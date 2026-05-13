@@ -8,3 +8,5 @@ flow-task/
 .omx/
 *.log
 .DS_Store
+web/.omc/
+web/dist/
