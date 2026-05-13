@@ -182,9 +182,10 @@ Include plan-ref: $plan_id in the deliverable metadata.
 PROMPT
 }
 
-# rtk_codex_verify <project> <deliverable_id> <verdict_file>
+# rtk_codex_verify <project> <deliverable_id> <verdict_file> [diff_artifact]
 rtk_codex_verify() {
   local project="$1" deliverable_id="$2" verdict_file="$3"
+  local diff_artifact="${4:-}"
   local deliverable_file="$FLOW_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
   local constraints=""
   if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
@@ -194,10 +195,20 @@ rtk_codex_verify() {
 - Do NOT execute terminal commands. This is a verification-only phase.
 - Do NOT modify any code files."
   fi
+  local diff_section=""
+  if [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ]; then
+    diff_section="## Diff Artifact
+A code diff was generated before this verification phase. Read it to understand what changed:
+- Diff file: $diff_artifact
+
+Use the diff to verify the actual code changes match the deliverable claims."
+  fi
   cat << PROMPT
 You are Flow Codex (Verifier). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $constraints
+
+$diff_section
 
 ## Files (read via fs/read_text_file as needed)
 - Role definition: $FLOW_ROOT/profiles/codex/soul.md

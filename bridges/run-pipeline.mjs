@@ -226,6 +226,33 @@ async function parseVerdict(verdictPath) {
 
 // ─── Phase execution ───
 
+async function generateDiffArtifact(flowRoot, project, jobId, wikiDir) {
+  const projectJsonPath = path.join(wikiDir, "project.json");
+  let sourcePath;
+  try {
+    const raw = await readFile(projectJsonPath, "utf8");
+    sourcePath = JSON.parse(raw).sourcePath;
+  } catch {
+    return null;
+  }
+  if (!sourcePath) return null;
+
+  const artifactsDir = runtimeDataPath(flowRoot, path.join("artifacts", project, jobId));
+  await mkdir(artifactsDir, { recursive: true });
+  const diffPath = path.join(artifactsDir, "diff-execute.patch");
+
+  try {
+    const result = await runBridge("git", ["diff", "HEAD"], sourcePath);
+    if (result.exitCode === 0 && result.stdout.trim().length > 0) {
+      await writeFile(diffPath, result.stdout, "utf8");
+      return diffPath;
+    }
+  } catch {
+    // Non-git project or no changes
+  }
+  return null;
+}
+
 async function checkCancelAndRedirect(flowRoot, project, jobId, phase) {
   const job = await getJob(flowRoot, project, jobId);
   if (job.cancelRequested) {
@@ -409,6 +436,11 @@ async function main() {
     }
 
     // ─── Phase 3: Verify (+ fix loop) ───
+    const diffArtifactPath = await generateDiffArtifact(flowRoot, project, jobId, wikiDir);
+    if (diffArtifactPath) {
+      log(project, `Diff artifact generated: ${diffArtifactPath}`);
+    }
+
     for (let cycle = 1; cycle <= maxRetries; cycle++) {
       if (checkTimeout()) {
         await failJob(flowRoot, project, jobId, { reason: "timed out during verify phase" });
@@ -418,10 +450,13 @@ async function main() {
       log(project, `Phase 3/3: Verify (Codex) attempt ${cycle}/${maxRetries}`);
 
       const verifyPhaseName = cycle === 1 ? "verify" : `verify-retry-${cycle}`;
+      const verifyArgs = diffArtifactPath
+        ? [project, deliverableId, diffArtifactPath]
+        : [project, deliverableId];
       await runPhaseWithLease(
         flowRoot, project, jobId, verifyPhaseName,
         "bridges/codex-verify.sh",
-        [project, deliverableId]
+        verifyArgs
       );
 
       const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${deliverableId}.md`);

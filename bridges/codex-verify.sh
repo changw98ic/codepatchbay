@@ -8,8 +8,9 @@ FLOW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=common.sh
 source "$FLOW_ROOT/bridges/common.sh"
 
-PROJECT="${1:?Usage: codex-verify.sh <project> <deliverable-id>}"
-DELIVERABLE_ID="${2:?Usage: codex-verify.sh <project> <deliverable-id>}"
+PROJECT="${1:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact]}"
+DELIVERABLE_ID="${2:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact]}"
+DIFF_ARTIFACT="${3:-}"
 WIKI_DIR="$FLOW_ROOT/wiki/projects/$PROJECT"
 
 require_safe_name "$PROJECT"
@@ -25,7 +26,7 @@ VERDICT_FILE="$WIKI_DIR/outputs/verdict-${DELIVERABLE_ID}.md"
 echo "Verifying [$PROJECT] deliverable-$DELIVERABLE_ID..."
 echo "Output: $VERDICT_FILE"
 
-PROMPT=$(rtk_codex_verify "$PROJECT" "$DELIVERABLE_ID" "$VERDICT_FILE")
+PROMPT=$(rtk_codex_verify "$PROJECT" "$DELIVERABLE_ID" "$VERDICT_FILE" "$DIFF_ARTIFACT")
 printf '%s' "$PROMPT" | acp_run codex 2>&1
 
 if [ -f "$VERDICT_FILE" ]; then
