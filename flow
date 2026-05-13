@@ -103,13 +103,16 @@ cmd_status() {
   local outputs=$(ls "$wdir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
   echo -e "${CYAN}Inbox:${NC} $inbox  ${CYAN}Outputs:${NC} $outputs"
 
-  # Pipeline state (per-project)
-  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
-  if [ -f "$sf" ]; then
-    local st ph
-    st=$(node "$FLOW_ROOT/bridges/json-helper.mjs" read "$sf" "status" 2>/dev/null || echo "?")
-    ph=$(node "$FLOW_ROOT/bridges/json-helper.mjs" read "$sf" "phase" 2>/dev/null)
-    echo -e "${CYAN}Pipeline:${NC} $st ${ph:+(phase: $ph)}"
+  # Pipeline state from durable job projection
+  local state
+  state=$(node -e "
+    import('${FLOW_ROOT}/server/services/job-projection.js').then(m =>
+      m.projectPipelineState('${FLOW_ROOT}', '${project}')
+    ).then(s => s ? s.status + ' ' + (s.phase || '') : '')
+    .catch(() => '')
+  " 2>/dev/null)
+  if [ -n "$state" ]; then
+    echo -e "${CYAN}Pipeline:${NC} $state"
   fi
 }
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { appendEvent, eventFileFor } from "../server/services/event-store.js";
 import { acquireLease, readLease } from "../server/services/lease-manager.js";
+import { projectPipelineState } from "../server/services/job-projection.js";
 
 const repoRoot = path.resolve(".");
 
@@ -31,6 +31,16 @@ await appendEvent(root, project, jobId, {
   ts: "2026-05-13T12:00:00.000Z",
 });
 
+await appendEvent(root, project, jobId, {
+  type: "phase_started",
+  jobId,
+  project,
+  phase: "plan",
+  attempt: 1,
+  leaseId: "lease-job-20260513-plan",
+  ts: "2026-05-13T12:00:01.000Z",
+});
+
 const eventFile = eventFileFor(root, project, jobId);
 assert.equal(
   eventFile,
@@ -50,31 +60,20 @@ assert.notEqual(await readLease(root, "lease-job-20260513-plan"), null);
 assert.equal(await exists(path.join(root, "flow-task", "leases", "lease-job-20260513-plan.json")), true);
 assert.equal(await exists(path.join(root, ".omc", "leases")), false);
 
-await mkdir(path.join(root, "wiki", "projects", project), { recursive: true });
-await mkdir(path.join(root, "bridges"), { recursive: true });
-await symlink(
-  path.join(repoRoot, "bridges", "json-helper.mjs"),
-  path.join(root, "bridges", "json-helper.mjs")
-);
-execFileSync(
-  "bash",
-  [
-    "-lc",
-    `export FLOW_ROOT=${JSON.stringify(root)}; source ${JSON.stringify(path.join(repoRoot, "bridges", "common.sh"))}; state_init demo "task" 3; state_write demo "'phase'" "'execute'"`,
-  ],
-  { cwd: repoRoot }
-);
+// Verify pipeline state comes from job projection (no state files needed)
+const pipelineState = await projectPipelineState(root, project);
+assert.equal(pipelineState.project, "demo");
+assert.equal(pipelineState.phase, "plan");
+assert.equal(pipelineState.status, "EXECUTING");
+assert.equal(pipelineState.jobId, jobId);
 
-const stateFile = path.join(root, "flow-task", "state", "pipeline-demo.json");
-assert.equal(await exists(stateFile), true);
+// No state files should exist
+assert.equal(await exists(path.join(root, "flow-task", "state")), false);
 assert.equal(await exists(path.join(root, ".omc", "state")), false);
-assert.match(await readFile(stateFile, "utf8"), /"phase": "execute"/);
 
 const { bootstrap } = await import("../bridges/worktree-manager.mjs");
 const projectDir = path.join(root, "source");
 await bootstrap(projectDir);
-const gitignore = await readFile(path.join(projectDir, ".gitignore"), "utf8");
-assert.match(gitignore, /flow-task\/state\//);
+const gitignore = await import("node:fs/promises").then(m => m.readFile(path.join(projectDir, ".gitignore"), "utf8"));
 assert.match(gitignore, /flow-task\/worktrees\//);
-assert.doesNotMatch(gitignore, /\.omc\/state\//);
 assert.doesNotMatch(gitignore, /\.omc\/worktrees\//);

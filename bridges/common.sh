@@ -3,7 +3,7 @@
 # source "$(dirname "$0")/common.sh"
 
 FLOW_ROOT="${FLOW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-JSON_HELPER="$FLOW_ROOT/bridges/json-helper.mjs"
+# ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 
 # ─── 颜色 ───
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -95,26 +95,6 @@ log_append() {
   done
   echo "- **$ts** | $msg" >> "$log"
   rmdir "$lockdir" 2>/dev/null
-}
-
-# ─── JSON 状态操作 (via json-helper.mjs, injection-safe) ───
-state_read() {
-  local project="$1" key="$2"
-  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
-  [ -f "$sf" ] || { echo ""; return; }
-  node "$JSON_HELPER" read "$sf" "$key" 2>/dev/null || echo ""
-}
-
-state_write() {
-  local project="$1" key="$2" value="$3"
-  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
-  node "$JSON_HELPER" write "$sf" "$key" "$value" 2>/dev/null
-}
-
-state_init() {
-  local project="$1" task="$2" max="${3:-3}"
-  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
-  node "$JSON_HELPER" init "$sf" "$project" "$task" "$max" 2>/dev/null
 }
 
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───

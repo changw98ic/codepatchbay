@@ -177,20 +177,32 @@ describe('GET /api/projects/:name', () => {
     assert.equal(body.log, null);
   });
 
-  it('includes pipelineState when state file exists', async () => {
+  it('includes pipelineState from job projection when events exist', async () => {
     await createProjectDir(tmpRoot, 'with-state');
-    const stateDir = path.join(tmpRoot, 'flow-task/state');
-    await fs.mkdir(stateDir, { recursive: true });
-    await fs.writeFile(
-      path.join(stateDir, 'pipeline-with-state.json'),
-      JSON.stringify({ phase: 'plan', status: 'running' })
-    );
+    const { appendEvent } = await import('../server/services/event-store.js');
+    await appendEvent(tmpRoot, 'with-state', 'job-20260514-test', {
+      type: 'job_created',
+      jobId: 'job-20260514-test',
+      project: 'with-state',
+      task: 'test task',
+      ts: '2026-05-14T12:00:00.000Z',
+    });
+    await appendEvent(tmpRoot, 'with-state', 'job-20260514-test', {
+      type: 'phase_started',
+      jobId: 'job-20260514-test',
+      project: 'with-state',
+      phase: 'plan',
+      attempt: 1,
+      ts: '2026-05-14T12:00:01.000Z',
+    });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/with-state' });
     assert.equal(res.statusCode, 200);
 
     const body = res.json();
-    assert.deepEqual(body.pipelineState, { phase: 'plan', status: 'running' });
+    assert.equal(body.pipelineState.project, 'with-state');
+    assert.equal(body.pipelineState.phase, 'plan');
+    assert.equal(body.pipelineState.status, 'EXECUTING');
   });
 });
 

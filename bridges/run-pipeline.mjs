@@ -219,54 +219,7 @@ async function parseVerdict(verdictPath) {
   }
 }
 
-// ─── Compatibility state for status/UI readers ───
-
-function pipelineStateFile(flowRoot, project) {
-  return runtimeDataPath(flowRoot, "state", `pipeline-${project}.json`);
-}
-
-async function readPipelineState(flowRoot, project) {
-  try {
-    return JSON.parse(await readFile(pipelineStateFile(flowRoot, project), "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-async function initPipelineState(flowRoot, { project, task, maxRetries, jobId }) {
-  const file = pipelineStateFile(flowRoot, project);
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(
-    file,
-    JSON.stringify(
-      {
-        project,
-        task,
-        jobId,
-        started: ts(),
-        phase: "plan",
-        retryCount: 0,
-        maxRetries: Number(maxRetries),
-        status: "running",
-      },
-      null,
-      2
-    ),
-    "utf8"
-  );
-}
-
-async function writePipelineState(flowRoot, project, patch) {
-  const file = pipelineStateFile(flowRoot, project);
-  const current = await readPipelineState(flowRoot, project);
-  const next = {
-    ...current,
-    ...patch,
-    updated: ts(),
-  };
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(next, null, 2), "utf8");
-}
+// ─── Phase execution ───
 
 // ─── Main pipeline ───
 
@@ -289,9 +242,6 @@ async function main() {
   if (timeoutMin > 0) {
     watchdogTimer = setTimeout(() => {
       timedOut = true;
-      void writePipelineState(flowRoot, project, { status: "timeout" }).catch((err) => {
-        console.error(`failed to write timeout state: ${err.message}`);
-      });
       fail(`Total timeout (${timeoutMin} min) exceeded`);
     }, timeoutMin * 60_000);
     watchdogTimer.unref?.();
@@ -308,7 +258,6 @@ async function main() {
   // Create job
   const job = await createJob(flowRoot, { project, task, workflow: "standard" });
   const jobId = job.jobId;
-  await initPipelineState(flowRoot, { project, task, maxRetries, jobId });
 
   const wikiDir = path.resolve(flowRoot, "wiki", "projects", project);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""})`);
@@ -324,13 +273,11 @@ async function main() {
 
     if (planResult.error) {
       fail(`Plan spawn failed: ${planResult.error.message}`);
-      await writePipelineState(flowRoot, project, { status: "failed" });
       await failJob(flowRoot, project, jobId, { reason: `plan spawn error: ${planResult.error.message}` });
       return 1;
     }
 
     if (checkTimeout()) {
-      await writePipelineState(flowRoot, project, { status: "timeout" });
       await failJob(flowRoot, project, jobId, { reason: "timed out after plan phase" });
       return 1;
     }
@@ -339,7 +286,6 @@ async function main() {
 
     if (!planId) {
       fail("Plan not created. Aborting.");
-      await writePipelineState(flowRoot, project, { status: "failed" });
       await completePhase(flowRoot, project, jobId, { phase: "plan", artifact: "" });
       await failJob(flowRoot, project, jobId, { reason: "plan not created" });
       return 1;
@@ -347,23 +293,17 @@ async function main() {
 
     ok(`plan-${planId}`);
     await completePhase(flowRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
-    await writePipelineState(flowRoot, project, { phase: "execute" });
 
     // ─── Phase 2: Execute (+ retry) ───
     let deliverableId = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       if (checkTimeout()) {
-        await writePipelineState(flowRoot, project, { status: "timeout" });
         await failJob(flowRoot, project, jobId, { reason: "timed out during execute phase" });
         return 1;
       }
 
       log(project, `Phase 2/3: Execute (Claude) attempt ${attempt}/${maxRetries}`);
-      await writePipelineState(flowRoot, project, {
-        phase: "execute",
-        retryCount: attempt - 1,
-      });
       const execResult = await runPhaseWithLease(
         flowRoot, project, jobId,
         `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
@@ -391,25 +331,18 @@ async function main() {
 
     if (!deliverableId) {
       fail(`Execute failed after ${maxRetries} attempts.`);
-      await writePipelineState(flowRoot, project, { status: "failed" });
       await failJob(flowRoot, project, jobId, { reason: `execute failed after ${maxRetries} attempts` });
       return 1;
     }
-    await writePipelineState(flowRoot, project, { phase: "verify" });
 
     // ─── Phase 3: Verify (+ fix loop) ───
     for (let cycle = 1; cycle <= maxRetries; cycle++) {
       if (checkTimeout()) {
-        await writePipelineState(flowRoot, project, { status: "timeout" });
         await failJob(flowRoot, project, jobId, { reason: "timed out during verify phase" });
         return 1;
       }
 
       log(project, `Phase 3/3: Verify (Codex) attempt ${cycle}/${maxRetries}`);
-      await writePipelineState(flowRoot, project, {
-        phase: "verify",
-        retryCount: cycle - 1,
-      });
 
       const verifyPhaseName = cycle === 1 ? "verify" : `verify-retry-${cycle}`;
       await runPhaseWithLease(
@@ -435,10 +368,6 @@ async function main() {
 
       if (verdict === "PASS") {
         ok("Pipeline complete!");
-        await writePipelineState(flowRoot, project, {
-          phase: "verify",
-          status: "completed",
-        });
         await completePhase(flowRoot, project, jobId, {
           phase: "verify",
           artifact: `verdict-${deliverableId}`,
@@ -458,10 +387,6 @@ async function main() {
       if (cycle < maxRetries) {
         log(project, "Re-executing (Claude fix)...");
         const fixPhaseName = `fix-${cycle}`;
-        await writePipelineState(flowRoot, project, {
-          phase: "execute",
-          retryCount: cycle,
-        });
         const fixResult = await runPhaseWithLease(
           flowRoot, project, jobId, fixPhaseName,
           "bridges/claude-execute.sh",
@@ -487,12 +412,10 @@ async function main() {
     }
 
     fail(`Pipeline failed after ${maxRetries} cycles.`);
-    await writePipelineState(flowRoot, project, { status: "failed" });
     await failJob(flowRoot, project, jobId, { reason: `pipeline failed after ${maxRetries} verify cycles` });
     return 1;
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
-    await writePipelineState(flowRoot, project, { status: "failed" });
     try {
       await failJob(flowRoot, project, jobId, { reason: `unhandled: ${err.message}` });
     } catch {

@@ -1,33 +1,10 @@
 import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import path from 'path';
-import { useProjection } from './state-source.js';
 import { projectPipelineState } from './job-projection.js';
 
 export function registerWatcher(flowRoot, broadcast) {
-  const stateDir = path.join(flowRoot, 'flow-task/state');
   const projectsDir = path.join(flowRoot, 'wiki/projects');
-
-  // Watch pipeline state files (legacy path, skipped when using projection)
-  let stateWatcher = null;
-  if (!useProjection()) {
-    stateWatcher = chokidar.watch(path.join(stateDir, 'pipeline-*.json'), {
-      persistent: true,
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 200 },
-    });
-
-    stateWatcher.on('all', async (event, filePath) => {
-      try {
-        const name = path.basename(filePath).replace('pipeline-', '').replace('.json', '');
-        const content = await fs.readFile(filePath, 'utf8');
-        const state = JSON.parse(content);
-        broadcast({ type: 'pipeline:update', project: name, state });
-      } catch (err) {
-        console.error(`[watcher] state file error (${filePath}): ${err.message}`);
-      }
-    });
-  }
 
   // Watch project wiki files
   const wikiWatcher = chokidar.watch(
@@ -79,14 +56,12 @@ export function registerWatcher(flowRoot, broadcast) {
       const [projectName, fileName] = rel.split(path.sep);
       const jobId = fileName.replace(/\.jsonl$/, '');
       broadcast({ type: 'job:update', project: projectName, jobId });
-      if (useProjection()) {
-        const state = await projectPipelineState(flowRoot, projectName);
-        broadcast({ type: 'pipeline:update', project: projectName, state });
-      }
+      const state = await projectPipelineState(flowRoot, projectName);
+      broadcast({ type: 'pipeline:update', project: projectName, state });
     } catch (err) {
       console.error(`[watcher] job event error (${filePath}): ${err.message}`);
     }
   });
 
-  return { stateWatcher, wikiWatcher, eventsWatcher };
+  return { wikiWatcher, eventsWatcher };
 }
