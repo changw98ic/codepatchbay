@@ -163,6 +163,12 @@ export function materializeJob(events) {
     createdAt: null,
     updatedAt: null,
     blockedReason: null,
+    cancelRequested: false,
+    cancelReason: null,
+    redirectContext: null,
+    redirectReason: null,
+    redirectEventId: null,
+    consumedRedirectIds: [],
   };
 
   for (const event of events) {
@@ -222,6 +228,33 @@ export function materializeJob(events) {
         state.phase = "completed";
         state.leaseId = null;
         state.blockedReason = null;
+        break;
+      case "job_cancel_requested":
+        state.cancelRequested = true;
+        state.cancelReason = event.reason ?? null;
+        break;
+      case "job_cancelled":
+        state.cancelRequested = true;
+        state.status = "cancelled";
+        state.leaseId = null;
+        break;
+      case "job_redirect_requested":
+        state.redirectContext = event.instructions ?? null;
+        state.redirectReason = event.reason ?? null;
+        state.redirectEventId = event.redirectEventId ?? null;
+        break;
+      case "job_redirect_consumed":
+        if (event.redirectEventId !== undefined) {
+          state.consumedRedirectIds = [
+            ...state.consumedRedirectIds,
+            event.redirectEventId,
+          ];
+        }
+        if (state.redirectEventId === event.redirectEventId) {
+          state.redirectContext = null;
+          state.redirectReason = null;
+          state.redirectEventId = null;
+        }
         break;
     }
   }

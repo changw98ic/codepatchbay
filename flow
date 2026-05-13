@@ -41,6 +41,8 @@ ${BOLD}Commands:${NC}
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
   ${CYAN}pipeline${NC} <project> "<task>" [retries]  全自动流水线
+  ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
+  ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
   ${CYAN}status${NC} <project>                       查看项目状态
   ${CYAN}list${NC}                                   列出所有项目
   ${CYAN}jobs${NC}                                     列出 durable jobs
@@ -193,6 +195,23 @@ cmd_wiki() {
   esac
 }
 
+cmd_cancel() {
+  local project="${1:?Usage: flow cancel <project> <jobId> [reason]}"
+  local jobId="${2:?Usage: flow cancel <project> <jobId> [reason]}"
+  shift 2
+  local reason="$*"
+  FLOW_ROOT="$FLOW_ROOT" node "$FLOW_ROOT/bridges/cancel-redirect.mjs" cancel "$project" "$jobId" "$reason"
+}
+
+cmd_redirect() {
+  local project="${1:?Usage: flow redirect <project> <jobId> \"<instructions>\" [reason]}"
+  local jobId="${2:?Usage: flow redirect <project> <jobId> \"<instructions>\" [reason]}"
+  local instructions="${3:?Usage: flow redirect <project> <jobId> \"<instructions>\" [reason]}"
+  shift 3
+  local reason="$*"
+  FLOW_ROOT="$FLOW_ROOT" node "$FLOW_ROOT/bridges/cancel-redirect.mjs" redirect "$project" "$jobId" "$instructions" "$reason"
+}
+
 cmd_interop() {
   if command -v omc &>/dev/null; then
     omc interop
@@ -265,6 +284,8 @@ case "${1:-help}" in
   execute)  shift; cmd_execute "$@" ;;
   verify)   shift; cmd_verify "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
+  cancel)   shift; cmd_cancel "$@" ;;
+  redirect) shift; cmd_redirect "$@" ;;
   status)   shift; cmd_status "$@" ;;
   jobs)     cmd_jobs ;;
   supervisor) cmd_supervisor ;;

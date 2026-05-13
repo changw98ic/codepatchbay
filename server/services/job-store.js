@@ -134,6 +134,73 @@ export async function completeJob(
   return getJob(flowRoot, project, jobId);
 }
 
+export async function requestCancelJob(
+  flowRoot,
+  project,
+  jobId,
+  { reason, ts = nowIso() } = {}
+) {
+  await appendEvent(flowRoot, project, jobId, {
+    type: "job_cancel_requested",
+    jobId,
+    project,
+    reason,
+    ts,
+  });
+  return getJob(flowRoot, project, jobId);
+}
+
+export async function cancelJob(
+  flowRoot,
+  project,
+  jobId,
+  { reason, ts = nowIso() } = {}
+) {
+  await appendEvent(flowRoot, project, jobId, {
+    type: "job_cancelled",
+    jobId,
+    project,
+    reason,
+    ts,
+  });
+  return getJob(flowRoot, project, jobId);
+}
+
+export async function requestRedirectJob(
+  flowRoot,
+  project,
+  jobId,
+  { instructions, reason, ts = nowIso() } = {}
+) {
+  const redirectEventId = `${jobId}-redirect-${Date.now()}`;
+  await appendEvent(flowRoot, project, jobId, {
+    type: "job_redirect_requested",
+    jobId,
+    project,
+    instructions,
+    reason,
+    redirectEventId,
+    ts,
+  });
+  return getJob(flowRoot, project, jobId);
+}
+
+export async function consumeRedirect(
+  flowRoot,
+  project,
+  jobId,
+  { redirectEventId, ts = nowIso() } = {}
+) {
+  await appendEvent(flowRoot, project, jobId, {
+    type: "job_redirect_consumed",
+    jobId,
+    project,
+    redirectEventId,
+    ts,
+  });
+  return getJob(flowRoot, project, jobId);
+}
+
 export async function getJob(flowRoot, project, jobId) {
   return materializeJob(await readEvents(flowRoot, project, jobId));
 }

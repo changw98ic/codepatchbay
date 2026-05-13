@@ -2,6 +2,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
+import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -57,6 +58,27 @@ export async function taskRoutes(fastify, opts) {
     if (!task) throw fastify.httpErrors.badRequest('task required');
 
     return spawnBridge(req.flowRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log);
+  });
+
+  // Cancel a running job
+  fastify.post('/tasks/:name/cancel', async (req) => {
+    const { name } = req.params;
+    const { jobId, reason } = req.body || {};
+    if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
+    const job = await requestCancelJob(req.flowRoot, name, jobId, { reason });
+    broadcast({ type: 'job:cancel_requested', project: name, jobId, reason });
+    return job;
+  });
+
+  // Redirect a running job
+  fastify.post('/tasks/:name/redirect', async (req) => {
+    const { name } = req.params;
+    const { jobId, instructions, reason } = req.body || {};
+    if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
+    if (!instructions) throw fastify.httpErrors.badRequest('instructions required');
+    const job = await requestRedirectJob(req.flowRoot, name, jobId, { instructions, reason });
+    broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
+    return job;
   });
 }
 

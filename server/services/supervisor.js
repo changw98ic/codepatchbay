@@ -4,7 +4,7 @@ import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { completeJob as completeJobStore } from "./job-store.js";
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
 function hasArtifact(value) {
   return typeof value === "string" && value.trim().length > 0;
