@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
 import {
   appendEvent,
+  checkpointJob,
   listEventFiles,
   materializeJob,
+  readCheckpoint,
   readEvents,
 } from "./event-store.js";
 
@@ -84,6 +86,7 @@ export async function blockJob(
     reason,
     ts,
   });
+  await checkpointJob(flowRoot, project, jobId).catch(() => {});
   return getJob(flowRoot, project, jobId);
 }
 
@@ -100,6 +103,7 @@ export async function failJob(
     reason,
     ts,
   });
+  await checkpointJob(flowRoot, project, jobId).catch(() => {});
   return getJob(flowRoot, project, jobId);
 }
 
@@ -131,6 +135,7 @@ export async function completeJob(
     project,
     ts,
   });
+  await checkpointJob(flowRoot, project, jobId).catch(() => {});
   return getJob(flowRoot, project, jobId);
 }
 
@@ -202,6 +207,8 @@ export async function consumeRedirect(
 }
 
 export async function getJob(flowRoot, project, jobId) {
+  const checkpoint = await readCheckpoint(flowRoot, project, jobId);
+  if (checkpoint) return checkpoint;
   return materializeJob(await readEvents(flowRoot, project, jobId));
 }
 

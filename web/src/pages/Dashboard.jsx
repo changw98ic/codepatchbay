@@ -130,6 +130,17 @@ export default function Dashboard() {
               <span className="job-project">{job.project}</span>
               <span className={`job-status badge badge-${job.status}`}>{job.status}</span>
               <span className="job-phase">{job.phase || '-'}</span>
+              {job.cancelRequested && (
+                <span className="badge badge-cancel">CANCEL REQUESTED</span>
+              )}
+              {job.redirectContext && (
+                <span className="badge badge-redirect">REDIRECT PENDING</span>
+              )}
+              {job.lastActivityAt && (
+                <span className="job-activity" title={job.lastActivityMessage || ''}>
+                  {new Date(job.lastActivityAt).toLocaleTimeString()}
+                </span>
+              )}
             </div>
           ))}
         </section>

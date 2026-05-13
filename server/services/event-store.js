@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
@@ -268,5 +268,45 @@ export function materializeJob(events) {
     }
   }
 
+  return state;
+}
+
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+
+function checkpointFileFor(flowRoot, project, jobId) {
+  validatePathComponent("project", project);
+  validatePathComponent("jobId", jobId);
+  const checkpointsRoot = runtimeDataPath(flowRoot, "checkpoints");
+  return path.resolve(checkpointsRoot, project, `${jobId}.json`);
+}
+
+export async function writeCheckpoint(flowRoot, project, jobId, state) {
+  const file = checkpointFileFor(flowRoot, project, jobId);
+  await mkdir(path.dirname(file), { recursive: true });
+  const checkpoint = {
+    _meta: { version: 1, writtenAt: new Date().toISOString(), eventCount: null },
+    state,
+  };
+  await writeFile(file, JSON.stringify(checkpoint) + "\n", "utf8");
+  return file;
+}
+
+export async function readCheckpoint(flowRoot, project, jobId) {
+  const file = checkpointFileFor(flowRoot, project, jobId);
+  try {
+    const raw = await readFile(file, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed.state ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function checkpointJob(flowRoot, project, jobId) {
+  const events = await readEvents(flowRoot, project, jobId);
+  if (events.length === 0) return null;
+  const state = materializeJob(events);
+  if (!TERMINAL_STATUSES.has(state.status)) return null;
+  await writeCheckpoint(flowRoot, project, jobId, state);
   return state;
 }
