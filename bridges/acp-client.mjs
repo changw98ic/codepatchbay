@@ -11,15 +11,93 @@ const usage = `Usage: acp-client.mjs --agent <codex|claude> [--cwd <path>]
 Reads a prompt from stdin and sends it to an ACP agent over stdio.
 
 Environment:
-  FLOW_ACP_CODEX_COMMAND    Command for the Codex ACP agent
-  FLOW_ACP_CODEX_ARGS       Args for the Codex ACP agent (JSON array or shell-like words)
-  FLOW_ACP_CLAUDE_COMMAND   Command for the Claude ACP agent
-  FLOW_ACP_CLAUDE_ARGS      Args for the Claude ACP agent (JSON array or shell-like words)
-  FLOW_ACP_TIMEOUT_MS       Idle timeout in milliseconds; activity resets it (default: 1800000)
-  FLOW_ACP_PERMISSION       allow or reject permission requests (default: allow)
-  FLOW_ACP_WRITE_ALLOW      Comma-separated glob patterns for allowed write paths (default: none = allow all)
-  FLOW_ACP_TERMINAL         allow or deny terminal creation (default: allow)
+  FLOW_ACP_CODEX_COMMAND      Command for the Codex ACP agent
+  FLOW_ACP_CODEX_ARGS         Args for the Codex ACP agent (JSON array or shell-like words)
+  FLOW_ACP_CLAUDE_COMMAND     Command for the Claude ACP agent
+  FLOW_ACP_CLAUDE_ARGS        Args for the Claude ACP agent (JSON array or shell-like words)
+  FLOW_ACP_TIMEOUT_MS         Idle timeout in milliseconds; activity resets it (default: 1800000)
+  FLOW_ACP_PERMISSION         allow or reject permission requests (default: allow)
+  FLOW_ACP_WRITE_ALLOW        Comma-separated glob patterns for allowed write paths (default: none = allow all)
+  FLOW_ACP_TERMINAL           allow or deny terminal creation (default: allow)
+  FLOW_ACP_TOOL_POLICY_FILE   Path to JSON file mapping tool names to "allow"|"deny"
+  FLOW_ACP_DENY_TOOLS         Comma-separated tool names to deny (e.g. "terminal/create,fs/delete")
+  FLOW_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
+
+Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > FLOW_ACP_TERMINAL
 `;
+
+/**
+ * Parse per-tool policy from environment variables.
+ * Priority: FLOW_ACP_TOOL_POLICY_FILE > FLOW_ACP_DENY_TOOLS/ALLOW_TOOLS > FLOW_ACP_TERMINAL
+ *
+ * Returns a Map<string, "allow"|"deny"> or null (no policy).
+ */
+async function parseToolPolicy() {
+  const policyFilePath = process.env.FLOW_ACP_TOOL_POLICY_FILE;
+
+  // 1. Highest priority: JSON policy file
+  if (policyFilePath) {
+    let content;
+    try {
+      content = await readFile(path.resolve(policyFilePath), "utf8");
+    } catch (error) {
+      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: failed to read "${policyFilePath}": ${error.message}`);
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch (error) {
+      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: invalid JSON in "${policyFilePath}": ${error.message}`);
+    }
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: expected a JSON object {"tool/name": "allow"|"deny"}, got ${Array.isArray(parsed) ? "array" : typeof parsed}`);
+    }
+
+    const policy = new Map();
+    for (const [tool, action] of Object.entries(parsed)) {
+      if (action !== "allow" && action !== "deny") {
+        throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: invalid action "${action}" for tool "${tool}" (must be "allow" or "deny")`);
+      }
+      policy.set(tool, action);
+    }
+    return policy;
+  }
+
+  // 2. Flat env var format
+  const denyTools = process.env.FLOW_ACP_DENY_TOOLS;
+  const allowTools = process.env.FLOW_ACP_ALLOW_TOOLS;
+
+  if (denyTools || allowTools) {
+    const policy = new Map();
+
+    if (denyTools) {
+      for (const tool of denyTools.split(",")) {
+        const trimmed = tool.trim();
+        if (trimmed) policy.set(trimmed, "deny");
+      }
+    }
+
+    if (allowTools) {
+      for (const tool of allowTools.split(",")) {
+        const trimmed = tool.trim();
+        if (trimmed) policy.set(trimmed, "allow");
+      }
+    }
+
+    return policy.size > 0 ? policy : null;
+  }
+
+  // 3. Legacy: FLOW_ACP_TERMINAL=deny maps to terminal/create=deny
+  if (process.env.FLOW_ACP_TERMINAL === "deny") {
+    const policy = new Map();
+    policy.set("terminal/create", "deny");
+    return policy;
+  }
+
+  return null;
+}
 
 function parseCli(argv) {
   const result = { agent: "", cwd: process.cwd() };
@@ -134,12 +212,13 @@ function jsonRpcError(code, message) {
 }
 
 class AcpClient {
-  constructor({ agent, cwd, prompt, writeAllowPaths, terminalPolicy }) {
+  constructor({ agent, cwd, prompt, writeAllowPaths, terminalPolicy, toolPolicy }) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
     this.writeAllowPaths = writeAllowPaths || null;
     this.terminalPolicy = terminalPolicy || "allow";
+    this.toolPolicy = toolPolicy || null;
     this.nextId = 1;
     this.pending = new Map();
     this.terminals = new Map();
@@ -331,6 +410,15 @@ class AcpClient {
 
   async handleClientRequest(message) {
     try {
+      // Per-tool policy enforcement: check before dispatching
+      if (this.toolPolicy && message.method) {
+        const action = this.toolPolicy.get(message.method);
+        if (action === "deny") {
+          throw new Error(`tool denied by policy: ${message.method}`);
+        }
+        // "allow" or no match → proceed
+      }
+
       switch (message.method) {
         case "session/update":
           this.handleSessionUpdate(message.params);
@@ -552,8 +640,9 @@ try {
     : null;
 
   const terminalPolicy = process.env.FLOW_ACP_TERMINAL === "deny" ? "deny" : "allow";
+  const toolPolicy = await parseToolPolicy();
 
-  await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy }).run();
+  await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy }).run();
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exit(1);
