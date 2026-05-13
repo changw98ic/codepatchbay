@@ -148,6 +148,11 @@ export async function readEvents(flowRoot, project, jobId) {
   }
 }
 
+const POST_TERMINAL_ALLOWED = new Set([
+  "job_completed", "job_failed", "job_blocked", "job_cancelled",
+  "job_cancel_requested", "job_redirect_consumed", "phase_activity", "workflow_selected",
+]);
+
 export function materializeJob(events) {
   const state = {
     jobId: null,
@@ -173,6 +178,8 @@ export function materializeJob(events) {
     lastActivityMessage: null,
   };
 
+  let terminal = false;
+
   for (const event of events) {
     if (event.jobId !== undefined) state.jobId = event.jobId;
     if (event.project !== undefined) state.project = event.project;
@@ -180,12 +187,17 @@ export function materializeJob(events) {
     if (event.workflow !== undefined) state.workflow = event.workflow;
     if (event.ts !== undefined) state.updatedAt = event.ts;
 
+    if (terminal && !POST_TERMINAL_ALLOWED.has(event.type)) {
+      continue;
+    }
+
     switch (event.type) {
       case "job_created":
         state.task = event.task ?? state.task;
         state.status = "running";
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;
+        terminal = false;
         break;
       case "worktree_created":
         state.worktree = event.worktree ?? event.path ?? state.worktree;
@@ -209,27 +221,32 @@ export function materializeJob(events) {
         state.leaseId = null;
         state.status = "failed";
         state.blockedReason = event.error ?? event.reason ?? null;
+        terminal = true;
         break;
       case "budget_exceeded":
         state.status = "blocked";
         state.leaseId = null;
         state.blockedReason = event.reason ?? "budget exceeded";
+        terminal = true;
         break;
       case "job_blocked":
         state.status = "blocked";
         state.leaseId = null;
         state.blockedReason = event.reason ?? event.blockedReason ?? null;
+        terminal = true;
         break;
       case "job_failed":
         state.status = "failed";
         state.leaseId = null;
         state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
+        terminal = true;
         break;
       case "job_completed":
         state.status = "completed";
         state.phase = "completed";
         state.leaseId = null;
         state.blockedReason = null;
+        terminal = true;
         break;
       case "job_cancel_requested":
         state.cancelRequested = true;
@@ -239,11 +256,14 @@ export function materializeJob(events) {
         state.cancelRequested = true;
         state.status = "cancelled";
         state.leaseId = null;
+        terminal = true;
         break;
       case "job_redirect_requested":
-        state.redirectContext = event.instructions ?? null;
-        state.redirectReason = event.reason ?? null;
-        state.redirectEventId = event.redirectEventId ?? null;
+        if (!terminal) {
+          state.redirectContext = event.instructions ?? null;
+          state.redirectReason = event.reason ?? null;
+          state.redirectEventId = event.redirectEventId ?? null;
+        }
         break;
       case "job_redirect_consumed":
         if (event.redirectEventId !== undefined) {
