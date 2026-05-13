@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -234,9 +235,9 @@ class AcpClient {
     const { command, args } = resolveAgentCommand(this.agent);
     const env = { ...process.env };
     if (command === "npx" && !env.npm_config_cache) {
-      const agentCache = path.join(tmpdir(), `flow-npm-cache-${this.agent}`);
-      await mkdir(agentCache, { recursive: true });
-      env.npm_config_cache = agentCache;
+      const instanceCache = path.join(tmpdir(), `flow-npm-cache-${this.agent}-${randomUUID()}`);
+      await mkdir(instanceCache, { recursive: true });
+      env.npm_config_cache = instanceCache;
     }
     this.child = spawn(command, args, {
       cwd: this.cwd,
