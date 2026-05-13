@@ -56,12 +56,12 @@ log "Started (max $MAX_RETRIES retries${TIMEOUT_MIN:+, ${TIMEOUT_MIN}min timeout
 
 # ─── Phase 1: Plan ───
 log "Phase 1/3: Plan (Codex)"
-"$FLOW_ROOT/bridges/codex-plan.sh" "$PROJECT" "$TASK" 2>&1
+PLAN_OUTPUT=$("$FLOW_ROOT/bridges/codex-plan.sh" "$PROJECT" "$TASK" 2>&1) || true
+echo "$PLAN_OUTPUT"
 
 if check_timeout; then fail "Timed out after plan phase."; exit 1; fi
 
-PLAN_ID=$(find "$WIKI_DIR/inbox" -maxdepth 1 -name 'plan-*.md' -print 2>/dev/null \
-  | sort | tail -1 | sed -E 's/.*plan-([0-9]+)\.md$/\1/')
+PLAN_ID=$(echo "$PLAN_OUTPUT" | grep -E '^Plan: .*/plan-[0-9]+\.md$' | sed -E 's/.*plan-([0-9]+)\.md$/\1/' | tail -1)
 
 if [ -z "$PLAN_ID" ]; then
   fail "Plan not created. Aborting."
@@ -77,10 +77,10 @@ while [ "$RETRY" -lt "$MAX_RETRIES" ]; do
   if check_timeout; then fail "Timed out during execute phase."; exit 1; fi
 
   log "Phase 2/3: Execute (Claude) attempt $((RETRY + 1))/$MAX_RETRIES"
-  "$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" 2>&1
+  EXEC_OUTPUT=$("$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" 2>&1) || true
+  echo "$EXEC_OUTPUT"
 
-  DELIVERABLE_ID=$(find "$WIKI_DIR/outputs" -maxdepth 1 -name 'deliverable-*.md' -newer "$WIKI_DIR/inbox/plan-${PLAN_ID}.md" -print 2>/dev/null \
-    | sort | tail -1 | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/')
+  DELIVERABLE_ID=$(echo "$EXEC_OUTPUT" | grep -E '^Deliverable: .*/deliverable-[0-9]+\.md$' | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/' | tail -1)
 
   if [ -n "$DELIVERABLE_ID" ]; then
     ok "deliverable-$DELIVERABLE_ID"
@@ -113,12 +113,9 @@ while [ "$RETRY" -lt "$MAX_RETRIES" ]; do
     continue
   fi
 
-  VERDICT=$(grep -E "^VERDICT:" "$VERDICT_FILE" | head -1 | sed 's/^VERDICT:[[:space:]]*//' || echo "")
+  VERDICT=$(head -1 "$VERDICT_FILE" | sed -n 's/^VERDICT:[[:space:]]*\(.*\)/\1/p')
   if [ -z "$VERDICT" ]; then
-    VERDICT=$(head -5 "$VERDICT_FILE" | grep -iE "VERDICT:[[:space:]]*(PASS|FAIL|PARTIAL)" | head -1 | sed 's/.*VERDICT:[[:space:]]*//' 2>/dev/null || true)
-    if [ -z "$VERDICT" ]; then
-      VERDICT=$(head -5 "$VERDICT_FILE" | grep -iE "^(PASS|FAIL|PARTIAL)" | head -1 || echo "UNKNOWN")
-    fi
+    VERDICT="UNKNOWN"
   fi
 
   if echo "$VERDICT" | grep -qi "PASS"; then
@@ -130,9 +127,9 @@ while [ "$RETRY" -lt "$MAX_RETRIES" ]; do
     warn "FAIL. Fix attempt $RETRY/$MAX_RETRIES"
     if [ "$RETRY" -lt "$MAX_RETRIES" ]; then
       log "Re-executing (Claude fix)..."
-      "$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" "$VERDICT_FILE" 2>&1
-      DELIVERABLE_ID=$(find "$WIKI_DIR/outputs" -maxdepth 1 -name 'deliverable-*.md' -newer "$VERDICT_FILE" -print 2>/dev/null \
-        | sort | tail -1 | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/')
+      FIX_OUTPUT=$("$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" "$VERDICT_FILE" 2>&1) || true
+      echo "$FIX_OUTPUT"
+      DELIVERABLE_ID=$(echo "$FIX_OUTPUT" | grep -E '^Deliverable: .*/deliverable-[0-9]+\.md$' | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/' | tail -1)
     fi
   else
     warn "Unclear verdict: $VERDICT"

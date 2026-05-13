@@ -11,6 +11,9 @@ const write = (message) => {
 };
 
 const sessionId = "fake-active-session";
+const tickIntervalMs = Number.parseInt(process.env.FLOW_TEST_ACTIVE_TICK_MS || "70", 10);
+const tickCount = Number.parseInt(process.env.FLOW_TEST_ACTIVE_TICKS || "4", 10);
+const finalDelayMs = Number.parseInt(process.env.FLOW_TEST_ACTIVE_FINAL_DELAY_MS || "30", 10);
 
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -58,7 +61,7 @@ rl.on("line", (line) => {
         },
       });
 
-      if (ticks === 4) {
+      if (ticks === tickCount) {
         clearInterval(interval);
         setTimeout(() => {
           write({
@@ -66,9 +69,9 @@ rl.on("line", (line) => {
             id: message.id,
             result: { stopReason: "end_turn" },
           });
-        }, 30);
+        }, finalDelayMs);
       }
-    }, 70);
+    }, tickIntervalMs);
     return;
   }
 
@@ -78,4 +81,3 @@ rl.on("line", (line) => {
     error: { code: -32601, message: `unknown method: ${message.method}` },
   });
 });
-

@@ -231,10 +231,8 @@ $constraints
 3. Verify against the plan's Acceptance-Criteria.
 4. Write the verdict to: $verdict_file
 
-The verdict file MUST start with this exact format (machine-parsed):
-\`\`\`
+The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
 VERDICT: <PASS|FAIL|PARTIAL>
-\`\`\`
 Follow with detailed evidence and reasoning. Be evidence-based, not reassuring.
 PROMPT
 }

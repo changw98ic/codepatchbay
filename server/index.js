@@ -17,7 +17,10 @@ const app = Fastify({ logger: { level: 'info' } });
 // WebSocket clients
 const clients = new Set();
 
-await app.register(cors, { origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] });
+const corsOrigins = process.env.FLOW_CORS_ORIGINS
+  ? process.env.FLOW_CORS_ORIGINS.split(',').map(s => s.trim())
+  : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+await app.register(cors, { origin: corsOrigins });
 await app.register(websocket);
 
 // WebSocket endpoint

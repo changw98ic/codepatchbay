@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -398,9 +398,37 @@ class AcpClient {
   }
 
   async writeTextFile(params) {
-    await mkdir(path.dirname(params.path), { recursive: true });
-    await writeFile(params.path, params.content, "utf8");
+    const targetPath = params.path;
+    await mkdir(path.dirname(targetPath), { recursive: true });
+
+    if (this.isWikiHandoffFile(targetPath)) {
+      this.validateHandoffContent(params.content, targetPath);
+    }
+
+    const tmpPath = path.join(
+      path.dirname(targetPath),
+      `.flow-tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await writeFile(tmpPath, params.content, "utf8");
+    await rename(tmpPath, targetPath);
     return null;
+  }
+
+  isWikiHandoffFile(filePath) {
+    const normalized = filePath.replace(/\\/g, "/");
+    return /wiki\/projects\/[^/]+\/(inbox|outputs)\/(plan|deliverable)-\d+\.md$/.test(normalized);
+  }
+
+  validateHandoffContent(content, filePath) {
+    if (!content || typeof content !== "string") return;
+    const hasHeader = content.includes("## Handoff");
+    const hasFooter = content.includes("## Acceptance-Criteria");
+    if (!hasHeader || !hasFooter) {
+      throw new Error(
+        `Handoff file ${path.basename(filePath)} missing required markers: ` +
+        `${!hasHeader ? "## Handoff header" : ""} ${!hasFooter ? "## Acceptance-Criteria footer" : ""}`
+      );
+    }
   }
 
   permissionResponse(params) {

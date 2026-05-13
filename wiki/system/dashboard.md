@@ -9,6 +9,18 @@
 ## 格式说明
 
 每个项目在 `## 活跃项目
+### variant-env-5085
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-13T10:29:58Z
+- **next**: flow verify variant-env-5085 003
+
+### acp-test-5084
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T10:29:58Z
+- **next**: manual review needed
+
 ### variant-env-80979
 - **status**: VERIFYING
 - **phase**: execute
@@ -96,3 +108,4 @@
 ## 活跃项目
 
 （初始化后自动填充）
+�充）
