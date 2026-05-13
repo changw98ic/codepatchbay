@@ -74,7 +74,35 @@ async function appendPhaseFailed(flowRoot, project, jobId, phase, details) {
   });
 }
 
-function runChild(command, args, cwd) {
+const ACTIVITY_THROTTLE_MS = 30_000;
+const ACTIVITY_MAX_MESSAGE = 200;
+
+function createActivityTracker(flowRoot, project, jobId) {
+  let lastActivityAt = 0;
+
+  async function track(message) {
+    const now = Date.now();
+    if (now - lastActivityAt < ACTIVITY_THROTTLE_MS) return;
+    lastActivityAt = now;
+    const truncated = message.length > ACTIVITY_MAX_MESSAGE
+      ? message.slice(0, ACTIVITY_MAX_MESSAGE)
+      : message;
+    try {
+      await appendEvent(flowRoot, project, jobId, {
+        type: "phase_activity",
+        jobId,
+        message: truncated,
+        ts: new Date(now).toISOString(),
+      });
+    } catch {
+      // Activity events are best-effort
+    }
+  }
+
+  return { track };
+}
+
+function runChild(command, args, cwd, onOutput) {
   return new Promise((resolve) => {
     let settled = false;
     let child;
@@ -101,9 +129,11 @@ function runChild(command, args, cwd) {
 
     child.stdout.on("data", (chunk) => {
       process.stdout.write(chunk);
+      if (onOutput) onOutput(chunk.toString("utf8"));
     });
     child.stderr.on("data", (chunk) => {
       process.stderr.write(chunk);
+      if (onOutput) onOutput(chunk.toString("utf8"));
     });
     child.on("error", (err) => {
       finish({ exitCode: 1, error: err });
@@ -171,7 +201,11 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    childResult = await runChild(script, scriptArgs, flowRoot);
+    const activity = createActivityTracker(flowRoot, project, jobId);
+    childResult = await runChild(script, scriptArgs, flowRoot, (output) => {
+      const line = output.trim();
+      if (line) activity.track(line);
+    });
   } catch (err) {
     childResult = { exitCode: 1, error: err };
   } finally {

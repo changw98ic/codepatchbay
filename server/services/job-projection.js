@@ -18,6 +18,8 @@ export function jobToPipelineState(job) {
     maxRetries: null,
     started: job.createdAt,
     updated: job.updatedAt,
+    lastActivityAt: job.lastActivityAt ?? null,
+    lastActivityMessage: job.lastActivityMessage ?? null,
   };
 }
 

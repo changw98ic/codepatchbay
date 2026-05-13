@@ -76,6 +76,15 @@ export async function recoverJobs(flowRoot, { now } = {}) {
       }
     }
 
+    // Fallback: if no lease or lease is stale, check lastActivityAt
+    if (job.lastActivityAt) {
+      const nowMs = now instanceof Date ? now.getTime() : Date.now();
+      const activityAge = nowMs - new Date(job.lastActivityAt).getTime();
+      if (activityAge < (parseInt(process.env.FLOW_ACTIVITY_STALE_MS, 10) || 300_000)) {
+        continue;
+      }
+    }
+
     recoverable.push(job);
   }
 

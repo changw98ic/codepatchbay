@@ -169,6 +169,8 @@ export function materializeJob(events) {
     redirectReason: null,
     redirectEventId: null,
     consumedRedirectIds: [],
+    lastActivityAt: null,
+    lastActivityMessage: null,
   };
 
   for (const event of events) {
@@ -258,6 +260,10 @@ export function materializeJob(events) {
         break;
       case "workflow_selected":
         state.workflow = event.workflow ?? state.workflow;
+        break;
+      case "phase_activity":
+        state.lastActivityAt = event.ts ?? state.lastActivityAt;
+        state.lastActivityMessage = event.message ?? state.lastActivityMessage;
         break;
     }
   }

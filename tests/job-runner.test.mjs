@@ -42,13 +42,15 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
   assert.match(result.stderr, /fake stderr stream/);
 
   const events = await readJobEvents(root);
-  assert.equal(events.length, 2);
+  // May include phase_activity events from child output
+  assert.ok(events.length >= 2);
   assert.equal(events[0].type, "phase_started");
   assert.equal(events[0].jobId, "job-1");
   assert.equal(events[0].phase, "plan");
   assert.equal(events[0].leaseId, "lease-job-1-plan");
-  assert.equal(events[1].type, "phase_completed");
-  assert.equal(events[1].exitCode, 0);
+  const completed = events.find(e => e.type === "phase_completed");
+  assert.ok(completed);
+  assert.equal(completed.exitCode, 0);
   assert.equal(await readLease(root, "lease-job-1-plan"), null);
 }
 
@@ -75,10 +77,11 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
   assert.match(result.stderr, /child failed/);
 
   const events = await readJobEvents(root, "demo", "job-2");
-  assert.equal(events.length, 2);
+  assert.ok(events.length >= 2);
   assert.equal(events[0].type, "phase_started");
-  assert.equal(events[1].type, "phase_failed");
-  assert.equal(events[1].exitCode, 7);
+  const failed = events.find(e => e.type === "phase_failed");
+  assert.ok(failed);
+  assert.equal(failed.exitCode, 7);
   assert.equal(await readLease(root, "lease-job-2-execute"), null);
 }
 
