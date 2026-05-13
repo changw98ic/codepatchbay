@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -231,9 +232,15 @@ class AcpClient {
 
   async run() {
     const { command, args } = resolveAgentCommand(this.agent);
+    const env = { ...process.env };
+    if (command === "npx" && !env.npm_config_cache) {
+      const agentCache = path.join(tmpdir(), `flow-npm-cache-${this.agent}`);
+      await mkdir(agentCache, { recursive: true });
+      env.npm_config_cache = agentCache;
+    }
     this.child = spawn(command, args, {
       cwd: this.cwd,
-      env: process.env,
+      env,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
