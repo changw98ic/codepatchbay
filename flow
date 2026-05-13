@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# flow — Codex + Claude Code ACP Workflow CLI
+# Usage: flow <command> [args...]
+
+FLOW_ROOT="$(cd "$(dirname "$0")" && pwd)"
+FLOW_VERSION="0.2.0"
+
+# Parse global flags
+DANGEROUS=0
+for arg in "$@"; do
+  case "$arg" in
+    --dangerous) DANGEROUS=1; export FLOW_DANGEROUS=1 ;;
+  esac
+done
+# Strip --dangerous from args so subcommands don't see it
+filtered_args=()
+for arg in "$@"; do
+  [ "$arg" = "--dangerous" ] && continue
+  filtered_args+=("$arg")
+done
+set -- "${filtered_args[@]}"
+
+# Colors (defined here so they're always available even if source fails)
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# shellcheck source=bridges/common.sh
+source "$FLOW_ROOT/bridges/common.sh" 2>/dev/null || true
+
+usage() {
+  cat << EOF
+${BOLD}flow${NC} v$FLOW_VERSION — Codex + Claude Code ACP Workflow
+
+${BOLD}Usage:${NC}
+  flow <command> [arguments]
+
+${BOLD}Commands:${NC}
+  ${CYAN}init${NC} <path> <name>                    初始化项目集成
+  ${CYAN}plan${NC} <project> "<task>"               Codex 规划
+  ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
+  ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
+  ${CYAN}pipeline${NC} <project> "<task>" [retries]  全自动流水线
+  ${CYAN}status${NC} <project>                       查看项目状态
+  ${CYAN}list${NC}                                   列出所有项目
+  ${CYAN}jobs${NC}                                     列出 durable jobs
+  ${CYAN}supervisor${NC}                               启动无人值守 supervisor 循环
+  ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
+  ${CYAN}ui${NC} [--port PORT] [--host HOST]        启动 Web UI (默认 127.0.0.1)
+
+${BOLD}Global flags:${NC}
+  ${YELLOW}--dangerous${NC}                            移除 ACP 权限约束（unrestricted mode）
+  ${CYAN}interop${NC}                                启动分屏协作
+  ${CYAN}install${NC}                                安装到 PATH
+
+${BOLD}Examples:${NC}
+  flow init ./my-project my-project
+  flow plan my-project "Add dark mode"
+  flow execute my-project 001
+  flow verify my-project 001
+  flow pipeline my-project "Add unit tests" 3 30
+EOF
+}
+
+check_deps() {
+  local missing=()
+  command -v node &>/dev/null || missing+=("node")
+  [ -x "$FLOW_ROOT/bridges/acp-client.mjs" ] || missing+=("acp-client.mjs (run: chmod +x bridges/acp-client.mjs)")
+
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Missing:${NC}"
+    for d in "${missing[@]}"; do echo "  - $d"; done
+    return 1
+  fi
+  echo -e "${GREEN}ACP client ready.${NC}"
+}
+
+cmd_init()     { "$FLOW_ROOT/bridges/init-project.sh" "$@"; }
+cmd_plan()     { "$FLOW_ROOT/bridges/codex-plan.sh" "$@"; }
+cmd_execute()  { "$FLOW_ROOT/bridges/claude-execute.sh" "$@"; }
+cmd_verify()   { "$FLOW_ROOT/bridges/codex-verify.sh" "$@"; }
+cmd_pipeline() { "$FLOW_ROOT/bridges/run-pipeline.sh" "$@"; }
+cmd_jobs()      { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/list-jobs.mjs"; }
+cmd_supervisor() { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/supervisor-loop.mjs"; }
+
+cmd_status() {
+  local project="${1:?Usage: flow status <project>}"
+  local wdir="$FLOW_ROOT/wiki/projects/$project"
+  require_project "$project"
+
+  echo -e "${BOLD}Project: $project${NC}"
+  echo ""
+
+  [ -f "$wdir/context.md" ] && { echo -e "${CYAN}Context:${NC}"; grep "^- \*\*" "$wdir/context.md" | head -5; echo ""; }
+
+  [ -f "$wdir/tasks.md" ] && { echo -e "${CYAN}Tasks:${NC}"; grep -E "TASK-|PENDING|IN_PROGRESS|DONE|BLOCKED" "$wdir/tasks.md" 2>/dev/null | head -10 || echo "  None"; echo ""; }
+
+  [ -f "$wdir/log.md" ] && { echo -e "${CYAN}Recent:${NC}"; grep "^- \*\*" "$wdir/log.md" | tail -5; echo ""; }
+
+  local inbox=$(ls "$wdir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  local outputs=$(ls "$wdir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  echo -e "${CYAN}Inbox:${NC} $inbox  ${CYAN}Outputs:${NC} $outputs"
+
+  # Pipeline state (per-project)
+  local sf="$FLOW_ROOT/.omc/state/pipeline-${project}.json"
+  if [ -f "$sf" ]; then
+    local st ph
+    st=$(node "$FLOW_ROOT/bridges/json-helper.mjs" read "$sf" "status" 2>/dev/null || echo "?")
+    ph=$(node "$FLOW_ROOT/bridges/json-helper.mjs" read "$sf" "phase" 2>/dev/null)
+    echo -e "${CYAN}Pipeline:${NC} $st ${ph:+(phase: $ph)}"
+  fi
+}
+
+cmd_list() {
+  echo -e "${BOLD}Flow Projects:${NC}"
+  local found=0
+  for dir in "$FLOW_ROOT/wiki/projects"/*/; do
+    [ -d "$dir" ] || continue
+    local name=$(basename "$dir")
+    [ "$name" = "_template" ] && continue
+    found=1
+    local inbox=$(ls "$dir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
+    local outputs=$(ls "$dir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${CYAN}$name${NC}  inbox:$inbox  out:$outputs"
+  done
+  [ "$found" -eq 0 ] && echo "  None. Run: flow init <path> <name>"
+}
+
+cmd_wiki() {
+  local sub="${1:-list}"
+  case "$sub" in
+    list)
+      echo -e "${BOLD}Wiki:${NC}"
+      find "$FLOW_ROOT/wiki" -type f -name "*.md" | sort | sed "s|$FLOW_ROOT/wiki/||"
+      ;;
+    lint)
+      echo "Wiki health check..."
+      local issues=0
+
+      # System files
+      for f in schema.md system/handshake-protocol.md system/memory-routing.md system/skill-registry.md system/team-prd.md system/team-architecture.md system/dashboard.md system/unattended-supervisor.md; do
+        [ ! -f "$FLOW_ROOT/wiki/$f" ] && { echo "  Missing: $f"; issues=$((issues + 1)); }
+      done
+
+      # ACP client
+      [ ! -x "$FLOW_ROOT/bridges/acp-client.mjs" ] && { echo "  acp-client.mjs not executable"; issues=$((issues + 1)); }
+
+      # Common.sh
+      [ ! -f "$FLOW_ROOT/bridges/common.sh" ] && { echo "  common.sh missing"; issues=$((issues + 1)); }
+
+      # Per-project checks
+      for dir in "$FLOW_ROOT/wiki/projects"/*/; do
+        [ -d "$dir" ] || continue
+        local name=$(basename "$dir")
+        [ "$name" = "_template" ] && continue
+
+        # Boundary violations
+        ls "$dir/inbox/deliverable-"*.md &>/dev/null && { echo "  $name: deliverable in inbox"; issues=$((issues + 1)); }
+        ls "$dir/outputs/plan-"*.md &>/dev/null && { echo "  $name: plan in outputs"; issues=$((issues + 1)); }
+
+        # Incomplete handoffs (missing Acceptance-Criteria)
+        for hf in "$dir/inbox/"*.md "$dir/outputs/"*.md; do
+          [ -f "$hf" ] || continue
+          [ -s "$hf" ] || continue
+          if ! grep -qiE "Acceptance[- ]Criteria|Next-Action" "$hf" 2>/dev/null; then
+            echo "  $name: incomplete handoff $(basename "$hf")"
+            issues=$((issues + 1))
+          fi
+        done
+
+        # Stale files (older than 7 days in inbox)
+        while read -r stale; do
+          [ -z "$stale" ] && continue
+          echo "  $name: stale inbox file $(basename "$stale") (>7 days)"
+          issues=$((issues + 1))
+        done < <(find "$dir/inbox" -name "*.md" -mtime +7 -print 2>/dev/null)
+      done
+
+      if [ "$issues" -eq 0 ]; then
+        echo -e "  ${GREEN}All checks passed.${NC}"
+      else
+        echo -e "  ${RED}$issues issue(s)${NC}"
+      fi
+      ;;
+    *)
+      echo "Usage: flow wiki [list|lint]"
+      ;;
+  esac
+}
+
+cmd_interop() {
+  if command -v omc &>/dev/null; then
+    omc interop
+  else
+    echo -e "${RED}omc not found. Install oh-my-claudecode.${NC}" >&2
+    exit 1
+  fi
+}
+
+cmd_ui() {
+  local port="${FLOW_PORT:-3456}"
+  local host="${FLOW_HOST:-127.0.0.1}"
+  # Parse flags
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port=*) port="${1#--port=}" ;;
+      --port) shift; port="${1:-$port}" ;;
+      --host=*) host="${1#--host=}" ;;
+      --host) shift; host="${1:-$host}" ;;
+    esac
+    shift
+  done
+
+  # Check dependencies
+  [ ! -d "$FLOW_ROOT/server/node_modules" ] && { echo "Installing server deps..."; cd "$FLOW_ROOT/server" && npm install --silent; }
+  [ ! -d "$FLOW_ROOT/web/node_modules" ] && { echo "Installing web deps..."; cd "$FLOW_ROOT/web" && npm install --silent; }
+
+  echo -e "${BOLD}Starting Flow UI...${NC}"
+
+  # Start backend server
+  FLOW_PORT="$port" FLOW_HOST="$host" node "$FLOW_ROOT/server/index.js" &
+  local server_pid=$!
+
+  # Start Vite dev server
+  cd "$FLOW_ROOT/web" && npx vite --port 5173 &
+  local vite_pid=$!
+
+  # Wait a moment then open browser
+  sleep 2
+  if command -v open &>/dev/null; then
+    open "http://localhost:5173"
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "http://localhost:5173"
+  fi
+
+  echo -e "${GREEN}Backend:${NC}  http://localhost:$port"
+  echo -e "${GREEN}Frontend:${NC} http://localhost:5173"
+  echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
+
+  # Trap exit to kill child processes
+  trap "kill $server_pid $vite_pid 2>/dev/null; exit 0" INT TERM
+  wait
+}
+
+cmd_install() {
+  local target="/usr/local/bin/flow"
+  if [ -w "/usr/local/bin" ]; then
+    ln -sf "$FLOW_ROOT/flow" "$target"
+    echo "Linked: $target -> $FLOW_ROOT/flow"
+  else
+    echo "Requires sudo:"
+    echo "  sudo ln -sf $FLOW_ROOT/flow /usr/local/bin/flow"
+  fi
+}
+
+# Main
+case "${1:-help}" in
+  init)     shift; cmd_init "$@" ;;
+  plan)     shift; cmd_plan "$@" ;;
+  execute)  shift; cmd_execute "$@" ;;
+  verify)   shift; cmd_verify "$@" ;;
+  pipeline) shift; cmd_pipeline "$@" ;;
+  status)   shift; cmd_status "$@" ;;
+  jobs)     cmd_jobs ;;
+  supervisor) cmd_supervisor ;;
+  list)     cmd_list ;;
+  wiki)     shift; cmd_wiki "${1:-list}" ;;
+  ui)       shift; cmd_ui "$@" ;;
+  interop)  cmd_interop ;;
+  install)  cmd_install ;;
+  version|--version|-v) echo "flow v$FLOW_VERSION" ;;
+  help|--help|-h)
+    usage
+    echo ""
+    check_deps
+    ;;
+  *)
+    echo -e "${RED}Unknown: $1${NC}" >&2
+    usage
+    exit 1
+    ;;
+esac

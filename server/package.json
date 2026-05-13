@@ -1,0 +1,17 @@
+{
+  "name": "flow-server",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "chokidar": "^4.0.0",
+    "fastify": "^5.0.0",
+    "glob": "^11.0.0"
+  }
+}

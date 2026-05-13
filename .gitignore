@@ -1,0 +1,9 @@
+node_modules/
+.omc/state/
+.omc/events/
+.omc/leases/
+.omc/worktrees/
+.omc/provider-slots/
+.omx/
+*.log
+.DS_Store

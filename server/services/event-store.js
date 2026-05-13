@@ -1,0 +1,229 @@
+import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import path from "node:path";
+
+function validatePathComponent(name, value) {
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value)
+  ) {
+    throw new Error(`invalid ${name}`);
+  }
+}
+
+function serializeEvent(event) {
+  if (event === null || typeof event !== "object" || Array.isArray(event)) {
+    throw new Error("invalid event: expected a non-null object");
+  }
+
+  let serialized;
+  try {
+    serialized = JSON.stringify(event);
+  } catch (err) {
+    throw new Error(`invalid event: ${err.message}`);
+  }
+
+  if (typeof serialized !== "string") {
+    throw new Error("invalid event: must serialize to JSON");
+  }
+
+  return serialized;
+}
+
+function malformedEventError(file, lineNumber, reason) {
+  return new Error(`${file} at line ${lineNumber}: malformed event: ${reason}`);
+}
+
+export function eventFileFor(flowRoot, project, jobId) {
+  validatePathComponent("project", project);
+  validatePathComponent("jobId", jobId);
+
+  const eventsRoot = path.resolve(flowRoot, ".omc", "events");
+  const file = path.resolve(eventsRoot, project, `${jobId}.jsonl`);
+  const relative = path.relative(eventsRoot, file);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("event file resolves outside events root");
+  }
+
+  return file;
+}
+
+export async function listEventFiles(flowRoot) {
+  const eventsRoot = path.resolve(flowRoot, ".omc", "events");
+
+  let projectEntries;
+  try {
+    projectEntries = await readdir(eventsRoot, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      return [];
+    }
+    throw err;
+  }
+
+  const files = [];
+  for (const projectEntry of projectEntries) {
+    if (!projectEntry.isDirectory()) {
+      continue;
+    }
+
+    const project = projectEntry.name;
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(project)) {
+      continue;
+    }
+
+    let jobEntries;
+    try {
+      jobEntries = await readdir(path.join(eventsRoot, project), { withFileTypes: true });
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        continue;
+      }
+      throw err;
+    }
+
+    for (const jobEntry of jobEntries) {
+      if (!jobEntry.isFile() || !jobEntry.name.endsWith(".jsonl")) {
+        continue;
+      }
+
+      const jobId = jobEntry.name.slice(0, -".jsonl".length);
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) {
+        continue;
+      }
+
+      files.push({
+        project,
+        jobId,
+        file: path.join(eventsRoot, project, jobEntry.name),
+      });
+    }
+  }
+
+  return files.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+export async function appendEvent(flowRoot, project, jobId, event) {
+  const serialized = serializeEvent(event);
+  const file = eventFileFor(flowRoot, project, jobId);
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, `${serialized}\n`, "utf8");
+  return event;
+}
+
+export async function readEvents(flowRoot, project, jobId) {
+  const file = eventFileFor(flowRoot, project, jobId);
+
+  try {
+    const raw = await readFile(file, "utf8");
+    const hasTrailingNewline = raw.endsWith("\n");
+    const lines = raw
+      .split("\n")
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => line.trim().length > 0);
+
+    const events = [];
+    for (const { line, lineNumber } of lines) {
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch (err) {
+        if (lineNumber === lines[lines.length - 1].lineNumber && !hasTrailingNewline) {
+          break;
+        }
+        throw new Error(`malformed event JSON in ${file} at line ${lineNumber}: ${err.message}`);
+      }
+      if (event === null || typeof event !== "object" || Array.isArray(event)) {
+        throw malformedEventError(file, lineNumber, "expected a non-null object");
+      }
+      events.push(event);
+    }
+    return events;
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      return [];
+    }
+    throw err;
+  }
+}
+
+export function materializeJob(events) {
+  const state = {
+    jobId: null,
+    project: null,
+    task: null,
+    status: null,
+    phase: null,
+    attempt: null,
+    workflow: null,
+    artifacts: {},
+    leaseId: null,
+    worktree: null,
+    createdAt: null,
+    updatedAt: null,
+    blockedReason: null,
+  };
+
+  for (const event of events) {
+    if (event.jobId !== undefined) state.jobId = event.jobId;
+    if (event.project !== undefined) state.project = event.project;
+    if (event.attempt !== undefined) state.attempt = event.attempt;
+    if (event.workflow !== undefined) state.workflow = event.workflow;
+    if (event.ts !== undefined) state.updatedAt = event.ts;
+
+    switch (event.type) {
+      case "job_created":
+        state.task = event.task ?? state.task;
+        state.status = "running";
+        state.createdAt = event.ts ?? state.createdAt;
+        state.blockedReason = null;
+        break;
+      case "worktree_created":
+        state.worktree = event.worktree ?? event.path ?? state.worktree;
+        break;
+      case "phase_started":
+        state.phase = event.phase ?? state.phase;
+        state.leaseId = event.leaseId ?? null;
+        state.status = "running";
+        state.blockedReason = null;
+        break;
+      case "phase_completed":
+        state.phase = event.phase ?? state.phase;
+        state.leaseId = null;
+        state.status = "running";
+        if (event.phase !== undefined && event.artifact !== undefined) {
+          state.artifacts[event.phase] = event.artifact;
+        }
+        break;
+      case "phase_failed":
+        state.phase = event.phase ?? state.phase;
+        state.leaseId = null;
+        state.status = "failed";
+        state.blockedReason = event.error ?? event.reason ?? null;
+        break;
+      case "budget_exceeded":
+        state.status = "blocked";
+        state.leaseId = null;
+        state.blockedReason = event.reason ?? "budget exceeded";
+        break;
+      case "job_blocked":
+        state.status = "blocked";
+        state.leaseId = null;
+        state.blockedReason = event.reason ?? event.blockedReason ?? null;
+        break;
+      case "job_failed":
+        state.status = "failed";
+        state.leaseId = null;
+        state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
+        break;
+      case "job_completed":
+        state.status = "completed";
+        state.phase = "completed";
+        state.leaseId = null;
+        state.blockedReason = null;
+        break;
+    }
+  }
+
+  return state;
+}
