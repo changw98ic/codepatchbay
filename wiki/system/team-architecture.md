@@ -124,7 +124,7 @@ flow-task/events/{project}/{task-id}.jsonl
 
 ## Profile Schema
 
-`config.yaml` should describe role defaults, not secrets.
+`config.yaml`（future rich schema；v1 使用 `config.json`）should describe role defaults, not secrets.
 
 ```yaml
 role: builder
@@ -385,7 +385,7 @@ Merge conflicts should return to the builder or reviewer with the conflict evide
 1. Coordinator chooses role and optional variant.
 2. Workflow planner chooses primary project cwd or task worktree cwd.
 3. Profile loader reads role files.
-4. Profile loader merges config.yaml with variants/{variant}.yaml.
+4. Profile loader merges config.yaml（future；v1 使用 config.json） with variants/{variant}.yaml.
 5. Secret resolver expands env references from safe sources.
 6. Permission compiler converts profile permissions into ACP policy.
 7. Prompt builder assembles role context and task context.
@@ -516,7 +516,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 
 ### Phase 2: Profile Scaffolding
 
-- Add role directories with `soul.md`, `user.md`, `memory.md`, `config.yaml`, `env.schema`.
+- Add role directories with `soul.md`, `user.md`, `memory.md`, `config.yaml`（future；v1 使用 config.json）, `env.schema`.
 - Keep existing `profiles/codex` and `profiles/claude` as compatibility aliases.
 - Add variant files for `glm5.1`, `kimi-k2.6`, and `mimo-v2.5pro`.
 

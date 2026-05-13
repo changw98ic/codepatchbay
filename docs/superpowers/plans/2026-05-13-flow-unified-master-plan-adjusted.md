@@ -54,7 +54,7 @@ A9  Diff-based verification
 | `web/src/components/PipelineStatus.jsx:3-4` | UI phase 展示硬编码三段 | workflow 支持会影响 UI |
 | `bridges/acp-client.mjs:452-463,465-468` | 现有权限只有全局 permission 和 terminal allow/deny | per-tool policy 是增量改造，不是新权限系统 |
 | `web/src/pages/Dashboard.jsx:124-135` | Durable Jobs panel 已存在 | R3 应改为增强，而不是“新增” |
-| `wiki/system/unattended-supervisor.md:9-12,39-40` | 文档仍残留 `.omc/` runtime 路径 | R1 应提前到 A0，避免误导执行 |
+| `wiki/system/unattended-supervisor.md:9-12,39-40` | ~~文档仍残留 `.omc/` runtime 路径~~ | **已修（A0 ae242b2）**：已全部改为 `flow-task/` |
 
 ---
 
@@ -696,7 +696,7 @@ Feature acceptance:
 | `workflow-definition.js` 单点故障 | Medium | 100% 分支覆盖单元测试，每个 workflow 变体至少 2 个测试 |
 | Lease TTL 不一致导致 supervisor 误判 | Low | 经核实 lock TTL 和 phase lease TTL 控制不同机制，无需统一，但需在代码中注释语义区分 |
 | 老统合计划 `2026-05-13-flow-unified-master-plan.md` 已 superseded，需保持标记防误用 | Low | A0 已加 superseded 警告头；如后续执行者仍误引用需再提醒 |
-| `wiki/system/dashboard.md` 有 replacement character 和测试项目残留 | Low | A0 doc sync 时一并清理 |
+| `wiki/system/dashboard.md` 有 replacement character 和测试项目残留 | Low | **已清理（A0 ae242b2）** |
 | Event log 无限增长导致 replay 变慢 | Medium | R5 snapshot-based compaction + retention |
 | 工时估算偏乐观（6.5 天） | Low | 按 A0-A4 和 A5-A9 分两个 milestone 验收，中间设 checkpoint |
 
@@ -736,7 +736,7 @@ Suggested commit grouping:
 4. `Add lease TTL semantics documentation`
 5. `Retire compatibility pipeline state writers`
 6. `Separate cancel and redirect control events`
-7. `Enforce control events in runner with executor PID tracking`
+7. `Enforce phase-boundary cancel and redirect consumption`
 8. `Track phase activity for recovery and UI`
 9. `Apply per-tool ACP policy (flat format + optional JSON file)`
 10. `Centralize workflow definitions`

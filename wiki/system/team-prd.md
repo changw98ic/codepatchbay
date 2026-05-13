@@ -95,7 +95,7 @@ profiles/{role}/
 | `soul.md` | Who the role is, what it owns, what it refuses to do. | Project status or secrets. |
 | `user.md` | User preferences as seen by this role. | Credentials or transient task data. |
 | `memory.md` | Long-term reusable role experience. | Current project state. |
-| `config.yaml` | Runtime, default variant, directories, permissions, forbidden paths. | API keys or tokens. |
+| `config.yaml`（future rich schema；v1 使用 config.json） | Runtime, default variant, directories, permissions, forbidden paths. | API keys or tokens. |
 | `skills/` | Role-specific task procedures. | Hidden credentials. |
 | `variants/*.yaml` | Provider/model/env overlay names. | Raw secrets. |
 | `env.schema` | Required environment variable names. | Raw secrets. |
