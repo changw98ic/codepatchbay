@@ -4,6 +4,7 @@ const ROLE_BRIDGE_MAP = {
   codex: "codex-plan.sh",
   claude: "claude-execute.sh",
   codex_verify: "codex-verify.sh",
+  codex_review: "reviewer-review.sh",
 };
 
 export function bridgeForRole(role) {

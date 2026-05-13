@@ -9,6 +9,17 @@ const WORKFLOWS = {
       verify: "codex-verify.sh",
     },
   },
+  complex: {
+    name: "complex",
+    phases: ["plan", "execute", "review", "verify"],
+    roleForPhase: { plan: "codex", execute: "claude", review: "codex", verify: "codex" },
+    bridgeForPhase: {
+      plan: "codex-plan.sh",
+      execute: "claude-execute.sh",
+      review: "reviewer-review.sh",
+      verify: "codex-verify.sh",
+    },
+  },
   blocked: {
     name: "blocked",
     phases: [],

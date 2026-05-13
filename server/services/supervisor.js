@@ -119,6 +119,13 @@ export function bridgeForPhase(phase, project, job) {
         args: [project, deliverableId],
       };
     }
+    case "review": {
+      const deliverableId = job.artifacts?.execute ?? "";
+      return {
+        script: path.join(bridgesDir, "reviewer-review.sh"),
+        args: [project, deliverableId],
+      };
+    }
     case "complete":
       return null;
     default: {
