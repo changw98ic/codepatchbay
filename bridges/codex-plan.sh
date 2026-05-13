@@ -29,6 +29,25 @@ PROMPT=$(rtk_codex_plan "$PROJECT" "$TASK" "$PLAN_FILE")
 printf '%s' "$PROMPT" | acp_run codex 2>&1
 
 if [ -f "$PLAN_FILE" ]; then
+  # Validate plan content matches task
+  PLAN_CONTENT=$(cat "$PLAN_FILE")
+  TASK_LOWER=$(echo "$TASK" | tr '[:upper:]' '[:lower:]')
+  PLAN_LOWER=$(echo "$PLAN_CONTENT" | tr '[:upper:]' '[:lower:]')
+  MATCH=0
+  for word in $TASK_LOWER; do
+    word=$(echo "$word" | sed 's/[^a-z0-9]//g')
+    [ -z "$word" ] && continue
+    if echo "$PLAN_LOWER" | grep -q "$word"; then
+      MATCH=$((MATCH + 1))
+    fi
+  done
+  if [ "$MATCH" -eq 0 ]; then
+    log_append "$WIKI_DIR" "codex | plan | WARNING: plan-$PLAN_ID content may not match task: $TASK | WARN"
+    echo "Warning: Plan content does not appear to match the given task." >&2
+    echo "  Task: $TASK" >&2
+    echo "  Plan file: $PLAN_FILE" >&2
+    echo "  Review the plan before executing." >&2
+  fi
   log_append "$WIKI_DIR" "codex | plan | Created plan-$PLAN_ID for: $TASK | SUCCESS"
   dashboard_update "$PROJECT" "plan" "EXECUTING" "flow execute $PROJECT $PLAN_ID"
   echo ""

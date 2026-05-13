@@ -115,8 +115,9 @@ rtk_codex_plan() {
   cat << PROMPT
 You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
-## Task
-$task
+## CRITICAL: Primary Directive
+Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
+**$task**
 
 $constraints
 
@@ -129,6 +130,7 @@ $constraints
 
 ## Output
 Write the plan to: $plan_file
+The plan title/heading MUST reference the task: "$task"
 Follow handshake-protocol (codex->claude, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.
 PROMPT
