@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -331,4 +331,344 @@ async function runClient({ env, prompt, cwd }) {
   let blockedExists = false;
   try { await readFile(blockedFile, "utf8"); blockedExists = true; } catch { /* expected */ }
   assert.equal(blockedExists, false, "blocked file must not exist");
+}
+
+// ============================================================
+// Per-tool ACP policy tests
+// ============================================================
+
+const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-tool-policy.mjs");
+
+// --- FLOW_ACP_DENY_TOOLS blocks denied tools ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-deny-tools-"));
+  const outputFile = path.join(tempDir, "output.txt");
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
+    },
+    prompt: `ACTION: write_file\nACTION: terminal\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  // The write was denied, so the file must not exist
+  let fileExists = false;
+  try { await readFile(outputFile, "utf8"); fileExists = true; } catch { /* expected */ }
+  assert.equal(fileExists, false, "denied tool: file must not exist");
+  assert.match(stdout, /done/);
+}
+
+// --- FLOW_ACP_DENY_TOOLS blocks terminal/create ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-deny-terminal-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_DENY_TOOLS: "terminal/create",
+    },
+    prompt: `ACTION: terminal\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /done/);
+}
+
+// --- FLOW_ACP_ALLOW_TOOLS overrides FLOW_ACP_DENY_TOOLS for same tool ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-allow-override-"));
+  const outputFile = path.join(tempDir, "output.txt");
+
+  // fs/write_text_file appears in both DENY and ALLOW — ALLOW takes precedence
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
+      FLOW_ACP_ALLOW_TOOLS: "fs/write_text_file",
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  // write was allowed (ALLOW overrides DENY for same tool)
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
+}
+
+// --- JSON policy file loads and enforces correctly ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-file-"));
+  const outputFile = path.join(tempDir, "output.txt");
+  const policyFile = path.join(tempDir, "policy.json");
+
+  await writeFile(policyFile, JSON.stringify({
+    "fs/write_text_file": "deny",
+    "terminal/create": "deny",
+    "fs/read_text_file": "allow",
+  }));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  let fileExists = false;
+  try { await readFile(outputFile, "utf8"); fileExists = true; } catch { /* expected */ }
+  assert.equal(fileExists, false, "policy file: denied write must not create file");
+  assert.match(stdout, /done/);
+}
+
+// --- JSON policy file allows explicitly allowed tools ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-file-allow-"));
+  const outputFile = path.join(tempDir, "output.txt");
+  const policyFile = path.join(tempDir, "policy.json");
+
+  await writeFile(policyFile, JSON.stringify({
+    "fs/write_text_file": "allow",
+  }));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
+}
+
+// --- Invalid JSON policy file: fail closed ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-bad-json-"));
+  const policyFile = path.join(tempDir, "policy.json");
+
+  await writeFile(policyFile, "{ this is not valid JSON }}}");
+
+  const { exitCode, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: "should not matter\n",
+  });
+
+  assert.equal(exitCode, 1, "must exit with error on invalid JSON");
+  assert.match(stderr, /invalid JSON/);
+}
+
+// --- Non-existent policy file: fail closed ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-no-file-"));
+
+  const { exitCode, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: "/tmp/nonexistent-flow-policy-xyz.json",
+    },
+    prompt: "should not matter\n",
+  });
+
+  assert.equal(exitCode, 1, "must exit with error on missing policy file");
+  assert.match(stderr, /failed to read/);
+}
+
+// --- Policy file with invalid action: fail closed ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-bad-action-"));
+  const policyFile = path.join(tempDir, "policy.json");
+
+  await writeFile(policyFile, JSON.stringify({ "fs/write_text_file": "maybe" }));
+
+  const { exitCode, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: "should not matter\n",
+  });
+
+  assert.equal(exitCode, 1, "must exit with error on invalid action");
+  assert.match(stderr, /invalid action/);
+}
+
+// --- Policy file with array instead of object: fail closed ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-array-"));
+  const policyFile = path.join(tempDir, "policy.json");
+
+  await writeFile(policyFile, JSON.stringify(["fs/write_text_file"]));
+
+  const { exitCode, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: "should not matter\n",
+  });
+
+  assert.equal(exitCode, 1, "must exit with error on array policy");
+  assert.match(stderr, /expected a JSON object/);
+}
+
+// --- Backward compat: FLOW_ACP_TERMINAL=deny still works ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-backcompat-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TERMINAL: "deny",
+    },
+    prompt: `ACTION: terminal\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /done/);
+}
+
+// --- Backward compat: FLOW_ACP_TERMINAL=deny does NOT block fs/write_text_file ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-write-ok-"));
+  const outputFile = path.join(tempDir, "output.txt");
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TERMINAL: "deny",
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
+}
+
+// --- Priority: TOOL_POLICY_FILE overrides FLOW_ACP_DENY_TOOLS ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-priority-file-"));
+  const outputFile = path.join(tempDir, "output.txt");
+  const policyFile = path.join(tempDir, "policy.json");
+
+  // Policy file says "allow" for write, env says "deny" — file wins
+  await writeFile(policyFile, JSON.stringify({ "fs/write_text_file": "allow" }));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      FLOW_ACP_DENY_TOOLS: "fs/write_text_file",
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
+}
+
+// --- Priority: DENY_TOOLS overrides FLOW_ACP_TERMINAL ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-priority-env-"));
+  const outputFile = path.join(tempDir, "output.txt");
+
+  // FLOW_ACP_TERMINAL=deny but DENY_TOOLS allows terminal/create — DENY_TOOLS wins
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_DENY_TOOLS: "fs/write_text_file",
+      FLOW_ACP_ALLOW_TOOLS: "terminal/create",
+      FLOW_ACP_TERMINAL: "deny",
+    },
+    prompt: `ACTION: terminal\n`,
+  });
+
+  // terminal/create should be allowed (ALLOW_TOOLS overrides legacy TERMINAL=deny)
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /done/);
+}
+
+// --- No policy set: all tools allowed (default behavior) ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-no-policy-"));
+  const outputFile = path.join(tempDir, "output.txt");
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
+}
+
+// --- Tools not in policy are allowed through ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-passthrough-"));
+  const outputFile = path.join(tempDir, "output.txt");
+  const policyFile = path.join(tempDir, "policy.json");
+
+  // Only deny terminal/create; fs/write_text_file has no entry → allowed
+  await writeFile(policyFile, JSON.stringify({ "terminal/create": "deny" }));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+    },
+    prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written by tool-policy agent/);
+  assert.match(stdout, /done/);
 }
