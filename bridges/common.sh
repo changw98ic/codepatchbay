@@ -100,20 +100,20 @@ log_append() {
 # ─── JSON 状态操作 (via json-helper.mjs, injection-safe) ───
 state_read() {
   local project="$1" key="$2"
-  local sf="$FLOW_ROOT/.omc/state/pipeline-${project}.json"
+  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
   [ -f "$sf" ] || { echo ""; return; }
   node "$JSON_HELPER" read "$sf" "$key" 2>/dev/null || echo ""
 }
 
 state_write() {
   local project="$1" key="$2" value="$3"
-  local sf="$FLOW_ROOT/.omc/state/pipeline-${project}.json"
+  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
   node "$JSON_HELPER" write "$sf" "$key" "$value" 2>/dev/null
 }
 
 state_init() {
   local project="$1" task="$2" max="${3:-3}"
-  local sf="$FLOW_ROOT/.omc/state/pipeline-${project}.json"
+  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
   node "$JSON_HELPER" init "$sf" "$project" "$task" "$max" 2>/dev/null
 }
 
@@ -229,7 +229,8 @@ $constraints
 1. Read the deliverable. Extract plan-ref from its metadata.
 2. Read the referenced plan file from inbox/.
 3. Verify against the plan's Acceptance-Criteria.
-4. Write the verdict to: $verdict_file
+4. Give a verdict.
+5. Write the verdict to: $verdict_file
 
 The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
 VERDICT: <PASS|FAIL|PARTIAL>

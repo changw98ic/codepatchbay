@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { runtimeDataPath } from "./runtime-root.js";
 
 function validatePathComponent(name, value) {
   if (
@@ -37,7 +38,7 @@ export function eventFileFor(flowRoot, project, jobId) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
 
-  const eventsRoot = path.resolve(flowRoot, ".omc", "events");
+  const eventsRoot = runtimeDataPath(flowRoot, "events");
   const file = path.resolve(eventsRoot, project, `${jobId}.jsonl`);
   const relative = path.relative(eventsRoot, file);
 
@@ -49,7 +50,7 @@ export function eventFileFor(flowRoot, project, jobId) {
 }
 
 export async function listEventFiles(flowRoot) {
-  const eventsRoot = path.resolve(flowRoot, ".omc", "events");
+  const eventsRoot = runtimeDataPath(flowRoot, "events");
 
   let projectEntries;
   try {

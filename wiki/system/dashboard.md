@@ -9,6 +9,150 @@
 ## 格式说明
 
 每个项目在 `## 活跃项目
+### dogfood-runtime-45625
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:18:14Z
+- **next**: completed
+
+### dogfood-runtime-41276
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:17:22Z
+- **next**: completed
+
+### acp-pipeline-33697
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:16:35Z
+- **next**: completed
+
+### acp-test-33697
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:16:34Z
+- **next**: completed
+
+### dogfood-runtime-17100
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:13:20Z
+- **next**: completed
+
+### acp-pipeline-9596
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:12:31Z
+- **next**: completed
+
+### acp-test-9596
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:12:30Z
+- **next**: completed
+
+### acp-pipeline-60326
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:05:11Z
+- **next**: completed
+
+### acp-test-60326
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-13T13:05:10Z
+- **next**: completed
+
+### acp-pipeline-debug-56359
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-13T13:04:56Z
+- **next**: flow verify acp-pipeline-debug-56359 001
+
+### acp-test-47727
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-13T13:04:33Z
+- **next**: flow verify acp-test-47727 001
+
+### acp-pipeline-35923
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T13:03:30Z
+- **next**: manual review needed
+
+### acp-test-35923
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T13:03:30Z
+- **next**: manual review needed
+
+### acp-pipeline-debug-6947
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:58:50Z
+- **next**: manual review needed
+
+### acp-pipeline-4678
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:58:36Z
+- **next**: manual review needed
+
+### acp-test-4678
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:58:36Z
+- **next**: manual review needed
+
+### acp-pipeline-2848
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:58:27Z
+- **next**: manual review needed
+
+### acp-test-2848
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:58:26Z
+- **next**: manual review needed
+
+### acp-pipeline-debug-97861
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:57:59Z
+- **next**: manual review needed
+
+### acp-pipeline-92269
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:57:42Z
+- **next**: manual review needed
+
+### acp-test-92269
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:57:41Z
+- **next**: manual review needed
+
+### acp-pipeline-89929
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:57:32Z
+- **next**: manual review needed
+
+### acp-test-89929
+- **status**: UNCLEAR
+- **phase**: verify
+- **updated**: 2026-05-13T12:57:31Z
+- **next**: manual review needed
+
+### fatecat
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-13T12:47:19Z
+- **next**: flow verify fatecat 002
+
 ### variant-env-5085
 - **status**: VERIFYING
 - **phase**: execute
@@ -62,12 +206,6 @@
 - **phase**: verify
 - **updated**: 2026-05-13T08:45:05Z
 - **next**: manual review needed
-
-### fatecat
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-13T08:44:46Z
-- **next**: flow execute fatecat 001
 
 ### acp-test-92077
 - **status**: UNCLEAR

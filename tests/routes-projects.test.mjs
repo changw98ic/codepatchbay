@@ -179,7 +179,7 @@ describe('GET /api/projects/:name', () => {
 
   it('includes pipelineState when state file exists', async () => {
     await createProjectDir(tmpRoot, 'with-state');
-    const stateDir = path.join(tmpRoot, '.omc/state');
+    const stateDir = path.join(tmpRoot, 'flow-task/state');
     await fs.mkdir(stateDir, { recursive: true });
     await fs.writeFile(
       path.join(stateDir, 'pipeline-with-state.json'),

@@ -11,13 +11,14 @@
 ## Design Principles
 
 1. **Role first, provider second**: `builder` is a role; Claude Code, z.ai, OllamaCloud, and Xiaomi are runtime/model choices.
-2. **Coordinator is the only entry router**: every task starts with classification and workflow selection.
+2. **Coordinator is the only entry router**: every user-facing task starts with lightweight classification and workflow selection.
 3. **Use the lightest safe workflow**: simple tasks should not pay full-team overhead.
 4. **Profiles are contracts**: identity, permissions, memory, and skills live with the role.
 5. **Secrets stay outside profiles**: configs reference env names; real values come from ignored secret files or shell env.
 6. **ACP is the adapter boundary**: Flow should not depend on provider-specific prompt hacks where ACP can carry the interaction.
 7. **Wiki is for handoff evidence**: project state and agent communication stay inspectable and durable.
 8. **Worktrees isolate writers**: code-writing tasks use per-task git worktrees; the primary project directory is the integration target.
+9. **Coordinator does not do the work**: it classifies complexity, selects workflow, and chooses roles/variants; execution belongs to the selected roles.
 
 ## Current Baseline
 
@@ -59,7 +60,7 @@ flow CLI / Web UI
 | Module | Responsibility |
 | --- | --- |
 | CLI/UI | Accept task input, show status, let user choose optional role variants. |
-| Coordinator classifier | Decide `simple`, `standard`, `complex`, or `blocked`. |
+| Coordinator classifier | Decide `simple`, `standard`, `complex`, or `blocked` without launching the team by default. |
 | Workflow planner | Expand classification into ordered phases and roles. |
 | Profile loader | Load `soul.md`, `user.md`, `memory.md`, `config.yaml`, `skills/`, and selected variant. |
 | ACP launcher | Start the runtime with cwd, env overlay, and permission envelope. |
@@ -106,6 +107,7 @@ Project task state should live under:
 ```text
 wiki/projects/{project}/
   tasks.md
+  tasks/{task-id}/classification.yaml
   inbox/
   outputs/
   log.md
@@ -175,6 +177,17 @@ Flow resolves `${NAME}` from the process environment or ignored secret files. Th
 
 ## Task Classification
 
+Every user-facing request enters through this fixed gate:
+
+```text
+request
+  -> coordinator classify
+  -> simple | standard | complex | blocked
+  -> workflow selection
+```
+
+This gate is intentionally cheap. It may inspect the request text, project metadata, existing task state, and explicit user constraints. It should not run research, make code changes, or spawn the full team.
+
 The coordinator emits a small record before dispatch:
 
 ```yaml
@@ -194,14 +207,26 @@ reasons:
   - code_change_expected
 ```
 
-Recommended storage:
+Canonical storage:
 
 ```text
-wiki/projects/{project}/inbox/classification-{id}.md
-.omc/state/task-{project}-{id}.json
+wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-Markdown keeps the decision inspectable. JSON keeps UI and automation simple.
+The wiki record keeps the routing decision inspectable. A JSON mirror under `.omc/state/` is optional and should be treated as a cache for UI and automation, not the source of truth.
+
+### Classification Dimensions
+
+| Dimension | Simple signal | Complex signal |
+| --- | --- | --- |
+| File scope | 1-3 files | Multi-module or multi-directory |
+| Requirements | Clear | Fuzzy or needs clarification |
+| Risk | Low and reversible | Permission, data, architecture, or security impact |
+| Verification | One command proves it | Multiple tests, review, or repeated cycles |
+| Dependencies | No new dependency | New dependency, service, or protocol |
+| Duration | Short task | Long-running or multi-round |
+| Handoff | Not needed | Researcher, planner, reviewer, or writer needed |
+| State | No durable memory needed | Wiki/state tracking required |
 
 ## Workflow Selection
 
@@ -255,6 +280,15 @@ coordinator -> user
 ```
 
 Only use `blocked` when the missing decision is truly material, destructive, externally visible, or credential-gated.
+
+### Escalation
+
+```text
+simple fails once -> standard
+standard verification fails once -> complex
+multi-module/security/architecture impact discovered -> complex
+missing requirements/credentials/destructive authority -> blocked
+```
 
 ## Worktree Concurrency Model
 
@@ -443,10 +477,15 @@ test-report-{id}.md
 New team handoffs should add:
 
 ```text
-classification-{id}.md
 research-{id}.md
 doc-update-{id}.md
 security-review-{id}.md
+```
+
+Coordinator classifications are task records, not inbox handoffs:
+
+```text
+wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
 The existing `handshake-protocol.md` should evolve from `codex | claude` sender names to role names:
@@ -500,6 +539,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 
 - Add coordinator classification command.
 - Add simple, standard, complex, and blocked workflows.
+- Write `wiki/projects/{project}/tasks/{task-id}/classification.yaml` before dispatch.
 - Add escalation logic.
 - Update UI to show workflow and role phase.
 
@@ -524,6 +564,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 
 - Role, runtime, provider, and variant are clearly separated.
 - The coordinator has a defined classification contract.
+- The coordinator classification step is lightweight and does not start a full team by default.
 - Simple, standard, complex, and blocked workflows are specified.
 - Profile config describes permissions without storing secrets.
 - ACP launch flow explains where env overlays and permission checks happen.

@@ -60,9 +60,8 @@ for (const pattern of [
   "dist/",
   "build/",
   "coverage/",
-  ".omc/state/",
-  ".omc/worktrees/",
-  ".omx/state/",
+  "flow-task/state/",
+  "flow-task/worktrees/",
 ]) {
   assert.match(gitignore, new RegExp(`(^|\\n)${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\n|$)`));
 }

@@ -10,9 +10,8 @@ const REQUIRED_IGNORES = [
   "dist/",
   "build/",
   "coverage/",
-  ".omc/state/",
-  ".omc/worktrees/",
-  ".omx/state/",
+  "flow-task/state/",
+  "flow-task/worktrees/",
 ];
 
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;

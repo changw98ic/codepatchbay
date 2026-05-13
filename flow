@@ -45,6 +45,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}list${NC}                                   列出所有项目
   ${CYAN}jobs${NC}                                     列出 durable jobs
   ${CYAN}supervisor${NC}                               启动无人值守 supervisor 循环
+  ${CYAN}migrate-runtime-root${NC} [--quarantine-non-flow] 迁移旧运行时数据到 flow-task/
   ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
   ${CYAN}ui${NC} [--port PORT] [--host HOST]        启动 Web UI (默认 127.0.0.1)
 
@@ -82,6 +83,7 @@ cmd_verify()   { "$FLOW_ROOT/bridges/codex-verify.sh" "$@"; }
 cmd_pipeline() { "$FLOW_ROOT/bridges/run-pipeline.sh" "$@"; }
 cmd_jobs()      { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/list-jobs.mjs"; }
 cmd_supervisor() { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/supervisor-loop.mjs"; }
+cmd_migrate_runtime_root() { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/migrate-runtime-root.mjs" "$@"; }
 
 cmd_status() {
   local project="${1:?Usage: flow status <project>}"
@@ -102,7 +104,7 @@ cmd_status() {
   echo -e "${CYAN}Inbox:${NC} $inbox  ${CYAN}Outputs:${NC} $outputs"
 
   # Pipeline state (per-project)
-  local sf="$FLOW_ROOT/.omc/state/pipeline-${project}.json"
+  local sf="$FLOW_ROOT/flow-task/state/pipeline-${project}.json"
   if [ -f "$sf" ]; then
     local st ph
     st=$(node "$FLOW_ROOT/bridges/json-helper.mjs" read "$sf" "status" 2>/dev/null || echo "?")
@@ -263,6 +265,7 @@ case "${1:-help}" in
   status)   shift; cmd_status "$@" ;;
   jobs)     cmd_jobs ;;
   supervisor) cmd_supervisor ;;
+  migrate-runtime-root) shift; cmd_migrate_runtime_root "$@" ;;
   list)     cmd_list ;;
   wiki)     shift; cmd_wiki "${1:-list}" ;;
   ui)       shift; cmd_ui "$@" ;;

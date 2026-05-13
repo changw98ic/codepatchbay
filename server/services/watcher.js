@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 
 export function registerWatcher(flowRoot, broadcast) {
-  const stateDir = path.join(flowRoot, '.omc/state');
+  const stateDir = path.join(flowRoot, 'flow-task/state');
   const projectsDir = path.join(flowRoot, 'wiki/projects');
 
   // Watch pipeline state files
@@ -62,7 +62,7 @@ export function registerWatcher(flowRoot, broadcast) {
   });
 
   // Watch durable job event logs
-  const eventsWatcher = chokidar.watch(path.join(flowRoot, '.omc', 'events', '*', '*.jsonl'), {
+  const eventsWatcher = chokidar.watch(path.join(flowRoot, 'flow-task', 'events', '*', '*.jsonl'), {
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200 },
@@ -70,7 +70,7 @@ export function registerWatcher(flowRoot, broadcast) {
 
   eventsWatcher.on('all', async (_event, filePath) => {
     try {
-      const rel = path.relative(path.join(flowRoot, '.omc', 'events'), filePath);
+      const rel = path.relative(path.join(flowRoot, 'flow-task', 'events'), filePath);
       const [projectName, fileName] = rel.split(path.sep);
       const jobId = fileName.replace(/\.jsonl$/, '');
       broadcast({ type: 'job:update', project: projectName, jobId });

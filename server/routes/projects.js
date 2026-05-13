@@ -30,7 +30,7 @@ export async function projectRoutes(fastify, opts) {
       // Read pipeline state
       let pipelineState = null;
       try {
-        const stateFile = path.join(req.flowRoot, `.omc/state/pipeline-${name}.json`);
+        const stateFile = path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`);
         pipelineState = JSON.parse(await fs.readFile(stateFile, 'utf8'));
       } catch {}
 
@@ -58,7 +58,7 @@ export async function projectRoutes(fastify, opts) {
 
     let pipelineState = null;
     try {
-      pipelineState = JSON.parse(await fs.readFile(path.join(req.flowRoot, `.omc/state/pipeline-${name}.json`), 'utf8'));
+      pipelineState = JSON.parse(await fs.readFile(path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`), 'utf8'));
     } catch {}
 
     return { name, context, tasks, decisions, log, pipelineState };

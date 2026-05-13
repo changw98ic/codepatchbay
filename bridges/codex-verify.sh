@@ -32,7 +32,7 @@ if [ -f "$VERDICT_FILE" ]; then
   VERDICT=$(grep -E "^VERDICT:" "$VERDICT_FILE" | head -1 | sed 's/^VERDICT:[[:space:]]*//' || echo "")
   if [ -z "$VERDICT" ]; then
     # Fallback: scan first 5 lines for structured marker, then legacy format
-    VERDICT=$(head -5 "$VERDICT_FILE" | grep -iE "VERDICT:[[:space:]]*(PASS|FAIL|PARTIAL)" | head -1 | sed -i 's/.*VERDICT:[[:space:]]*//' 2>/dev/null || true)
+    VERDICT=$(head -5 "$VERDICT_FILE" | grep -iE "VERDICT:[[:space:]]*(PASS|FAIL|PARTIAL)" | head -1 | sed 's/.*VERDICT:[[:space:]]*//' 2>/dev/null || true)
     if [ -z "$VERDICT" ]; then
       VERDICT=$(head -5 "$VERDICT_FILE" | grep -iE "^(PASS|FAIL|PARTIAL)" | head -1 || echo "UNKNOWN")
     fi

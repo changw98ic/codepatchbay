@@ -13,6 +13,7 @@
 | Handoff 格式 | `wiki/system/handshake-protocol.md` | 框架 | 所有（只读） |
 | 项目说明书 | `wiki/projects/{name}/context.md` | 用户/Codex | 所有 |
 | 架构决策 | `wiki/projects/{name}/decisions.md` | Codex | 所有 |
+| 任务分类 | `wiki/projects/{name}/tasks/{task-id}/classification.yaml` | Coordinator | 所有 |
 | 实现计划 | `wiki/projects/{name}/inbox/plan-{id}.md` | Codex | Claude |
 | 代码审查 | `wiki/projects/{name}/inbox/review-{id}.md` | Codex | Claude |
 | 实现产出 | `wiki/projects/{name}/outputs/deliverable-{id}.md` | Claude | Codex |

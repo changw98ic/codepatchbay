@@ -1,4 +1,5 @@
 node_modules/
+flow-task/
 .omc/state/
 .omc/events/
 .omc/leases/

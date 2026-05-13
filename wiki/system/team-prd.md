@@ -26,7 +26,7 @@ That is enough for a first ACP workflow, but it does not scale cleanly to real p
 Flow should become a small AI project team runtime where:
 
 1. Users describe project goals in natural language.
-2. A coordinator classifies the task and selects the lightest safe workflow.
+2. A coordinator classifies the task and selects the lightest safe workflow without launching a full team by default.
 3. Roles are loaded from `profiles/{role}/`, not hard-coded as `codex` or `claude`.
 4. Runtime providers and model variants are selected by profile config.
 5. Agents communicate through ACP and persist handoffs through the Flow wiki.
@@ -104,7 +104,9 @@ Real credentials should live outside profiles in ignored secret files or the use
 
 ## Task Classification
 
-All user requests should enter through the coordinator. The coordinator should emit a short classification record before dispatching work.
+All user-facing work should enter through the coordinator. This first step must be lightweight: it classifies task shape, selects a workflow, and chooses roles/model variants. It does not solve the task, write code, or start the whole team.
+
+The coordinator should emit a short classification record before dispatching work.
 
 ```yaml
 classification: simple | standard | complex | blocked
@@ -118,15 +120,26 @@ reasons:
   - clear_scope
 ```
 
+The canonical record location is:
+
+```text
+wiki/projects/{project}/tasks/{task-id}/classification.yaml
+```
+
+Machine state may mirror the same data under `.omc/state/` for UI speed, but the wiki task record is the inspectable source for handoff and review.
+
 ### Classification Rules
 
 | Signal | Simple | Standard | Complex | Blocked |
 | --- | --- | --- | --- | --- |
-| Files touched | 0-3 | 1-6 | Multi-module | Unknown or destructive |
-| Requirements | Clear | Mostly clear | Need research/design | Missing critical decision |
-| Risk | Low | Low/medium | Architecture/security/data | Irreversible or externally visible |
-| Verification | One light check | Tests/build | Multi-stage review | Cannot verify safely |
-| Dependencies | None | Existing only | New service or protocol | Requires credentials/approval |
+| Files touched | 0-3 | 1-6 | Multi-module or cross-directory | Unknown or destructive |
+| Requirements | Clear | Mostly clear | Fuzzy or needs design | Missing critical decision |
+| Risk | Low and reversible | Low/medium | Architecture, security, permission, or data impact | Irreversible or externally visible |
+| Verification | One light check | Tests/build | Multi-stage review or repeated tests | Cannot verify safely |
+| Dependencies | None | Existing only | New dependency, service, or protocol | Requires credentials/approval |
+| Duration | Short | Bounded implementation | Long-running or multi-round | Unsafe to continue autonomously |
+| Handoff | None | Builder/verifier handoff | Research/planning/review/doc handoffs | Needs user decision first |
+| State | No durable state needed | Task state helpful | Wiki/state tracking required | Blocked state required |
 | Workflow | Single role | Builder + verifier | Full team | Ask user |
 
 ### Escalation Rules
@@ -246,7 +259,8 @@ The role remains stable. The variant changes the backend model and environment f
 ### P0
 
 - Define profile schema and required role set.
-- Add coordinator classification as the first logical step of every workflow.
+- Add lightweight coordinator classification as the first logical step of every user-facing workflow.
+- Persist the coordinator classification record at `wiki/projects/{project}/tasks/{task-id}/classification.yaml`.
 - Support simple, standard, complex, and blocked workflows.
 - Separate role identity from runtime provider.
 - Support Claude Code provider/model switching via temporary environment overlays.
@@ -278,6 +292,7 @@ The role remains stable. The variant changes the backend model and environment f
 - Store API keys in profiles or wiki files.
 - Make every task run through the full team.
 - Let one role plan, implement, and approve the same task without separation.
+- Let the coordinator perform implementation work.
 - Push commits to a remote repository without explicit user request.
 
 ## Acceptance Criteria
@@ -293,5 +308,5 @@ The role remains stable. The variant changes the backend model and environment f
 
 - Which role should own final user-facing summaries: `coordinator` or `writer`?
 - Should `reviewer` and `verifier` always be separate invocations, or can low-risk tasks collapse them?
-- Should Flow keep classification records as markdown, JSON, or both?
+- Should Flow keep a JSON mirror of classification records for UI performance, or read YAML directly?
 - Should provider variants be globally reusable or role-local only?

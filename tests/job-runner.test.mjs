@@ -9,7 +9,7 @@ import { spawnFile } from "./helpers/spawn-file.mjs";
 const runner = path.resolve("bridges/job-runner.mjs");
 
 async function readJobEvents(root, project = "demo", jobId = "job-1") {
-  const eventFile = path.join(root, ".omc", "events", project, `${jobId}.jsonl`);
+  const eventFile = path.join(root, "flow-task", "events", project, `${jobId}.jsonl`);
   const raw = await readFile(eventFile, "utf8");
   return raw
     .trim()
@@ -131,7 +131,7 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /missing required argument: --script/i);
   await assert.rejects(
-    () => readFile(path.join(root, ".omc", "events", "demo", "job-4.jsonl"), "utf8"),
+    () => readFile(path.join(root, "flow-task", "events", "demo", "job-4.jsonl"), "utf8"),
     { code: "ENOENT" }
   );
 }

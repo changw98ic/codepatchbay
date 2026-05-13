@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
+import { runtimeDataPath } from "./runtime-root.js";
 
 const ownedLeaseTokens = new Map();
 const DEFAULT_LOCK_TTL_MS = 30_000;
@@ -18,7 +19,7 @@ function validateLeaseId(leaseId) {
 function leaseFileFor(flowRoot, leaseId) {
   validateLeaseId(leaseId);
 
-  const leasesRoot = path.resolve(flowRoot, ".omc", "leases");
+  const leasesRoot = runtimeDataPath(flowRoot, "leases");
   const file = path.resolve(leasesRoot, `${leaseId}.json`);
   const relative = path.relative(leasesRoot, file);
 

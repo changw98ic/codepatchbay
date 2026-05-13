@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { completeJob as completeJobStore } from "./job-store.js";
@@ -7,6 +8,14 @@ const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked"]);
 
 function hasArtifact(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+async function fileExists(file) {
+  try {
+    return (await stat(file)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function nextPhaseFor(state) {
@@ -143,6 +152,16 @@ export async function recoverOneJob(flowRoot, job) {
   }
 
   const jobRunner = path.resolve(flowRoot, "bridges", "job-runner.mjs");
+  if (!await fileExists(jobRunner)) {
+    return {
+      jobId: job.jobId,
+      project: job.project,
+      phase,
+      exitCode: 1,
+      error: `job runner not found: ${jobRunner}`,
+    };
+  }
+
   const runnerArgs = [
     jobRunner,
     "--flow-root", flowRoot,

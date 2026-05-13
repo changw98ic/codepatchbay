@@ -2,7 +2,6 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
-import { createJob } from '../services/job-store.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -57,13 +56,7 @@ export async function taskRoutes(fastify, opts) {
     const { task, maxRetries = '3', timeout = '0' } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
 
-    const job = await createJob(req.flowRoot, {
-      project: name,
-      task,
-      workflow: 'standard',
-    });
-
-    return spawnBridge(req.flowRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log, job.jobId);
+    return spawnBridge(req.flowRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log);
   });
 }
 

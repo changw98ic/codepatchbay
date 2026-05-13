@@ -42,7 +42,7 @@ async function setupTempRoot() {
   const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-tasks-'));
   await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
   await fs.mkdir(path.join(tmpRoot, 'bridges'), { recursive: true });
-  await fs.mkdir(path.join(tmpRoot, '.omc/state'), { recursive: true });
+  await fs.mkdir(path.join(tmpRoot, 'flow-task/state'), { recursive: true });
 
   // Create dummy bridge scripts that just exit cleanly
   const scripts = ['codex-plan.sh', 'claude-execute.sh', 'codex-verify.sh', 'run-pipeline.sh'];
@@ -106,7 +106,7 @@ describe('GET /api/tasks/durable', () => {
 
   it('returns jobs from the event store', async () => {
     // Create a job event file directly
-    const eventsDir = path.join(tmpRoot, '.omc/events/my-proj');
+    const eventsDir = path.join(tmpRoot, 'flow-task/events/my-proj');
     await fs.mkdir(eventsDir, { recursive: true });
     const jobEvent = {
       type: 'job_created',

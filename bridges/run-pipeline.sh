@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# run-pipeline.sh — 全自动流水线 (ACP + RTK)
+# run-pipeline.sh — compatibility wrapper for the durable Node pipeline
 # Usage: run-pipeline.sh <project> "<task>" [max-retries] [timeout-minutes]
 
 FLOW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,127 +16,8 @@ TIMEOUT_MIN="${4:-0}"  # 0 = no total timeout (rely on ACP idle timeout)
 require_safe_name "$PROJECT"
 require_project "$PROJECT"
 
-log() { echo -e "${CYAN}[pipeline:$PROJECT]${NC} $1"; }
-ok() { echo -e "${GREEN}[PASS]${NC} $1"; }
-fail() { echo -e "${RED}[FAIL]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-
-WIKI_DIR="$FLOW_ROOT/wiki/projects/$PROJECT"
-PLAN_ID="" DELIVERABLE_ID=""
-TIMED_OUT=false
-
-# Check if timeout was flagged by watchdog (state-based, no process killing)
-check_timeout() {
-  local st
-  st=$(state_read "$PROJECT" "status")
-  if [ "$st" = "timeout" ]; then
-    TIMED_OUT=true
-    return 0
-  fi
-  return 1
-}
-
-# Total timeout: writes state flag instead of killing process
-# Pipeline checks between phases via check_timeout()
-if [ "$TIMEOUT_MIN" -gt 0 ]; then
-  (
-    sleep $((TIMEOUT_MIN * 60))
-    if kill -0 "$$" 2>/dev/null; then
-      echo -e "${RED}[pipeline:$PROJECT] Total timeout ($TIMEOUT_MIN min) exceeded${NC}" >&2
-      state_write "$PROJECT" "'status'" "'timeout'"
-    fi
-  ) &
-  WATCHDOG_PID=$!
-  trap 'kill $WATCHDOG_PID 2>/dev/null' EXIT
-fi
-
-# 初始化状态
-state_init "$PROJECT" "$TASK" "$MAX_RETRIES"
-log "Started (max $MAX_RETRIES retries${TIMEOUT_MIN:+, ${TIMEOUT_MIN}min timeout})"
-
-# ─── Phase 1: Plan ───
-log "Phase 1/3: Plan (Codex)"
-PLAN_OUTPUT=$("$FLOW_ROOT/bridges/codex-plan.sh" "$PROJECT" "$TASK" 2>&1) || true
-echo "$PLAN_OUTPUT"
-
-if check_timeout; then fail "Timed out after plan phase."; exit 1; fi
-
-PLAN_ID=$(echo "$PLAN_OUTPUT" | grep -E '^Plan: .*/plan-[0-9]+\.md$' | sed -E 's/.*plan-([0-9]+)\.md$/\1/' | tail -1)
-
-if [ -z "$PLAN_ID" ]; then
-  fail "Plan not created. Aborting."
-  state_write "$PROJECT" "'status'" "'failed'"
-  exit 1
-fi
-ok "plan-$PLAN_ID"
-state_write "$PROJECT" "'phase'" "'execute'"
-
-# ─── Phase 2: Execute (+ retry) ───
-RETRY=0
-while [ "$RETRY" -lt "$MAX_RETRIES" ]; do
-  if check_timeout; then fail "Timed out during execute phase."; exit 1; fi
-
-  log "Phase 2/3: Execute (Claude) attempt $((RETRY + 1))/$MAX_RETRIES"
-  EXEC_OUTPUT=$("$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" 2>&1) || true
-  echo "$EXEC_OUTPUT"
-
-  DELIVERABLE_ID=$(echo "$EXEC_OUTPUT" | grep -E '^Deliverable: .*/deliverable-[0-9]+\.md$' | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/' | tail -1)
-
-  if [ -n "$DELIVERABLE_ID" ]; then
-    ok "deliverable-$DELIVERABLE_ID"
-    break
-  fi
-  RETRY=$((RETRY + 1))
-  warn "No deliverable. Retry $RETRY/$MAX_RETRIES"
-done
-
-if [ -z "$DELIVERABLE_ID" ]; then
-  fail "Execute failed after $MAX_RETRIES attempts."
-  state_write "$PROJECT" "'status'" "'failed'"
-  exit 1
-fi
-
-state_write "$PROJECT" "'phase'" "'verify'"
-
-# ─── Phase 3: Verify (+ fix loop) ───
-RETRY=0
-while [ "$RETRY" -lt "$MAX_RETRIES" ]; do
-  if check_timeout; then fail "Timed out during verify phase."; exit 1; fi
-
-  log "Phase 3/3: Verify (Codex) attempt $((RETRY + 1))/$MAX_RETRIES"
-  "$FLOW_ROOT/bridges/codex-verify.sh" "$PROJECT" "$DELIVERABLE_ID" 2>&1
-
-  VERDICT_FILE="$WIKI_DIR/outputs/verdict-${DELIVERABLE_ID}.md"
-  if [ ! -f "$VERDICT_FILE" ]; then
-    RETRY=$((RETRY + 1))
-    warn "No verdict. Retry $RETRY/$MAX_RETRIES"
-    continue
-  fi
-
-  VERDICT=$(head -1 "$VERDICT_FILE" | sed -n 's/^VERDICT:[[:space:]]*\(.*\)/\1/p')
-  if [ -z "$VERDICT" ]; then
-    VERDICT="UNKNOWN"
-  fi
-
-  if echo "$VERDICT" | grep -qi "PASS"; then
-    ok "Pipeline complete!"
-    state_write "$PROJECT" "'status'" "'completed'"
-    exit 0
-  elif echo "$VERDICT" | grep -qi "FAIL"; then
-    RETRY=$((RETRY + 1))
-    warn "FAIL. Fix attempt $RETRY/$MAX_RETRIES"
-    if [ "$RETRY" -lt "$MAX_RETRIES" ]; then
-      log "Re-executing (Claude fix)..."
-      FIX_OUTPUT=$("$FLOW_ROOT/bridges/claude-execute.sh" "$PROJECT" "$PLAN_ID" "$VERDICT_FILE" 2>&1) || true
-      echo "$FIX_OUTPUT"
-      DELIVERABLE_ID=$(echo "$FIX_OUTPUT" | grep -E '^Deliverable: .*/deliverable-[0-9]+\.md$' | sed -E 's/.*deliverable-([0-9]+)\.md$/\1/' | tail -1)
-    fi
-  else
-    warn "Unclear verdict: $VERDICT"
-    RETRY=$((RETRY + 1))
-  fi
-done
-
-fail "Pipeline failed after $MAX_RETRIES cycles."
-state_write "$PROJECT" "'status'" "'failed'"
-exit 1
+exec node "$FLOW_ROOT/bridges/run-pipeline.mjs" \
+  --project "$PROJECT" \
+  --task "$TASK" \
+  --max-retries "$MAX_RETRIES" \
+  --timeout-min "$TIMEOUT_MIN"

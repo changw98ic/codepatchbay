@@ -11,9 +11,12 @@ mkdir -p "$PROJECT_DIR"
 printf '{"scripts":{"test":"echo ok"}}\n' > "$PROJECT_DIR/package.json"
 
 project="acp-test-$$"
+pipeline_project="acp-pipeline-$$"
 
 cleanup_project() {
   rm -rf "$ROOT/wiki/projects/$project"
+  rm -rf "$ROOT/wiki/projects/$pipeline_project"
+  rm -rf "$ROOT/flow-task/events/$pipeline_project" "$ROOT/flow-task/state/pipeline-${pipeline_project}.json"
 }
 trap 'cleanup_project; rm -rf "$TMP_DIR"' EXIT
 
@@ -40,3 +43,14 @@ grep -qx 'codex' "$AGENT_LOG"
 grep -qx 'claude' "$AGENT_LOG"
 test "$(grep -xc 'codex' "$AGENT_LOG")" -eq 2
 
+"$ROOT/flow" init "$PROJECT_DIR" "$pipeline_project" >/dev/null
+
+FLOW_ACP_CLIENT="$ROOT/tests/fixtures/acp-client-stub.sh" \
+FLOW_TEST_AGENT_LOG="$AGENT_LOG" \
+  "$ROOT/flow" pipeline "$pipeline_project" "Add pipeline events" 1 >/dev/null
+
+test -f "$ROOT/wiki/projects/$pipeline_project/inbox/plan-001.md"
+test -f "$ROOT/wiki/projects/$pipeline_project/outputs/deliverable-001.md"
+test -f "$ROOT/wiki/projects/$pipeline_project/outputs/verdict-001.md"
+test -f "$ROOT/flow-task/state/pipeline-${pipeline_project}.json"
+find "$ROOT/flow-task/events/$pipeline_project" -name 'job-*.jsonl' -print -quit | grep -q .

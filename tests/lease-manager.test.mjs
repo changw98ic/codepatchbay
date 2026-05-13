@@ -175,7 +175,7 @@ await acquireLease(invalidRoot, {
   now,
 });
 await writeFile(
-  path.join(invalidRoot, ".omc", "leases", "lease-job-4-plan.json"),
+  path.join(invalidRoot, "flow-task", "leases", "lease-job-4-plan.json"),
   JSON.stringify({
     leaseId: "lease-job-4-plan",
     jobId: "job-4",
@@ -208,7 +208,7 @@ await acquireLease(orphanLockRoot, {
 });
 const orphanLockDir = path.join(
   orphanLockRoot,
-  ".omc",
+  "flow-task",
   "leases",
   "lease-job-5-plan.json.lock"
 );
