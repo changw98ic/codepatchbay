@@ -124,6 +124,8 @@ async function main() {
 
   const { flowRoot, project, jobId, phase, script, scriptArgs } = parsed;
   const leaseId = `lease-${jobId}-${phase}`;
+  // Phase lease TTL: how long a lease is valid before considered stale.
+  // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
   const ttlMs = positiveIntegerFromEnv("FLOW_LEASE_TTL_MS", 120_000);
   const renewEveryMs = positiveIntegerFromEnv(
     "FLOW_LEASE_RENEW_INTERVAL_MS",

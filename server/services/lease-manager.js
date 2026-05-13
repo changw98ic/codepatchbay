@@ -5,6 +5,8 @@ import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
 const ownedLeaseTokens = new Map();
+// Lock TTL: timeout for mkdir-based atomic lock contention between competing processes.
+// This is NOT the phase lease TTL (see FLOW_LEASE_TTL_MS in job-runner.mjs / run-pipeline.mjs).
 const DEFAULT_LOCK_TTL_MS = 30_000;
 
 function validateLeaseId(leaseId) {

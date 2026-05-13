@@ -144,6 +144,8 @@ function combineChunks(chunks) {
 
 async function runPhaseWithLease(flowRoot, project, jobId, phase, script, scriptArgs) {
   const leaseId = `lease-${jobId}-${phase}`;
+  // Phase lease TTL: how long a lease is valid before considered stale.
+  // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
   const ttlMs = parseInt(process.env.FLOW_LEASE_TTL_MS || "120000", 10) || 120_000;
   const renewEveryMs = parseInt(
     process.env.FLOW_LEASE_RENEW_INTERVAL_MS || String(Math.max(5_000, Math.floor(ttlMs / 3))),
