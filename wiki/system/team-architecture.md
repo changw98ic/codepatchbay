@@ -117,9 +117,9 @@ wiki/projects/{project}/
 Machine state can continue under:
 
 ```text
-.omc/state/
-.omc/worktrees/{project}/{task-id}/
-.omc/events/{project}/{task-id}.jsonl
+flow-task/state/
+flow-task/worktrees/{project}/{task-id}/
+flow-task/events/{project}/{task-id}.jsonl
 ```
 
 ## Profile Schema
@@ -213,7 +213,7 @@ Canonical storage:
 wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-The wiki record keeps the routing decision inspectable. A JSON mirror under `.omc/state/` is optional and should be treated as a cache for UI and automation, not the source of truth.
+The wiki record keeps the routing decision inspectable. A JSON mirror under `flow-task/state/` is optional and should be treated as a cache for UI and automation, not the source of truth.
 
 ### Classification Dimensions
 
@@ -299,7 +299,7 @@ primary project directory
   -> integration target
 
 Flow managed task worktrees
-  -> .omc/worktrees/{project}/{task-id}/
+  -> flow-task/worktrees/{project}/{task-id}/
 ```
 
 ### Policy
@@ -336,7 +336,7 @@ If the target project is not a git repository, Flow should initialize git by def
 
 5. Create task branch and worktree:
    branch: flow/{project}/{task-id}-{slug}
-   path:   .omc/worktrees/{project}/{task-id}-{slug}
+   path:   flow-task/worktrees/{project}/{task-id}-{slug}
 ```
 
 `git worktree` needs an existing commit to branch from. That is why `git init` must be paired with a protected baseline commit when the project has no history.
@@ -348,7 +348,7 @@ The baseline commit should stage only safe project files. It must exclude:
 - `.env`, `.env.*`, credentials, keys, tokens, and secret files;
 - dependency directories such as `node_modules/`;
 - build outputs such as `dist/`, `build/`, `target/`, and coverage output;
-- Flow runtime state such as `.omc/state/`, `.omx/state/`, and managed worktrees;
+- Flow runtime state such as `flow-task/state/`, `.omx/state/`, and managed worktrees;
 - large cache directories.
 
 If Flow detects likely secrets that would be staged, it should stop with `blocked` and explain the file paths that need ignore rules. Flow should never push the baseline commit to a remote.
@@ -532,7 +532,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 - Detect whether a target project is a git repository.
 - Run `git init` by default for non-git projects.
 - Create protected baseline commits when no commits exist.
-- Create task branches and task worktrees under `.omc/worktrees/`.
+- Create task branches and task worktrees under `flow-task/worktrees/`.
 - Add merge locking and post-merge verification hooks.
 
 ### Phase 5: Workflow Engine

@@ -6,10 +6,10 @@ resume after a child process exits.
 
 ## Guarantees
 
-- Job state is reconstructed from `.omc/events/{project}/{jobId}.jsonl`.
-- Active phases hold renewable leases under `.omc/leases/`.
+- Job state is reconstructed from `flow-task/events/{project}/{jobId}.jsonl`.
+- Active phases hold renewable leases under `flow-task/leases/`.
 - Supervisor recovery treats missing or stale leases as resumable work.
-- Code-writing phases can run in task git worktrees under `.omc/worktrees/`.
+- Code-writing phases can run in task git worktrees under `flow-task/worktrees/`.
 - Budget and blocked states stop loops without deleting job history.
 
 ## Non-Guarantees
@@ -36,8 +36,8 @@ activity and lease heartbeats.
 
 1. Run `flow jobs`.
 2. Find jobs with `running`, `blocked`, or `failed` status.
-3. Inspect `.omc/events/{project}/{jobId}.jsonl`.
-4. Inspect `.omc/leases/` for missing or stale current leases.
+3. Inspect `flow-task/events/{project}/{jobId}.jsonl`.
+4. Inspect `flow-task/leases/` for missing or stale current leases.
 5. Restart `flow supervisor`.
 6. Resume from the next missing phase shown by the materialized job state.
 

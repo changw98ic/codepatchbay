@@ -126,7 +126,7 @@ The canonical record location is:
 wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-Machine state may mirror the same data under `.omc/state/` for UI speed, but the wiki task record is the inspectable source for handoff and review.
+Machine state may mirror the same data under `flow-task/state/` for UI speed, but the wiki task record is the inspectable source for handoff and review.
 
 ### Classification Rules
 
