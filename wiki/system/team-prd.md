@@ -81,7 +81,7 @@ profiles/{role}/
   soul.md
   user.md
   memory.md
-  config.yaml
+  config.yaml    # future/rich profile schema；v1 使用 config.json
   skills/
   variants/
     {variant}.yaml

@@ -387,7 +387,7 @@ blocked: no agent launch, write job_blocked
 
 变更：
 
-- `run-pipeline.mjs` 支持 `--workflow standard|simple|blocked`。
+- `run-pipeline.mjs` 支持 `--workflow standard|blocked`。
 - `flow pipeline <project> "<task>" [max-retries] [timeout-min] --workflow standard` 保持兼容。
 - `supervisor.nextPhaseFor()` 改为基于 workflow definition 计算下一 phase。
 - `bridgeForPhase()` 改为通过 role bridge 映射。
@@ -397,9 +397,8 @@ blocked: no agent launch, write job_blocked
 验收：
 
 - omitted workflow 与 explicit `standard` 行为一致。
-- `simple` 不创建 plan phase artifact。
 - `blocked` 写 `job_blocked` 或 `workflow_selected + job_blocked`，不启动 ACP child。
-- supervisor 对 `standard/simple/blocked` 都有测试。
+- supervisor 对 `standard/blocked` 都有测试。
 
 风险：
 
@@ -675,6 +674,8 @@ Feature acceptance:
 | Reviewer | Complex workflow phase visible and tested with fake ACP |
 | Diff verify | Verifier reads runner-generated diff without terminal access |
 
+**注意**：`simple` workflow 不在 v1 验收范围内。
+
 ---
 
 ## 八、Risks and mitigations
@@ -694,7 +695,7 @@ Feature acceptance:
 | `FLOW_ACP_TOOL_POLICY` JSON 环境变量维护性差 | Medium | A5 改用扁平格式 `FLOW_ACP_DENY_TOOLS` + 可选 JSON 文件 |
 | `workflow-definition.js` 单点故障 | Medium | 100% 分支覆盖单元测试，每个 workflow 变体至少 2 个测试 |
 | Lease TTL 不一致导致 supervisor 误判 | Low | 经核实 lock TTL 和 phase lease TTL 控制不同机制，无需统一，但需在代码中注释语义区分 |
-| 老统合计划 `2026-05-13-flow-unified-master-plan.md` 仍含旧方向（config.yaml、simple: builder->verifier、job_cancelled/job_redirected） | Medium | A0 中加 superseded 标记或移至 archive/ |
+| 老统合计划 `2026-05-13-flow-unified-master-plan.md` 已 superseded，需保持标记防误用 | Low | A0 已加 superseded 警告头；如后续执行者仍误引用需再提醒 |
 | `wiki/system/dashboard.md` 有 replacement character 和测试项目残留 | Low | A0 doc sync 时一并清理 |
 | Event log 无限增长导致 replay 变慢 | Medium | R5 snapshot-based compaction + retention |
 | 工时估算偏乐观（6.5 天） | Low | 按 A0-A4 和 A5-A9 分两个 milestone 验收，中间设 checkpoint |
@@ -732,7 +733,7 @@ Suggested commit grouping:
 1. `Align runtime docs with flow-task root, audit existing profiles`
 2. `Serve project pipeline state from durable job projection`
 3. `Add FLOW_USE_PROJECTION feature flag for migration safety`
-4. `Unify lease TTL configuration source`
+4. `Add lease TTL semantics documentation`
 5. `Retire compatibility pipeline state writers`
 6. `Separate cancel and redirect control events`
 7. `Enforce control events in runner with executor PID tracking`

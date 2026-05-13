@@ -62,7 +62,7 @@ flow CLI / Web UI
 | CLI/UI | Accept task input, show status, let user choose optional role variants. |
 | Coordinator classifier | Decide `simple`, `standard`, `complex`, or `blocked` without launching the team by default. |
 | Workflow planner | Expand classification into ordered phases and roles. |
-| Profile loader | Load `soul.md`, `user.md`, `memory.md`, `config.yaml`, `skills/`, and selected variant. |
+| Profile loader | Load `soul.md`, `user.md`, `memory.md`, `config.yaml`（future/rich profile schema；v1 使用 `config.json`）, `skills/`, and selected variant. |
 | ACP launcher | Start the runtime with cwd, env overlay, and permission envelope. |
 | ACP client | Speak JSON-RPC over stdio and enforce filesystem/terminal policy. |
 | Wiki/state store | Persist classification, plans, handoffs, verdicts, logs, and task state. |
