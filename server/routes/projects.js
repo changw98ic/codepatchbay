@@ -2,6 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { useProjection } from '../services/state-source.js';
+import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -13,6 +15,11 @@ export async function projectRoutes(fastify, opts) {
     const wikiDir = path.join(req.flowRoot, 'wiki/projects');
     const entries = await fs.readdir(wikiDir).catch(() => []);
     const projects = [];
+
+    let projectionStates = null;
+    if (useProjection()) {
+      projectionStates = await listProjectPipelineStates(req.flowRoot);
+    }
 
     for (const name of entries) {
       if (name === '_template' || name.startsWith('.')) continue;
@@ -29,10 +36,14 @@ export async function projectRoutes(fastify, opts) {
 
       // Read pipeline state
       let pipelineState = null;
-      try {
-        const stateFile = path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`);
-        pipelineState = JSON.parse(await fs.readFile(stateFile, 'utf8'));
-      } catch {}
+      if (useProjection()) {
+        pipelineState = projectionStates[name] ?? null;
+      } else {
+        try {
+          const stateFile = path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`);
+          pipelineState = JSON.parse(await fs.readFile(stateFile, 'utf8'));
+        } catch {}
+      }
 
       // Count inbox/outputs
       const inbox = (await fs.readdir(path.join(projDir, 'inbox')).catch(() => [])).filter(f => f.endsWith('.md')).length;
@@ -57,9 +68,13 @@ export async function projectRoutes(fastify, opts) {
     const log = await readFile('log.md');
 
     let pipelineState = null;
-    try {
-      pipelineState = JSON.parse(await fs.readFile(path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`), 'utf8'));
-    } catch {}
+    if (useProjection()) {
+      pipelineState = await projectPipelineState(req.flowRoot, name);
+    } else {
+      try {
+        pipelineState = JSON.parse(await fs.readFile(path.join(req.flowRoot, `flow-task/state/pipeline-${name}.json`), 'utf8'));
+      } catch {}
+    }
 
     return { name, context, tasks, decisions, log, pipelineState };
   });
