@@ -7,10 +7,9 @@ const execFileAsync = promisify(execFile);
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 export async function projectRoutes(fastify, opts) {
-  const { prefix } = opts;
 
   // List all projects with status
-  fastify.get(`${prefix}/projects`, async (req) => {
+  fastify.get('/projects', async (req) => {
     const wikiDir = path.join(req.flowRoot, 'wiki/projects');
     const entries = await fs.readdir(wikiDir).catch(() => []);
     const projects = [];
@@ -46,7 +45,7 @@ export async function projectRoutes(fastify, opts) {
   });
 
   // Project detail
-  fastify.get(`${prefix}/projects/:name`, async (req) => {
+  fastify.get('/projects/:name', async (req) => {
     const { name } = req.params;
     const projDir = path.join(req.flowRoot, 'wiki/projects', name);
     await fs.access(projDir).catch(() => { throw fastify.httpErrors.notFound(`Project '${name}' not found`); });
@@ -66,21 +65,21 @@ export async function projectRoutes(fastify, opts) {
   });
 
   // List inbox files
-  fastify.get(`${prefix}/projects/:name/inbox`, async (req) => {
+  fastify.get('/projects/:name/inbox', async (req) => {
     const inboxDir = path.join(req.flowRoot, 'wiki/projects', req.params.name, 'inbox');
     const files = (await fs.readdir(inboxDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
 
   // List output files
-  fastify.get(`${prefix}/projects/:name/outputs`, async (req) => {
+  fastify.get('/projects/:name/outputs', async (req) => {
     const outDir = path.join(req.flowRoot, 'wiki/projects', req.params.name, 'outputs');
     const files = (await fs.readdir(outDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
 
   // Read specific file (wildcard matches nested paths like inbox/plan-001.md)
-  fastify.get(`${prefix}/projects/:name/files/*`, async (req) => {
+  fastify.get('/projects/:name/files/*', async (req) => {
     const name = req.params.name;
     const filePath = req.params['*'];
     const fullPath = path.join(req.flowRoot, 'wiki/projects', name, filePath);
@@ -101,7 +100,7 @@ export async function projectRoutes(fastify, opts) {
   });
 
   // Init new project
-  fastify.post(`${prefix}/projects/init`, async (req) => {
+  fastify.post('/projects/init', async (req) => {
     const { path: projectPath, name } = req.body || {};
     if (!projectPath || !name) throw fastify.httpErrors.badRequest('path and name required');
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');

@@ -1,13 +1,12 @@
 import path from 'path';
 import { spawn } from 'child_process';
-import { broadcast } from '../index.js';
+import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
 import { createJob } from '../services/job-store.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 export async function taskRoutes(fastify, opts) {
-  const { prefix } = opts;
 
   // Validate project name param
   fastify.addHook('preHandler', (req, _res, done) => {
@@ -19,17 +18,17 @@ export async function taskRoutes(fastify, opts) {
   });
 
   // Get running tasks
-  fastify.get(`${prefix}/tasks/running`, async () => {
+  fastify.get('/tasks/running', async () => {
     return getRunningTasks();
   });
 
   // Get durable tasks
-  fastify.get(`${prefix}/tasks/durable`, async (req) => {
+  fastify.get('/tasks/durable', async (req) => {
     return getDurableTasks(req.flowRoot);
   });
 
   // Trigger Codex plan
-  fastify.post(`${prefix}/tasks/:name/plan`, async (req) => {
+  fastify.post('/tasks/:name/plan', async (req) => {
     const { name } = req.params;
     const { task } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
@@ -37,7 +36,7 @@ export async function taskRoutes(fastify, opts) {
   });
 
   // Trigger Claude execute
-  fastify.post(`${prefix}/tasks/:name/execute`, async (req) => {
+  fastify.post('/tasks/:name/execute', async (req) => {
     const { name } = req.params;
     const { planId } = req.body || {};
     if (!planId) throw fastify.httpErrors.badRequest('planId required');
@@ -45,7 +44,7 @@ export async function taskRoutes(fastify, opts) {
   });
 
   // Trigger Codex verify
-  fastify.post(`${prefix}/tasks/:name/verify`, async (req) => {
+  fastify.post('/tasks/:name/verify', async (req) => {
     const { name } = req.params;
     const { deliverableId } = req.body || {};
     if (!deliverableId) throw fastify.httpErrors.badRequest('deliverableId required');
@@ -53,7 +52,7 @@ export async function taskRoutes(fastify, opts) {
   });
 
   // Trigger full pipeline
-  fastify.post(`${prefix}/tasks/:name/pipeline`, async (req) => {
+  fastify.post('/tasks/:name/pipeline', async (req) => {
     const { name } = req.params;
     const { task, maxRetries = '3', timeout = '0' } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');

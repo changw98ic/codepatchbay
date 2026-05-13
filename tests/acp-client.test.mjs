@@ -11,6 +11,7 @@ const fakeAgent = path.join(root, "tests", "fixtures", "fake-acp-agent.mjs");
 const fakeActiveAgent = path.join(root, "tests", "fixtures", "fake-active-acp-agent.mjs");
 const fakeHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-handoff.mjs");
 const fakeBadHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-bad-handoff.mjs");
+const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-terminal.mjs");
 
 async function runClient({ env, prompt, cwd }) {
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
@@ -187,4 +188,147 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(output, /## Handoff/);
   assert.match(output, /## Acceptance-Criteria/);
   assert.match(stdout, /done/);
+}
+
+// --- writeAllowPaths blocks write to disallowed path ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-blocked-"));
+  const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
+  const blockedFile = path.join(tempDir, "etc", "passwd");
+
+  const { exitCode } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      FLOW_ACP_WRITE_ALLOW: `${allowedDir}/*`,
+    },
+    prompt: `Generate a plan.\nWrite the plan to: ${blockedFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, "client exits cleanly even when write is blocked");
+  let fileExists = false;
+  try { await readFile(blockedFile, "utf8"); fileExists = true; } catch { /* expected */ }
+  assert.equal(fileExists, false, "blocked file must not exist");
+}
+
+// --- writeAllowPaths allows write to matched path ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-allowed-"));
+  const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
+  const allowedFile = path.join(allowedDir, "plan-001.md");
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
+      FLOW_ACP_WRITE_ALLOW: `${allowedDir}/*`,
+    },
+    prompt: `Generate a plan.\nWrite the plan to: ${allowedFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(allowedFile, "utf8");
+  assert.match(output, /## Handoff/);
+  assert.match(output, /## Acceptance-Criteria/);
+  assert.match(stdout, /done/);
+}
+
+// --- null writeAllowPaths allows all writes (backward compatible) ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-norestrict-"));
+  const outputFile = path.join(tempDir, "anywhere", "output.txt");
+
+  // No FLOW_ACP_WRITE_ALLOW set — null by default, all writes allowed
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeAgent,
+    },
+    prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(outputFile, "utf8");
+  assert.match(output, /Written through ACP fs\/write_text_file/);
+  assert.match(stdout, /done/);
+}
+
+// --- terminalPolicy 'deny' blocks terminal creation ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-deny-"));
+
+  const { exitCode } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeTerminalAgent,
+      FLOW_ACP_TERMINAL: "deny",
+    },
+    prompt: `Run command: echo hello\n`,
+  });
+
+  assert.equal(exitCode, 0, "client exits cleanly even when terminal is denied");
+}
+
+// --- terminalPolicy 'allow' (default) allows terminal creation ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-allow-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeTerminalAgent,
+      // FLOW_ACP_TERMINAL not set — defaults to "allow"
+    },
+    prompt: `Run command: echo hello\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /done/);
+}
+
+// --- FLOW_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-envvar-"));
+  const inboxDir = path.join(tempDir, "wiki", "projects", "proj", "inbox");
+  const outputsDir = path.join(tempDir, "wiki", "projects", "proj", "outputs");
+
+  // Set two glob patterns via env var, use handoff agent for wiki paths
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
+      FLOW_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
+    },
+    prompt: `Generate a plan.\nWrite the plan to: ${inboxDir}/plan-001.md\n`,
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const output = await readFile(path.join(inboxDir, "plan-001.md"), "utf8");
+  assert.match(output, /## Handoff/);
+  assert.match(stdout, /done/);
+
+  // Verify a path outside both patterns is blocked
+  const blockedDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-envvar-blocked-"));
+  const blockedFile = path.join(blockedDir, "etc", "shadow");
+
+  const { exitCode: exitCode2 } = await runClient({
+    cwd: tempDir,
+    env: {
+      FLOW_ACP_CODEX_COMMAND: process.execPath,
+      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      FLOW_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
+    },
+    prompt: `Generate a plan.\nWrite the plan to: ${blockedFile}\n`,
+  });
+
+  assert.equal(exitCode2, 0);
+  let blockedExists = false;
+  try { await readFile(blockedFile, "utf8"); blockedExists = true; } catch { /* expected */ }
+  assert.equal(blockedExists, false, "blocked file must not exist");
 }

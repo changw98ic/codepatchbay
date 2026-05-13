@@ -1,0 +1,60 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install server dependencies
+        run: cd server && npm ci
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Run unit tests
+        run: node --test tests/*.mjs
+
+      - name: Run bash integration tests
+        run: |
+          chmod +x bridges/*.sh tests/*.sh
+          bash tests/flow-jobs.test.sh
+          bash tests/flow-bridges.test.sh
+          bash tests/flow-variant-env.test.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check bash scripts syntax
+        run: |
+          for f in bridges/*.sh tests/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      - name: Check node scripts syntax
+        run: |
+          for f in bridges/*.mjs tests/*.mjs; do
+            node --check "$f" || exit 1
+          done
+          for f in server/index.js server/routes/*.js server/services/*.js; do
+            node --check "$f" || exit 1
+          done

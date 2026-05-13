@@ -17,6 +17,8 @@ Environment:
   FLOW_ACP_CLAUDE_ARGS      Args for the Claude ACP agent (JSON array or shell-like words)
   FLOW_ACP_TIMEOUT_MS       Idle timeout in milliseconds; activity resets it (default: 1800000)
   FLOW_ACP_PERMISSION       allow or reject permission requests (default: allow)
+  FLOW_ACP_WRITE_ALLOW      Comma-separated glob patterns for allowed write paths (default: none = allow all)
+  FLOW_ACP_TERMINAL         allow or deny terminal creation (default: allow)
 `;
 
 function parseCli(argv) {
@@ -132,10 +134,12 @@ function jsonRpcError(code, message) {
 }
 
 class AcpClient {
-  constructor({ agent, cwd, prompt }) {
+  constructor({ agent, cwd, prompt, writeAllowPaths, terminalPolicy }) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
+    this.writeAllowPaths = writeAllowPaths || null;
+    this.terminalPolicy = terminalPolicy || "allow";
     this.nextId = 1;
     this.pending = new Map();
     this.terminals = new Map();
@@ -397,8 +401,22 @@ class AcpClient {
     return { content: lines.slice(start, end).join("\n") };
   }
 
+  validateWritePath(targetPath) {
+    if (!this.writeAllowPaths) return;
+    const resolved = path.resolve(targetPath);
+    const allowed = this.writeAllowPaths.some((pattern) => {
+      const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+      const regex = new RegExp(`^${escaped}$`);
+      return regex.test(resolved);
+    });
+    if (!allowed) {
+      throw new Error(`write path not allowed: ${targetPath}`);
+    }
+  }
+
   async writeTextFile(params) {
     const targetPath = params.path;
+    this.validateWritePath(targetPath);
     await mkdir(path.dirname(targetPath), { recursive: true });
 
     if (this.isWikiHandoffFile(targetPath)) {
@@ -445,6 +463,9 @@ class AcpClient {
   }
 
   createTerminal(params) {
+    if (this.terminalPolicy === "deny") {
+      throw new Error("terminal access denied for this phase");
+    }
     const terminalId = `term-${this.nextTerminalId++}`;
     const env = { ...process.env };
     for (const item of params.env || []) env[item.name] = item.value;
@@ -523,7 +544,16 @@ class AcpClient {
 try {
   const options = parseCli(process.argv.slice(2));
   const prompt = await readStdin();
-  await new AcpClient({ ...options, prompt }).run();
+
+  const writeAllowPaths = process.env.FLOW_ACP_WRITE_ALLOW
+    ? process.env.FLOW_ACP_WRITE_ALLOW.split(",").map((p) =>
+        p.trim().includes("*") ? path.resolve(options.cwd, p.trim()) : path.resolve(p.trim())
+      )
+    : null;
+
+  const terminalPolicy = process.env.FLOW_ACP_TERMINAL === "deny" ? "deny" : "allow";
+
+  await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy }).run();
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exit(1);
