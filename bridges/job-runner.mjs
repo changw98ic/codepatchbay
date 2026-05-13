@@ -7,6 +7,7 @@ import {
   releaseLease,
   renewLease,
 } from "../server/services/lease-manager.js";
+import { cancelJob, getJob } from "../server/services/job-store.js";
 
 const rawArgs = process.argv.slice(2);
 
@@ -132,6 +133,14 @@ async function main() {
     Math.max(5_000, Math.floor(ttlMs / 3))
   );
 
+  // Check cancel before acquiring lease
+  const jobBefore = await getJob(flowRoot, project, jobId);
+  if (jobBefore.cancelRequested) {
+    await cancelJob(flowRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
+    console.error(`cancelled before phase ${phase}`);
+    return 1;
+  }
+
   let lease = null;
   let heartbeat = null;
   let childResult = { exitCode: 1 };
@@ -186,6 +195,12 @@ async function main() {
 
   if (childResult.error) {
     console.error(`failed to spawn ${script}: ${childResult.error.message}`);
+    // Check if cancel was requested during execution
+    const jobAfterError = await getJob(flowRoot, project, jobId);
+    if (jobAfterError.cancelRequested) {
+      await cancelJob(flowRoot, project, jobId, { reason: jobAfterError.cancelReason ?? "cancelled during execution" });
+      return 1;
+    }
     await appendPhaseFailed(flowRoot, project, jobId, phase, {
       exitCode: childResult.exitCode,
       error: childResult.error.message,
@@ -202,6 +217,13 @@ async function main() {
       ts: eventTimestamp(),
     });
     return 0;
+  }
+
+  // Check if cancel was requested during execution
+  const jobAfter = await getJob(flowRoot, project, jobId);
+  if (jobAfter.cancelRequested) {
+    await cancelJob(flowRoot, project, jobId, { reason: jobAfter.cancelReason ?? "cancelled during execution" });
+    return 1;
   }
 
   await appendPhaseFailed(flowRoot, project, jobId, phase, {

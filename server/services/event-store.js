@@ -256,6 +256,9 @@ export function materializeJob(events) {
           state.redirectEventId = null;
         }
         break;
+      case "workflow_selected":
+        state.workflow = event.workflow ?? state.workflow;
+        break;
     }
   }
 

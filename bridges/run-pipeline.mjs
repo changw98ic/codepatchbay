@@ -7,11 +7,15 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
+import { appendEvent } from "../server/services/event-store.js";
 import {
   completeJob,
   completePhase,
   createJob,
+  cancelJob,
+  consumeRedirect,
   failJob,
+  getJob,
   startPhase,
 } from "../server/services/job-store.js";
 import {
@@ -43,7 +47,7 @@ function parseArgs(argv) {
   const task = options.get("--task");
 
   if (!project || !task) {
-    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--max-retries N] [--timeout-min M]");
+    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--max-retries N] [--timeout-min M] [--workflow standard|blocked]");
   }
 
   if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
@@ -52,8 +56,9 @@ function parseArgs(argv) {
 
   const maxRetries = Math.max(1, parseInt(options.get("--max-retries") || "3", 10) || 3);
   const timeoutMin = Math.max(0, parseInt(options.get("--timeout-min") || "0", 10) || 0);
+  const workflow = options.get("--workflow") || "standard";
 
-  return { project, task, maxRetries, timeoutMin };
+  return { project, task, maxRetries, timeoutMin, workflow };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -221,6 +226,20 @@ async function parseVerdict(verdictPath) {
 
 // ─── Phase execution ───
 
+async function checkCancelAndRedirect(flowRoot, project, jobId, phase) {
+  const job = await getJob(flowRoot, project, jobId);
+  if (job.cancelRequested) {
+    await cancelJob(flowRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });
+    fail(`Cancelled before ${phase}`);
+    return { cancelled: true, redirect: null };
+  }
+  let redirect = null;
+  if (job.redirectEventId && !job.consumedRedirectIds.includes(job.redirectEventId)) {
+    redirect = { instructions: job.redirectContext, reason: job.redirectReason, eventId: job.redirectEventId };
+  }
+  return { cancelled: false, redirect };
+}
+
 // ─── Main pipeline ───
 
 async function main() {
@@ -232,7 +251,7 @@ async function main() {
     return 1;
   }
 
-  const { project, task, maxRetries, timeoutMin } = parsed;
+  const { project, task, maxRetries, timeoutMin, workflow } = parsed;
   const flowRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   // Timeout support: set a flag via setTimeout
@@ -256,14 +275,50 @@ async function main() {
   }
 
   // Create job
-  const job = await createJob(flowRoot, { project, task, workflow: "standard" });
+  const job = await createJob(flowRoot, { project, task, workflow });
   const jobId = job.jobId;
 
   const wikiDir = path.resolve(flowRoot, "wiki", "projects", project);
-  log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""})`);
+  log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
+
+  // Blocked workflow: record and exit without launching agents
+  if (workflow === "blocked") {
+    await appendEvent(flowRoot, project, jobId, {
+      type: "workflow_selected",
+      jobId,
+      project,
+      workflow,
+      default: false,
+      reason: "blocked by operator",
+      ts: ts(),
+    });
+    const { blockJob } = await import("../server/services/job-store.js");
+    await blockJob(flowRoot, project, jobId, { reason: "blocked by operator" });
+    log(project, `Job ${jobId} blocked. No agents launched.`);
+    return 0;
+  }
+
+  // Record workflow selection for standard
+  if (workflow !== "standard") {
+    await appendEvent(flowRoot, project, jobId, {
+      type: "workflow_selected",
+      jobId,
+      project,
+      workflow,
+      default: false,
+      ts: ts(),
+    });
+  }
 
   try {
     // ─── Phase 1: Plan ───
+    {
+      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "plan");
+      if (check.cancelled) {
+        await failJob(flowRoot, project, jobId, { reason: "cancelled before plan" });
+        return 1;
+      }
+    }
     log(project, "Phase 1/3: Plan (Codex)");
     const planResult = await runPhaseWithLease(
       flowRoot, project, jobId, "plan",
@@ -293,6 +348,15 @@ async function main() {
 
     ok(`plan-${planId}`);
     await completePhase(flowRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+
+    // Cancel check after plan
+    {
+      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "execute");
+      if (check.cancelled) {
+        await failJob(flowRoot, project, jobId, { reason: "cancelled after plan" });
+        return 1;
+      }
+    }
 
     // ─── Phase 2: Execute (+ retry) ───
     let deliverableId = null;
@@ -333,6 +397,15 @@ async function main() {
       fail(`Execute failed after ${maxRetries} attempts.`);
       await failJob(flowRoot, project, jobId, { reason: `execute failed after ${maxRetries} attempts` });
       return 1;
+    }
+
+    // Cancel check after execute
+    {
+      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "verify");
+      if (check.cancelled) {
+        await failJob(flowRoot, project, jobId, { reason: "cancelled after execute" });
+        return 1;
+      }
     }
 
     // ─── Phase 3: Verify (+ fix loop) ───

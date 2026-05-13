@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
-import { completeJob as completeJobStore } from "./job-store.js";
+import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
+import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -23,15 +24,23 @@ export function nextPhaseFor(state) {
     return "";
   }
 
+  if (state.cancelRequested) {
+    return "";
+  }
+
+  const workflow = getWorkflow(state.workflow);
+
+  // Blocked workflow has no phases
+  if (workflow.phases.length === 0) {
+    return "";
+  }
+
+  // Determine current phase from artifacts
   const artifacts = state.artifacts ?? {};
-  if (!hasArtifact(artifacts.plan)) {
-    return "plan";
-  }
-  if (!hasArtifact(artifacts.execute)) {
-    return "execute";
-  }
-  if (!hasArtifact(artifacts.verify)) {
-    return "verify";
+  for (const phase of workflow.phases) {
+    if (!hasArtifact(artifacts[phase])) {
+      return phase;
+    }
   }
   return "complete";
 }
@@ -42,6 +51,20 @@ export async function recoverJobs(flowRoot, { now } = {}) {
   const recoverable = [];
 
   for (const job of jobs) {
+    // Cancel-requested jobs with no active lease should be terminated first
+    if (job.cancelRequested) {
+      if (job.leaseId) {
+        const lease = await readLease(flowRoot, job.leaseId);
+        if (lease !== null && !isLeaseStale(lease, now)) {
+          continue;
+        }
+      }
+      await cancelJob(flowRoot, job.project, job.jobId, {
+        reason: job.cancelReason ?? "cancelled during recovery",
+      });
+      continue;
+    }
+
     if (nextPhaseFor(job) === "") {
       continue;
     }
@@ -66,6 +89,7 @@ export async function recoverJobs(flowRoot, { now } = {}) {
 export function bridgeForPhase(phase, project, job) {
   const bridgesDir = "bridges";
 
+  // Use hardcoded mapping for known phases (preserves existing arg logic)
   switch (phase) {
     case "plan":
       return {
@@ -88,8 +112,13 @@ export function bridgeForPhase(phase, project, job) {
     }
     case "complete":
       return null;
-    default:
+    default: {
+      // Unknown phase: try workflow definition
+      const workflow = getWorkflow(job.workflow);
+      const bridge = workflowBridgeForPhase(workflow, phase);
+      if (bridge) return { script: path.join(bridgesDir, bridge), args: [project] };
       return null;
+    }
   }
 }
 
