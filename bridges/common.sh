@@ -291,9 +291,9 @@ rtk_research_prompt() {
   local skills_section
   skills_section=$(build_skills_section codex)
   cat << PROMPT
-You are Flow Research Agent. Analyze this task for project "$project".
+You are CodePatchbay Research Agent. Analyze this task for project "$project".
 
-Skills: Read skill files from $FLOW_ROOT/profiles/codex/skills/ or $FLOW_ROOT/profiles/claude/skills/ as needed.
+Skills: Read skill files from $CPB_ROOT/profiles/codex/skills/ or $CPB_ROOT/profiles/claude/skills/ as needed.
 
 $skills_section
 
@@ -333,23 +333,23 @@ rtk_codex_plan_with_research() {
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
-- ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
+- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
 - Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
   fi
   local skills_section
   skills_section=$(build_skills_section codex)
 
   local proj_context decisions handshake plan_tpl research_content
-  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
-  handshake=$(_pre_read "$FLOW_ROOT/wiki/system/handshake-protocol.md")
-  plan_tpl=$(_pre_read "$FLOW_ROOT/templates/handoff/plan-to-execute.md")
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
   research_content=$(_pre_read "$research_file")
 
   cat << PROMPT
-You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
