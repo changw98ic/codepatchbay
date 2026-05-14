@@ -12,5 +12,10 @@
     "test:node": "node --test tests/*.mjs",
     "test:shell": "bash tests/cpb-jobs.test.sh && bash tests/cpb-bridges.test.sh && bash tests/cpb-variant-env.test.sh",
     "build:web": "npm run build --workspace codepatchbay-web"
+  },
+  "devDependencies": {
+    "@fastify/cors": "^10.0.0",
+    "@fastify/sensible": "^6.0.4",
+    "fastify": "^5.0.0"
   }
 }
