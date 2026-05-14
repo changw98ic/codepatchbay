@@ -100,6 +100,9 @@ log_append() {
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 # Set FLOW_DANGEROUS=1 to disable all constraints (unrestricted agent access)
 
+# Pre-read a file, return empty string if missing
+_pre_read() { [ -f "$1" ] && cat "$1" 2>/dev/null || echo "[file not found: $1]"; }
+
 # rtk_codex_plan <project> <task> <plan_file>
 rtk_codex_plan() {
   local project="$1" task="$2" plan_file="$3"
@@ -109,12 +112,18 @@ rtk_codex_plan() {
   if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
-- ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/ or $FLOW_ROOT/wiki/system/ or $FLOW_ROOT/templates/
-- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase.
-- You MAY and SHOULD use your Read, Glob, and Grep tools to read files — these are NOT terminal commands."
+- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
   fi
   local skills_section
   skills_section=$(build_skills_section codex)
+
+  # Pre-read reference files so Codex doesn't need file-reading tools
+  local proj_context decisions handshake plan_tpl
+  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$FLOW_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$FLOW_ROOT/templates/handoff/plan-to-execute.md")
+
   cat << PROMPT
 You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
@@ -126,12 +135,17 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 
 $constraints
 
-## Files to read
-- Role definition: $FLOW_ROOT/profiles/codex/soul.md
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Existing decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
-- Handshake format: $FLOW_ROOT/wiki/system/handshake-protocol.md
-- Plan template: $FLOW_ROOT/templates/handoff/plan-to-execute.md
+## Project Context
+$proj_context
+
+## Existing Decisions
+$decisions
+
+## Handshake Protocol
+$handshake
+
+## Plan Template
+$plan_tpl
 
 ## Output
 Write the plan to: $plan_file
@@ -202,21 +216,39 @@ rtk_codex_verify() {
   if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
-- ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/
 - Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
-- Do NOT modify any code files.
-- You MAY and SHOULD use your Read, Glob, and Grep tools to read files — these are NOT terminal commands."
+- Do NOT modify any code files."
   fi
-  local diff_section=""
-  if [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ]; then
-    diff_section="## Diff Artifact
-A code diff was generated before this verification phase. Read it to understand what changed:
-- Diff file: $diff_artifact
 
-Use the diff to verify the actual code changes match the deliverable claims."
+  # Pre-read deliverable to extract plan-ref
+  local deliverable_content=""
+  deliverable_content=$(_pre_read "$deliverable_file")
+
+  # Extract plan-ref and read the referenced plan
+  local plan_ref plan_file plan_content=""
+  plan_ref=$(echo "$deliverable_content" | grep -i 'plan-ref' | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')
+  if [ -n "$plan_ref" ]; then
+    plan_file="$FLOW_ROOT/wiki/projects/$project/inbox/plan-${plan_ref}.md"
+    plan_content=$(_pre_read "$plan_file")
   fi
+
+  # Pre-read other reference files
+  local proj_context decisions diff_content=""
+  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
+  [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ] && diff_content=$(_pre_read "$diff_artifact")
+
   local skills_section
   skills_section=$(build_skills_section codex)
+
+  local diff_section=""
+  if [ -n "$diff_content" ]; then
+    diff_section="## Diff Artifact
+The following code diff shows what changed:
+
+$diff_content"
+  fi
+
   cat << PROMPT
 You are Flow Codex (Verifier). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
@@ -226,17 +258,23 @@ $constraints
 
 $diff_section
 
-## Files to read
-- Role definition: $FLOW_ROOT/profiles/codex/soul.md
-- Deliverable to verify: $deliverable_file
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
+## Deliverable to verify (plan-ref: ${plan_ref:-unknown})
+$deliverable_content
+
+## Referenced Plan
+$plan_content
+
+## Project Context
+$proj_context
+
+## Decisions
+$decisions
 
 ## Instructions
-1. Read the deliverable. Extract plan-ref from its metadata.
-2. Read the referenced plan file from inbox/.
-3. Verify against the plan's Acceptance-Criteria.
-4. Give a verdict.
+1. The deliverable content is above. It references plan-ref: $plan_ref.
+2. The referenced plan content is above.
+3. Verify the deliverable against the plan's Acceptance-Criteria.
+4. Give a verdict based on EVIDENCE from the deliverable and plan content above.
 5. Write the verdict to: $verdict_file
 
 The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
