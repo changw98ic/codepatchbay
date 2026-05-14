@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# common.sh — Flow bridge 共享函数库
+# common.sh — CodePatchbay bridge 共享函数库
 # source "$(dirname "$0")/common.sh"
 
-FLOW_ROOT="${FLOW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 
 # ─── 颜色 ───
@@ -10,9 +10,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC
 
 # ─── 项目校验 ───
 require_project() {
-  local project="$1" wiki_dir="$FLOW_ROOT/wiki/projects/$1"
+  local project="$1" wiki_dir="$CPB_ROOT/wiki/projects/$1"
   if [ ! -d "$wiki_dir" ]; then
-    echo -e "${RED}Project '$project' not found. Run 'flow init' first.${NC}" >&2
+    echo -e "${RED}Project '$project' not found. Run 'cpb init' first.${NC}" >&2
     exit 1
   fi
 }
@@ -37,7 +37,7 @@ require_safe_name() {
 # Usage: get_project_path <project-name>
 get_project_path() {
   local project="$1"
-  local meta="$FLOW_ROOT/wiki/projects/$project/project.json"
+  local meta="$CPB_ROOT/wiki/projects/$project/project.json"
   if [ -f "$meta" ]; then
     META_FILE="$meta" node -e "try{const p=JSON.parse(require('fs').readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(p.sourcePath||'')}catch{}" 2>/dev/null
   fi
@@ -48,7 +48,7 @@ get_project_path() {
 next_id() {
   local dir="$1"
   local prefix="$2"
-  local lockdir="$dir/.flow-id.lock"
+  local lockdir="$dir/.cpb-id.lock"
   mkdir -p "$dir"
 
   local attempts=0
@@ -80,7 +80,7 @@ log_append() {
   local wiki_dir="$1"
   local msg="$2"
   local log="$wiki_dir/log.md"
-  local lockdir="$wiki_dir/.flow-log.lock"
+  local lockdir="$wiki_dir/.cpb-log.lock"
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -98,7 +98,7 @@ log_append() {
 }
 
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
-# Set FLOW_DANGEROUS=1 to disable all constraints (unrestricted agent access)
+# Set CPB_DANGEROUS=1 to disable all constraints (unrestricted agent access)
 
 # Pre-read a file, return empty string if missing
 _pre_read() { [ -f "$1" ] && cat "$1" 2>/dev/null || echo "[file not found: $1]"; }
@@ -109,9 +109,9 @@ rtk_codex_plan() {
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
-- ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
+- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
 - Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
   fi
   local skills_section
@@ -119,13 +119,13 @@ rtk_codex_plan() {
 
   # Pre-read reference files so Codex doesn't need file-reading tools
   local proj_context decisions handshake plan_tpl
-  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
-  handshake=$(_pre_read "$FLOW_ROOT/wiki/system/handshake-protocol.md")
-  plan_tpl=$(_pre_read "$FLOW_ROOT/templates/handoff/plan-to-execute.md")
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
 
   cat << PROMPT
-You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -159,17 +159,17 @@ PROMPT
 rtk_claude_execute() {
   local project="$1" plan_id="$2" deliverable_file="$3"
   local verdict_file="${4:-}"
-  local plan_file="$FLOW_ROOT/wiki/projects/$project/inbox/plan-${plan_id}.md"
+  local plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_id}.md"
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - Write code ONLY in the target project directory${project_cwd:+: $project_cwd}
 - Write deliverable ONLY to: $deliverable_file
-- Write verdicts ONLY under: $FLOW_ROOT/wiki/projects/$project/outputs/
-- Do NOT modify files under: $FLOW_ROOT/wiki/system/, $FLOW_ROOT/profiles/, $FLOW_ROOT/bridges/
-- Do NOT read or write files outside the project, Flow wiki, and Flow profiles directories."
+- Write verdicts ONLY under: $CPB_ROOT/wiki/projects/$project/outputs/
+- Do NOT modify files under: $CPB_ROOT/wiki/system/, $CPB_ROOT/profiles/, $CPB_ROOT/bridges/
+- Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories."
   fi
   local fix_section=""
   if [ -n "$verdict_file" ] && [ -f "$verdict_file" ]; then
@@ -181,7 +181,7 @@ You MUST address the specific failures listed in the verdict. Do NOT repeat the 
   local skills_section
   skills_section=$(build_skills_section claude)
   cat << PROMPT
-You are Flow Claude (Executor). Role: $(head -3 "$FLOW_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -190,12 +190,12 @@ $constraints
 $fix_section
 
 ## Files to read
-- Role definition: $FLOW_ROOT/profiles/claude/soul.md
+- Role definition: $CPB_ROOT/profiles/claude/soul.md
 - Plan to execute: $plan_file
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
-- Deliverable template: $FLOW_ROOT/templates/handoff/execute-to-review.md
-- Handshake format: $FLOW_ROOT/wiki/system/handshake-protocol.md
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Deliverable template: $CPB_ROOT/templates/handoff/execute-to-review.md
+- Handshake format: $CPB_ROOT/wiki/system/handshake-protocol.md
 
 ## Instructions
 1. Read the plan file first.
@@ -211,9 +211,9 @@ PROMPT
 rtk_codex_verify() {
   local project="$1" deliverable_id="$2" verdict_file="$3"
   local diff_artifact="${4:-}"
-  local deliverable_file="$FLOW_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
+  local deliverable_file="$CPB_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
 - Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
@@ -228,14 +228,14 @@ rtk_codex_verify() {
   local plan_ref plan_file plan_content=""
   plan_ref=$(echo "$deliverable_content" | grep -i 'plan-ref' | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')
   if [ -n "$plan_ref" ]; then
-    plan_file="$FLOW_ROOT/wiki/projects/$project/inbox/plan-${plan_ref}.md"
+    plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_ref}.md"
     plan_content=$(_pre_read "$plan_file")
   fi
 
   # Pre-read other reference files
   local proj_context decisions diff_content=""
-  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
   [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ] && diff_content=$(_pre_read "$diff_artifact")
 
   local skills_section
@@ -244,13 +244,15 @@ rtk_codex_verify() {
   local diff_section=""
   if [ -n "$diff_content" ]; then
     diff_section="## Diff Artifact
+Path: $diff_artifact
+
 The following code diff shows what changed:
 
 $diff_content"
   fi
 
   cat << PROMPT
-You are Flow Codex (Verifier). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -283,10 +285,108 @@ Follow with detailed evidence and reasoning. Be evidence-based, not reassuring.
 PROMPT
 }
 
+# rtk_research_prompt <project> <task>
+rtk_research_prompt() {
+  local project="$1" task="$2"
+  local skills_section
+  skills_section=$(build_skills_section codex)
+  cat << PROMPT
+You are Flow Research Agent. Analyze this task for project "$project".
+
+Skills: Read skill files from $FLOW_ROOT/profiles/codex/skills/ or $FLOW_ROOT/profiles/claude/skills/ as needed.
+
+$skills_section
+
+## Task
+$task
+
+## Analysis Required
+Provide a structured analysis covering:
+
+### 1. Feasibility
+- Technical complexity (low/medium/high)
+- Estimated effort
+- Required knowledge/domains
+
+### 2. Risks & Dependencies
+- Key risks that could block or delay
+- External dependencies
+- Potential blockers
+
+### 3. Suggested Approach
+- High-level implementation strategy
+- Key design decisions
+- Alternative approaches considered
+
+### 4. Questions & Ambiguities
+- What information is missing?
+- What assumptions are being made?
+- What needs clarification from the user?
+
+Be concise and evidence-based. If the task is too vague to analyze, say so explicitly and list what's needed.
+PROMPT
+}
+
+# rtk_codex_plan_with_research <project> <task> <plan_file> <research_file>
+rtk_codex_plan_with_research() {
+  local project="$1" task="$2" plan_file="$3" research_file="$4"
+  local project_cwd
+  project_cwd=$(get_project_path "$project")
+  local constraints=""
+  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+    constraints="## Constraints
+- ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
+- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
+  fi
+  local skills_section
+  skills_section=$(build_skills_section codex)
+
+  local proj_context decisions handshake plan_tpl research_content
+  proj_context=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$FLOW_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$FLOW_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$FLOW_ROOT/templates/handoff/plan-to-execute.md")
+  research_content=$(_pre_read "$research_file")
+
+  cat << PROMPT
+You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
+
+## CRITICAL: Primary Directive
+Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
+**$task**
+
+$constraints
+
+## Collaborative Research (from dual-agent analysis)
+$research_content
+
+## Project Context
+$proj_context
+
+## Existing Decisions
+$decisions
+
+## Handshake Protocol
+$handshake
+
+## Plan Template
+$plan_tpl
+
+## Output
+Write the plan to: $plan_file
+The plan title/heading MUST reference the task: "$task"
+Follow handshake-protocol (codex->claude, Phase: plan).
+Use scope-matched step count with concrete acceptance criteria.
+Address risks and questions identified in the research above.
+PROMPT
+}
+
 # ─── Dashboard 更新 ───
 dashboard_update() {
   local project="$1" phase="$2" status="$3" next="$4"
-  local dash="$FLOW_ROOT/wiki/system/dashboard.md"
+  local dash="$CPB_ROOT/wiki/system/dashboard.md"
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -315,7 +415,7 @@ dashboard_update() {
 # ─── Skill catalog builder ───
 build_skills_section() {
   local role="$1"
-  local skills_dir="$FLOW_ROOT/profiles/$role/skills"
+  local skills_dir="$CPB_ROOT/profiles/$role/skills"
   [ -d "$skills_dir" ] || return 0
   local count=0
   echo "## Available Skills"
@@ -335,8 +435,8 @@ build_skills_section() {
 }
 
 # ─── Claude provider variant overlays ───
-flow_apply_claude_variant() {
-  local variant_script="${FLOW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
+cpb_apply_claude_variant() {
+  local variant_script="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
   if [ ! -f "$variant_script" ]; then
     echo -e "${RED}Variant module not found: $variant_script${NC}" >&2
     exit 1
@@ -352,13 +452,13 @@ flow_apply_claude_variant() {
 # ─── ACP 执行 ───
 acp_run() {
   local agent="$1"; shift
-  local acp="${FLOW_ACP_CLIENT:-$FLOW_ROOT/bridges/acp-client.mjs}"
+  local acp="${CPB_ACP_CLIENT:-$CPB_ROOT/bridges/acp-client.mjs}"
   if [ ! -x "$acp" ]; then
     echo -e "${RED}ACP client not executable: $acp${NC}" >&2
     exit 1
   fi
   if [ "$agent" = "claude" ]; then
-    flow_apply_claude_variant
+    cpb_apply_claude_variant
   fi
-  "$acp" --agent "$agent" --cwd "${FLOW_ACP_CWD:-$PWD}" "$@"
+  "$acp" --agent "$agent" --cwd "${CPB_ACP_CWD:-$PWD}" "$@"
 }
