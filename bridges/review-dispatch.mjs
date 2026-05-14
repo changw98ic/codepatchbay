@@ -111,17 +111,29 @@ class PersistentAcp {
     const session = await this.request("session/new", { cwd: FLOW_ROOT, mcpServers: [] });
 
     let response = "";
-    const originalHandler = this.handleClientRequest.bind(this);
+    let lastProgress = Date.now();
+    const PROMPT_STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
 
-    // Collect agent messages into response
     const collectUpdate = (params) => {
       const update = params?.update;
       if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
         response += update.content.text;
+        lastProgress = Date.now();
+      } else if (update?.sessionUpdate) {
+        lastProgress = Date.now();
       }
     };
 
-    // Temporarily intercept session/update to collect response
+    let stuckTimer = null;
+    const stuckGuard = new Promise((_, reject) => {
+      stuckTimer = setInterval(() => {
+        if (Date.now() - lastProgress > PROMPT_STUCK_MS) {
+          clearInterval(stuckTimer);
+          reject(new Error(`${this.agent} prompt stuck: no progress for ${PROMPT_STUCK_MS}ms`));
+        }
+      }, 15000);
+    });
+
     const origHandle = this.handleClientRequest;
     this.handleClientRequest = async (msg) => {
       if (msg.method === "session/update") {
@@ -133,14 +145,21 @@ class PersistentAcp {
     };
 
     try {
-      await this.request("session/prompt", {
-        sessionId: session.sessionId,
-        prompt: [{ type: "text", text: prompt }],
-      });
+      await Promise.race([
+        this.request("session/prompt", {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: prompt }],
+        }),
+        stuckGuard,
+      ]);
 
-      // Close session if supported
       await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
+    } catch (err) {
+      console.error(`[${this.agent}] sendPrompt error: ${err.message}`);
+      this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: session.sessionId } });
+      throw err;
     } finally {
+      clearInterval(stuckTimer);
       this.handleClientRequest = origHandle;
     }
 
@@ -201,6 +220,14 @@ class PersistentAcp {
 
   clearWatchdog() {
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+  }
+
+  async restart() {
+    this.close();
+    this.closed = false;
+    this.pending.clear();
+    this.nextId = 1;
+    return this.start();
   }
 
   close() {
@@ -287,6 +314,24 @@ Provide the revised plan as markdown, addressing each issue.`;
 
 // --- Main review flow ---
 
+const MAX_RETRIES = parseInt(process.env.ACP_MAX_RETRIES || "2", 10);
+
+async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      return await acp.sendPrompt(prompt);
+    } catch (err) {
+      console.error(`[review] ${agent} attempt ${attempt}/${retries + 1} failed: ${err.message}`);
+      if (attempt <= retries) {
+        console.log(`[review] restarting ${agent} ACP connection`);
+        await acp.restart();
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 async function runReview(flowRoot, sessionId) {
   const session = await getSession(flowRoot, sessionId);
   if (!session) throw new Error(`session not found: ${sessionId}`);
@@ -294,35 +339,37 @@ async function runReview(flowRoot, sessionId) {
   let codex, claude;
 
   try {
-    // Start persistent ACP connections (parallel)
     [codex, claude] = await Promise.all([
       new PersistentAcp("codex").start(),
       new PersistentAcp("claude").start(),
     ]);
 
-    // Phase 1: Research (parallel, reuse connections)
+    // Phase 1: Research
     await updateSession(flowRoot, sessionId, { status: "researching" });
+    console.log(`[review] ${sessionId} phase 1: researching`);
     const [codexResearch, claudeResearch] = await Promise.all([
-      codex.sendPrompt(researchPrompt(session.intent, session.project)),
-      claude.sendPrompt(researchPrompt(session.intent, session.project)),
+      sendWithRetry(codex, researchPrompt(session.intent, session.project), "codex"),
+      sendWithRetry(claude, researchPrompt(session.intent, session.project), "claude"),
     ]);
     await updateSession(flowRoot, sessionId, {
       research: { codex: codexResearch, claude: claudeResearch },
     });
 
-    // Phase 2: Plan (reuse codex connection)
+    // Phase 2: Plan
     await updateSession(flowRoot, sessionId, { status: "planning" });
-    const plan = await codex.sendPrompt(planPrompt(session.intent, codexResearch, claudeResearch));
+    console.log(`[review] ${sessionId} phase 2: planning`);
+    const plan = await sendWithRetry(codex, planPrompt(session.intent, codexResearch, claudeResearch), "codex");
     await updateSession(flowRoot, sessionId, { plan });
 
-    // Phase 3: Review Loop (max 5 rounds, reuse both connections)
+    // Phase 3: Review Loop (max 5 rounds)
     let currentPlan = plan;
     for (let round = 1; round <= 5; round++) {
       await updateSession(flowRoot, sessionId, { status: "reviewing", round });
+      console.log(`[review] ${sessionId} round ${round}: reviewing`);
 
       const [codexReview, claudeReview] = await Promise.all([
-        codex.sendPrompt(reviewPrompt(currentPlan, "codex")),
-        claude.sendPrompt(reviewPrompt(currentPlan, "claude")),
+        sendWithRetry(codex, reviewPrompt(currentPlan, "codex"), "codex"),
+        sendWithRetry(claude, reviewPrompt(currentPlan, "claude"), "claude"),
       ]);
 
       const codexIssues = parseIssues(codexReview);
@@ -334,24 +381,26 @@ async function runReview(flowRoot, sessionId) {
       });
 
       const hasP2 = [...codexIssues, ...claudeIssues].some((i) => i.severity >= 2);
+      console.log(`[review] ${sessionId} round ${round}: codex=${codexIssues.length} claude=${claudeIssues.length} hasP2=${hasP2}`);
       if (!hasP2) {
         await updateSession(flowRoot, sessionId, { status: "user_review" });
-        console.log(`[review] session ${sessionId} passed review at round ${round}`);
+        console.log(`[review] ${sessionId} passed at round ${round}`);
         return;
       }
 
       if (round < 5) {
         await updateSession(flowRoot, sessionId, { status: "revising" });
-        const revised = await codex.sendPrompt(revisePrompt(currentPlan, codexIssues, claudeIssues));
+        console.log(`[review] ${sessionId} revising for round ${round + 1}`);
+        const revised = await sendWithRetry(codex, revisePrompt(currentPlan, codexIssues, claudeIssues), "codex");
         currentPlan = revised;
         await updateSession(flowRoot, sessionId, { plan: revised });
       }
     }
 
     await updateSession(flowRoot, sessionId, { status: "expired" });
-    console.log(`[review] session ${sessionId} expired after 5 rounds`);
+    console.log(`[review] ${sessionId} expired after 5 rounds`);
   } catch (err) {
-    console.error(`[review] session ${sessionId} error: ${err.message}`);
+    console.error(`[review] ${sessionId} error: ${err.message}`);
     try { await updateSession(flowRoot, sessionId, { status: "expired" }); } catch {}
   } finally {
     codex?.close();
