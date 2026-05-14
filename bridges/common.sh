@@ -112,8 +112,12 @@ rtk_codex_plan() {
 - ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/ or $FLOW_ROOT/wiki/system/ or $FLOW_ROOT/templates/
 - Do NOT execute terminal commands. This is a planning-only phase."
   fi
+  local skills_section
+  skills_section=$(build_skills_section codex)
   cat << PROMPT
 You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 ## CRITICAL: Primary Directive
 Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
@@ -150,7 +154,7 @@ rtk_claude_execute() {
 - Write deliverable ONLY to: $deliverable_file
 - Write verdicts ONLY under: $FLOW_ROOT/wiki/projects/$project/outputs/
 - Do NOT modify files under: $FLOW_ROOT/wiki/system/, $FLOW_ROOT/profiles/, $FLOW_ROOT/bridges/
-- Do NOT read or write files outside the project and Flow wiki directories."
+- Do NOT read or write files outside the project, Flow wiki, and Flow profiles directories."
   fi
   local fix_section=""
   if [ -n "$verdict_file" ] && [ -f "$verdict_file" ]; then
@@ -159,8 +163,12 @@ The previous deliverable was verified and REJECTED. Read the verdict for details
 - Verdict file: $verdict_file
 You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach."
   fi
+  local skills_section
+  skills_section=$(build_skills_section claude)
   cat << PROMPT
 You are Flow Claude (Executor). Role: $(head -3 "$FLOW_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 $constraints
 
@@ -205,8 +213,12 @@ A code diff was generated before this verification phase. Read it to understand 
 
 Use the diff to verify the actual code changes match the deliverable claims."
   fi
+  local skills_section
+  skills_section=$(build_skills_section codex)
   cat << PROMPT
 You are Flow Codex (Verifier). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 $constraints
 
@@ -258,6 +270,28 @@ dashboard_update() {
     }
     fs.writeFileSync(f, c);
   ' 2>/dev/null
+}
+
+# ─── Skill catalog builder ───
+build_skills_section() {
+  local role="$1"
+  local skills_dir="$FLOW_ROOT/profiles/$role/skills"
+  [ -d "$skills_dir" ] || return 0
+  local count=0
+  echo "## Available Skills (read via fs/read_text_file)"
+  for f in $(ls "$skills_dir"/*.md 2>/dev/null | sort); do
+    [ -f "$f" ] || continue
+    [ $count -ge 10 ] && { echo "- ... (truncated, max 10)"; break; }
+    local name desc
+    local fm
+    fm=$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit} n==1 && !/^---$/{print}' "$f")
+    name=$(echo "$fm" | sed -n 's/^name: *//p' | head -1)
+    desc=$(echo "$fm" | sed -n 's/^description: *//p' | head -1)
+    if [ -n "$name" ]; then
+      echo "- /$name: $desc → $f"
+      count=$((count + 1))
+    fi
+  done
 }
 
 # ─── Claude provider variant overlays ───

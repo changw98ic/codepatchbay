@@ -268,6 +268,8 @@ Be concise and structured.`;
 function planPrompt(intent, codexResearch, claudeResearch) {
   return `You are Flow Planner. Based on the research below, create an implementation plan.
 
+Skills: Read skill files from ${FLOW_ROOT}/profiles/codex/skills/ as needed via fs/read_text_file.
+
 **Task**: ${intent}
 
 **Codex Research**:
@@ -286,7 +288,11 @@ Output the plan as markdown.`;
 }
 
 function reviewPrompt(plan, reviewer) {
+  const skillDir = reviewer === "codex" ? "codex" : "reviewer";
   return `You are Flow ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer.
+
+Skills: Read skill files from ${FLOW_ROOT}/profiles/${skillDir}/skills/ as needed via fs/read_text_file.
+
 Review this plan critically. For each issue found, use severity tags [P0] [P1] [P2] [P3]:
 
 - [P0] Critical: Will cause system failure or data loss

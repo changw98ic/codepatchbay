@@ -41,8 +41,12 @@ if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
 - Do NOT modify any code files."
 fi
 
+SKILLS_SECTION=$(build_skills_section reviewer)
+
 PROMPT=$(cat << PROMPT
 You are Flow Reviewer. Role: Code Review Expert
+
+$SKILLS_SECTION
 
 ## Task
 Review the deliverable for code quality, correctness, maintainability, and security.
