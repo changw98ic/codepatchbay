@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const LOCK_TTL_MS = 30_000;
@@ -30,9 +30,15 @@ export async function loadState(flowRoot) {
   });
 }
 
+async function writeAtomic(filePath, content) {
+  const tmpPath = `${filePath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await writeFile(tmpPath, content, "utf8");
+  await rename(tmpPath, filePath);
+}
+
 export async function saveState(flowRoot, state) {
   await mkdir(evolveDir(flowRoot), { recursive: true });
-  await writeFile(statePath(flowRoot, "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+  await writeAtomic(statePath(flowRoot, "state.json"), JSON.stringify(state, null, 2) + "\n");
 }
 
 export async function loadBacklog(flowRoot) {

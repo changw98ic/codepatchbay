@@ -3,18 +3,29 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { accessSync, constants, statSync } from 'fs';
 import { registerWatcher } from './services/watcher.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
 import { channelRoutes } from './routes/channels.js';
 import { reviewRoutes } from './routes/review.js';
+import { evolveRoutes } from './routes/evolve.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
 import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FLOW_ROOT = path.resolve(__dirname, '..');
+const FLOW_ROOT = path.resolve(process.env.FLOW_ROOT || path.resolve(__dirname, '..'));
 const PORT = parseInt(process.env.FLOW_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
 const HOST = process.env.FLOW_HOST || '127.0.0.1';
+
+try {
+  accessSync(FLOW_ROOT, constants.F_OK | constants.R_OK);
+  const stat = statSync(FLOW_ROOT);
+  if (!stat.isDirectory()) throw new Error();
+} catch {
+  console.error(`Invalid FLOW_ROOT: ${FLOW_ROOT}`);
+  process.exit(1);
+}
 
 const app = Fastify({ logger: { level: 'info' } });
 
@@ -59,6 +70,7 @@ app.register(projectRoutes, { prefix: '/api' });
 app.register(taskRoutes, { prefix: '/api' });
 app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
+app.register(evolveRoutes, { prefix: '/api' });
 
 const watchers = registerWatcher(FLOW_ROOT, notifBroadcast);
 

@@ -88,13 +88,15 @@ export async function listSessions(flowRoot) {
   return sessions;
 }
 
-export async function updateSession(flowRoot, sessionId, patch) {
+export async function updateSession(flowRoot, sessionId, patch, options = {}) {
+  const { skipTransitionCheck = false } = options;
+
   const lockDir = path.join(reviewsDir(flowRoot), `.lock-${sessionId}`);
   return withFileLock(lockDir, async () => {
     const session = await getSession(flowRoot, sessionId);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
-    if (patch.status && patch.status !== session.status) {
+    if (!skipTransitionCheck && patch.status && patch.status !== session.status) {
       const allowed = VALID_TRANSITIONS[session.status];
       if (!allowed || !allowed.includes(patch.status)) {
         throw new Error(`invalid transition: ${session.status} → ${patch.status}`);

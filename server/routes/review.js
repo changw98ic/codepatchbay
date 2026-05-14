@@ -106,6 +106,70 @@ export async function reviewRoutes(fastify, opts) {
     return { dispatched: true, sessionId: session.sessionId, taskId: result.taskId };
   });
 
+  // Internal auto-approve path (used by self-evolve)
+  fastify.post("/review/:id/auto-approve", async (req) => {
+    const session = await getSession(req.flowRoot, req.params.id);
+    if (!session) throw fastify.httpErrors.notFound("session not found");
+
+    if (!["dispatched", "user_review"].includes(session.status)) {
+      return {
+        dispatched: false,
+        sessionId: session.sessionId,
+        status: session.status,
+        note: "invalid_state_for_auto_approve",
+      };
+    }
+
+    const result = await updateSession(
+      req.flowRoot,
+      session.sessionId,
+      {
+        status: session.status === "dispatched" ? session.status : "dispatched",
+        userVerdict: "approved",
+      },
+      { skipTransitionCheck: true },
+    );
+
+    if (result.status === "dispatched" && result.jobId) {
+      return {
+        dispatched: true,
+        sessionId: session.sessionId,
+        taskId: result.jobId,
+        note: "already_dispatched",
+      };
+    }
+
+    const updated = spawnBridge(
+      req.flowRoot,
+      session.project,
+      "run-pipeline.sh",
+      [session.project, session.intent, "3", "0"],
+      req.log,
+    );
+
+    const refreshed = await updateSession(req.flowRoot, session.sessionId, {
+      ...result,
+      jobId: updated.taskId,
+      status: "dispatched",
+      userVerdict: "approved",
+    }, { skipTransitionCheck: true });
+
+    notify({
+      type: "review:update",
+      sessionId: refreshed.sessionId,
+      status: refreshed.status,
+      jobId: refreshed.jobId,
+      project: refreshed.project,
+      session: refreshed,
+    });
+
+    return {
+      dispatched: true,
+      sessionId: session.sessionId,
+      taskId: updated.taskId,
+    };
+  });
+
   // User rejects
   fastify.post("/review/:id/reject", async (req) => {
     const session = await getSession(req.flowRoot, req.params.id);

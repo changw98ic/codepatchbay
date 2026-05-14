@@ -8,6 +8,8 @@ export default function Review() {
   const [activeSession, setActiveSession] = useState(null);
   const [form, setForm] = useState({ project: '', intent: '' });
   const [projects, setProjects] = useState([]);
+  const [evolveStatus, setEvolveStatus] = useState(null);
+  const [evolveHistory, setEvolveHistory] = useState([]);
   const { subscribe } = useWebSocket();
 
   useEffect(() => {
@@ -30,9 +32,36 @@ export default function Review() {
       .catch(() => {});
   }, [activeId]);
 
+  const loadEvolve = useCallback(() => {
+    Promise.all([
+      fetch('/api/evolve/status'),
+      fetch('/api/evolve/history'),
+    ])
+      .then(async ([statusRes, historyRes]) => {
+        if (statusRes.ok) setEvolveStatus(await statusRes.json());
+        if (historyRes.ok) setEvolveHistory(await historyRes.json());
+      })
+      .catch(() => {});
+  }, []);
+
+  const startEvolve = async () => {
+    await fetch('/api/evolve/start', { method: 'POST' });
+    await loadEvolve();
+  };
+
+  const stopEvolve = async () => {
+    await fetch('/api/evolve/stop', { method: 'POST' });
+    await loadEvolve();
+  };
+
+  const isEvolveRunning = !!evolveStatus?.running;
+
   useEffect(() => {
     loadSessions();
-  }, [loadSessions]);
+    loadEvolve();
+    const timer = setInterval(loadEvolve, 5000);
+    return () => clearInterval(timer);
+  }, [loadSessions, loadEvolve]);
 
   useEffect(() => {
     const unsub = subscribe('review:update', (msg) => {
@@ -113,6 +142,47 @@ export default function Review() {
             Create Session
           </button>
         </form>
+
+        <div className="session-list">
+          <h3>Self-Evolve</h3>
+          {evolveStatus ? (
+            <>
+              <div className="evolve-status">Status: {evolveStatus.status}</div>
+              <div className="evolve-status">
+                Source: {evolveStatus.source || 'manual'}
+              </div>
+              <div className="evolve-status">
+                Lease started: {evolveStatus.leaseStartedAt ? new Date(evolveStatus.leaseStartedAt).toLocaleTimeString() : 'n/a'}
+              </div>
+              <div className="evolve-status">
+                Round: {evolveStatus.round}/{evolveStatus.maxRounds ?? '-'}
+              </div>
+              <div className="evolve-status">
+                Running: {isEvolveRunning ? `yes (${evolveStatus.pid || 'n/a'})` : 'no'}
+              </div>
+              <div className="action-buttons">
+                <button className="btn btn-primary" onClick={startEvolve} disabled={isEvolveRunning}>Start</button>
+                <button className="btn btn-reject" onClick={stopEvolve} disabled={!isEvolveRunning}>Stop</button>
+              </div>
+            </>
+          ) : (
+            <div className="empty">Self-Evolve status unavailable</div>
+          )}
+        </div>
+
+        <div className="session-list">
+          <h3>Self-Evolve History</h3>
+          {evolveHistory.length > 0 ? (
+            evolveHistory.slice(-5).reverse().map((entry) => (
+              <div key={`${entry.timestamp}-${entry.round}-${entry.action}`} className="session-item">
+                <span className="session-id">{entry.action}</span>
+                <span className="session-id">{entry.result}</span>
+              </div>
+            ))
+          ) : (
+            <div className="empty">No history yet</div>
+          )}
+        </div>
 
         <div className="session-list">
           <h3>Sessions</h3>
