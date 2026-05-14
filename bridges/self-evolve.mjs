@@ -20,8 +20,9 @@ const EVOLVE_LEASE_DIR = path.join(EVOLVE_DIR, ".controller-lock");
 const PORT = parseInt(process.env.FLOW_PORT || "3456", 10);
 const COOLDOWN_MS = parseInt(process.env.EVOLVE_COOLDOWN_MS || "60000", 10);
 const MAX_ROUNDS = parseInt(process.env.EVOLVE_MAX_ROUNDS || "50", 10);
-const REVIEW_TIMEOUT_MS = parseInt(process.env.EVOLVE_REVIEW_TIMEOUT_MS || "1800000", 10);
-const PIPELINE_TIMEOUT_MS = parseInt(process.env.EVOLVE_PIPELINE_TIMEOUT_MS || "600000", 10);
+const REVIEW_TIMEOUT_MS = parseInt(process.env.EVOLVE_REVIEW_TIMEOUT_MS || "0", 10);
+const PIPELINE_TIMEOUT_MS = parseInt(process.env.EVOLVE_PIPELINE_TIMEOUT_MS || "0", 10);
+const STUCK_THRESHOLD_MS = parseInt(process.env.EVOLVE_STUCK_MS || "600000", 10);
 const REVIEW_POLL_MS = parseInt(process.env.EVOLVE_REVIEW_POLL_MS || "5000", 10);
 const PIPELINE_POLL_MS = parseInt(process.env.EVOLVE_PIPELINE_POLL_MS || "4000", 10);
 const STASH_PREFIX = "self-evolve-stash";
@@ -338,29 +339,53 @@ async function autoApproveSession(sessionId) {
   return apiRequest("POST", `/api/review/${sessionId}/auto-approve`);
 }
 
-async function waitForReviewSession(sessionId, timeoutMs = REVIEW_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (shuttingDown) return null;
+async function waitForReviewSession(sessionId) {
+  let lastStatus = null;
+  let lastRound = null;
+  let lastChange = Date.now();
+
+  while (!shuttingDown) {
     const session = await getReviewSession(sessionId);
+    if (!session) return null;
+
     if (session.status === "user_review" || session.status === "expired") {
       return session;
     }
+
+    if (session.status !== lastStatus || session.round !== lastRound) {
+      lastStatus = session.status;
+      lastRound = session.round;
+      lastChange = Date.now();
+    } else if (Date.now() - lastChange > STUCK_THRESHOLD_MS) {
+      log("error", `review session ${sessionId} stuck in ${lastStatus} for ${STUCK_THRESHOLD_MS}ms`);
+      return null;
+    }
+
     await wait(REVIEW_POLL_MS);
   }
   return null;
 }
 
-async function waitForJob(project, jobId, timeoutMs = PIPELINE_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (shuttingDown) return null;
+async function waitForJob(project, jobId) {
+  let lastStatus = null;
+  let lastChange = Date.now();
 
+  while (!shuttingDown) {
     const durable = await apiRequest("GET", "/api/tasks/durable");
     const found = durable.find((j) => j.jobId === jobId && j.project === project);
+
     if (found && ["completed", "failed", "blocked", "cancelled"].includes(found.status)) {
       return found;
     }
+
+    if (found?.status !== lastStatus) {
+      lastStatus = found?.status || null;
+      lastChange = Date.now();
+    } else if (Date.now() - lastChange > STUCK_THRESHOLD_MS) {
+      log("error", `job ${jobId} stuck in ${lastStatus} for ${STUCK_THRESHOLD_MS}ms`);
+      return null;
+    }
+
     await wait(PIPELINE_POLL_MS);
   }
   return null;

@@ -7,6 +7,8 @@ import { createSession, getSession, updateSession, parseIssues } from "../server
 const FLOW_ROOT = path.resolve(".");
 const ACP_CLIENT = path.join(FLOW_ROOT, "bridges/acp-client.mjs");
 
+const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
+
 function acpRun(agent, prompt) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [ACP_CLIENT, "--agent", agent], {
@@ -15,19 +17,36 @@ function acpRun(agent, prompt) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    let lastActivity = Date.now();
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    let settled = false;
+
+    const settle = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(watchdog);
+      fn(arg);
+    };
+
+    child.stdout.on("data", (chunk) => { lastActivity = Date.now(); stdout += chunk; });
+    child.stderr.on("data", (chunk) => { lastActivity = Date.now(); stderr += chunk; });
 
     child.on("exit", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`${agent} exited ${code}: ${stderr.slice(-200)}`));
+      if (code === 0) settle(resolve, stdout.trim());
+      else settle(reject, new Error(`${agent} exited ${code}: ${stderr.slice(-200)}`));
     });
-    child.on("error", reject);
+    child.on("error", (err) => settle(reject, err));
 
     child.stdin.write(prompt);
     child.stdin.end();
+
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity > ACP_STUCK_MS) {
+        child.kill("SIGKILL");
+        settle(reject, new Error(`${agent} heartbeat timeout: no activity for ${ACP_STUCK_MS}ms`));
+      }
+    }, 10000);
   });
 }
 
