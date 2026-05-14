@@ -13,8 +13,9 @@ GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 PLAN_CONTENT=$(cat "$PLAN_FILE")
 
-# Extract title (first heading)
+# Extract title (first heading), fallback to filename
 TITLE=$(echo "$PLAN_CONTENT" | grep -m1 '^#' | sed 's/^#* *//')
+[ -z "$TITLE" ] && TITLE="$PLAN_ID"
 
 # Extract plan ID from filename
 PLAN_ID=$(basename "$PLAN_FILE" .md)
