@@ -26,7 +26,7 @@ echo -e "${CYAN}Task: ${TITLE}${NC}"
 echo ""
 
 # Show acceptance criteria section if present
-CRITERIA=$(echo "$PLAN_CONTENT" | sed -n '/^## Acceptance-Criteria\|^## Acceptance Criteria/,/^## /p' | head -20)
+CRITERIA=$(echo "$PLAN_CONTENT" | awk '/^## Acceptance-Criteria|^## Acceptance Criteria/{found=1; next} found && /^## /{exit} found{print}' | head -20)
 if [ -n "$CRITERIA" ]; then
   echo -e "${BOLD}Acceptance Criteria:${NC}"
   echo "$CRITERIA" | grep -E '^\s*-\s*\[' | head -10
@@ -34,7 +34,7 @@ if [ -n "$CRITERIA" ]; then
 fi
 
 # Show first few steps
-STEPS=$(echo "$PLAN_CONTENT" | sed -n '/^## [0-9]\|^### [0-9]\|^## Step\|^### Step/,/^## /p' | head -20)
+STEPS=$(echo "$PLAN_CONTENT" | awk '/^## [0-9]|^### [0-9]|^## Step|^### Step/{found=1; next} found && /^## /{exit} found{print}' | head -20)
 if [ -n "$STEPS" ]; then
   echo -e "${BOLD}Key Steps:${NC}"
   echo "$STEPS" | grep -E '^\s*[-0-9]' | head -8
