@@ -21,12 +21,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   app.register(projectRoutes, { prefix: '/api' })
  * which yields URL paths like /api/projects.
  */
-async function buildApp(flowRoot) {
+async function buildApp(cpbRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
-    req.flowRoot = flowRoot;
+    req.cpbRoot = cpbRoot;
     done();
   });
   await app.register(projectRoutes, { prefix: '/api' });
@@ -72,7 +72,7 @@ describe('GET /api/projects', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-projects-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-projects-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });
@@ -128,7 +128,7 @@ describe('GET /api/projects/:name', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-detail-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-detail-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });
@@ -210,7 +210,7 @@ describe('GET /api/projects/:name/inbox', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-inbox-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-inbox-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });
@@ -257,7 +257,7 @@ describe('GET /api/projects/:name/outputs', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-outputs-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-outputs-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });
@@ -294,7 +294,7 @@ describe('GET /api/projects/:name/files/*', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-files-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-files-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });
@@ -361,7 +361,7 @@ describe('POST /api/projects/init', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-init-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-init-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });

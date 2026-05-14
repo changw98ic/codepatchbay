@@ -15,10 +15,10 @@ import {
 } from "../server/services/evolve-state.js";
 import { applyVariant } from "./apply-variant.mjs";
 
-const FLOW_ROOT = path.resolve(process.env.FLOW_ROOT || process.cwd());
-const EVOLVE_DIR = path.join(FLOW_ROOT, "flow-task", "self-evolve");
+const CPB_ROOT = path.resolve(process.env.CPB_ROOT || process.cwd());
+const EVOLVE_DIR = path.join(CPB_ROOT, "cpb-task", "self-evolve");
 const EVOLVE_LEASE_DIR = path.join(EVOLVE_DIR, ".controller-lock");
-const PORT = parseInt(process.env.FLOW_PORT || "3456", 10);
+const PORT = parseInt(process.env.CPB_PORT || "3456", 10);
 const COOLDOWN_MS = parseInt(process.env.EVOLVE_COOLDOWN_MS || "60000", 10);
 const MAX_ROUNDS = parseInt(process.env.EVOLVE_MAX_ROUNDS || "50", 10);
 const REVIEW_TIMEOUT_MS = parseInt(process.env.EVOLVE_REVIEW_TIMEOUT_MS || "0", 10);
@@ -45,31 +45,31 @@ function log(tag, msg) {
 
 // --- Validation ---
 
-function validateFlowRoot(flowRoot) {
-  if (!path.isAbsolute(flowRoot)) {
-    throw new Error(`FLOW_ROOT must be absolute: ${flowRoot}`);
+function validateCodePatchbayRoot(cpbRoot) {
+  if (!path.isAbsolute(cpbRoot)) {
+    throw new Error(`CPB_ROOT must be absolute: ${cpbRoot}`);
   }
 
   try {
-    accessSync(flowRoot, constants.R_OK | constants.W_OK);
-    const st = statSync(flowRoot);
+    accessSync(cpbRoot, constants.R_OK | constants.W_OK);
+    const st = statSync(cpbRoot);
     if (!st.isDirectory()) {
-      throw new Error(`FLOW_ROOT is not a directory: ${flowRoot}`);
+      throw new Error(`CPB_ROOT is not a directory: ${cpbRoot}`);
     }
   } catch (err) {
-    throw new Error(`FLOW_ROOT not accessible: ${flowRoot}: ${err.message}`);
+    throw new Error(`CPB_ROOT not accessible: ${cpbRoot}: ${err.message}`);
   }
 
   const required = [
-    path.join(flowRoot, "server", "index.js"),
-    path.join(flowRoot, "bridges", "review-dispatch.mjs"),
+    path.join(cpbRoot, "server", "index.js"),
+    path.join(cpbRoot, "bridges", "review-dispatch.mjs"),
   ];
 
   for (const p of required) {
     try {
       accessSync(p, constants.R_OK);
     } catch {
-      throw new Error(`FLOW_ROOT validation failed: missing ${p}`);
+      throw new Error(`CPB_ROOT validation failed: missing ${p}`);
     }
   }
 }
@@ -84,7 +84,7 @@ function assertGitArg(arg) {
 function git(...args) {
   args.forEach(assertGitArg);
   return execFileSync("git", args, {
-    cwd: FLOW_ROOT,
+    cwd: CPB_ROOT,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     windowsHide: true,
@@ -198,8 +198,8 @@ function runNodeScript(script, args = [], timeoutMs = 120000, env = process.env)
   return new Promise((resolve) => {
     let output = "";
     const child = spawn("node", [script, ...args], {
-      cwd: FLOW_ROOT,
-      env: { ...env, FLOW_ROOT, FLOW_PORT: String(PORT) },
+      cwd: CPB_ROOT,
+      env: { ...env, CPB_ROOT, CPB_PORT: String(PORT) },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -250,9 +250,9 @@ function spawnServer() {
       }
 
       serverManaged = true;
-      serverProc = spawn("node", [path.join(FLOW_ROOT, "server", "index.js")], {
-        cwd: FLOW_ROOT,
-        env: { ...process.env, FLOW_ROOT, FLOW_PORT: String(PORT) },
+      serverProc = spawn("node", [path.join(CPB_ROOT, "server", "index.js")], {
+        cwd: CPB_ROOT,
+        env: { ...process.env, CPB_ROOT, CPB_PORT: String(PORT) },
         stdio: "pipe",
       });
 
@@ -318,7 +318,7 @@ async function restartServer() {
 }
 
 async function healthCheck(timeoutMs = 30000) {
-  const result = runNodeScript(path.join(FLOW_ROOT, "bridges", "health-check.mjs"), [], timeoutMs);
+  const result = runNodeScript(path.join(CPB_ROOT, "bridges", "health-check.mjs"), [], timeoutMs);
   return result;
 }
 
@@ -395,9 +395,9 @@ async function waitForJob(project, jobId) {
 // --- Issue handling ---
 
 function scanPrompt() {
-  return `You are Flow Self-Evolve Scanner. Analyze the Flow codebase for improvement opportunities.
+  return `You are CodePatchbay Self-Evolve Scanner. Analyze the CodePatchbay codebase for improvement opportunities.
 
-Examine the codebase at ${FLOW_ROOT} and identify issues. For each issue, output EXACTLY:
+Examine the codebase at ${CPB_ROOT} and identify issues. For each issue, output EXACTLY:
 
 [ISSUE] <P0|P1|P2> <one-line description>
 
@@ -425,9 +425,9 @@ function parseScanResults(text) {
 
 function acpRun(agent, prompt) {
   return new Promise((resolve, reject) => {
-    const child = spawn("node", [path.join(FLOW_ROOT, "bridges", "acp-client.mjs"), "--agent", agent], {
-      cwd: FLOW_ROOT,
-      env: { ...process.env, FLOW_ROOT },
+    const child = spawn("node", [path.join(CPB_ROOT, "bridges", "acp-client.mjs"), "--agent", agent], {
+      cwd: CPB_ROOT,
+      env: { ...process.env, CPB_ROOT },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -521,12 +521,12 @@ async function evolve(opts = {}) {
 
   await mkdir(EVOLVE_DIR, { recursive: true });
 
-  const state = await loadState(FLOW_ROOT);
+  const state = await loadState(CPB_ROOT);
   state.status = "running";
   state.round = state.round || 0;
   state.maxRounds = MAX_ROUNDS;
   state.knownGoodCommit = state.knownGoodCommit || gitSafe("rev-parse", "HEAD");
-  await saveState(FLOW_ROOT, state);
+  await saveState(CPB_ROOT, state);
 
   if (!state.knownGoodCommit) {
     throw new Error("failed to resolve known good commit");
@@ -550,10 +550,10 @@ async function evolve(opts = {}) {
 
     state.round = round;
     state.status = "scanning";
-    await saveState(FLOW_ROOT, state);
+    await saveState(CPB_ROOT, state);
 
     try {
-      const popped = await popIssue(FLOW_ROOT);
+      const popped = await popIssue(CPB_ROOT);
       issue = popped?.issue;
 
       if (!issue) {
@@ -563,14 +563,14 @@ async function evolve(opts = {}) {
 
         if (issues.length === 0) {
           log("scan", `round ${round} — no issues found`);
-          await appendHistory(FLOW_ROOT, { round, action: "scan", result: "empty" });
-          await saveState(FLOW_ROOT, state);
+          await appendHistory(CPB_ROOT, { round, action: "scan", result: "empty" });
+          await saveState(CPB_ROOT, state);
           await wait(COOLDOWN_MS);
           continue;
         }
 
-        await pushIssues(FLOW_ROOT, issues);
-        const next = await popIssue(FLOW_ROOT);
+        await pushIssues(CPB_ROOT, issues);
+        const next = await popIssue(CPB_ROOT);
         issue = next?.issue;
       }
 
@@ -585,7 +585,7 @@ async function evolve(opts = {}) {
       log("stash", `${round}/${MAX_ROUNDS} — stashed local changes with ${stashLabel || "none"}`);
 
       state.status = "reviewing";
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
       log("issue", `${issue.priority || "P?"} — ${issue.description}`);
 
       const session = await createReviewSession(project, issue.description);
@@ -593,20 +593,20 @@ async function evolve(opts = {}) {
 
       const reviewed = await waitForReviewSession(session.sessionId);
       if (!reviewed) {
-        await updateIssue(FLOW_ROOT, issue.description, "failed", "review timed out");
-        await appendHistory(FLOW_ROOT, { round, action: "review", result: "timeout" });
+        await updateIssue(CPB_ROOT, issue.description, "failed", "review timed out");
+        await appendHistory(CPB_ROOT, { round, action: "review", result: "timeout" });
         state.status = "failed";
         failedThisRound = true;
-        await saveState(FLOW_ROOT, state);
+        await saveState(CPB_ROOT, state);
         continue;
       }
 
       if (reviewed.status === "expired") {
-        await updateIssue(FLOW_ROOT, issue.description, "failed", "review session expired");
-        await appendHistory(FLOW_ROOT, { round, action: "review", result: "expired", sessionId: reviewed.sessionId });
+        await updateIssue(CPB_ROOT, issue.description, "failed", "review session expired");
+        await appendHistory(CPB_ROOT, { round, action: "review", result: "expired", sessionId: reviewed.sessionId });
         state.status = "failed";
         failedThisRound = true;
-        await saveState(FLOW_ROOT, state);
+        await saveState(CPB_ROOT, state);
         continue;
       }
 
@@ -617,7 +617,7 @@ async function evolve(opts = {}) {
 
       state.status = "executing";
       shouldRollback = true;
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
       const job = await waitForJob(project, approval.taskId);
       if (!job) {
         throw new Error(`pipeline timed out for task ${approval.taskId}`);
@@ -627,10 +627,10 @@ async function evolve(opts = {}) {
       }
 
       if (!hasWorkingChanges()) {
-        await updateIssue(FLOW_ROOT, issue.description, "done", "no changes needed");
-        await appendHistory(FLOW_ROOT, { round, action: "execute", result: "no_changes", taskId: job.taskId || job.jobId, sessionId: reviewed.sessionId });
+        await updateIssue(CPB_ROOT, issue.description, "done", "no changes needed");
+        await appendHistory(CPB_ROOT, { round, action: "execute", result: "no_changes", taskId: job.taskId || job.jobId, sessionId: reviewed.sessionId });
         state.status = "running";
-        await saveState(FLOW_ROOT, state);
+        await saveState(CPB_ROOT, state);
         continue;
       }
 
@@ -642,19 +642,19 @@ async function evolve(opts = {}) {
       }
 
       state.status = "switching";
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
       await restartServer();
 
       state.status = "verifying";
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
       const hc = await healthCheck();
       if (hc.ok) {
         const newCommit = gitSafe("rev-parse", "HEAD");
         if (newCommit) state.knownGoodCommit = newCommit;
         state.status = "running";
-        await saveState(FLOW_ROOT, state);
-        await updateIssue(FLOW_ROOT, issue.description, "done", "passed review+health");
-        await appendHistory(FLOW_ROOT, {
+        await saveState(CPB_ROOT, state);
+        await updateIssue(CPB_ROOT, issue.description, "done", "passed review+health");
+        await appendHistory(CPB_ROOT, {
           round,
           action: "switch",
           result: "success",
@@ -664,10 +664,10 @@ async function evolve(opts = {}) {
         });
       } else {
         state.status = "rolling_back";
-        await saveState(FLOW_ROOT, state);
+        await saveState(CPB_ROOT, state);
         await maybeRollback(state);
-        await updateIssue(FLOW_ROOT, issue.description, "failed", "health check failed, rolled back");
-        await appendHistory(FLOW_ROOT, {
+        await updateIssue(CPB_ROOT, issue.description, "failed", "health check failed, rolled back");
+        await appendHistory(CPB_ROOT, {
           round,
           action: "rollback",
           result: "health_check_failed",
@@ -690,15 +690,15 @@ async function evolve(opts = {}) {
       }
       const message = isTerminatingSessionError(err) ? "interrupted" : err.message;
       if (issue?.description) {
-        await updateIssue(FLOW_ROOT, issue.description, "failed", message);
+        await updateIssue(CPB_ROOT, issue.description, "failed", message);
       }
-      await appendHistory(FLOW_ROOT, {
+      await appendHistory(CPB_ROOT, {
         round,
         action: "round_error",
         result: message,
       });
       state.status = "failed";
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
     } finally {
       if (stashLabel) {
         await restoreRoundStash(stashLabel);
@@ -711,12 +711,12 @@ async function evolve(opts = {}) {
       } else {
         state.status = "idle";
       }
-      await saveState(FLOW_ROOT, state);
+      await saveState(CPB_ROOT, state);
     }
   }
 
   state.status = "completed";
-  await saveState(FLOW_ROOT, state);
+  await saveState(CPB_ROOT, state);
   log("done", `completed ${state.round} rounds`);
 }
 
@@ -728,9 +728,9 @@ async function shutdown(sig) {
   log("shutdown", `${sig} received, stopping...`);
   await stopServer();
   await releaseLease();
-  const state = await loadState(FLOW_ROOT);
+  const state = await loadState(CPB_ROOT);
   state.status = "stopped";
-  await saveState(FLOW_ROOT, state);
+  await saveState(CPB_ROOT, state);
   process.exit(0);
 }
 
@@ -757,20 +757,20 @@ function parseEntryArgs(argv) {
 const entryOpts = parseEntryArgs(process.argv);
 const cmd = entryOpts.cmd;
 if (cmd === "scan") {
-  validateFlowRoot(FLOW_ROOT);
+  validateCodePatchbayRoot(CPB_ROOT);
   applyVariant({ variant: entryOpts.variant });
   const result = await acpRun(entryOpts.scanAgent, scanPrompt());
   const issues = parseScanResults(result);
   if (issues.length > 0) {
-    await pushIssues(FLOW_ROOT, issues);
+    await pushIssues(CPB_ROOT, issues);
     console.log(`Found ${issues.length} issues, added to backlog`);
   } else {
     console.log("No issues found");
   }
 } else if (cmd === "status") {
-  validateFlowRoot(FLOW_ROOT);
-  const state = await loadState(FLOW_ROOT);
-  const backlog = await loadBacklog(FLOW_ROOT);
+  validateCodePatchbayRoot(CPB_ROOT);
+  const state = await loadState(CPB_ROOT);
+  const backlog = await loadBacklog(CPB_ROOT);
   const pending = backlog.filter((i) => i.status === "pending").length;
   console.log(`Status: ${state.status}`);
   console.log(`Round: ${state.round}/${state.maxRounds}`);
@@ -778,7 +778,7 @@ if (cmd === "scan") {
   console.log(`Backlog: ${pending} pending / ${backlog.length} total`);
 } else {
   try {
-    validateFlowRoot(FLOW_ROOT);
+    validateCodePatchbayRoot(CPB_ROOT);
     await acquireLease();
     await evolve(entryOpts);
   } catch (err) {

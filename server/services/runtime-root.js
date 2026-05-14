@@ -1,10 +1,10 @@
 import path from "node:path";
 
-export function runtimeDataRoot(flowRoot) {
-  return path.join(path.resolve(flowRoot), "flow-task");
+export function runtimeDataRoot(cpbRoot) {
+  return path.join(path.resolve(cpbRoot), "cpb-task");
 }
 
-export function runtimeDataPath(flowRoot, ...parts) {
-  return path.join(runtimeDataRoot(flowRoot), ...parts);
+export function runtimeDataPath(cpbRoot, ...parts) {
+  return path.join(runtimeDataRoot(cpbRoot), ...parts);
 }
 

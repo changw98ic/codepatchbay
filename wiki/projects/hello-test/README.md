@@ -1,10 +1,10 @@
 # hello-test
 
-> 待补充：一句话项目定位（例如：这是一个用于演示 Flow 工作流的示例项目）。
+> 待补充：一句话项目定位（例如：这是一个用于演示 CodePatchbay 工作流的示例项目）。
 
 ## 项目介绍
 
-本项目（`hello-test`）当前为 Flow 框架的占位/测试项目，主要用于验证多 Agent 协作的流水线配置。项目根目录包含 `FLOW.md` 作为流程配置入口。
+本项目（`hello-test`）当前为 CodePatchbay 框架的占位/测试项目，主要用于验证多 Agent 协作的流水线配置。项目根目录包含 `CPB.md` 作为流程配置入口。
 
 待补充：
 - 目标用户群体
@@ -53,7 +53,7 @@ cd hello-test
 
 ```
 hello-test/
-├── FLOW.md          # Flow 框架配置（项目、Agent、阶段定义）
+├── CPB.md          # CodePatchbay 框架配置（项目、Agent、阶段定义）
 ├── .omc/            # 待补充：目录用途说明
 └── .omx/            # 待补充：目录用途说明
 ```

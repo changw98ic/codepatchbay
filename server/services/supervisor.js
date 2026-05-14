@@ -45,21 +45,21 @@ export function nextPhaseFor(state) {
   return "complete";
 }
 
-export async function recoverJobs(flowRoot, { now } = {}) {
+export async function recoverJobs(cpbRoot, { now } = {}) {
   const { listJobs } = await import("./job-store.js");
-  const jobs = await listJobs(flowRoot);
+  const jobs = await listJobs(cpbRoot);
   const recoverable = [];
 
   for (const job of jobs) {
     // Cancel-requested jobs with no active lease should be terminated first
     if (job.cancelRequested) {
       if (job.leaseId) {
-        const lease = await readLease(flowRoot, job.leaseId);
+        const lease = await readLease(cpbRoot, job.leaseId);
         if (lease !== null && !isLeaseStale(lease, now)) {
           continue;
         }
       }
-      await cancelJob(flowRoot, job.project, job.jobId, {
+      await cancelJob(cpbRoot, job.project, job.jobId, {
         reason: job.cancelReason ?? "cancelled during recovery",
       });
       continue;
@@ -70,7 +70,7 @@ export async function recoverJobs(flowRoot, { now } = {}) {
     }
 
     if (job.leaseId) {
-      const lease = await readLease(flowRoot, job.leaseId);
+      const lease = await readLease(cpbRoot, job.leaseId);
       if (lease !== null && !isLeaseStale(lease, now)) {
         continue;
       }
@@ -80,7 +80,7 @@ export async function recoverJobs(flowRoot, { now } = {}) {
     if (job.lastActivityAt) {
       const nowMs = now instanceof Date ? now.getTime() : Date.now();
       const activityAge = nowMs - new Date(job.lastActivityAt).getTime();
-      if (activityAge < (parseInt(process.env.FLOW_ACTIVITY_STALE_MS, 10) || 300_000)) {
+      if (activityAge < (parseInt(process.env.CPB_ACTIVITY_STALE_MS, 10) || 300_000)) {
         continue;
       }
     }
@@ -179,7 +179,7 @@ function runChild(command, args, cwd) {
  *
  * Returns { jobId, project, phase, exitCode } on success or error.
  */
-export async function recoverOneJob(flowRoot, job) {
+export async function recoverOneJob(cpbRoot, job) {
   const phase = nextPhaseFor(job);
   if (phase === "") {
     return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
@@ -187,7 +187,7 @@ export async function recoverOneJob(flowRoot, job) {
 
   // "complete" phase: no bridge script, just mark done.
   if (phase === "complete") {
-    await completeJobStore(flowRoot, job.project, job.jobId);
+    await completeJobStore(cpbRoot, job.project, job.jobId);
     return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
   }
 
@@ -196,7 +196,7 @@ export async function recoverOneJob(flowRoot, job) {
     return { jobId: job.jobId, project: job.project, phase, exitCode: 1, error: "no bridge for phase" };
   }
 
-  const jobRunner = path.resolve(flowRoot, "bridges", "job-runner.mjs");
+  const jobRunner = path.resolve(cpbRoot, "bridges", "job-runner.mjs");
   if (!await fileExists(jobRunner)) {
     return {
       jobId: job.jobId,
@@ -209,16 +209,16 @@ export async function recoverOneJob(flowRoot, job) {
 
   const runnerArgs = [
     jobRunner,
-    "--flow-root", flowRoot,
+    "--cpb-root", cpbRoot,
     "--project", job.project,
     "--job-id", job.jobId,
     "--phase", phase,
-    "--script", path.resolve(flowRoot, bridge.script),
+    "--script", path.resolve(cpbRoot, bridge.script),
     "--",
     ...bridge.args,
   ];
 
-  const result = await runChild("node", runnerArgs, flowRoot);
+  const result = await runChild("node", runnerArgs, cpbRoot);
 
   return {
     jobId: job.jobId,
@@ -235,8 +235,8 @@ export async function recoverOneJob(flowRoot, job) {
  *
  * Returns an array of recovery results.
  */
-export async function recoverAndRun(flowRoot, { now, maxConcurrent = 1 } = {}) {
-  const jobs = await recoverJobs(flowRoot, { now });
+export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1 } = {}) {
+  const jobs = await recoverJobs(cpbRoot, { now });
   const results = [];
 
   // Process in batches of maxConcurrent.
@@ -244,7 +244,7 @@ export async function recoverAndRun(flowRoot, { now, maxConcurrent = 1 } = {}) {
     const batch = jobs.slice(i, i + maxConcurrent);
     const batchResults = await Promise.all(
       batch.map((job) =>
-        recoverOneJob(flowRoot, job).catch((err) => ({
+        recoverOneJob(cpbRoot, job).catch((err) => ({
           jobId: job.jobId,
           project: job.project,
           phase: nextPhaseFor(job),

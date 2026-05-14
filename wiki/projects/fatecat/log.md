@@ -23,7 +23,7 @@
 - **2026-05-13T13:05:10Z** | codex | verify | deliverable-003 | PASS
 - **2026-05-13T13:46:17Z** | codex | plan | Created plan-004 for visual polish: button press, result label/paw, FateCat logo | SUCCESS
 - **2026-05-13T14:01:53Z** | claude | execute | deliverable-004 from plan-004 via direct ACP, with Codex runtime-path correction | SUCCESS
-- **2026-05-13T14:01:53Z** | codex | verify | deliverable-004 simulator flow and screenshots | PASS
+- **2026-05-13T14:01:53Z** | codex | verify | deliverable-004 simulator cpb and screenshots | PASS
 - **2026-05-13T14:54:43Z** | codex | plan | Created plan-005 for generated paw assets replacing hand-drawn paw | SUCCESS
 - **2026-05-13T14:54:43Z** | codex | execute | Generated and integrated FateCat-matched paw assets via imagegen | SUCCESS
 - **2026-05-13T14:54:43Z** | codex | verify | deliverable-005 generated paw assets, build, simulator result screen | PASS

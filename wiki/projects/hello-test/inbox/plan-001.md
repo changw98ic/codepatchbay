@@ -19,7 +19,7 @@
 - 拒绝在此阶段添加复杂测试与 CI 流程：README 文档任务不需要新增验证流水线。
 
 ### Files
-- `/Users/chengwen/dev/flow/wiki/projects/hello-test/README.md` — 交付文件：项目说明与使用文档。
+- `/Users/chengwen/dev/cpb/wiki/projects/hello-test/README.md` — 交付文件：项目说明与使用文档。
 
 ## Scope
 

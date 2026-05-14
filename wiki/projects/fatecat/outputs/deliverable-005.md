@@ -2,7 +2,7 @@
 
 ## Source Plan
 
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-005.md`
+- `/Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/plan-005.md`
 
 ## Execution Mode
 

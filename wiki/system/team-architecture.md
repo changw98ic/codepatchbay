@@ -1,11 +1,11 @@
-# Flow Team Profile Architecture
+# CodePatchbay Team Profile Architecture
 
-> Architecture for a profile-driven Flow team that uses ACP as the transport layer and wiki/state as shared memory.
+> Architecture for a profile-driven CodePatchbay team that uses ACP as the transport layer and wiki/state as shared memory.
 
 ## Status
 
 - **State**: Draft
-- **Owner**: Flow Coordinator
+- **Owner**: CodePatchbay Coordinator
 - **Updated**: 2026-05-13
 
 ## Design Principles
@@ -15,17 +15,17 @@
 3. **Use the lightest safe workflow**: simple tasks should not pay full-team overhead.
 4. **Profiles are contracts**: identity, permissions, memory, and skills live with the role.
 5. **Secrets stay outside profiles**: configs reference env names; real values come from ignored secret files or shell env.
-6. **ACP is the adapter boundary**: Flow should not depend on provider-specific prompt hacks where ACP can carry the interaction.
+6. **ACP is the adapter boundary**: CodePatchbay should not depend on provider-specific prompt hacks where ACP can carry the interaction.
 7. **Wiki is for handoff evidence**: project state and agent communication stay inspectable and durable.
 8. **Worktrees isolate writers**: code-writing tasks use per-task git worktrees; the primary project directory is the integration target.
 9. **Coordinator does not do the work**: it classifies complexity, selects workflow, and chooses roles/variants; execution belongs to the selected roles.
 
 ## Current Baseline
 
-Flow currently has this shape:
+CodePatchbay currently has this shape:
 
 ```text
-flow CLI
+cpb CLI
   -> bridges/codex-plan.sh
   -> bridges/claude-execute.sh
   -> bridges/codex-verify.sh
@@ -46,7 +46,7 @@ Target architecture generalizes those provider profiles into role profiles.
 ## Target Module Map
 
 ```text
-flow CLI / Web UI
+cpb CLI / Web UI
   -> coordinator classifier
   -> workflow planner
   -> profile loader
@@ -117,9 +117,9 @@ wiki/projects/{project}/
 Machine state can continue under:
 
 ```text
-flow-task/state/
-flow-task/worktrees/{project}/{task-id}/
-flow-task/events/{project}/{task-id}.jsonl
+cpb-task/state/
+cpb-task/worktrees/{project}/{task-id}/
+cpb-task/events/{project}/{task-id}.jsonl
 ```
 
 ## Profile Schema
@@ -138,18 +138,18 @@ permissions:
   fs:
     read:
       - project
-      - flow_project_wiki
-      - flow_system_readonly
+      - cpb_project_wiki
+      - cpb_system_readonly
     write:
       - project
-      - flow_project_outputs
+      - cpb_project_outputs
   terminal:
     allow: true
     policy: project_only
   forbidden:
-    - flow_profiles
-    - flow_bridges
-    - flow_system_write
+    - cpb_profiles
+    - cpb_bridges
+    - cpb_system_write
     - secrets
 
 handoff:
@@ -173,7 +173,7 @@ env:
   ANTHROPIC_MODEL: kimi-k2.6
 ```
 
-Flow resolves `${NAME}` from the process environment or ignored secret files. The resolved values are injected only into the child ACP process for that invocation.
+CodePatchbay resolves `${NAME}` from the process environment or ignored secret files. The resolved values are injected only into the child ACP process for that invocation.
 
 ## Task Classification
 
@@ -213,7 +213,7 @@ Canonical storage:
 wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-The wiki record keeps the routing decision inspectable. A JSON mirror under `flow-task/state/` is optional and should be treated as a cache for UI and automation, not the source of truth.
+The wiki record keeps the routing decision inspectable. A JSON mirror under `cpb-task/state/` is optional and should be treated as a cache for UI and automation, not the source of truth.
 
 ### Classification Dimensions
 
@@ -292,14 +292,14 @@ missing requirements/credentials/destructive authority -> blocked
 
 ## Worktree Concurrency Model
 
-Flow should treat git worktrees as the default answer to concurrent code-writing.
+CodePatchbay should treat git worktrees as the default answer to concurrent code-writing.
 
 ```text
 primary project directory
   -> integration target
 
-Flow managed task worktrees
-  -> flow-task/worktrees/{project}/{task-id}/
+CodePatchbay managed task worktrees
+  -> cpb-task/worktrees/{project}/{task-id}/
 ```
 
 ### Policy
@@ -307,18 +307,18 @@ Flow managed task worktrees
 | Operation | Workspace |
 | --- | --- |
 | Read-only scan, explanation, classification | Primary project directory |
-| Planning | Primary project directory + Flow wiki |
+| Planning | Primary project directory + CodePatchbay wiki |
 | Building code | Task worktree |
 | Reviewing implementation | Same task worktree |
 | Verifying implementation | Same task worktree |
 | Writing docs tied to implementation | Same task worktree |
 | Merging accepted work | Primary project directory under merge lock |
 
-This gives Flow true parallel builders without mixing code states.
+This gives CodePatchbay true parallel builders without mixing code states.
 
 ### Non-Git Project Bootstrap
 
-If the target project is not a git repository, Flow should initialize git by default before running code-writing workflows.
+If the target project is not a git repository, CodePatchbay should initialize git by default before running code-writing workflows.
 
 ```text
 1. Detect git repository:
@@ -335,8 +335,8 @@ If the target project is not a git repository, Flow should initialize git by def
    create a protected local baseline commit
 
 5. Create task branch and worktree:
-   branch: flow/{project}/{task-id}-{slug}
-   path:   flow-task/worktrees/{project}/{task-id}-{slug}
+   branch: cpb/{project}/{task-id}-{slug}
+   path:   cpb-task/worktrees/{project}/{task-id}-{slug}
 ```
 
 `git worktree` needs an existing commit to branch from. That is why `git init` must be paired with a protected baseline commit when the project has no history.
@@ -348,10 +348,10 @@ The baseline commit should stage only safe project files. It must exclude:
 - `.env`, `.env.*`, credentials, keys, tokens, and secret files;
 - dependency directories such as `node_modules/`;
 - build outputs such as `dist/`, `build/`, `target/`, and coverage output;
-- Flow runtime state such as `flow-task/state/`, `.omx/state/`, and managed worktrees;
+- CodePatchbay runtime state such as `cpb-task/state/`, `.omx/state/`, and managed worktrees;
 - large cache directories.
 
-If Flow detects likely secrets that would be staged, it should stop with `blocked` and explain the file paths that need ignore rules. Flow should never push the baseline commit to a remote.
+If CodePatchbay detects likely secrets that would be staged, it should stop with `blocked` and explain the file paths that need ignore rules. CodePatchbay should never push the baseline commit to a remote.
 
 ### Locks Still Needed
 
@@ -365,21 +365,21 @@ Worktrees remove most write collisions, but not every shared resource.
 | `provider semaphore` | Limit concurrent calls to the same model/provider. |
 | `resource.lock` | Protect shared ports, databases, caches, and local services. |
 
-### Merge Flow
+### Merge CodePatchbay
 
 ```text
 1. Verifier returns PASS for the task worktree.
 2. Coordinator acquires merge.lock.
-3. Flow checks primary project is clean or safely mergeable.
-4. Flow merges task branch into the primary project.
-5. Flow runs configured post-merge verification.
-6. Flow releases merge.lock.
-7. Flow prunes or archives the task worktree.
+3. CodePatchbay checks primary project is clean or safely mergeable.
+4. CodePatchbay merges task branch into the primary project.
+5. CodePatchbay runs configured post-merge verification.
+6. CodePatchbay releases merge.lock.
+7. CodePatchbay prunes or archives the task worktree.
 ```
 
 Merge conflicts should return to the builder or reviewer with the conflict evidence. They should not be auto-resolved silently.
 
-## Runtime Launch Flow
+## Runtime Launch CodePatchbay
 
 ```text
 1. Coordinator chooses role and optional variant.
@@ -392,7 +392,7 @@ Merge conflicts should return to the builder or reviewer with the conflict evide
 8. ACP launcher starts codex-acp or claude-agent-acp.
 9. ACP client enforces path and terminal policy.
 10. Agent writes handoff outputs.
-11. Flow updates wiki and machine state.
+11. CodePatchbay updates wiki and machine state.
 ```
 
 ## ACP Permission Model
@@ -408,10 +408,10 @@ Allowed roots should be derived from profile permissions:
 | `project` | The active workspace for the phase: primary project for read-only phases, task worktree for write phases. |
 | `project_source` | `wiki/projects/{project}/project.json.sourcePath` |
 | `project_worktree` | The task-specific worktree path for code-writing phases. |
-| `flow_project_wiki` | `wiki/projects/{project}/` |
-| `flow_project_outputs` | `wiki/projects/{project}/outputs/` |
-| `flow_system_readonly` | selected files under `wiki/system/` |
-| `flow_profiles_readonly` | selected role profile files |
+| `cpb_project_wiki` | `wiki/projects/{project}/` |
+| `cpb_project_outputs` | `wiki/projects/{project}/outputs/` |
+| `cpb_system_readonly` | selected files under `wiki/system/` |
+| `cpb_profiles_readonly` | selected role profile files |
 
 Writes must reject paths outside allowed write roots. Reads must reject secrets and unrelated projects.
 
@@ -458,8 +458,8 @@ The provider matrix should be role-aware:
 The CLI can expose overrides later:
 
 ```bash
-flow run my-project "implement login" --builder kimi-k2.6
-flow run my-project "scan codebase" --researcher glm5.1
+cpb run my-project "implement login" --builder kimi-k2.6
+cpb run my-project "scan codebase" --researcher glm5.1
 ```
 
 ## Handoff Evolution
@@ -532,7 +532,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 - Detect whether a target project is a git repository.
 - Run `git init` by default for non-git projects.
 - Create protected baseline commits when no commits exist.
-- Create task branches and task worktrees under `flow-task/worktrees/`.
+- Create task branches and task worktrees under `cpb-task/worktrees/`.
 - Add merge locking and post-merge verification hooks.
 
 ### Phase 5: Workflow Engine
@@ -567,7 +567,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 - The coordinator classification step is lightweight and does not start a full team by default.
 - Simple, standard, complex, and blocked workflows are specified.
 - Profile config describes permissions without storing secrets.
-- ACP launch flow explains where env overlays and permission checks happen.
+- ACP launch cpb explains where env overlays and permission checks happen.
 - Code-writing tasks use per-task worktrees by default.
 - Non-git projects are initialized with git before worktree-based writing begins.
-- Migration can be implemented incrementally without breaking current `flow plan`, `flow execute`, `flow verify`, and `flow pipeline`.
+- Migration can be implemented incrementally without breaking current `cpb plan`, `cpb execute`, `cpb verify`, and `cpb pipeline`.

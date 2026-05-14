@@ -11,13 +11,13 @@
 
 ## Scope
 
-- Write target directory: `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/`
+- Write target directory: `/Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/`
 - No other filesystem paths are modified in this plan.
 
 ## Plan
 
 ### 1) Create a single new file in inbox
-- Action: add `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt`.
+- Action: add `/Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/hello.txt`.
 - Acceptance criteria:
   - The file exists at the exact path above.
   - It is a newly created file and only this file is added for this task.

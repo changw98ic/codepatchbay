@@ -34,11 +34,11 @@ function malformedEventError(file, lineNumber, reason) {
   return new Error(`${file} at line ${lineNumber}: malformed event: ${reason}`);
 }
 
-export function eventFileFor(flowRoot, project, jobId) {
+export function eventFileFor(cpbRoot, project, jobId) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
 
-  const eventsRoot = runtimeDataPath(flowRoot, "events");
+  const eventsRoot = runtimeDataPath(cpbRoot, "events");
   const file = path.resolve(eventsRoot, project, `${jobId}.jsonl`);
   const relative = path.relative(eventsRoot, file);
 
@@ -49,8 +49,8 @@ export function eventFileFor(flowRoot, project, jobId) {
   return file;
 }
 
-export async function listEventFiles(flowRoot) {
-  const eventsRoot = runtimeDataPath(flowRoot, "events");
+export async function listEventFiles(cpbRoot) {
+  const eventsRoot = runtimeDataPath(cpbRoot, "events");
 
   let projectEntries;
   try {
@@ -104,16 +104,16 @@ export async function listEventFiles(flowRoot) {
   return files.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-export async function appendEvent(flowRoot, project, jobId, event) {
+export async function appendEvent(cpbRoot, project, jobId, event) {
   const serialized = serializeEvent(event);
-  const file = eventFileFor(flowRoot, project, jobId);
+  const file = eventFileFor(cpbRoot, project, jobId);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${serialized}\n`, "utf8");
   return event;
 }
 
-export async function readEvents(flowRoot, project, jobId) {
-  const file = eventFileFor(flowRoot, project, jobId);
+export async function readEvents(cpbRoot, project, jobId) {
+  const file = eventFileFor(cpbRoot, project, jobId);
 
   try {
     const raw = await readFile(file, "utf8");
@@ -293,15 +293,15 @@ export function materializeJob(events) {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function checkpointFileFor(flowRoot, project, jobId) {
+function checkpointFileFor(cpbRoot, project, jobId) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
-  const checkpointsRoot = runtimeDataPath(flowRoot, "checkpoints");
+  const checkpointsRoot = runtimeDataPath(cpbRoot, "checkpoints");
   return path.resolve(checkpointsRoot, project, `${jobId}.json`);
 }
 
-export async function writeCheckpoint(flowRoot, project, jobId, state) {
-  const file = checkpointFileFor(flowRoot, project, jobId);
+export async function writeCheckpoint(cpbRoot, project, jobId, state) {
+  const file = checkpointFileFor(cpbRoot, project, jobId);
   await mkdir(path.dirname(file), { recursive: true });
   const checkpoint = {
     _meta: { version: 1, writtenAt: new Date().toISOString(), eventCount: null },
@@ -311,8 +311,8 @@ export async function writeCheckpoint(flowRoot, project, jobId, state) {
   return file;
 }
 
-export async function readCheckpoint(flowRoot, project, jobId) {
-  const file = checkpointFileFor(flowRoot, project, jobId);
+export async function readCheckpoint(cpbRoot, project, jobId) {
+  const file = checkpointFileFor(cpbRoot, project, jobId);
   try {
     const raw = await readFile(file, "utf8");
     const parsed = JSON.parse(raw);
@@ -322,11 +322,11 @@ export async function readCheckpoint(flowRoot, project, jobId) {
   }
 }
 
-export async function checkpointJob(flowRoot, project, jobId) {
-  const events = await readEvents(flowRoot, project, jobId);
+export async function checkpointJob(cpbRoot, project, jobId) {
+  const events = await readEvents(cpbRoot, project, jobId);
   if (events.length === 0) return null;
   const state = materializeJob(events);
   if (!TERMINAL_STATUSES.has(state.status)) return null;
-  await writeCheckpoint(flowRoot, project, jobId, state);
+  await writeCheckpoint(cpbRoot, project, jobId, state);
   return state;
 }

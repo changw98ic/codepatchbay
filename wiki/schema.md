@@ -1,4 +1,4 @@
-# Flow Wiki Schema
+# CodePatchbay Wiki Schema
 
 > Wiki 宪法：所有参与模型和 Agent 必须遵守的规则。
 

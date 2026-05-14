@@ -32,9 +32,9 @@ jobs:
       - name: Run bash integration tests
         run: |
           chmod +x bridges/*.sh tests/*.sh
-          bash tests/flow-jobs.test.sh
-          bash tests/flow-bridges.test.sh
-          bash tests/flow-variant-env.test.sh
+          bash tests/cpb-jobs.test.sh
+          bash tests/cpb-bridges.test.sh
+          bash tests/cpb-variant-env.test.sh
 
   lint:
     runs-on: ubuntu-latest

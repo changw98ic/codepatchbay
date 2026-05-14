@@ -21,14 +21,14 @@ const REVIEW_STATUS_TO_EVENT = {
   expired: "review_expired",
 };
 
-export function initNotificationService(flowRoot) {
+export function initNotificationService(cpbRoot) {
   let configCache = null;
   let configLoaded = false;
   const notified = new Set();
 
   async function getConfig() {
     if (!configLoaded) {
-      configCache = await loadConfig(flowRoot);
+      configCache = await loadConfig(cpbRoot);
       configLoaded = true;
     }
     return configCache;
@@ -53,7 +53,7 @@ export function initNotificationService(flowRoot) {
 
     let jobState;
     try {
-      jobState = await getJob(flowRoot, event.project, event.jobId);
+      jobState = await getJob(cpbRoot, event.project, event.jobId);
     } catch (err) {
       console.error(`[notification] getJob error: ${err.message}`);
       return;

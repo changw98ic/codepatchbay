@@ -119,7 +119,7 @@ async function removeIfEmptyOrOnlyGitignore(root, dir, report) {
     await rm(dir, { recursive: true, force: true });
     report.deleted.push(rel(root, dir));
   } else {
-    report.retained.push(`${rel(root, dir)} (${meaningful.length} non-Flow entr${meaningful.length === 1 ? "y" : "ies"})`);
+    report.retained.push(`${rel(root, dir)} (${meaningful.length} non-CodePatchbay entr${meaningful.length === 1 ? "y" : "ies"})`);
   }
 }
 
@@ -145,10 +145,10 @@ async function quarantineRemainingRoot(root, dirName, report) {
   report.quarantined.push(`${rel(root, src)} -> ${rel(root, dest)}`);
 }
 
-async function cleanupLegacyRoots(root, report, { quarantineNonFlow = false } = {}) {
+async function cleanupLegacyRoots(root, report, { quarantineNonCodePatchbay = false } = {}) {
   await removeIfEmptyOrOnlyGitignore(root, path.join(root, ".omc", "leases"), report);
 
-  if (quarantineNonFlow) {
+  if (quarantineNonCodePatchbay) {
     await quarantineRemainingRoot(root, ".omc", report);
     await quarantineRemainingRoot(root, ".omx", report);
     return;
@@ -158,8 +158,8 @@ async function cleanupLegacyRoots(root, report, { quarantineNonFlow = false } = 
   await removeIfEmptyOrOnlyGitignore(root, path.join(root, ".omx"), report);
 }
 
-export async function migrateRuntimeRoot(flowRoot, options = {}) {
-  const root = path.resolve(flowRoot);
+export async function migrateRuntimeRoot(cpbRoot, options = {}) {
+  const root = path.resolve(cpbRoot);
   const report = {
     copied: [],
     skipped: [],
@@ -207,9 +207,9 @@ export function printReport(report) {
 }
 
 async function main() {
-  const flowRoot = process.env.FLOW_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const quarantineNonFlow = process.argv.includes("--quarantine-non-flow");
-  const report = await migrateRuntimeRoot(flowRoot, { quarantineNonFlow });
+  const cpbRoot = process.env.CPB_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const quarantineNonCodePatchbay = process.argv.includes("--quarantine-non-cpb");
+  const report = await migrateRuntimeRoot(cpbRoot, { quarantineNonCodePatchbay });
   printReport(report);
   return report.conflicts.length > 0 ? 2 : 0;
 }

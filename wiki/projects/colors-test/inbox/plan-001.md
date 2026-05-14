@@ -23,8 +23,8 @@
 **目标**: Create a colors.json with 5 CSS color name-value pairs
 
 **涉及文件**:
-- `/Users/chengwen/dev/flow/wiki/projects/colors-test/inbox/plan-001.md` — 生成执行计划（本文件）
-- `/Users/chengwen/dev/flow/wiki/projects/colors-test/inbox/colors.json` — 仅该文件需创建，包含 5 个颜色名-值对
+- `/Users/chengwen/dev/cpb/wiki/projects/colors-test/inbox/plan-001.md` — 生成执行计划（本文件）
+- `/Users/chengwen/dev/cpb/wiki/projects/colors-test/inbox/colors.json` — 仅该文件需创建，包含 5 个颜色名-值对
 
 **实现步骤**:
 1. 在 `colors-test/inbox` 目录创建 `colors.json`，内容为标准 JSON 对象，包含 5 个唯一且合法的 CSS 色名字段（例如 `"red"`, `"blue"`，全部小写）。
@@ -40,7 +40,7 @@
 请在 `colors.json` 中按上述决策创建 5 条 CSS 颜色名-值对，并确认 JSON 可解析后提交。
 
 ## Acceptance-Criteria
-- [ ] 文件 `/Users/chengwen/dev/flow/wiki/projects/colors-test/inbox/colors.json` 存在。
+- [ ] 文件 `/Users/chengwen/dev/cpb/wiki/projects/colors-test/inbox/colors.json` 存在。
 - [ ] 文件是合法 JSON，内容为一个对象，且包含且仅包含 5 个顶层键值对。
 - [ ] 每个 key 为合法 CSS 颜色名（如 `red`, `blue`, `rebeccapurple` 等），至少应满足大小写一致与标准命名约定。
 - [ ] 每个 value 为可用 CSS 颜色值，且与对应 key 能在 CSS 上下文中解析（最少以十六进制字符串形式明确表达）。

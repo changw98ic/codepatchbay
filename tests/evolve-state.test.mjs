@@ -14,7 +14,7 @@ const TMP = path.join(process.cwd(), "test-evolve-tmp-" + Date.now());
 
 describe("evolve-state", () => {
   beforeEach(async () => {
-    await mkdir(path.join(TMP, "flow-task", "self-evolve"), { recursive: true });
+    await mkdir(path.join(TMP, "cpb-task", "self-evolve"), { recursive: true });
   });
   afterEach(async () => {
     await rm(TMP, { recursive: true, force: true }).catch(() => {});
@@ -82,7 +82,7 @@ describe("evolve-state", () => {
   it("appends history as JSONL", async () => {
     await appendHistory(TMP, { round: 1, action: "scan", result: "empty" });
     await appendHistory(TMP, { round: 2, action: "fix", result: "success" });
-    const raw = await readFile(path.join(TMP, "flow-task", "self-evolve", "history.jsonl"), "utf8");
+    const raw = await readFile(path.join(TMP, "cpb-task", "self-evolve", "history.jsonl"), "utf8");
     const lines = raw.trim().split("\n");
     assert.equal(lines.length, 2);
     const entry1 = JSON.parse(lines[0]);

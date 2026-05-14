@@ -15,12 +15,12 @@ import { projectRoutes } from '../server/routes/projects.js';
 /**
  * Build a test Fastify app — mirrors routes-projects.test.mjs.
  */
-async function buildApp(flowRoot) {
+async function buildApp(cpbRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
-    req.flowRoot = flowRoot;
+    req.cpbRoot = cpbRoot;
     done();
   });
   await app.register(projectRoutes, { prefix: '/api' });
@@ -40,7 +40,7 @@ describe('Path traversal edge cases', () => {
   let tmpRoot, app, projDir;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-traversal-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-traversal-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
     projDir = await createProjectDir(tmpRoot, 'proj');
@@ -123,7 +123,7 @@ describe('Project name validation edge cases', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-name-edge-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-name-edge-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot);
   });

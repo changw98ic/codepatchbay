@@ -3,19 +3,19 @@
 **From:** codex  
 **To:** claude  
 **Phase:** plan  
-**Scope:** `/Users/chengwen/dev/flow/wiki/projects/empty-test/inbox/`（仅此目录写入）
+**Scope:** `/Users/chengwen/dev/cpb/wiki/projects/empty-test/inbox/`（仅此目录写入）
 
 ## 目标
 在目标项目中，于 `inbox` 目录生成 `config.json`，作为后续配置基线文件；不修改其他目录与文件。
 
 ## 前置约束（执行边界）
-1. 仅写入：`/Users/chengwen/dev/flow/wiki/projects/empty-test/inbox/`
+1. 仅写入：`/Users/chengwen/dev/cpb/wiki/projects/empty-test/inbox/`
 2. 仅读取：  
-   - `/Users/chengwen/dev/flow/wiki/projects/empty-test/context.md`
-   - `/Users/chengwen/dev/flow/wiki/projects/empty-test/decisions.md`
-   - `/Users/chengwen/dev/flow/profiles/codex/soul.md`
-   - `/Users/chengwen/dev/flow/wiki/system/handshake-protocol.md`
-   - `/Users/chengwen/dev/flow/templates/handoff/plan-to-execute.md`
+   - `/Users/chengwen/dev/cpb/wiki/projects/empty-test/context.md`
+   - `/Users/chengwen/dev/cpb/wiki/projects/empty-test/decisions.md`
+   - `/Users/chengwen/dev/cpb/profiles/codex/soul.md`
+   - `/Users/chengwen/dev/cpb/wiki/system/handshake-protocol.md`
+   - `/Users/chengwen/dev/cpb/templates/handoff/plan-to-execute.md`
 3. 不执行终端命令，仅产出计划文件。
 4. 产物命名遵循用户指定：`plan-002.md`
 
@@ -39,7 +39,7 @@
 - JSON 语义完整可解释，无未定义占位符。
 
 ### Step 3：制定创建文件的具体动作
-- 计划目标文件路径：`/Users/chengwen/dev/flow/wiki/projects/empty-test/inbox/config.json`
+- 计划目标文件路径：`/Users/chengwen/dev/cpb/wiki/projects/empty-test/inbox/config.json`
 - 文件应采用 UTF-8 编码、`json` 格式，无注释，含最小可用配置。
 - 预定义可执行动作：创建文件并写入最终配置内容。
 

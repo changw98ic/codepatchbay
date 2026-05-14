@@ -19,7 +19,7 @@ describe("Feishu channel formatter", () => {
     const msg = feishuFormat("job_completed", mockJob);
     assert.equal(msg.msg_type, "interactive");
     assert.equal(msg.card.header.template, "turquoise");
-    assert.equal(msg.card.header.title.content, "Flow: Job Completed");
+    assert.equal(msg.card.header.title.content, "CodePatchbay: Job Completed");
     const fields = msg.card.elements[0].fields;
     assert.equal(fields.length, 4);
     assert.ok(fields.some(f => f.text.content.includes("demo")));
@@ -52,7 +52,7 @@ describe("DingTalk channel formatter", () => {
   it("produces markdown message for job_completed", () => {
     const msg = dingtalkFormat("job_completed", mockJob);
     assert.equal(msg.msgtype, "markdown");
-    assert.equal(msg.markdown.title, "Flow: Job Completed");
+    assert.equal(msg.markdown.title, "CodePatchbay: Job Completed");
     assert.ok(msg.markdown.text.includes("demo"));
     assert.ok(msg.markdown.text.includes("COMPLETED"));
     assert.ok(msg.markdown.text.includes("Add dark mode"));
@@ -60,7 +60,7 @@ describe("DingTalk channel formatter", () => {
 
   it("produces correct title for job_failed", () => {
     const msg = dingtalkFormat("job_failed", { ...mockJob, status: "failed" });
-    assert.equal(msg.markdown.title, "Flow: Job Failed");
+    assert.equal(msg.markdown.title, "CodePatchbay: Job Failed");
     assert.ok(msg.markdown.text.includes("FAILED"));
   });
 

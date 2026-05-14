@@ -25,7 +25,7 @@ PASS
   - Device: `iPhone 17 Pro (CB13F262-3B2E-4B6A-813B-75709459A7C2)`
   - Bundle: `com.chengwen.FateCat`
   - Result: PASS, launched with pid `26051`.
-- Manual simulator flow
+- Manual simulator cpb
   - Entered two options, started decision, waited for result.
   - Result screen showed selected `火锅` label on wheel and visible paw marker.
   - Screenshot: `/tmp/fatecat-plan004-result.png`

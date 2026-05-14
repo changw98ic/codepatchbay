@@ -8,7 +8,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createSession, getSession, updateSession, parseIssues } from "../server/services/review-session.js";
 
-const FLOW_ROOT = path.resolve(".");
+const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
 const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
 
@@ -20,9 +20,9 @@ function commandExists(cmd) {
 
 function resolveAgentCommand(agent) {
   const upper = agent.toUpperCase();
-  const envCmd = process.env[`FLOW_ACP_${upper}_COMMAND`];
+  const envCmd = process.env[`CPB_ACP_${upper}_COMMAND`];
   if (envCmd) {
-    const envArgs = process.env[`FLOW_ACP_${upper}_ARGS`];
+    const envArgs = process.env[`CPB_ACP_${upper}_ARGS`];
     return { command: envCmd, args: envArgs ? JSON.parse(envArgs) : [] };
   }
   if (agent === "codex") {
@@ -51,14 +51,14 @@ class PersistentAcp {
     const { command, args } = resolveAgentCommand(this.agent);
     const env = { ...process.env };
     if (command === "npx" && !env.npm_config_cache) {
-      const cache = path.join(tmpdir(), `flow-npm-cache-${this.agent}-${randomUUID()}`);
+      const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(cache, { recursive: true });
       env.npm_config_cache = cache;
     }
 
     this.child = spawn(command, args, {
-      cwd: FLOW_ROOT,
-      env: { ...env, FLOW_ROOT },
+      cwd: CPB_ROOT,
+      env: { ...env, CPB_ROOT },
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -92,7 +92,7 @@ class PersistentAcp {
     const init = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
-      clientInfo: { name: "flow-review", title: "Flow Review", version: "0.1.0" },
+      clientInfo: { name: "cpb-review", title: "CodePatchbay Review", version: "0.1.0" },
     });
 
     if (init.protocolVersion !== PROTOCOL_VERSION) {
@@ -108,7 +108,7 @@ class PersistentAcp {
     if (this.closed) throw new Error(`${this.agent} connection closed`);
     this.lastActivity = Date.now();
 
-    const session = await this.request("session/new", { cwd: FLOW_ROOT, mcpServers: [] });
+    const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
 
     let response = "";
     const startedAt = Date.now();
@@ -252,7 +252,7 @@ class PersistentAcp {
 // --- Prompt builders ---
 
 function researchPrompt(intent, project) {
-  return `You are Flow Research Agent. Analyze this task intent for project "${project}":
+  return `You are CodePatchbay Research Agent. Analyze this task intent for project "${project}":
 
 **Task**: ${intent}
 
@@ -266,9 +266,9 @@ Be concise and structured.`;
 }
 
 function planPrompt(intent, codexResearch, claudeResearch) {
-  return `You are Flow Planner. Based on the research below, create an implementation plan.
+  return `You are CodePatchbay Planner. Based on the research below, create an implementation plan.
 
-Skills: Read skill files from ${FLOW_ROOT}/profiles/codex/skills/ as needed.
+Skills: Read skill files from ${CPB_ROOT}/profiles/codex/skills/ as needed.
 
 **Task**: ${intent}
 
@@ -289,9 +289,9 @@ Output the plan as markdown.`;
 
 function reviewPrompt(plan, reviewer) {
   const skillDir = reviewer === "codex" ? "codex" : "reviewer";
-  return `You are Flow ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer.
+  return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer.
 
-Skills: Read skill files from ${FLOW_ROOT}/profiles/${skillDir}/skills/ as needed.
+Skills: Read skill files from ${CPB_ROOT}/profiles/${skillDir}/skills/ as needed.
 
 Review this plan critically. For each issue found, use severity tags [P0] [P1] [P2] [P3]:
 
@@ -312,7 +312,7 @@ function revisePrompt(plan, codexIssues, claudeIssues) {
     .map(i => `[P${i.severity}] ${i.description}`)
     .join("\n");
 
-  return `You are Flow Plan Reviser. Revise this plan to address the issues below.
+  return `You are CodePatchbay Plan Reviser. Revise this plan to address the issues below.
 
 **Issues found by reviewers**:
 ${allIssues}
@@ -323,7 +323,7 @@ ${plan}
 Provide the revised plan as markdown, addressing each issue.`;
 }
 
-// --- Main review flow ---
+// --- Main review cpb ---
 
 const MAX_RETRIES = parseInt(process.env.ACP_MAX_RETRIES || "2", 10);
 
@@ -343,8 +343,8 @@ async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
   }
 }
 
-async function runReview(flowRoot, sessionId) {
-  const session = await getSession(flowRoot, sessionId);
+async function runReview(cpbRoot, sessionId) {
+  const session = await getSession(cpbRoot, sessionId);
   if (!session) throw new Error(`session not found: ${sessionId}`);
 
   let codex, claude;
@@ -356,7 +356,7 @@ async function runReview(flowRoot, sessionId) {
     ]);
 
     // Phase 1: Research
-    await updateSession(flowRoot, sessionId, { status: "researching" });
+    await updateSession(cpbRoot, sessionId, { status: "researching" });
     console.log(`[review] ${sessionId} phase 1: researching`);
     const [codexRes, claudeRes] = await Promise.allSettled([
       sendWithRetry(codex, researchPrompt(session.intent, session.project), "codex"),
@@ -365,20 +365,20 @@ async function runReview(flowRoot, sessionId) {
     const codexResearch = codexRes.status === "fulfilled" ? codexRes.value : "";
     const claudeResearch = claudeRes.status === "fulfilled" ? claudeRes.value : "";
     if (!codexResearch && !claudeResearch) throw new Error("both research agents failed");
-    await updateSession(flowRoot, sessionId, {
+    await updateSession(cpbRoot, sessionId, {
       research: { codex: codexResearch, claude: claudeResearch },
     });
 
     // Phase 2: Plan
-    await updateSession(flowRoot, sessionId, { status: "planning" });
+    await updateSession(cpbRoot, sessionId, { status: "planning" });
     console.log(`[review] ${sessionId} phase 2: planning`);
     const plan = await sendWithRetry(codex, planPrompt(session.intent, codexResearch, claudeResearch), "codex");
-    await updateSession(flowRoot, sessionId, { plan });
+    await updateSession(cpbRoot, sessionId, { plan });
 
     // Phase 3: Review Loop (max 5 rounds)
     let currentPlan = plan;
     for (let round = 1; round <= 5; round++) {
-      await updateSession(flowRoot, sessionId, { status: "reviewing", round });
+      await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
 
       const results = await Promise.allSettled([
@@ -395,33 +395,33 @@ async function runReview(flowRoot, sessionId) {
       const codexIssues = parseIssues(codexReview);
       const claudeIssues = parseIssues(claudeReview);
 
-      const reviews = (await getSession(flowRoot, sessionId)).reviews;
-      await updateSession(flowRoot, sessionId, {
+      const reviews = (await getSession(cpbRoot, sessionId)).reviews;
+      await updateSession(cpbRoot, sessionId, {
         reviews: [...reviews, { round, codex: codexReview, claude: claudeReview, codexIssues, claudeIssues }],
       });
 
       const hasP2 = [...codexIssues, ...claudeIssues].some((i) => i.severity >= 2);
       console.log(`[review] ${sessionId} round ${round}: codex=${codexIssues.length} claude=${claudeIssues.length} hasP2=${hasP2}`);
       if (!hasP2) {
-        await updateSession(flowRoot, sessionId, { status: "user_review" });
+        await updateSession(cpbRoot, sessionId, { status: "user_review" });
         console.log(`[review] ${sessionId} passed at round ${round}`);
         return;
       }
 
       if (round < 5) {
-        await updateSession(flowRoot, sessionId, { status: "revising" });
+        await updateSession(cpbRoot, sessionId, { status: "revising" });
         console.log(`[review] ${sessionId} revising for round ${round + 1}`);
         const revised = await sendWithRetry(codex, revisePrompt(currentPlan, codexIssues, claudeIssues), "codex");
         currentPlan = revised;
-        await updateSession(flowRoot, sessionId, { plan: revised });
+        await updateSession(cpbRoot, sessionId, { plan: revised });
       }
     }
 
-    await updateSession(flowRoot, sessionId, { status: "expired" });
+    await updateSession(cpbRoot, sessionId, { status: "expired" });
     console.log(`[review] ${sessionId} expired after 5 rounds`);
   } catch (err) {
     console.error(`[review] ${sessionId} error: ${err.message}`);
-    try { await updateSession(flowRoot, sessionId, { status: "expired" }); } catch {}
+    try { await updateSession(cpbRoot, sessionId, { status: "expired" }); } catch {}
   } finally {
     codex?.close();
     claude?.close();
@@ -429,11 +429,11 @@ async function runReview(flowRoot, sessionId) {
 }
 
 // CLI entry
-const flowRoot = process.argv[2];
+const cpbRoot = process.argv[2];
 const sessionId = process.argv[3];
-if (!flowRoot || !sessionId) {
-  console.error("Usage: review-dispatch.mjs <flowRoot> <sessionId>");
+if (!cpbRoot || !sessionId) {
+  console.error("Usage: review-dispatch.mjs <cpbRoot> <sessionId>");
   process.exit(1);
 }
 
-runReview(flowRoot, sessionId);
+runReview(cpbRoot, sessionId);

@@ -75,7 +75,7 @@ describe("channel inbound parseCommand", () => {
   });
 
   it("strips @mention prefix", () => {
-    const cmd = parseCommand("@FlowBot fatecat add dark mode");
+    const cmd = parseCommand("@CodePatchbayBot fatecat add dark mode");
     assert.deepEqual(cmd, { project: "fatecat", task: "add dark mode" });
   });
 

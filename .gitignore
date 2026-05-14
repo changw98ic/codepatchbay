@@ -1,13 +1,35 @@
+# Dependencies
 node_modules/
-flow-task/
-.omc/state/
-.omc/events/
-.omc/leases/
-.omc/worktrees/
-.omc/provider-slots/
-.omx/
-*.log
-.DS_Store
-web/.omc/
+server/node_modules/
+web/node_modules/
+
+# Build outputs
+.dist/
+dist/
+build/
+coverage/
 web/dist/
+server/dist/
+
+# CodePatchbay runtime state
+cpb-task/
+.omc/
+.omx/
+web/.omc/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
 channels.json
+*.local
+
+# Logs and OS/editor files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+.vscode/
+.idea/

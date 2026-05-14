@@ -1,10 +1,10 @@
-# Flow 补足计划
+# CodePatchbay 补足计划
 
 > 基于 P0/P1 修复、Zed 对比、Cancel/Redirect 分析、fixed-role 计划审查后的落地计划。
 
 ## Context
 
-基于以下分析，补足 Flow 的剩余缺口：
+基于以下分析，补足 CodePatchbay 的剩余缺口：
 - 初始痛点分析（P0/P1 已修，P2 剩余）
 - Zed 对比（权限系统、plan 追踪、diff 审批）
 - Cancellation/Redirect 需求分析
@@ -43,7 +43,7 @@ case "job_cancelled":
 
 `server/services/job-store.js` — 新增 cancelJob：
 ```js
-export async function cancelJob(flowRoot, project, jobId, { reason, ts } = {}) {
+export async function cancelJob(cpbRoot, project, jobId, { reason, ts } = {}) {
   // Release lease if active
   // Append job_cancelled event
 }
@@ -56,10 +56,10 @@ const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"
 
 `bridges/run-pipeline.mjs` — phase 之间检查 cancel：
 ```js
-const job = await getJob(flowRoot, project, jobId);
+const job = await getJob(cpbRoot, project, jobId);
 if (job.status === 'cancelled') {
   log('Job cancelled by user');
-  await releaseLease(flowRoot, leaseId, { ownerToken });
+  await releaseLease(cpbRoot, leaseId, { ownerToken });
   process.exit(0);
 }
 ```
@@ -69,9 +69,9 @@ if (job.status === 'cancelled') {
 POST /api/tasks/:name/cancel  { jobId, reason? }
 ```
 
-`flow` CLI — 新增命令：
+`cpb` CLI — 新增命令：
 ```bash
-flow cancel <project> <jobId>
+cpb cancel <project> <jobId>
 ```
 
 ### 1C: Redirect
@@ -91,7 +91,7 @@ case "job_redirected":
 
 `bridges/run-pipeline.mjs` — phase 之间检查 redirect 并注入 prompt：
 ```js
-const job = await getJob(flowRoot, project, jobId);
+const job = await getJob(cpbRoot, project, jobId);
 if (job.redirectContext) {
   redirectSection = `## Direction Change\nOriginal task: ${originalTask}\nNew direction: ${job.redirectContext}`;
   // 清除 redirectContext（写一个 redirect_consumed event）
@@ -103,9 +103,9 @@ if (job.redirectContext) {
 POST /api/tasks/:name/redirect  { jobId, instructions, reason? }
 ```
 
-`flow` CLI：
+`cpb` CLI：
 ```bash
-flow redirect <project> <jobId> "<new instructions>"
+cpb redirect <project> <jobId> "<new instructions>"
 ```
 
 **测试**：
@@ -120,14 +120,14 @@ flow redirect <project> <jobId> "<new instructions>"
 
 ### 2A: Per-Tool Permission Patterns
 
-当前：`FLOW_ACP_PERMISSION=allow|reject`，全局开关。
+当前：`CPB_ACP_PERMISSION=allow|reject`，全局开关。
 目标：per-tool pattern 精细控制。
 
 **文件**：`bridges/acp-client.mjs`
 
 **新增环境变量**：
 ```
-FLOW_ACP_TOOL_POLICY=<json>
+CPB_ACP_TOOL_POLICY=<json>
 ```
 
 格式：
@@ -152,8 +152,8 @@ permissionResponse(params) {
 ```
 
 **bridge 脚本设置**：
-- `rtk_codex_plan` → `FLOW_ACP_TOOL_POLICY='{"terminal/create":"deny"}'`
-- `rtk_codex_verify` → `FLOW_ACP_TOOL_POLICY='{"terminal/create":"deny"}'`
+- `rtk_codex_plan` → `CPB_ACP_TOOL_POLICY='{"terminal/create":"deny"}'`
+- `rtk_codex_verify` → `CPB_ACP_TOOL_POLICY='{"terminal/create":"deny"}'`
 - `rtk_claude_execute` → 不设（默认 allow）
 
 ### 2B: Phase Activity Event
@@ -170,7 +170,7 @@ child.stdout.on('data', (chunk) => {
 });
 const activityInterval = setInterval(() => {
   if (Date.now() - lastActivity > 30000) {
-    appendEvent(flowRoot, project, jobId, {
+    appendEvent(cpbRoot, project, jobId, {
       type: 'phase_activity',
       jobId, phase, note: 'stdout idle 30s', ts: new Date().toISOString()
     });
@@ -199,8 +199,8 @@ case "phase_activity":
 **新建**：`server/services/profile-loader.js`
 
 ```js
-export async function loadProfile(flowRoot, role) {
-  const dir = path.join(flowRoot, 'profiles', role);
+export async function loadProfile(cpbRoot, role) {
+  const dir = path.join(cpbRoot, 'profiles', role);
   const soul = await readFile(path.join(dir, 'soul.md'), 'utf8').catch(() => '');
   const config = await readYaml(path.join(dir, 'config.yaml')).catch(() => ({}));
   return { role, soul, config };
@@ -303,13 +303,13 @@ grep -r "pipeline-.*json" server/ bridges/ --include="*.js" --include="*.mjs"  #
 ### 1B/1C 验证
 ```bash
 node --test tests/cancel-redirect.test.mjs  # 全部通过
-# 手动测试：启动 pipeline → 另一个终端 flow cancel → 确认 pipeline 退出且不恢复
+# 手动测试：启动 pipeline → 另一个终端 cpb cancel → 确认 pipeline 退出且不恢复
 ```
 
 ### 2A 验证
 ```bash
 # plan phase 尝试创建 terminal → deny
-FLOW_ACP_TOOL_POLICY='{"terminal/create":"deny"}' node bridges/acp-client.mjs --agent codex
+CPB_ACP_TOOL_POLICY='{"terminal/create":"deny"}' node bridges/acp-client.mjs --agent codex
 ```
 
 ### 2B 验证
@@ -321,10 +321,10 @@ grep "phase_activity" .omc/events/*/*.jsonl
 ### 3A/3B 验证
 ```bash
 node --test tests/profile-loader.test.mjs
-./flow pipeline test-project "Add unit tests" --workflow standard
+./cpb pipeline test-project "Add unit tests" --workflow standard
 ```
 
 ### 4A 验证
 ```bash
-./flow review test-project <deliverable-id>
+./cpb review test-project <deliverable-id>
 ```

@@ -5,7 +5,7 @@ Status: ready_for_direct_acp_execute
 Project: fatecat
 From: codex
 To: claude
-Artifact: /Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-003.md
+Artifact: /Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/plan-003.md
 
 ## Handoff
 
@@ -17,10 +17,10 @@ This is a local-only P0 task. Do not add screens, routes, accounts, cloud sync, 
 
 Read these files before implementation:
 
-- /Users/chengwen/dev/flow/profiles/claude/soul.md
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/context.md
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/decisions.md
-- /Users/chengwen/dev/flow/wiki/system/handshake-protocol.md
+- /Users/chengwen/dev/cpb/profiles/claude/soul.md
+- /Users/chengwen/dev/cpb/wiki/projects/fatecat/context.md
+- /Users/chengwen/dev/cpb/wiki/projects/fatecat/decisions.md
+- /Users/chengwen/dev/cpb/wiki/system/handshake-protocol.md
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateModels.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateCatStore.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Views/FateCatHomeView.swift
@@ -50,7 +50,7 @@ Read these files before implementation:
    - Acceptance criteria: no visible layout restructure is required.
 
 5. Preserve existing behavior.
-   - Acceptance criteria: result selection, recent options/settings persistence, recent result history, reroll, and edit flow still pass existing tests.
+   - Acceptance criteria: result selection, recent options/settings persistence, recent result history, reroll, and edit cpb still pass existing tests.
    - Acceptance criteria: no new dependencies, generated assets, or post-MVP systems.
 
 6. Verify.
@@ -59,8 +59,8 @@ Read these files before implementation:
 
 ## Guardrails
 
-- Use direct ACP Claude execution per DEC-001; do not invoke `flow execute`.
-- Do not write Flow deliverable/verdict files from Claude. Codex will record PRD ledger artifacts after verification.
+- Use direct ACP Claude execution per DEC-001; do not invoke `cpb execute`.
+- Do not write CodePatchbay deliverable/verdict files from Claude. Codex will record PRD ledger artifacts after verification.
 - Do not edit fake/mock assets or weaken tests merely to pass.
 - Prefer the smallest production change that satisfies the new tests and PRD P0 copy requirement.
 - Do not revert user or other-agent changes.

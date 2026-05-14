@@ -3,8 +3,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { projectPipelineState } from './job-projection.js';
 
-export function registerWatcher(flowRoot, broadcast) {
-  const projectsDir = path.join(flowRoot, 'wiki/projects');
+export function registerWatcher(cpbRoot, broadcast) {
+  const projectsDir = path.join(cpbRoot, 'wiki/projects');
 
   // Watch project wiki files
   const wikiWatcher = chokidar.watch(
@@ -44,7 +44,7 @@ export function registerWatcher(flowRoot, broadcast) {
   });
 
   // Watch durable job event logs
-  const eventsWatcher = chokidar.watch(path.join(flowRoot, 'flow-task', 'events', '*', '*.jsonl'), {
+  const eventsWatcher = chokidar.watch(path.join(cpbRoot, 'cpb-task', 'events', '*', '*.jsonl'), {
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200 },
@@ -52,11 +52,11 @@ export function registerWatcher(flowRoot, broadcast) {
 
   eventsWatcher.on('all', async (_event, filePath) => {
     try {
-      const rel = path.relative(path.join(flowRoot, 'flow-task', 'events'), filePath);
+      const rel = path.relative(path.join(cpbRoot, 'cpb-task', 'events'), filePath);
       const [projectName, fileName] = rel.split(path.sep);
       const jobId = fileName.replace(/\.jsonl$/, '');
       broadcast({ type: 'job:update', project: projectName, jobId });
-      const state = await projectPipelineState(flowRoot, projectName);
+      const state = await projectPipelineState(cpbRoot, projectName);
       broadcast({ type: 'pipeline:update', project: projectName, state });
     } catch (err) {
       console.error(`[watcher] job event error (${filePath}): ${err.message}`);

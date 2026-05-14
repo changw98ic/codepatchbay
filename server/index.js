@@ -14,23 +14,23 @@ import { addClient, removeClient, broadcast, closeAll } from './services/ws-broa
 import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FLOW_ROOT = path.resolve(process.env.FLOW_ROOT || path.resolve(__dirname, '..'));
-const PORT = parseInt(process.env.FLOW_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
-const HOST = process.env.FLOW_HOST || '127.0.0.1';
+const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.resolve(__dirname, '..'));
+const PORT = parseInt(process.env.CPB_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
+const HOST = process.env.CPB_HOST || '127.0.0.1';
 
 try {
-  accessSync(FLOW_ROOT, constants.F_OK | constants.R_OK);
-  const stat = statSync(FLOW_ROOT);
+  accessSync(CPB_ROOT, constants.F_OK | constants.R_OK);
+  const stat = statSync(CPB_ROOT);
   if (!stat.isDirectory()) throw new Error();
 } catch {
-  console.error(`Invalid FLOW_ROOT: ${FLOW_ROOT}`);
+  console.error(`Invalid CPB_ROOT: ${CPB_ROOT}`);
   process.exit(1);
 }
 
 const app = Fastify({ logger: { level: 'info' } });
 
-const corsOrigins = process.env.FLOW_CORS_ORIGINS
-  ? process.env.FLOW_CORS_ORIGINS.split(',').map(s => s.trim())
+const corsOrigins = process.env.CPB_CORS_ORIGINS
+  ? process.env.CPB_CORS_ORIGINS.split(',').map(s => s.trim())
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 await app.register(cors, { origin: corsOrigins });
 await app.register(websocket);
@@ -49,14 +49,14 @@ app.register(async function (fastify) {
   });
 });
 
-// Inject FLOW_ROOT into requests
+// Inject CPB_ROOT into requests
 app.addHook('onRequest', (req, _res, done) => {
-  req.flowRoot = FLOW_ROOT;
+  req.cpbRoot = CPB_ROOT;
   done();
 });
 
 // File watcher + notification service
-const notifService = initNotificationService(FLOW_ROOT);
+const notifService = initNotificationService(CPB_ROOT);
 const notifBroadcast = async (event) => {
   broadcast(event);
   await notifService.notify(event).catch(() => {});
@@ -72,12 +72,12 @@ app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
 
-const watchers = registerWatcher(FLOW_ROOT, notifBroadcast);
+const watchers = registerWatcher(CPB_ROOT, notifBroadcast);
 
 // Start
 try {
   await app.listen({ port: PORT, host: HOST });
-  console.log(`Flow UI server running at http://localhost:${PORT}`);
+  console.log(`CodePatchbay UI server running at http://localhost:${PORT}`);
 } catch (err) {
   app.log.error(err);
   process.exit(1);

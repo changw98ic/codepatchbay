@@ -4,7 +4,7 @@ codex->claude
 Phase: plan
 Task: Add multiply and divide functions to `calculator.js`
 Source constraints:
-- Must write only under `/Users/chengwen/dev/flow/wiki/projects/calc-test/inbox/`
+- Must write only under `/Users/chengwen/dev/cpb/wiki/projects/calc-test/inbox/`
 - Must read only allowed locations under project/system/profile/template paths
 - Execution mode: planning-only (no terminal commands)
 

@@ -16,7 +16,7 @@ import {
   startPhase,
 } from "../server/services/job-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-job-store-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-job-store-"));
 const project = "demo";
 
 const created = await createJob(root, {
@@ -99,7 +99,7 @@ assert.equal(jobs[1].jobId, failed.jobId);
 assert.equal(jobs[2].jobId, created.jobId);
 assert(jobs.some((job) => job.jobId === created.jobId));
 
-const eventsRoot = path.join(root, "flow-task", "events");
+const eventsRoot = path.join(root, "cpb-task", "events");
 await mkdir(path.join(eventsRoot, "ignored"), { recursive: true });
 await writeFile(path.join(eventsRoot, "ignored", "notes.txt"), "skip me\n", "utf8");
 await writeFile(path.join(eventsRoot, "ignored", "job-20260513-020000-extra.jsonl"), "", "utf8");
@@ -138,30 +138,30 @@ assert.deepEqual(
     {
       project,
       jobId: created.jobId,
-      file: path.join("flow-task", "events", project, `${created.jobId}.jsonl`),
+      file: path.join("cpb-task", "events", project, `${created.jobId}.jsonl`),
     },
     {
       project,
       jobId: budgetBlocked.jobId,
-      file: path.join("flow-task", "events", project, `${budgetBlocked.jobId}.jsonl`),
+      file: path.join("cpb-task", "events", project, `${budgetBlocked.jobId}.jsonl`),
     },
     {
       project,
       jobId: failed.jobId,
-      file: path.join("flow-task", "events", project, `${failed.jobId}.jsonl`),
+      file: path.join("cpb-task", "events", project, `${failed.jobId}.jsonl`),
     },
     {
       project: "ignored",
       jobId: "job-20260513-020000-extra",
-      file: path.join("flow-task", "events", "ignored", "job-20260513-020000-extra.jsonl"),
+      file: path.join("cpb-task", "events", "ignored", "job-20260513-020000-extra.jsonl"),
     },
     {
       project: "ignored",
       jobId: orphanJobId,
-      file: path.join("flow-task", "events", "ignored", `${orphanJobId}.jsonl`),
+      file: path.join("cpb-task", "events", "ignored", `${orphanJobId}.jsonl`),
     },
   ].sort((a, b) => a.file.localeCompare(b.file))
 );
 
-const missingEventsRoot = await mkdtemp(path.join(tmpdir(), "flow-job-store-missing-"));
+const missingEventsRoot = await mkdtemp(path.join(tmpdir(), "cpb-job-store-missing-"));
 assert.deepEqual(await listEventFiles(missingEventsRoot), []);

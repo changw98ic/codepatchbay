@@ -34,7 +34,7 @@ P0 明确不做：
 
 - `FateCatIOS/FateCat/FateCatApp.swift`: SwiftUI app entry.
 - `FateCatIOS/FateCat/Core/FateModels.swift`: phase enums, animation mapping, templates.
-- `FateCatIOS/FateCat/Core/FateCatStore.swift`: decision flow state, option normalization, result picking.
+- `FateCatIOS/FateCat/Core/FateCatStore.swift`: decision cpb state, option normalization, result picking.
 - `FateCatIOS/FateCat/Views/FateCatHomeView.swift`: main screen, stage switching, spin/button animation timing.
 - `FateCatIOS/FateCat/Views/OptionEditorView.swift`: option input and template picker.
 - `FateCatIOS/FateCat/Views/FateWheelView.swift`: wheel rendering, labels, center cat, result highlight.
@@ -57,14 +57,14 @@ P0 明确不做：
 
 - **Package**: fatecat-tools
 - npm dev dependency: `@afromero/kin3o` for animation generation.
-- Claude/Codex collaboration is mediated by Flow ACP from `/Users/chengwen/dev/flow`.
+- Claude/Codex collaboration is mediated by CodePatchbay ACP from `/Users/chengwen/dev/cpb`.
 
 ## Current MVP State
 
 Already present:
 - Basic SwiftUI app entry and home view.
 - Option editor with templates: food, buy, place, action.
-- Store flow: idle -> editing/options -> pressingButton -> spinning -> result.
+- Store cpb: idle -> editing/options -> pressingButton -> spinning -> result.
 - Option normalization removes blank and duplicate values.
 - Random result picker is injectable for tests.
 - Reroll, edit options, and reuse recent options exist in memory.
@@ -76,4 +76,4 @@ Likely next MVP work:
 - Persist recent options and settings locally.
 - Strengthen result copy / cat reaction variety.
 - Verify build/test in Xcode or SwiftPM as available.
-- Add tests for persistence and any new decision-flow behavior.
+- Add tests for persistence and any new decision-cpb behavior.

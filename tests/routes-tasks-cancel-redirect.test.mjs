@@ -16,12 +16,12 @@ import { taskRoutes } from '../server/routes/tasks.js';
  * Build a test Fastify app with task routes registered.
  * Mirrors server/index.js registration: app.register(taskRoutes, { prefix: '/api' })
  */
-async function buildApp(flowRoot) {
+async function buildApp(cpbRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
-    req.flowRoot = flowRoot;
+    req.cpbRoot = cpbRoot;
     done();
   });
   await app.register(taskRoutes, { prefix: '/api' });
@@ -33,8 +33,8 @@ async function buildApp(flowRoot) {
  * Seed a job event file so that requestCancelJob / requestRedirectJob
  * can materialize the job and return state.
  */
-async function seedJob(flowRoot, project, jobId, task = 'test task') {
-  const eventsDir = path.join(flowRoot, 'flow-task', 'events', project);
+async function seedJob(cpbRoot, project, jobId, task = 'test task') {
+  const eventsDir = path.join(cpbRoot, 'cpb-task', 'events', project);
   await fs.mkdir(eventsDir, { recursive: true });
   const event = JSON.stringify({
     type: 'job_created',
@@ -51,7 +51,7 @@ describe('POST /api/tasks/:name/cancel', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-cancel-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-cancel-'));
     app = await buildApp(tmpRoot);
   });
 
@@ -120,7 +120,7 @@ describe('POST /api/tasks/:name/redirect', () => {
   let tmpRoot, app;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-redirect-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-redirect-'));
     app = await buildApp(tmpRoot);
   });
 

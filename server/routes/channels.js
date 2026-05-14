@@ -7,13 +7,13 @@ import { createSession, getSession, updateSession } from "../services/review-ses
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-function spawnPipeline(flowRoot, project, task, log) {
-  const scriptPath = path.join(flowRoot, "bridges", "run-pipeline.sh");
+function spawnPipeline(cpbRoot, project, task, log) {
+  const scriptPath = path.join(cpbRoot, "bridges", "run-pipeline.sh");
   const taskId = `channel:${project}:pipeline:${Date.now()}`;
 
   const child = spawn("bash", [scriptPath, project, task, "3", "0"], {
-    cwd: flowRoot,
-    env: { ...process.env, FLOW_ROOT: flowRoot, FLOW_DANGEROUS: process.env.FLOW_DANGEROUS || "0" },
+    cwd: cpbRoot,
+    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -82,16 +82,16 @@ function parseReviewCommand(text) {
   return null;
 }
 
-async function handleReviewCommand(flowRoot, cmd, log) {
+async function handleReviewCommand(cpbRoot, cmd, log) {
   if (cmd.action === "create") {
-    const session = await createSession(flowRoot, { project: cmd.project, intent: cmd.intent });
+    const session = await createSession(cpbRoot, { project: cmd.project, intent: cmd.intent });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: session.status, project: cmd.project, session });
 
     // Auto-start the review
-    const scriptPath = path.join(flowRoot, "bridges/review-dispatch.mjs");
-    spawn("node", [scriptPath, flowRoot, session.sessionId], {
-      cwd: flowRoot,
-      env: { ...process.env, FLOW_ROOT: flowRoot },
+    const scriptPath = path.join(cpbRoot, "bridges/review-dispatch.mjs");
+    spawn("node", [scriptPath, cpbRoot, session.sessionId], {
+      cwd: cpbRoot,
+      env: { ...process.env, CPB_ROOT: cpbRoot },
       stdio: "ignore",
       detached: true,
     }).unref();
@@ -99,16 +99,16 @@ async function handleReviewCommand(flowRoot, cmd, log) {
     return { ok: true, sessionId: session.sessionId, action: "created" };
   }
 
-  const session = await getSession(flowRoot, cmd.sessionId);
+  const session = await getSession(cpbRoot, cmd.sessionId);
   if (!session) return { ok: false, error: "session not found" };
 
   if (cmd.action === "approve") {
     if (session.status !== "user_review") {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
-    await updateSession(flowRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" });
-    const result = spawnPipeline(flowRoot, session.project, session.intent, log);
-    await updateSession(flowRoot, session.sessionId, { jobId: result.taskId });
+    await updateSession(cpbRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" });
+    const result = spawnPipeline(cpbRoot, session.project, session.intent, log);
+    await updateSession(cpbRoot, session.sessionId, { jobId: result.taskId });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "dispatched", jobId: result.taskId, project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "approved", taskId: result.taskId };
   }
@@ -117,7 +117,7 @@ async function handleReviewCommand(flowRoot, cmd, log) {
     if (session.status !== "user_review") {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
-    const updated = await updateSession(flowRoot, session.sessionId, { status: "expired", userVerdict: "rejected" });
+    const updated = await updateSession(cpbRoot, session.sessionId, { status: "expired", userVerdict: "rejected" });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "expired", project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "rejected" };
   }
@@ -125,8 +125,8 @@ async function handleReviewCommand(flowRoot, cmd, log) {
   return { ok: false, error: "unknown action" };
 }
 
-async function loadChannelConfig(flowRoot) {
-  const file = path.join(flowRoot, "channels.json");
+async function loadChannelConfig(cpbRoot) {
+  const file = path.join(cpbRoot, "channels.json");
   try {
     const raw = await readFile(file, "utf8");
     return JSON.parse(raw);
@@ -150,8 +150,8 @@ export async function channelRoutes(fastify, opts) {
     const event = body.event;
     if (!event || !event.message) return { ok: true };
 
-    const flowRoot = req.flowRoot;
-    const config = await loadChannelConfig(flowRoot);
+    const cpbRoot = req.cpbRoot;
+    const config = await loadChannelConfig(cpbRoot);
     if (!config?.channels?.feishu?.enabled) return { ok: true };
 
     // Validate token if configured
@@ -170,20 +170,20 @@ export async function channelRoutes(fastify, opts) {
 
     // Try review command first
     const reviewCmd = parseReviewCommand(text);
-    if (reviewCmd) return handleReviewCommand(flowRoot, reviewCmd, req.log);
+    if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
 
     const cmd = parseCommand(text);
     if (!cmd) return { ok: true, parsed: false };
 
-    return spawnPipeline(flowRoot, cmd.project, cmd.task, req.log);
+    return spawnPipeline(cpbRoot, cmd.project, cmd.task, req.log);
   });
 
   // DingTalk outgoing robot callback
 
   fastify.post("/channels/dingtalk", async (req, reply) => {
     const body = req.body || {};
-    const flowRoot = req.flowRoot;
-    const config = await loadChannelConfig(flowRoot);
+    const cpbRoot = req.cpbRoot;
+    const config = await loadChannelConfig(cpbRoot);
     if (!config?.channels?.dingtalk?.enabled) return { ok: true };
 
     // Validate token if configured
@@ -199,11 +199,11 @@ export async function channelRoutes(fastify, opts) {
 
     // Try review command first
     const reviewCmd = parseReviewCommand(text);
-    if (reviewCmd) return handleReviewCommand(flowRoot, reviewCmd, req.log);
+    if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
 
     const cmd = parseCommand(text);
     if (!cmd) return { ok: true, parsed: false };
 
-    return spawnPipeline(flowRoot, cmd.project, cmd.task, req.log);
+    return spawnPipeline(cpbRoot, cmd.project, cmd.task, req.log);
   });
 }

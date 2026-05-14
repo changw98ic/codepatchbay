@@ -1,17 +1,17 @@
-# Flow Team Profile PRD
+# CodePatchbay Team Profile PRD
 
-> Product requirements for evolving Flow from a two-agent ACP pipeline into a profile-driven AI project team.
+> Product requirements for evolving CodePatchbay from a two-agent ACP pipeline into a profile-driven AI project team.
 
 ## Status
 
 - **State**: Draft
-- **Owner**: Flow Coordinator
+- **Owner**: CodePatchbay Coordinator
 - **Audience**: users, maintainers, profile authors, bridge/runtime implementers
 - **Updated**: 2026-05-13
 
 ## Problem
 
-Flow can currently run a useful Codex -> Claude Code -> Codex loop, but the team model is still bound to provider names. Codex acts as planner/verifier, Claude Code acts as executor, and the bridge scripts hard-code those responsibilities.
+CodePatchbay can currently run a useful Codex -> Claude Code -> Codex loop, but the team model is still bound to provider names. Codex acts as planner/verifier, Claude Code acts as executor, and the bridge scripts hard-code those responsibilities.
 
 That is enough for a first ACP workflow, but it does not scale cleanly to real project work:
 
@@ -23,13 +23,13 @@ That is enough for a first ACP workflow, but it does not scale cleanly to real p
 
 ## Product Goal
 
-Flow should become a small AI project team runtime where:
+CodePatchbay should become a small AI project team runtime where:
 
 1. Users describe project goals in natural language.
 2. A coordinator classifies the task and selects the lightest safe workflow without launching a full team by default.
 3. Roles are loaded from `profiles/{role}/`, not hard-coded as `codex` or `claude`.
 4. Runtime providers and model variants are selected by profile config.
-5. Agents communicate through ACP and persist handoffs through the Flow wiki.
+5. Agents communicate through ACP and persist handoffs through the CodePatchbay wiki.
 6. Simple tasks stay fast, while complex tasks get research, planning, implementation, review, verification, and documentation.
 7. Code-writing tasks run in isolated git worktrees by default, not directly in the primary project directory.
 
@@ -41,7 +41,7 @@ The project owner who wants to ship code with an AI team while keeping control o
 
 ### Maintainer
 
-The person evolving Flow itself: profile schemas, bridge scripts, UI, ACP permissions, and runtime behavior.
+The person evolving CodePatchbay itself: profile schemas, bridge scripts, UI, ACP permissions, and runtime behavior.
 
 ### Profile Author
 
@@ -54,7 +54,7 @@ The person creating or tuning roles such as coordinator, researcher, builder, re
 | Profile | A role contract: identity, responsibilities, boundaries, preferences, memory, config, and skills. |
 | Variant | A model/provider overlay for a profile, such as `glm5.1`, `kimi-k2.6`, or `mimo-v2.5pro`. |
 | Runtime | The execution backend, usually Codex ACP or Claude Code ACP. |
-| ACP | The transport and tool protocol between Flow and the agent runtime. |
+| ACP | The transport and tool protocol between CodePatchbay and the agent runtime. |
 | Wiki | Shared project memory and handoff storage. |
 | State | Machine-readable task and pipeline status. |
 | Worktree | A per-task git worktree used to isolate code-writing agents. |
@@ -126,7 +126,7 @@ The canonical record location is:
 wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-Machine state may mirror the same data under `flow-task/state/` for UI speed, but the wiki task record is the inspectable source for handoff and review.
+Machine state may mirror the same data under `cpb-task/state/` for UI speed, but the wiki task record is the inspectable source for handoff and review.
 
 ### Classification Rules
 
@@ -206,11 +206,11 @@ coordinator -> ask user for the missing decision or authority
 
 ## Git and Worktree Requirements
 
-Flow should use git worktrees as the default isolation mechanism for any task that writes code.
+CodePatchbay should use git worktrees as the default isolation mechanism for any task that writes code.
 
 ### Default Policy
 
-| Project State | Flow Behavior |
+| Project State | CodePatchbay Behavior |
 | --- | --- |
 | Existing git repo with commits | Create a task branch and task worktree. |
 | Existing git repo without commits | Create a protected baseline commit, then create a task worktree. |
@@ -219,15 +219,15 @@ Flow should use git worktrees as the default isolation mechanism for any task th
 
 ### Baseline Commit Requirements
 
-When Flow initializes git or finds a repository without commits, it must create a local baseline commit before worktree creation. The baseline step must:
+When CodePatchbay initializes git or finds a repository without commits, it must create a local baseline commit before worktree creation. The baseline step must:
 
 - avoid staging `.env`, secrets, credentials, caches, dependency folders, and build artifacts;
 - respect existing `.gitignore`;
 - add common ignore rules when no useful ignore coverage exists;
-- record that the baseline was created by Flow;
+- record that the baseline was created by CodePatchbay;
 - stop as `blocked` if safe staging cannot be determined.
 
-The baseline commit is local. Flow must not push to remotes.
+The baseline commit is local. CodePatchbay must not push to remotes.
 
 ### Worktree Requirements
 
@@ -287,8 +287,8 @@ The role remains stable. The variant changes the backend model and environment f
 
 ## Non-Goals
 
-- Build a new agent protocol. Flow uses ACP.
-- Replace Codex or Claude Code. Flow orchestrates them.
+- Build a new agent protocol. CodePatchbay uses ACP.
+- Replace Codex or Claude Code. CodePatchbay orchestrates them.
 - Store API keys in profiles or wiki files.
 - Make every task run through the full team.
 - Let one role plan, implement, and approve the same task without separation.
@@ -308,5 +308,5 @@ The role remains stable. The variant changes the backend model and environment f
 
 - Which role should own final user-facing summaries: `coordinator` or `writer`?
 - Should `reviewer` and `verifier` always be separate invocations, or can low-risk tasks collapse them?
-- Should Flow keep a JSON mirror of classification records for UI performance, or read YAML directly?
+- Should CodePatchbay keep a JSON mirror of classification records for UI performance, or read YAML directly?
 - Should provider variants be globally reusable or role-local only?

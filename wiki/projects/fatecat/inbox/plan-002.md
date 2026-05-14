@@ -5,7 +5,7 @@ Status: ready_for_execute
 Project: fatecat
 From: codex
 To: claude
-Artifact: /Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-002.md
+Artifact: /Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/plan-002.md
 
 ## Handoff
 
@@ -17,11 +17,11 @@ This is a P0/MVP local-only task. Do not add screens, routes, accounts, cloud sy
 
 Read these files before implementation:
 
-- /Users/chengwen/dev/flow/profiles/claude/soul.md
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/context.md
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/decisions.md
-- /Users/chengwen/dev/flow/wiki/system/handshake-protocol.md
-- /Users/chengwen/dev/flow/templates/handoff/execute-to-review.md
+- /Users/chengwen/dev/cpb/profiles/claude/soul.md
+- /Users/chengwen/dev/cpb/wiki/projects/fatecat/context.md
+- /Users/chengwen/dev/cpb/wiki/projects/fatecat/decisions.md
+- /Users/chengwen/dev/cpb/wiki/system/handshake-protocol.md
+- /Users/chengwen/dev/cpb/templates/handoff/execute-to-review.md
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateModels.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateCatStore.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCatTests/FateCatStoreTests.swift

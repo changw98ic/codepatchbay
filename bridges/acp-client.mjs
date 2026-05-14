@@ -13,29 +13,29 @@ const usage = `Usage: acp-client.mjs --agent <codex|claude> [--cwd <path>]
 Reads a prompt from stdin and sends it to an ACP agent over stdio.
 
 Environment:
-  FLOW_ACP_CODEX_COMMAND      Command for the Codex ACP agent
-  FLOW_ACP_CODEX_ARGS         Args for the Codex ACP agent (JSON array or shell-like words)
-  FLOW_ACP_CLAUDE_COMMAND     Command for the Claude ACP agent
-  FLOW_ACP_CLAUDE_ARGS        Args for the Claude ACP agent (JSON array or shell-like words)
-  FLOW_ACP_TIMEOUT_MS         Idle timeout in milliseconds; activity resets it (default: 1800000)
-  FLOW_ACP_PERMISSION         allow or reject permission requests (default: allow)
-  FLOW_ACP_WRITE_ALLOW        Comma-separated glob patterns for allowed write paths (default: none = allow all)
-  FLOW_ACP_TERMINAL           allow or deny terminal creation (default: allow)
-  FLOW_ACP_TOOL_POLICY_FILE   Path to JSON file mapping tool names to "allow"|"deny"
-  FLOW_ACP_DENY_TOOLS         Comma-separated tool names to deny (e.g. "terminal/create,fs/delete")
-  FLOW_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
+  CPB_ACP_CODEX_COMMAND      Command for the Codex ACP agent
+  CPB_ACP_CODEX_ARGS         Args for the Codex ACP agent (JSON array or shell-like words)
+  CPB_ACP_CLAUDE_COMMAND     Command for the Claude ACP agent
+  CPB_ACP_CLAUDE_ARGS        Args for the Claude ACP agent (JSON array or shell-like words)
+  CPB_ACP_TIMEOUT_MS         Idle timeout in milliseconds; activity resets it (default: 1800000)
+  CPB_ACP_PERMISSION         allow or reject permission requests (default: allow)
+  CPB_ACP_WRITE_ALLOW        Comma-separated glob patterns for allowed write paths (default: none = allow all)
+  CPB_ACP_TERMINAL           allow or deny terminal creation (default: allow)
+  CPB_ACP_TOOL_POLICY_FILE   Path to JSON file mapping tool names to "allow"|"deny"
+  CPB_ACP_DENY_TOOLS         Comma-separated tool names to deny (e.g. "terminal/create,fs/delete")
+  CPB_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
 
-Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > FLOW_ACP_TERMINAL
+Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
 `;
 
 /**
  * Parse per-tool policy from environment variables.
- * Priority: FLOW_ACP_TOOL_POLICY_FILE > FLOW_ACP_DENY_TOOLS/ALLOW_TOOLS > FLOW_ACP_TERMINAL
+ * Priority: CPB_ACP_TOOL_POLICY_FILE > CPB_ACP_DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
  *
  * Returns a Map<string, "allow"|"deny"> or null (no policy).
  */
 async function parseToolPolicy() {
-  const policyFilePath = process.env.FLOW_ACP_TOOL_POLICY_FILE;
+  const policyFilePath = process.env.CPB_ACP_TOOL_POLICY_FILE;
 
   // 1. Highest priority: JSON policy file
   if (policyFilePath) {
@@ -43,24 +43,24 @@ async function parseToolPolicy() {
     try {
       content = await readFile(path.resolve(policyFilePath), "utf8");
     } catch (error) {
-      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: failed to read "${policyFilePath}": ${error.message}`);
+      throw new Error(`CPB_ACP_TOOL_POLICY_FILE: failed to read "${policyFilePath}": ${error.message}`);
     }
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (error) {
-      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: invalid JSON in "${policyFilePath}": ${error.message}`);
+      throw new Error(`CPB_ACP_TOOL_POLICY_FILE: invalid JSON in "${policyFilePath}": ${error.message}`);
     }
 
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: expected a JSON object {"tool/name": "allow"|"deny"}, got ${Array.isArray(parsed) ? "array" : typeof parsed}`);
+      throw new Error(`CPB_ACP_TOOL_POLICY_FILE: expected a JSON object {"tool/name": "allow"|"deny"}, got ${Array.isArray(parsed) ? "array" : typeof parsed}`);
     }
 
     const policy = new Map();
     for (const [tool, action] of Object.entries(parsed)) {
       if (action !== "allow" && action !== "deny") {
-        throw new Error(`FLOW_ACP_TOOL_POLICY_FILE: invalid action "${action}" for tool "${tool}" (must be "allow" or "deny")`);
+        throw new Error(`CPB_ACP_TOOL_POLICY_FILE: invalid action "${action}" for tool "${tool}" (must be "allow" or "deny")`);
       }
       policy.set(tool, action);
     }
@@ -68,8 +68,8 @@ async function parseToolPolicy() {
   }
 
   // 2. Flat env var format
-  const denyTools = process.env.FLOW_ACP_DENY_TOOLS;
-  const allowTools = process.env.FLOW_ACP_ALLOW_TOOLS;
+  const denyTools = process.env.CPB_ACP_DENY_TOOLS;
+  const allowTools = process.env.CPB_ACP_ALLOW_TOOLS;
 
   if (denyTools || allowTools) {
     const policy = new Map();
@@ -91,8 +91,8 @@ async function parseToolPolicy() {
     return policy.size > 0 ? policy : null;
   }
 
-  // 3. Legacy: FLOW_ACP_TERMINAL=deny maps to terminal/create=deny
-  if (process.env.FLOW_ACP_TERMINAL === "deny") {
+  // 3. Legacy: CPB_ACP_TERMINAL=deny maps to terminal/create=deny
+  if (process.env.CPB_ACP_TERMINAL === "deny") {
     const policy = new Map();
     policy.set("terminal/create", "deny");
     return policy;
@@ -197,8 +197,8 @@ function resolveAgentCommand(agent) {
   const upper = agent.toUpperCase();
   const defaults = defaultAgentCommand(agent);
   return {
-    command: process.env[`FLOW_ACP_${upper}_COMMAND`] || defaults.command,
-    args: parseEnvArgs(process.env[`FLOW_ACP_${upper}_ARGS`]) ?? defaults.args,
+    command: process.env[`CPB_ACP_${upper}_COMMAND`] || defaults.command,
+    args: parseEnvArgs(process.env[`CPB_ACP_${upper}_ARGS`]) ?? defaults.args,
   };
 }
 
@@ -228,14 +228,14 @@ class AcpClient {
     this.closed = false;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
-    this.idleTimeoutMs = Number.parseInt(process.env.FLOW_ACP_TIMEOUT_MS || "1800000", 10);
+    this.idleTimeoutMs = Number.parseInt(process.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
   }
 
   async run() {
     const { command, args } = resolveAgentCommand(this.agent);
     const env = { ...process.env };
     if (command === "npx" && !env.npm_config_cache) {
-      const instanceCache = path.join(tmpdir(), `flow-npm-cache-${this.agent}-${randomUUID()}`);
+      const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(instanceCache, { recursive: true });
       env.npm_config_cache = instanceCache;
     }
@@ -285,8 +285,8 @@ class AcpClient {
           terminal: true,
         },
         clientInfo: {
-          name: "flow",
-          title: "Flow",
+          name: "cpb",
+          title: "CodePatchbay",
           version: "0.1.0",
         },
       });
@@ -521,7 +521,7 @@ class AcpClient {
 
     const tmpPath = path.join(
       path.dirname(targetPath),
-      `.flow-tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      `.cpb-tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
     );
     await writeFile(tmpPath, params.content, "utf8");
     await rename(tmpPath, targetPath);
@@ -546,7 +546,7 @@ class AcpClient {
   }
 
   permissionResponse(params) {
-    const wantsReject = process.env.FLOW_ACP_PERMISSION === "reject";
+    const wantsReject = process.env.CPB_ACP_PERMISSION === "reject";
     const options = params?.options || [];
     const preferred = options.find((option) =>
       wantsReject ? option.kind?.startsWith("reject") : option.kind?.startsWith("allow")
@@ -641,13 +641,13 @@ try {
   const options = parseCli(process.argv.slice(2));
   const prompt = await readStdin();
 
-  const writeAllowPaths = process.env.FLOW_ACP_WRITE_ALLOW
-    ? process.env.FLOW_ACP_WRITE_ALLOW.split(",").map((p) =>
+  const writeAllowPaths = process.env.CPB_ACP_WRITE_ALLOW
+    ? process.env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
         p.trim().includes("*") ? path.resolve(options.cwd, p.trim()) : path.resolve(p.trim())
       )
     : null;
 
-  const terminalPolicy = process.env.FLOW_ACP_TERMINAL === "deny" ? "deny" : "allow";
+  const terminalPolicy = process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow";
   const toolPolicy = await parseToolPolicy();
 
   await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy }).run();

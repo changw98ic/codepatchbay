@@ -27,7 +27,7 @@ PASS
   - Device: `iPhone 17 Pro (CB13F262-3B2E-4B6A-813B-75709459A7C2)`
   - Bundle: `com.chengwen.FateCat`
   - Result: PASS, launched with pid `9592`.
-- Manual simulator flow
+- Manual simulator cpb
   - Used recent options, started decision, waited for result.
   - Result screen rendered generated `FateCatPawReach` asset.
   - Screenshot: `/tmp/fatecat-generated-paw-result.png`

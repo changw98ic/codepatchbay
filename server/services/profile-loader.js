@@ -35,8 +35,8 @@ function parseSkill(filePath, content) {
   return { name: fm.name, description: fm.description, path: filePath };
 }
 
-export async function loadProfile(flowRoot, role) {
-  const profileDir = path.join(flowRoot, PROFILES_DIR, role);
+export async function loadProfile(cpbRoot, role) {
+  const profileDir = path.join(cpbRoot, PROFILES_DIR, role);
   const profile = defaultProfile(role);
 
   // Load soul.md
@@ -95,8 +95,8 @@ export async function loadProfile(flowRoot, role) {
   return profile;
 }
 
-export async function listProfiles(flowRoot) {
-  const profilesPath = path.join(flowRoot, PROFILES_DIR);
+export async function listProfiles(cpbRoot) {
+  const profilesPath = path.join(cpbRoot, PROFILES_DIR);
   let entries;
   try {
     entries = await readdir(profilesPath, { withFileTypes: true });

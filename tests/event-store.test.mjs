@@ -10,7 +10,7 @@ import {
   eventFileFor,
 } from "../server/services/event-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-event-store-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-event-store-"));
 const project = "demo";
 const jobId = "job-20260513-000001";
 
@@ -124,7 +124,7 @@ const completed = materializeJob([
 assert.equal(completed.status, "completed");
 assert.equal(completed.phase, "completed");
 
-const invalidEventRoot = await mkdtemp(path.join(tmpdir(), "flow-event-store-invalid-"));
+const invalidEventRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-invalid-"));
 await assert.rejects(
   () => appendEvent(invalidEventRoot, project, jobId, undefined),
   /invalid event/i
@@ -133,7 +133,7 @@ await assert.rejects(() => stat(eventFileFor(invalidEventRoot, project, jobId)),
   code: "ENOENT",
 });
 
-const trailingPartialRoot = await mkdtemp(path.join(tmpdir(), "flow-event-store-partial-"));
+const trailingPartialRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-partial-"));
 const trailingPartialFile = eventFileFor(trailingPartialRoot, project, jobId);
 await mkdir(path.dirname(trailingPartialFile), { recursive: true });
 await writeFile(
@@ -146,7 +146,7 @@ assert.equal(recoveredEvents.length, 1);
 assert.equal(recoveredEvents[0].type, "job_created");
 
 const malformedFinalNewlineRoot = await mkdtemp(
-  path.join(tmpdir(), "flow-event-store-malformed-final-")
+  path.join(tmpdir(), "cpb-event-store-malformed-final-")
 );
 const malformedFinalNewlineFile = eventFileFor(malformedFinalNewlineRoot, project, jobId);
 await mkdir(path.dirname(malformedFinalNewlineFile), { recursive: true });
@@ -160,7 +160,7 @@ await assert.rejects(
   new RegExp(`${malformedFinalNewlineFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*line 2`)
 );
 
-const nonObjectEventRoot = await mkdtemp(path.join(tmpdir(), "flow-event-store-non-object-"));
+const nonObjectEventRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-non-object-"));
 const nonObjectEventFile = eventFileFor(nonObjectEventRoot, project, jobId);
 await mkdir(path.dirname(nonObjectEventFile), { recursive: true });
 await writeFile(nonObjectEventFile, `${JSON.stringify(createdEvent)}\nnull\n`, "utf8");
@@ -169,7 +169,7 @@ await assert.rejects(
   new RegExp(`${nonObjectEventFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*line 2.*malformed event`)
 );
 
-const arrayEventRoot = await mkdtemp(path.join(tmpdir(), "flow-event-store-array-"));
+const arrayEventRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-array-"));
 const arrayEventFile = eventFileFor(arrayEventRoot, project, jobId);
 await mkdir(path.dirname(arrayEventFile), { recursive: true });
 await writeFile(arrayEventFile, `${JSON.stringify(createdEvent)}\n[]\n`, "utf8");
@@ -178,7 +178,7 @@ await assert.rejects(
   new RegExp(`${arrayEventFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*line 2.*malformed event`)
 );
 
-const malformedMiddleRoot = await mkdtemp(path.join(tmpdir(), "flow-event-store-malformed-"));
+const malformedMiddleRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-malformed-"));
 const malformedMiddleFile = eventFileFor(malformedMiddleRoot, project, jobId);
 await mkdir(path.dirname(malformedMiddleFile), { recursive: true });
 await writeFile(

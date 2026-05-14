@@ -9,12 +9,12 @@
 - Task: Add a `config` file containing `key="value"` pairs and inline/comments.
 - Scope constraints:
   - Read only from:
-    - `/Users/chengwen/dev/flow/wiki/projects/hello-test/context.md`
-    - `/Users/chengwen/dev/flow/wiki/projects/hello-test/decisions.md`
-    - `/Users/chengwen/dev/flow/profiles/codex/soul.md`
-    - `/Users/chengwen/dev/flow/wiki/system/handshake-protocol.md`
-    - `/Users/chengwen/dev/flow/templates/handoff/plan-to-execute.md`
-  - Write only under: `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/`
+    - `/Users/chengwen/dev/cpb/wiki/projects/hello-test/context.md`
+    - `/Users/chengwen/dev/cpb/wiki/projects/hello-test/decisions.md`
+    - `/Users/chengwen/dev/cpb/profiles/codex/soul.md`
+    - `/Users/chengwen/dev/cpb/wiki/system/handshake-protocol.md`
+    - `/Users/chengwen/dev/cpb/templates/handoff/plan-to-execute.md`
+  - Write only under: `/Users/chengwen/dev/cpb/wiki/projects/hello-test/inbox/`
   - No terminal/test/build execution in planning phase.
 
 ## Objectives
@@ -54,7 +54,7 @@
      - States any pending follow-up tasks as explicit next actions.
 
 ## Deliverable
-- Create `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/config` (or agreed filename in the execution handoff).
+- Create `/Users/chengwen/dev/cpb/wiki/projects/hello-test/inbox/config` (or agreed filename in the execution handoff).
 - Populate with:
   - A brief header comment.
   - At least 5 commented and commented-gated `key="value"` lines.

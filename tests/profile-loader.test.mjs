@@ -11,8 +11,8 @@ import { bridgeEnvFromProfile } from '../server/services/role-bridge.js';
 
 describe('profile-loader', () => {
   it('loads codex profile with config.json', async () => {
-    const flowRoot = path.resolve('.');
-    const profile = await loadProfile(flowRoot, 'codex');
+    const cpbRoot = path.resolve('.');
+    const profile = await loadProfile(cpbRoot, 'codex');
     assert.equal(profile.role, 'codex');
     assert.ok(profile.soulMd);
     assert.ok(profile.soulMd.includes('Codex'));
@@ -21,8 +21,8 @@ describe('profile-loader', () => {
   });
 
   it('loads claude profile with config.json', async () => {
-    const flowRoot = path.resolve('.');
-    const profile = await loadProfile(flowRoot, 'claude');
+    const cpbRoot = path.resolve('.');
+    const profile = await loadProfile(cpbRoot, 'claude');
     assert.equal(profile.role, 'claude');
     assert.ok(profile.soulMd);
     assert.ok(profile.soulMd.includes('Claude'));
@@ -31,8 +31,8 @@ describe('profile-loader', () => {
   });
 
   it('returns defaults for unknown role', async () => {
-    const flowRoot = path.resolve('.');
-    const profile = await loadProfile(flowRoot, 'nonexistent');
+    const cpbRoot = path.resolve('.');
+    const profile = await loadProfile(cpbRoot, 'nonexistent');
     assert.equal(profile.role, 'nonexistent');
     assert.equal(profile.soulMd, null);
     assert.deepEqual(profile.permissions.write_paths, []);
@@ -40,7 +40,7 @@ describe('profile-loader', () => {
   });
 
   it('loads profile from custom dir with only soul.md', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-profile-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-profile-'));
     try {
       await mkdir(path.join(tmpRoot, 'profiles', 'reviewer'), { recursive: true });
       await writeFile(
@@ -57,7 +57,7 @@ describe('profile-loader', () => {
   });
 
   it('loads profile with only config.json', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-profile-cfg-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-profile-cfg-'));
     try {
       await mkdir(path.join(tmpRoot, 'profiles', 'minimal'), { recursive: true });
       await writeFile(
@@ -74,7 +74,7 @@ describe('profile-loader', () => {
   });
 
   it('handles invalid JSON gracefully', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-profile-bad-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-profile-bad-'));
     try {
       await mkdir(path.join(tmpRoot, 'profiles', 'badjson'), { recursive: true });
       await writeFile(
@@ -90,14 +90,14 @@ describe('profile-loader', () => {
   });
 
   it('listProfiles returns available profile directories', async () => {
-    const flowRoot = path.resolve('.');
-    const profiles = await listProfiles(flowRoot);
+    const cpbRoot = path.resolve('.');
+    const profiles = await listProfiles(cpbRoot);
     assert.ok(profiles.includes('codex'));
     assert.ok(profiles.includes('claude'));
   });
 
   it('listProfiles skips dot-prefixed dirs', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-profile-list-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-profile-list-'));
     try {
       await mkdir(path.join(tmpRoot, 'profiles', 'visible'), { recursive: true });
       await mkdir(path.join(tmpRoot, 'profiles', '.hidden'), { recursive: true });
@@ -112,21 +112,21 @@ describe('profile-loader', () => {
 
 describe('role-bridge with profile', () => {
   it('bridgeEnvFromProfile returns deny_tools env for codex', async () => {
-    const flowRoot = path.resolve('.');
-    const env = await bridgeEnvFromProfile(flowRoot, 'codex');
-    assert.equal(env.FLOW_ACP_DENY_TOOLS, 'terminal/create');
+    const cpbRoot = path.resolve('.');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'codex');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, 'terminal/create');
   });
 
   it('bridgeEnvFromProfile returns empty env for claude (no deny_tools)', async () => {
-    const flowRoot = path.resolve('.');
-    const env = await bridgeEnvFromProfile(flowRoot, 'claude');
-    assert.equal(env.FLOW_ACP_DENY_TOOLS, undefined);
+    const cpbRoot = path.resolve('.');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'claude');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
   });
 
   it('bridgeEnvFromProfile returns defaults for unknown role', async () => {
-    const flowRoot = path.resolve('.');
-    const env = await bridgeEnvFromProfile(flowRoot, 'nonexistent');
-    assert.equal(env.FLOW_ACP_DENY_TOOLS, undefined);
-    assert.equal(env.FLOW_ACP_CLAUDE_COMMAND, undefined);
+    const cpbRoot = path.resolve('.');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'nonexistent');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
+    assert.equal(env.CPB_ACP_CLAUDE_COMMAND, undefined);
   });
 });

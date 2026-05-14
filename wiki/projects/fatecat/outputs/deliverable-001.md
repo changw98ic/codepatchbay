@@ -17,10 +17,10 @@
 ### Files Changed
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateCatStore.swift` — added `KeyValuePersisting`, `UserDefaults` conformance, storage injection, settings write-through, recent-options load/save, and normalization guard for loaded recent options.
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCatTests/FateCatStoreTests.swift` — added in-memory storage test double and persistence regression tests; existing tests now use injected storage to avoid touching real `UserDefaults.standard`.
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/context.md` — enriched Flow project context with MVP scope, current app state, constraints, and likely next work.
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-001.md` — tightened the handoff from a generic plan into the concrete FateCat persistence task.
-- `/Users/chengwen/dev/flow/bridges/run-pipeline.sh` — fixed `FLOW_ROOT` resolution so the automatic pipeline can find `bridges/common.sh`.
-- `/Users/chengwen/Documents/FateCat/FLOW.md` and `/Users/chengwen/Documents/FateCat/.omc/wiki/flow` — created by `flow init` to register FateCat with Flow.
+- `/Users/chengwen/dev/cpb/wiki/projects/fatecat/context.md` — enriched CodePatchbay project context with MVP scope, current app state, constraints, and likely next work.
+- `/Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/plan-001.md` — tightened the handoff from a generic plan into the concrete FateCat persistence task.
+- `/Users/chengwen/dev/cpb/bridges/run-pipeline.sh` — fixed `CPB_ROOT` resolution so the automatic pipeline can find `bridges/common.sh`.
+- `/Users/chengwen/Documents/FateCat/CPB.md` and `/Users/chengwen/Documents/FateCat/.omc/wiki/cpb` — created by `cpb init` to register FateCat with CodePatchbay.
 
 ### Evidence
 

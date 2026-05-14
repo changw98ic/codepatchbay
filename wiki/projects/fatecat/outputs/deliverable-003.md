@@ -6,14 +6,14 @@
 - **Phase**: execute
 - **Task-Ref**: plan-003
 - **Timestamp**: 2026-05-13T13:05:10Z
-- **Execution**: direct ACP Claude Code via `/Users/chengwen/dev/flow/bridges/acp-client.mjs --agent claude`
+- **Execution**: direct ACP Claude Code via `/Users/chengwen/dev/cpb/bridges/acp-client.mjs --agent claude`
 
 ### Implemented
 
 - Added Store-driven result feedback copy for the result page.
 - Added `FeedbackPicker` injection to `FateCatStore` for deterministic tests and default random built-in feedback.
 - Added `selectedFeedbackLine` state, set when `finishSpin()` completes a valid decision.
-- Cleared previous feedback when starting a new spin or button-press flow.
+- Cleared previous feedback when starting a new spin or button-press cpb.
 - Added a built-in P0 feedback copy pool with mysterious, pleased, and mildly aloof cat tones.
 - Replaced the result page's hardcoded feedback sentence with `store.selectedFeedbackLine` plus the previous sentence as a fallback.
 - Added focused XCTest coverage for deterministic feedback injection, feedback clearing on reroll, non-empty built-in copy, and banned high-stakes wording.
@@ -23,8 +23,8 @@
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateCatStore.swift`
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Views/FateCatHomeView.swift`
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCatTests/FateCatStoreTests.swift`
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-003.md`
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/outputs/deliverable-003.md`
+- `/Users/chengwen/dev/cpb/wiki/projects/fatecat/inbox/plan-003.md`
+- `/Users/chengwen/dev/cpb/wiki/projects/fatecat/outputs/deliverable-003.md`
 
 ### TDD Evidence
 

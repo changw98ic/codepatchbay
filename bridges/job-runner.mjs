@@ -14,7 +14,7 @@ const rawArgs = process.argv.slice(2);
 function usage() {
   return [
     "Usage:",
-    "  node bridges/job-runner.mjs --flow-root <root> --project <project> --job-id <job-id> --phase <phase> --script <command> -- [args...]",
+    "  node bridges/job-runner.mjs --cpb-root <root> --project <project> --job-id <job-id> --phase <phase> --script <command> -- [args...]",
   ].join("\n");
 }
 
@@ -39,14 +39,14 @@ function parseArgs(args) {
     index += 1;
   }
 
-  for (const required of ["--flow-root", "--project", "--job-id", "--phase", "--script"]) {
+  for (const required of ["--cpb-root", "--project", "--job-id", "--phase", "--script"]) {
     if (!options.get(required)) {
       throw new Error(`missing required argument: ${required}`);
     }
   }
 
   return {
-    flowRoot: path.resolve(options.get("--flow-root")),
+    cpbRoot: path.resolve(options.get("--cpb-root")),
     project: options.get("--project"),
     jobId: options.get("--job-id"),
     phase: options.get("--phase"),
@@ -64,8 +64,8 @@ function eventTimestamp() {
   return new Date().toISOString();
 }
 
-async function appendPhaseFailed(flowRoot, project, jobId, phase, details) {
-  await appendEvent(flowRoot, project, jobId, {
+async function appendPhaseFailed(cpbRoot, project, jobId, phase, details) {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "phase_failed",
     jobId,
     phase,
@@ -77,7 +77,7 @@ async function appendPhaseFailed(flowRoot, project, jobId, phase, details) {
 const ACTIVITY_THROTTLE_MS = 30_000;
 const ACTIVITY_MAX_MESSAGE = 200;
 
-function createActivityTracker(flowRoot, project, jobId) {
+function createActivityTracker(cpbRoot, project, jobId) {
   let lastActivityAt = 0;
 
   async function track(message) {
@@ -88,7 +88,7 @@ function createActivityTracker(flowRoot, project, jobId) {
       ? message.slice(0, ACTIVITY_MAX_MESSAGE)
       : message;
     try {
-      await appendEvent(flowRoot, project, jobId, {
+      await appendEvent(cpbRoot, project, jobId, {
         type: "phase_activity",
         jobId,
         message: truncated,
@@ -153,20 +153,20 @@ async function main() {
     return 2;
   }
 
-  const { flowRoot, project, jobId, phase, script, scriptArgs } = parsed;
+  const { cpbRoot, project, jobId, phase, script, scriptArgs } = parsed;
   const leaseId = `lease-${jobId}-${phase}`;
   // Phase lease TTL: how long a lease is valid before considered stale.
   // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
-  const ttlMs = positiveIntegerFromEnv("FLOW_LEASE_TTL_MS", 120_000);
+  const ttlMs = positiveIntegerFromEnv("CPB_LEASE_TTL_MS", 120_000);
   const renewEveryMs = positiveIntegerFromEnv(
-    "FLOW_LEASE_RENEW_INTERVAL_MS",
+    "CPB_LEASE_RENEW_INTERVAL_MS",
     Math.max(5_000, Math.floor(ttlMs / 3))
   );
 
   // Check cancel before acquiring lease
-  const jobBefore = await getJob(flowRoot, project, jobId);
+  const jobBefore = await getJob(cpbRoot, project, jobId);
   if (jobBefore.cancelRequested) {
-    await cancelJob(flowRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
+    await cancelJob(cpbRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
     console.error(`cancelled before phase ${phase}`);
     return 1;
   }
@@ -176,14 +176,14 @@ async function main() {
   let childResult = { exitCode: 1 };
 
   try {
-    lease = await acquireLease(flowRoot, {
+    lease = await acquireLease(cpbRoot, {
       leaseId,
       jobId,
       phase,
       ttlMs,
     });
 
-    await appendEvent(flowRoot, project, jobId, {
+    await appendEvent(cpbRoot, project, jobId, {
       type: "phase_started",
       jobId,
       phase,
@@ -192,7 +192,7 @@ async function main() {
     });
 
     heartbeat = setInterval(() => {
-      renewLease(flowRoot, leaseId, {
+      renewLease(cpbRoot, leaseId, {
         ttlMs,
         ownerToken: lease.ownerToken,
       }).catch((err) => {
@@ -201,8 +201,8 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    const activity = createActivityTracker(flowRoot, project, jobId);
-    childResult = await runChild(script, scriptArgs, flowRoot, (output) => {
+    const activity = createActivityTracker(cpbRoot, project, jobId);
+    childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {
       const line = output.trim();
       if (line) activity.track(line);
     });
@@ -215,7 +215,7 @@ async function main() {
 
     if (lease !== null) {
       try {
-        await releaseLease(flowRoot, leaseId, {
+        await releaseLease(cpbRoot, leaseId, {
           ownerToken: lease.ownerToken,
         });
       } catch (err) {
@@ -230,12 +230,12 @@ async function main() {
   if (childResult.error) {
     console.error(`failed to spawn ${script}: ${childResult.error.message}`);
     // Check if cancel was requested during execution
-    const jobAfterError = await getJob(flowRoot, project, jobId);
+    const jobAfterError = await getJob(cpbRoot, project, jobId);
     if (jobAfterError.cancelRequested) {
-      await cancelJob(flowRoot, project, jobId, { reason: jobAfterError.cancelReason ?? "cancelled during execution" });
+      await cancelJob(cpbRoot, project, jobId, { reason: jobAfterError.cancelReason ?? "cancelled during execution" });
       return 1;
     }
-    await appendPhaseFailed(flowRoot, project, jobId, phase, {
+    await appendPhaseFailed(cpbRoot, project, jobId, phase, {
       exitCode: childResult.exitCode,
       error: childResult.error.message,
     });
@@ -243,7 +243,7 @@ async function main() {
   }
 
   if (childResult.exitCode === 0) {
-    await appendEvent(flowRoot, project, jobId, {
+    await appendEvent(cpbRoot, project, jobId, {
       type: "phase_completed",
       jobId,
       phase,
@@ -254,13 +254,13 @@ async function main() {
   }
 
   // Check if cancel was requested during execution
-  const jobAfter = await getJob(flowRoot, project, jobId);
+  const jobAfter = await getJob(cpbRoot, project, jobId);
   if (jobAfter.cancelRequested) {
-    await cancelJob(flowRoot, project, jobId, { reason: jobAfter.cancelReason ?? "cancelled during execution" });
+    await cancelJob(cpbRoot, project, jobId, { reason: jobAfter.cancelReason ?? "cancelled during execution" });
     return 1;
   }
 
-  await appendPhaseFailed(flowRoot, project, jobId, phase, {
+  await appendPhaseFailed(cpbRoot, project, jobId, phase, {
     exitCode: childResult.exitCode,
     signal: childResult.signal ?? null,
   });

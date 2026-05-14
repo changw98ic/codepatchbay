@@ -10,16 +10,16 @@ const REQUIRED_IGNORES = [
   "dist/",
   "build/",
   "coverage/",
-  "flow-task/state/",
-  "flow-task/worktrees/",
+  "cpb-task/state/",
+  "cpb-task/worktrees/",
 ];
 
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const BASELINE_ENV = {
-  GIT_AUTHOR_NAME: "Flow Supervisor",
-  GIT_AUTHOR_EMAIL: "flow-supervisor@local.invalid",
-  GIT_COMMITTER_NAME: "Flow Supervisor",
-  GIT_COMMITTER_EMAIL: "flow-supervisor@local.invalid",
+  GIT_AUTHOR_NAME: "CodePatchbay Supervisor",
+  GIT_AUTHOR_EMAIL: "cpb-supervisor@local.invalid",
+  GIT_COMMITTER_NAME: "CodePatchbay Supervisor",
+  GIT_COMMITTER_EMAIL: "cpb-supervisor@local.invalid",
 };
 
 function usage() {
@@ -200,7 +200,7 @@ async function rejectPreExistingStagedChanges(project) {
   );
   if (unsafeStaged.length > 0) {
     throw new Error(
-      `pre-existing staged changes must be committed or unstaged before Flow bootstrap: ${unsafeStaged.join(", ")}`
+      `pre-existing staged changes must be committed or unstaged before CodePatchbay bootstrap: ${unsafeStaged.join(", ")}`
     );
   }
 }
@@ -222,7 +222,7 @@ async function createBaselineCommit(project) {
   await removeRequiredIgnoresFromIndex(project);
   await assertNoRequiredIgnoresInIndex(project);
 
-  await commitStaged(project, "Flow protected baseline", {
+  await commitStaged(project, "CodePatchbay protected baseline", {
     allowEmpty: !(await hasStagedChanges(project)),
   });
 }
@@ -233,7 +233,7 @@ async function commitIgnoreProtection(project) {
   await assertNoRequiredIgnoresInIndex(project);
 
   if (await hasStagedChanges(project)) {
-    await commitStaged(project, "Flow protected ignore baseline");
+    await commitStaged(project, "CodePatchbay protected ignore baseline");
   }
 }
 
@@ -309,7 +309,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
 
   await bootstrap(project);
 
-  const branch = `flow/${jobId}-${slug}`;
+  const branch = `cpb/${jobId}-${slug}`;
   const root = path.resolve(worktreesRoot);
   const worktreePath = path.resolve(root, `${jobId}-${slug}`);
   ensureInside(root, worktreePath);

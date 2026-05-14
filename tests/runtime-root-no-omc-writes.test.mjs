@@ -19,7 +19,7 @@ async function exists(target) {
   }
 }
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-runtime-root-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-runtime-root-"));
 const project = "demo";
 const jobId = "job-20260513-120000-abc123";
 
@@ -44,7 +44,7 @@ await appendEvent(root, project, jobId, {
 const eventFile = eventFileFor(root, project, jobId);
 assert.equal(
   eventFile,
-  path.join(root, "flow-task", "events", project, `${jobId}.jsonl`)
+  path.join(root, "cpb-task", "events", project, `${jobId}.jsonl`)
 );
 assert.equal(await exists(path.join(root, ".omc", "events")), false);
 
@@ -57,7 +57,7 @@ await acquireLease(root, {
 });
 
 assert.notEqual(await readLease(root, "lease-job-20260513-plan"), null);
-assert.equal(await exists(path.join(root, "flow-task", "leases", "lease-job-20260513-plan.json")), true);
+assert.equal(await exists(path.join(root, "cpb-task", "leases", "lease-job-20260513-plan.json")), true);
 assert.equal(await exists(path.join(root, ".omc", "leases")), false);
 
 // Verify pipeline state comes from job projection (no state files needed)
@@ -68,12 +68,12 @@ assert.equal(pipelineState.status, "EXECUTING");
 assert.equal(pipelineState.jobId, jobId);
 
 // No state files should exist
-assert.equal(await exists(path.join(root, "flow-task", "state")), false);
+assert.equal(await exists(path.join(root, "cpb-task", "state")), false);
 assert.equal(await exists(path.join(root, ".omc", "state")), false);
 
 const { bootstrap } = await import("../bridges/worktree-manager.mjs");
 const projectDir = path.join(root, "source");
 await bootstrap(projectDir);
 const gitignore = await import("node:fs/promises").then(m => m.readFile(path.join(projectDir, ".gitignore"), "utf8"));
-assert.match(gitignore, /flow-task\/worktrees\//);
+assert.match(gitignore, /cpb-task\/worktrees\//);
 assert.doesNotMatch(gitignore, /\.omc\/worktrees\//);

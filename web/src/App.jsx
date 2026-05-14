@@ -27,7 +27,7 @@ export default function App() {
       <div className="app-layout">
         <nav className="sidebar">
           <div className="sidebar-header">
-            <h1>Flow</h1>
+            <h1>CodePatchbay</h1>
             <StatusIndicator />
           </div>
           <ul className="nav-list">

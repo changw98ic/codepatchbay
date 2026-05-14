@@ -10,7 +10,7 @@ import {
 
 let activeProcess = null;
 
-const leaseMetaPath = (flowRoot) => path.join(flowRoot, "flow-task", "self-evolve", ".controller-lock", "meta.json");
+const leaseMetaPath = (cpbRoot) => path.join(cpbRoot, "cpb-task", "self-evolve", ".controller-lock", "meta.json");
 
 function isPidAlive(pid) {
   try {
@@ -22,17 +22,17 @@ function isPidAlive(pid) {
   }
 }
 
-async function getControllerLease(flowRoot) {
+async function getControllerLease(cpbRoot) {
   try {
-    const raw = await readFile(leaseMetaPath(flowRoot), "utf8");
+    const raw = await readFile(leaseMetaPath(cpbRoot), "utf8");
     return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-async function getRunningController(flowRoot) {
-  const lease = await getControllerLease(flowRoot);
+async function getRunningController(cpbRoot) {
+  const lease = await getControllerLease(cpbRoot);
   const leasedPid = lease?.pid ? Number(lease.pid) : null;
   if (leasedPid && isPidAlive(leasedPid)) {
     return { pid: leasedPid, source: "lease", startedAt: lease.startedAt || null };
@@ -41,22 +41,22 @@ async function getRunningController(flowRoot) {
   return null;
 }
 
-async function resolveRunningState(flowRoot) {
+async function resolveRunningState(cpbRoot) {
   if (activeProcess) {
     return { running: true, pid: activeProcess.pid, source: "ui-process", startedAt: null };
   }
 
-  const lease = await getRunningController(flowRoot);
+  const lease = await getRunningController(cpbRoot);
   if (!lease) return { running: false, pid: null, source: null, startedAt: null };
   return { ...lease, running: true };
 }
 
-function evolveScriptPath(flowRoot) {
-  return path.join(flowRoot, "bridges", "self-evolve.mjs");
+function evolveScriptPath(cpbRoot) {
+  return path.join(cpbRoot, "bridges", "self-evolve.mjs");
 }
 
-async function readHistory(flowRoot) {
-  const filePath = path.join(flowRoot, "flow-task", "self-evolve", "history.jsonl");
+async function readHistory(cpbRoot) {
+  const filePath = path.join(cpbRoot, "cpb-task", "self-evolve", "history.jsonl");
   try {
     const raw = await readFile(filePath, "utf8");
     return raw
@@ -93,8 +93,8 @@ function toResponseState(state, runningState) {
 
 export async function evolveRoutes(fastify, opts) {
   const getState = async (req) => {
-    const state = await loadState(req.flowRoot);
-    const runningState = await resolveRunningState(req.flowRoot);
+    const state = await loadState(req.cpbRoot);
+    const runningState = await resolveRunningState(req.cpbRoot);
     return toResponseState(state, runningState);
   };
 
@@ -103,28 +103,28 @@ export async function evolveRoutes(fastify, opts) {
   });
 
   fastify.get("/evolve/history", async (req) => {
-    return readHistory(req.flowRoot);
+    return readHistory(req.cpbRoot);
   });
 
   fastify.post("/evolve/start", async (req, res) => {
-    const runningState = await resolveRunningState(req.flowRoot);
+    const runningState = await resolveRunningState(req.cpbRoot);
     if (runningState.running) {
       throw fastify.httpErrors.conflict("self-evolve already running");
     }
 
-    const state = await loadState(req.flowRoot);
-    const backlog = await loadBacklog(req.flowRoot);
+    const state = await loadState(req.cpbRoot);
+    const backlog = await loadBacklog(req.cpbRoot);
     const isIdle = !state.status || state.status === "idle" || state.status === "stopped" || state.status === "completed" || state.status === "error" || state.status === "failed";
     if (!isIdle && state.status !== "running" && state.round > 0) {
       throw fastify.httpErrors.conflict(`cannot start while status is ${state.status}`);
     }
     state.status = "starting";
-    await saveState(req.flowRoot, state);
+    await saveState(req.cpbRoot, state);
 
-    const script = evolveScriptPath(req.flowRoot);
+    const script = evolveScriptPath(req.cpbRoot);
     const child = spawn("node", [script], {
-      cwd: req.flowRoot,
-      env: { ...process.env, FLOW_ROOT: req.flowRoot },
+      cwd: req.cpbRoot,
+      env: { ...process.env, CPB_ROOT: req.cpbRoot },
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     });
@@ -140,18 +140,18 @@ export async function evolveRoutes(fastify, opts) {
     });
     activeProcess = child;
 
-    await appendHistory(req.flowRoot, {
+    await appendHistory(req.cpbRoot, {
       action: "start",
       source: "ui",
       backlog: backlog.length,
     });
 
     res.code(202);
-    return { accepted: true, pid: child.pid, status: toResponseState(await loadState(req.flowRoot), await resolveRunningState(req.flowRoot)) };
+    return { accepted: true, pid: child.pid, status: toResponseState(await loadState(req.cpbRoot), await resolveRunningState(req.cpbRoot)) };
   });
 
   fastify.post("/evolve/stop", async (req) => {
-    const runningState = await resolveRunningState(req.flowRoot);
+    const runningState = await resolveRunningState(req.cpbRoot);
     if (!runningState.running) {
       return { stopped: false, reason: "not_running" };
     }
@@ -165,13 +165,13 @@ export async function evolveRoutes(fastify, opts) {
       } catch {
         // ignore termination failures to keep endpoint idempotent
       }
-      await rm(path.join(req.flowRoot, "flow-task", "self-evolve", ".controller-lock"), { recursive: true, force: true });
+      await rm(path.join(req.cpbRoot, "cpb-task", "self-evolve", ".controller-lock"), { recursive: true, force: true });
     }
 
-    const state = await loadState(req.flowRoot);
+    const state = await loadState(req.cpbRoot);
     state.status = "stopped";
-    await saveState(req.flowRoot, state);
-    await appendHistory(req.flowRoot, {
+    await saveState(req.cpbRoot, state);
+    await appendHistory(req.cpbRoot, {
       action: "stop",
       source: "ui",
       targetPid: runningState.pid,

@@ -1,11 +1,11 @@
-# Flow Task Runtime v2 Plan
+# CodePatchbay Task Runtime v2 Plan
 
-> Replacement plan for Flow's 24h unattended fixed-role task runtime.
-> This plan intentionally keeps Flow runtime state out of `.omc/` and `.omx/`.
+> Replacement plan for CodePatchbay's 24h unattended fixed-role task runtime.
+> This plan intentionally keeps CodePatchbay runtime state out of `.omc/` and `.omx/`.
 
 ## Goal
 
-Make Flow capable of running long-lived project tasks with durable recovery,
+Make CodePatchbay capable of running long-lived project tasks with durable recovery,
 role-based phases, and optional multi-agent escalation while keeping task state
 simple and auditable.
 
@@ -14,16 +14,16 @@ The central correction is namespace ownership:
 ```text
 .omc/  belongs to oh-my-claudecode
 .omx/  belongs to oh-my-codex
-Flow task runtime data belongs to flow-task/
+CodePatchbay task runtime data belongs to cpb-task/
 ```
 
-Flow task state must not depend on wiki YAML files, profile files, `.omc/`, or
+CodePatchbay task state must not depend on wiki YAML files, profile files, `.omc/`, or
 `.omx/`.
 
 ## Non-Goals
 
-- Do not store Flow task runtime state under `.omc/`.
-- Do not store Flow task runtime state under `.omx/`.
+- Do not store CodePatchbay task runtime state under `.omc/`.
+- Do not store CodePatchbay task runtime state under `.omx/`.
 - Do not create machine-state YAML files under `wiki/projects/*/tasks/`.
 - Do not make every task run through a full multi-agent workflow.
 - Do not keep one agent process alive for 24 hours.
@@ -34,16 +34,16 @@ Flow task state must not depend on wiki YAML files, profile files, `.omc/`, or
 
 ## Runtime Data Root
 
-All Flow task runtime data lives under:
+All CodePatchbay task runtime data lives under:
 
 ```text
-flow-task/
+cpb-task/
 ```
 
 Recommended layout:
 
 ```text
-flow-task/
+cpb-task/
   events/
     {project}/
       {taskId}.jsonl
@@ -72,40 +72,40 @@ Directory semantics:
 
 | Directory | Purpose | Authoritative for task state |
 | --- | --- | --- |
-| `flow-task/events/` | Append-only task event logs | Yes |
-| `flow-task/leases/` | Process leases and heartbeats | No |
-| `flow-task/worktrees/` | Task-isolated git worktrees | No |
-| `flow-task/logs/` | stdout/stderr attachments | No |
-| `flow-task/locks/` | Local coordination locks | No |
-| `flow-task/tmp/` | Temporary files | No |
+| `cpb-task/events/` | Append-only task event logs | Yes |
+| `cpb-task/leases/` | Process leases and heartbeats | No |
+| `cpb-task/worktrees/` | Task-isolated git worktrees | No |
+| `cpb-task/logs/` | stdout/stderr attachments | No |
+| `cpb-task/locks/` | Local coordination locks | No |
+| `cpb-task/tmp/` | Temporary files | No |
 
-`flow-task/` should be ignored by git.
+`cpb-task/` should be ignored by git.
 
 ## State Model
 
 The event log is the only authoritative mutable task state:
 
 ```text
-flow-task/events/{project}/{taskId}.jsonl
+cpb-task/events/{project}/{taskId}.jsonl
 ```
 
 All state changes go through:
 
 ```text
-appendTaskEvent(flowRoot, project, taskId, event)
+appendTaskEvent(cpbRoot, project, taskId, event)
 ```
 
 All reads materialize state from events:
 
 ```text
-events = readTaskEvents(flowRoot, project, taskId)
+events = readTaskEvents(cpbRoot, project, taskId)
 state = materializeTask(events)
 ```
 
 Forbidden state sources:
 
 ```text
-flow-task/state/*.json
+cpb-task/state/*.json
 wiki/projects/*/tasks/*.yaml
 profiles/* current task state
 .omc/*
@@ -113,7 +113,7 @@ profiles/* current task state
 ```
 
 If UI performance later requires caching, the cache must be a rebuildable
-projection from `flow-task/events/`. Runtime correctness must not depend on the
+projection from `cpb-task/events/`. Runtime correctness must not depend on the
 cache.
 
 ## Event Contract
@@ -198,7 +198,7 @@ Creating a task appends only `task_created`:
   "type": "task_created",
   "project": "demo",
   "taskId": "task-20260513-120000-abc123",
-  "task": "Add login flow",
+  "task": "Add login cpb",
   "ts": "2026-05-13T12:00:00.000Z"
 }
 ```
@@ -341,7 +341,7 @@ Successful completion appends `task_completed`:
 ```json
 {
   "type": "task_completed",
-  "summary": "Implemented and verified login flow.",
+  "summary": "Implemented and verified login cpb.",
   "ts": "2026-05-13T12:16:00.000Z"
 }
 ```
@@ -354,7 +354,7 @@ Terminal failure appends `task_failed`; user/action blockers append
 Lease files live under:
 
 ```text
-flow-task/leases/{project}/{taskId}/{phaseId}.json
+cpb-task/leases/{project}/{taskId}/{phaseId}.json
 ```
 
 Leases answer only one question:
@@ -374,10 +374,10 @@ Leases must not decide:
 
 Those decisions come only from events.
 
-Supervisor recovery flow:
+Supervisor recovery cpb:
 
 ```text
-1. Scan flow-task/events/*/*.jsonl
+1. Scan cpb-task/events/*/*.jsonl
 2. Materialize each task
 3. Skip completed, failed, and blocked tasks
 4. If a phase is running, inspect the phase lease
@@ -451,8 +451,8 @@ Concrete provider/model selection is resolved at runtime from environment or an
 ignored local config:
 
 ```text
-FLOW_ROLE_BUILDER_PROVIDER=claude-code
-FLOW_ROLE_BUILDER_MODEL=...
+CPB_ROLE_BUILDER_PROVIDER=claude-code
+CPB_ROLE_BUILDER_MODEL=...
 ```
 
 Versioned profiles must not hardcode short-lived model names unless the file is
@@ -527,7 +527,7 @@ materializeTask p95
 
 ## API Surface
 
-Add a Flow task store module:
+Add a CodePatchbay task store module:
 
 ```text
 server/services/task-event-store.js
@@ -536,10 +536,10 @@ server/services/task-event-store.js
 Suggested exports:
 
 ```text
-taskEventFileFor(flowRoot, project, taskId)
-appendTaskEvent(flowRoot, project, taskId, event)
-readTaskEvents(flowRoot, project, taskId)
-listTaskEventFiles(flowRoot)
+taskEventFileFor(cpbRoot, project, taskId)
+appendTaskEvent(cpbRoot, project, taskId, event)
+readTaskEvents(cpbRoot, project, taskId)
+listTaskEventFiles(cpbRoot)
 materializeTask(events)
 ```
 
@@ -552,18 +552,18 @@ server/services/task-store.js
 Suggested exports:
 
 ```text
-createTask(flowRoot, { project, task })
-classifyTask(flowRoot, project, taskId, classification)
-planWorkflow(flowRoot, project, taskId, phaseGraph)
-startPhase(flowRoot, project, taskId, phase)
-completePhase(flowRoot, project, taskId, result)
-failPhase(flowRoot, project, taskId, result)
-blockPhase(flowRoot, project, taskId, result)
-completeTask(flowRoot, project, taskId, result)
-failTask(flowRoot, project, taskId, result)
-blockTask(flowRoot, project, taskId, result)
-getTask(flowRoot, project, taskId)
-listTasks(flowRoot)
+createTask(cpbRoot, { project, task })
+classifyTask(cpbRoot, project, taskId, classification)
+planWorkflow(cpbRoot, project, taskId, phaseGraph)
+startPhase(cpbRoot, project, taskId, phase)
+completePhase(cpbRoot, project, taskId, result)
+failPhase(cpbRoot, project, taskId, result)
+blockPhase(cpbRoot, project, taskId, result)
+completeTask(cpbRoot, project, taskId, result)
+failTask(cpbRoot, project, taskId, result)
+blockTask(cpbRoot, project, taskId, result)
+getTask(cpbRoot, project, taskId)
+listTasks(cpbRoot)
 ```
 
 ## CLI and Routes
@@ -571,41 +571,41 @@ listTasks(flowRoot)
 MVP CLI additions:
 
 ```text
-flow team-run <project> "<task>"
-flow tasks
-flow task <project> <taskId>
-flow supervisor
+cpb team-run <project> "<task>"
+cpb tasks
+cpb task <project> <taskId>
+cpb supervisor
 ```
 
 Compatibility commands remain stable:
 
 ```text
-flow plan
-flow execute
-flow verify
-flow pipeline
+cpb plan
+cpb execute
+cpb verify
+cpb pipeline
 ```
 
-`flow pipeline` should not be rewritten until `flow team-run` is stable.
+`cpb pipeline` should not be rewritten until `cpb team-run` is stable.
 
 ## Migration Plan
 
 ### MVP
 
-1. Add `flow-task/` to `.gitignore`.
-2. Add `task-event-store.js` backed by `flow-task/events/`.
+1. Add `cpb-task/` to `.gitignore`.
+2. Add `task-event-store.js` backed by `cpb-task/events/`.
 3. Add `materializeTask()` and event coverage tests.
 4. Add deterministic coordinator classification.
 5. Add workflow planner for `simple`, `standard`, and `blocked`.
 6. Add thin profile loader for `soul.md` and `config.yaml`.
 7. Add role phase runner with phase graph input.
-8. Add `flow team-run <project> "<task>"`.
-9. Keep existing `flow pipeline` behavior unchanged.
+8. Add `cpb team-run <project> "<task>"`.
+9. Keep existing `cpb pipeline` behavior unchanged.
 
 ### V1
 
-1. Teach supervisor to resume phase graphs from `flow-task/events/`.
-2. Move leases, logs, locks, provider slots, and worktrees under `flow-task/`.
+1. Teach supervisor to resume phase graphs from `cpb-task/events/`.
+2. Move leases, logs, locks, provider slots, and worktrees under `cpb-task/`.
 3. Add UI/CLI task state display from `materializeTask()`.
 4. Add task worktree creation for write phases.
 5. Add provider semaphore integration.
@@ -622,17 +622,17 @@ flow pipeline
 
 MVP is complete only when:
 
-- `flow-task/events/` is the only authoritative Flow task state source.
-- New Flow task runtime code does not write task state to `.omc/` or `.omx/`.
-- New Flow task runtime code does not write wiki YAML state files.
+- `cpb-task/events/` is the only authoritative CodePatchbay task state source.
+- New CodePatchbay task runtime code does not write task state to `.omc/` or `.omx/`.
+- New CodePatchbay task runtime code does not write wiki YAML state files.
 - `materializeTask()` handles every MVP event type.
 - Tests cover every state-changing event type.
 - Deterministic coordinator rules are tested.
 - Standard workflow can run `builder -> verifier`.
 - Blocked workflow produces a typed blocked state.
 - Supervisor can recover from event logs and stale leases.
-- `flow pipeline` remains compatible during migration.
-- `flow team-run` is available as the new task-runtime entry point.
+- `cpb pipeline` remains compatible during migration.
+- `cpb team-run` is available as the new task-runtime entry point.
 
 ## Risks and Mitigations
 
@@ -645,13 +645,13 @@ MVP is complete only when:
 | Provider/model churn | Resolve provider/model from runtime config, not versioned profiles |
 | Parallelism rewrite | Use phase graph and phase-scoped runner API from MVP |
 | Lease/state confusion | Treat leases as liveness hints only |
-| Migration breakage | Keep `flow pipeline` unchanged until `team-run` is proven |
+| Migration breakage | Keep `cpb pipeline` unchanged until `team-run` is proven |
 
 ## Implementation Notes
 
 - Existing docs that mention `.omc/state`, `.omc/events`, or wiki YAML task
   records should be updated after this plan is accepted.
-- Existing runtime code may continue to exist during migration, but new Flow
-  task runtime code should target `flow-task/`.
+- Existing runtime code may continue to exist during migration, but new CodePatchbay
+  task runtime code should target `cpb-task/`.
 - Use explicit names: `taskId`, `phaseId`, and `materializeTask`, not `jobId`
   or `materializeJob`, for the v2 task runtime.

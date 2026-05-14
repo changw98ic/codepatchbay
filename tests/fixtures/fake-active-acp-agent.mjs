@@ -11,9 +11,9 @@ const write = (message) => {
 };
 
 const sessionId = "fake-active-session";
-const tickIntervalMs = Number.parseInt(process.env.FLOW_TEST_ACTIVE_TICK_MS || "70", 10);
-const tickCount = Number.parseInt(process.env.FLOW_TEST_ACTIVE_TICKS || "4", 10);
-const finalDelayMs = Number.parseInt(process.env.FLOW_TEST_ACTIVE_FINAL_DELAY_MS || "30", 10);
+const tickIntervalMs = Number.parseInt(process.env.CPB_TEST_ACTIVE_TICK_MS || "70", 10);
+const tickCount = Number.parseInt(process.env.CPB_TEST_ACTIVE_TICKS || "4", 10);
+const finalDelayMs = Number.parseInt(process.env.CPB_TEST_ACTIVE_FINAL_DELAY_MS || "30", 10);
 
 rl.on("line", (line) => {
   if (!line.trim()) return;

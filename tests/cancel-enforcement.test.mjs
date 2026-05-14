@@ -14,7 +14,7 @@ describe('A3: cancel enforcement', () => {
   let tmpRoot;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-cancel-enforce-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-cancel-enforce-'));
   });
 
   afterEach(async () => {

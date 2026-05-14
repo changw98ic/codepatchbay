@@ -5,19 +5,19 @@
 - to: claude
 - phase: plan
 - task: Create a LICENSE file with MIT license text
-- project: /Users/chengwen/dev/flow/wiki/projects/hello-test
-- scope: /Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/plan-004.md
+- project: /Users/chengwen/dev/cpb/wiki/projects/hello-test
+- scope: /Users/chengwen/dev/cpb/wiki/projects/hello-test/inbox/plan-004.md
 
 ## Objective
 Produce a deterministic implementation plan so Claude can create `LICENSE` with the canonical MIT license text in the project `hello-test`.
 
 ## Constraints
-- Only write under `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/`.
+- Only write under `/Users/chengwen/dev/cpb/wiki/projects/hello-test/inbox/`.
 - Only read from:
-  - `/Users/chengwen/dev/flow/wiki/projects/hello-test/`
-  - `/Users/chengwen/dev/flow/profiles/`
-  - `/Users/chengwen/dev/flow/wiki/system/`
-  - `/Users/chengwen/dev/flow/templates/`
+  - `/Users/chengwen/dev/cpb/wiki/projects/hello-test/`
+  - `/Users/chengwen/dev/cpb/profiles/`
+  - `/Users/chengwen/dev/cpb/wiki/system/`
+  - `/Users/chengwen/dev/cpb/templates/`
 - No terminal command execution in this phase.
 - Keep scope strictly to the license task only.
 
@@ -43,7 +43,7 @@ Produce a deterministic implementation plan so Claude can create `LICENSE` with 
    - Acceptance criteria:
      - `LICENSE` file exists at the agreed project path.
      - File content matches the MIT template exactly except for expected placeholders/insertion values.
-     - No files outside `/Users/chengwen/dev/flow/wiki/projects/hello-test/` are modified.
+     - No files outside `/Users/chengwen/dev/cpb/wiki/projects/hello-test/` are modified.
 
 ## Definition of done
 - `LICENSE` contains valid MIT license text.

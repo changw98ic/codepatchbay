@@ -32,36 +32,36 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.badRequest("intent required (min 3 chars)");
     }
 
-    const session = await createSession(req.flowRoot, { project, intent: intent.trim() });
+    const session = await createSession(req.cpbRoot, { project, intent: intent.trim() });
     notify({ type: "review:update", sessionId: session.sessionId, status: session.status, project, session });
     return session;
   });
 
   // List sessions
   fastify.get("/review", async (req) => {
-    return listSessions(req.flowRoot);
+    return listSessions(req.cpbRoot);
   });
 
   // Get session
   fastify.get("/review/:id", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     return session;
   });
 
-  // Start review flow (spawns review-dispatch.mjs in background)
+  // Start review cpb (spawns review-dispatch.mjs in background)
   fastify.post("/review/:id/start", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "idle") {
       throw fastify.httpErrors.conflict(`session already in status: ${session.status}`);
     }
 
-    const scriptPath = path.join(req.flowRoot, "bridges/review-dispatch.mjs");
+    const scriptPath = path.join(req.cpbRoot, "bridges/review-dispatch.mjs");
 
-    const child = spawn("node", [scriptPath, req.flowRoot, session.sessionId], {
-      cwd: req.flowRoot,
-      env: { ...process.env, FLOW_ROOT: req.flowRoot },
+    const child = spawn("node", [scriptPath, req.cpbRoot, session.sessionId], {
+      cwd: req.cpbRoot,
+      env: { ...process.env, CPB_ROOT: req.cpbRoot },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -74,26 +74,26 @@ export async function reviewRoutes(fastify, opts) {
 
   // User approves → dispatch pipeline
   fastify.post("/review/:id/approve", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    await updateSession(req.flowRoot, session.sessionId, {
+    await updateSession(req.cpbRoot, session.sessionId, {
       status: "dispatched",
       userVerdict: "approved",
     });
 
     const result = spawnBridge(
-      req.flowRoot,
+      req.cpbRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
       req.log,
     );
 
-    await updateSession(req.flowRoot, session.sessionId, {
+    await updateSession(req.cpbRoot, session.sessionId, {
       jobId: result.taskId,
     });
 
@@ -103,7 +103,7 @@ export async function reviewRoutes(fastify, opts) {
       status: "dispatched",
       jobId: result.taskId,
       project: session.project,
-      session: await getSession(req.flowRoot, session.sessionId),
+      session: await getSession(req.cpbRoot, session.sessionId),
     });
 
     return { dispatched: true, sessionId: session.sessionId, taskId: result.taskId };
@@ -111,7 +111,7 @@ export async function reviewRoutes(fastify, opts) {
 
   // Internal auto-approve path (used by self-evolve)
   fastify.post("/review/:id/auto-approve", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
 
     if (!["dispatched", "user_review"].includes(session.status)) {
@@ -124,7 +124,7 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     const result = await updateSession(
-      req.flowRoot,
+      req.cpbRoot,
       session.sessionId,
       {
         status: session.status === "dispatched" ? session.status : "dispatched",
@@ -143,14 +143,14 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     const updated = spawnBridge(
-      req.flowRoot,
+      req.cpbRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
       req.log,
     );
 
-    const refreshed = await updateSession(req.flowRoot, session.sessionId, {
+    const refreshed = await updateSession(req.cpbRoot, session.sessionId, {
       ...result,
       jobId: updated.taskId,
       status: "dispatched",
@@ -175,13 +175,13 @@ export async function reviewRoutes(fastify, opts) {
 
   // User rejects
   fastify.post("/review/:id/reject", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    const updated = await updateSession(req.flowRoot, session.sessionId, {
+    const updated = await updateSession(req.cpbRoot, session.sessionId, {
       status: "expired",
       userVerdict: "rejected",
     });

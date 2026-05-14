@@ -24,7 +24,7 @@ export async function taskRoutes(fastify, opts) {
 
   // Get durable tasks
   fastify.get('/tasks/durable', async (req) => {
-    return getDurableTasks(req.flowRoot);
+    return getDurableTasks(req.cpbRoot);
   });
 
   // Trigger Codex plan
@@ -32,7 +32,7 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { task } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
-    return spawnBridge(req.flowRoot, name, 'codex-plan.sh', [name, task], req.log);
+    return spawnBridge(req.cpbRoot, name, 'codex-plan.sh', [name, task], req.log);
   });
 
   // Trigger Claude execute
@@ -40,7 +40,7 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { planId } = req.body || {};
     if (!planId) throw fastify.httpErrors.badRequest('planId required');
-    return spawnBridge(req.flowRoot, name, 'claude-execute.sh', [name, planId], req.log);
+    return spawnBridge(req.cpbRoot, name, 'claude-execute.sh', [name, planId], req.log);
   });
 
   // Trigger Codex verify
@@ -48,7 +48,7 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { deliverableId } = req.body || {};
     if (!deliverableId) throw fastify.httpErrors.badRequest('deliverableId required');
-    return spawnBridge(req.flowRoot, name, 'codex-verify.sh', [name, deliverableId], req.log);
+    return spawnBridge(req.cpbRoot, name, 'codex-verify.sh', [name, deliverableId], req.log);
   });
 
   // Trigger full pipeline
@@ -57,7 +57,7 @@ export async function taskRoutes(fastify, opts) {
     const { task, maxRetries = '3', timeout = '0' } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
 
-    return spawnBridge(req.flowRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log);
   });
 
   // Cancel a running job
@@ -65,7 +65,7 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { jobId, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
-    const job = await requestCancelJob(req.flowRoot, name, jobId, { reason });
+    const job = await requestCancelJob(req.cpbRoot, name, jobId, { reason });
     broadcast({ type: 'job:cancel_requested', project: name, jobId, reason });
     return job;
   });
@@ -76,19 +76,19 @@ export async function taskRoutes(fastify, opts) {
     const { jobId, instructions, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
     if (!instructions) throw fastify.httpErrors.badRequest('instructions required');
-    const job = await requestRedirectJob(req.flowRoot, name, jobId, { instructions, reason });
+    const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
   });
 }
 
-export function spawnBridge(flowRoot, project, script, args, log, providedTaskId = '') {
-  const scriptPath = path.join(flowRoot, 'bridges', script);
+export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = '') {
+  const scriptPath = path.join(cpbRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
 
   const child = spawn('bash', [scriptPath, ...args], {
-    cwd: flowRoot,
-    env: { ...process.env, FLOW_ROOT: flowRoot, FLOW_DANGEROUS: process.env.FLOW_DANGEROUS || '0' },
+    cwd: cpbRoot,
+    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

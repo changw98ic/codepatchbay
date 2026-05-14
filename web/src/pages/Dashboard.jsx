@@ -91,7 +91,7 @@ export default function Dashboard() {
       </div>
       {projects.length === 0 ? (
         <div className="empty-state">
-          <p>No projects found. Run <code>flow init</code> to create one.</p>
+          <p>No projects found. Run <code>cpb init</code> to create one.</p>
         </div>
       ) : (
         <div className="project-grid">

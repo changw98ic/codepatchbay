@@ -24,7 +24,7 @@ function runFreshNode(source) {
   });
 }
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-lease-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-lease-"));
 const now = new Date("2026-05-13T00:00:00.000Z");
 
 const lease = await acquireLease(root, {
@@ -56,7 +56,7 @@ assert.equal(renewed.expiresAt, "2026-05-13T00:01:45.000Z");
 await releaseLease(root, "lease-job-1-plan");
 const afterRelease = await readLease(root, "lease-job-1-plan");
 assert.equal(afterRelease, null);
-await releaseLease(await mkdtemp(path.join(tmpdir(), "flow-lease-missing-")), "missing-lease");
+await releaseLease(await mkdtemp(path.join(tmpdir(), "cpb-lease-missing-")), "missing-lease");
 
 await assert.rejects(
   () => acquireLease(root, {
@@ -69,7 +69,7 @@ await assert.rejects(
 );
 assert.throws(() => isLeaseStale(null), /invalid lease/i);
 
-const staleRoot = await mkdtemp(path.join(tmpdir(), "flow-lease-stale-"));
+const staleRoot = await mkdtemp(path.join(tmpdir(), "cpb-lease-stale-"));
 const staleLease = await acquireLease(staleRoot, {
   leaseId: "lease-job-2-plan",
   jobId: "job-2",
@@ -125,7 +125,7 @@ await releaseLease(staleRoot, "lease-job-2-plan", {
 });
 assert.equal(await readLease(staleRoot, "lease-job-2-plan"), null);
 
-const concurrentRoot = await mkdtemp(path.join(tmpdir(), "flow-lease-race-"));
+const concurrentRoot = await mkdtemp(path.join(tmpdir(), "cpb-lease-race-"));
 await acquireLease(concurrentRoot, {
   leaseId: "lease-job-3-plan",
   jobId: "job-3",
@@ -166,7 +166,7 @@ assert.equal(
   concurrentResults.find((result) => result.status === "fulfilled").value.ownerToken
 );
 
-const invalidRoot = await mkdtemp(path.join(tmpdir(), "flow-lease-invalid-"));
+const invalidRoot = await mkdtemp(path.join(tmpdir(), "cpb-lease-invalid-"));
 await acquireLease(invalidRoot, {
   leaseId: "lease-job-4-plan",
   jobId: "job-4",
@@ -175,7 +175,7 @@ await acquireLease(invalidRoot, {
   now,
 });
 await writeFile(
-  path.join(invalidRoot, "flow-task", "leases", "lease-job-4-plan.json"),
+  path.join(invalidRoot, "cpb-task", "leases", "lease-job-4-plan.json"),
   JSON.stringify({
     leaseId: "lease-job-4-plan",
     jobId: "job-4",
@@ -198,7 +198,7 @@ const invalidRecovered = await acquireLease(invalidRoot, {
 });
 assert.notEqual(invalidRecovered.ownerToken, "old-token");
 
-const orphanLockRoot = await mkdtemp(path.join(tmpdir(), "flow-lease-orphan-lock-"));
+const orphanLockRoot = await mkdtemp(path.join(tmpdir(), "cpb-lease-orphan-lock-"));
 await acquireLease(orphanLockRoot, {
   leaseId: "lease-job-5-plan",
   jobId: "job-5",
@@ -208,7 +208,7 @@ await acquireLease(orphanLockRoot, {
 });
 const orphanLockDir = path.join(
   orphanLockRoot,
-  "flow-task",
+  "cpb-task",
   "leases",
   "lease-job-5-plan.json.lock"
 );

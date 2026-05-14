@@ -26,9 +26,9 @@ function normalizeVariant(requested) {
 
 function resolveVariant() {
   const requested =
-    process.env.FLOW_CLAUDE_VARIANT ||
-    process.env.FLOW_BUILDER_VARIANT ||
-    process.env.FLOW_ACP_CLAUDE_VARIANT ||
+    process.env.CPB_CLAUDE_VARIANT ||
+    process.env.CPB_BUILDER_VARIANT ||
+    process.env.CPB_ACP_CLAUDE_VARIANT ||
     "";
 
   if (requested) return normalizeVariant(requested);
@@ -106,12 +106,12 @@ function resolveConfig() {
  */
 export function applyVariant(opts = {}) {
   if (opts.variant) {
-    process.env.FLOW_CLAUDE_VARIANT = opts.variant;
+    process.env.CPB_CLAUDE_VARIANT = opts.variant;
   }
   const config = resolveConfig();
 
   if (config.variant === "none") {
-    process.env.FLOW_ACTIVE_CLAUDE_VARIANT = "none";
+    process.env.CPB_ACTIVE_CLAUDE_VARIANT = "none";
     return config;
   }
 
@@ -122,12 +122,12 @@ export function applyVariant(opts = {}) {
   process.env.ANTHROPIC_MODEL = model;
   process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = model;
   process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = displayName;
-  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = `Flow provider variant: ${variant}`;
+  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = `CodePatchbay provider variant: ${variant}`;
   process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
   process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
   process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
   process.env.CLAUDE_CODE_SUBAGENT_MODEL = model;
-  process.env.FLOW_ACTIVE_CLAUDE_VARIANT = variant;
+  process.env.CPB_ACTIVE_CLAUDE_VARIANT = variant;
 
   return config;
 }
@@ -140,7 +140,7 @@ if (isDirect) {
   const jsonMode = args.includes("--json");
   const variantIdx = args.indexOf("--variant");
   if (variantIdx !== -1 && args[variantIdx + 1]) {
-    process.env.FLOW_CLAUDE_VARIANT = args[variantIdx + 1];
+    process.env.CPB_CLAUDE_VARIANT = args[variantIdx + 1];
   }
 
   try {
@@ -150,7 +150,7 @@ if (isDirect) {
       process.stdout.write(JSON.stringify(config) + "\n");
     } else if (exportMode) {
       if (config.variant === "none") {
-        process.stdout.write("export FLOW_ACTIVE_CLAUDE_VARIANT='none'\n");
+        process.stdout.write("export CPB_ACTIVE_CLAUDE_VARIANT='none'\n");
       } else {
         const vars = {
           ANTHROPIC_BASE_URL: config.baseUrl,
@@ -158,12 +158,12 @@ if (isDirect) {
           ANTHROPIC_MODEL: config.model,
           ANTHROPIC_CUSTOM_MODEL_OPTION: config.model,
           ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: config.displayName,
-          ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: `Flow provider variant: ${config.variant}`,
+          ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: `CodePatchbay provider variant: ${config.variant}`,
           ANTHROPIC_DEFAULT_SONNET_MODEL: config.model,
           ANTHROPIC_DEFAULT_OPUS_MODEL: config.model,
           ANTHROPIC_DEFAULT_HAIKU_MODEL: config.model,
           CLAUDE_CODE_SUBAGENT_MODEL: config.model,
-          FLOW_ACTIVE_CLAUDE_VARIANT: config.variant,
+          CPB_ACTIVE_CLAUDE_VARIANT: config.variant,
         };
         for (const [key, val] of Object.entries(vars)) {
           const escaped = String(val).replace(/'/g, "'\\''");

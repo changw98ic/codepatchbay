@@ -15,13 +15,13 @@ describe("notification config", () => {
   });
 
   it("returns null when channels.json does not exist", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-cfg-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-cfg-"));
     const config = await loadConfig(tmp);
     assert.equal(config, null);
   });
 
   it("returns parsed config from valid JSON", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-cfg-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-cfg-"));
     await writeFile(path.join(tmp, "channels.json"), JSON.stringify({
       enabled: true,
       channels: {
@@ -35,14 +35,14 @@ describe("notification config", () => {
   });
 
   it("returns null for malformed JSON", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-cfg-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-cfg-"));
     await writeFile(path.join(tmp, "channels.json"), "{bad json", "utf8");
     const config = await loadConfig(tmp);
     assert.equal(config, null);
   });
 
   it("returns null for JSON that is not an object", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-cfg-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-cfg-"));
     await writeFile(path.join(tmp, "channels.json"), "42", "utf8");
     const config = await loadConfig(tmp);
     assert.equal(config, null);

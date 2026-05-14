@@ -21,12 +21,12 @@ import { taskRoutes } from '../server/routes/tasks.js';
  * Task routes spawn bridge scripts via child_process. For testing,
  * we set up a dummy bridges directory with scripts that exit immediately.
  */
-async function buildApp(flowRoot) {
+async function buildApp(cpbRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
-    req.flowRoot = flowRoot;
+    req.cpbRoot = cpbRoot;
     done();
   });
   await app.register(taskRoutes, { prefix: '/api' });
@@ -35,14 +35,14 @@ async function buildApp(flowRoot) {
 }
 
 /**
- * Create a temp flow root with dummy bridge scripts.
+ * Create a temp cpb root with dummy bridge scripts.
  * Each bridge script is a bash one-liner that exits 0 immediately.
  */
 async function setupTempRoot() {
-  const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-test-tasks-'));
+  const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-tasks-'));
   await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
   await fs.mkdir(path.join(tmpRoot, 'bridges'), { recursive: true });
-  await fs.mkdir(path.join(tmpRoot, 'flow-task/state'), { recursive: true });
+  await fs.mkdir(path.join(tmpRoot, 'cpb-task/state'), { recursive: true });
 
   // Create dummy bridge scripts that just exit cleanly
   const scripts = ['codex-plan.sh', 'claude-execute.sh', 'codex-verify.sh', 'run-pipeline.sh'];
@@ -106,7 +106,7 @@ describe('GET /api/tasks/durable', () => {
 
   it('returns jobs from the event store', async () => {
     // Create a job event file directly
-    const eventsDir = path.join(tmpRoot, 'flow-task/events/my-proj');
+    const eventsDir = path.join(tmpRoot, 'cpb-task/events/my-proj');
     await fs.mkdir(eventsDir, { recursive: true });
     const jobEvent = {
       type: 'job_created',

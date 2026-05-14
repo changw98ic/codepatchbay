@@ -38,14 +38,14 @@ async function runClient({ env, prompt, cwd }) {
 }
 
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-client-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-client-"));
   const outputFile = path.join(tempDir, "plan-001.md");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -57,15 +57,15 @@ async function runClient({ env, prompt, cwd }) {
 }
 
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-active-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-active-"));
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeActiveAgent,
-      FLOW_ACP_TIMEOUT_MS: "30000",
-      FLOW_TEST_ACTIVE_TICK_MS: "7500",
-      FLOW_TEST_ACTIVE_TICKS: "5",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeActiveAgent,
+      CPB_ACP_TIMEOUT_MS: "30000",
+      CPB_TEST_ACTIVE_TICK_MS: "7500",
+      CPB_TEST_ACTIVE_TICKS: "5",
     },
     prompt: "Stay active longer than the idle timeout, then finish.\n",
   });
@@ -76,14 +76,14 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- Atomic write: no leftover temp files ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-atomic-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-atomic-"));
   const outputFile = path.join(tempDir, "output.txt");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -96,13 +96,13 @@ async function runClient({ env, prompt, cwd }) {
 
   // No leftover temp files in the directory
   const files = await readdir(tempDir);
-  const tmpFiles = files.filter((f) => f.startsWith(".flow-tmp-"));
+  const tmpFiles = files.filter((f) => f.startsWith(".cpb-tmp-"));
   assert.equal(tmpFiles.length, 0, `leftover temp files: ${tmpFiles.join(", ")}`);
 }
 
 // --- Non-handoff file (non-wiki path) skips validation ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-no-handoff-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-no-handoff-"));
   const outputFile = path.join(tempDir, "plan-001.md");
 
   // Uses default fake agent which writes content WITHOUT handoff markers.
@@ -110,8 +110,8 @@ async function runClient({ env, prompt, cwd }) {
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -123,15 +123,15 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- Valid handoff file (wiki path + valid content) passes validation ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-handoff-ok-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-handoff-ok-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "inbox");
   const outputFile = path.join(wikiDir, "plan-001.md");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeHandoffAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -145,15 +145,15 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- Missing handoff markers on wiki path fails validation ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-handoff-bad-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-handoff-bad-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "inbox");
   const outputFile = path.join(wikiDir, "plan-001.md");
 
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeBadHandoffAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeBadHandoffAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -170,15 +170,15 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- Wiki deliverable path also validates ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-deliverable-ok-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deliverable-ok-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "outputs");
   const outputFile = path.join(wikiDir, "deliverable-001.md");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeHandoffAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -192,16 +192,16 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- writeAllowPaths blocks write to disallowed path ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-blocked-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-blocked-"));
   const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
   const blockedFile = path.join(tempDir, "etc", "passwd");
 
   const { exitCode } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
-      FLOW_ACP_WRITE_ALLOW: `${allowedDir}/*`,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_WRITE_ALLOW: `${allowedDir}/*`,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${blockedFile}\n`,
   });
@@ -214,16 +214,16 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- writeAllowPaths allows write to matched path ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-allowed-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-allowed-"));
   const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
   const allowedFile = path.join(allowedDir, "plan-001.md");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
-      FLOW_ACP_WRITE_ALLOW: `${allowedDir}/*`,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeHandoffAgent,
+      CPB_ACP_WRITE_ALLOW: `${allowedDir}/*`,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${allowedFile}\n`,
   });
@@ -237,15 +237,15 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- null writeAllowPaths allows all writes (backward compatible) ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-norestrict-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-norestrict-"));
   const outputFile = path.join(tempDir, "anywhere", "output.txt");
 
-  // No FLOW_ACP_WRITE_ALLOW set — null by default, all writes allowed
+  // No CPB_ACP_WRITE_ALLOW set — null by default, all writes allowed
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${outputFile}\n`,
   });
@@ -258,14 +258,14 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- terminalPolicy 'deny' blocks terminal creation ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-deny-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-deny-"));
 
   const { exitCode } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeTerminalAgent,
-      FLOW_ACP_TERMINAL: "deny",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeTerminalAgent,
+      CPB_ACP_TERMINAL: "deny",
     },
     prompt: `Run command: echo hello\n`,
   });
@@ -275,14 +275,14 @@ async function runClient({ env, prompt, cwd }) {
 
 // --- terminalPolicy 'allow' (default) allows terminal creation ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-allow-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-allow-"));
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeTerminalAgent,
-      // FLOW_ACP_TERMINAL not set — defaults to "allow"
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeTerminalAgent,
+      // CPB_ACP_TERMINAL not set — defaults to "allow"
     },
     prompt: `Run command: echo hello\n`,
   });
@@ -291,9 +291,9 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(stdout, /done/);
 }
 
-// --- FLOW_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly ---
+// --- CPB_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-envvar-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-envvar-"));
   const inboxDir = path.join(tempDir, "wiki", "projects", "proj", "inbox");
   const outputsDir = path.join(tempDir, "wiki", "projects", "proj", "outputs");
 
@@ -301,9 +301,9 @@ async function runClient({ env, prompt, cwd }) {
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeHandoffAgent,
-      FLOW_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeHandoffAgent,
+      CPB_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${inboxDir}/plan-001.md\n`,
   });
@@ -314,15 +314,15 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(stdout, /done/);
 
   // Verify a path outside both patterns is blocked
-  const blockedDir = await mkdtemp(path.join(tmpdir(), "flow-acp-write-envvar-blocked-"));
+  const blockedDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-envvar-blocked-"));
   const blockedFile = path.join(blockedDir, "etc", "shadow");
 
   const { exitCode: exitCode2 } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeAgent,
-      FLOW_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeAgent,
+      CPB_ACP_WRITE_ALLOW: `${inboxDir}/*,${outputsDir}/*`,
     },
     prompt: `Generate a plan.\nWrite the plan to: ${blockedFile}\n`,
   });
@@ -339,17 +339,17 @@ async function runClient({ env, prompt, cwd }) {
 
 const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-tool-policy.mjs");
 
-// --- FLOW_ACP_DENY_TOOLS blocks denied tools ---
+// --- CPB_ACP_DENY_TOOLS blocks denied tools ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-deny-tools-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deny-tools-"));
   const outputFile = path.join(tempDir, "output.txt");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
     },
     prompt: `ACTION: write_file\nACTION: terminal\nWrite the plan to: ${outputFile}\n`,
   });
@@ -362,16 +362,16 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stdout, /done/);
 }
 
-// --- FLOW_ACP_DENY_TOOLS blocks terminal/create ---
+// --- CPB_ACP_DENY_TOOLS blocks terminal/create ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-deny-terminal-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deny-terminal-"));
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_DENY_TOOLS: "terminal/create",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_DENY_TOOLS: "terminal/create",
     },
     prompt: `ACTION: terminal\n`,
   });
@@ -380,19 +380,19 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stdout, /done/);
 }
 
-// --- FLOW_ACP_ALLOW_TOOLS overrides FLOW_ACP_DENY_TOOLS for same tool ---
+// --- CPB_ACP_ALLOW_TOOLS overrides CPB_ACP_DENY_TOOLS for same tool ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-allow-override-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-allow-override-"));
   const outputFile = path.join(tempDir, "output.txt");
 
   // fs/write_text_file appears in both DENY and ALLOW — ALLOW takes precedence
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
-      FLOW_ACP_ALLOW_TOOLS: "fs/write_text_file",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_DENY_TOOLS: "fs/write_text_file,terminal/create",
+      CPB_ACP_ALLOW_TOOLS: "fs/write_text_file",
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -406,7 +406,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- JSON policy file loads and enforces correctly ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-file-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-file-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -419,9 +419,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -435,7 +435,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- JSON policy file allows explicitly allowed tools ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-file-allow-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-file-allow-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -446,9 +446,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -461,7 +461,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- Invalid JSON policy file: fail closed ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-bad-json-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-bad-json-"));
   const policyFile = path.join(tempDir, "policy.json");
 
   await writeFile(policyFile, "{ this is not valid JSON }}}");
@@ -469,9 +469,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: "should not matter\n",
   });
@@ -482,14 +482,14 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- Non-existent policy file: fail closed ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-no-file-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-no-file-"));
 
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: "/tmp/nonexistent-flow-policy-xyz.json",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: "/tmp/nonexistent-cpb-policy-xyz.json",
     },
     prompt: "should not matter\n",
   });
@@ -500,7 +500,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- Policy file with invalid action: fail closed ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-bad-action-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-bad-action-"));
   const policyFile = path.join(tempDir, "policy.json");
 
   await writeFile(policyFile, JSON.stringify({ "fs/write_text_file": "maybe" }));
@@ -508,9 +508,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: "should not matter\n",
   });
@@ -521,7 +521,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- Policy file with array instead of object: fail closed ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-array-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-array-"));
   const policyFile = path.join(tempDir, "policy.json");
 
   await writeFile(policyFile, JSON.stringify(["fs/write_text_file"]));
@@ -529,9 +529,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: "should not matter\n",
   });
@@ -540,16 +540,16 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stderr, /expected a JSON object/);
 }
 
-// --- Backward compat: FLOW_ACP_TERMINAL=deny still works ---
+// --- Backward compat: CPB_ACP_TERMINAL=deny still works ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-backcompat-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-backcompat-"));
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TERMINAL: "deny",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TERMINAL: "deny",
     },
     prompt: `ACTION: terminal\n`,
   });
@@ -558,17 +558,17 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stdout, /done/);
 }
 
-// --- Backward compat: FLOW_ACP_TERMINAL=deny does NOT block fs/write_text_file ---
+// --- Backward compat: CPB_ACP_TERMINAL=deny does NOT block fs/write_text_file ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-terminal-write-ok-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-write-ok-"));
   const outputFile = path.join(tempDir, "output.txt");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TERMINAL: "deny",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TERMINAL: "deny",
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -579,9 +579,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stdout, /done/);
 }
 
-// --- Priority: TOOL_POLICY_FILE overrides FLOW_ACP_DENY_TOOLS ---
+// --- Priority: TOOL_POLICY_FILE overrides CPB_ACP_DENY_TOOLS ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-priority-file-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-priority-file-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -591,10 +591,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
-      FLOW_ACP_DENY_TOOLS: "fs/write_text_file",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_DENY_TOOLS: "fs/write_text_file",
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -605,20 +605,20 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(stdout, /done/);
 }
 
-// --- Priority: DENY_TOOLS overrides FLOW_ACP_TERMINAL ---
+// --- Priority: DENY_TOOLS overrides CPB_ACP_TERMINAL ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-priority-env-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-priority-env-"));
   const outputFile = path.join(tempDir, "output.txt");
 
-  // FLOW_ACP_TERMINAL=deny but DENY_TOOLS allows terminal/create — DENY_TOOLS wins
+  // CPB_ACP_TERMINAL=deny but DENY_TOOLS allows terminal/create — DENY_TOOLS wins
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_DENY_TOOLS: "fs/write_text_file",
-      FLOW_ACP_ALLOW_TOOLS: "terminal/create",
-      FLOW_ACP_TERMINAL: "deny",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_DENY_TOOLS: "fs/write_text_file",
+      CPB_ACP_ALLOW_TOOLS: "terminal/create",
+      CPB_ACP_TERMINAL: "deny",
     },
     prompt: `ACTION: terminal\n`,
   });
@@ -630,14 +630,14 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- No policy set: all tools allowed (default behavior) ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-no-policy-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-no-policy-"));
   const outputFile = path.join(tempDir, "output.txt");
 
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });
@@ -650,7 +650,7 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
 // --- Tools not in policy are allowed through ---
 {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-acp-policy-passthrough-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-passthrough-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -660,9 +660,9 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
     env: {
-      FLOW_ACP_CODEX_COMMAND: process.execPath,
-      FLOW_ACP_CODEX_ARGS: fakeToolPolicyAgent,
-      FLOW_ACP_TOOL_POLICY_FILE: policyFile,
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeToolPolicyAgent,
+      CPB_ACP_TOOL_POLICY_FILE: policyFile,
     },
     prompt: `ACTION: write_file\nWrite the plan to: ${outputFile}\n`,
   });

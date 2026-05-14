@@ -48,7 +48,7 @@ async function mustGit(args, cwd) {
 
 describe("Migration edge cases", () => {
   it("re-running event append and lease acquire is idempotent", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "flow-idempotent-"));
+    const root = await mkdtemp(path.join(tmpdir(), "cpb-idempotent-"));
     try {
       const project = "idempotency-test";
       const jobId = "job-idem-001";
@@ -86,7 +86,7 @@ describe("Migration edge cases", () => {
   });
 
   it("partial migration coexists with pre-existing files", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "flow-partial-"));
+    const root = await mkdtemp(path.join(tmpdir(), "cpb-partial-"));
     try {
       const project = "partial-test";
       const jobId = "job-partial-001";
@@ -112,7 +112,7 @@ describe("Migration edge cases", () => {
   });
 
   it("stale conflicting lease file is overwritten by acquireLease", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "flow-conflict-"));
+    const root = await mkdtemp(path.join(tmpdir(), "cpb-conflict-"));
     try {
       const project = "conflict-test";
       const jobId = "job-conflict-001";
@@ -146,10 +146,10 @@ describe("Migration edge cases", () => {
 
 describe("Worktree edge cases", () => {
   it("path traversal in jobId is rejected", async () => {
-    const project = await mkdtemp(path.join(tmpdir(), "flow-wt-traversal-"));
+    const project = await mkdtemp(path.join(tmpdir(), "cpb-wt-traversal-"));
     await writeFile(path.join(project, "README.md"), "# Traversal\n", "utf8");
     await runManager(["bootstrap", "--project", project]);
-    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "flow-wt-traversal-root-"));
+    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "cpb-wt-traversal-root-"));
 
     try {
       for (const badId of ["../bad", "../../etc/passwd", "a/b/c"]) {
@@ -167,10 +167,10 @@ describe("Worktree edge cases", () => {
   });
 
   it("duplicate worktree (same jobId + slug) is idempotent", async () => {
-    const project = await mkdtemp(path.join(tmpdir(), "flow-wt-dup-"));
+    const project = await mkdtemp(path.join(tmpdir(), "cpb-wt-dup-"));
     await writeFile(path.join(project, "README.md"), "# Dup\n", "utf8");
     await runManager(["bootstrap", "--project", project]);
-    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "flow-wt-dup-root-"));
+    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "cpb-wt-dup-root-"));
 
     try {
       const first = await runManager([
@@ -193,15 +193,15 @@ describe("Worktree edge cases", () => {
 
   it("git worktree remove on non-existent path fails gracefully", async () => {
     const result = await spawnFile("git", [
-      "worktree", "remove", "/tmp/no-such-worktree-flow-test",
+      "worktree", "remove", "/tmp/no-such-worktree-cpb-test",
     ]);
     assert.notEqual(result.code, 0, "expected git worktree remove to fail on non-existent path");
   });
 
   it("createWorktree on plain directory auto-inits git", async () => {
-    const nonGitDir = await mkdtemp(path.join(tmpdir(), "flow-wt-nongit-"));
+    const nonGitDir = await mkdtemp(path.join(tmpdir(), "cpb-wt-nongit-"));
     await writeFile(path.join(nonGitDir, "README.md"), "# Not Git\n", "utf8");
-    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "flow-wt-nongit-root-"));
+    const worktreesRoot = await mkdtemp(path.join(tmpdir(), "cpb-wt-nongit-root-"));
 
     try {
       const result = await runManager([

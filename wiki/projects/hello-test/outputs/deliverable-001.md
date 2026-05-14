@@ -13,19 +13,19 @@
 - 所有缺失信息（如技术栈、安装命令、详细描述）均以“待补充”或 TODO 形式显式标注，未进行无依据推测。
 
 ### Files Changed
-- `/Users/chengwen/dev/flow/wiki/projects/hello-test/README.md` — 新建：项目说明与使用文档
+- `/Users/chengwen/dev/cpb/wiki/projects/hello-test/README.md` — 新建：项目说明与使用文档
 
 ### Evidence
 
 **文件存在性验证**:
 ```bash
-$ ls -la /Users/chengwen/dev/flow/wiki/projects/hello-test/README.md
--rw-r--r--  1 chengwen  wheel  1690 May 14 01:40 /Users/chengwen/dev/flow/wiki/projects/hello-test/README.md
+$ ls -la /Users/chengwen/dev/cpb/wiki/projects/hello-test/README.md
+-rw-r--r--  1 chengwen  wheel  1690 May 14 01:40 /Users/chengwen/dev/cpb/wiki/projects/hello-test/README.md
 ```
 
 **内容结构验证**:
 ```bash
-$ grep "^## " /Users/chengwen/dev/flow/wiki/projects/hello-test/README.md
+$ grep "^## " /Users/chengwen/dev/cpb/wiki/projects/hello-test/README.md
 ## 项目介绍
 ## 快速开始
 ## 运行要求与安装
