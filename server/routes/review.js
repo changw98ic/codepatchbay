@@ -59,12 +59,15 @@ export async function reviewRoutes(fastify, opts) {
 
     const scriptPath = path.join(req.flowRoot, "bridges/review-dispatch.mjs");
 
-    spawn("node", [scriptPath, req.flowRoot, session.sessionId], {
+    const child = spawn("node", [scriptPath, req.flowRoot, session.sessionId], {
       cwd: req.flowRoot,
       env: { ...process.env, FLOW_ROOT: req.flowRoot },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       detached: true,
-    }).unref();
+    });
+    child.stdout.on("data", (chunk) => process.stdout.write(`[review-dispatch] ${chunk}`));
+    child.stderr.on("data", (chunk) => process.stderr.write(`[review-dispatch] ${chunk}`));
+    child.unref();
 
     return { accepted: true, sessionId: session.sessionId };
   });

@@ -352,10 +352,13 @@ async function runReview(flowRoot, sessionId) {
     // Phase 1: Research
     await updateSession(flowRoot, sessionId, { status: "researching" });
     console.log(`[review] ${sessionId} phase 1: researching`);
-    const [codexResearch, claudeResearch] = await Promise.all([
+    const [codexRes, claudeRes] = await Promise.allSettled([
       sendWithRetry(codex, researchPrompt(session.intent, session.project), "codex"),
       sendWithRetry(claude, researchPrompt(session.intent, session.project), "claude"),
     ]);
+    const codexResearch = codexRes.status === "fulfilled" ? codexRes.value : "";
+    const claudeResearch = claudeRes.status === "fulfilled" ? claudeRes.value : "";
+    if (!codexResearch && !claudeResearch) throw new Error("both research agents failed");
     await updateSession(flowRoot, sessionId, {
       research: { codex: codexResearch, claude: claudeResearch },
     });
@@ -372,10 +375,16 @@ async function runReview(flowRoot, sessionId) {
       await updateSession(flowRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
 
-      const [codexReview, claudeReview] = await Promise.all([
+      const results = await Promise.allSettled([
         sendWithRetry(codex, reviewPrompt(currentPlan, "codex"), "codex"),
         sendWithRetry(claude, reviewPrompt(currentPlan, "claude"), "claude"),
       ]);
+
+      const codexReview = results[0].status === "fulfilled" ? results[0].value : "";
+      const claudeReview = results[1].status === "fulfilled" ? results[1].value : "";
+      if (results[0].status === "rejected") console.error(`[review] codex review failed: ${results[0].reason?.message}`);
+      if (results[1].status === "rejected") console.error(`[review] claude review failed: ${results[1].reason?.message}`);
+      if (!codexReview && !claudeReview) throw new Error("both reviewers failed");
 
       const codexIssues = parseIssues(codexReview);
       const claudeIssues = parseIssues(claudeReview);
