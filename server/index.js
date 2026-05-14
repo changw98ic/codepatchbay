@@ -6,6 +6,7 @@ import path from 'path';
 import { registerWatcher } from './services/watcher.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
+import { channelRoutes } from './routes/channels.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
 import { initNotificationService } from './services/notification/index.js';
 
@@ -45,6 +46,7 @@ app.addHook('onRequest', (req, _res, done) => {
 // Register routes
 app.register(projectRoutes, { prefix: '/api' });
 app.register(taskRoutes, { prefix: '/api' });
+app.register(channelRoutes, { prefix: '/api' });
 
 // File watcher + notification service
 const notifService = initNotificationService(FLOW_ROOT);
