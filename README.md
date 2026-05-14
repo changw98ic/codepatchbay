@@ -17,7 +17,7 @@ Current experiment:
 
 CodePatchbay is **not production-ready**.
 
-It has only been developed in the original local environment so far. Clean-machine setup, cross-platform behavior, long-running recovery, and real unattended operation still need to be proven.
+It has been clean-clone validated once from the GitHub repository on macOS with Node.js 24.4.1. Cross-platform behavior, long-running recovery, and real unattended operation still need to be proven.
 
 Use it as an experimental local tool, not as infrastructure you rely on for important repositories.
 
@@ -100,7 +100,7 @@ cpb-task/reviews/     review session state
 
 ## Quick start
 
-This quick start has not yet been validated on a clean machine. Expect setup issues and adapter-specific failures.
+This quick start has been validated once from a clean GitHub clone on macOS with Node.js 24.4.1. Expect setup issues on other operating systems, Node versions, and adapter configurations until they are tested.
 
 ### Prerequisites
 
@@ -192,7 +192,7 @@ Safe operating rules:
 ## Known limitations
 
 - Only Codex ACP and Claude Code ACP are supported as first-class backends.
-- Clean environment setup has not been proven yet.
+- Clean environment setup has only been validated once on macOS with Node.js 24.4.1; Linux, Windows, and CI setup still need proof.
 - Long-running and 24-hour recovery claims have not been proven yet.
 - No authentication or RBAC is included in the local Web UI.
 - The UI is not polished.
@@ -202,7 +202,7 @@ Safe operating rules:
 
 ## Near-term work before public launch
 
-- Prove clean-machine setup outside the current development environment.
+- Repeat clean-machine setup on Linux, CI, and another macOS account.
 - Document the real minimum setup: local Codex CLI plus Claude Code CLI configured and reachable through their ACP/CLI bridges.
 - Add a real long-running example only after it has been validated with actual Codex + Claude Code execution.
 - Keep public claims aligned with verified behavior; do not describe 24h unattended operation as proven until it is demonstrated.
