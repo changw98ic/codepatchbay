@@ -115,10 +115,18 @@ This quick start has not yet been validated on a clean machine. Expect setup iss
 ```bash
 git clone https://github.com/changw98ic/codepatchbay.git
 cd codepatchbay
+npm ci
 
 ./cpb init /path/to/your-project my-project
 ./cpb plan my-project "Describe a small change"
 ./cpb ui
+```
+
+Local verification commands:
+
+```bash
+npm test
+npm run build:web
 ```
 
 The full pipeline command exists, but treat it as experimental:

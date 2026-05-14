@@ -47,7 +47,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}status${NC} <project>                       查看项目状态
   ${CYAN}list${NC}                                   列出所有项目
   ${CYAN}jobs${NC}                                     列出 durable jobs
-  ${CYAN}supervisor${NC}                               启动无人值守 supervisor 循环
+  ${CYAN}supervisor${NC}                               启动长时运行 supervisor 原型
   ${CYAN}migrate-runtime-root${NC} [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/
   ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
   ${CYAN}ui${NC} [--port PORT] [--host HOST]        启动 Web UI (默认 127.0.0.1)

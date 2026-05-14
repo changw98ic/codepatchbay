@@ -20,21 +20,19 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install server dependencies
-        run: cd server && npm ci
-
-      - name: Install web dependencies
-        run: cd web && npm ci
+      - name: Install dependencies
+        run: npm ci
 
       - name: Run unit tests
-        run: node --test tests/*.mjs
+        run: npm run test:node
 
       - name: Run bash integration tests
         run: |
           chmod +x bridges/*.sh tests/*.sh
-          bash tests/cpb-jobs.test.sh
-          bash tests/cpb-bridges.test.sh
-          bash tests/cpb-variant-env.test.sh
+          npm run test:shell
+
+      - name: Build web UI
+        run: npm run build:web
 
   lint:
     runs-on: ubuntu-latest
@@ -43,6 +41,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Check bash scripts syntax
         run: |
