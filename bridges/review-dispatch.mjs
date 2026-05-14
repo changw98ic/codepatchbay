@@ -111,25 +111,28 @@ class PersistentAcp {
     const session = await this.request("session/new", { cwd: FLOW_ROOT, mcpServers: [] });
 
     let response = "";
-    let lastProgress = Date.now();
-    const PROMPT_STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
+    const startedAt = Date.now();
+    let lastTextAt = Date.now();
+    const STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
+    const MAX_MS = parseInt(process.env.ACP_PROMPT_MAX_MS || "600000", 10);
 
     const collectUpdate = (params) => {
       const update = params?.update;
       if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
         response += update.content.text;
-        lastProgress = Date.now();
-      } else if (update?.sessionUpdate) {
-        lastProgress = Date.now();
+        lastTextAt = Date.now();
       }
     };
 
     let stuckTimer = null;
     const stuckGuard = new Promise((_, reject) => {
       stuckTimer = setInterval(() => {
-        if (Date.now() - lastProgress > PROMPT_STUCK_MS) {
+        const noText = Date.now() - lastTextAt > STUCK_MS;
+        const tooLong = Date.now() - startedAt > MAX_MS;
+        if (noText || tooLong) {
           clearInterval(stuckTimer);
-          reject(new Error(`${this.agent} prompt stuck: no progress for ${PROMPT_STUCK_MS}ms`));
+          const reason = tooLong ? `exceeded max ${MAX_MS}ms` : `no text output for ${STUCK_MS}ms`;
+          reject(new Error(`${this.agent} prompt stuck: ${reason}`));
         }
       }, 15000);
     });
@@ -156,7 +159,9 @@ class PersistentAcp {
       await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
     } catch (err) {
       console.error(`[${this.agent}] sendPrompt error: ${err.message}`);
-      this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: session.sessionId } });
+      try {
+        this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: session.sessionId } });
+      } catch {}
       throw err;
     } finally {
       clearInterval(stuckTimer);
