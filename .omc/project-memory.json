@@ -1,0 +1,502 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1778681264610,
+  "projectRoot": "/Users/chengwen/dev/flow",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "git commit -m \"$(cat <<'EOF'\nAdd 31 tests: ACP protocol exceptions, migration/worktree edges, web frontend\n\n- tests/acp-protocol-exceptions.test.mjs: 7 tests for malformed JSON, early exit, large payload, stale id\n- tests/migration-worktree-edge-cases.test.mjs: 7 tests for idempotent migration, stale lease overwrite, path traversal, duplicate worktree\n- tests/fixtures/fake-acp-agent-*.mjs: 7 fixture agents for ACP protocol testing\n- web/src/components/PipelineStatus.test.jsx: 9 tests for phase rendering, unknown phases, custom workflows\n- web/src/components/TaskForm.test.jsx: 8 tests for form validation, mode switching, project sync\n- web/vite.config.js: add vitest config with jsdom environment\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>\nEOF\n)\"",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bridges": {
+      "path": "bridges",
+      "purpose": null,
+      "fileCount": 14,
+      "lastAccessed": 1778681264598,
+      "keyFiles": [
+        "acp-client.mjs",
+        "claude-execute.sh",
+        "codex-plan.sh",
+        "codex-verify.sh",
+        "common.sh"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1778681264599,
+      "keyFiles": [
+        "runtime-namespace.md"
+      ]
+    },
+    "flow-task": {
+      "path": "flow-task",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778681264599,
+      "keyFiles": []
+    },
+    "profiles": {
+      "path": "profiles",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778681264599,
+      "keyFiles": []
+    },
+    "server": {
+      "path": "server",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1778681264600,
+      "keyFiles": [
+        "index.js",
+        "package-lock.json",
+        "package.json"
+      ]
+    },
+    "templates": {
+      "path": "templates",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778681264600,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 16,
+      "lastAccessed": 1778681264600,
+      "keyFiles": [
+        "acp-client.test.mjs",
+        "event-store.test.mjs",
+        "executor.test.mjs",
+        "flow-bridges.test.sh",
+        "flow-jobs.test.sh"
+      ]
+    },
+    "web": {
+      "path": "web",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1778681264600,
+      "keyFiles": [
+        "index.html",
+        "package-lock.json",
+        "package.json",
+        "vite.config.js"
+      ]
+    },
+    "wiki": {
+      "path": "wiki",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1778681264600,
+      "keyFiles": [
+        "schema.md"
+      ]
+    },
+    "server/node_modules": {
+      "path": "server/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1778681264600,
+      "keyFiles": []
+    },
+    "server/routes": {
+      "path": "server/routes",
+      "purpose": "Route handlers",
+      "fileCount": 2,
+      "lastAccessed": 1778681264600,
+      "keyFiles": [
+        "projects.js",
+        "tasks.js"
+      ]
+    },
+    "server/services": {
+      "path": "server/services",
+      "purpose": "Business logic services",
+      "fileCount": 8,
+      "lastAccessed": 1778681264601,
+      "keyFiles": [
+        "event-store.js",
+        "executor.js",
+        "job-store.js"
+      ]
+    },
+    "tests/fixtures": {
+      "path": "tests/fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 6,
+      "lastAccessed": 1778681264601,
+      "keyFiles": [
+        "acp-client-stub.sh",
+        "fake-acp-agent-bad-handoff.mjs",
+        "fake-acp-agent-handoff.mjs"
+      ]
+    },
+    "tests/helpers": {
+      "path": "tests/helpers",
+      "purpose": "Helper functions",
+      "fileCount": 1,
+      "lastAccessed": 1778681264601,
+      "keyFiles": [
+        "spawn-file.mjs"
+      ]
+    },
+    "web/dist": {
+      "path": "web/dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 1,
+      "lastAccessed": 1778681264601,
+      "keyFiles": [
+        "index.html"
+      ]
+    },
+    "web/node_modules": {
+      "path": "web/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1778681264601,
+      "keyFiles": []
+    },
+    "web/src": {
+      "path": "web/src",
+      "purpose": "Source code",
+      "fileCount": 3,
+      "lastAccessed": 1778681264601,
+      "keyFiles": [
+        "App.jsx",
+        "app.css",
+        "main.jsx"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "docs/superpowers/plans/2026-05-13-flow-unified-master-plan-adjusted.md",
+      "accessCount": 45,
+      "lastAccessed": 1778692464022,
+      "type": "file"
+    },
+    {
+      "path": "bridges/run-pipeline.mjs",
+      "accessCount": 41,
+      "lastAccessed": 1778725859659,
+      "type": "file"
+    },
+    {
+      "path": "server/services/event-store.js",
+      "accessCount": 19,
+      "lastAccessed": 1778716385102,
+      "type": "file"
+    },
+    {
+      "path": "wiki/system/team-architecture.md",
+      "accessCount": 17,
+      "lastAccessed": 1778686282401,
+      "type": "file"
+    },
+    {
+      "path": "bridges/job-runner.mjs",
+      "accessCount": 15,
+      "lastAccessed": 1778725860173,
+      "type": "file"
+    },
+    {
+      "path": "server/services/supervisor.js",
+      "accessCount": 15,
+      "lastAccessed": 1778725889870,
+      "type": "file"
+    },
+    {
+      "path": "server/services/job-store.js",
+      "accessCount": 14,
+      "lastAccessed": 1778725871085,
+      "type": "file"
+    },
+    {
+      "path": "bridges/acp-client.mjs",
+      "accessCount": 14,
+      "lastAccessed": 1778733548531,
+      "type": "file"
+    },
+    {
+      "path": "server/services/lease-manager.js",
+      "accessCount": 13,
+      "lastAccessed": 1778716406602,
+      "type": "file"
+    },
+    {
+      "path": "server/services/watcher.js",
+      "accessCount": 12,
+      "lastAccessed": 1778716496196,
+      "type": "file"
+    },
+    {
+      "path": "bridges/common.sh",
+      "accessCount": 12,
+      "lastAccessed": 1778726474912,
+      "type": "file"
+    },
+    {
+      "path": "server/routes/tasks.js",
+      "accessCount": 12,
+      "lastAccessed": 1778733352212,
+      "type": "file"
+    },
+    {
+      "path": "server/routes/projects.js",
+      "accessCount": 12,
+      "lastAccessed": 1778733356053,
+      "type": "file"
+    },
+    {
+      "path": "web/src/pages/Dashboard.jsx",
+      "accessCount": 8,
+      "lastAccessed": 1778733358115,
+      "type": "file"
+    },
+    {
+      "path": "web/src/components/PipelineStatus.jsx",
+      "accessCount": 7,
+      "lastAccessed": 1778725868471,
+      "type": "file"
+    },
+    {
+      "path": "wiki/system/team-prd.md",
+      "accessCount": 6,
+      "lastAccessed": 1778686283620,
+      "type": "file"
+    },
+    {
+      "path": "server/services/job-projection.js",
+      "accessCount": 6,
+      "lastAccessed": 1778716501188,
+      "type": "file"
+    },
+    {
+      "path": "wiki/system/unattended-supervisor.md",
+      "accessCount": 5,
+      "lastAccessed": 1778684632843,
+      "type": "file"
+    },
+    {
+      "path": "server/services/runtime-root.js",
+      "accessCount": 5,
+      "lastAccessed": 1778716390232,
+      "type": "file"
+    },
+    {
+      "path": "tests/routes-projects.test.mjs",
+      "accessCount": 4,
+      "lastAccessed": 1778695665606,
+      "type": "file"
+    },
+    {
+      "path": "server/services/executor.js",
+      "accessCount": 4,
+      "lastAccessed": 1778716390351,
+      "type": "file"
+    },
+    {
+      "path": "server/services/role-bridge.js",
+      "accessCount": 4,
+      "lastAccessed": 1778716401142,
+      "type": "file"
+    },
+    {
+      "path": "bridges/codex-verify.sh",
+      "accessCount": 4,
+      "lastAccessed": 1778725890742,
+      "type": "file"
+    },
+    {
+      "path": "server/services/workflow-definition.js",
+      "accessCount": 4,
+      "lastAccessed": 1778725893635,
+      "type": "file"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-05-13-flow-unified-master-plan.md",
+      "accessCount": 3,
+      "lastAccessed": 1778684637719,
+      "type": "file"
+    },
+    {
+      "path": "flow",
+      "accessCount": 3,
+      "lastAccessed": 1778687793365,
+      "type": "file"
+    },
+    {
+      "path": "tests/job-runner.test.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1778690939215,
+      "type": "file"
+    },
+    {
+      "path": "tests/runtime-root-no-omc-writes.test.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1778695919195,
+      "type": "file"
+    },
+    {
+      "path": "wiki/system/dashboard.md",
+      "accessCount": 2,
+      "lastAccessed": 1778684689819,
+      "type": "file"
+    },
+    {
+      "path": "bridges/json-helper.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1778687749105,
+      "type": "file"
+    },
+    {
+      "path": "tests/acp-client.test.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1778695912646,
+      "type": "file"
+    },
+    {
+      "path": "server/services/profile-loader.js",
+      "accessCount": 2,
+      "lastAccessed": 1778716421850,
+      "type": "file"
+    },
+    {
+      "path": "profiles/codex/soul.md",
+      "accessCount": 2,
+      "lastAccessed": 1778725872129,
+      "type": "file"
+    },
+    {
+      "path": "profiles/claude/soul.md",
+      "accessCount": 2,
+      "lastAccessed": 1778725879477,
+      "type": "file"
+    },
+    {
+      "path": "bridges/list-jobs.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778681378374,
+      "type": "file"
+    },
+    {
+      "path": "wiki/schema.md",
+      "accessCount": 1,
+      "lastAccessed": 1778681386398,
+      "type": "file"
+    },
+    {
+      "path": "tests/flow-variant-env.test.sh",
+      "accessCount": 1,
+      "lastAccessed": 1778681452121,
+      "type": "file"
+    },
+    {
+      "path": "bridges/init-project.sh",
+      "accessCount": 1,
+      "lastAccessed": 1778683839246,
+      "type": "file"
+    },
+    {
+      "path": "server/services/state-source.js",
+      "accessCount": 1,
+      "lastAccessed": 1778687255110,
+      "type": "file"
+    },
+    {
+      "path": "tests/cancel-enforcement.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778689521826,
+      "type": "file"
+    },
+    {
+      "path": "tests/workflow-definition.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778689796945,
+      "type": "file"
+    },
+    {
+      "path": "tests/activity-events.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778690851054,
+      "type": "file"
+    },
+    {
+      "path": "profiles/codex/config.json",
+      "accessCount": 1,
+      "lastAccessed": 1778691064258,
+      "type": "file"
+    },
+    {
+      "path": "profiles/claude/config.json",
+      "accessCount": 1,
+      "lastAccessed": 1778691065295,
+      "type": "file"
+    },
+    {
+      "path": "tests/profile-loader.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778691112793,
+      "type": "file"
+    },
+    {
+      "path": "profiles/reviewer/soul.md",
+      "accessCount": 1,
+      "lastAccessed": 1778691220612,
+      "type": "file"
+    },
+    {
+      "path": "profiles/reviewer/config.json",
+      "accessCount": 1,
+      "lastAccessed": 1778691221635,
+      "type": "file"
+    },
+    {
+      "path": "bridges/reviewer-review.sh",
+      "accessCount": 1,
+      "lastAccessed": 1778691253814,
+      "type": "file"
+    },
+    {
+      "path": "tests/reviewer-workflow.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778691302488,
+      "type": "file"
+    },
+    {
+      "path": "tests/diff-verification.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1778691510487,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

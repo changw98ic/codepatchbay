@@ -6,7 +6,7 @@
 // Version management: git commits. Process management: child_process.spawn.
 // No external dependencies (no pm2, no systemd).
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -35,7 +35,7 @@ function log(tag, msg) {
 // --- Git helpers ---
 
 function git(...args) {
-  return execSync(`git ${args.join(" ")}`, { cwd: FLOW_ROOT, encoding: "utf8" }).trim();
+  return execFileSync("git", args, { cwd: FLOW_ROOT, encoding: "utf8" }).trim();
 }
 
 function gitSafe(...args) {

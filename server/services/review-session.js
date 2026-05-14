@@ -1,7 +1,16 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { runtimeDataPath } from "./runtime-root.js";
+
+async function withFileLock(lockDir, fn) {
+  await mkdir(lockDir, { recursive: false }).catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { force: true }).catch(() => {});
+  }
+}
 
 const VALID_TRANSITIONS = {
   idle: ["researching"],
@@ -80,28 +89,31 @@ export async function listSessions(flowRoot) {
 }
 
 export async function updateSession(flowRoot, sessionId, patch) {
-  const session = await getSession(flowRoot, sessionId);
-  if (!session) throw new Error(`review session not found: ${sessionId}`);
+  const lockDir = path.join(reviewsDir(flowRoot), `.lock-${sessionId}`);
+  return withFileLock(lockDir, async () => {
+    const session = await getSession(flowRoot, sessionId);
+    if (!session) throw new Error(`review session not found: ${sessionId}`);
 
-  if (patch.status && patch.status !== session.status) {
-    const allowed = VALID_TRANSITIONS[session.status];
-    if (!allowed || !allowed.includes(patch.status)) {
-      throw new Error(`invalid transition: ${session.status} → ${patch.status}`);
+    if (patch.status && patch.status !== session.status) {
+      const allowed = VALID_TRANSITIONS[session.status];
+      if (!allowed || !allowed.includes(patch.status)) {
+        throw new Error(`invalid transition: ${session.status} → ${patch.status}`);
+      }
     }
-  }
 
-  const updated = {
-    ...session,
-    ...patch,
-    sessionId: session.sessionId, // immutable
-    project: session.project,
-    intent: session.intent,
-    createdAt: session.createdAt,
-    updatedAt: new Date().toISOString(),
-  };
+    const updated = {
+      ...session,
+      ...patch,
+      sessionId: session.sessionId, // immutable
+      project: session.project,
+      intent: session.intent,
+      createdAt: session.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
 
-  await writeFile(sessionFile(flowRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
-  return updated;
+    await writeFile(sessionFile(flowRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    return updated;
+  });
 }
 
 export function parseIssues(text) {
