@@ -125,7 +125,7 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 
 $constraints
 
-## Files (read via fs/read_text_file as needed)
+## Files to read
 - Role definition: $FLOW_ROOT/profiles/codex/soul.md
 - Project context: $FLOW_ROOT/wiki/projects/$project/context.md
 - Existing decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
@@ -174,7 +174,7 @@ $constraints
 
 $fix_section
 
-## Files (read via fs/read_text_file as needed)
+## Files to read
 - Role definition: $FLOW_ROOT/profiles/claude/soul.md
 - Plan to execute: $plan_file
 - Project context: $FLOW_ROOT/wiki/projects/$project/context.md
@@ -224,7 +224,7 @@ $constraints
 
 $diff_section
 
-## Files (read via fs/read_text_file as needed)
+## Files to read
 - Role definition: $FLOW_ROOT/profiles/codex/soul.md
 - Deliverable to verify: $deliverable_file
 - Project context: $FLOW_ROOT/wiki/projects/$project/context.md
@@ -278,7 +278,7 @@ build_skills_section() {
   local skills_dir="$FLOW_ROOT/profiles/$role/skills"
   [ -d "$skills_dir" ] || return 0
   local count=0
-  echo "## Available Skills (read via fs/read_text_file)"
+  echo "## Available Skills"
   for f in $(ls "$skills_dir"/*.md 2>/dev/null | sort); do
     [ -f "$f" ] || continue
     [ $count -ge 10 ] && { echo "- ... (truncated, max 10)"; break; }

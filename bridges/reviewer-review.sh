@@ -53,7 +53,7 @@ Review the deliverable for code quality, correctness, maintainability, and secur
 
 $constraints
 
-## Files (read via fs/read_text_file as needed)
+## Files to read
 - Deliverable to review: $DELIVERABLE_FILE
 ${PLAN_FILE:+- Implementation plan: $PLAN_FILE}
 - Project context: $WIKI_DIR/context.md
