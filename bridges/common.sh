@@ -110,7 +110,8 @@ rtk_codex_plan() {
     constraints="## Constraints
 - ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
 - ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/ or $FLOW_ROOT/wiki/system/ or $FLOW_ROOT/templates/
-- Do NOT execute terminal commands. This is a planning-only phase."
+- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase.
+- You MAY and SHOULD use your Read, Glob, and Grep tools to read files — these are NOT terminal commands."
   fi
   local skills_section
   skills_section=$(build_skills_section codex)
@@ -202,8 +203,9 @@ rtk_codex_verify() {
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
 - ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/
-- Do NOT execute terminal commands. This is a verification-only phase.
-- Do NOT modify any code files."
+- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
+- Do NOT modify any code files.
+- You MAY and SHOULD use your Read, Glob, and Grep tools to read files — these are NOT terminal commands."
   fi
   local diff_section=""
   if [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ]; then
