@@ -44,6 +44,13 @@ app.addHook('onRequest', (req, _res, done) => {
   done();
 });
 
+// File watcher + notification service
+const notifService = initNotificationService(FLOW_ROOT);
+const notifBroadcast = (event) => {
+  broadcast(event);
+  notifService.notify(event).catch(() => {});
+};
+
 // Register routes — decorate broadcast for channel notifications
 app.decorate('notifBroadcast', notifBroadcast);
 
@@ -53,12 +60,6 @@ app.register(taskRoutes, { prefix: '/api' });
 app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 
-// File watcher + notification service
-const notifService = initNotificationService(FLOW_ROOT);
-const notifBroadcast = (event) => {
-  broadcast(event);
-  notifService.notify(event).catch(() => {});
-};
 const watchers = registerWatcher(FLOW_ROOT, notifBroadcast);
 
 // Start
