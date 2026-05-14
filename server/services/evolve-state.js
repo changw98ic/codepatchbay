@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const LOCK_TTL_MS = 30_000;
 
 function evolveDir(flowRoot) {
   return path.join(flowRoot, "flow-task", "self-evolve");
@@ -42,15 +44,50 @@ export async function saveBacklog(flowRoot, backlog) {
   await writeFile(statePath(flowRoot, "backlog.json"), JSON.stringify(backlog, null, 2) + "\n", "utf8");
 }
 
+async function withBacklogLock(flowRoot, fn) {
+  const lockDir = statePath(flowRoot, "backlog.json.lock");
+  let acquired = false;
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      await mkdir(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        const s = await stat(lockDir);
+        if (Date.now() - s.mtimeMs >= LOCK_TTL_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  if (!acquired) throw new Error("backlog lock busy");
+
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
+}
+
 export async function popIssue(flowRoot) {
-  const backlog = await loadBacklog(flowRoot);
-  const pending = backlog.filter((i) => i.status === "pending");
-  if (pending.length === 0) return null;
-  pending.sort((a, b) => (a.priority === "P0" ? 0 : a.priority === "P1" ? 1 : 2) - (b.priority === "P0" ? 0 : b.priority === "P1" ? 1 : 2));
-  const issue = pending[0];
-  issue.status = "in_progress";
-  await saveBacklog(flowRoot, backlog);
-  return { issue, backlog };
+  return withBacklogLock(flowRoot, async () => {
+    const backlog = await loadBacklog(flowRoot);
+    const pending = backlog.filter((i) => i.status === "pending");
+    if (pending.length === 0) return null;
+    pending.sort((a, b) => (a.priority === "P0" ? 0 : a.priority === "P1" ? 1 : 2) - (b.priority === "P0" ? 0 : b.priority === "P1" ? 1 : 2));
+    const issue = pending[0];
+    issue.status = "in_progress";
+    await saveBacklog(flowRoot, backlog);
+    return { issue, backlog };
+  });
 }
 
 export async function pushIssues(flowRoot, issues) {
