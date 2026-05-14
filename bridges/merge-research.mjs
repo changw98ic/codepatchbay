@@ -74,8 +74,13 @@ if (!claudeOk) {
 
 const content = sections.join("\n");
 
-mkdirSync(dirname(output), { recursive: true });
-writeFileSync(output, content, "utf8");
+try {
+  mkdirSync(dirname(output), { recursive: true });
+  writeFileSync(output, content, "utf8");
+} catch (err) {
+  console.error(`Failed to write output: ${err.message}`);
+  process.exit(1);
+}
 
 console.log(`Merged research written to ${output}`);
 console.log(`  Codex: ${codexOk ? "ok" : "failed"}`);

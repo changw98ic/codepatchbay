@@ -230,6 +230,7 @@ cmd_list() {
     echo -e "  ${CYAN}$name${NC}  inbox:$inbox  out:$outputs"
   done
   [ "$found" -eq 0 ] && echo "  None. Run: cpb init <path> <name>"
+  return 0
 }
 
 cmd_wiki() {
