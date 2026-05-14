@@ -7,6 +7,7 @@ import { registerWatcher } from './services/watcher.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
+import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLOW_ROOT = path.resolve(__dirname, '..');
@@ -45,8 +46,13 @@ app.addHook('onRequest', (req, _res, done) => {
 app.register(projectRoutes, { prefix: '/api' });
 app.register(taskRoutes, { prefix: '/api' });
 
-// File watcher
-const watchers = registerWatcher(FLOW_ROOT, broadcast);
+// File watcher + notification service
+const notifService = initNotificationService(FLOW_ROOT);
+const notifBroadcast = (event) => {
+  broadcast(event);
+  notifService.notify(event).catch(() => {});
+};
+const watchers = registerWatcher(FLOW_ROOT, notifBroadcast);
 
 // Start
 try {
@@ -61,7 +67,8 @@ try {
 const shutdown = async (sig) => {
   console.log(`\n${sig} received, shutting down...`);
   closeAll();
-  await watchers.stateWatcher.close();
+  await notifService.close();
+  await watchers.stateWatcher?.close();
   await watchers.wikiWatcher.close();
   await watchers.eventsWatcher.close();
   await app.close();
