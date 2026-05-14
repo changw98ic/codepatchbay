@@ -16,7 +16,7 @@ pipeline_project="acp-pipeline-$$"
 cleanup_project() {
   rm -rf "$ROOT/wiki/projects/$project"
   rm -rf "$ROOT/wiki/projects/$pipeline_project"
-  rm -rf "$ROOT/cpb-task/events/$pipeline_project" "$ROOT/cpb-task/state/pipeline-${pipeline_project}.json"
+  rm -rf "$ROOT/cpb-task/events/$pipeline_project"
 }
 trap 'cleanup_project; rm -rf "$TMP_DIR"' EXIT
 
@@ -52,5 +52,4 @@ CPB_TEST_AGENT_LOG="$AGENT_LOG" \
 test -f "$ROOT/wiki/projects/$pipeline_project/inbox/plan-001.md"
 test -f "$ROOT/wiki/projects/$pipeline_project/outputs/deliverable-001.md"
 test -f "$ROOT/wiki/projects/$pipeline_project/outputs/verdict-001.md"
-test -f "$ROOT/cpb-task/state/pipeline-${pipeline_project}.json"
 find "$ROOT/cpb-task/events/$pipeline_project" -name 'job-*.jsonl' -print -quit | grep -q .
