@@ -41,6 +41,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
   ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
+  ${CYAN}diff${NC} <project>                           查看项目源码变更
   ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
@@ -89,6 +90,25 @@ cmd_research() {
   local project="${1:?Usage: cpb research <project> '<task>'}"
   local task="${2:?Usage: cpb research <project> '<task>'}"
   "$CPB_ROOT/bridges/dual-research.sh" "$project" "$task"
+}
+
+cmd_diff() {
+  local project="${1:?Usage: cpb diff <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local src
+  src=$(get_project_path "$project")
+  if [ -z "$src" ] || [ ! -d "$src" ]; then
+    echo -e "${RED}Project source path not found: $src${NC}" >&2
+    exit 1
+  fi
+  if [ ! -d "$src/.git" ]; then
+    echo -e "${RED}Not a git repository: $src${NC}" >&2
+    exit 1
+  fi
+  git -C "$src" diff --stat
+  echo ""
+  git -C "$src" diff
 }
 
 cmd_pipeline() {
@@ -384,6 +404,7 @@ case "${1:-help}" in
   execute)  shift; cmd_execute "$@" ;;
   verify)   shift; cmd_verify "$@" ;;
   research) shift; cmd_research "$@" ;;
+  diff)     shift; cmd_diff "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
