@@ -4,10 +4,12 @@ import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
 import Dashboard from './pages/Dashboard';
 import Project from './pages/Project';
 import NewTask from './pages/NewTask';
+import Review from './pages/Review';
 
 const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/new-task', label: 'New Task' },
+  { to: '/review', label: 'Review' },
 ];
 
 function StatusIndicator() {
@@ -43,6 +45,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:name" element={<Project />} />
             <Route path="/new-task" element={<NewTask />} />
+            <Route path="/review" element={<Review />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

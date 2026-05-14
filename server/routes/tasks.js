@@ -82,7 +82,7 @@ export async function taskRoutes(fastify, opts) {
   });
 }
 
-function spawnBridge(flowRoot, project, script, args, log, providedTaskId = '') {
+export function spawnBridge(flowRoot, project, script, args, log, providedTaskId = '') {
   const scriptPath = path.join(flowRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
 

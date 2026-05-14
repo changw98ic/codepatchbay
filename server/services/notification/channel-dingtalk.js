@@ -7,10 +7,18 @@ const EVENT_TITLES = {
   job_blocked: "Job Blocked",
   job_cancelled: "Job Cancelled",
   phase_failed: "Phase Failed",
+  review_ready: "Review Ready",
+  review_dispatched: "Review Approved",
+  review_expired: "Review Expired",
 };
 
 export function formatMessage(eventType, jobState) {
   const title = EVENT_TITLES[eventType] ?? "Job Update";
+
+  if (eventType.startsWith("review_")) {
+    return formatReviewMessage(eventType, title, jobState);
+  }
+
   const status = (jobState.status ?? "unknown").toUpperCase();
   const timestamp = jobState.updatedAt ?? new Date().toISOString();
 
@@ -60,4 +68,28 @@ export function send({ webhookUrl, secret, message }) {
     req.write(body);
     req.end();
   });
+}
+
+function formatReviewMessage(eventType, title, session) {
+  const lines = [
+    `### Flow: ${title}`,
+    "",
+    `- **Project**: ${session.project ?? "-"}`,
+    `- **Session**: ${session.sessionId ?? "-"}`,
+    `- **Intent**: ${session.intent ?? "-"}`,
+  ];
+
+  if (eventType === "review_ready") {
+    lines.push("", "> Reply \`review approve ${session.sessionId}\` to approve");
+  }
+  if (eventType === "review_dispatched" && session.jobId) {
+    lines.push(`- **Job ID**: ${session.jobId}`);
+  }
+
+  lines.push("", `- **Time**: ${session.updatedAt ?? new Date().toISOString()}`);
+
+  return {
+    msgtype: "markdown",
+    markdown: { title: `Flow: ${title}`, text: lines.join("\n") },
+  };
 }

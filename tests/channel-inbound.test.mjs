@@ -17,6 +17,57 @@ function parseCommand(text) {
   return { project, task };
 }
 
+describe("channel inbound parseReviewCommand", () => {
+  function parseReviewCommand(text) {
+    const trimmed = text.trim().replace(/@\S+\s*/, "");
+    const parts = trimmed.split(/\s+/);
+    if (parts[0] !== "review") return null;
+
+    if (parts.length >= 3 && (parts[1] === "approve" || parts[1] === "reject")) {
+      const sessionId = parts.slice(2).join(" ");
+      return { action: parts[1], sessionId };
+    }
+
+    if (parts.length >= 3 && /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(parts[1])) {
+      return { action: "create", project: parts[1], intent: parts.slice(2).join(" ") };
+    }
+
+    return null;
+  }
+
+  it("parses review approve command", () => {
+    const cmd = parseReviewCommand("review approve rev-20260514-abc123");
+    assert.deepEqual(cmd, { action: "approve", sessionId: "rev-20260514-abc123" });
+  });
+
+  it("parses review reject command", () => {
+    const cmd = parseReviewCommand("review reject rev-20260514-abc123");
+    assert.deepEqual(cmd, { action: "reject", sessionId: "rev-20260514-abc123" });
+  });
+
+  it("parses review create command", () => {
+    const cmd = parseReviewCommand("review fatecat optimize the login page");
+    assert.deepEqual(cmd, { action: "create", project: "fatecat", intent: "optimize the login page" });
+  });
+
+  it("strips @mention from review command", () => {
+    const cmd = parseReviewCommand("@Bot review approve rev-123");
+    assert.deepEqual(cmd, { action: "approve", sessionId: "rev-123" });
+  });
+
+  it("returns null for plain pipeline command", () => {
+    assert.equal(parseReviewCommand("fatecat add dark mode"), null);
+  });
+
+  it("returns null for 'review' alone", () => {
+    assert.equal(parseReviewCommand("review"), null);
+  });
+
+  it("returns null for 'review approve' without session id", () => {
+    assert.equal(parseReviewCommand("review approve"), null);
+  });
+});
+
 describe("channel inbound parseCommand", () => {
   it("parses 'project task description'", () => {
     const cmd = parseCommand("fatecat optimize the login page");

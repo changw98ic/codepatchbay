@@ -409,3 +409,253 @@ body {
 .job-phase {
   color: var(--text-dim);
 }
+
+/* Review Page */
+.review-page {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  height: calc(100vh - 48px);
+}
+
+.review-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.review-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.review-form h3 {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.session-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.session-list h3 {
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.session-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.session-item:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+.session-item.active { background: rgba(108,140,255,0.1); color: var(--accent); }
+
+.review-main {
+  overflow-y: auto;
+}
+
+.review-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.review-header h2 {
+  font-size: 16px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* Chat Bubbles */
+.review-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-bubble {
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  max-width: 90%;
+}
+
+.user-bubble {
+  background: rgba(108,140,255,0.12);
+  border: 1px solid rgba(108,140,255,0.2);
+  align-self: flex-end;
+}
+
+.system-bubble {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+  width: 100%;
+  max-width: 100%;
+}
+
+.status-bubble {
+  align-self: center;
+  background: rgba(108,140,255,0.06);
+  border: 1px solid rgba(108,140,255,0.15);
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+  max-width: 400px;
+}
+
+.status-bubble.expired {
+  background: rgba(244,67,54,0.08);
+  border-color: rgba(244,67,54,0.2);
+  color: var(--error);
+}
+
+.action-bubble {
+  align-self: center;
+  background: rgba(76,175,80,0.06);
+  border: 1px solid rgba(76,175,80,0.2);
+  text-align: center;
+  max-width: 360px;
+}
+
+.bubble-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.bubble-content {
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+/* Research Panels */
+.research-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.research-panel summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.research-panel pre,
+.plan-content,
+.review-text {
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.2);
+  padding: 10px;
+  border-radius: 4px;
+}
+
+/* Review Rounds */
+.review-rounds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.review-panel {
+  background: rgba(0,0,0,0.15);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.reviewer-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.issue-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.issue-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-family: 'SF Mono', monospace;
+}
+
+.sev-high {
+  background: rgba(244,67,54,0.15);
+  color: var(--error);
+}
+
+.sev-low {
+  background: rgba(76,175,80,0.15);
+  color: var(--success);
+}
+
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.btn-approve {
+  background: var(--success);
+  color: #fff;
+  padding: 10px 24px;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.btn-approve:hover { background: #43a047; }
+
+.btn-reject {
+  background: transparent;
+  color: var(--error);
+  border: 1px solid var(--error);
+  padding: 10px 24px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn-reject:hover { background: rgba(244,67,54,0.08); }

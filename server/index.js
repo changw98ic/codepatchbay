@@ -7,6 +7,7 @@ import { registerWatcher } from './services/watcher.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
 import { channelRoutes } from './routes/channels.js';
+import { reviewRoutes } from './routes/review.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
 import { initNotificationService } from './services/notification/index.js';
 
@@ -43,10 +44,14 @@ app.addHook('onRequest', (req, _res, done) => {
   done();
 });
 
+// Register routes — decorate broadcast for channel notifications
+app.decorate('notifBroadcast', notifBroadcast);
+
 // Register routes
 app.register(projectRoutes, { prefix: '/api' });
 app.register(taskRoutes, { prefix: '/api' });
 app.register(channelRoutes, { prefix: '/api' });
+app.register(reviewRoutes, { prefix: '/api' });
 
 // File watcher + notification service
 const notifService = initNotificationService(FLOW_ROOT);

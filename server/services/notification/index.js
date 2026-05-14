@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import * as feishu from "./channel-feishu.js";
 import * as dingtalk from "./channel-dingtalk.js";
 import { getJob } from "../job-store.js";
+import { getSession } from "../review-session.js";
 
 const CHANNELS = { feishu, dingtalk };
 
@@ -12,6 +13,12 @@ const STATUS_TO_EVENT = {
   failed: "job_failed",
   blocked: "job_blocked",
   cancelled: "job_cancelled",
+};
+
+const REVIEW_STATUS_TO_EVENT = {
+  user_review: "review_ready",
+  dispatched: "review_dispatched",
+  expired: "review_expired",
 };
 
 export function initNotificationService(flowRoot) {
@@ -28,12 +35,21 @@ export function initNotificationService(flowRoot) {
   }
 
   async function notify(event) {
-    if (!event || event.type !== "job:update") return;
-    if (!event.project || !event.jobId) return;
+    if (!event) return;
 
     const config = await getConfig();
     if (!config || config.enabled === false) return;
     if (!config.channels || typeof config.channels !== "object") return;
+
+    if (event.type === "job:update") {
+      await notifyJobUpdate(event, config);
+    } else if (event.type === "review:update") {
+      await notifyReviewUpdate(event, config);
+    }
+  }
+
+  async function notifyJobUpdate(event, config) {
+    if (!event.project || !event.jobId) return;
 
     let jobState;
     try {
@@ -50,7 +66,24 @@ export function initNotificationService(flowRoot) {
     notified.add(dedupKey);
 
     const eventType = STATUS_TO_EVENT[jobState.status] ?? "job_failed";
+    await dispatchToChannels(eventType, jobState, config);
+  }
 
+  async function notifyReviewUpdate(event, config) {
+    const session = event.session;
+    if (!session) return;
+
+    const eventType = REVIEW_STATUS_TO_EVENT[event.status];
+    if (!eventType) return;
+
+    const dedupKey = `review:${session.sessionId}:${event.status}`;
+    if (notified.has(dedupKey)) return;
+    notified.add(dedupKey);
+
+    await dispatchToChannels(eventType, { ...session, type: "review" }, config);
+  }
+
+  async function dispatchToChannels(eventType, state, config) {
     for (const [name, channel] of Object.entries(CHANNELS)) {
       const chConfig = config.channels[name];
       if (!chConfig || chConfig.enabled === false) continue;
@@ -58,7 +91,7 @@ export function initNotificationService(flowRoot) {
       if (chConfig.events && !chConfig.events.includes(eventType)) continue;
 
       try {
-        const message = channel.formatMessage(eventType, jobState);
+        const message = channel.formatMessage(eventType, state);
         await channel.send({ webhookUrl: chConfig.webhookUrl, secret: chConfig.secret || "", message });
       } catch (err) {
         console.error(`[notification] ${name} send error: ${err.message}`);
