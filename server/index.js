@@ -57,9 +57,9 @@ app.addHook('onRequest', (req, _res, done) => {
 
 // File watcher + notification service
 const notifService = initNotificationService(FLOW_ROOT);
-const notifBroadcast = (event) => {
+const notifBroadcast = async (event) => {
   broadcast(event);
-  notifService.notify(event).catch(() => {});
+  await notifService.notify(event).catch(() => {});
 };
 
 // Register routes — decorate broadcast for channel notifications
