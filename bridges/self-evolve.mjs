@@ -13,6 +13,7 @@ import {
   loadBacklog, popIssue, pushIssues, updateIssue,
   appendHistory,
 } from "../server/services/evolve-state.js";
+import { applyVariant } from "./apply-variant.mjs";
 
 const FLOW_ROOT = path.resolve(process.env.FLOW_ROOT || process.cwd());
 const EVOLVE_DIR = path.join(FLOW_ROOT, "flow-task", "self-evolve");
@@ -513,7 +514,11 @@ async function maybeRollback(state) {
 
 // --- Main evolve loop ---
 
-async function evolve() {
+async function evolve(opts = {}) {
+  const variantConfig = applyVariant({ variant: opts.variant });
+  const scanAgent = opts.scanAgent || "claude";
+  log("init", `claude variant: ${variantConfig.variant}${variantConfig.model ? ` (${variantConfig.model})` : ""}, scan agent: ${scanAgent}`);
+
   await mkdir(EVOLVE_DIR, { recursive: true });
 
   const state = await loadState(FLOW_ROOT);
@@ -553,7 +558,7 @@ async function evolve() {
 
       if (!issue) {
         log("scan", `round ${round} — backlog empty, running scan`);
-        const scanResult = await acpRun("codex", scanPrompt());
+        const scanResult = await acpRun(scanAgent, scanPrompt());
         const issues = parseScanResults(scanResult);
 
         if (issues.length === 0) {
@@ -734,10 +739,27 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // --- Entry ---
 
-const cmd = process.argv[2];
+function parseEntryArgs(argv) {
+  const opts = { variant: undefined, scanAgent: "claude", cmd: null };
+  const args = argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--variant" && args[i + 1]) {
+      opts.variant = args[++i];
+    } else if (args[i] === "--scan-agent" && args[i + 1]) {
+      opts.scanAgent = args[++i];
+    } else if (!opts.cmd && !args[i].startsWith("--")) {
+      opts.cmd = args[i];
+    }
+  }
+  return opts;
+}
+
+const entryOpts = parseEntryArgs(process.argv);
+const cmd = entryOpts.cmd;
 if (cmd === "scan") {
   validateFlowRoot(FLOW_ROOT);
-  const result = await acpRun("codex", scanPrompt());
+  applyVariant({ variant: entryOpts.variant });
+  const result = await acpRun(entryOpts.scanAgent, scanPrompt());
   const issues = parseScanResults(result);
   if (issues.length > 0) {
     await pushIssues(FLOW_ROOT, issues);
@@ -758,7 +780,7 @@ if (cmd === "scan") {
   try {
     validateFlowRoot(FLOW_ROOT);
     await acquireLease();
-    await evolve();
+    await evolve(entryOpts);
   } catch (err) {
     console.error(err.message);
     process.exit(1);

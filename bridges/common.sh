@@ -261,105 +261,18 @@ dashboard_update() {
 }
 
 # ─── Claude provider variant overlays ───
-flow_env_first() {
-  local name value
-  for name in "$@"; do
-    value="${!name:-}"
-    if [ -n "$value" ]; then
-      printf '%s' "$value"
-      return 0
-    fi
-  done
-  return 1
-}
-
-flow_env_any() {
-  local name
-  for name in "$@"; do
-    if [ -n "${!name:-}" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-flow_require_variant_env() {
-  local variant="$1" label="$2" value="$3" names="$4"
-  if [ -z "$value" ]; then
-    echo -e "${RED}Missing $label for Claude variant '$variant'. Set one of: $names${NC}" >&2
+flow_apply_claude_variant() {
+  local variant_script="${FLOW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
+  if [ ! -f "$variant_script" ]; then
+    echo -e "${RED}Variant module not found: $variant_script${NC}" >&2
     exit 1
   fi
-}
-
-flow_export_claude_gateway_variant() {
-  local variant="$1" display_name="$2" base_url="$3" auth_token="$4" model="$5"
-  export ANTHROPIC_BASE_URL="$base_url"
-  export ANTHROPIC_AUTH_TOKEN="$auth_token"
-  export ANTHROPIC_MODEL="$model"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION="$model"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$display_name"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Flow provider variant: $variant"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
-  export CLAUDE_CODE_SUBAGENT_MODEL="$model"
-  export FLOW_ACTIVE_CLAUDE_VARIANT="$variant"
-}
-
-flow_apply_kimi_variant() {
-  local variant="kimi-k2.6"
-  local base_url auth_token model
-  base_url="$(flow_env_first OLLAMA_CLOUD_URL OLLAMA_CLOUD_BASE_URL OLLAMACLOUD_BASE_URL OLLAMACLOUD_URL KIMI_BASE_URL MOONSHOT_BASE_URL || true)"
-  auth_token="$(flow_env_first OLLAMA_CLOUD_KEY OLLAMA_CLOUD_API_KEY OLLAMACLOUD_API_KEY OLLAMACLOUD_KEY KIMI_API_KEY MOONSHOT_API_KEY || true)"
-  model="$(flow_env_first OLLAMA_CLOUD_MODEL OLLAMACLOUD_MODEL KIMI_MODEL MOONSHOT_MODEL || printf 'kimi-k2.6')"
-
-  flow_require_variant_env "$variant" "base URL" "$base_url" "OLLAMA_CLOUD_URL, OLLAMA_CLOUD_BASE_URL, OLLAMACLOUD_BASE_URL, KIMI_BASE_URL, MOONSHOT_BASE_URL"
-  flow_require_variant_env "$variant" "API key" "$auth_token" "OLLAMA_CLOUD_KEY, OLLAMA_CLOUD_API_KEY, OLLAMACLOUD_API_KEY, KIMI_API_KEY, MOONSHOT_API_KEY"
-  flow_export_claude_gateway_variant "$variant" "Kimi K2.6" "$base_url" "$auth_token" "$model"
-}
-
-flow_apply_xiaomi_variant() {
-  local variant="mimo-v2.5pro"
-  local base_url auth_token model
-  base_url="$(flow_env_first XIAOMI_BASE_URL MIMO_BASE_URL || true)"
-  auth_token="$(flow_env_first XIAOMI_API_KEY XIAOMI_AUTH_TOKEN MIMO_API_KEY MIMO_AUTH_TOKEN || true)"
-  model="$(flow_env_first XIAOMI_MODEL MIMO_MODEL || printf 'mimo-v2.5pro')"
-
-  flow_require_variant_env "$variant" "base URL" "$base_url" "XIAOMI_BASE_URL, MIMO_BASE_URL"
-  flow_require_variant_env "$variant" "API key" "$auth_token" "XIAOMI_API_KEY, XIAOMI_AUTH_TOKEN, MIMO_API_KEY, MIMO_AUTH_TOKEN"
-  flow_export_claude_gateway_variant "$variant" "MiMo v2.5 Pro" "$base_url" "$auth_token" "$model"
-}
-
-flow_apply_claude_variant() {
-  local requested normalized
-  requested="${FLOW_CLAUDE_VARIANT:-${FLOW_BUILDER_VARIANT:-${FLOW_ACP_CLAUDE_VARIANT:-}}}"
-
-  if [ -z "$requested" ]; then
-    if flow_env_any OLLAMA_CLOUD_URL OLLAMA_CLOUD_BASE_URL OLLAMACLOUD_BASE_URL OLLAMACLOUD_URL KIMI_BASE_URL MOONSHOT_BASE_URL; then
-      requested="kimi-k2.6"
-    elif flow_env_any XIAOMI_BASE_URL MIMO_BASE_URL; then
-      requested="mimo-v2.5pro"
-    else
-      return 0
-    fi
-  fi
-
-  normalized="$(printf '%s' "$requested" | tr '[:upper:]' '[:lower:]')"
-  case "$normalized" in
-    none|off|default|anthropic|claude)
-      export FLOW_ACTIVE_CLAUDE_VARIANT="none"
-      ;;
-    kimi|kimi-k2.6|ollama|ollamacloud|ollama-cloud)
-      flow_apply_kimi_variant
-      ;;
-    xiaomi|mimo|mimo-v2.5pro)
-      flow_apply_xiaomi_variant
-      ;;
-    *)
-      echo -e "${RED}Unknown Claude variant: '$requested'. Use kimi-k2.6, mimo-v2.5pro, or none.${NC}" >&2
-      exit 1
-      ;;
-  esac
+  local output
+  output="$(node "$variant_script" --export 2>&1)" || {
+    echo -e "${RED}${output}${NC}" >&2
+    exit 1
+  }
+  eval "$output"
 }
 
 # ─── ACP 执行 ───
