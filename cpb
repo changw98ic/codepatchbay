@@ -186,6 +186,7 @@ cmd_inbox() {
     printf "  %-14s %s\n" "$name" "${title:-(no title)}"
   done
   [ "$found" -eq 0 ] && echo "  (empty)"
+  return 0
 }
 
 cmd_outputs() {
@@ -214,6 +215,7 @@ cmd_outputs() {
     printf "  %-18s %-12s %s\n" "$name" "$type" "${verdict:-}"
   done
   [ "$found" -eq 0 ] && echo "  (empty)"
+  return 0
 }
 
 cmd_pipeline() {
@@ -317,17 +319,41 @@ cmd_status() {
   require_project "$project"
 
   echo -e "${BOLD}Project: $project${NC}"
+
+  # Source path
+  local src
+  src=$(get_project_path "$project")
+  [ -n "$src" ] && echo -e "  ${CYAN}Source:${NC} $src" || true
   echo ""
 
-  [ -f "$wdir/context.md" ] && { echo -e "${CYAN}Context:${NC}"; grep "^- \*\*" "$wdir/context.md" | head -5; echo ""; }
+  [ -f "$wdir/context.md" ] && { echo -e "${CYAN}Context:${NC}"; grep "^- \*\*" "$wdir/context.md" | head -5; echo ""; } || true
 
-  [ -f "$wdir/tasks.md" ] && { echo -e "${CYAN}Tasks:${NC}"; grep -E "TASK-|PENDING|IN_PROGRESS|DONE|BLOCKED" "$wdir/tasks.md" 2>/dev/null | head -10 || echo "  None"; echo ""; }
+  # Latest plan
+  local latest_plan
+  latest_plan=$(ls "$wdir/inbox/"plan-*.md 2>/dev/null | sort | tail -1)
+  if [ -n "$latest_plan" ]; then
+    local plan_name plan_title
+    plan_name=$(basename "$latest_plan" .md)
+    plan_title=$(head -3 "$latest_plan" | grep -m1 '^#' | sed 's/^#* *//')
+    echo -e "${CYAN}Latest plan:${NC} $plan_name — $plan_title"
+  fi
 
-  [ -f "$wdir/log.md" ] && { echo -e "${CYAN}Recent:${NC}"; grep "^- \*\*" "$wdir/log.md" | tail -5; echo ""; }
+  # Latest verdict
+  local latest_verdict
+  latest_verdict=$(ls "$wdir/outputs/"verdict-*.md 2>/dev/null | sort | tail -1)
+  if [ -n "$latest_verdict" ]; then
+    local verdict_name verdict_status
+    verdict_name=$(basename "$latest_verdict" .md)
+    verdict_status=$(grep -m1 '^VERDICT:' "$latest_verdict" | sed 's/^VERDICT: *//')
+    echo -e "${CYAN}Latest verdict:${NC} $verdict_name — ${verdict_status:-unknown}"
+  fi
+  echo ""
+
+  [ -f "$wdir/log.md" ] && { echo -e "${CYAN}Recent:${NC}"; grep "^- \*\*" "$wdir/log.md" | tail -5; echo ""; } || true
 
   local inbox=$(ls "$wdir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
   local outputs=$(ls "$wdir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
-  echo -e "${CYAN}Inbox:${NC} $inbox  ${CYAN}Outputs:${NC} $outputs"
+  echo -e "${CYAN}Inbox:${NC} $inbox plans  ${CYAN}Outputs:${NC} $outputs files"
 
   # Pipeline state from durable job projection
   local state
@@ -340,6 +366,7 @@ cmd_status() {
   if [ -n "$state" ]; then
     echo -e "${CYAN}Pipeline:${NC} $state"
   fi
+  return 0
 }
 
 cmd_list() {
