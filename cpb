@@ -44,6 +44,8 @@ ${BOLD}Commands:${NC}
   ${CYAN}diff${NC} <project>                           查看项目源码变更
   ${CYAN}log${NC} <project> [lines]                   查看项目日志
   ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
+  ${CYAN}inbox${NC} <project>                        列出计划文件
+  ${CYAN}outputs${NC} <project>                      列出产出文件
   ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
@@ -166,6 +168,52 @@ cmd_remove() {
   fi
   rm -rf "$wiki_dir"
   echo -e "${GREEN}Removed: $project${NC}"
+}
+
+cmd_inbox() {
+  local project="${1:?Usage: cpb inbox <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local dir="$CPB_ROOT/wiki/projects/$project/inbox"
+  echo -e "${BOLD}Inbox: $project${NC}"
+  local found=0
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    found=1
+    local name title
+    name=$(basename "$f" .md)
+    title=$(head -3 "$f" | grep -m1 '^#' | sed 's/^#* *//')
+    printf "  %-14s %s\n" "$name" "${title:-(no title)}"
+  done
+  [ "$found" -eq 0 ] && echo "  (empty)"
+}
+
+cmd_outputs() {
+  local project="${1:?Usage: cpb outputs <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local dir="$CPB_ROOT/wiki/projects/$project/outputs"
+  echo -e "${BOLD}Outputs: $project${NC}"
+  local found=0
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    found=1
+    local name type
+    name=$(basename "$f" .md)
+    if [[ "$name" == verdict-* ]]; then
+      type="verdict"
+    elif [[ "$name" == deliverable-* ]]; then
+      type="deliverable"
+    else
+      type="other"
+    fi
+    local verdict=""
+    if [ "$type" = "verdict" ]; then
+      verdict=$(grep -m1 '^VERDICT:' "$f" | sed 's/^VERDICT: *//')
+    fi
+    printf "  %-18s %-12s %s\n" "$name" "$type" "${verdict:-}"
+  done
+  [ "$found" -eq 0 ] && echo "  (empty)"
 }
 
 cmd_pipeline() {
@@ -464,6 +512,8 @@ case "${1:-help}" in
   diff)     shift; cmd_diff "$@" ;;
   log)      shift; cmd_log "$@" ;;
   remove)   shift; cmd_remove "$@" ;;
+  inbox)    shift; cmd_inbox "$@" ;;
+  outputs)  shift; cmd_outputs "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
