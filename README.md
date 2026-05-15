@@ -13,6 +13,12 @@ Current experiment:
 
 **License:** personal and non-commercial use only. See [License](#license).
 
+## The short version
+
+CodePatchbay is for developers who already use Codex and Claude Code and want a more inspectable local workflow than one long chat session. It connects the tools through Markdown handoff files and JSONL runtime events, so plans, deliverables, verdicts, and job state can be reviewed after each step.
+
+This is intentionally narrow: Codex plans and verifies; Claude Code executes. It is not trying to be a general multi-agent framework yet.
+
 ## Current status
 
 CodePatchbay is **not production-ready**.
@@ -212,6 +218,10 @@ Safe operating rules:
 Contributions are welcome for personal and non-commercial collaboration under the project license. By contributing, you agree that your contribution may be distributed under the current non-commercial license and under separate commercial licenses offered by the project owner.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Demo
+
+Start with the [Demo path](docs/demo.md) if you want to reproduce the clean-clone checks or record a small real Codex + Claude Code handoff run.
 
 ## License
 
