@@ -70,6 +70,11 @@ ${BOLD}Examples:${NC}
   cpb pipeline my-project "Add unit tests" 3 30
   cpb research my-project "Add dark mode"
   cpb pipeline --interactive my-project "Add dark mode"
+  cpb diff my-project
+  cpb log my-project 10
+  cpb inbox my-project
+  cpb outputs my-project
+  cpb remove my-project
 EOF
 }
 
@@ -149,8 +154,8 @@ cmd_remove() {
     exit 1
   fi
   local inbox_count outputs_count
-  inbox_count=$(ls "$wiki_dir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
-  outputs_count=$(ls "$wiki_dir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  inbox_count=$(find "$wiki_dir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  outputs_count=$(find "$wiki_dir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
   echo -e "${YELLOW}Remove project: $project${NC}"
   echo "  Wiki: $wiki_dir"
   echo "  Inbox: $inbox_count plans, Outputs: $outputs_count files"
@@ -330,7 +335,7 @@ cmd_status() {
 
   # Latest plan
   local latest_plan
-  latest_plan=$(ls "$wdir/inbox/"plan-*.md 2>/dev/null | sort | tail -1)
+  latest_plan=$(find "$wdir/inbox" -maxdepth 1 -name 'plan-*.md' 2>/dev/null | sort | tail -1)
   if [ -n "$latest_plan" ]; then
     local plan_name plan_title
     plan_name=$(basename "$latest_plan" .md)
@@ -340,7 +345,7 @@ cmd_status() {
 
   # Latest verdict
   local latest_verdict
-  latest_verdict=$(ls "$wdir/outputs/"verdict-*.md 2>/dev/null | sort | tail -1)
+  latest_verdict=$(find "$wdir/outputs" -maxdepth 1 -name 'verdict-*.md' 2>/dev/null | sort | tail -1)
   if [ -n "$latest_verdict" ]; then
     local verdict_name verdict_status
     verdict_name=$(basename "$latest_verdict" .md)
@@ -351,8 +356,8 @@ cmd_status() {
 
   [ -f "$wdir/log.md" ] && { echo -e "${CYAN}Recent:${NC}"; grep "^- \*\*" "$wdir/log.md" | tail -5; echo ""; } || true
 
-  local inbox=$(ls "$wdir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
-  local outputs=$(ls "$wdir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  local inbox=$(find "$wdir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  local outputs=$(find "$wdir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
   echo -e "${CYAN}Inbox:${NC} $inbox plans  ${CYAN}Outputs:${NC} $outputs files"
 
   # Pipeline state from durable job projection
@@ -377,8 +382,8 @@ cmd_list() {
     local name=$(basename "$dir")
     [ "$name" = "_template" ] && continue
     found=1
-    local inbox=$(ls "$dir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
-    local outputs=$(ls "$dir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+    local inbox=$(find "$dir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    local outputs=$(find "$dir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
     echo -e "  ${CYAN}$name${NC}  inbox:$inbox  out:$outputs"
   done
   [ "$found" -eq 0 ] && echo "  None. Run: cpb init <path> <name>"
@@ -414,8 +419,8 @@ cmd_wiki() {
         [ "$name" = "_template" ] && continue
 
         # Boundary violations
-        ls "$dir/inbox/deliverable-"*.md &>/dev/null && { echo "  $name: deliverable in inbox"; issues=$((issues + 1)); }
-        ls "$dir/outputs/plan-"*.md &>/dev/null && { echo "  $name: plan in outputs"; issues=$((issues + 1)); }
+        find "$dir/inbox" -maxdepth 1 -name 'deliverable-*.md' 2>/dev/null | grep -q . && { echo "  $name: deliverable in inbox"; issues=$((issues + 1)); } || true
+        find "$dir/outputs" -maxdepth 1 -name 'plan-*.md' 2>/dev/null | grep -q . && { echo "  $name: plan in outputs"; issues=$((issues + 1)); } || true
 
         # Incomplete handoffs (missing Acceptance-Criteria)
         for hf in "$dir/inbox/"*.md "$dir/outputs/"*.md; do
