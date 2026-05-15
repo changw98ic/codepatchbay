@@ -43,6 +43,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
   ${CYAN}diff${NC} <project>                           查看项目源码变更
   ${CYAN}log${NC} <project> [lines]                   查看项目日志
+  ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
   ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
@@ -125,6 +126,46 @@ cmd_log() {
   echo -e "${BOLD}Log: $project${NC} (last $lines entries)"
   echo ""
   tail -n "$lines" "$log"
+}
+
+cmd_remove() {
+  local project="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      *) project="$1"; shift ;;
+    esac
+  done
+  if [ -z "$project" ]; then
+    echo -e "${RED}Usage: cpb remove <project> [--force]${NC}" >&2
+    exit 1
+  fi
+  require_safe_name "$project"
+  local wiki_dir="$CPB_ROOT/wiki/projects/$project"
+  if [ ! -d "$wiki_dir" ]; then
+    echo -e "${RED}Project not found: $project${NC}" >&2
+    exit 1
+  fi
+  local inbox_count outputs_count
+  inbox_count=$(ls "$wiki_dir/inbox/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  outputs_count=$(ls "$wiki_dir/outputs/"*.md 2>/dev/null | wc -l | tr -d ' ')
+  echo -e "${YELLOW}Remove project: $project${NC}"
+  echo "  Wiki: $wiki_dir"
+  echo "  Inbox: $inbox_count plans, Outputs: $outputs_count files"
+  if [ "$force" -eq 0 ]; then
+    if [[ -t 0 ]]; then
+      read -rp "Confirm remove? [y/N]: " answer
+      case "$answer" in
+        [yY]) ;;
+        *) echo "Aborted."; exit 0 ;;
+      esac
+    else
+      echo -e "${RED}Non-interactive: use --force to confirm${NC}" >&2
+      exit 1
+    fi
+  fi
+  rm -rf "$wiki_dir"
+  echo -e "${GREEN}Removed: $project${NC}"
 }
 
 cmd_pipeline() {
@@ -422,6 +463,7 @@ case "${1:-help}" in
   research) shift; cmd_research "$@" ;;
   diff)     shift; cmd_diff "$@" ;;
   log)      shift; cmd_log "$@" ;;
+  remove)   shift; cmd_remove "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
