@@ -23,6 +23,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install rollup native binding (npm workspace bug workaround)
+        run: npm install @rollup/rollup-linux-x64-gnu --no-save
+        if: runner.os == 'Linux'
+
       - name: Run unit tests
         run: npm run test:node
 
