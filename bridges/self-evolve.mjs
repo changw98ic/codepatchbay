@@ -513,7 +513,7 @@ async function maybeRollback(state) {
 
 // --- Main evolve loop ---
 
-async function evolve() {
+async function evolve(opts = {}) {
   await mkdir(EVOLVE_DIR, { recursive: true });
 
   const state = await loadState(CPB_ROOT);
