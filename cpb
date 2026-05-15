@@ -43,6 +43,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
   ${CYAN}diff${NC} <project>                           查看项目源码变更
   ${CYAN}log${NC} <project> [lines]                   查看项目日志
+  ${CYAN}doctor${NC}                                  环境健康检查
   ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
   ${CYAN}inbox${NC} <project>                        列出计划文件
   ${CYAN}outputs${NC} <project>                      列出产出文件
@@ -220,6 +221,104 @@ cmd_outputs() {
     printf "  %-18s %-12s %s\n" "$name" "$type" "${verdict:-}"
   done
   [ "$found" -eq 0 ] && echo "  (empty)"
+  return 0
+}
+
+cmd_doctor() {
+  local issues=0
+  echo -e "${BOLD}CodePatchbay Doctor${NC}"
+  echo ""
+
+  # Node.js
+  if command -v node &>/dev/null; then
+    local node_ver
+    node_ver=$(node --version 2>/dev/null)
+    echo -e "  ${GREEN}✓${NC} Node.js $node_ver"
+  else
+    echo -e "  ${RED}✗${NC} Node.js not found"
+    issues=$((issues + 1))
+  fi
+
+  # Git
+  if command -v git &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Git $(git --version | awk '{print $3}')"
+  else
+    echo -e "  ${RED}✗${NC} Git not found"
+    issues=$((issues + 1))
+  fi
+
+  # ACP client
+  local acp="$CPB_ROOT/bridges/acp-client.mjs"
+  if [ -x "$acp" ]; then
+    echo -e "  ${GREEN}✓${NC} ACP client executable"
+  elif [ -f "$acp" ]; then
+    echo -e "  ${YELLOW}!${NC} ACP client exists but not executable (chmod +x bridges/acp-client.mjs)"
+    issues=$((issues + 1))
+  else
+    echo -e "  ${RED}✗${NC} ACP client missing: $acp"
+    issues=$((issues + 1))
+  fi
+
+  # ACP adapters
+  if command -v npx &>/dev/null; then
+    if npx -y @zed-industries/codex-acp --help &>/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} codex-acp adapter available"
+    else
+      echo -e "  ${YELLOW}!${NC} codex-acp adapter not cached (will download on first use)"
+    fi
+    if npx -y @agentclientprotocol/claude-agent-acp --help &>/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} claude-agent-acp adapter available"
+    else
+      echo -e "  ${YELLOW}!${NC} claude-agent-acp adapter not cached (will download on first use)"
+    fi
+  else
+    echo -e "  ${YELLOW}!${NC} npx not found — cannot verify ACP adapters"
+  fi
+
+  # common.sh
+  if [ -f "$CPB_ROOT/bridges/common.sh" ]; then
+    echo -e "  ${GREEN}✓${NC} common.sh present"
+  else
+    echo -e "  ${RED}✗${NC} common.sh missing"
+    issues=$((issues + 1))
+  fi
+
+  # Server deps
+  if [ -d "$CPB_ROOT/server/node_modules" ]; then
+    echo -e "  ${GREEN}✓${NC} Server dependencies installed"
+  else
+    echo -e "  ${YELLOW}!${NC} Server dependencies not installed (cpb ui will auto-install)"
+  fi
+
+  echo ""
+
+  # Check projects
+  echo -e "${BOLD}Projects:${NC}"
+  for dir in "$CPB_ROOT/wiki/projects"/*/; do
+    [ -d "$dir" ] || continue
+    local name
+    name=$(basename "$dir")
+    [ "$name" = "_template" ] && continue
+
+    local p_issues=0
+    [ ! -f "$dir/project.json" ] && { p_issues=$((p_issues + 1)); }
+    [ ! -d "$dir/inbox" ] && { p_issues=$((p_issues + 1)); }
+    [ ! -d "$dir/outputs" ] && { p_issues=$((p_issues + 1)); }
+
+    if [ "$p_issues" -gt 0 ]; then
+      echo -e "  ${YELLOW}!${NC} $name: $p_issues structural issues"
+      issues=$((issues + 1))
+    else
+      echo -e "  ${GREEN}✓${NC} $name"
+    fi
+  done
+
+  echo ""
+  if [ "$issues" -eq 0 ]; then
+    echo -e "${GREEN}All checks passed.${NC}"
+  else
+    echo -e "${YELLOW}$issues issue(s) found.${NC}"
+  fi
   return 0
 }
 
@@ -543,6 +642,7 @@ case "${1:-help}" in
   research) shift; cmd_research "$@" ;;
   diff)     shift; cmd_diff "$@" ;;
   log)      shift; cmd_log "$@" ;;
+  doctor)   cmd_doctor ;;
   remove)   shift; cmd_remove "$@" ;;
   inbox)    shift; cmd_inbox "$@" ;;
   outputs)  shift; cmd_outputs "$@" ;;

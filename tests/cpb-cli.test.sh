@@ -33,6 +33,9 @@ run_test() {
 # Test help
 run_test "help" "$ROOT/cpb help"
 
+# Test doctor
+run_test "doctor" "$ROOT/cpb doctor"
+
 # Test list
 run_test "list" "$ROOT/cpb list"
 
