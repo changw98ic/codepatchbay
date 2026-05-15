@@ -24,6 +24,10 @@ import {
   renewLease,
 } from "../server/services/lease-manager.js";
 
+// ─── Helpers ───
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // ─── CLI arg parsing ───
 
 function parseArgs(argv) {
@@ -457,7 +461,14 @@ async function main() {
         break;
       }
 
-      warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
+      // Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+      if (attempt < maxRetries) {
+        const backoffMs = Math.min(30_000, 1000 * Math.pow(2, attempt - 1));
+        warn(`No deliverable. Retry ${attempt}/${maxRetries} in ${backoffMs / 1000}s...`);
+        await sleep(backoffMs);
+      } else {
+        warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
+      }
       await completePhase(cpbRoot, project, jobId, {
         phase: `execute-retry-${attempt}`,
         artifact: "",

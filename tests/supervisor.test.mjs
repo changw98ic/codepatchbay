@@ -15,6 +15,7 @@ import {
 } from "../server/services/job-store.js";
 import {
   bridgeForPhase,
+  getStaleTrackerSnapshot,
   nextPhaseFor,
   recoverAndRun,
   recoverJobs,
@@ -132,11 +133,25 @@ await blockJob(root, "demo", blocked.jobId, {
   ts: "2026-05-13T00:31:00.000Z",
 });
 
-const recovered = await recoverJobs(root, { now: new Date("2026-05-13T01:00:00.000Z") });
+// Grace period: first stale detection should NOT recover the job
+const notYet = await recoverJobs(root, { now: new Date("2026-05-13T01:00:00.000Z") });
+assert.equal(notYet.length, 0, "first stale detection should be within grace period");
+const tracker1 = getStaleTrackerSnapshot();
+assert.equal(tracker1[job.jobId]?.count, 1);
+
+// Second stale detection: still within grace
+const notYet2 = await recoverJobs(root, { now: new Date("2026-05-13T01:00:30.000Z") });
+assert.equal(notYet2.length, 0, "second stale detection still within grace");
+const tracker2 = getStaleTrackerSnapshot();
+assert.equal(tracker2[job.jobId]?.count, 2);
+
+// Third stale detection: grace exhausted — now recoverable
+const recovered = await recoverJobs(root, { now: new Date("2026-05-13T01:01:00.000Z") });
 assert.equal(recovered.length, 1);
 assert.equal(recovered[0].jobId, job.jobId);
 assert.equal(recovered[0].project, "demo");
 assert.equal(nextPhaseFor(recovered[0]), "plan");
+assert.equal(getStaleTrackerSnapshot()[job.jobId], undefined, "tracker cleaned up after recovery");
 
 const state = await getJob(root, "demo", job.jobId);
 assert.equal(state.status, "running");
@@ -214,9 +229,12 @@ await acquireLease(root, {
 });
 assert.equal((await getJob(root, "demo", staleLeaseJob.jobId)).leaseId, "lease-stale-verify");
 
-const leaseAwareRecovered = await recoverJobs(root, {
-  now: new Date("2026-05-13T01:40:00.000Z"),
-});
+// Grace period for missingLeaseJob + staleLeaseJob (+ job still stale from earlier)
+const leaseGrace1 = await recoverJobs(root, { now: new Date("2026-05-13T01:40:00.000Z") });
+assert.equal(leaseGrace1.length, 0, "grace period call 1 — not yet");
+const leaseGrace2 = await recoverJobs(root, { now: new Date("2026-05-13T01:40:30.000Z") });
+assert.equal(leaseGrace2.length, 0, "grace period call 2 — not yet");
+const leaseAwareRecovered = await recoverJobs(root, { now: new Date("2026-05-13T01:41:00.000Z") });
 assert.deepEqual(
   leaseAwareRecovered.map((recoveredJob) => recoveredJob.jobId).sort(),
   [job.jobId, missingLeaseJob.jobId, staleLeaseJob.jobId].sort()
