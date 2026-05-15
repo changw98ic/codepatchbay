@@ -2,7 +2,8 @@
 // run-pipeline.mjs — Full automated pipeline using job-store as single source of truth
 // Usage: node bridges/run-pipeline.mjs --project <name> --task "<desc>" [--max-retries N] [--timeout-min M]
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +88,43 @@ function fail(msg) {
 
 function warn(msg) {
   console.log(`${YELLOW}[WARN]${NC} ${msg}`);
+}
+
+function printFailureSummary(cpbRoot, project, jobId, { phase, reason, deliverableId, verdictFile }) {
+  console.log("");
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log(`${RED}  PIPELINE FAILED${NC}`);
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log("");
+  console.log(`  ${CYAN}Project:${NC}   ${project}`);
+  console.log(`  ${CYAN}Job:${NC}       ${jobId}`);
+  if (phase) console.log(`  ${CYAN}Phase:${NC}     ${phase}`);
+  if (reason) console.log(`  ${CYAN}Reason:${NC}    ${reason}`);
+  if (deliverableId) console.log(`  ${CYAN}Deliverable:${NC} deliverable-${deliverableId}`);
+  if (verdictFile) {
+    try {
+      const content = readFileSync(verdictFile, "utf8");
+      const verdict = content.match(/^VERDICT:\s*(\S+)/m)?.[1] || "unknown";
+      const firstEvidence = content.split("\n").filter(l => l.trim() && !l.startsWith("VERDICT:")).slice(0, 3).join(" | ");
+      console.log(`  ${CYAN}Verdict:${NC}    ${verdict}`);
+      if (firstEvidence) console.log(`  ${CYAN}Evidence:${NC}   ${firstEvidence.slice(0, 120)}`);
+    } catch {}
+  }
+  console.log("");
+  console.log(`  ${YELLOW}Next steps:${NC}`);
+  if (phase === "execute" || phase === "plan") {
+    console.log(`    cpb status ${project}          # check current state`);
+    console.log(`    cpb review ${project}          # review deliverable`);
+  } else if (phase === "verify") {
+    console.log(`    cpb review ${project}          # review verdict & diff`);
+    console.log(`    cpb execute ${project} <id>    # retry with fixes`);
+  } else {
+    console.log(`    cpb status ${project}          # check current state`);
+    console.log(`    cpb doctor                     # diagnose issues`);
+  }
+  console.log("");
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log("");
 }
 
 // ─── Timestamp helper ───
@@ -520,7 +558,9 @@ async function main() {
     }
 
     fail(`Pipeline failed after ${maxRetries} cycles.`);
-    await failJob(flowRoot, project, jobId, { reason: `pipeline failed after ${maxRetries} verify cycles` });
+    await failJob(cpbRoot, project, jobId, { reason: `pipeline failed after ${maxRetries} verify cycles` });
+    const vf = deliverableId ? path.join(wikiDir, "outputs", `verdict-${deliverableId}.md`) : undefined;
+    printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} cycles`, deliverableId, verdictFile: vf });
     return 1;
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
@@ -529,6 +569,7 @@ async function main() {
     } catch {
       // Best effort — job may already be in terminal state
     }
+    printFailureSummary(cpbRoot, project, jobId, { reason: err.message });
     return 1;
   } finally {
     if (watchdogTimer !== null) {

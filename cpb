@@ -1,0 +1,930 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# cpb — CodePatchbay CLI for Codex + Claude Code ACP handoffs
+# Usage: cpb <command> [args...]
+
+CPB_ROOT="$(cd "$(dirname "$0")" && pwd)"
+CPB_VERSION="0.2.0"
+
+# Parse global flags
+DANGEROUS=0
+for arg in "$@"; do
+  case "$arg" in
+    --dangerous) DANGEROUS=1; export CPB_DANGEROUS=1 ;;
+  esac
+done
+# Strip --dangerous from args so subcommands don't see it
+filtered_args=()
+for arg in "$@"; do
+  [ "$arg" = "--dangerous" ] && continue
+  filtered_args+=("$arg")
+done
+set -- "${filtered_args[@]}"
+
+# Colors (defined here so they're always available even if source fails)
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# shellcheck source=bridges/common.sh
+source "$CPB_ROOT/bridges/common.sh" 2>/dev/null || true
+
+usage() {
+  cat << EOF
+${BOLD}cpb${NC} v$CPB_VERSION — CodePatchbay
+
+${BOLD}Usage:${NC}
+  cpb <command> [arguments]
+
+${BOLD}Commands:${NC}
+  ${CYAN}init${NC} <path> <name>                    初始化项目集成
+  ${CYAN}plan${NC} <project> "<task>"               Codex 规划
+  ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
+  ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
+  ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
+  ${CYAN}diff${NC} <project>                           查看项目源码变更
+  ${CYAN}review${NC} <project> [deliverable-id]       审查产出：verdict + diff + accept/reject
+  ${CYAN}log${NC} <project> [lines]                   查看项目日志
+  ${CYAN}doctor${NC}                                  环境健康检查
+  ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
+  ${CYAN}inbox${NC} <project>                        列出计划文件
+  ${CYAN}outputs${NC} <project>                      列出产出文件
+  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
+  ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
+  ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
+  ${CYAN}recover${NC} <project> <jobId>              强制恢复卡住的 job (跳过 grace period)
+  ${CYAN}status${NC} <project>                       查看项目状态
+  ${CYAN}list${NC}                                   列出所有项目
+  ${CYAN}jobs${NC}                                     列出 durable jobs
+  ${CYAN}gc${NC}                                       清理已完成 job 的孤立 lease 文件
+  ${CYAN}supervisor${NC}                               启动长时运行 supervisor 原型
+  ${CYAN}migrate-runtime-root${NC} [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/
+  ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
+  ${CYAN}ui${NC} [--port PORT] [--host HOST]        启动 Web UI (默认 127.0.0.1)
+
+${BOLD}Global flags:${NC}
+  ${YELLOW}--dangerous${NC}                            移除 ACP 权限约束（unrestricted mode）
+  ${CYAN}interop${NC}                                启动分屏协作
+  ${CYAN}install${NC}                                安装到 PATH
+
+${BOLD}Examples:${NC}
+  cpb init ./my-project my-project
+  cpb plan my-project "Add dark mode"
+  cpb execute my-project 001
+  cpb verify my-project 001
+  cpb pipeline my-project "Add unit tests" 3 30
+  cpb research my-project "Add dark mode"
+  cpb pipeline --interactive my-project "Add dark mode"
+  cpb diff my-project
+  cpb log my-project 10
+  cpb inbox my-project
+  cpb outputs my-project
+  cpb remove my-project
+EOF
+}
+
+check_deps() {
+  local missing=()
+  command -v node &>/dev/null || missing+=("node")
+  [ -x "$CPB_ROOT/bridges/acp-client.mjs" ] || missing+=("acp-client.mjs (run: chmod +x bridges/acp-client.mjs)")
+
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Missing:${NC}"
+    for d in "${missing[@]}"; do echo "  - $d"; done
+    return 1
+  fi
+  echo -e "${GREEN}ACP client ready.${NC}"
+}
+
+cmd_init()     { "$CPB_ROOT/bridges/init-project.sh" "$@"; }
+cmd_plan()     { "$CPB_ROOT/bridges/codex-plan.sh" "$@"; }
+cmd_execute()  { "$CPB_ROOT/bridges/claude-execute.sh" "$@"; }
+cmd_verify()   { "$CPB_ROOT/bridges/codex-verify.sh" "$@"; }
+cmd_research() {
+  local project="${1:?Usage: cpb research <project> '<task>'}"
+  local task="${2:?Usage: cpb research <project> '<task>'}"
+  "$CPB_ROOT/bridges/dual-research.sh" "$project" "$task"
+}
+
+cmd_diff() {
+  local project="${1:?Usage: cpb diff <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local src
+  src=$(get_project_path "$project")
+  if [ -z "$src" ] || [ ! -d "$src" ]; then
+    echo -e "${RED}Project source path not found: $src${NC}" >&2
+    exit 1
+  fi
+  if [ ! -d "$src/.git" ]; then
+    echo -e "${RED}Not a git repository: $src${NC}" >&2
+    exit 1
+  fi
+  git -C "$src" diff --stat
+  echo ""
+  git -C "$src" diff
+}
+
+cmd_review() {
+  local project="${1:?Usage: cpb review <project> [deliverable-id]}"
+  local did="${2:-}"
+  require_safe_name "$project"
+  require_project "$project"
+  local wdir="$CPB_ROOT/wiki/projects/$project"
+
+  # Find latest deliverable/verdict if no ID given
+  if [ -z "$did" ]; then
+    local latest_d
+    latest_d=$(find "$wdir/outputs" -maxdepth 1 -name 'deliverable-*.md' 2>/dev/null | sort | tail -1)
+    if [ -z "$latest_d" ]; then
+      echo -e "${RED}No deliverables found for $project${NC}" >&2
+      exit 1
+    fi
+    did=$(basename "$latest_d" .md | sed 's/deliverable-//')
+  fi
+
+  local deliverable="$wdir/outputs/deliverable-${did}.md"
+  local verdict="$wdir/outputs/verdict-${did}.md"
+
+  require_file "$deliverable"
+
+  # ─── Verdict ───
+  echo -e "${BOLD}Review: $project / deliverable-$did${NC}"
+  echo ""
+  if [ -f "$verdict" ]; then
+    local v_status
+    v_status=$(grep -m1 '^VERDICT:' "$verdict" | sed 's/^VERDICT: *//')
+    case "$v_status" in
+      PASS)    echo -e "Verdict: ${GREEN}PASS${NC}" ;;
+      FAIL)    echo -e "Verdict: ${RED}FAIL${NC}" ;;
+      PARTIAL) echo -e "Verdict: ${YELLOW}PARTIAL${NC}" ;;
+      *)       echo -e "Verdict: ${YELLOW}${v_status:-unknown}${NC}" ;;
+    esac
+    echo ""
+    # Show first 10 lines of verdict evidence
+    echo -e "${CYAN}Evidence (first 10 lines):${NC}"
+    grep -v '^VERDICT:' "$verdict" | head -10
+    echo ""
+  else
+    echo -e "${YELLOW}No verdict yet.${NC}"
+    echo ""
+  fi
+
+  # ─── Deliverable summary ───
+  echo -e "${CYAN}Deliverable summary:${NC}"
+  head -20 "$deliverable"
+  echo ""
+
+  # ─── Git diff ───
+  local src
+  src=$(get_project_path "$project")
+  if [ -n "$src" ] && [ -d "$src/.git" ]; then
+    local changes
+    changes=$(git -C "$src" diff --stat 2>/dev/null)
+    if [ -n "$changes" ]; then
+      echo -e "${CYAN}Changes:${NC}"
+      echo "$changes"
+      echo ""
+      echo -e "${CYAN}Diff (first 80 lines):${NC}"
+      git -C "$src" diff 2>/dev/null | head -80
+    else
+      echo -e "${YELLOW}No uncommitted changes.${NC}"
+    fi
+  fi
+
+  # ─── Accept/Reject ───
+  echo ""
+  echo -e "${BOLD}Actions:${NC}"
+  echo "  a/accept   — keep changes"
+  echo "  r/reject   — revert changes (git reset --hard)"
+  echo "  q/quit     — exit"
+  echo ""
+  read -rp "Choice [a/r/q]: " choice
+  case "$choice" in
+    a|accept)
+      echo -e "${GREEN}Changes accepted.${NC}"
+      ;;
+    r|reject)
+      if [ -n "$src" ] && [ -d "$src/.git" ]; then
+        echo -e "${YELLOW}Reverting changes in $src...${NC}"
+        git -C "$src" checkout -- . 2>/dev/null
+        git -C "$src" clean -fd 2>/dev/null
+        echo -e "${GREEN}Reverted to last committed state.${NC}"
+      else
+        echo -e "${RED}Cannot revert: not a git repo.${NC}" >&2
+      fi
+      ;;
+    *)
+      echo "No action taken."
+      ;;
+  esac
+}
+
+cmd_log() {
+  local project="${1:?Usage: cpb log <project> [tail-lines]}"
+  local lines="${2:-20}"
+  require_safe_name "$project"
+  require_project "$project"
+  local log="$CPB_ROOT/wiki/projects/$project/log.md"
+  if [ ! -f "$log" ]; then
+    echo -e "${YELLOW}No log found for $project${NC}"
+    return 0
+  fi
+  echo -e "${BOLD}Log: $project${NC} (last $lines entries)"
+  echo ""
+  tail -n "$lines" "$log"
+}
+
+cmd_remove() {
+  local project="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      *) project="$1"; shift ;;
+    esac
+  done
+  if [ -z "$project" ]; then
+    echo -e "${RED}Usage: cpb remove <project> [--force]${NC}" >&2
+    exit 1
+  fi
+  require_safe_name "$project"
+  local wiki_dir="$CPB_ROOT/wiki/projects/$project"
+  if [ ! -d "$wiki_dir" ]; then
+    echo -e "${RED}Project not found: $project${NC}" >&2
+    exit 1
+  fi
+  local inbox_count outputs_count
+  inbox_count=$(find "$wiki_dir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  outputs_count=$(find "$wiki_dir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  echo -e "${YELLOW}Remove project: $project${NC}"
+  echo "  Wiki: $wiki_dir"
+  echo "  Inbox: $inbox_count plans, Outputs: $outputs_count files"
+  if [ "$force" -eq 0 ]; then
+    if [[ -t 0 ]]; then
+      read -rp "Confirm remove? [y/N]: " answer
+      case "$answer" in
+        [yY]) ;;
+        *) echo "Aborted."; exit 0 ;;
+      esac
+    else
+      echo -e "${RED}Non-interactive: use --force to confirm${NC}" >&2
+      exit 1
+    fi
+  fi
+  rm -rf "$wiki_dir"
+  echo -e "${GREEN}Removed: $project${NC}"
+}
+
+cmd_inbox() {
+  local project="${1:?Usage: cpb inbox <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local dir="$CPB_ROOT/wiki/projects/$project/inbox"
+  echo -e "${BOLD}Inbox: $project${NC}"
+  local found=0
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    found=1
+    local name title
+    name=$(basename "$f" .md)
+    title=$(head -3 "$f" | grep -m1 '^#' | sed 's/^#* *//')
+    printf "  %-14s %s\n" "$name" "${title:-(no title)}"
+  done
+  [ "$found" -eq 0 ] && echo "  (empty)"
+  return 0
+}
+
+cmd_outputs() {
+  local project="${1:?Usage: cpb outputs <project>}"
+  require_safe_name "$project"
+  require_project "$project"
+  local dir="$CPB_ROOT/wiki/projects/$project/outputs"
+  echo -e "${BOLD}Outputs: $project${NC}"
+  local found=0
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    found=1
+    local name type
+    name=$(basename "$f" .md)
+    if [[ "$name" == verdict-* ]]; then
+      type="verdict"
+    elif [[ "$name" == deliverable-* ]]; then
+      type="deliverable"
+    else
+      type="other"
+    fi
+    local verdict=""
+    if [ "$type" = "verdict" ]; then
+      verdict=$(grep -m1 '^VERDICT:' "$f" | sed 's/^VERDICT: *//')
+    fi
+    printf "  %-18s %-12s %s\n" "$name" "$type" "${verdict:-}"
+  done
+  [ "$found" -eq 0 ] && echo "  (empty)"
+  return 0
+}
+
+cmd_doctor() {
+  local issues=0
+  echo -e "${BOLD}CodePatchbay Doctor${NC}"
+  echo ""
+
+  # Node.js
+  if command -v node &>/dev/null; then
+    local node_ver
+    node_ver=$(node --version 2>/dev/null)
+    echo -e "  ${GREEN}✓${NC} Node.js $node_ver"
+  else
+    echo -e "  ${RED}✗${NC} Node.js not found"
+    issues=$((issues + 1))
+  fi
+
+  # Git
+  if command -v git &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Git $(git --version | awk '{print $3}')"
+  else
+    echo -e "  ${RED}✗${NC} Git not found"
+    issues=$((issues + 1))
+  fi
+
+  # ACP client
+  local acp="$CPB_ROOT/bridges/acp-client.mjs"
+  if [ -x "$acp" ]; then
+    echo -e "  ${GREEN}✓${NC} ACP client executable"
+  elif [ -f "$acp" ]; then
+    echo -e "  ${YELLOW}!${NC} ACP client exists but not executable (chmod +x bridges/acp-client.mjs)"
+    issues=$((issues + 1))
+  else
+    echo -e "  ${RED}✗${NC} ACP client missing: $acp"
+    issues=$((issues + 1))
+  fi
+
+  # ACP adapters
+  if command -v npx &>/dev/null; then
+    if npx -y @zed-industries/codex-acp --help &>/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} codex-acp adapter available"
+    else
+      echo -e "  ${YELLOW}!${NC} codex-acp adapter not cached (will download on first use)"
+    fi
+    if npx -y @agentclientprotocol/claude-agent-acp --help &>/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} claude-agent-acp adapter available"
+    else
+      echo -e "  ${YELLOW}!${NC} claude-agent-acp adapter not cached (will download on first use)"
+    fi
+  else
+    echo -e "  ${YELLOW}!${NC} npx not found — cannot verify ACP adapters"
+  fi
+
+  # common.sh
+  if [ -f "$CPB_ROOT/bridges/common.sh" ]; then
+    echo -e "  ${GREEN}✓${NC} common.sh present"
+  else
+    echo -e "  ${RED}✗${NC} common.sh missing"
+    issues=$((issues + 1))
+  fi
+
+  # Server deps
+  if [ -d "$CPB_ROOT/server/node_modules" ]; then
+    echo -e "  ${GREEN}✓${NC} Server dependencies installed"
+  else
+    echo -e "  ${YELLOW}!${NC} Server dependencies not installed (cpb ui will auto-install)"
+  fi
+
+  # Runtime data directory
+  local runtime_dir
+  runtime_dir=$(CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+    import { runtimeDataPath } from '$CPB_ROOT/server/services/runtime-root.js';
+    console.log(runtimeDataPath('$CPB_ROOT', ''));
+  " 2>/dev/null)
+  if [ -n "$runtime_dir" ] && [ -d "$runtime_dir" ]; then
+    local lease_count
+    lease_count=$(find "$runtime_dir/leases" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+    local event_count
+    event_count=$(find "$runtime_dir/events" -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${GREEN}✓${NC} Runtime data: $runtime_dir (leases:$lease_count events:$event_count)"
+  elif [ -n "$runtime_dir" ]; then
+    echo -e "  ${YELLOW}!${NC} Runtime data dir missing: $runtime_dir"
+  fi
+
+  # Supervisor env vars (non-zero = configured)
+  echo ""
+  echo -e "${BOLD}Supervisor settings:${NC}"
+  local env_vars=(
+    "CPB_STALE_GRACE_COUNT:3:stale grace detections before recovery"
+    "CPB_ACTIVITY_STALE_MS:300000:activity stale threshold (ms)"
+    "CPB_LEASE_TTL_MS:120000:phase lease TTL (ms)"
+    "CPB_SUPERVISOR_INTERVAL_MS:30000:supervisor poll interval (ms)"
+    "CPB_LEASE_LOCK_TTL_MS:30000:lock contention TTL (ms)"
+  )
+  local has_overrides=0
+  for entry in "${env_vars[@]}"; do
+    local var_name="${entry%%:*}"
+    local rest="${entry#*:}"
+    local default_val="${rest%%:*}"
+    local desc="${rest#*:}"
+    local val="${!var_name:-}"
+    if [ -n "$val" ]; then
+      echo -e "  ${CYAN}~${NC} $var_name=$val ($desc, default $default_val)"
+      has_overrides=1
+    fi
+  done
+  if [ "$has_overrides" -eq 0 ]; then
+    echo -e "  ${GREEN}(using defaults)${NC}"
+  fi
+
+  # Check for stale jobs
+  echo ""
+  echo -e "${BOLD}Running jobs:${NC}"
+  local stale_jobs
+  stale_jobs=$(CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+    import path from 'node:path';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const { listJobs } = await import(path.join(cpbRoot, 'server/services/job-store.js'));
+    const { readLease, isLeaseStale } = await import(path.join(cpbRoot, 'server/services/lease-manager.js'));
+    const jobs = await listJobs(cpbRoot);
+    const running = jobs.filter(j => !['completed','failed','blocked','cancelled'].includes(j.status));
+    if (running.length === 0) { console.log('  (none)'); process.exit(0); }
+    for (const j of running) {
+      let lease = '-';
+      if (j.leaseId) {
+        try {
+          const l = await readLease(cpbRoot, j.leaseId);
+          lease = l === null ? 'missing' : isLeaseStale(l) ? 'stale' : 'active';
+        } catch { lease = 'error'; }
+      }
+      console.log('  ' + j.jobId + '  ' + j.project + '  ' + j.status + '  ' + (j.phase||'-') + '  ' + lease);
+    }
+  " 2>/dev/null)
+  if [ -n "$stale_jobs" ]; then
+    echo "$stale_jobs"
+    local stale_count=$(echo "$stale_jobs" | grep -c 'stale' || true)
+    if [ "$stale_count" -gt 0 ]; then
+      echo -e "  ${YELLOW}!${NC} $stale_count job(s) with stale leases. Run: ${CYAN}cpb recover <project> <jobId>${NC}"
+    fi
+  else
+    echo -e "  ${GREEN}(none)${NC}"
+  fi
+
+  # Self-evolve state
+  local evolve_state="$CPB_ROOT/cpb-task/self-evolve/state.json"
+  if [ -f "$evolve_state" ]; then
+    local round known_good
+    round=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$evolve_state','utf8')).round || 0)" 2>/dev/null)
+    known_good=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$evolve_state','utf8')).knownGoodCommit?.slice(0,8) || 'none')" 2>/dev/null)
+    echo -e "  ${CYAN}Self-evolve:${NC} round $round, known-good $known_good"
+  fi
+
+  echo ""
+
+  # Check projects
+  echo -e "${BOLD}Projects:${NC}"
+  for dir in "$CPB_ROOT/wiki/projects"/*/; do
+    [ -d "$dir" ] || continue
+    local name
+    name=$(basename "$dir")
+    [ "$name" = "_template" ] && continue
+
+    local p_issues=0
+    local missing=""
+    [ ! -f "$dir/project.json" ] && { p_issues=$((p_issues + 1)); missing="$missing project.json"; }
+    [ ! -d "$dir/inbox" ] && { p_issues=$((p_issues + 1)); missing="$missing inbox/"; }
+    [ ! -d "$dir/outputs" ] && { p_issues=$((p_issues + 1)); missing="$missing outputs/"; }
+
+    if [ "$p_issues" -gt 0 ]; then
+      local label="issue"
+      [ "$p_issues" -gt 1 ] && label="issues"
+      echo -e "  ${YELLOW}!${NC} $name: $p_issues structural $label (missing:$missing)"
+      issues=$((issues + 1))
+    else
+      echo -e "  ${GREEN}✓${NC} $name"
+    fi
+  done
+
+  echo ""
+  if [ "$issues" -eq 0 ]; then
+    echo -e "${GREEN}All checks passed.${NC}"
+  else
+    echo -e "${YELLOW}$issues issue(s) found.${NC}"
+  fi
+  return 0
+}
+
+cmd_pipeline() {
+  if [ "${1:-}" = "--interactive" ]; then
+    shift
+    cmd_pipeline_interactive "$@"
+  else
+    "$CPB_ROOT/bridges/run-pipeline.sh" "$@"
+  fi
+}
+
+cmd_pipeline_interactive() {
+  local project="${1:?Usage: cpb pipeline --interactive <project> '<task>'}"
+  local task="${2:?Usage: cpb pipeline --interactive <project> '<task>'}"
+  local max_retries="${3:-3}"
+
+  # TTY check
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo -e "${RED}--interactive mode requires a terminal (TTY).${NC}" >&2
+    exit 1
+  fi
+
+  require_safe_name "$project"
+  require_project "$project"
+
+  local wiki_dir="$CPB_ROOT/wiki/projects/$project"
+  local research_file plan_file plan_id
+
+  # Phase 1: Research
+  echo -e "\n${BOLD}Phase 1/4: Research (dual-agent)${NC}"
+  research_file=$("$CPB_ROOT/bridges/dual-research.sh" "$project" "$task" | tail -1 | sed 's/^Research: //')
+  if [ ! -f "$research_file" ]; then
+    echo -e "${RED}Research failed.${NC}" >&2
+    exit 1
+  fi
+  echo -e "  ${GREEN}Research done:${NC} $research_file"
+
+  # Phase 2: Plan (with research)
+  echo -e "\n${BOLD}Phase 2/4: Plan (Codex)${NC}"
+  plan_file=$("$CPB_ROOT/bridges/codex-plan.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
+  if [ ! -f "$plan_file" ]; then
+    echo -e "${RED}Plan generation failed.${NC}" >&2
+    exit 1
+  fi
+  plan_id=$(basename "$plan_file" .md | sed 's/^plan-//')
+  echo -e "  ${GREEN}Plan done:${NC} $plan_file"
+
+  # Phase 3: Show plan + user confirmation
+  echo -e "\n${BOLD}Phase 3/4: Review Plan${NC}"
+  echo ""
+  "$CPB_ROOT/bridges/show-plan.sh" "$plan_file"
+  echo ""
+
+  local answer
+  while true; do
+    read -rp "$(echo -e "${CYAN}Confirm execute? [y/n/e(edit task)]: ${NC}")" answer
+    case "$answer" in
+      [yY])
+        break
+        ;;
+      [nN])
+        echo -e "${YELLOW}Aborted. Plan saved: $plan_file${NC}"
+        echo "  To execute later: cpb execute $project $plan_id"
+        exit 0
+        ;;
+      [eE])
+        read -rp "$(echo -e "${CYAN}New task description: ${NC}")" task
+        echo -e "\n${BOLD}Re-generating plan...${NC}"
+        plan_file=$("$CPB_ROOT/bridges/codex-plan.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
+        if [ ! -f "$plan_file" ]; then
+          echo -e "${RED}Plan regeneration failed.${NC}" >&2
+          exit 1
+        fi
+        plan_id=$(basename "$plan_file" .md | sed 's/^plan-//')
+        echo ""
+        "$CPB_ROOT/bridges/show-plan.sh" "$plan_file"
+        echo ""
+        ;;
+      *)
+        echo "  Please enter y, n, or e."
+        ;;
+    esac
+  done
+
+  # Phase 4: Execute + Verify (skip plan in pipeline)
+  echo -e "\n${BOLD}Phase 4/4: Execute + Verify${NC}"
+  exec node "$CPB_ROOT/bridges/run-pipeline.mjs" \
+    --project "$project" \
+    --task "$task" \
+    --max-retries "$max_retries" \
+    --skip-plan \
+    --plan-id "$plan_id"
+}
+cmd_jobs()      { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/list-jobs.mjs"; }
+cmd_gc() {
+  echo -e "${BOLD}Garbage collecting stale runtime data...${NC}"
+  CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+    import path from 'node:path';
+    import { readdir, unlink, stat } from 'node:fs/promises';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const { listJobs } = await import(path.join(cpbRoot, 'server/services/job-store.js'));
+    const jobs = await listJobs(cpbRoot);
+    const terminal = new Set(['completed','failed','blocked','cancelled']);
+    const terminalLeases = jobs.filter(j => terminal.has(j.status) && j.leaseId).map(j => j.leaseId);
+    const leasesDir = path.join(cpbRoot, 'cpb-task', 'leases');
+    let cleaned = 0;
+    try {
+      for (const f of await readdir(leasesDir)) {
+        if (!f.endsWith('.json')) continue;
+        const leaseId = f.replace('.json', '');
+        if (terminalLeases.includes(leaseId)) {
+          await unlink(path.join(leasesDir, f));
+          // Also remove lock dir if present
+          try { await unlink(path.join(leasesDir, leaseId + '.lock')); } catch {}
+          console.log('  removed lease: ' + leaseId);
+          cleaned++;
+        }
+      }
+    } catch {}
+    console.log(cleaned + ' stale lease(s) cleaned.');
+  "
+}
+cmd_supervisor() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/supervisor-loop.mjs"; }
+cmd_migrate_runtime_root() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/migrate-runtime-root.mjs" "$@"; }
+
+cmd_status() {
+  local project="${1:?Usage: cpb status <project>}"
+  local wdir="$CPB_ROOT/wiki/projects/$project"
+  require_project "$project"
+
+  echo -e "${BOLD}Project: $project${NC}"
+
+  # Source path
+  local src
+  src=$(get_project_path "$project")
+  [ -n "$src" ] && echo -e "  ${CYAN}Source:${NC} $src" || true
+  echo ""
+
+  [ -f "$wdir/context.md" ] && { echo -e "${CYAN}Context:${NC}"; grep "^- \*\*" "$wdir/context.md" | head -5; echo ""; } || true
+
+  # Latest plan
+  local latest_plan
+  latest_plan=$(find "$wdir/inbox" -maxdepth 1 -name 'plan-*.md' 2>/dev/null | sort | tail -1)
+  if [ -n "$latest_plan" ]; then
+    local plan_name plan_title
+    plan_name=$(basename "$latest_plan" .md)
+    plan_title=$(head -3 "$latest_plan" | grep -m1 '^#' | sed 's/^#* *//')
+    echo -e "${CYAN}Latest plan:${NC} $plan_name — $plan_title"
+  fi
+
+  # Latest verdict
+  local latest_verdict
+  latest_verdict=$(find "$wdir/outputs" -maxdepth 1 -name 'verdict-*.md' 2>/dev/null | sort | tail -1)
+  if [ -n "$latest_verdict" ]; then
+    local verdict_name verdict_status
+    verdict_name=$(basename "$latest_verdict" .md)
+    verdict_status=$(grep -m1 '^VERDICT:' "$latest_verdict" | sed 's/^VERDICT: *//')
+    echo -e "${CYAN}Latest verdict:${NC} $verdict_name — ${verdict_status:-unknown}"
+  fi
+  echo ""
+
+  [ -f "$wdir/log.md" ] && { echo -e "${CYAN}Recent:${NC}"; grep "^- \*\*" "$wdir/log.md" | tail -5; echo ""; } || true
+
+  local inbox=$(find "$wdir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  local outputs=$(find "$wdir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  echo -e "${CYAN}Inbox:${NC} $inbox plans  ${CYAN}Outputs:${NC} $outputs files"
+
+  # Pipeline state from durable job projection
+  local state
+  state=$(node --input-type=module -e "
+    import path from 'node:path';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const project = '${project}';
+    const { listJobs } = await import(path.join(cpbRoot, 'server/services/job-store.js'));
+    const { readLease, isLeaseStale } = await import(path.join(cpbRoot, 'server/services/lease-manager.js'));
+    const jobs = await listJobs(cpbRoot);
+    const projJobs = jobs.filter(j => j.project === project);
+    if (projJobs.length === 0) process.exit(0);
+    // Latest non-terminal job
+    const terminal = new Set(['completed','failed','blocked','cancelled']);
+    const running = projJobs.filter(j => !terminal.has(j.status));
+    const latest = running[0] || projJobs[projJobs.length - 1];
+    let leaseState = '-';
+    if (latest.leaseId) {
+      try {
+        const l = await readLease(cpbRoot, latest.leaseId);
+        leaseState = l === null ? 'missing' : isLeaseStale(l) ? 'stale' : 'active';
+      } catch { leaseState = 'error'; }
+    }
+    console.log(latest.status + ' ' + (latest.phase || '-') + ' lease:' + leaseState + ' ' + (latest.task || '').slice(0, 60));
+  " 2>/dev/null)
+  if [ -n "$state" ]; then
+    echo -e "${CYAN}Latest job:${NC} $state"
+  fi
+  return 0
+}
+
+cmd_list() {
+  echo -e "${BOLD}CodePatchbay Projects:${NC}"
+  local found=0
+  for dir in "$CPB_ROOT/wiki/projects"/*/; do
+    [ -d "$dir" ] || continue
+    local name=$(basename "$dir")
+    [ "$name" = "_template" ] && continue
+    found=1
+    local inbox=$(find "$dir/inbox" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    local outputs=$(find "$dir/outputs" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    local verdict=""
+    local latest_verdict=$(find "$dir/outputs" -maxdepth 1 -name 'verdict-*.md' 2>/dev/null | sort | tail -1)
+    if [ -n "$latest_verdict" ]; then
+      verdict=$(grep -m1 '^VERDICT:' "$latest_verdict" | sed 's/^VERDICT: *//')
+    fi
+    printf "  ${CYAN}%-20s${NC} inbox:%-3s out:%-3s %s\n" "$name" "$inbox" "$outputs" "${verdict:-}"
+  done
+  [ "$found" -eq 0 ] && echo "  None. Run: cpb init <path> <name>"
+  return 0
+}
+
+cmd_wiki() {
+  local sub="${1:-list}"
+  case "$sub" in
+    list)
+      echo -e "${BOLD}Wiki:${NC}"
+      find "$CPB_ROOT/wiki" -type f -name "*.md" | sort | sed "s|$CPB_ROOT/wiki/||"
+      ;;
+    lint)
+      echo "Wiki health check..."
+      local issues=0
+
+      # System files
+      for f in schema.md system/handshake-protocol.md system/memory-routing.md system/skill-registry.md system/team-prd.md system/team-architecture.md system/dashboard.md system/unattended-supervisor.md; do
+        [ ! -f "$CPB_ROOT/wiki/$f" ] && { echo "  Missing: $f"; issues=$((issues + 1)); }
+      done
+
+      # ACP client
+      [ ! -x "$CPB_ROOT/bridges/acp-client.mjs" ] && { echo "  acp-client.mjs not executable"; issues=$((issues + 1)); }
+
+      # Common.sh
+      [ ! -f "$CPB_ROOT/bridges/common.sh" ] && { echo "  common.sh missing"; issues=$((issues + 1)); }
+
+      # Per-project checks
+      for dir in "$CPB_ROOT/wiki/projects"/*/; do
+        [ -d "$dir" ] || continue
+        local name=$(basename "$dir")
+        [ "$name" = "_template" ] && continue
+
+        # Boundary violations
+        find "$dir/inbox" -maxdepth 1 -name 'deliverable-*.md' 2>/dev/null | grep -q . && { echo "  $name: deliverable in inbox"; issues=$((issues + 1)); } || true
+        find "$dir/outputs" -maxdepth 1 -name 'plan-*.md' 2>/dev/null | grep -q . && { echo "  $name: plan in outputs"; issues=$((issues + 1)); } || true
+
+        # Incomplete handoffs (missing Acceptance-Criteria)
+        for hf in "$dir/inbox/"*.md "$dir/outputs/"*.md; do
+          [ -f "$hf" ] || continue
+          [ -s "$hf" ] || continue
+          if ! grep -qiE "Acceptance[- ]Criteria|Next-Action" "$hf" 2>/dev/null; then
+            echo "  $name: incomplete handoff $(basename "$hf")"
+            issues=$((issues + 1))
+          fi
+        done
+
+        # Stale files (older than 7 days in inbox)
+        while read -r stale; do
+          [ -z "$stale" ] && continue
+          echo "  $name: stale inbox file $(basename "$stale") (>7 days)"
+          issues=$((issues + 1))
+        done < <(find "$dir/inbox" -name "*.md" -mtime +7 -print 2>/dev/null)
+      done
+
+      if [ "$issues" -eq 0 ]; then
+        echo -e "  ${GREEN}All checks passed.${NC}"
+      else
+        echo -e "  ${RED}$issues issue(s)${NC}"
+      fi
+      ;;
+    *)
+      echo "Usage: cpb wiki [list|lint]"
+      ;;
+  esac
+}
+
+cmd_cancel() {
+  local project="${1:?Usage: cpb cancel <project> <jobId> [reason]}"
+  local jobId="${2:?Usage: cpb cancel <project> <jobId> [reason]}"
+  shift 2
+  local reason="$*"
+  CPB_ROOT="$CPB_ROOT" node "$CPB_ROOT/bridges/cancel-redirect.mjs" cancel "$project" "$jobId" "$reason"
+}
+
+cmd_redirect() {
+  local project="${1:?Usage: cpb redirect <project> <jobId> \"<instructions>\" [reason]}"
+  local jobId="${2:?Usage: cpb redirect <project> <jobId> \"<instructions>\" [reason]}"
+  local instructions="${3:?Usage: cpb redirect <project> <jobId> \"<instructions>\" [reason]}"
+  shift 3
+  local reason="$*"
+  CPB_ROOT="$CPB_ROOT" node "$CPB_ROOT/bridges/cancel-redirect.mjs" redirect "$project" "$jobId" "$instructions" "$reason"
+}
+
+cmd_recover() {
+  local project="${1:?Usage: cpb recover <project> <jobId>}"
+  local jobId="${2:?Usage: cpb recover <project> <jobId>}"
+  CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+    import path from 'node:path';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const { getJob } = await import(path.join(cpbRoot, 'server/services/job-store.js'));
+    const { recoverOneJob } = await import(path.join(cpbRoot, 'server/services/supervisor.js'));
+    try {
+      const job = await getJob(cpbRoot, '${project}', '${jobId}');
+      if (!job) { console.error('Job not found: ${jobId}'); process.exit(1); }
+      const result = await recoverOneJob(cpbRoot, job);
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(result.exitCode);
+    } catch (err) {
+      console.error('Recover failed:', err.message);
+      process.exit(1);
+    }
+  "
+}
+
+cmd_interop() {
+  if command -v omc &>/dev/null; then
+    omc interop
+  else
+    echo -e "${RED}omc not found. Install oh-my-claudecode.${NC}" >&2
+    exit 1
+  fi
+}
+
+cmd_ui() {
+  local port="${CPB_PORT:-3456}"
+  local host="${CPB_HOST:-127.0.0.1}"
+  # Parse flags
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port=*) port="${1#--port=}" ;;
+      --port) shift; port="${1:-$port}" ;;
+      --host=*) host="${1#--host=}" ;;
+      --host) shift; host="${1:-$host}" ;;
+    esac
+    shift
+  done
+
+  # Check dependencies
+  [ ! -d "$CPB_ROOT/server/node_modules" ] && { echo "Installing server deps..."; cd "$CPB_ROOT/server" && npm install --silent; }
+  [ ! -d "$CPB_ROOT/web/node_modules" ] && { echo "Installing web deps..."; cd "$CPB_ROOT/web" && npm install --silent; }
+
+  echo -e "${BOLD}Starting CodePatchbay UI...${NC}"
+
+  # Start backend server
+  CPB_PORT="$port" CPB_HOST="$host" node "$CPB_ROOT/server/index.js" &
+  local server_pid=$!
+
+  # Start Vite dev server
+  cd "$CPB_ROOT/web" && npx vite --port 5173 &
+  local vite_pid=$!
+
+  # Wait a moment then open browser
+  sleep 2
+  if command -v open &>/dev/null; then
+    open "http://localhost:5173"
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "http://localhost:5173"
+  fi
+
+  echo -e "${GREEN}Backend:${NC}  http://localhost:$port"
+  echo -e "${GREEN}Frontend:${NC} http://localhost:5173"
+  echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
+
+  # Trap exit to kill child processes
+  trap "kill $server_pid $vite_pid 2>/dev/null; exit 0" INT TERM
+  wait
+}
+
+cmd_install() {
+  local target="/usr/local/bin/cpb"
+  if [ -w "/usr/local/bin" ]; then
+    ln -sf "$CPB_ROOT/cpb" "$target"
+    echo "Linked: $target -> $CPB_ROOT/cpb"
+  else
+    echo "Requires sudo:"
+    echo "  sudo ln -sf $CPB_ROOT/cpb /usr/local/bin/cpb"
+  fi
+}
+
+# Main
+case "${1:-help}" in
+  init)     shift; cmd_init "$@" ;;
+  plan)     shift; cmd_plan "$@" ;;
+  execute)  shift; cmd_execute "$@" ;;
+  verify)   shift; cmd_verify "$@" ;;
+  research) shift; cmd_research "$@" ;;
+  diff)     shift; cmd_diff "$@" ;;
+  review)   shift; cmd_review "$@" ;;
+  log)      shift; cmd_log "$@" ;;
+  doctor)   cmd_doctor ;;
+  remove)   shift; cmd_remove "$@" ;;
+  inbox)    shift; cmd_inbox "$@" ;;
+  outputs)  shift; cmd_outputs "$@" ;;
+  pipeline) shift; cmd_pipeline "$@" ;;
+  cancel)   shift; cmd_cancel "$@" ;;
+  redirect) shift; cmd_redirect "$@" ;;
+  recover)  shift; cmd_recover "$@" ;;
+  status)   shift; cmd_status "$@" ;;
+  jobs)     cmd_jobs ;;
+  gc)       cmd_gc ;;
+  supervisor) cmd_supervisor ;;
+  migrate-runtime-root) shift; cmd_migrate_runtime_root "$@" ;;
+  list)     cmd_list ;;
+  wiki)     shift; cmd_wiki "${1:-list}" ;;
+  ui)       shift; cmd_ui "$@" ;;
+  interop)  cmd_interop ;;
+  install)  cmd_install ;;
+  version|--version|-v) echo "cpb v$CPB_VERSION" ;;
+  help|--help|-h)
+    usage
+    echo ""
+    check_deps
+    ;;
+  *)
+    echo -e "${RED}Unknown: $1${NC}" >&2
+    usage
+    exit 1
+    ;;
+esac

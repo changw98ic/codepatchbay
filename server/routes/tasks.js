@@ -82,13 +82,13 @@ export async function taskRoutes(fastify, opts) {
   });
 }
 
-export function spawnBridge(flowRoot, project, script, args, log, providedTaskId = '') {
-  const scriptPath = path.join(flowRoot, 'bridges', script);
+export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = '', extraEnv = {}) {
+  const scriptPath = path.join(cpbRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
 
   const child = spawn('bash', [scriptPath, ...args], {
-    cwd: flowRoot,
-    env: { ...process.env, FLOW_ROOT: flowRoot, FLOW_DANGEROUS: process.env.FLOW_DANGEROUS || '0' },
+    cwd: cpbRoot,
+    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

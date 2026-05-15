@@ -125,3 +125,22 @@ export async function appendHistory(flowRoot, entry) {
   const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + "\n";
   await writeFile(filePath, line, { flag: "a", encoding: "utf8" });
 }
+
+export async function appendWisdom(cpbRoot, { round, issue, action, result, detail }) {
+  await mkdir(evolveDir(cpbRoot), { recursive: true });
+  const filePath = statePath(cpbRoot, "wisdom.md");
+  const ts = new Date().toISOString();
+  const icon = result === "success" ? "✅" : result === "no_changes" ? "➖" : "❌";
+  const lines = [
+    `### Round ${round} — ${ts}`,
+    ``,
+    `**Issue**: ${issue || "(scan-only)"}`,
+    `**Action**: ${action}`,
+    `**Result**: ${icon} ${result}`,
+    detail ? `**Detail**: ${detail}` : null,
+    ``,
+    `---`,
+    ``,
+  ].filter((l) => l !== null);
+  await writeFile(filePath, lines.join("\n"), { flag: "a", encoding: "utf8" });
+}

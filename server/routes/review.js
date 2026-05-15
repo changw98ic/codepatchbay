@@ -1,5 +1,6 @@
-import { spawn } from "child_process";
+import { spawn, execFile } from "child_process";
 import path from "path";
+import { readFile, rm } from "fs/promises";
 import { broadcast } from "../services/ws-broadcast.js";
 import { spawnBridge } from "./tasks.js";
 import {
@@ -11,7 +12,41 @@ import {
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-const REVIEW_NOTIFY_STATUSES = new Set(["user_review", "dispatched", "expired"]);
+function gitExec(cwd, ...args) {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`git ${args.join(" ")} failed: ${stderr || err.message}`));
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+function worktreePathFor(cpbRoot, jobId) {
+  return path.join(cpbRoot, "cpb-task", "worktrees", `${jobId}-pipeline`);
+}
+
+const REVIEW_NOTIFY_STATUSES = new Set(["user_review", "dispatched", "expired", "cancelled"]);
+const activeReviewProcesses = new Map();
+
+function stopReviewProcess(sessionId, signal = "SIGTERM") {
+  const child = activeReviewProcesses.get(sessionId);
+  if (!child) return { killed: false, pid: null };
+
+  const pid = child.pid;
+  try {
+    if (process.platform !== "win32" && pid) {
+      process.kill(-pid, signal);
+    } else {
+      child.kill(signal);
+    }
+    return { killed: true, pid };
+  } catch (err) {
+    if (err?.code !== "ESRCH") throw err;
+    return { killed: false, pid };
+  } finally {
+    activeReviewProcesses.delete(sessionId);
+  }
+}
 
 export async function reviewRoutes(fastify, opts) {
 
@@ -85,16 +120,21 @@ export async function reviewRoutes(fastify, opts) {
       userVerdict: "approved",
     });
 
+    const jobId = makeJobId();
+    const wtPath = worktreePathFor(req.cpbRoot, jobId);
     const result = spawnBridge(
       req.flowRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
       req.log,
+      jobId,
+      { CPB_USE_WORKTREE: "1" },
     );
 
-    await updateSession(req.flowRoot, session.sessionId, {
-      jobId: result.taskId,
+    await updateSession(req.cpbRoot, session.sessionId, {
+      jobId,
+      worktreePath: wtPath,
     });
 
     notify({
@@ -142,17 +182,22 @@ export async function reviewRoutes(fastify, opts) {
       };
     }
 
+    const jobId = makeJobId();
+    const wtPath = worktreePathFor(req.cpbRoot, jobId);
     const updated = spawnBridge(
       req.flowRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
       req.log,
+      jobId,
+      { CPB_USE_WORKTREE: "1" },
     );
 
     const refreshed = await updateSession(req.flowRoot, session.sessionId, {
       ...result,
-      jobId: updated.taskId,
+      jobId,
+      worktreePath: wtPath,
       status: "dispatched",
       userVerdict: "approved",
     }, { skipTransitionCheck: true });
@@ -173,7 +218,7 @@ export async function reviewRoutes(fastify, opts) {
     };
   });
 
-  // User rejects
+  // User rejects → discard worktree, keep main tree clean
   fastify.post("/review/:id/reject", async (req) => {
     const session = await getSession(req.flowRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
@@ -181,12 +226,70 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    const updated = await updateSession(req.flowRoot, session.sessionId, {
+    // Clean up worktree if it exists
+    if (session.worktreePath) {
+      try {
+        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
+        const meta = JSON.parse(await readFile(projectJson, "utf8"));
+        if (meta.sourcePath) {
+          await gitExec(meta.sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
+        }
+      } catch {}
+      try { await rm(session.worktreePath, { recursive: true, force: true }); } catch {}
+    }
+
+    const updated = await updateSession(req.cpbRoot, session.sessionId, {
       status: "expired",
       userVerdict: "rejected",
     });
 
     notify({ type: "review:update", sessionId: session.sessionId, status: "expired", project: session.project, session: updated });
     return updated;
+  });
+
+  // User accepts → merge worktree branch into main, clean up worktree
+  fastify.post("/review/:id/accept", async (req) => {
+    const session = await getSession(req.cpbRoot, req.params.id);
+    if (!session) throw fastify.httpErrors.notFound("session not found");
+    if (session.status !== "user_review" && session.status !== "dispatched") {
+      throw fastify.httpErrors.conflict(`session not in reviewable state (status: ${session.status})`);
+    }
+
+    let merged = false;
+    if (session.worktreePath && session.jobId) {
+      try {
+        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
+        const meta = JSON.parse(await readFile(projectJson, "utf8"));
+        const sourcePath = meta.sourcePath;
+        if (sourcePath) {
+          const branch = `cpb/${session.jobId}-pipeline`;
+          // Check if branch exists
+          try {
+            await gitExec(sourcePath, "rev-parse", "--verify", branch);
+            // Merge the branch
+            await gitExec(sourcePath, "merge", "--no-ff", "-m", `cpb: accept review ${session.sessionId}`, branch);
+            merged = true;
+            // Clean up branch
+            await gitExec(sourcePath, "branch", "-D", branch).catch(() => {});
+          } catch (err) {
+            // Branch might not exist if pipeline didn't use worktree
+          }
+          // Clean up worktree directory
+          await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
+          await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
+        }
+      } catch (err) {
+        // Best effort merge
+      }
+    }
+
+    const updated = await updateSession(req.cpbRoot, session.sessionId, {
+      status: "completed",
+      userVerdict: "accepted",
+      merged,
+    });
+
+    notify({ type: "review:update", sessionId: session.sessionId, status: "completed", project: session.project, session: updated });
+    return { accepted: true, merged, sessionId: session.sessionId };
   });
 }
