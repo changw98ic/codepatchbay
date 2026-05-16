@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import sensible from '@fastify/sensible';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { accessSync, constants, statSync } from 'fs';
@@ -33,6 +34,7 @@ const corsOrigins = process.env.FLOW_CORS_ORIGINS
   ? process.env.FLOW_CORS_ORIGINS.split(',').map(s => s.trim())
   : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 await app.register(cors, { origin: corsOrigins });
+await app.register(sensible);
 await app.register(websocket);
 
 // WebSocket endpoint
