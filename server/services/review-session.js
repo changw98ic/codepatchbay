@@ -118,6 +118,10 @@ export async function updateSession(flowRoot, sessionId, patch, options = {}) {
   });
 }
 
+export async function cancelReviewSession(flowRoot, sessionId, reason) {
+  return updateSession(flowRoot, sessionId, { status: "cancelled", detail: reason }, { skipTransitionCheck: true });
+}
+
 export function parseIssues(text) {
   if (!text || typeof text !== "string") return [];
   const issues = [];

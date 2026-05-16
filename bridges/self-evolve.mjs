@@ -339,6 +339,10 @@ async function autoApproveSession(sessionId) {
   return apiRequest("POST", `/api/review/${sessionId}/auto-approve`);
 }
 
+async function cancelReviewSession(sessionId, reason) {
+  return apiRequest("POST", `/api/review/${sessionId}/cancel`, { reason });
+}
+
 async function waitForReviewSession(sessionId) {
   let lastStatus = null;
   let lastRound = null;
