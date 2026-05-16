@@ -13,6 +13,7 @@ source "$CPB_ROOT/bridges/common.sh"
 # so we must unset ANTHROPIC_AUTH_TOKEN when ANTHROPIC_API_KEY is provided.
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   unset ANTHROPIC_AUTH_TOKEN
+  export CPB_CLAUDE_VARIANT=none
 fi
 
 PROJECT="${1:?Usage: claude-execute.sh <project> <plan-id> [verdict-file]}"
