@@ -54,10 +54,10 @@ export async function taskRoutes(fastify, opts) {
   // Trigger full pipeline
   fastify.post('/tasks/:name/pipeline', async (req) => {
     const { name } = req.params;
-    const { task, maxRetries = '3', timeout = '0' } = req.body || {};
+    const { task, maxRetries = '3', timeout = '0', workflow = 'standard' } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
 
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout], req.log);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout, workflow], req.log);
   });
 
   // Cancel a running job

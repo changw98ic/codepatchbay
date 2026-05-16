@@ -42,7 +42,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
   ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
   ${CYAN}diff${NC} <project>                           查看项目源码变更
-  ${CYAN}review${NC} <project> [deliverable-id]       审查产出：verdict + diff + accept/reject
+  ${CYAN}review${NC} <project> [deliverable-id] [--agent] 审查产出；--agent 运行 reviewer
   ${CYAN}log${NC} <project> [lines]                   查看项目日志
   ${CYAN}doctor${NC}                                  环境健康检查
   ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
@@ -52,6 +52,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
   ${CYAN}recover${NC} <project> <jobId>              强制恢复卡住的 job (跳过 grace period)
+  ${CYAN}retry${NC} <project> <jobId> [--from phase] [--force]  人工重试失败 job
   ${CYAN}status${NC} <project>                       查看项目状态
   ${CYAN}list${NC}                                   列出所有项目
   ${CYAN}jobs${NC}                                     列出 durable jobs
@@ -125,8 +126,13 @@ cmd_diff() {
 }
 
 cmd_review() {
-  local project="${1:?Usage: cpb review <project> [deliverable-id]}"
+  local project="${1:?Usage: cpb review <project> [deliverable-id] [--agent]}"
   local did="${2:-}"
+  local mode="${3:-}"
+  if [ "$did" = "--agent" ] || [ "$did" = "--ai" ]; then
+    mode="$did"
+    did=""
+  fi
   require_safe_name "$project"
   require_project "$project"
   local wdir="$CPB_ROOT/wiki/projects/$project"
@@ -140,12 +146,19 @@ cmd_review() {
       exit 1
     fi
     did=$(basename "$latest_d" .md | sed 's/deliverable-//')
+  else
+    did="${did#deliverable-}"
   fi
 
   local deliverable="$wdir/outputs/deliverable-${did}.md"
   local verdict="$wdir/outputs/verdict-${did}.md"
 
   require_file "$deliverable"
+
+  if [ "$mode" = "--agent" ] || [ "$mode" = "--ai" ]; then
+    "$CPB_ROOT/bridges/reviewer-review.sh" "$project" "$did"
+    return
+  fi
 
   # ─── Verdict ───
   echo -e "${BOLD}Review: $project / deliverable-$did${NC}"
@@ -823,6 +836,57 @@ cmd_recover() {
   "
 }
 
+cmd_retry() {
+  local project="${1:?Usage: cpb retry <project> <jobId> [--from phase] [--force]}"
+  local jobId="${2:?Usage: cpb retry <project> <jobId> [--from phase] [--force]}"
+  shift 2
+  local fromPhase="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from)
+        fromPhase="${2:?Usage: cpb retry <project> <jobId> --from <phase>}"
+        shift 2
+        ;;
+      --force|-f)
+        force=1
+        shift
+        ;;
+      *)
+        echo -e "${RED}Unknown retry option: $1${NC}" >&2
+        exit 1
+        ;;
+    esac
+  done
+  require_safe_name "$project"
+  CPB_RETRY_PROJECT="$project" \
+  CPB_RETRY_JOB_ID="$jobId" \
+  CPB_RETRY_FROM="$fromPhase" \
+  CPB_RETRY_FORCE="$force" \
+  CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+    import path from 'node:path';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const project = process.env.CPB_RETRY_PROJECT;
+    const jobId = process.env.CPB_RETRY_JOB_ID;
+    const fromPhase = process.env.CPB_RETRY_FROM || undefined;
+    const force = process.env.CPB_RETRY_FORCE === '1';
+    const { retryJob } = await import(path.join(cpbRoot, 'server/services/job-store.js'));
+    const { recoverOneJob } = await import(path.join(cpbRoot, 'server/services/supervisor.js'));
+    try {
+      const retried = await retryJob(cpbRoot, project, jobId, {
+        fromPhase,
+        force,
+        trigger: 'manual',
+      });
+      const result = await recoverOneJob(cpbRoot, retried);
+      console.log(JSON.stringify({ retried, result }, null, 2));
+      process.exit(result.exitCode);
+    } catch (err) {
+      console.error('Retry failed:', err.message);
+      process.exit(1);
+    }
+  "
+}
+
 cmd_interop() {
   if command -v omc &>/dev/null; then
     omc interop
@@ -906,6 +970,7 @@ case "${1:-help}" in
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
   recover)  shift; cmd_recover "$@" ;;
+  retry)    shift; cmd_retry "$@" ;;
   status)   shift; cmd_status "$@" ;;
   jobs)     cmd_jobs ;;
   gc)       cmd_gc ;;

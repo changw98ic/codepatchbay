@@ -11,6 +11,12 @@ function hasArtifact(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function artifactId(value, prefix) {
+  if (!hasArtifact(value)) return "";
+  const base = path.basename(value, ".md");
+  return base.startsWith(`${prefix}-`) ? base.slice(prefix.length + 1) : value;
+}
+
 async function fileExists(file) {
   try {
     return (await stat(file)).isFile();
@@ -106,21 +112,21 @@ export function bridgeForPhase(phase, project, job) {
         args: [project, job.task ?? ""],
       };
     case "execute": {
-      const planId = job.artifacts?.plan ?? "";
+      const planId = artifactId(job.artifacts?.plan, "plan");
       return {
         script: path.join(bridgesDir, "claude-execute.sh"),
         args: [project, planId],
       };
     }
     case "verify": {
-      const deliverableId = job.artifacts?.execute ?? "";
+      const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
         script: path.join(bridgesDir, "codex-verify.sh"),
         args: [project, deliverableId],
       };
     }
     case "review": {
-      const deliverableId = job.artifacts?.execute ?? "";
+      const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
         script: path.join(bridgesDir, "reviewer-review.sh"),
         args: [project, deliverableId],

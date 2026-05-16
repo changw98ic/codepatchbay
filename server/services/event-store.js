@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
@@ -150,7 +150,7 @@ export async function readEvents(cpbRoot, project, jobId) {
 
 const POST_TERMINAL_ALLOWED = new Set([
   "job_completed", "job_failed", "job_blocked", "job_cancelled",
-  "job_cancel_requested", "job_redirect_consumed", "phase_activity", "workflow_selected",
+  "job_cancel_requested", "job_redirect_consumed", "job_retried", "phase_activity", "workflow_selected",
 ]);
 
 export function materializeJob(events) {
@@ -168,6 +168,11 @@ export function materializeJob(events) {
     createdAt: null,
     updatedAt: null,
     blockedReason: null,
+    failureCode: null,
+    failurePhase: null,
+    retryable: false,
+    retryCount: 0,
+    failureCause: null,
     cancelRequested: false,
     cancelReason: null,
     redirectContext: null,
@@ -221,6 +226,11 @@ export function materializeJob(events) {
         state.leaseId = null;
         state.status = "failed";
         state.blockedReason = event.error ?? event.reason ?? null;
+        state.failureCode = event.code ?? state.failureCode;
+        state.failurePhase = event.phase ?? state.failurePhase;
+        state.retryable = event.retryable ?? state.retryable;
+        state.retryCount = event.retryCount ?? state.retryCount;
+        state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
       case "budget_exceeded":
@@ -239,6 +249,11 @@ export function materializeJob(events) {
         state.status = "failed";
         state.leaseId = null;
         state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
+        state.failureCode = event.code ?? state.failureCode;
+        state.failurePhase = event.phase ?? state.failurePhase;
+        state.retryable = event.retryable ?? state.retryable;
+        state.retryCount = event.retryCount ?? state.retryCount;
+        state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
       case "job_completed":
@@ -246,6 +261,11 @@ export function materializeJob(events) {
         state.phase = "completed";
         state.leaseId = null;
         state.blockedReason = null;
+        state.failureCode = null;
+        state.failurePhase = null;
+        state.retryable = false;
+        state.retryCount = 0;
+        state.failureCause = null;
         terminal = true;
         break;
       case "job_cancel_requested":
@@ -257,6 +277,21 @@ export function materializeJob(events) {
         state.status = "cancelled";
         state.leaseId = null;
         terminal = true;
+        break;
+      case "job_retried":
+        state.status = "running";
+        state.phase = event.fromPhase ?? state.phase;
+        state.leaseId = null;
+        state.blockedReason = null;
+        state.failureCode = null;
+        state.failurePhase = null;
+        state.retryable = false;
+        state.retryCount = event.retryCount ?? state.retryCount + 1;
+        state.failureCause = null;
+        for (const artifactPhase of event.clearArtifacts ?? []) {
+          delete state.artifacts[artifactPhase];
+        }
+        terminal = false;
         break;
       case "job_redirect_requested":
         if (!terminal) {
@@ -320,6 +355,11 @@ export async function readCheckpoint(cpbRoot, project, jobId) {
   } catch {
     return null;
   }
+}
+
+export async function deleteCheckpoint(cpbRoot, project, jobId) {
+  const file = checkpointFileFor(cpbRoot, project, jobId);
+  await rm(file, { force: true });
 }
 
 export async function checkpointJob(cpbRoot, project, jobId) {

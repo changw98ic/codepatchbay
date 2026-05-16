@@ -11,8 +11,10 @@ import {
   completePhase,
   createJob,
   failJob,
+  FAILURE_CODES,
   getJob,
   listJobs,
+  retryJob,
   startPhase,
 } from "../server/services/job-store.js";
 
@@ -73,11 +75,26 @@ const failed = await createJob(root, {
 });
 await failJob(root, project, failed.jobId, {
   reason: "verification failed",
+  code: FAILURE_CODES.RECOVERABLE,
+  phase: "execute",
   ts: "2026-05-13T01:01:00.000Z",
 });
 const failedState = await getJob(root, project, failed.jobId);
 assert.equal(failedState.status, "failed");
 assert.equal(failedState.blockedReason, "verification failed");
+assert.equal(failedState.failureCode, FAILURE_CODES.RECOVERABLE);
+assert.equal(failedState.failurePhase, "execute");
+assert.equal(failedState.retryable, true);
+
+// job_retried clears failed state and allows retryJob to resume from the failed phase.
+const retriedState = await retryJob(root, project, failed.jobId, {
+  ts: "2026-05-13T01:02:00.000Z",
+});
+assert.equal(retriedState.status, "running");
+assert.equal(retriedState.phase, "execute");
+assert.equal(retriedState.retryCount, 1);
+assert.equal(retriedState.failureCode, null);
+assert.equal(retriedState.retryable, false);
 
 const budgetBlocked = await createJob(root, {
   project,

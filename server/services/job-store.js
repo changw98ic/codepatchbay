@@ -2,15 +2,24 @@ import { randomBytes } from "node:crypto";
 import {
   appendEvent,
   checkpointJob,
+  deleteCheckpoint,
   listEventFiles,
   materializeJob,
   readCheckpoint,
   readEvents,
 } from "./event-store.js";
+import { getWorkflow } from "./workflow-definition.js";
 
 function nowIso() {
   return new Date().toISOString();
 }
+
+export const FAILURE_CODES = Object.freeze({
+  RECOVERABLE: "RECOVERABLE",
+  QUALITY_FAIL: "QUALITY_FAIL",
+  BLOCKED: "BLOCKED",
+  FATAL: "FATAL",
+});
 
 export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")) {
   const date = new Date(ts);
@@ -94,16 +103,99 @@ export async function failJob(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso() }
+  {
+    reason,
+    code = FAILURE_CODES.FATAL,
+    phase,
+    retryable,
+    retryCount,
+    cause,
+    ts = nowIso(),
+  }
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_failed",
     jobId,
     project,
     reason,
+    code,
+    phase,
+    retryable: retryable ?? code === FAILURE_CODES.RECOVERABLE,
+    retryCount,
+    cause,
     ts,
   });
   await checkpointJob(cpbRoot, project, jobId).catch(() => {});
+  return getJob(cpbRoot, project, jobId);
+}
+
+function inferRetryPhase(job) {
+  const workflow = getWorkflow(job.workflow);
+  if (job.failurePhase && workflow.phases.includes(job.failurePhase)) {
+    return job.failurePhase;
+  }
+  for (const phase of workflow.phases) {
+    if (!job.artifacts?.[phase]) return phase;
+  }
+  return workflow.phases[workflow.phases.length - 1] ?? null;
+}
+
+export async function retryJob(
+  cpbRoot,
+  project,
+  jobId,
+  {
+    fromPhase,
+    force = false,
+    trigger = "manual",
+    maxRetries = 3,
+    ts = nowIso(),
+  } = {}
+) {
+  const job = await getJob(cpbRoot, project, jobId);
+  if (!job?.jobId) {
+    throw new Error(`job not found: ${jobId}`);
+  }
+  if (job.status !== "failed") {
+    throw new Error(`job is not failed: ${job.status ?? "unknown"}`);
+  }
+
+  const code = job.failureCode ?? FAILURE_CODES.FATAL;
+  if (code === FAILURE_CODES.FATAL) {
+    throw new Error(`fatal job is not retryable: ${job.blockedReason ?? "unknown failure"}`);
+  }
+  if (!job.retryable && !force) {
+    throw new Error(`job requires --force to retry: ${code}`);
+  }
+
+  const retryCount = (job.retryCount ?? 0) + 1;
+  if (retryCount > maxRetries) {
+    throw new Error(`retry limit exceeded: ${retryCount}/${maxRetries}`);
+  }
+
+  const workflow = getWorkflow(job.workflow);
+  const retryPhase = fromPhase || inferRetryPhase(job);
+  if (!retryPhase || !workflow.phases.includes(retryPhase)) {
+    throw new Error(`invalid retry phase: ${retryPhase ?? "unknown"}`);
+  }
+
+  const phaseIndex = workflow.phases.indexOf(retryPhase);
+  const clearArtifacts = workflow.phases.slice(phaseIndex);
+
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "job_retried",
+    jobId,
+    project,
+    fromPhase: retryPhase,
+    retryCount,
+    maxRetries,
+    trigger,
+    previousReason: job.blockedReason,
+    previousCode: code,
+    clearArtifacts,
+    ts,
+  });
+  await deleteCheckpoint(cpbRoot, project, jobId);
   return getJob(cpbRoot, project, jobId);
 }
 

@@ -23,6 +23,7 @@ const EVENT_REGISTRY = {
   job_cancelled:          { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-redirect.test.mjs', testMatch: ['job_cancelled', 'cancelJob'] },
   job_redirect_requested: { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_redirect_requested', 'requestRedirectJob'] },
   job_redirect_consumed:  { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_redirect_consumed', 'consumeRedirect'] },
+  job_retried:            { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_retried', 'retryJob'] },
   workflow_selected:      { class: 'state',    consumer: 'supervisor',                testFile: 'workflow-definition.test.mjs', testMatch: ['workflow_selected'] },
   phase_activity:         { class: 'activity', consumer: 'job-projection, dashboard', testFile: 'activity-events.test.mjs', testMatch: ['phase_activity'] },
 };

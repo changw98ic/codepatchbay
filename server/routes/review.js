@@ -249,7 +249,7 @@ export async function reviewRoutes(fastify, opts) {
   });
 
   // User accepts → merge worktree branch into main, clean up worktree
-  fastify.post("/review/:id/cancel", cancelRoute);
+  fastify.post("/review/:id/cancel", async (req, reply) => cancelRoute(req, reply, notify));
 
   fastify.post("/review/:id/accept", async (req) => {
     const session = await getSession(req.cpbRoot, req.params.id);
@@ -297,7 +297,7 @@ export async function reviewRoutes(fastify, opts) {
   });
 }
 
-async function cancelRoute(req, reply) {
+async function cancelRoute(req, reply, notify) {
   const { id } = req.params;
   const session = await getSession(req.cpbRoot, id);
   if (!session) return reply.code(404).send({ error: "not found" });
