@@ -427,7 +427,8 @@ function parseScanResults(text) {
   return issues;
 }
 
-function acpRun(agent, prompt) {
+function acpRun(agent, prompt, timeoutMs = 0) {
+  const timeout = timeoutMs || parseInt(process.env.CPB_SCAN_TIMEOUT_MS || "300000", 10);
   return new Promise((resolve, reject) => {
     const child = spawn("node", [path.join(CPB_ROOT, "bridges", "acp-client.mjs"), "--agent", agent], {
       cwd: CPB_ROOT,
@@ -437,14 +438,28 @@ function acpRun(agent, prompt) {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new Error(`${agent} timed out after ${timeout / 1000}s`));
+      }
+    }, timeout);
+
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
 
     child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
       if (code === 0) resolve(stdout.trim());
       else reject(new Error(`${agent} exited ${code}: ${stderr.slice(-300)}`));
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      if (!settled) { settled = true; reject(err); }
+    });
 
     child.stdin.write(prompt);
     child.stdin.end();
