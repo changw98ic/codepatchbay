@@ -299,9 +299,9 @@ export async function reviewRoutes(fastify, opts) {
 
 async function cancelRoute(req, reply, notify) {
   const { id } = req.params;
-  const session = await getSession(req.cpbRoot, id);
+  const session = await getSession(req.flowRoot, id);
   if (!session) return reply.code(404).send({ error: "not found" });
-  const updated = await updateSession(req.cpbRoot, id, {
+  const updated = await updateSession(req.flowRoot, id, {
     status: "cancelled",
     detail: req.body?.reason || "cancelled",
   }, { skipTransitionCheck: true });
