@@ -2,7 +2,7 @@
 // run-pipeline.mjs — Full automated pipeline using job-store as single source of truth
 // Usage: node bridges/run-pipeline.mjs --project <name> --task "<desc>" [--max-retries N] [--timeout-min M]
 
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -135,7 +135,7 @@ function ts() {
 
 // ─── Run a bridge script as child process ───
 
-function runBridge(script, scriptArgs, cwd) {
+function runCommand(command, commandArgs, cwd) {
   return new Promise((resolve) => {
     let settled = false;
     const stdoutChunks = [];
@@ -148,7 +148,7 @@ function runBridge(script, scriptArgs, cwd) {
 
     let proc;
     try {
-      proc = spawn("bash", [script, ...scriptArgs], {
+      proc = spawn(command, commandArgs, {
         cwd,
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -176,6 +176,10 @@ function runBridge(script, scriptArgs, cwd) {
       });
     });
   });
+}
+
+function runBridge(script, scriptArgs, cwd) {
+  return runCommand("bash", [script, ...scriptArgs], cwd);
 }
 
 function combineChunks(chunks) {
@@ -275,12 +279,18 @@ async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   }
   if (!sourcePath) return null;
 
+  try {
+    await access(path.join(sourcePath, ".git"));
+  } catch {
+    return null;
+  }
+
   const artifactsDir = runtimeDataPath(cpbRoot, path.join("artifacts", project, jobId));
   await mkdir(artifactsDir, { recursive: true });
   const diffPath = path.join(artifactsDir, "diff-execute.patch");
 
   try {
-    const result = await runBridge("git", ["diff", "HEAD"], sourcePath);
+    const result = await runCommand("git", ["diff", "HEAD"], sourcePath);
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       await writeFile(diffPath, result.stdout, "utf8");
       return diffPath;

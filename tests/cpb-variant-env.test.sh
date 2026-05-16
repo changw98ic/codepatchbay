@@ -18,6 +18,7 @@ cleanup_project() {
 }
 
 "$ROOT/cpb" init "$PROJECT_DIR" "$project" >/dev/null
+mkdir -p "$ROOT/wiki/projects/$project/inbox"
 printf '# Plan\n\nExercise provider env overlay.\n' > "$ROOT/wiki/projects/$project/inbox/plan-001.md"
 
 CPB_ACP_CLIENT="$ROOT/tests/fixtures/acp-client-stub.sh" \

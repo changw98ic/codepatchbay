@@ -52,5 +52,5 @@ CPB_TEST_AGENT_LOG="$AGENT_LOG" \
 test -f "$ROOT/wiki/projects/$pipeline_project/inbox/plan-001.md"
 test -f "$ROOT/wiki/projects/$pipeline_project/outputs/deliverable-001.md"
 test -f "$ROOT/wiki/projects/$pipeline_project/outputs/verdict-001.md"
-test -f "$ROOT/cpb-task/state/pipeline-${pipeline_project}.json"
+test ! -e "$ROOT/cpb-task/state/pipeline-${pipeline_project}.json"
 find "$ROOT/cpb-task/events/$pipeline_project" -name 'job-*.jsonl' -print -quit | grep -q .
