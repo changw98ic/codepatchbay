@@ -13,13 +13,18 @@ TASK="${2:?Usage: run-pipeline.sh <project> '<task>' [max-retries] [timeout-min]
 MAX_RETRIES="${3:-3}"
 TIMEOUT_MIN="${4:-0}"  # 0 = no total timeout (rely on ACP idle timeout)
 WORKFLOW="${5:-standard}"
+JOB_ID="${6:-}"
 
 require_safe_name "$PROJECT"
 require_project "$PROJECT"
+
+JOB_ID_ARG=""
+[ -n "$JOB_ID" ] && JOB_ID_ARG="--job-id $JOB_ID"
 
 exec node "$CPB_ROOT/bridges/run-pipeline.mjs" \
   --project "$PROJECT" \
   --task "$TASK" \
   --max-retries "$MAX_RETRIES" \
   --timeout-min "$TIMEOUT_MIN" \
-  --workflow "$WORKFLOW"
+  --workflow "$WORKFLOW" \
+  $JOB_ID_ARG

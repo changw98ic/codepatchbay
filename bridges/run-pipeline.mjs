@@ -61,7 +61,9 @@ function parseArgs(argv) {
   const timeoutMin = Math.max(0, parseInt(options.get("--timeout-min") || "0", 10) || 0);
   const workflow = options.get("--workflow") || "standard";
 
-  return { project, task, maxRetries, timeoutMin, workflow };
+  const jobIdOverride = options.get("--job-id") || null;
+
+  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -356,7 +358,7 @@ async function main() {
     return 1;
   }
 
-  const { project, task, maxRetries, timeoutMin, workflow } = parsed;
+  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride } = parsed;
   const cpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const workflowDef = getWorkflow(workflow);
   const phaseTotal = workflowDef.phases.length || 0;
@@ -386,7 +388,7 @@ async function main() {
   }
 
   // Create job
-  const job = await createJob(cpbRoot, { project, task, workflow });
+  const job = await createJob(cpbRoot, { project, task, workflow, jobId: jobIdOverride });
   const jobId = job.jobId;
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
