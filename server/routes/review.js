@@ -3,6 +3,7 @@ import path from "path";
 import { readFile, rm } from "fs/promises";
 import { broadcast } from "../services/ws-broadcast.js";
 import { spawnBridge } from "./tasks.js";
+import { makeJobId } from "../services/job-store.js";
 import {
   createSession,
   getSession,

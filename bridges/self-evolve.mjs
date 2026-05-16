@@ -748,6 +748,10 @@ async function evolve(opts = {}) {
       const message = isTerminatingSessionError(err) ? "interrupted" : err.message;
       if (issue?.description) {
         await updateIssue(CPB_ROOT, issue.description, "failed", message);
+        await pushIssues(CPB_ROOT, [{
+          priority: issue.priority || "P2",
+          description: `${issue.description} (retry: ${message})`,
+        }]);
       }
       await appendHistory(CPB_ROOT, {
         round,
