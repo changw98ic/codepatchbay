@@ -126,6 +126,66 @@ describe("review-session service", () => {
   });
 });
 
+function lockDirFor(cpbRoot, sessionId) {
+  return path.join(cpbRoot, "cpb-task", "reviews", `.lock-${sessionId}`);
+}
+
+describe("withFileLock concurrency", () => {
+  it("serializes concurrent updateSession calls", async () => {
+    const s = await createSession(TMP, { project: "p1", intent: "concurrency" });
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        updateSession(TMP, s.sessionId, { round: i + 1 }),
+      ),
+    );
+    assert.equal(results.length, 5);
+    const final = await getSession(TMP, s.sessionId);
+    assert.equal(final.sessionId, s.sessionId);
+    assert.ok(Number.isInteger(final.round));
+  });
+
+  it("retries and succeeds when lock contention clears", async () => {
+    const s = await createSession(TMP, { project: "p1", intent: "retry" });
+    const lockDir = lockDirFor(TMP, s.sessionId);
+    await mkdir(lockDir, { recursive: true });
+    const updateP = updateSession(TMP, s.sessionId, { round: 42 });
+    await new Promise((r) => setTimeout(r, 30));
+    await rm(lockDir, { recursive: true, force: true });
+    const result = await updateP;
+    assert.equal(result.round, 42);
+  });
+
+  it("throws when lock contention persists beyond max attempts", async () => {
+    const s = await createSession(TMP, { project: "p1", intent: "timeout" });
+    const lockDir = lockDirFor(TMP, s.sessionId);
+    await mkdir(lockDir, { recursive: true });
+    try {
+      await assert.rejects(
+        () => updateSession(TMP, s.sessionId, { round: 1 }),
+        /lock contention/,
+      );
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces filesystem errors from mkdir immediately", async () => {
+    const s = await createSession(TMP, { project: "p1", intent: "notdir" });
+    const reviewsPath = path.join(TMP, "cpb-task", "reviews");
+    await rm(reviewsPath, { recursive: true, force: true });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(reviewsPath, "not a directory");
+    try {
+      await assert.rejects(
+        () => updateSession(TMP, s.sessionId, { round: 1 }),
+        (err) => err.code === "EEXIST",
+      );
+    } finally {
+      await rm(reviewsPath, { force: true });
+    }
+  });
+});
+
 describe("parseIssues", () => {
   it("extracts issues with severity", () => {
     const text = "[P0] Critical bug here\nSome details\n[P2] Medium issue\n[P3] Minor thing";

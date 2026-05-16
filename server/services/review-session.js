@@ -3,12 +3,31 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { runtimeDataPath } from "./runtime-root.js";
 
+const LOCK_MAX_ATTEMPTS = 10;
+const LOCK_BASE_DELAY_MS = 10;
+
 async function withFileLock(lockDir, fn) {
-  await mkdir(lockDir, { recursive: false }).catch(() => {});
-  try {
-    return await fn();
-  } finally {
-    await rm(lockDir, { force: true }).catch(() => {});
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await mkdir(lockDir, { recursive: false });
+    } catch (err) {
+      if (err.code === "EEXIST" && attempt < LOCK_MAX_ATTEMPTS) {
+        const jitter = Math.random() * LOCK_BASE_DELAY_MS;
+        await new Promise((r) => setTimeout(r, LOCK_BASE_DELAY_MS + jitter));
+        continue;
+      }
+      if (err.code === "EEXIST") {
+        throw new Error(
+          `lock contention: failed to acquire ${lockDir} after ${LOCK_MAX_ATTEMPTS} attempts`,
+        );
+      }
+      throw err;
+    }
+    try {
+      return await fn();
+    } finally {
+      await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -91,7 +110,9 @@ export async function listSessions(cpbRoot) {
 export async function updateSession(cpbRoot, sessionId, patch, options = {}) {
   const { skipTransitionCheck = false } = options;
 
-  const lockDir = path.join(reviewsDir(cpbRoot), `.lock-${sessionId}`);
+  const dir = reviewsDir(cpbRoot);
+  await mkdir(dir, { recursive: true });
+  const lockDir = path.join(dir, `.lock-${sessionId}`);
   return withFileLock(lockDir, async () => {
     const session = await getSession(cpbRoot, sessionId);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
