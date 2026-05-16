@@ -235,7 +235,7 @@ assert.deepEqual(
   bridgeForPhase("execute", "myapp", { artifacts: { plan: "plan-001" } }),
   {
     script: path.join("bridges", "claude-execute.sh"),
-    args: ["myapp", "plan-001"],
+    args: ["myapp", "001"],
   }
 );
 
@@ -243,7 +243,7 @@ assert.deepEqual(
   bridgeForPhase("verify", "myapp", { artifacts: { execute: "deliverable-002" } }),
   {
     script: path.join("bridges", "codex-verify.sh"),
-    args: ["myapp", "deliverable-002"],
+    args: ["myapp", "002"],
   }
 );
 
