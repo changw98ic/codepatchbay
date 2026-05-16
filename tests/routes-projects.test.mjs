@@ -357,6 +357,168 @@ describe('GET /api/projects/:name/files/*', () => {
   });
 });
 
+describe('Path traversal protection on project name param', () => {
+  let tmpRoot, app;
+
+  beforeEach(async () => {
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-traversal-'));
+    await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
+    await createProjectDir(tmpRoot, 'real-proj', { context: '# real' });
+    app = await buildApp(tmpRoot);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await rm(tmpRoot, { recursive: true });
+  });
+
+  const badNames = [
+    '..',           // directory traversal
+    '../etc',       // traversal with target
+    'a..b',         // dots in middle (rejected by SAFE_NAME)
+    'a/b',          // path separator
+    'a\\b',         // backslash separator
+    '.hidden',      // dot prefix
+    'proj name',    // space
+    '',             // empty — won't match route but test anyway
+  ];
+
+  for (const badName of badNames) {
+    if (!badName) continue; // empty name can't form a route
+
+    it(`getProject rejects "${badName}"`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${encodeURIComponent(badName)}` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for "${badName}", got ${res.statusCode}`);
+    });
+
+    it(`getProjectInbox rejects "${badName}"`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${encodeURIComponent(badName)}/inbox` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for "${badName}", got ${res.statusCode}`);
+    });
+
+    it(`getProjectOutputs rejects "${badName}"`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${encodeURIComponent(badName)}/outputs` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for "${badName}", got ${res.statusCode}`);
+    });
+
+    it(`getProjectFiles rejects "${badName}"`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${encodeURIComponent(badName)}/files/context.md` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404 || res.statusCode === 403,
+        `Expected 400/403/404 for "${badName}", got ${res.statusCode}`);
+    });
+  }
+
+  // Verify legitimate project names still work across all four handlers
+  it('valid project name works in getProject', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj' });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().name, 'real-proj');
+  });
+
+  it('valid project name works in getProjectInbox', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj/inbox' });
+    assert.equal(res.statusCode, 200);
+    assert.ok(Array.isArray(res.json()));
+  });
+
+  it('valid project name works in getProjectOutputs', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj/outputs' });
+    assert.equal(res.statusCode, 200);
+    assert.ok(Array.isArray(res.json()));
+  });
+
+  it('valid project name works in getProjectFiles', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj/files/context.md' });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().content, '# real');
+  });
+
+  // Wildcard path traversal in getProjectFiles
+  it('getProjectFiles rejects wildcard path with ..', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj/files/../../etc/passwd' });
+    assert.ok(res.statusCode === 400 || res.statusCode === 403 || res.statusCode === 404,
+      `Expected 400/403/404, got ${res.statusCode}`);
+  });
+});
+
+describe('Encoded path variant protection', () => {
+  let tmpRoot, app;
+
+  beforeEach(async () => {
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-encvar-'));
+    await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
+    await createProjectDir(tmpRoot, 'real-proj', { context: '# real' });
+    app = await buildApp(tmpRoot);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await rm(tmpRoot, { recursive: true });
+  });
+
+  // After Fastify URL-decodes, SAFE_NAME regex rejects all of these
+  // because the decoded value contains characters outside [a-zA-Z0-9-]
+  const encodedNameVariants = [
+    { label: '%2e%2e (URL-encoded ..)', raw: '%2e%2e' },
+    { label: '..%2f (.. + URL-encoded /)', raw: '..%2f' },
+    { label: '%2f (URL-encoded /)', raw: '%2f' },
+    { label: '%5c (URL-encoded \\)', raw: '%5c' },
+    { label: '%2e%2e%5c (URL-encoded ..\\)', raw: '%2e%2e%5c' },
+    { label: '%2e%2e%2f (URL-encoded ../)', raw: '%2e%2e%2f' },
+  ];
+
+  for (const variant of encodedNameVariants) {
+    it(`getProject rejects ${variant.label}`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${variant.raw}` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for ${variant.label}, got ${res.statusCode}`);
+    });
+
+    it(`getProjectInbox rejects ${variant.label}`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${variant.raw}/inbox` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for ${variant.label}, got ${res.statusCode}`);
+    });
+
+    it(`getProjectOutputs rejects ${variant.label}`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${variant.raw}/outputs` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404,
+        `Expected 400/404 for ${variant.label}, got ${res.statusCode}`);
+    });
+
+    it(`getProjectFiles rejects ${variant.label}`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${variant.raw}/files/context.md` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 404 || res.statusCode === 403,
+        `Expected 400/403/404 for ${variant.label}, got ${res.statusCode}`);
+    });
+  }
+
+  // Encoded path traversal in getProjectFiles wildcard file path
+  const filePathVariants = [
+    { label: '%2e%2e/etc/passwd', urlPath: '%2e%2e/etc/passwd' },
+    { label: '%2e%2e%2f%2e%2e/etc/passwd', urlPath: '%2e%2e%2f%2e%2e/etc/passwd' },
+    { label: '..%5c..%5c/etc/passwd', urlPath: '..%5c..%5c/etc/passwd' },
+  ];
+
+  for (const variant of filePathVariants) {
+    it(`getProjectFiles rejects encoded file path: ${variant.label}`, async () => {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/real-proj/files/${variant.urlPath}` });
+      assert.ok(res.statusCode === 400 || res.statusCode === 403 || res.statusCode === 404,
+        `Expected 400/403/404 for ${variant.label}, got ${res.statusCode}`);
+    });
+  }
+
+  // Verify legitimate project still works after encoded variant protection
+  it('legitimate project name still resolves after encoded variant tests', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/real-proj' });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().name, 'real-proj');
+  });
+});
+
 describe('POST /api/projects/init', () => {
   let tmpRoot, app;
 

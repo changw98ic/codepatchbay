@@ -45,6 +45,7 @@ export async function projectRoutes(fastify, opts) {
   // Project detail
   fastify.get('/projects/:name', async (req) => {
     const { name } = req.params;
+    if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
     const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
     await fs.access(projDir).catch(() => { throw fastify.httpErrors.notFound(`Project '${name}' not found`); });
 
@@ -61,28 +62,38 @@ export async function projectRoutes(fastify, opts) {
 
   // List inbox files
   fastify.get('/projects/:name/inbox', async (req) => {
-    const inboxDir = path.join(req.cpbRoot, 'wiki/projects', req.params.name, 'inbox');
+    const { name } = req.params;
+    if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
+    const inboxDir = path.join(req.cpbRoot, 'wiki/projects', name, 'inbox');
     const files = (await fs.readdir(inboxDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
 
   // List output files
   fastify.get('/projects/:name/outputs', async (req) => {
-    const outDir = path.join(req.cpbRoot, 'wiki/projects', req.params.name, 'outputs');
+    const { name } = req.params;
+    if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
+    const outDir = path.join(req.cpbRoot, 'wiki/projects', name, 'outputs');
     const files = (await fs.readdir(outDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
 
   // Read specific file (wildcard matches nested paths like inbox/plan-001.md)
   fastify.get('/projects/:name/files/*', async (req) => {
-    const name = req.params.name;
+    const { name } = req.params;
+    if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
     const filePath = req.params['*'];
+    // Reject any path segment that could escape the project directory
+    const normalized = path.normalize(filePath);
+    if (normalized.startsWith('..') || path.isAbsolute(normalized)) {
+      throw fastify.httpErrors.badRequest('Invalid file path');
+    }
     const fullPath = path.join(req.cpbRoot, 'wiki/projects', name, filePath);
 
-    // Security: prevent path traversal
+    // Security: prevent path traversal (defense in depth)
     const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
     const resolved = path.resolve(fullPath);
-    if (!resolved.startsWith(path.resolve(projDir))) {
+    if (!resolved.startsWith(path.resolve(projDir) + path.sep) && resolved !== path.resolve(projDir)) {
       throw fastify.httpErrors.forbidden('Path traversal denied');
     }
 
