@@ -27,27 +27,6 @@ function worktreePathFor(cpbRoot, jobId) {
 }
 
 const REVIEW_NOTIFY_STATUSES = new Set(["user_review", "dispatched", "expired", "cancelled"]);
-const activeReviewProcesses = new Map();
-
-function stopReviewProcess(sessionId, signal = "SIGTERM") {
-  const child = activeReviewProcesses.get(sessionId);
-  if (!child) return { killed: false, pid: null };
-
-  const pid = child.pid;
-  try {
-    if (process.platform !== "win32" && pid) {
-      process.kill(-pid, signal);
-    } else {
-      child.kill(signal);
-    }
-    return { killed: true, pid };
-  } catch (err) {
-    if (err?.code !== "ESRCH") throw err;
-    return { killed: false, pid };
-  } finally {
-    activeReviewProcesses.delete(sessionId);
-  }
-}
 
 export async function reviewRoutes(fastify, opts) {
 

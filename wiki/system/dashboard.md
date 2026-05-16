@@ -10,10 +10,10 @@
 
 每个项目在 `## 活跃项目
 ### calc-test
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-16T14:58:00Z
-- **next**: cpb execute calc-test 004
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-16T23:25:23Z
+- **next**: completed
 
 ### novel-writer
 - **status**: EXECUTING
