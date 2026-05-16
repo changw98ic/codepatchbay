@@ -35,6 +35,7 @@ let serverProc = null;
 let serverManaged = false;
 let shuttingDown = false;
 let leaseAcquired = false;
+let bgScanResult = null;
 
 // --- Logging ---
 
@@ -450,6 +451,52 @@ function acpRun(agent, prompt) {
   });
 }
 
+async function validateIssue(issue) {
+  const prompt = `Check if this issue still exists in the codebase at ${CPB_ROOT}:
+
+ISSUE: ${issue.description}
+
+Answer ONLY "VALID" if still present, or "INVALID" if resolved or no longer applies.`;
+
+  try {
+    const result = await acpRun("codex", prompt);
+    const valid = /\bVALID\b/.test(result) && !/\bINVALID\b/.test(result);
+    if (!valid) {
+      log("validate", `issue no longer valid: ${issue.description.slice(0, 80)}`);
+      return false;
+    }
+    log("validate", `issue confirmed: ${issue.description.slice(0, 80)}`);
+    return true;
+  } catch (err) {
+    log("warn", `validation failed (${err.message}), proceeding anyway`);
+    return true;
+  }
+}
+
+function startBackgroundScan() {
+  log("bgscan", "starting background scan while executing");
+  bgScanResult = acpRun("codex", scanPrompt())
+    .then(result => {
+      const issues = parseScanResults(result);
+      log("bgscan", `found ${issues.length} issues`);
+      return issues;
+    })
+    .catch(err => {
+      log("bgscan", `failed: ${err.message}`);
+      return [];
+    });
+}
+
+async function collectBackgroundScan() {
+  if (!bgScanResult) return;
+  const issues = await bgScanResult;
+  bgScanResult = null;
+  if (issues.length > 0) {
+    await pushIssues(CPB_ROOT, issues);
+    log("bgscan", `pushed ${issues.length} issues to backlog`);
+  }
+}
+
 function ensureEvolveProject(issue, projects) {
   if (issue?.project && SAFE_NAME.test(issue.project) && projects.includes(issue.project)) {
     return issue.project;
@@ -552,6 +599,9 @@ async function evolve(opts = {}) {
     await saveState(CPB_ROOT, state);
 
     try {
+      // Collect background scan from previous round
+      await collectBackgroundScan();
+
       const popped = await popIssue(CPB_ROOT);
       issue = popped?.issue;
 
@@ -579,6 +629,16 @@ async function evolve(opts = {}) {
       if (!project) {
         throw new Error("no valid project found for self-evolve session");
       }
+
+      // Pre-execute validation: check issue is still present
+      if (!(await validateIssue(issue))) {
+        await updateIssue(CPB_ROOT, issue.description, "done", "validated as resolved");
+        await appendHistory(CPB_ROOT, { round, action: "validate", result: "resolved" });
+        continue;
+      }
+
+      // Start background scan (runs in parallel with execution)
+      startBackgroundScan();
 
       stashLabel = await stashRound(round);
       log("stash", `${round}/${MAX_ROUNDS} — stashed local changes with ${stashLabel || "none"}`);
