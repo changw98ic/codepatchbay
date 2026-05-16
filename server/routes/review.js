@@ -122,7 +122,7 @@ export async function reviewRoutes(fastify, opts) {
     });
 
     const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.cpbRoot, jobId);
+    const wtPath = worktreePathFor(req.flowRoot, jobId);
     const result = spawnBridge(
       req.flowRoot,
       session.project,
@@ -133,7 +133,7 @@ export async function reviewRoutes(fastify, opts) {
       { CPB_USE_WORKTREE: "1" },
     );
 
-    await updateSession(req.cpbRoot, session.sessionId, {
+    await updateSession(req.flowRoot, session.sessionId, {
       jobId,
       worktreePath: wtPath,
     });
@@ -184,7 +184,7 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.cpbRoot, jobId);
+    const wtPath = worktreePathFor(req.flowRoot, jobId);
     const updated = spawnBridge(
       req.flowRoot,
       session.project,
@@ -230,7 +230,7 @@ export async function reviewRoutes(fastify, opts) {
     // Clean up worktree if it exists
     if (session.worktreePath) {
       try {
-        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
+        const projectJson = path.join(req.flowRoot, "wiki", "projects", session.project, "project.json");
         const meta = JSON.parse(await readFile(projectJson, "utf8"));
         if (meta.sourcePath) {
           await gitExec(meta.sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
@@ -239,7 +239,7 @@ export async function reviewRoutes(fastify, opts) {
       try { await rm(session.worktreePath, { recursive: true, force: true }); } catch {}
     }
 
-    const updated = await updateSession(req.cpbRoot, session.sessionId, {
+    const updated = await updateSession(req.flowRoot, session.sessionId, {
       status: "expired",
       userVerdict: "rejected",
     });
@@ -252,7 +252,7 @@ export async function reviewRoutes(fastify, opts) {
   fastify.post("/review/:id/cancel", cancelRoute);
 
   fastify.post("/review/:id/accept", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
+    const session = await getSession(req.flowRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review" && session.status !== "dispatched") {
       throw fastify.httpErrors.conflict(`session not in reviewable state (status: ${session.status})`);
@@ -261,7 +261,7 @@ export async function reviewRoutes(fastify, opts) {
     let merged = false;
     if (session.worktreePath && session.jobId) {
       try {
-        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
+        const projectJson = path.join(req.flowRoot, "wiki", "projects", session.project, "project.json");
         const meta = JSON.parse(await readFile(projectJson, "utf8"));
         const sourcePath = meta.sourcePath;
         if (sourcePath) {
@@ -286,7 +286,7 @@ export async function reviewRoutes(fastify, opts) {
       }
     }
 
-    const updated = await updateSession(req.cpbRoot, session.sessionId, {
+    const updated = await updateSession(req.flowRoot, session.sessionId, {
       status: "completed",
       userVerdict: "accepted",
       merged,
