@@ -56,7 +56,7 @@ describe('A4: activity/liveness events', () => {
   });
 
   it('job with fresh activity is not recovered', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-activity-test-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-activity-test-'));
     try {
       const job = await createJob(tmpRoot, { project: 'test', task: 'activity test' });
       await appendEvent(tmpRoot, 'test', job.jobId, {
@@ -84,7 +84,7 @@ describe('A4: activity/liveness events', () => {
   });
 
   it('job with stale activity is recovered', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-activity-stale-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-activity-stale-'));
     try {
       const job = await createJob(tmpRoot, { project: 'test', task: 'stale test' });
       // Old activity (6 minutes ago)
@@ -112,7 +112,7 @@ describe('A4: activity/liveness events', () => {
   });
 
   it('job projection includes lastActivityAt', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-activity-proj-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-activity-proj-'));
     try {
       const { projectPipelineState } = await import('../server/services/job-projection.js');
       const job = await createJob(tmpRoot, { project: 'test', task: 'proj test' });

@@ -12,8 +12,8 @@ function defaultProfile(role) {
   };
 }
 
-export async function loadProfile(flowRoot, role) {
-  const profileDir = path.join(flowRoot, PROFILES_DIR, role);
+export async function loadProfile(cpbRoot, role) {
+  const profileDir = path.join(cpbRoot, PROFILES_DIR, role);
   const profile = defaultProfile(role);
 
   // Load soul.md
@@ -47,9 +47,9 @@ export async function loadProfile(flowRoot, role) {
   return profile;
 }
 
-export async function listProfiles(flowRoot) {
+export async function listProfiles(cpbRoot) {
   const { readdir } = await import("node:fs/promises");
-  const profilesPath = path.join(flowRoot, PROFILES_DIR);
+  const profilesPath = path.join(cpbRoot, PROFILES_DIR);
   let entries;
   try {
     entries = await readdir(profilesPath, { withFileTypes: true });

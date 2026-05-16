@@ -30,7 +30,7 @@ All tests: 10 tests, 0 failures
 ### Notes
 
 - Claude ACP executed the production code change but stalled before writing the deliverable. Codex terminated the stalled process and wrote `deliverable-002.md` as rescue documentation after test verification.
-- No residual `flow execute`, `acp-client`, `claude-agent-acp`, or Claude stream-json process remained after cleanup.
+- No residual `cpb execute`, `acp-client`, `claude-agent-acp`, or Claude stream-json process remained after cleanup.
 
 ### Risks
 
@@ -39,7 +39,7 @@ All tests: 10 tests, 0 failures
 
 ## Next-Action
 
-Proceed to the next P0 MVP PRD slice. Good candidates: result/cat reaction copy variety, launch-on-simulator visual QA, or polishing the Flow ACP stall handling so Claude execute can reliably write its own deliverable.
+Proceed to the next P0 MVP PRD slice. Good candidates: result/cat reaction copy variety, launch-on-simulator visual QA, or polishing the CodePatchbay ACP stall handling so Claude execute can reliably write its own deliverable.
 
 ## Acceptance-Criteria
 

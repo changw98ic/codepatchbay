@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# common.sh — Flow bridge 共享函数库
+# common.sh — CodePatchbay bridge 共享函数库
 # source "$(dirname "$0")/common.sh"
 
-FLOW_ROOT="${FLOW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 
 # ─── 颜色 ───
@@ -10,9 +10,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC
 
 # ─── 项目校验 ───
 require_project() {
-  local project="$1" wiki_dir="$FLOW_ROOT/wiki/projects/$1"
+  local project="$1" wiki_dir="$CPB_ROOT/wiki/projects/$1"
   if [ ! -d "$wiki_dir" ]; then
-    echo -e "${RED}Project '$project' not found. Run 'flow init' first.${NC}" >&2
+    echo -e "${RED}Project '$project' not found. Run 'cpb init' first.${NC}" >&2
     exit 1
   fi
 }
@@ -37,7 +37,7 @@ require_safe_name() {
 # Usage: get_project_path <project-name>
 get_project_path() {
   local project="$1"
-  local meta="$FLOW_ROOT/wiki/projects/$project/project.json"
+  local meta="$CPB_ROOT/wiki/projects/$project/project.json"
   if [ -f "$meta" ]; then
     META_FILE="$meta" node -e "try{const p=JSON.parse(require('fs').readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(p.sourcePath||'')}catch{}" 2>/dev/null
   fi
@@ -48,7 +48,7 @@ get_project_path() {
 next_id() {
   local dir="$1"
   local prefix="$2"
-  local lockdir="$dir/.flow-id.lock"
+  local lockdir="$dir/.cpb-id.lock"
   mkdir -p "$dir"
 
   local attempts=0
@@ -80,7 +80,7 @@ log_append() {
   local wiki_dir="$1"
   local msg="$2"
   local log="$wiki_dir/log.md"
-  local lockdir="$wiki_dir/.flow-log.lock"
+  local lockdir="$wiki_dir/.cpb-log.lock"
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -98,7 +98,7 @@ log_append() {
 }
 
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
-# Set FLOW_DANGEROUS=1 to disable all constraints (unrestricted agent access)
+# Set CPB_DANGEROUS=1 to disable all constraints (unrestricted agent access)
 
 # rtk_codex_plan <project> <task> <plan_file>
 rtk_codex_plan() {
@@ -106,14 +106,14 @@ rtk_codex_plan() {
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
-- ONLY write files under: $FLOW_ROOT/wiki/projects/$project/inbox/
-- ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/ or $FLOW_ROOT/wiki/system/ or $FLOW_ROOT/templates/
+- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
+- ONLY read files under: $CPB_ROOT/wiki/projects/$project/ or $CPB_ROOT/profiles/ or $CPB_ROOT/wiki/system/ or $CPB_ROOT/templates/
 - Do NOT execute terminal commands. This is a planning-only phase."
   fi
   cat << PROMPT
-You are Flow Codex (Planner). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 ## CRITICAL: Primary Directive
 Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
@@ -122,11 +122,11 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 $constraints
 
 ## Files (read via fs/read_text_file as needed)
-- Role definition: $FLOW_ROOT/profiles/codex/soul.md
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Existing decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
-- Handshake format: $FLOW_ROOT/wiki/system/handshake-protocol.md
-- Plan template: $FLOW_ROOT/templates/handoff/plan-to-execute.md
+- Role definition: $CPB_ROOT/profiles/codex/soul.md
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Existing decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Handshake format: $CPB_ROOT/wiki/system/handshake-protocol.md
+- Plan template: $CPB_ROOT/templates/handoff/plan-to-execute.md
 
 ## Output
 Write the plan to: $plan_file
@@ -140,17 +140,17 @@ PROMPT
 rtk_claude_execute() {
   local project="$1" plan_id="$2" deliverable_file="$3"
   local verdict_file="${4:-}"
-  local plan_file="$FLOW_ROOT/wiki/projects/$project/inbox/plan-${plan_id}.md"
+  local plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_id}.md"
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - Write code ONLY in the target project directory${project_cwd:+: $project_cwd}
 - Write deliverable ONLY to: $deliverable_file
-- Write verdicts ONLY under: $FLOW_ROOT/wiki/projects/$project/outputs/
-- Do NOT modify files under: $FLOW_ROOT/wiki/system/, $FLOW_ROOT/profiles/, $FLOW_ROOT/bridges/
-- Do NOT read or write files outside the project and Flow wiki directories."
+- Write verdicts ONLY under: $CPB_ROOT/wiki/projects/$project/outputs/
+- Do NOT modify files under: $CPB_ROOT/wiki/system/, $CPB_ROOT/profiles/, $CPB_ROOT/bridges/
+- Do NOT read or write files outside the project and CodePatchbay wiki directories."
   fi
   local fix_section=""
   if [ -n "$verdict_file" ] && [ -f "$verdict_file" ]; then
@@ -160,19 +160,19 @@ The previous deliverable was verified and REJECTED. Read the verdict for details
 You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach."
   fi
   cat << PROMPT
-You are Flow Claude (Executor). Role: $(head -3 "$FLOW_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
 
 $constraints
 
 $fix_section
 
 ## Files (read via fs/read_text_file as needed)
-- Role definition: $FLOW_ROOT/profiles/claude/soul.md
+- Role definition: $CPB_ROOT/profiles/claude/soul.md
 - Plan to execute: $plan_file
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
-- Deliverable template: $FLOW_ROOT/templates/handoff/execute-to-review.md
-- Handshake format: $FLOW_ROOT/wiki/system/handshake-protocol.md
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Deliverable template: $CPB_ROOT/templates/handoff/execute-to-review.md
+- Handshake format: $CPB_ROOT/wiki/system/handshake-protocol.md
 
 ## Instructions
 1. Read the plan file first.
@@ -188,12 +188,12 @@ PROMPT
 rtk_codex_verify() {
   local project="$1" deliverable_id="$2" verdict_file="$3"
   local diff_artifact="${4:-}"
-  local deliverable_file="$FLOW_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
+  local deliverable_file="$CPB_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
   local constraints=""
-  if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
-- ONLY read files under: $FLOW_ROOT/wiki/projects/$project/ or $FLOW_ROOT/profiles/
+- ONLY read files under: $CPB_ROOT/wiki/projects/$project/ or $CPB_ROOT/profiles/
 - Do NOT execute terminal commands. This is a verification-only phase.
 - Do NOT modify any code files."
   fi
@@ -206,17 +206,17 @@ A code diff was generated before this verification phase. Read it to understand 
 Use the diff to verify the actual code changes match the deliverable claims."
   fi
   cat << PROMPT
-You are Flow Codex (Verifier). Role: $(head -3 "$FLOW_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $constraints
 
 $diff_section
 
 ## Files (read via fs/read_text_file as needed)
-- Role definition: $FLOW_ROOT/profiles/codex/soul.md
+- Role definition: $CPB_ROOT/profiles/codex/soul.md
 - Deliverable to verify: $deliverable_file
-- Project context: $FLOW_ROOT/wiki/projects/$project/context.md
-- Decisions: $FLOW_ROOT/wiki/projects/$project/decisions.md
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
 
 ## Instructions
 1. Read the deliverable. Extract plan-ref from its metadata.
@@ -234,7 +234,7 @@ PROMPT
 # ─── Dashboard 更新 ───
 dashboard_update() {
   local project="$1" phase="$2" status="$3" next="$4"
-  local dash="$FLOW_ROOT/wiki/system/dashboard.md"
+  local dash="$CPB_ROOT/wiki/system/dashboard.md"
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -298,12 +298,12 @@ flow_export_claude_gateway_variant() {
   export ANTHROPIC_MODEL="$model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION="$model"
   export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$display_name"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Flow provider variant: $variant"
+  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="CodePatchbay provider variant: $variant"
   export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
   export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"
   export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
   export CLAUDE_CODE_SUBAGENT_MODEL="$model"
-  export FLOW_ACTIVE_CLAUDE_VARIANT="$variant"
+  export CPB_ACTIVE_CLAUDE_VARIANT="$variant"
 }
 
 flow_apply_kimi_variant() {
@@ -332,7 +332,7 @@ flow_apply_xiaomi_variant() {
 
 flow_apply_claude_variant() {
   local requested normalized
-  requested="${FLOW_CLAUDE_VARIANT:-${FLOW_BUILDER_VARIANT:-${FLOW_ACP_CLAUDE_VARIANT:-}}}"
+  requested="${CPB_CLAUDE_VARIANT:-${CPB_BUILDER_VARIANT:-${CPB_ACP_CLAUDE_VARIANT:-}}}"
 
   if [ -z "$requested" ]; then
     if flow_env_any OLLAMA_CLOUD_URL OLLAMA_CLOUD_BASE_URL OLLAMACLOUD_BASE_URL OLLAMACLOUD_URL KIMI_BASE_URL MOONSHOT_BASE_URL; then
@@ -347,7 +347,7 @@ flow_apply_claude_variant() {
   normalized="$(printf '%s' "$requested" | tr '[:upper:]' '[:lower:]')"
   case "$normalized" in
     none|off|default|anthropic|claude)
-      export FLOW_ACTIVE_CLAUDE_VARIANT="none"
+      export CPB_ACTIVE_CLAUDE_VARIANT="none"
       ;;
     kimi|kimi-k2.6|ollama|ollamacloud|ollama-cloud)
       flow_apply_kimi_variant
@@ -365,7 +365,7 @@ flow_apply_claude_variant() {
 # ─── ACP 执行 ───
 acp_run() {
   local agent="$1"; shift
-  local acp="${FLOW_ACP_CLIENT:-$FLOW_ROOT/bridges/acp-client.mjs}"
+  local acp="${CPB_ACP_CLIENT:-$CPB_ROOT/bridges/acp-client.mjs}"
   if [ ! -x "$acp" ]; then
     echo -e "${RED}ACP client not executable: $acp${NC}" >&2
     exit 1
@@ -373,5 +373,5 @@ acp_run() {
   if [ "$agent" = "claude" ]; then
     flow_apply_claude_variant
   fi
-  "$acp" --agent "$agent" --cwd "${FLOW_ACP_CWD:-$PWD}" "$@"
+  "$acp" --agent "$agent" --cwd "${CPB_ACP_CWD:-$PWD}" "$@"
 }

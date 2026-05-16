@@ -23,8 +23,8 @@ export function jobToPipelineState(job) {
   };
 }
 
-export async function projectPipelineState(flowRoot, project) {
-  const jobs = await listJobs(flowRoot);
+export async function projectPipelineState(cpbRoot, project) {
+  const jobs = await listJobs(cpbRoot);
   const matching = jobs.filter((j) => j.project === project);
   if (matching.length === 0) return null;
 
@@ -32,8 +32,8 @@ export async function projectPipelineState(flowRoot, project) {
   return jobToPipelineState(running ?? matching[0]);
 }
 
-export async function listProjectPipelineStates(flowRoot) {
-  const jobs = await listJobs(flowRoot);
+export async function listProjectPipelineStates(cpbRoot) {
+  const jobs = await listJobs(cpbRoot);
   const byProject = new Map();
   for (const job of jobs) {
     const existing = byProject.get(job.project);

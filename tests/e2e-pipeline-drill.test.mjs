@@ -32,7 +32,7 @@ describe('R3: E2E pipeline drill', () => {
   let tmpRoot;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-e2e-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-e2e-'));
     await mkdir(path.join(tmpRoot, 'wiki', 'projects', 'e2e', 'inbox'), { recursive: true });
     await mkdir(path.join(tmpRoot, 'wiki', 'projects', 'e2e', 'outputs'), { recursive: true });
   });
@@ -128,7 +128,7 @@ describe('R3: E2E pipeline drill', () => {
 
     const { stdout, stderr } = await execFileAsync(node(), [
       runner(),
-      '--flow-root', tmpRoot,
+      '--cpb-root', tmpRoot,
       '--project', 'e2e',
       '--job-id', job.jobId,
       '--phase', 'plan',

@@ -2,7 +2,7 @@
 
 ## Source Plan
 
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-004.md`
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/plan-004.md`
 
 ## Execution Mode
 
@@ -31,4 +31,4 @@
 ## Notes
 
 - Codex corrected the first Claude pass because it changed only the fallback path while the bundled Lottie resource would still have owned the button-press runtime path.
-- The selected result and paw marker were manually exercised through the iPhone 17 Pro simulator flow.
+- The selected result and paw marker were manually exercised through the iPhone 17 Pro simulator cpb.

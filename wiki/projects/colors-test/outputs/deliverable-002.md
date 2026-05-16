@@ -14,7 +14,7 @@
 - 颜色名统一小写，色值统一为 `#RRGGBB` 格式，无额外字段或注释。
 
 ### Files Changed
-- `/Users/chengwen/dev/flow/wiki/projects/colors-test/inbox/colors.json` — 新增，包含 5 条颜色键值对
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/colors-test/inbox/colors.json` — 新增，包含 5 条颜色键值对
 
 ### Evidence
 
@@ -46,7 +46,7 @@ Count: 5
 验证 `colors.json` 是否满足 plan-001.md 中的 Acceptance-Criteria，给出 PASS/FAIL 判定。
 
 ## Acceptance-Criteria
-- [x] 文件 `/Users/chengwen/dev/flow/wiki/projects/colors-test/inbox/colors.json` 存在。
+- [x] 文件 `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/colors-test/inbox/colors.json` 存在。
 - [x] 文件是合法 JSON，内容为一个对象，且包含且仅包含 5 个顶层键值对。
 - [x] 每个 key 为合法 CSS 颜色名（全部小写，标准命名）。
 - [x] 每个 value 为可用 CSS 颜色值（十六进制字符串 `#RRGGBB`）。

@@ -13,7 +13,7 @@ describe('R5: event log compaction', () => {
   let tmpRoot;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-compaction-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-compaction-'));
   });
 
   afterEach(async () => {
@@ -85,11 +85,11 @@ describe('R5: event log compaction', () => {
     assert.equal(checkpoint.status, 'blocked');
   });
 
-  it('checkpoint file is under flow-task/checkpoints', async () => {
+  it('checkpoint file is under cpb-task/checkpoints', async () => {
     const job = await createJob(tmpRoot, { project: 'test', task: 'path test' });
     await completeJob(tmpRoot, 'test', job.jobId);
 
-    const checkpointPath = path.join(tmpRoot, 'flow-task', 'checkpoints', 'test', `${job.jobId}.json`);
+    const checkpointPath = path.join(tmpRoot, 'cpb-task', 'checkpoints', 'test', `${job.jobId}.json`);
     const s = await stat(checkpointPath);
     assert.ok(s.isFile());
   });

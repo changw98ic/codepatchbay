@@ -14,8 +14,8 @@
 - Added a local validation script `test-calculator.js` to assert acceptance criteria from the plan.
 
 ### Files Changed
-- `/tmp/flow-test-calc/calculator.js` — new module with `add` and `subtract`
-- `/tmp/flow-test-calc/test-calculator.js` — temporary validation script (can be removed after review)
+- `/tmp/cpb-test-calc/calculator.js` — new module with `add` and `subtract`
+- `/tmp/cpb-test-calc/test-calculator.js` — temporary validation script (can be removed after review)
 
 ### Evidence
 

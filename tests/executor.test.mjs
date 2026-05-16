@@ -6,7 +6,7 @@ import path from "node:path";
 import { registerTask, unregisterTask, getRunningTasks, getDurableTasks } from "../server/services/executor.js";
 import { createJob } from "../server/services/job-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-executor-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-executor-"));
 
 // In-memory task tracking
 registerTask("job-1", "demo", "job-runner.mjs", 12345);

@@ -23,11 +23,11 @@ export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")
 }
 
 export async function createJob(
-  flowRoot,
+  cpbRoot,
   { project, task, workflow = "standard", ts = nowIso() }
 ) {
   const jobId = makeJobId(ts);
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_created",
     jobId,
     project,
@@ -35,16 +35,16 @@ export async function createJob(
     workflow,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function startPhase(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { phase, attempt = 1, leaseId, ts = nowIso() }
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "phase_started",
     jobId,
     project,
@@ -53,16 +53,16 @@ export async function startPhase(
     leaseId,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function completePhase(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { phase, artifact = "", ts = nowIso() }
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "phase_completed",
     jobId,
     project,
@@ -70,115 +70,115 @@ export async function completePhase(
     artifact,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function blockJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { reason, ts = nowIso() }
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_blocked",
     jobId,
     project,
     reason,
     ts,
   });
-  await checkpointJob(flowRoot, project, jobId).catch(() => {});
-  return getJob(flowRoot, project, jobId);
+  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function failJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { reason, ts = nowIso() }
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_failed",
     jobId,
     project,
     reason,
     ts,
   });
-  await checkpointJob(flowRoot, project, jobId).catch(() => {});
-  return getJob(flowRoot, project, jobId);
+  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function budgetExceeded(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { reason, ts = nowIso() }
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "budget_exceeded",
     jobId,
     project,
     reason,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function completeJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { ts = nowIso() } = {}
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_completed",
     jobId,
     project,
     ts,
   });
-  await checkpointJob(flowRoot, project, jobId).catch(() => {});
-  return getJob(flowRoot, project, jobId);
+  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function requestCancelJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { reason, ts = nowIso() } = {}
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancel_requested",
     jobId,
     project,
     reason,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function cancelJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { reason, ts = nowIso() } = {}
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancelled",
     jobId,
     project,
     reason,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function requestRedirectJob(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { instructions, reason, ts = nowIso() } = {}
 ) {
   const redirectEventId = `${jobId}-redirect-${Date.now()}`;
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_redirect_requested",
     jobId,
     project,
@@ -187,35 +187,35 @@ export async function requestRedirectJob(
     redirectEventId,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
 export async function consumeRedirect(
-  flowRoot,
+  cpbRoot,
   project,
   jobId,
   { redirectEventId, ts = nowIso() } = {}
 ) {
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_redirect_consumed",
     jobId,
     project,
     redirectEventId,
     ts,
   });
-  return getJob(flowRoot, project, jobId);
+  return getJob(cpbRoot, project, jobId);
 }
 
-export async function getJob(flowRoot, project, jobId) {
-  const checkpoint = await readCheckpoint(flowRoot, project, jobId);
+export async function getJob(cpbRoot, project, jobId) {
+  const checkpoint = await readCheckpoint(cpbRoot, project, jobId);
   if (checkpoint) return checkpoint;
-  return materializeJob(await readEvents(flowRoot, project, jobId));
+  return materializeJob(await readEvents(cpbRoot, project, jobId));
 }
 
-export async function listJobs(flowRoot) {
-  const files = await listEventFiles(flowRoot);
+export async function listJobs(cpbRoot) {
+  const files = await listEventFiles(cpbRoot);
   const jobs = await Promise.all(
-    files.map(({ project, jobId }) => getJob(flowRoot, project, jobId))
+    files.map(({ project, jobId }) => getJob(cpbRoot, project, jobId))
   );
 
   return jobs.filter((job) => job.createdAt && job.project && job.jobId).sort((a, b) => {

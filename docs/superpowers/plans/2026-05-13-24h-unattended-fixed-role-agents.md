@@ -1,10 +1,10 @@
 # 24h Unattended Fixed-Role Agents Implementation Plan
 
-> Plan for combining Flow's durable 24h supervisor with profile-defined fixed agent roles.
+> Plan for combining CodePatchbay's durable 24h supervisor with profile-defined fixed agent roles.
 
 ## Goal
 
-Make Flow capable of running project tasks for 24 hours or more with a stable team structure:
+Make CodePatchbay capable of running project tasks for 24 hours or more with a stable team structure:
 
 - `coordinator` remains the single entry router.
 - Role identity and permissions come from `profiles/{role}/`.
@@ -29,7 +29,7 @@ supervisor = long-running recovery engine
 
 ## Current Baseline
 
-Flow already has:
+CodePatchbay already has:
 
 - ACP client and Codex/Claude adapter launch path.
 - Plan -> execute -> verify bridge scripts.
@@ -192,7 +192,7 @@ A phase is alive when any of these are true:
 - The role process wrote a `phase_activity` event.
 - The lease heartbeat is fresh.
 
-`FLOW_ACP_TIMEOUT_MS=0` disables idle timeout entirely.
+`CPB_ACP_TIMEOUT_MS=0` disables idle timeout entirely.
 
 For unattended runs, total wall-clock timeout should not kill the process. Budget exhaustion should mark the job `blocked` with a reason.
 
@@ -392,10 +392,10 @@ Acceptance:
 - Add CLI commands:
 
 ```bash
-flow classify <project> "<task>"
-flow team-run <project> "<task>"
-flow jobs
-flow supervisor
+cpb classify <project> "<task>"
+cpb team-run <project> "<task>"
+cpb jobs
+cpb supervisor
 ```
 
 - Add UI display for:
@@ -445,8 +445,8 @@ simulate 24h heartbeat with fake active ACP agent
 
 ## Migration Strategy
 
-1. Keep existing `flow plan`, `flow execute`, `flow verify`, and `flow pipeline` stable.
-2. Introduce role/profile path behind a new `flow team-run` command.
+1. Keep existing `cpb plan`, `cpb execute`, `cpb verify`, and `cpb pipeline` stable.
+2. Introduce role/profile path behind a new `cpb team-run` command.
 3. Map old phases to new roles:
 
 ```text
@@ -455,7 +455,7 @@ claude-execute.sh  -> builder
 codex-verify.sh    -> verifier
 ```
 
-4. Once stable, make `flow pipeline` call the coordinator/workflow planner internally.
+4. Once stable, make `cpb pipeline` call the coordinator/workflow planner internally.
 5. Keep compatibility aliases for old profile names until docs and tests are updated.
 
 ## Risks

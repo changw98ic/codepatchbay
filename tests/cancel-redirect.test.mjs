@@ -169,7 +169,7 @@ const baseEvents = [
 
 // --- job-store integration tests (I/O) ---
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-cancel-redirect-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-cancel-redirect-"));
 const project = "demo";
 
 try {
@@ -196,7 +196,7 @@ try {
   assert.equal(fullyCancelled.status, "cancelled");
   assert.equal(fullyCancelled.cancelRequested, true);
 
-  // Redirect flow
+  // Redirect cpb
   const job2 = await createJob(root, {
     project,
     task: "Redirect me",

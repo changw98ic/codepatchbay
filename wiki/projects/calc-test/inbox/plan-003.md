@@ -6,7 +6,7 @@ Phase: plan
 ## Scope
 
 - Project: `calc-test`
-- Output file target: `/Users/chengwen/dev/flow/wiki/projects/calc-test/inbox/config/comprehensive-config.md` (to be authored by next execution lane after this plan is handed off)
+- Output file target: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/calc-test/inbox/config/comprehensive-config.md` (to be authored by next execution lane after this plan is handed off)
 - Required sections: Database, API, Logging, Caching, Security, Feature Flags, Monitoring
 - Constraint: planning output only; no terminal commands run in this phase
 

@@ -4,7 +4,7 @@
 - sender: codex
 - receiver: claude
 - phase: plan
-- project: /Users/chengwen/dev/flow/wiki/projects/calc-test
+- project: __ABS_WORKSPACE_CPB_PATH__/wiki/projects/calc-test
 
 ## Objective
 Create `calculator.js` that exports two functions:
@@ -12,9 +12,9 @@ Create `calculator.js` that exports two functions:
 - `subtract(a, b)` — returns numeric difference
 
 ## Scope and constraints
-- Scope is limited to `/Users/chengwen/dev/flow/wiki/projects/calc-test/inbox/`.
+- Scope is limited to `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/calc-test/inbox/`.
 - No terminal commands, no tests, no implementation-only work in this phase.
-- File to be created for execution step: `/Users/chengwen/dev/flow/wiki/projects/calc-test/inbox/calculator.js`.
+- File to be created for execution step: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/calc-test/inbox/calculator.js`.
 
 ## Step 1: Define minimal file contract
 - Add a simple module interface with exactly two functions: `add` and `subtract`.

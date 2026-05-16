@@ -18,6 +18,6 @@ export function getRunningTasks() {
   }));
 }
 
-export async function getDurableTasks(flowRoot) {
-  return listJobs(flowRoot);
+export async function getDurableTasks(cpbRoot) {
+  return listJobs(cpbRoot);
 }

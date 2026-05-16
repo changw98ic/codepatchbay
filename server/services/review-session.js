@@ -23,12 +23,12 @@ const VALID_TRANSITIONS = {
   expired: [],
 };
 
-function reviewsDir(flowRoot) {
-  return runtimeDataPath(flowRoot, "reviews");
+function reviewsDir(cpbRoot) {
+  return runtimeDataPath(cpbRoot, "reviews");
 }
 
-function sessionFile(flowRoot, sessionId) {
-  return path.join(reviewsDir(flowRoot), `${sessionId}.json`);
+function sessionFile(cpbRoot, sessionId) {
+  return path.join(reviewsDir(cpbRoot), `${sessionId}.json`);
 }
 
 export function makeSessionId() {
@@ -37,7 +37,7 @@ export function makeSessionId() {
   return `rev-${ts}-${suffix}`;
 }
 
-export async function createSession(flowRoot, { project, intent }) {
+export async function createSession(cpbRoot, { project, intent }) {
   const session = {
     sessionId: makeSessionId(),
     project,
@@ -52,15 +52,15 @@ export async function createSession(flowRoot, { project, intent }) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const dir = reviewsDir(flowRoot);
+  const dir = reviewsDir(cpbRoot);
   await mkdir(dir, { recursive: true });
-  await writeFile(sessionFile(flowRoot, session.sessionId), JSON.stringify(session, null, 2) + "\n", "utf8");
+  await writeFile(sessionFile(cpbRoot, session.sessionId), JSON.stringify(session, null, 2) + "\n", "utf8");
   return session;
 }
 
-export async function getSession(flowRoot, sessionId) {
+export async function getSession(cpbRoot, sessionId) {
   try {
-    const raw = await readFile(sessionFile(flowRoot, sessionId), "utf8");
+    const raw = await readFile(sessionFile(cpbRoot, sessionId), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err && err.code === "ENOENT") return null;
@@ -68,8 +68,8 @@ export async function getSession(flowRoot, sessionId) {
   }
 }
 
-export async function listSessions(flowRoot) {
-  const dir = reviewsDir(flowRoot);
+export async function listSessions(cpbRoot) {
+  const dir = reviewsDir(cpbRoot);
   let entries;
   try {
     entries = await readdir(dir);
@@ -88,12 +88,12 @@ export async function listSessions(flowRoot) {
   return sessions;
 }
 
-export async function updateSession(flowRoot, sessionId, patch, options = {}) {
+export async function updateSession(cpbRoot, sessionId, patch, options = {}) {
   const { skipTransitionCheck = false } = options;
 
-  const lockDir = path.join(reviewsDir(flowRoot), `.lock-${sessionId}`);
+  const lockDir = path.join(reviewsDir(cpbRoot), `.lock-${sessionId}`);
   return withFileLock(lockDir, async () => {
-    const session = await getSession(flowRoot, sessionId);
+    const session = await getSession(cpbRoot, sessionId);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
     if (!skipTransitionCheck && patch.status && patch.status !== session.status) {
@@ -113,13 +113,13 @@ export async function updateSession(flowRoot, sessionId, patch, options = {}) {
       updatedAt: new Date().toISOString(),
     };
 
-    await writeFile(sessionFile(flowRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
     return updated;
   });
 }
 
-export async function cancelReviewSession(flowRoot, sessionId, reason) {
-  return updateSession(flowRoot, sessionId, { status: "cancelled", detail: reason }, { skipTransitionCheck: true });
+export async function cancelReviewSession(cpbRoot, sessionId, reason) {
+  return updateSession(cpbRoot, sessionId, { status: "cancelled", detail: reason }, { skipTransitionCheck: true });
 }
 
 export function parseIssues(text) {

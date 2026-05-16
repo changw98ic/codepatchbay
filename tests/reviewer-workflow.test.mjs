@@ -56,8 +56,8 @@ describe('A8: reviewer workflow', () => {
   });
 
   it('reviewer profile loads with correct config', async () => {
-    const flowRoot = process.cwd();
-    const profile = await loadProfile(flowRoot, 'reviewer');
+    const cpbRoot = process.cwd();
+    const profile = await loadProfile(cpbRoot, 'reviewer');
     assert.equal(profile.role, 'reviewer');
     assert.ok(profile.soulMd);
     assert.ok(profile.soulMd.includes('Reviewer'));
@@ -66,8 +66,8 @@ describe('A8: reviewer workflow', () => {
   });
 
   it('reviewer profile is listed', async () => {
-    const flowRoot = process.cwd();
-    const profiles = await listProfiles(flowRoot);
+    const cpbRoot = process.cwd();
+    const profiles = await listProfiles(cpbRoot);
     assert.ok(profiles.includes('reviewer'));
   });
 });

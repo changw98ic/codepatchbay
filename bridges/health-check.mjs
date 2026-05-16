@@ -6,9 +6,9 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-const PORT = parseInt(process.env.FLOW_PORT || "3456", 10);
-const FLOW_ROOT = path.resolve(process.env.FLOW_ROOT || ".");
-const WEB_DIR = path.join(FLOW_ROOT, "web");
+const PORT = parseInt(process.env.CPB_PORT || "3456", 10);
+const CPB_ROOT = path.resolve(process.env.CPB_ROOT || ".");
+const WEB_DIR = path.join(CPB_ROOT, "web");
 
 async function httpCheck(maxAttempts = 10, intervalMs = 3000) {
   for (let i = 0; i < maxAttempts; i++) {
@@ -21,7 +21,7 @@ async function httpCheck(maxAttempts = 10, intervalMs = 3000) {
   return false;
 }
 
-function runCmd(cmd, args, cwd = FLOW_ROOT) {
+function runCmd(cmd, args, cwd = CPB_ROOT) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, stdio: "pipe" });
     let output = "";

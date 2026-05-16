@@ -36,7 +36,7 @@ describe("notification service", () => {
   });
 
   it("notify is a no-op when channels.json does not exist", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-svc-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-svc-"));
     const { initNotificationService } = await import("../server/services/notification/index.js");
     const service = initNotificationService(tmp);
     // Should not throw
@@ -45,7 +45,7 @@ describe("notification service", () => {
   });
 
   it("notify ignores non-job:update events", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-svc-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-svc-"));
     await writeFile(path.join(tmp, "channels.json"), JSON.stringify({
       enabled: true, channels: {
         feishu: { enabled: true, webhookUrl: "https://localhost:9999/hook", events: ["job_completed"] },
@@ -61,7 +61,7 @@ describe("notification service", () => {
   });
 
   it("notify does nothing for running jobs (no terminal status)", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-svc-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-svc-"));
     const project = "run-test";
     const jobId = "job-running";
 
@@ -83,7 +83,7 @@ describe("notification service", () => {
   });
 
   it("notify deduplicates same jobId+status", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-svc-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-svc-"));
     const project = "dedup-test";
     const jobId = "job-dedup";
 
@@ -108,7 +108,7 @@ describe("notification service", () => {
   });
 
   it("notify handles missing config gracefully", async () => {
-    tmp = await mkdtemp(path.join(tmpdir(), "flow-notif-svc-"));
+    tmp = await mkdtemp(path.join(tmpdir(), "cpb-notif-svc-"));
     const project = "noconfig-test";
     const jobId = "job-noconfig";
 

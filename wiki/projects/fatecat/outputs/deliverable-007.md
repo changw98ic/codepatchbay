@@ -8,11 +8,11 @@
 - **Timestamp**: 2026-05-14
 
 ### Implemented
-- Created `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt` per plan-007.
+- Created `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/hello.txt` per plan-007.
 - File contains a clear greeting sentence and a single-line timestamp note.
 
 ### Files Changed
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt` — new file with greeting payload
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/hello.txt` — new file with greeting payload
 
 ### Evidence
 

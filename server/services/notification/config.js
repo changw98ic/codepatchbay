@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-export async function loadConfig(flowRoot) {
-  const file = path.join(flowRoot, "channels.json");
+export async function loadConfig(cpbRoot) {
+  const file = path.join(cpbRoot, "channels.json");
   try {
     const raw = await readFile(file, "utf8");
     const config = JSON.parse(raw);

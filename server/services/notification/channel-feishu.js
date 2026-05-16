@@ -38,7 +38,7 @@ export function formatMessage(eventType, jobState) {
     msg_type: "interactive",
     card: {
       header: {
-        title: { tag: "plain_text", content: `Flow: ${title}` },
+        title: { tag: "plain_text", content: `CodePatchbay: ${title}` },
         template: color,
       },
       elements: [
@@ -134,7 +134,7 @@ function formatReviewMessage(eventType, title, color, session) {
     msg_type: "interactive",
     card: {
       header: {
-        title: { tag: "plain_text", content: `Flow: ${title}` },
+        title: { tag: "plain_text", content: `CodePatchbay: ${title}` },
         template: color,
       },
       elements,

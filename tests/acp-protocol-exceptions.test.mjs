@@ -21,9 +21,9 @@ async function runClient({ agentFixture, prompt, cwd }) {
       cwd: root,
       env: {
         ...process.env,
-        FLOW_ACP_CODEX_COMMAND: process.execPath,
-        FLOW_ACP_CODEX_ARGS: agentFixture,
-        FLOW_ACP_TIMEOUT_MS: "10000",
+        CPB_ACP_CODEX_COMMAND: process.execPath,
+        CPB_ACP_CODEX_ARGS: agentFixture,
+        CPB_ACP_TIMEOUT_MS: "10000",
       },
       stdio: ["pipe", "pipe", "pipe"],
     },
@@ -41,7 +41,7 @@ async function runClient({ agentFixture, prompt, cwd }) {
 
 // 1. Agent exits immediately (code 0) without sending any response
 test("agent exits cleanly without response", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-exit0-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-exit0-"));
   const { exitCode, stderr } = await runClient({
     agentFixture: fixture("fake-acp-agent-exit-clean.mjs"),
     cwd: tempDir,
@@ -54,7 +54,7 @@ test("agent exits cleanly without response", async () => {
 
 // 2. Agent exits with error code (code 1)
 test("agent exits with error code 1", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-exit1-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-exit1-"));
   const { exitCode, stderr } = await runClient({
     agentFixture: fixture("fake-acp-agent-exit-error.mjs"),
     cwd: tempDir,
@@ -67,7 +67,7 @@ test("agent exits with error code 1", async () => {
 
 // 3. Agent sends malformed JSON before valid responses
 test("agent sends malformed JSON lines", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-malformed-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-malformed-"));
   const { exitCode, stdout, stderr } = await runClient({
     agentFixture: fixture("fake-acp-agent-malformed.mjs"),
     cwd: tempDir,
@@ -82,7 +82,7 @@ test("agent sends malformed JSON lines", async () => {
 
 // 4. Agent sends response without id field
 test("agent sends response without id field", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-no-id-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-no-id-"));
   const { exitCode, stdout } = await runClient({
     agentFixture: fixture("fake-acp-agent-no-id.mjs"),
     cwd: tempDir,
@@ -96,7 +96,7 @@ test("agent sends response without id field", async () => {
 
 // 5. Agent sends response with wrong (stale) id
 test("agent sends response with stale id", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-stale-id-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-stale-id-"));
   const { exitCode, stdout } = await runClient({
     agentFixture: fixture("fake-acp-agent-wrong-method.mjs"),
     cwd: tempDir,
@@ -110,7 +110,7 @@ test("agent sends response with stale id", async () => {
 
 // 6. Large payload response (>10KB)
 test("agent sends large payload (>10KB)", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-large-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-large-"));
   const { exitCode, stdout } = await runClient({
     agentFixture: fixture("fake-acp-agent-large.mjs"),
     cwd: tempDir,
@@ -125,7 +125,7 @@ test("agent sends large payload (>10KB)", async () => {
 
 // 7. Agent sends partial response then exits
 test("agent sends partial response then exits", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "flow-proto-partial-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-proto-partial-"));
   const { exitCode, stderr } = await runClient({
     agentFixture: fixture("fake-acp-agent-partial-exit.mjs"),
     cwd: tempDir,

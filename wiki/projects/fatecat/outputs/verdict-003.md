@@ -34,7 +34,7 @@ Result: ** BUILD SUCCEEDED **
 
 ### Notes
 
-- This slice used direct ACP Claude execution per `DEC-001`; no `flow execute` wrapper was used.
+- This slice used direct ACP Claude execution per `DEC-001`; no `cpb execute` wrapper was used.
 - Claude completed normally and returned its execution summary through ACP.
 - No residual ACP/Claude adapter process remained after completion.
 

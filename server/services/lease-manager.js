@@ -6,7 +6,7 @@ import { runtimeDataPath } from "./runtime-root.js";
 
 const ownedLeaseTokens = new Map();
 // Lock TTL: timeout for mkdir-based atomic lock contention between competing processes.
-// This is NOT the phase lease TTL (see FLOW_LEASE_TTL_MS in job-runner.mjs / run-pipeline.mjs).
+// This is NOT the phase lease TTL (see CPB_LEASE_TTL_MS in job-runner.mjs / run-pipeline.mjs).
 const DEFAULT_LOCK_TTL_MS = 30_000;
 
 function validateLeaseId(leaseId) {
@@ -18,10 +18,10 @@ function validateLeaseId(leaseId) {
   }
 }
 
-function leaseFileFor(flowRoot, leaseId) {
+function leaseFileFor(cpbRoot, leaseId) {
   validateLeaseId(leaseId);
 
-  const leasesRoot = runtimeDataPath(flowRoot, "leases");
+  const leasesRoot = runtimeDataPath(cpbRoot, "leases");
   const file = path.resolve(leasesRoot, `${leaseId}.json`);
   const relative = path.relative(leasesRoot, file);
 
@@ -36,23 +36,23 @@ function expiresAtFor(now, ttlMs) {
   return new Date(now.getTime() + ttlMs).toISOString();
 }
 
-function tokenKey(flowRoot, leaseId) {
-  return `${path.resolve(flowRoot)}\0${leaseId}`;
+function tokenKey(cpbRoot, leaseId) {
+  return `${path.resolve(cpbRoot)}\0${leaseId}`;
 }
 
-function rememberOwnerToken(flowRoot, leaseId, ownerToken) {
-  ownedLeaseTokens.set(tokenKey(flowRoot, leaseId), ownerToken);
+function rememberOwnerToken(cpbRoot, leaseId, ownerToken) {
+  ownedLeaseTokens.set(tokenKey(cpbRoot, leaseId), ownerToken);
 }
 
-function forgetOwnerToken(flowRoot, leaseId, ownerToken) {
-  const key = tokenKey(flowRoot, leaseId);
+function forgetOwnerToken(cpbRoot, leaseId, ownerToken) {
+  const key = tokenKey(cpbRoot, leaseId);
   if (ownedLeaseTokens.get(key) === ownerToken) {
     ownedLeaseTokens.delete(key);
   }
 }
 
-function ownerTokenFor(flowRoot, leaseId, suppliedToken) {
-  return suppliedToken ?? ownedLeaseTokens.get(tokenKey(flowRoot, leaseId));
+function ownerTokenFor(cpbRoot, leaseId, suppliedToken) {
+  return suppliedToken ?? ownedLeaseTokens.get(tokenKey(cpbRoot, leaseId));
 }
 
 function assertLeaseOwner(lease, ownerToken) {
@@ -87,7 +87,7 @@ function lockTtlMsFor(lockTtlMs) {
     return lockTtlMs;
   }
 
-  const fromEnv = Number.parseInt(process.env.FLOW_LEASE_LOCK_TTL_MS ?? "", 10);
+  const fromEnv = Number.parseInt(process.env.CPB_LEASE_LOCK_TTL_MS ?? "", 10);
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_LOCK_TTL_MS;
 }
 
@@ -194,7 +194,7 @@ function createLease({
 }
 
 export async function acquireLease(
-  flowRoot,
+  cpbRoot,
   {
     leaseId,
     jobId,
@@ -205,7 +205,7 @@ export async function acquireLease(
     lockTtlMs,
   }
 ) {
-  const file = leaseFileFor(flowRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId);
   const lease = createLease({
     leaseId,
     jobId,
@@ -221,7 +221,7 @@ export async function acquireLease(
       encoding: "utf8",
       flag: "wx",
     });
-    rememberOwnerToken(flowRoot, leaseId, lease.ownerToken);
+    rememberOwnerToken(cpbRoot, leaseId, lease.ownerToken);
     return lease;
   } catch (err) {
     if (!err || err.code !== "EEXIST") {
@@ -240,15 +240,15 @@ export async function acquireLease(
       }
 
       await atomicWriteJson(file, lease);
-      rememberOwnerToken(flowRoot, leaseId, lease.ownerToken);
+      rememberOwnerToken(cpbRoot, leaseId, lease.ownerToken);
       return lease;
     },
     { lockTtlMs }
   );
 }
 
-export async function readLease(flowRoot, leaseId) {
-  return await readLeaseFile(leaseFileFor(flowRoot, leaseId));
+export async function readLease(cpbRoot, leaseId) {
+  return await readLeaseFile(leaseFileFor(cpbRoot, leaseId));
 }
 
 export function isLeaseStale(lease, now = new Date()) {
@@ -269,11 +269,11 @@ export function isLeaseStale(lease, now = new Date()) {
 }
 
 export async function renewLease(
-  flowRoot,
+  cpbRoot,
   leaseId,
   { ttlMs, now = new Date(), ownerToken, lockTtlMs } = {}
 ) {
-  const file = leaseFileFor(flowRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId);
   return await withLeaseLock(
     file,
     async () => {
@@ -282,7 +282,7 @@ export async function renewLease(
         throw new Error(`lease not found: ${leaseId}`);
       }
 
-      const effectiveOwnerToken = ownerTokenFor(flowRoot, leaseId, ownerToken);
+      const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
       assertLeaseOwner(existing, effectiveOwnerToken);
 
       const renewed = {
@@ -292,7 +292,7 @@ export async function renewLease(
       };
 
       await atomicWriteJson(file, renewed);
-      rememberOwnerToken(flowRoot, leaseId, renewed.ownerToken);
+      rememberOwnerToken(cpbRoot, leaseId, renewed.ownerToken);
       return renewed;
     },
     { lockTtlMs }
@@ -300,11 +300,11 @@ export async function renewLease(
 }
 
 export async function releaseLease(
-  flowRoot,
+  cpbRoot,
   leaseId,
   { ownerToken, lockTtlMs } = {}
 ) {
-  const file = leaseFileFor(flowRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId);
 
   await withLeaseLock(
     file,
@@ -314,11 +314,11 @@ export async function releaseLease(
         return;
       }
 
-      const effectiveOwnerToken = ownerTokenFor(flowRoot, leaseId, ownerToken);
+      const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
       assertLeaseOwner(existing, effectiveOwnerToken);
 
       await rm(file);
-      forgetOwnerToken(flowRoot, leaseId, existing.ownerToken);
+      forgetOwnerToken(cpbRoot, leaseId, existing.ownerToken);
     },
     { lockTtlMs }
   );

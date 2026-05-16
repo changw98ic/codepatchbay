@@ -16,13 +16,13 @@
 - Updated `finishSpin()` to record completed decisions, keep newest results first, trim to five entries, and persist the trimmed history.
 - Preserved plan-001 persistence for recent options and sound/haptics settings.
 
-Note: Claude ACP performed the production code edit in `FateCatStore.swift` but stalled before writing this execute handoff. Codex terminated the stalled Flow execute process after verifying the code and wrote this handoff as Codex rescue documentation.
+Note: Claude ACP performed the production code edit in `FateCatStore.swift` but stalled before writing this execute handoff. Codex terminated the stalled CodePatchbay execute process after verifying the code and wrote this handoff as Codex rescue documentation.
 
 ### Files Changed
 
 - `/Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Core/FateCatStore.swift` — added result-history model, storage key, clock injection, history hydration, completion recording, trimming, and persistence.
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-002.md` — corrected the PRD handoff to the actual Swift/FateCatStore/XCTest project context before execution.
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/outputs/deliverable-002.md` — execute handoff written after Claude ACP stalled.
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/plan-002.md` — corrected the PRD handoff to the actual Swift/FateCatStore/XCTest project context before execution.
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/outputs/deliverable-002.md` — execute handoff written after Claude ACP stalled.
 
 ### Evidence
 
@@ -50,7 +50,7 @@ testResultHistoryKeepsOnlyFiveMostRecentResults passed
 
 ### Unresolved
 
-- The Flow/Claude ACP execute process stalled after modifying production code and before writing this deliverable; it was terminated to avoid late writes.
+- The CodePatchbay/Claude ACP execute process stalled after modifying production code and before writing this deliverable; it was terminated to avoid late writes.
 - iOS simulator build/test was not rerun for this slice; SwiftPM XCTest coverage for the changed Store behavior passed.
 
 ### Risks

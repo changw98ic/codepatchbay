@@ -9,7 +9,7 @@ import { spawnFile } from "./helpers/spawn-file.mjs";
 const runner = path.resolve("bridges/job-runner.mjs");
 
 async function readJobEvents(root, project = "demo", jobId = "job-1") {
-  const eventFile = path.join(root, "flow-task", "events", project, `${jobId}.jsonl`);
+  const eventFile = path.join(root, "cpb-task", "events", project, `${jobId}.jsonl`);
   const raw = await readFile(eventFile, "utf8");
   return raw
     .trim()
@@ -19,10 +19,10 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
 }
 
 {
-  const root = await mkdtemp(path.join(tmpdir(), "flow-job-runner-success-"));
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-success-"));
   const result = await spawnFile(process.execPath, [
     runner,
-    "--flow-root",
+    "--cpb-root",
     root,
     "--project",
     "demo",
@@ -55,10 +55,10 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
 }
 
 {
-  const root = await mkdtemp(path.join(tmpdir(), "flow-job-runner-failed-"));
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-failed-"));
   const result = await spawnFile(process.execPath, [
     runner,
-    "--flow-root",
+    "--cpb-root",
     root,
     "--project",
     "demo",
@@ -86,10 +86,10 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
 }
 
 {
-  const root = await mkdtemp(path.join(tmpdir(), "flow-job-runner-spawn-error-"));
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-spawn-error-"));
   const result = await spawnFile(process.execPath, [
     runner,
-    "--flow-root",
+    "--cpb-root",
     root,
     "--project",
     "demo",
@@ -98,13 +98,13 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
     "--phase",
     "verify",
     "--script",
-    "definitely-not-a-flow-command",
+    "definitely-not-a-cpb-command",
     "--",
     "--ignored",
   ], { cwd: path.resolve(".") });
 
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /failed to spawn definitely-not-a-flow-command/i);
+  assert.match(result.stderr, /failed to spawn definitely-not-a-cpb-command/i);
 
   const events = await readJobEvents(root, "demo", "job-3");
   assert.equal(events.length, 2);
@@ -115,10 +115,10 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
 }
 
 {
-  const root = await mkdtemp(path.join(tmpdir(), "flow-job-runner-args-"));
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-args-"));
   const result = await spawnFile(process.execPath, [
     runner,
-    "--flow-root",
+    "--cpb-root",
     root,
     "--project",
     "demo",
@@ -134,7 +134,7 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /missing required argument: --script/i);
   await assert.rejects(
-    () => readFile(path.join(root, "flow-task", "events", "demo", "job-4.jsonl"), "utf8"),
+    () => readFile(path.join(root, "cpb-task", "events", "demo", "job-4.jsonl"), "utf8"),
     { code: "ENOENT" }
   );
 }

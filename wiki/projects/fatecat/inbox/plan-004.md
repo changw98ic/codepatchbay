@@ -5,7 +5,7 @@ Status: ready_for_direct_acp_execute
 Project: fatecat
 From: codex
 To: claude
-Artifact: /Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-004.md
+Artifact: __ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/plan-004.md
 
 ## Handoff
 
@@ -28,8 +28,8 @@ This is a P0 visual polish slice. Keep the app light and local-only. Do not add 
 
 Read these files before implementation:
 
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/context.md
-- /Users/chengwen/dev/flow/wiki/projects/fatecat/decisions.md
+- __ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/context.md
+- __ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/decisions.md
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Views/FateCatHomeView.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Views/FateWheelView.swift
 - /Users/chengwen/Documents/FateCat/FateCatIOS/FateCat/Views/CatStageView.swift
@@ -71,8 +71,8 @@ Read these files before implementation:
 
 ## Guardrails
 
-- Use direct ACP Claude execution per DEC-001; do not invoke `flow execute`.
-- Do not write Flow deliverable/verdict files from Claude. Codex will record PRD ledger artifacts after verification.
+- Use direct ACP Claude execution per DEC-001; do not invoke `cpb execute`.
+- Do not write CodePatchbay deliverable/verdict files from Claude. Codex will record PRD ledger artifacts after verification.
 - Do not introduce new dependencies or generated assets unless absolutely necessary.
 - Do not revert user or other-agent changes.
 - Prefer SwiftUI polish over large animation-system rewrites.
@@ -89,4 +89,4 @@ The task is complete when the app launches in simulator, the three user-observed
 - [ ] Cat paw marker is visibly present after wheel completion.
 - [ ] `swift test` passes.
 - [ ] iOS simulator build passes.
-- [ ] Simulator screenshot evidence is captured after launch/result flow.
+- [ ] Simulator screenshot evidence is captured after launch/result cpb.

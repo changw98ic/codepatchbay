@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Flow capable of running long tasks for 24+ hours unattended by replacing fragile one-shot process state with durable jobs, event logs, leases, resumable phases, and worktree isolation.
+**Goal:** Make CodePatchbay capable of running long tasks for 24+ hours unattended by replacing fragile one-shot process state with durable jobs, event logs, leases, resumable phases, and worktree isolation.
 
 **Architecture:** Keep the current ACP bridge scripts compatible, but introduce a durable supervisor layer above them. Jobs become append-only event streams materialized into JSON state; phases acquire renewable leases; code-writing phases run in task git worktrees; supervisor restart can resume from the latest completed checkpoint.
 
@@ -19,7 +19,7 @@
 - Stale leases are recoverable without manual file deletion.
 - The UI and CLI can show durable jobs, not only in-memory running processes.
 - Budgets and blocked states prevent infinite unattended loops.
-- Current commands `flow plan`, `flow execute`, `flow verify`, and `flow pipeline` remain usable during migration.
+- Current commands `cpb plan`, `cpb execute`, `cpb verify`, and `cpb pipeline` remain usable during migration.
 
 ## File Structure
 
@@ -41,7 +41,7 @@ Create these focused modules:
 - Modify `server/services/executor.js`: replace in-memory-only tracking with durable job-store integration.
 - Modify `server/routes/tasks.js`: create durable jobs instead of raw detached bridge process records for pipeline runs.
 - Modify `server/services/watcher.js`: watch event/state files for durable job updates.
-- Modify `flow`: add `jobs` and `supervisor` commands while keeping existing commands.
+- Modify `cpb`: add `jobs` and `supervisor` commands while keeping existing commands.
 - Modify `README.md`: document 24h unattended mode.
 
 ## Data Model
@@ -113,7 +113,7 @@ import {
   eventFileFor,
 } from "../server/services/event-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-event-store-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-event-store-"));
 const project = "demo";
 const jobId = "job-20260513-000001";
 
@@ -174,20 +174,20 @@ Create `server/services/event-store.js`:
 import fs from "fs/promises";
 import path from "path";
 
-export function eventFileFor(flowRoot, project, jobId) {
-  return path.join(flowRoot, ".omc", "events", project, `${jobId}.jsonl`);
+export function eventFileFor(cpbRoot, project, jobId) {
+  return path.join(cpbRoot, ".omc", "events", project, `${jobId}.jsonl`);
 }
 
-export async function appendEvent(flowRoot, project, jobId, event) {
-  const file = eventFileFor(flowRoot, project, jobId);
+export async function appendEvent(cpbRoot, project, jobId, event) {
+  const file = eventFileFor(cpbRoot, project, jobId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const line = `${JSON.stringify(event)}\n`;
   await fs.appendFile(file, line, "utf8");
   return event;
 }
 
-export async function readEvents(flowRoot, project, jobId) {
-  const file = eventFileFor(flowRoot, project, jobId);
+export async function readEvents(cpbRoot, project, jobId) {
+  const file = eventFileFor(cpbRoot, project, jobId);
   try {
     const raw = await fs.readFile(file, "utf8");
     return raw
@@ -278,7 +278,7 @@ Expected: exit code 0.
 
 ```bash
 git add server/services/event-store.js tests/event-store.test.mjs
-git commit -m "Add durable event log for Flow jobs"
+git commit -m "Add durable event log for CodePatchbay jobs"
 ```
 
 ## Task 2: Lease Manager With Stale Recovery
@@ -305,7 +305,7 @@ import {
   isLeaseStale,
 } from "../server/services/lease-manager.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-lease-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-lease-"));
 const now = new Date("2026-05-13T00:00:00.000Z");
 
 const lease = await acquireLease(root, {
@@ -356,16 +356,16 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 
-function leaseFile(flowRoot, leaseId) {
-  return path.join(flowRoot, ".omc", "leases", `${leaseId}.json`);
+function leaseFile(cpbRoot, leaseId) {
+  return path.join(cpbRoot, ".omc", "leases", `${leaseId}.json`);
 }
 
 function iso(date) {
   return date.toISOString();
 }
 
-export async function acquireLease(flowRoot, { leaseId, jobId, phase, ttlMs, now = new Date(), ownerPid = process.pid }) {
-  const file = leaseFile(flowRoot, leaseId);
+export async function acquireLease(cpbRoot, { leaseId, jobId, phase, ttlMs, now = new Date(), ownerPid = process.pid }) {
+  const file = leaseFile(cpbRoot, leaseId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const lease = {
     leaseId,
@@ -381,9 +381,9 @@ export async function acquireLease(flowRoot, { leaseId, jobId, phase, ttlMs, now
   return lease;
 }
 
-export async function readLease(flowRoot, leaseId) {
+export async function readLease(cpbRoot, leaseId) {
   try {
-    const raw = await fs.readFile(leaseFile(flowRoot, leaseId), "utf8");
+    const raw = await fs.readFile(leaseFile(cpbRoot, leaseId), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT") return null;
@@ -395,18 +395,18 @@ export function isLeaseStale(lease, now = new Date()) {
   return new Date(lease.expiresAt).getTime() < now.getTime();
 }
 
-export async function renewLease(flowRoot, leaseId, { ttlMs, now = new Date() }) {
-  const lease = await readLease(flowRoot, leaseId);
+export async function renewLease(cpbRoot, leaseId, { ttlMs, now = new Date() }) {
+  const lease = await readLease(cpbRoot, leaseId);
   if (!lease) throw new Error(`Lease not found: ${leaseId}`);
   lease.heartbeatAt = iso(now);
   lease.expiresAt = iso(new Date(now.getTime() + ttlMs));
-  await fs.writeFile(leaseFile(flowRoot, leaseId), JSON.stringify(lease, null, 2));
+  await fs.writeFile(leaseFile(cpbRoot, leaseId), JSON.stringify(lease, null, 2));
   return lease;
 }
 
-export async function releaseLease(flowRoot, leaseId) {
+export async function releaseLease(cpbRoot, leaseId) {
   try {
-    await fs.unlink(leaseFile(flowRoot, leaseId));
+    await fs.unlink(leaseFile(cpbRoot, leaseId));
   } catch (err) {
     if (err.code !== "ENOENT") throw err;
   }
@@ -457,7 +457,7 @@ import {
   listJobs,
 } from "../server/services/job-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-job-store-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-job-store-"));
 
 const job = await createJob(root, {
   project: "demo",
@@ -516,8 +516,8 @@ Expected: failure because `server/services/job-store.js` does not exist.
 Modify `server/services/event-store.js`:
 
 ```js
-export async function listEventFiles(flowRoot) {
-  const eventsRoot = path.join(flowRoot, ".omc", "events");
+export async function listEventFiles(cpbRoot) {
+  const eventsRoot = path.join(cpbRoot, ".omc", "events");
   try {
     const projects = await fs.readdir(eventsRoot, { withFileTypes: true });
     const files = [];
@@ -559,9 +559,9 @@ export function makeJobId(ts = new Date().toISOString(), suffix = crypto.randomB
   return `job-${compactStamp(ts)}-${suffix}`;
 }
 
-export async function createJob(flowRoot, { project, task, workflow = "standard", ts = new Date().toISOString() }) {
+export async function createJob(cpbRoot, { project, task, workflow = "standard", ts = new Date().toISOString() }) {
   const jobId = makeJobId(ts);
-  await appendEvent(flowRoot, project, jobId, {
+  await appendEvent(cpbRoot, project, jobId, {
     type: "job_created",
     jobId,
     project,
@@ -572,8 +572,8 @@ export async function createJob(flowRoot, { project, task, workflow = "standard"
   return { jobId, project, task, workflow };
 }
 
-export async function startPhase(flowRoot, project, jobId, { phase, attempt = 1, leaseId, ts = new Date().toISOString() }) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function startPhase(cpbRoot, project, jobId, { phase, attempt = 1, leaseId, ts = new Date().toISOString() }) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "phase_started",
     jobId,
     phase,
@@ -583,8 +583,8 @@ export async function startPhase(flowRoot, project, jobId, { phase, attempt = 1,
   });
 }
 
-export async function completePhase(flowRoot, project, jobId, { phase, artifact = "", ts = new Date().toISOString() }) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function completePhase(cpbRoot, project, jobId, { phase, artifact = "", ts = new Date().toISOString() }) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "phase_completed",
     jobId,
     phase,
@@ -593,8 +593,8 @@ export async function completePhase(flowRoot, project, jobId, { phase, artifact 
   });
 }
 
-export async function blockJob(flowRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function blockJob(cpbRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "job_blocked",
     jobId,
     reason,
@@ -602,8 +602,8 @@ export async function blockJob(flowRoot, project, jobId, { reason, ts = new Date
   });
 }
 
-export async function failJob(flowRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function failJob(cpbRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "job_failed",
     jobId,
     reason,
@@ -611,24 +611,24 @@ export async function failJob(flowRoot, project, jobId, { reason, ts = new Date(
   });
 }
 
-export async function completeJob(flowRoot, project, jobId, { ts = new Date().toISOString() } = {}) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function completeJob(cpbRoot, project, jobId, { ts = new Date().toISOString() } = {}) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "job_completed",
     jobId,
     ts,
   });
 }
 
-export async function getJob(flowRoot, project, jobId) {
-  const events = await readEvents(flowRoot, project, jobId);
+export async function getJob(cpbRoot, project, jobId) {
+  const events = await readEvents(cpbRoot, project, jobId);
   return materializeJob(events);
 }
 
-export async function listJobs(flowRoot) {
-  const files = await listEventFiles(flowRoot);
+export async function listJobs(cpbRoot) {
+  const files = await listEventFiles(cpbRoot);
   const jobs = [];
   for (const file of files) {
-    jobs.push(await getJob(flowRoot, file.project, file.jobId));
+    jobs.push(await getJob(cpbRoot, file.project, file.jobId));
   }
   return jobs.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
@@ -649,7 +649,7 @@ Expected: both exit code 0.
 
 ```bash
 git add server/services/event-store.js server/services/job-store.js tests/job-store.test.mjs
-git commit -m "Materialize durable Flow job state"
+git commit -m "Materialize durable CodePatchbay job state"
 ```
 
 ## Task 4: Worktree Manager
@@ -670,8 +670,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnFile } from "./helpers/spawn-file.mjs";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-worktree-root-"));
-const project = await mkdtemp(path.join(tmpdir(), "flow-project-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-worktree-root-"));
+const project = await mkdtemp(path.join(tmpdir(), "cpb-project-"));
 await writeFile(path.join(project, "README.md"), "# Demo\n");
 await writeFile(path.join(project, ".env"), "SECRET=do-not-stage\n");
 
@@ -793,13 +793,13 @@ async function bootstrap(project) {
   await ensureIgnore(project);
   if (!hasCommit(project)) {
     run("git", ["-C", project, "add", "--", "."]);
-    run("git", ["-C", project, "commit", "-m", "Initialize Flow baseline"]);
+    run("git", ["-C", project, "commit", "-m", "Initialize CodePatchbay baseline"]);
   }
 }
 
 async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   await bootstrap(project);
-  const branch = `flow/${jobId}-${slug}`;
+  const branch = `cpb/${jobId}-${slug}`;
   const worktreePath = path.join(worktreesRoot, `${jobId}-${slug}`);
   await fsp.mkdir(worktreesRoot, { recursive: true });
   run("git", ["-C", project, "branch", branch]);
@@ -863,7 +863,7 @@ import path from "node:path";
 import { createJob, getJob, startPhase } from "../server/services/job-store.js";
 import { recoverJobs, nextPhaseFor } from "../server/services/supervisor.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-supervisor-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-supervisor-"));
 
 const job = await createJob(root, {
   project: "demo",
@@ -917,8 +917,8 @@ export function nextPhaseFor(state) {
   return "complete";
 }
 
-export async function recoverJobs(flowRoot) {
-  const jobs = await listJobs(flowRoot);
+export async function recoverJobs(cpbRoot) {
+  const jobs = await listJobs(cpbRoot);
   return jobs.filter((job) => {
     if (["completed", "failed", "blocked"].includes(job.status)) return false;
     return nextPhaseFor(job) !== "";
@@ -963,12 +963,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnFile } from "./helpers/spawn-file.mjs";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-job-runner-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-"));
 const runner = path.resolve("bridges/job-runner.mjs");
 
 const result = await spawnFile(process.execPath, [
   runner,
-  "--flow-root",
+  "--cpb-root",
   root,
   "--project",
   "demo",
@@ -1022,16 +1022,16 @@ function arg(name, fallback = "") {
 
 const separator = args.indexOf("--");
 const scriptArgs = separator >= 0 ? args.slice(separator + 1) : [];
-const flowRoot = path.resolve(arg("--flow-root", process.cwd()));
+const cpbRoot = path.resolve(arg("--cpb-root", process.cwd()));
 const project = arg("--project");
 const jobId = arg("--job-id");
 const phase = arg("--phase");
 const script = arg("--script");
 const leaseId = `lease-${jobId}-${phase}`;
-const ttlMs = Number(process.env.FLOW_LEASE_TTL_MS || 120_000);
+const ttlMs = Number(process.env.CPB_LEASE_TTL_MS || 120_000);
 
-await acquireLease(flowRoot, { leaseId, jobId, phase, ttlMs });
-await appendEvent(flowRoot, project, jobId, {
+await acquireLease(cpbRoot, { leaseId, jobId, phase, ttlMs });
+await appendEvent(cpbRoot, project, jobId, {
   type: "phase_started",
   jobId,
   phase,
@@ -1040,11 +1040,11 @@ await appendEvent(flowRoot, project, jobId, {
 });
 
 const heartbeat = setInterval(() => {
-  renewLease(flowRoot, leaseId, { ttlMs }).catch(() => {});
+  renewLease(cpbRoot, leaseId, { ttlMs }).catch(() => {});
 }, Math.max(5_000, Math.floor(ttlMs / 3)));
 
 const child = spawn(script, scriptArgs, {
-  cwd: flowRoot,
+  cwd: cpbRoot,
   env: process.env,
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -1054,9 +1054,9 @@ child.stderr.on("data", (chunk) => process.stderr.write(chunk));
 
 const code = await new Promise((resolve) => child.on("close", resolve));
 clearInterval(heartbeat);
-await releaseLease(flowRoot, leaseId);
+await releaseLease(cpbRoot, leaseId);
 
-await appendEvent(flowRoot, project, jobId, {
+await appendEvent(cpbRoot, project, jobId, {
   type: code === 0 ? "phase_completed" : "phase_failed",
   jobId,
   phase,
@@ -1104,7 +1104,7 @@ import path from "node:path";
 import { registerTask, unregisterTask, getRunningTasks, getDurableTasks } from "../server/services/executor.js";
 import { createJob } from "../server/services/job-store.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-executor-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-executor-"));
 const job = await createJob(root, {
   project: "demo",
   task: "Add login",
@@ -1157,8 +1157,8 @@ export function getRunningTasks() {
   }));
 }
 
-export async function getDurableTasks(flowRoot) {
-  return listJobs(flowRoot);
+export async function getDurableTasks(cpbRoot) {
+  return listJobs(cpbRoot);
 }
 ```
 
@@ -1178,21 +1178,21 @@ fastify.post(`${prefix}/tasks/:name/pipeline`, async (req) => {
   const { task, maxRetries = "3", timeout = "0" } = req.body || {};
   if (!task) throw fastify.httpErrors.badRequest("task required");
 
-  const job = await createJob(req.flowRoot, {
+  const job = await createJob(req.cpbRoot, {
     project: name,
     task,
     workflow: "standard",
   });
 
-  return spawnBridge(req.flowRoot, name, "run-pipeline.sh", [name, task, maxRetries, timeout], req.log, job.jobId);
+  return spawnBridge(req.cpbRoot, name, "run-pipeline.sh", [name, task, maxRetries, timeout], req.log, job.jobId);
 });
 ```
 
 Change `spawnBridge` signature:
 
 ```js
-function spawnBridge(flowRoot, project, script, args, log, providedTaskId = "") {
-  const scriptPath = path.join(flowRoot, "bridges", script);
+function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = "") {
+  const scriptPath = path.join(cpbRoot, "bridges", script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
 ```
 
@@ -1216,14 +1216,14 @@ git commit -m "Expose durable jobs through task executor"
 ## Task 8: CLI Job and Supervisor Commands
 
 **Files:**
-- Modify: `flow`
+- Modify: `cpb`
 - Create: `bridges/list-jobs.mjs`
 - Create: `bridges/supervisor-loop.mjs`
-- Create: `tests/flow-jobs.test.sh`
+- Create: `tests/cpb-jobs.test.sh`
 
 - [ ] **Step 1: Write failing CLI test**
 
-Create `tests/flow-jobs.test.sh`:
+Create `tests/cpb-jobs.test.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -1233,12 +1233,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-FLOW_ROOT="$TMP" mkdir -p "$TMP/.omc/events/demo"
+CPB_ROOT="$TMP" mkdir -p "$TMP/.omc/events/demo"
 cat > "$TMP/.omc/events/demo/job-20260513-000001-abc123.jsonl" <<'JSONL'
 {"type":"job_created","jobId":"job-20260513-000001-abc123","project":"demo","task":"Add login","workflow":"standard","ts":"2026-05-13T00:00:00.000Z"}
 JSONL
 
-FLOW_ROOT="$TMP" "$ROOT/bridges/list-jobs.mjs" | grep "job-20260513-000001-abc123"
+CPB_ROOT="$TMP" "$ROOT/bridges/list-jobs.mjs" | grep "job-20260513-000001-abc123"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1246,8 +1246,8 @@ FLOW_ROOT="$TMP" "$ROOT/bridges/list-jobs.mjs" | grep "job-20260513-000001-abc12
 Run:
 
 ```bash
-chmod +x tests/flow-jobs.test.sh
-tests/flow-jobs.test.sh
+chmod +x tests/cpb-jobs.test.sh
+tests/cpb-jobs.test.sh
 ```
 
 Expected: failure because `bridges/list-jobs.mjs` does not exist.
@@ -1261,8 +1261,8 @@ Create `bridges/list-jobs.mjs`:
 import path from "node:path";
 import { listJobs } from "../server/services/job-store.js";
 
-const flowRoot = path.resolve(process.env.FLOW_ROOT || path.join(import.meta.dirname, ".."));
-const jobs = await listJobs(flowRoot);
+const cpbRoot = path.resolve(process.env.CPB_ROOT || path.join(import.meta.dirname, ".."));
+const jobs = await listJobs(cpbRoot);
 
 for (const job of jobs) {
   console.log(`${job.jobId}\t${job.project}\t${job.status}\t${job.phase || "-"}\t${job.task}`);
@@ -1276,11 +1276,11 @@ Create `bridges/supervisor-loop.mjs`:
 import path from "node:path";
 import { recoverJobs } from "../server/services/supervisor.js";
 
-const flowRoot = path.resolve(process.env.FLOW_ROOT || path.join(import.meta.dirname, ".."));
-const intervalMs = Number(process.env.FLOW_SUPERVISOR_INTERVAL_MS || 30_000);
+const cpbRoot = path.resolve(process.env.CPB_ROOT || path.join(import.meta.dirname, ".."));
+const intervalMs = Number(process.env.CPB_SUPERVISOR_INTERVAL_MS || 30_000);
 
 async function tick() {
-  const jobs = await recoverJobs(flowRoot);
+  const jobs = await recoverJobs(cpbRoot);
   for (const job of jobs) {
     console.log(`${new Date().toISOString()} recoverable ${job.jobId} ${job.project} ${job.phase || "-"}`);
   }
@@ -1292,7 +1292,7 @@ setInterval(tick, intervalMs);
 
 - [ ] **Step 4: Wire CLI commands**
 
-Modify `flow` usage:
+Modify `cpb` usage:
 
 ```text
   jobs                                      列出 durable jobs
@@ -1302,8 +1302,8 @@ Modify `flow` usage:
 Add functions:
 
 ```bash
-cmd_jobs() { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/list-jobs.mjs"; }
-cmd_supervisor() { FLOW_ROOT="$FLOW_ROOT" "$FLOW_ROOT/bridges/supervisor-loop.mjs"; }
+cmd_jobs() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/list-jobs.mjs"; }
+cmd_supervisor() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/supervisor-loop.mjs"; }
 ```
 
 Add cases:
@@ -1318,8 +1318,8 @@ Add cases:
 Run:
 
 ```bash
-tests/flow-jobs.test.sh
-bash -n flow bridges/*.sh tests/*.sh tests/fixtures/*.sh
+tests/cpb-jobs.test.sh
+bash -n cpb bridges/*.sh tests/*.sh tests/fixtures/*.sh
 ```
 
 Expected: both commands exit 0.
@@ -1327,7 +1327,7 @@ Expected: both commands exit 0.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add flow bridges/list-jobs.mjs bridges/supervisor-loop.mjs tests/flow-jobs.test.sh
+git add cpb bridges/list-jobs.mjs bridges/supervisor-loop.mjs tests/cpb-jobs.test.sh
 git commit -m "Add durable job CLI surfaces"
 ```
 
@@ -1350,7 +1350,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { acquireProviderSlot, releaseProviderSlot, listProviderSlots } from "../server/services/provider-semaphore.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-provider-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-provider-"));
 
 const first = await acquireProviderSlot(root, { provider: "ollamacloud", jobId: "job-1", limit: 1 });
 assert.equal(first.acquired, true);
@@ -1385,12 +1385,12 @@ Create `server/services/provider-semaphore.js`:
 import fs from "node:fs/promises";
 import path from "node:path";
 
-function providerDir(flowRoot, provider) {
-  return path.join(flowRoot, ".omc", "provider-slots", provider);
+function providerDir(cpbRoot, provider) {
+  return path.join(cpbRoot, ".omc", "provider-slots", provider);
 }
 
-export async function listProviderSlots(flowRoot, provider) {
-  const dir = providerDir(flowRoot, provider);
+export async function listProviderSlots(cpbRoot, provider) {
+  const dir = providerDir(cpbRoot, provider);
   try {
     const files = await fs.readdir(dir);
     const slots = [];
@@ -1404,19 +1404,19 @@ export async function listProviderSlots(flowRoot, provider) {
   }
 }
 
-export async function acquireProviderSlot(flowRoot, { provider, jobId, limit }) {
-  const dir = providerDir(flowRoot, provider);
+export async function acquireProviderSlot(cpbRoot, { provider, jobId, limit }) {
+  const dir = providerDir(cpbRoot, provider);
   await fs.mkdir(dir, { recursive: true });
-  const slots = await listProviderSlots(flowRoot, provider);
+  const slots = await listProviderSlots(cpbRoot, provider);
   if (slots.length >= limit) return { acquired: false, provider, jobId };
   const slot = { provider, jobId, acquiredAt: new Date().toISOString() };
   await fs.writeFile(path.join(dir, `${jobId}.json`), JSON.stringify(slot, null, 2), { flag: "wx" });
   return { acquired: true, ...slot };
 }
 
-export async function releaseProviderSlot(flowRoot, { provider, jobId }) {
+export async function releaseProviderSlot(cpbRoot, { provider, jobId }) {
   try {
-    await fs.unlink(path.join(providerDir(flowRoot, provider), `${jobId}.json`));
+    await fs.unlink(path.join(providerDir(cpbRoot, provider), `${jobId}.json`));
   } catch (err) {
     if (err.code !== "ENOENT") throw err;
   }
@@ -1438,8 +1438,8 @@ Expected: exit code 0.
 Modify `server/services/job-store.js`:
 
 ```js
-export async function budgetExceeded(flowRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
-  return appendEvent(flowRoot, project, jobId, {
+export async function budgetExceeded(cpbRoot, project, jobId, { reason, ts = new Date().toISOString() }) {
+  return appendEvent(cpbRoot, project, jobId, {
     type: "budget_exceeded",
     jobId,
     reason,
@@ -1489,7 +1489,7 @@ git commit -m "Add provider concurrency and budget events"
 Modify `server/services/watcher.js` to watch `.omc/events/*/*.jsonl`:
 
 ```js
-const eventsWatcher = chokidar.watch(path.join(flowRoot, ".omc/events/*/*.jsonl"), {
+const eventsWatcher = chokidar.watch(path.join(cpbRoot, ".omc/events/*/*.jsonl"), {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 200 },
@@ -1497,7 +1497,7 @@ const eventsWatcher = chokidar.watch(path.join(flowRoot, ".omc/events/*/*.jsonl"
 
 eventsWatcher.on("all", async (_event, filePath) => {
   try {
-    const rel = path.relative(path.join(flowRoot, ".omc/events"), filePath);
+    const rel = path.relative(path.join(cpbRoot, ".omc/events"), filePath);
     const [projectName, fileName] = rel.split(path.sep);
     const jobId = fileName.replace(/\.jsonl$/, "");
     broadcast({ type: "job:update", project: projectName, jobId });
@@ -1531,7 +1531,7 @@ Add route:
 
 ```js
 fastify.get(`${prefix}/tasks/durable`, async (req) => {
-  return getDurableTasks(req.flowRoot);
+  return getDurableTasks(req.cpbRoot);
 });
 ```
 
@@ -1586,7 +1586,7 @@ Expected: Vite build completes successfully.
 
 ```bash
 git add server/index.js server/services/watcher.js server/routes/tasks.js web/src/App.jsx web/src/app.css
-git commit -m "Surface durable jobs in Flow UI"
+git commit -m "Surface durable jobs in CodePatchbay UI"
 ```
 
 ## Task 11: Operator Documentation
@@ -1594,7 +1594,7 @@ git commit -m "Surface durable jobs in Flow UI"
 **Files:**
 - Create: `wiki/system/unattended-supervisor.md`
 - Modify: `README.md`
-- Modify: `flow`
+- Modify: `cpb`
 
 - [ ] **Step 1: Add operator guide**
 
@@ -1603,7 +1603,7 @@ Create `wiki/system/unattended-supervisor.md`:
 ```markdown
 # Unattended Supervisor
 
-Flow unattended mode is designed for long-running work where the process may run for 24 hours or more.
+CodePatchbay unattended mode is designed for long-running work where the process may run for 24 hours or more.
 
 ## Guarantees
 
@@ -1614,25 +1614,25 @@ Flow unattended mode is designed for long-running work where the process may run
 
 ## Non-Guarantees
 
-- Flow does not push to remotes without an explicit user request.
-- Flow does not bypass blocked states for missing credentials, destructive actions, or merge conflicts.
-- Flow does not silently auto-resolve merge conflicts.
+- CodePatchbay does not push to remotes without an explicit user request.
+- CodePatchbay does not bypass blocked states for missing credentials, destructive actions, or merge conflicts.
+- CodePatchbay does not silently auto-resolve merge conflicts.
 
 ## Commands
 
 ```bash
-flow jobs
-flow supervisor
-flow pipeline <project> "<task>" 3 0
+cpb jobs
+cpb supervisor
+cpb pipeline <project> "<task>" 3 0
 ```
 
 ## Recovery
 
-1. Run `flow jobs`.
+1. Run `cpb jobs`.
 2. Find jobs with `running`, `blocked`, or `failed` status.
 3. Inspect `.omc/events/{project}/{jobId}.jsonl`.
 4. Inspect `.omc/leases/` for stale leases.
-5. Restart `flow supervisor`.
+5. Restart `cpb supervisor`.
 
 ## Safe Defaults
 
@@ -1649,11 +1649,11 @@ Add a section:
 ```markdown
 ## 24h 无人值守
 
-Flow 的无人值守模式基于 durable job、event log、lease heartbeat、task worktree 和 supervisor resume。
+CodePatchbay 的无人值守模式基于 durable job、event log、lease heartbeat、task worktree 和 supervisor resume。
 
 ```bash
-flow jobs
-flow supervisor
+cpb jobs
+cpb supervisor
 ```
 
 设计说明见 `wiki/system/unattended-supervisor.md`。
@@ -1661,7 +1661,7 @@ flow supervisor
 
 - [ ] **Step 3: Include doc in wiki lint**
 
-Modify `flow` wiki lint system-file loop to include:
+Modify `cpb` wiki lint system-file loop to include:
 
 ```text
 system/unattended-supervisor.md
@@ -1672,7 +1672,7 @@ system/unattended-supervisor.md
 Run:
 
 ```bash
-./flow wiki lint
+./cpb wiki lint
 rg -n "T[B]D|TO[D]O|FIX[M]E" wiki/system/unattended-supervisor.md README.md
 ```
 
@@ -1681,7 +1681,7 @@ Expected: wiki lint passes, `rg` returns no matches.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add wiki/system/unattended-supervisor.md README.md flow
+git add wiki/system/unattended-supervisor.md README.md cpb
 git commit -m "Document unattended supervisor operations"
 ```
 
@@ -1713,9 +1713,9 @@ Expected: all exit code 0.
 Run:
 
 ```bash
-tests/flow-bridges.test.sh
-tests/flow-jobs.test.sh
-bash -n flow bridges/*.sh tests/*.sh tests/fixtures/*.sh
+tests/cpb-bridges.test.sh
+tests/cpb-jobs.test.sh
+bash -n cpb bridges/*.sh tests/*.sh tests/fixtures/*.sh
 ```
 
 Expected: all exit code 0.
@@ -1725,7 +1725,7 @@ Expected: all exit code 0.
 Run:
 
 ```bash
-./flow wiki lint
+./cpb wiki lint
 ```
 
 Expected: `All checks passed.`
@@ -1745,28 +1745,28 @@ Expected: Vite build completes successfully.
 Run with reduced intervals:
 
 ```bash
-FLOW_SUPERVISOR_INTERVAL_MS=1000 FLOW_LEASE_TTL_MS=3000 flow supervisor
+CPB_SUPERVISOR_INTERVAL_MS=1000 CPB_LEASE_TTL_MS=3000 cpb supervisor
 ```
 
 In another shell, create a pipeline job:
 
 ```bash
-flow pipeline <project> "Small safe test task" 1 0
+cpb pipeline <project> "Small safe test task" 1 0
 ```
 
 Expected:
 
-- `flow jobs` shows the job.
+- `cpb jobs` shows the job.
 - `.omc/events/{project}/{jobId}.jsonl` receives phase events.
 - lease files renew while the phase runs.
-- killing and restarting `flow supervisor` does not delete the job.
+- killing and restarting `cpb supervisor` does not delete the job.
 
 - [ ] **Step 6: Final commit**
 
 ```bash
 git status --short
 git add .
-git commit -m "Enable durable unattended Flow supervision"
+git commit -m "Enable durable unattended CodePatchbay supervision"
 ```
 
 ## Rollout Order

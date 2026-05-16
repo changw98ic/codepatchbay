@@ -11,11 +11,11 @@ export async function projectRoutes(fastify, opts) {
 
   // List all projects with status
   fastify.get('/projects', async (req) => {
-    const wikiDir = path.join(req.flowRoot, 'wiki/projects');
+    const wikiDir = path.join(req.cpbRoot, 'wiki/projects');
     const entries = await fs.readdir(wikiDir).catch(() => []);
     const projects = [];
 
-    const projectionStates = await listProjectPipelineStates(req.flowRoot);
+    const projectionStates = await listProjectPipelineStates(req.cpbRoot);
 
     for (const name of entries) {
       if (name === '_template' || name.startsWith('.')) continue;
@@ -45,7 +45,7 @@ export async function projectRoutes(fastify, opts) {
   // Project detail
   fastify.get('/projects/:name', async (req) => {
     const { name } = req.params;
-    const projDir = path.join(req.flowRoot, 'wiki/projects', name);
+    const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
     await fs.access(projDir).catch(() => { throw fastify.httpErrors.notFound(`Project '${name}' not found`); });
 
     const readFile = async (f) => { try { return await fs.readFile(path.join(projDir, f), 'utf8'); } catch { return null; } };
@@ -54,21 +54,21 @@ export async function projectRoutes(fastify, opts) {
     const decisions = await readFile('decisions.md');
     const log = await readFile('log.md');
 
-    const pipelineState = await projectPipelineState(req.flowRoot, name);
+    const pipelineState = await projectPipelineState(req.cpbRoot, name);
 
     return { name, context, tasks, decisions, log, pipelineState };
   });
 
   // List inbox files
   fastify.get('/projects/:name/inbox', async (req) => {
-    const inboxDir = path.join(req.flowRoot, 'wiki/projects', req.params.name, 'inbox');
+    const inboxDir = path.join(req.cpbRoot, 'wiki/projects', req.params.name, 'inbox');
     const files = (await fs.readdir(inboxDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
 
   // List output files
   fastify.get('/projects/:name/outputs', async (req) => {
-    const outDir = path.join(req.flowRoot, 'wiki/projects', req.params.name, 'outputs');
+    const outDir = path.join(req.cpbRoot, 'wiki/projects', req.params.name, 'outputs');
     const files = (await fs.readdir(outDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
@@ -77,10 +77,10 @@ export async function projectRoutes(fastify, opts) {
   fastify.get('/projects/:name/files/*', async (req) => {
     const name = req.params.name;
     const filePath = req.params['*'];
-    const fullPath = path.join(req.flowRoot, 'wiki/projects', name, filePath);
+    const fullPath = path.join(req.cpbRoot, 'wiki/projects', name, filePath);
 
     // Security: prevent path traversal
-    const projDir = path.join(req.flowRoot, 'wiki/projects', name);
+    const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
     const resolved = path.resolve(fullPath);
     if (!resolved.startsWith(path.resolve(projDir))) {
       throw fastify.httpErrors.forbidden('Path traversal denied');
@@ -102,9 +102,9 @@ export async function projectRoutes(fastify, opts) {
 
     try {
       const { stdout } = await execFileAsync(
-        req.flowRoot + '/bridges/init-project.sh',
+        req.cpbRoot + '/bridges/init-project.sh',
         [projectPath, name],
-        { timeout: 10000, cwd: req.flowRoot }
+        { timeout: 10000, cwd: req.cpbRoot }
       );
       return { success: true, output: stdout };
     } catch (err) {

@@ -2,7 +2,7 @@
 
 ## Source Plan
 
-- `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-006.md`
+- `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/plan-006.md`
 
 ## Execution Mode
 

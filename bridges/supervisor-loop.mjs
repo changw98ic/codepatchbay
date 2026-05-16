@@ -2,14 +2,14 @@
 import path from "node:path";
 import { recoverAndRun } from "../server/services/supervisor.js";
 
-const flowRoot = path.resolve(
-  process.env.FLOW_ROOT || path.join(import.meta.dirname, "..")
+const cpbRoot = path.resolve(
+  process.env.CPB_ROOT || path.join(import.meta.dirname, "..")
 );
 const intervalMs = Number(
-  process.env.FLOW_SUPERVISOR_INTERVAL_MS || 30_000
+  process.env.CPB_SUPERVISOR_INTERVAL_MS || 30_000
 );
 const maxConcurrent = Number(
-  process.env.FLOW_SUPERVISOR_MAX_CONCURRENT || 1
+  process.env.CPB_SUPERVISOR_MAX_CONCURRENT || 1
 );
 
 function log(tag, message) {
@@ -21,7 +21,7 @@ async function tick() {
 
   let results;
   try {
-    results = await recoverAndRun(flowRoot, { maxConcurrent });
+    results = await recoverAndRun(cpbRoot, { maxConcurrent });
   } catch (err) {
     log("error", `recovery scan failed: ${err.message}`);
     return;

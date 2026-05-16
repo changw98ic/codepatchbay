@@ -23,7 +23,7 @@ export function formatMessage(eventType, jobState) {
   const timestamp = jobState.updatedAt ?? new Date().toISOString();
 
   const text = [
-    `### Flow: ${title}`,
+    `### CodePatchbay: ${title}`,
     "",
     `- **Project**: ${jobState.project ?? "-"}`,
     `- **Status**: ${status}`,
@@ -35,7 +35,7 @@ export function formatMessage(eventType, jobState) {
 
   return {
     msgtype: "markdown",
-    markdown: { title: `Flow: ${title}`, text },
+    markdown: { title: `CodePatchbay: ${title}`, text },
   };
 }
 
@@ -72,7 +72,7 @@ export function send({ webhookUrl, secret, message }) {
 
 function formatReviewMessage(eventType, title, session) {
   const lines = [
-    `### Flow: ${title}`,
+    `### CodePatchbay: ${title}`,
     "",
     `- **Project**: ${session.project ?? "-"}`,
     `- **Session**: ${session.sessionId ?? "-"}`,
@@ -90,6 +90,6 @@ function formatReviewMessage(eventType, title, session) {
 
   return {
     msgtype: "markdown",
-    markdown: { title: `Flow: ${title}`, text: lines.join("\n") },
+    markdown: { title: `CodePatchbay: ${title}`, text: lines.join("\n") },
   };
 }

@@ -9,35 +9,35 @@
 ## 格式说明
 
 每个项目在 `## 活跃项目
+### calc-test
+- **status**: EXECUTING
+- **phase**: plan
+- **updated**: 2026-05-16T14:58:00Z
+- **next**: cpb execute calc-test 004
+
 ### novel-writer
 - **status**: EXECUTING
 - **phase**: plan
 - **updated**: 2026-05-14T02:27:31Z
-- **next**: flow execute novel-writer 003
+- **next**: cpb execute novel-writer 003
 
 ### empty-test
 - **status**: EXECUTING
 - **phase**: plan
 - **updated**: 2026-05-13T17:59:08Z
-- **next**: flow execute empty-test 002
+- **next**: cpb execute empty-test 002
 
 ### hello-test
 - **status**: EXECUTING
 - **phase**: plan
 - **updated**: 2026-05-13T17:57:53Z
-- **next**: flow execute hello-test 004
+- **next**: cpb execute hello-test 004
 
 ### colors-test
 - **status**: EXECUTING
 - **phase**: plan
 - **updated**: 2026-05-13T17:57:48Z
-- **next**: flow execute colors-test 003
-
-### calc-test
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-13T17:56:01Z
-- **next**: flow execute calc-test 003
+- **next**: cpb execute colors-test 003
 
 ### fatecat
 - **status**: DONE

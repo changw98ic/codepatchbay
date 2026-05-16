@@ -185,13 +185,13 @@ function combineChunks(chunks) {
 
 // ─── Lease + heartbeat wrapper for a phase ───
 
-async function runPhaseWithLease(flowRoot, project, jobId, phase, script, scriptArgs) {
+async function runPhaseWithLease(cpbRoot, project, jobId, phase, script, scriptArgs) {
   const leaseId = `lease-${jobId}-${phase}`;
   // Phase lease TTL: how long a lease is valid before considered stale.
   // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
-  const ttlMs = parseInt(process.env.FLOW_LEASE_TTL_MS || "120000", 10) || 120_000;
+  const ttlMs = parseInt(process.env.CPB_LEASE_TTL_MS || "120000", 10) || 120_000;
   const renewEveryMs = parseInt(
-    process.env.FLOW_LEASE_RENEW_INTERVAL_MS || String(Math.max(5_000, Math.floor(ttlMs / 3))),
+    process.env.CPB_LEASE_RENEW_INTERVAL_MS || String(Math.max(5_000, Math.floor(ttlMs / 3))),
     10
   ) || Math.max(5_000, Math.floor(ttlMs / 3));
 
@@ -200,18 +200,18 @@ async function runPhaseWithLease(flowRoot, project, jobId, phase, script, script
   let result = { exitCode: 1, stdout: "" };
 
   try {
-    lease = await acquireLease(flowRoot, { leaseId, jobId, phase, ttlMs });
+    lease = await acquireLease(cpbRoot, { leaseId, jobId, phase, ttlMs });
 
-    await startPhase(flowRoot, project, jobId, { phase, leaseId });
+    await startPhase(cpbRoot, project, jobId, { phase, leaseId });
 
     heartbeat = setInterval(() => {
-      renewLease(flowRoot, leaseId, { ttlMs, ownerToken: lease.ownerToken }).catch((err) => {
+      renewLease(cpbRoot, leaseId, { ttlMs, ownerToken: lease.ownerToken }).catch((err) => {
         console.error(`failed to renew lease ${leaseId}: ${err.message}`);
       });
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    result = await runBridge(script, scriptArgs, flowRoot);
+    result = await runBridge(script, scriptArgs, cpbRoot);
   } catch (err) {
     result = { exitCode: 1, stdout: "", error: err };
   } finally {
@@ -220,7 +220,7 @@ async function runPhaseWithLease(flowRoot, project, jobId, phase, script, script
     }
     if (lease !== null) {
       try {
-        await releaseLease(flowRoot, leaseId, { ownerToken: lease.ownerToken });
+        await releaseLease(cpbRoot, leaseId, { ownerToken: lease.ownerToken });
       } catch (err) {
         console.error(`failed to release lease ${leaseId}: ${err.message}`);
       }
@@ -264,7 +264,7 @@ async function parseVerdict(verdictPath) {
 
 // ─── Phase execution ───
 
-async function generateDiffArtifact(flowRoot, project, jobId, wikiDir) {
+async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   const projectJsonPath = path.join(wikiDir, "project.json");
   let sourcePath;
   try {
@@ -275,7 +275,7 @@ async function generateDiffArtifact(flowRoot, project, jobId, wikiDir) {
   }
   if (!sourcePath) return null;
 
-  const artifactsDir = runtimeDataPath(flowRoot, path.join("artifacts", project, jobId));
+  const artifactsDir = runtimeDataPath(cpbRoot, path.join("artifacts", project, jobId));
   await mkdir(artifactsDir, { recursive: true });
   const diffPath = path.join(artifactsDir, "diff-execute.patch");
 
@@ -291,10 +291,10 @@ async function generateDiffArtifact(flowRoot, project, jobId, wikiDir) {
   return null;
 }
 
-async function checkCancelAndRedirect(flowRoot, project, jobId, phase) {
-  const job = await getJob(flowRoot, project, jobId);
+async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
+  const job = await getJob(cpbRoot, project, jobId);
   if (job.cancelRequested) {
-    await cancelJob(flowRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });
+    await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });
     fail(`Cancelled before ${phase}`);
     return { cancelled: true, redirect: null };
   }
@@ -317,7 +317,7 @@ async function main() {
   }
 
   const { project, task, maxRetries, timeoutMin, workflow } = parsed;
-  const flowRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const cpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   // Timeout support: set a flag via setTimeout
   let timedOut = false;
@@ -340,15 +340,15 @@ async function main() {
   }
 
   // Create job
-  const job = await createJob(flowRoot, { project, task, workflow });
+  const job = await createJob(cpbRoot, { project, task, workflow });
   const jobId = job.jobId;
 
-  const wikiDir = path.resolve(flowRoot, "wiki", "projects", project);
+  const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents
   if (workflow === "blocked") {
-    await appendEvent(flowRoot, project, jobId, {
+    await appendEvent(cpbRoot, project, jobId, {
       type: "workflow_selected",
       jobId,
       project,
@@ -358,14 +358,14 @@ async function main() {
       ts: ts(),
     });
     const { blockJob } = await import("../server/services/job-store.js");
-    await blockJob(flowRoot, project, jobId, { reason: "blocked by operator" });
+    await blockJob(cpbRoot, project, jobId, { reason: "blocked by operator" });
     log(project, `Job ${jobId} blocked. No agents launched.`);
     return 0;
   }
 
   // Record workflow selection for standard
   if (workflow !== "standard") {
-    await appendEvent(flowRoot, project, jobId, {
+    await appendEvent(cpbRoot, project, jobId, {
       type: "workflow_selected",
       jobId,
       project,
@@ -378,27 +378,27 @@ async function main() {
   try {
     // ─── Phase 1: Plan ───
     {
-      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "plan");
+      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
       if (check.cancelled) {
-        await failJob(flowRoot, project, jobId, { reason: "cancelled before plan" });
+        await failJob(cpbRoot, project, jobId, { reason: "cancelled before plan" });
         return 1;
       }
     }
     log(project, "Phase 1/3: Plan (Codex)");
     const planResult = await runPhaseWithLease(
-      flowRoot, project, jobId, "plan",
+      cpbRoot, project, jobId, "plan",
       "bridges/codex-plan.sh",
       [project, task]
     );
 
     if (planResult.error) {
       fail(`Plan spawn failed: ${planResult.error.message}`);
-      await failJob(flowRoot, project, jobId, { reason: `plan spawn error: ${planResult.error.message}` });
+      await failJob(cpbRoot, project, jobId, { reason: `plan spawn error: ${planResult.error.message}` });
       return 1;
     }
 
     if (checkTimeout()) {
-      await failJob(flowRoot, project, jobId, { reason: "timed out after plan phase" });
+      await failJob(cpbRoot, project, jobId, { reason: "timed out after plan phase" });
       return 1;
     }
 
@@ -406,19 +406,19 @@ async function main() {
 
     if (!planId) {
       fail("Plan not created. Aborting.");
-      await completePhase(flowRoot, project, jobId, { phase: "plan", artifact: "" });
-      await failJob(flowRoot, project, jobId, { reason: "plan not created" });
+      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
+      await failJob(cpbRoot, project, jobId, { reason: "plan not created" });
       return 1;
     }
 
     ok(`plan-${planId}`);
-    await completePhase(flowRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+    await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
 
     // Cancel check after plan
     {
-      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "execute");
+      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
       if (check.cancelled) {
-        await failJob(flowRoot, project, jobId, { reason: "cancelled after plan" });
+        await failJob(cpbRoot, project, jobId, { reason: "cancelled after plan" });
         return 1;
       }
     }
@@ -428,13 +428,13 @@ async function main() {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       if (checkTimeout()) {
-        await failJob(flowRoot, project, jobId, { reason: "timed out during execute phase" });
+        await failJob(cpbRoot, project, jobId, { reason: "timed out during execute phase" });
         return 1;
       }
 
       log(project, `Phase 2/3: Execute (Claude) attempt ${attempt}/${maxRetries}`);
       const execResult = await runPhaseWithLease(
-        flowRoot, project, jobId,
+        cpbRoot, project, jobId,
         `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
         "bridges/claude-execute.sh",
         [project, planId]
@@ -444,7 +444,7 @@ async function main() {
 
       if (deliverableId) {
         ok(`deliverable-${deliverableId}`);
-        await completePhase(flowRoot, project, jobId, {
+        await completePhase(cpbRoot, project, jobId, {
           phase: "execute",
           artifact: `deliverable-${deliverableId}`,
         });
@@ -452,7 +452,7 @@ async function main() {
       }
 
       warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
-      await completePhase(flowRoot, project, jobId, {
+      await completePhase(cpbRoot, project, jobId, {
         phase: `execute-retry-${attempt}`,
         artifact: "",
       });
@@ -460,28 +460,28 @@ async function main() {
 
     if (!deliverableId) {
       fail(`Execute failed after ${maxRetries} attempts.`);
-      await failJob(flowRoot, project, jobId, { reason: `execute failed after ${maxRetries} attempts` });
+      await failJob(cpbRoot, project, jobId, { reason: `execute failed after ${maxRetries} attempts` });
       return 1;
     }
 
     // Cancel check after execute
     {
-      const check = await checkCancelAndRedirect(flowRoot, project, jobId, "verify");
+      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
       if (check.cancelled) {
-        await failJob(flowRoot, project, jobId, { reason: "cancelled after execute" });
+        await failJob(cpbRoot, project, jobId, { reason: "cancelled after execute" });
         return 1;
       }
     }
 
     // ─── Phase 3: Verify (+ fix loop) ───
-    const diffArtifactPath = await generateDiffArtifact(flowRoot, project, jobId, wikiDir);
+    const diffArtifactPath = await generateDiffArtifact(cpbRoot, project, jobId, wikiDir);
     if (diffArtifactPath) {
       log(project, `Diff artifact generated: ${diffArtifactPath}`);
     }
 
     for (let cycle = 1; cycle <= maxRetries; cycle++) {
       if (checkTimeout()) {
-        await failJob(flowRoot, project, jobId, { reason: "timed out during verify phase" });
+        await failJob(cpbRoot, project, jobId, { reason: "timed out during verify phase" });
         return 1;
       }
 
@@ -492,7 +492,7 @@ async function main() {
         ? [project, deliverableId, diffArtifactPath]
         : [project, deliverableId];
       await runPhaseWithLease(
-        flowRoot, project, jobId, verifyPhaseName,
+        cpbRoot, project, jobId, verifyPhaseName,
         "bridges/codex-verify.sh",
         verifyArgs
       );
@@ -502,30 +502,30 @@ async function main() {
 
       if (verdict === null) {
         warn(`No verdict file. Retry ${cycle}/${maxRetries}`);
-        await completePhase(flowRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
         continue;
       }
 
       if (verdict === "UNKNOWN") {
         warn(`Unclear verdict: ${verdict}`);
-        await completePhase(flowRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
         continue;
       }
 
       if (verdict === "PASS") {
         ok("Pipeline complete!");
-        await completePhase(flowRoot, project, jobId, {
+        await completePhase(cpbRoot, project, jobId, {
           phase: "verify",
           artifact: `verdict-${deliverableId}`,
         });
-        await completeJob(flowRoot, project, jobId);
+        await completeJob(cpbRoot, project, jobId);
         return 0;
       }
 
       // FAIL or PARTIAL — fix loop
       warn(`Verdict: ${verdict}. Fix attempt ${cycle}/${maxRetries}`);
 
-      await completePhase(flowRoot, project, jobId, {
+      await completePhase(cpbRoot, project, jobId, {
         phase: verifyPhaseName,
         artifact: `verdict-${deliverableId}`,
       });
@@ -534,7 +534,7 @@ async function main() {
         log(project, "Re-executing (Claude fix)...");
         const fixPhaseName = `fix-${cycle}`;
         const fixResult = await runPhaseWithLease(
-          flowRoot, project, jobId, fixPhaseName,
+          cpbRoot, project, jobId, fixPhaseName,
           "bridges/claude-execute.sh",
           [project, planId, verdictPath]
         );
@@ -543,13 +543,13 @@ async function main() {
         if (newDeliverableId) {
           deliverableId = newDeliverableId;
           ok(`deliverable-${deliverableId} (fix)`);
-          await completePhase(flowRoot, project, jobId, {
+          await completePhase(cpbRoot, project, jobId, {
             phase: fixPhaseName,
             artifact: `deliverable-${deliverableId}`,
           });
         } else {
           warn("Fix produced no deliverable.");
-          await completePhase(flowRoot, project, jobId, {
+          await completePhase(cpbRoot, project, jobId, {
             phase: fixPhaseName,
             artifact: "",
           });
@@ -565,7 +565,7 @@ async function main() {
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
     try {
-      await failJob(flowRoot, project, jobId, { reason: `unhandled: ${err.message}` });
+      await failJob(cpbRoot, project, jobId, { reason: `unhandled: ${err.message}` });
     } catch {
       // Best effort — job may already be in terminal state
     }

@@ -12,7 +12,7 @@ import { runtimeDataPath } from '../server/services/runtime-root.js';
 
 describe('A9: diff-based verification', () => {
   it('generateDiffArtifact creates diff file for git project', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-diff-test-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-diff-test-'));
     try {
       // Create a fake project with git
       const projectDir = path.join(tmpRoot, 'source');
@@ -39,11 +39,11 @@ describe('A9: diff-based verification', () => {
     }
   });
 
-  it('diff artifact path is stored under flow-task/artifacts', async () => {
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-diff-path-'));
+  it('diff artifact path is stored under cpb-task/artifacts', async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-diff-path-'));
     try {
       const artifactsDir = runtimeDataPath(tmpRoot, path.join('artifacts', 'myproj', 'job-123'));
-      assert.ok(artifactsDir.includes('flow-task'));
+      assert.ok(artifactsDir.includes('cpb-task'));
       assert.ok(artifactsDir.includes('artifacts'));
       assert.ok(artifactsDir.includes('myproj'));
       assert.ok(artifactsDir.includes('job-123'));
@@ -54,13 +54,13 @@ describe('A9: diff-based verification', () => {
 
   it('rtk_codex_verify includes diff section when artifact exists', async () => {
     const { execSync } = await import('node:child_process');
-    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-diff-prompt-'));
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-diff-prompt-'));
     try {
       const diffFile = path.join(tmpRoot, 'test-diff.patch');
       await writeFile(diffFile, 'fake diff content');
 
       const result = execSync(
-        `FLOW_ROOT="${path.resolve('.')}" FLOW_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md "${diffFile}"'`,
+        `CPB_ROOT="${path.resolve('.')}" CPB_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md "${diffFile}"'`,
         { encoding: 'utf8', cwd: path.resolve('.') }
       );
 
@@ -74,7 +74,7 @@ describe('A9: diff-based verification', () => {
   it('rtk_codex_verify omits diff section when no artifact', async () => {
     const { execSync } = await import('node:child_process');
     const result = execSync(
-      `FLOW_ROOT="${path.resolve('.')}" FLOW_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md'`,
+      `CPB_ROOT="${path.resolve('.')}" CPB_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md'`,
       { encoding: 'utf8', cwd: path.resolve('.') }
     );
 
@@ -96,7 +96,7 @@ describe('A9: diff-based verification', () => {
     // When diff artifact is null/missing, verify still runs without diff
     const { execSync } = await import('node:child_process');
     const result = execSync(
-      `FLOW_ROOT="${path.resolve('.')}" FLOW_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md ""'`,
+      `CPB_ROOT="${path.resolve('.')}" CPB_DANGEROUS=1 bash -c 'source bridges/common.sh && rtk_codex_verify testproj 001 /tmp/verdict.md ""'`,
       { encoding: 'utf8', cwd: path.resolve('.') }
     );
 

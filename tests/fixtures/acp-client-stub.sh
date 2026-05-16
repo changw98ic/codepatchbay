@@ -18,15 +18,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 prompt="$(cat)"
-printf '%s\n' "$agent" >> "${FLOW_TEST_AGENT_LOG:?FLOW_TEST_AGENT_LOG is required}"
-if [ -n "${FLOW_TEST_ENV_LOG:-}" ]; then
+printf '%s\n' "$agent" >> "${CPB_TEST_AGENT_LOG:?CPB_TEST_AGENT_LOG is required}"
+if [ -n "${CPB_TEST_ENV_LOG:-}" ]; then
   printf '%s|%s|%s|%s|%s|%s\n' \
     "$agent" \
     "${ANTHROPIC_BASE_URL:-}" \
     "${ANTHROPIC_AUTH_TOKEN:-}" \
     "${ANTHROPIC_MODEL:-}" \
     "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" \
-    "${ANTHROPIC_CUSTOM_MODEL_OPTION:-}" >> "$FLOW_TEST_ENV_LOG"
+    "${ANTHROPIC_CUSTOM_MODEL_OPTION:-}" >> "$CPB_TEST_ENV_LOG"
 fi
 
 output_file="$(

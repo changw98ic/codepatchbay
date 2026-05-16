@@ -19,7 +19,7 @@
 
 ### DEC-001: Skip Codex verify phase for novel-writer
 - **状态**: [ACTIVE]
-- **决定**: 在 novel-writer 项目中跳过 Flow pipeline 的 Codex verify 阶段，由人工 review 替代
+- **决定**: 在 novel-writer 项目中跳过 CodePatchbay pipeline 的 Codex verify 阶段，由人工 review 替代
 - **原因**: Codex ACP adapter (`codex-acp`) 在 verify 阶段两次卡住（P0 和 P1），lease 过期后进程僵死不退出。两次 execute 阶段均成功完成且 dart analyze 通过，问题仅在 Codex ACP 的响应超时处理上
-- **否决**: 修复 Codex ACP——超出 novel-writer 项目范围，应作为 Flow 框架的 bug 处理
+- **否决**: 修复 Codex ACP——超出 novel-writer 项目范围，应作为 CodePatchbay 框架的 bug 处理
 - **日期**: 2026-05-14

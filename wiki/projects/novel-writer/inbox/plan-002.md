@@ -51,4 +51,4 @@
 - 长度上调可能影响性能/测试时长，必要时同步调整 benchmark 阈值与执行预期。
 
 ### 产物
-- 计划文件：`/Users/chengwen/dev/flow/wiki/projects/novel-writer/inbox/plan-002.md`
+- 计划文件：`__ABS_WORKSPACE_CPB_PATH__/wiki/projects/novel-writer/inbox/plan-002.md`

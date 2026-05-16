@@ -68,36 +68,36 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.badRequest("intent required (min 3 chars)");
     }
 
-    const session = await createSession(req.flowRoot, { project, intent: intent.trim() });
+    const session = await createSession(req.cpbRoot, { project, intent: intent.trim() });
     notify({ type: "review:update", sessionId: session.sessionId, status: session.status, project, session });
     return session;
   });
 
   // List sessions
   fastify.get("/review", async (req) => {
-    return listSessions(req.flowRoot);
+    return listSessions(req.cpbRoot);
   });
 
   // Get session
   fastify.get("/review/:id", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     return session;
   });
 
-  // Start review flow (spawns review-dispatch.mjs in background)
+  // Start review cpb (spawns review-dispatch.mjs in background)
   fastify.post("/review/:id/start", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "idle") {
       throw fastify.httpErrors.conflict(`session already in status: ${session.status}`);
     }
 
-    const scriptPath = path.join(req.flowRoot, "bridges/review-dispatch.mjs");
+    const scriptPath = path.join(req.cpbRoot, "bridges/review-dispatch.mjs");
 
-    const child = spawn("node", [scriptPath, req.flowRoot, session.sessionId], {
-      cwd: req.flowRoot,
-      env: { ...process.env, FLOW_ROOT: req.flowRoot },
+    const child = spawn("node", [scriptPath, req.cpbRoot, session.sessionId], {
+      cwd: req.cpbRoot,
+      env: { ...process.env, CPB_ROOT: req.cpbRoot },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -110,21 +110,21 @@ export async function reviewRoutes(fastify, opts) {
 
   // User approves → dispatch pipeline
   fastify.post("/review/:id/approve", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    await updateSession(req.flowRoot, session.sessionId, {
+    await updateSession(req.cpbRoot, session.sessionId, {
       status: "dispatched",
       userVerdict: "approved",
     });
 
     const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.flowRoot, jobId);
+    const wtPath = worktreePathFor(req.cpbRoot, jobId);
     const result = spawnBridge(
-      req.flowRoot,
+      req.cpbRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
@@ -133,7 +133,7 @@ export async function reviewRoutes(fastify, opts) {
       { CPB_USE_WORKTREE: "1" },
     );
 
-    await updateSession(req.flowRoot, session.sessionId, {
+    await updateSession(req.cpbRoot, session.sessionId, {
       jobId,
       worktreePath: wtPath,
     });
@@ -144,7 +144,7 @@ export async function reviewRoutes(fastify, opts) {
       status: "dispatched",
       jobId: result.taskId,
       project: session.project,
-      session: await getSession(req.flowRoot, session.sessionId),
+      session: await getSession(req.cpbRoot, session.sessionId),
     });
 
     return { dispatched: true, sessionId: session.sessionId, taskId: result.taskId };
@@ -152,7 +152,7 @@ export async function reviewRoutes(fastify, opts) {
 
   // Internal auto-approve path (used by self-evolve)
   fastify.post("/review/:id/auto-approve", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
 
     if (!["dispatched", "user_review"].includes(session.status)) {
@@ -165,7 +165,7 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     const result = await updateSession(
-      req.flowRoot,
+      req.cpbRoot,
       session.sessionId,
       {
         status: session.status === "dispatched" ? session.status : "dispatched",
@@ -184,9 +184,9 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.flowRoot, jobId);
+    const wtPath = worktreePathFor(req.cpbRoot, jobId);
     const updated = spawnBridge(
-      req.flowRoot,
+      req.cpbRoot,
       session.project,
       "run-pipeline.sh",
       [session.project, session.intent, "3", "0"],
@@ -195,7 +195,7 @@ export async function reviewRoutes(fastify, opts) {
       { CPB_USE_WORKTREE: "1" },
     );
 
-    const refreshed = await updateSession(req.flowRoot, session.sessionId, {
+    const refreshed = await updateSession(req.cpbRoot, session.sessionId, {
       ...result,
       jobId,
       worktreePath: wtPath,
@@ -221,7 +221,7 @@ export async function reviewRoutes(fastify, opts) {
 
   // User rejects → discard worktree, keep main tree clean
   fastify.post("/review/:id/reject", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
@@ -230,7 +230,7 @@ export async function reviewRoutes(fastify, opts) {
     // Clean up worktree if it exists
     if (session.worktreePath) {
       try {
-        const projectJson = path.join(req.flowRoot, "wiki", "projects", session.project, "project.json");
+        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
         const meta = JSON.parse(await readFile(projectJson, "utf8"));
         if (meta.sourcePath) {
           await gitExec(meta.sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
@@ -239,7 +239,7 @@ export async function reviewRoutes(fastify, opts) {
       try { await rm(session.worktreePath, { recursive: true, force: true }); } catch {}
     }
 
-    const updated = await updateSession(req.flowRoot, session.sessionId, {
+    const updated = await updateSession(req.cpbRoot, session.sessionId, {
       status: "expired",
       userVerdict: "rejected",
     });
@@ -252,7 +252,7 @@ export async function reviewRoutes(fastify, opts) {
   fastify.post("/review/:id/cancel", cancelRoute);
 
   fastify.post("/review/:id/accept", async (req) => {
-    const session = await getSession(req.flowRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review" && session.status !== "dispatched") {
       throw fastify.httpErrors.conflict(`session not in reviewable state (status: ${session.status})`);
@@ -261,7 +261,7 @@ export async function reviewRoutes(fastify, opts) {
     let merged = false;
     if (session.worktreePath && session.jobId) {
       try {
-        const projectJson = path.join(req.flowRoot, "wiki", "projects", session.project, "project.json");
+        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
         const meta = JSON.parse(await readFile(projectJson, "utf8"));
         const sourcePath = meta.sourcePath;
         if (sourcePath) {
@@ -286,7 +286,7 @@ export async function reviewRoutes(fastify, opts) {
       }
     }
 
-    const updated = await updateSession(req.flowRoot, session.sessionId, {
+    const updated = await updateSession(req.cpbRoot, session.sessionId, {
       status: "completed",
       userVerdict: "accepted",
       merged,
@@ -299,9 +299,9 @@ export async function reviewRoutes(fastify, opts) {
 
 async function cancelRoute(req, reply) {
   const { id } = req.params;
-  const session = await getSession(req.flowRoot, id);
+  const session = await getSession(req.cpbRoot, id);
   if (!session) return reply.code(404).send({ error: "not found" });
-  const updated = await updateSession(req.flowRoot, id, {
+  const updated = await updateSession(req.cpbRoot, id, {
     status: "cancelled",
     detail: req.body?.reason || "cancelled",
   }, { skipTransitionCheck: true });

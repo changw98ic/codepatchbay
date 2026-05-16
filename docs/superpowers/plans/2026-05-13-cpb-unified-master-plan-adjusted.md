@@ -1,8 +1,8 @@
-# Flow 统合计划调整版
+# CodePatchbay 统合计划调整版
 
 > 目的：在保留原统合计划战略方向的前提下，修正短期执行顺序、遗漏触点和验收口径。
 > 生成时间：2026-05-13
-> 适用对象：替代 `2026-05-13-flow-unified-master-plan.md` 作为后续执行基线。
+> 适用对象：替代 `2026-05-13-cpb-unified-master-plan.md` 作为后续执行基线。
 
 ---
 
@@ -10,8 +10,8 @@
 
 原计划的核心方向继续成立：
 
-1. `flow-task/events/` 是 durable job 的唯一事实来源。
-2. `flow-task/` 是 Flow runtime root，Flow 不再写 `.omc/` 或 `.omx/`。
+1. `cpb-task/events/` 是 durable job 的唯一事实来源。
+2. `cpb-task/` 是 CodePatchbay runtime root，CodePatchbay 不再写 `.omc/` 或 `.omx/`。
 3. 不引入第二套 task runtime，继续演进当前 `job-store` / `event-store`。
 4. 自动分类延后，MVP 使用显式 workflow input。
 5. Profile、reviewer、parallel phase 都按需生长，不提前铺大架构。
@@ -46,15 +46,15 @@ A9  Diff-based verification
 
 | 证据 | 当前含义 | 对计划的影响 |
 |------|----------|--------------|
-| `bridges/run-pipeline.mjs:220-267` | Pipeline 仍写 `flow-task/state/pipeline-*.json` 兼容状态 | 不能在第一步直接删除 state writer |
+| `bridges/run-pipeline.mjs:220-267` | Pipeline 仍写 `cpb-task/state/pipeline-*.json` 兼容状态 | 不能在第一步直接删除 state writer |
 | `server/routes/projects.js:30-35,59-62` | Projects API 仍从兼容 state 读 `pipelineState` | M1 必须先提供 event-backed projection |
-| `server/services/watcher.js:6-25` | Watcher 仍监听 `flow-task/state` 并广播 `pipeline:update` | UI 更新通道要先迁移到 `job:update`/投影 API |
-| `flow:106-113` | `flow status` 仍读兼容 state | CLI 是 M1 真实触点之一 |
+| `server/services/watcher.js:6-25` | Watcher 仍监听 `cpb-task/state` 并广播 `pipeline:update` | UI 更新通道要先迁移到 `job:update`/投影 API |
+| `cpb:106-113` | `cpb status` 仍读兼容 state | CLI 是 M1 真实触点之一 |
 | `server/services/supervisor.js:21-36` | Supervisor phase 顺序硬编码为 plan/execute/verify | workflow 支持不能只改 runner |
 | `web/src/components/PipelineStatus.jsx:3-4` | UI phase 展示硬编码三段 | workflow 支持会影响 UI |
 | `bridges/acp-client.mjs:452-463,465-468` | 现有权限只有全局 permission 和 terminal allow/deny | per-tool policy 是增量改造，不是新权限系统 |
 | `web/src/pages/Dashboard.jsx:124-135` | Durable Jobs panel 已存在 | R3 应改为增强，而不是“新增” |
-| `wiki/system/unattended-supervisor.md:9-12,39-40` | ~~文档仍残留 `.omc/` runtime 路径~~ | **已修（A0 ae242b2）**：已全部改为 `flow-task/` |
+| `wiki/system/unattended-supervisor.md:9-12,39-40` | ~~文档仍残留 `.omc/` runtime 路径~~ | **已修（A0 ae242b2）**：已全部改为 `cpb-task/` |
 
 ---
 
@@ -67,10 +67,10 @@ A9  Diff-based verification
 变更范围：
 
 - 更新或替代原统合计划，明确本文件为执行基线。
-- 给 `2026-05-13-flow-unified-master-plan.md` 加 superseded 标记（文件头加醒目警告，或移至 `docs/superpowers/plans/archive/`）。
-- 修正 `wiki/system/unattended-supervisor.md` 中 `.omc/events`、`.omc/leases`、`.omc/worktrees` 为 `flow-task/events`、`flow-task/leases`、`flow-task/worktrees`（涉及 line 9-12、line 39-40）。
+- 给 `2026-05-13-cpb-unified-master-plan.md` 加 superseded 标记（文件头加醒目警告，或移至 `docs/superpowers/plans/archive/`）。
+- 修正 `wiki/system/unattended-supervisor.md` 中 `.omc/events`、`.omc/leases`、`.omc/worktrees` 为 `cpb-task/events`、`cpb-task/leases`、`cpb-task/worktrees`（涉及 line 9-12、line 39-40）。
 - 修正 roadmap 中 “UI Durable Jobs panel 新增” 为 “Durable Jobs panel 增强”。
-- 明确 `bridges/init-project.sh` 中 `.omc/wiki/flow` symlink 是项目集成链接（project integration symlink），不是 runtime state。Flow live runtime 不读写 `.omc/` 指的是不写 events/leases/state/worktrees 等运行时数据。验收标准中的 “Flow live runtime does not read or write `.omc/`” 应精确为 “Flow live runtime 不读写 `.omc/events`、`.omc/leases`、`.omc/state`、`.omc/worktrees`；`.omc/wiki/flow` 是 init 创建的项目集成 symlink，不属于 runtime state”。
+- 明确 `bridges/init-project.sh` 中 `.omc/wiki/cpb` symlink 是项目集成链接（project integration symlink），不是 runtime state。CodePatchbay live runtime 不读写 `.omc/` 指的是不写 events/leases/state/worktrees 等运行时数据。验收标准中的 “CodePatchbay live runtime does not read or write `.omc/`” 应精确为 “CodePatchbay live runtime 不读写 `.omc/events`、`.omc/leases`、`.omc/state`、`.omc/worktrees`；`.omc/wiki/cpb` 是 init 创建的项目集成 symlink，不属于 runtime state”。
 
 验收：
 
@@ -96,8 +96,8 @@ A9  Diff-based verification
 新增 `server/services/job-projection.js`，提供：
 
 - `jobToPipelineState(job)`：把 materialized job 转为旧 UI 可消费的 `pipelineState` 形状。
-- `projectPipelineState(flowRoot, project)`：从 `listJobs()` 找该项目最新 running/non-terminal job，必要时退回最近 job。
-- `listProjectPipelineStates(flowRoot)`：供 projects list 一次性使用，避免每个项目重复全量扫描。
+- `projectPipelineState(cpbRoot, project)`：从 `listJobs()` 找该项目最新 running/non-terminal job，必要时退回最近 job。
+- `listProjectPipelineStates(cpbRoot)`：供 projects list 一次性使用，避免每个项目重复全量扫描。
 
 保留字段兼容：
 
@@ -121,8 +121,8 @@ A9  Diff-based verification
 
 修改：
 
-- `server/routes/projects.js`：不再读 `flow-task/state/pipeline-*.json`，改用 projection。
-- `flow status`：不再调用 `json-helper.mjs` 读 state，改用 `bridges/list-jobs.mjs` 或新增轻量 node helper 读取 projection。
+- `server/routes/projects.js`：不再读 `cpb-task/state/pipeline-*.json`，改用 projection。
+- `cpb status`：不再调用 `json-helper.mjs` 读 state，改用 `bridges/list-jobs.mjs` 或新增轻量 node helper 读取 projection。
 - `web/src/pages/Dashboard.jsx`：保留 `pipelineState` 字段消费，但来源由 API/projection 提供。
 
 #### A1.3 迁移更新通道
@@ -130,7 +130,7 @@ A9  Diff-based verification
 修改：
 
 - `server/services/watcher.js`：`job:update` 触发后广播 job projection，或前端收到 `job:update` 后刷新 `/api/tasks/durable` 与 `/api/projects`。
-- 删除 `flow-task/state` watcher 前，先保证 UI 在 pipeline run 中能刷新。
+- 删除 `cpb-task/state` watcher 前，先保证 UI 在 pipeline run 中能刷新。
 
 #### A1.4 删除兼容 state 写入
 
@@ -139,14 +139,14 @@ A9  Diff-based verification
 - `bridges/json-helper.mjs`
 - `common.sh` 中 `state_read/state_write/state_init`
 - `run-pipeline.mjs` 中 `pipelineStateFile/readPipelineState/initPipelineState/writePipelineState`
-- tests 中对 `flow-task/state/pipeline-*.json` 的正向依赖
+- tests 中对 `cpb-task/state/pipeline-*.json` 的正向依赖
 
 验收：
 
-- `! rg -n "pipeline-.*json|flow-task/state" server bridges flow web/src tests --glob '!worktree-manager.*'`
+- `! rg -n "pipeline-.*json|cpb-task/state" server bridges cpb web/src tests --glob '!worktree-manager.*'`
 - `node --test tests/*.test.mjs`
-- `bash tests/flow-jobs.test.sh`
-- `bash tests/flow-bridges.test.sh`
+- `bash tests/cpb-jobs.test.sh`
+- `bash tests/cpb-bridges.test.sh`
 - 手动或 fixture 验证：pipeline 执行中 Dashboard 能看到 job status/phase 更新。
 
 #### A1.5 确认 Lease TTL 语义一致性
@@ -154,14 +154,14 @@ A9  Diff-based verification
 经核实，当前 TTL 设计没有 bug，只是语义需要文档化：
 
 - `lease-manager.js:8` 的 `DEFAULT_LOCK_TTL_MS = 30,000ms` 是 **lock 目录 TTL**（mkdir atomic lock 的超时），不是 phase lease TTL。
-- `job-runner.mjs:127` 和 `run-pipeline.mjs:147` 的 `FLOW_LEASE_TTL_MS`（默认 120,000ms）是 **phase lease TTL**（控制单次 phase 的租约时长）。
+- `job-runner.mjs:127` 和 `run-pipeline.mjs:147` 的 `CPB_LEASE_TTL_MS`（默认 120,000ms）是 **phase lease TTL**（控制单次 phase 的租约时长）。
 - 两个 TTL 控制不同机制，不需要统一。Lock TTL 控制的是"两个进程争抢同一个 lease 文件时的等待超时"，phase lease TTL 控制的是"lease 多久没续期视为 stale"。
 
 变更：
 
 - 在代码注释中明确两个 TTL 的语义区分。
-- `lease-manager.js` 的 lock TTL 保留 `FLOW_LEASE_LOCK_TTL_MS` 作为覆盖入口。
-- Phase lease TTL 保留 `FLOW_LEASE_TTL_MS` 作为覆盖入口。
+- `lease-manager.js` 的 lock TTL 保留 `CPB_LEASE_LOCK_TTL_MS` 作为覆盖入口。
+- Phase lease TTL 保留 `CPB_LEASE_TTL_MS` 作为覆盖入口。
 - 无需更改默认值或统一配置源。
 
 验收：
@@ -175,20 +175,20 @@ A1.1-A1.3 迁移窗口期间，pipeline 同时写 state file 和 event log。如
 
 变更：
 
-- 新增环境变量 `FLOW_USE_PROJECTION=1`（默认关闭）。
-- A1.1-A1.3 期间，`FLOW_USE_PROJECTION=1` 时读 projection，否则仍读 state file。
-- A1.4 删除 state writer 时，`FLOW_USE_PROJECTION` 逻辑一并删除。
+- 新增环境变量 `CPB_USE_PROJECTION=1`（默认关闭）。
+- A1.1-A1.3 期间，`CPB_USE_PROJECTION=1` 时读 projection，否则仍读 state file。
+- A1.4 删除 state writer 时，`CPB_USE_PROJECTION` 逻辑一并删除。
 - UI 更新延迟指标：从 event 写入到 UI 显示更新 < 2s（手动或 fixture 验证）。
 
 验收：
 
-- 不设 `FLOW_USE_PROJECTION` 时行为与迁移前完全一致。
-- 设 `FLOW_USE_PROJECTION=1` 后，Dashboard 能正确显示 pipeline 运行状态。
+- 不设 `CPB_USE_PROJECTION` 时行为与迁移前完全一致。
+- 设 `CPB_USE_PROJECTION=1` 后，Dashboard 能正确显示 pipeline 运行状态。
 
 风险：
 
 - 最大风险是 UI 从 push update 退化成 polling。允许短期 polling，但必须在验收中记录。
-- `flow-task/state/` 仍可保留为迁移目录名，但不再由 live runtime 读写。
+- `cpb-task/state/` 仍可保留为迁移目录名，但不再由 live runtime 读写。
 
 ---
 
@@ -233,8 +233,8 @@ A1.1-A1.3 迁移窗口期间，pipeline 同时写 state file 和 event log。如
 
 - `POST /api/tasks/:name/cancel { jobId, reason? }`
 - `POST /api/tasks/:name/redirect { jobId, instructions, reason? }`
-- `flow cancel <project> <jobId> [reason]`
-- `flow redirect <project> <jobId> "<instructions>" [reason]`
+- `cpb cancel <project> <jobId> [reason]`
+- `cpb redirect <project> <jobId> "<instructions>" [reason]`
 
 验收：
 
@@ -308,7 +308,7 @@ A1.1-A1.3 迁移窗口期间，pipeline 同时写 state file 和 event log。如
 
 - 测试 materialization：`phase_activity` 不改变 `status`。
 - 测试 supervisor：fresh activity 的 job 不被错误恢复；stale activity 的 job 可恢复。
-- `grep "phase_activity" flow-task/events/*/*.jsonl` 只是辅助检查，不作为唯一验收。
+- `grep "phase_activity" cpb-task/events/*/*.jsonl` 只是辅助检查，不作为唯一验收。
 
 风险：
 
@@ -318,25 +318,25 @@ A1.1-A1.3 迁移窗口期间，pipeline 同时写 state file 和 event log。如
 
 ### A5: Per-tool ACP policy
 
-目标：把现有 `FLOW_ACP_TERMINAL` 扩展为可按 ACP method/tool 控制的 policy，同时保持向后兼容。
+目标：把现有 `CPB_ACP_TERMINAL` 扩展为可按 ACP method/tool 控制的 policy，同时保持向后兼容。
 
 环境变量：
 
 ```bash
 # 方式一：扁平格式（推荐，shell 友好）
-FLOW_ACP_DENY_TOOLS="terminal/create,fs/delete"
-FLOW_ACP_ALLOW_TOOLS="fs/write_text_file"
+CPB_ACP_DENY_TOOLS="terminal/create,fs/delete"
+CPB_ACP_ALLOW_TOOLS="fs/write_text_file"
 
 # 方式二：JSON 文件（复杂策略时使用）
-FLOW_ACP_TOOL_POLICY_FILE="./policy.json"
+CPB_ACP_TOOL_POLICY_FILE="./policy.json"
 ```
 
-优先级：`FLOW_ACP_TOOL_POLICY_FILE` > `FLOW_ACP_DENY_TOOLS`/`FLOW_ACP_ALLOW_TOOLS` > 默认行为。
+优先级：`CPB_ACP_TOOL_POLICY_FILE` > `CPB_ACP_DENY_TOOLS`/`CPB_ACP_ALLOW_TOOLS` > 默认行为。
 
 规则：
 
 - 未配置时保持当前行为。
-- `FLOW_ACP_TERMINAL=deny` 继续生效，并等价于 `terminal/create=deny` 的默认策略。
+- `CPB_ACP_TERMINAL=deny` 继续生效，并等价于 `terminal/create=deny` 的默认策略。
 - policy value 初版只支持 `allow|deny`。
 - JSON parse 失败时 fail closed，退出并给出清晰错误。
 
@@ -353,7 +353,7 @@ FLOW_ACP_TOOL_POLICY_FILE="./policy.json"
 验收：
 
 - `tests/acp-client.test.mjs` 覆盖 deny `terminal/create`、allow default、扁平格式解析、JSON 文件加载、invalid 输入 fail closed。
-- 现有 `FLOW_ACP_TERMINAL` 测试继续通过。
+- 现有 `CPB_ACP_TERMINAL` 测试继续通过。
 
 风险：
 
@@ -388,7 +388,7 @@ blocked: no agent launch, write job_blocked
 变更：
 
 - `run-pipeline.mjs` 支持 `--workflow standard|blocked`。
-- `flow pipeline <project> "<task>" [max-retries] [timeout-min] --workflow standard` 保持兼容。
+- `cpb pipeline <project> "<task>" [max-retries] [timeout-min] --workflow standard` 保持兼容。
 - `supervisor.nextPhaseFor()` 改为基于 workflow definition 计算下一 phase。
 - `bridgeForPhase()` 改为通过 role bridge 映射。
 - `event-store` 支持 `workflow_selected`，记录 explicit/default/blocked reason。
@@ -508,12 +508,12 @@ wiki/projects/{project}/outputs/diff-{deliverableId}.patch
 或更推荐：
 
 ```text
-flow-task/artifacts/{project}/{jobId}/diff-{phase}.patch
+cpb-task/artifacts/{project}/{jobId}/diff-{phase}.patch
 ```
 
 选择原则：
 
-- 如果 diff 是机器生成、可能很大，放 `flow-task/artifacts/`。
+- 如果 diff 是机器生成、可能很大，放 `cpb-task/artifacts/`。
 - 如果 diff 需要人类交接阅读，可复制摘要到 wiki outputs。
 
 变更：
@@ -584,10 +584,10 @@ simulate blocked workflow -> no agent launched
 
 变更：
 
-- 新增 `event-store.checkpointJob(flowRoot, project, jobId)`：在 job terminal 时写一个 checkpoint file，包含完整的 materialized state。
+- 新增 `event-store.checkpointJob(cpbRoot, project, jobId)`：在 job terminal 时写一个 checkpoint file，包含完整的 materialized state。
 - `materializeJob()` 优先读 checkpoint，仅从 checkpoint 之后的 event 开始 replay。
 - 非 terminal job 不写 checkpoint（保留全量 replay 的准确性）。
-- `flow jobs cleanup --before <date>` 命令归档/删除已完成 job 的 event log 文件（保留 checkpoint）。
+- `cpb jobs cleanup --before <date>` 命令归档/删除已完成 job 的 event log 文件（保留 checkpoint）。
 
 验收：
 
@@ -654,10 +654,10 @@ Do not implement realtime cancel kill before phase-boundary cancel is verified.
 Global acceptance:
 
 - All existing tests pass: `node --test tests/*.test.mjs`.
-- Bash integration passes: `bash tests/flow-jobs.test.sh`, `bash tests/flow-bridges.test.sh`, `bash tests/flow-variant-env.test.sh`.
+- Bash integration passes: `bash tests/cpb-jobs.test.sh`, `bash tests/cpb-bridges.test.sh`, `bash tests/cpb-variant-env.test.sh`.
 - Syntax checks pass for `bridges/*.sh`, `tests/*.sh`, `bridges/*.mjs`, `tests/*.mjs`, `server/**/*.js`.
 - No new npm dependency unless explicitly approved.
-- Flow live runtime 不读写 `.omc/events`、`.omc/leases`、`.omc/state`、`.omc/worktrees`；`.omc/wiki/flow` 是 `flow init` 创建的项目集成 symlink，不属于 runtime state。
+- CodePatchbay live runtime 不读写 `.omc/events`、`.omc/leases`、`.omc/state`、`.omc/worktrees`；`.omc/wiki/cpb` 是 `cpb init` 创建的项目集成 symlink，不属于 runtime state。
 - No fake/mock fixture is edited merely to hide production behavior changes.
 
 Feature acceptance:
@@ -682,20 +682,20 @@ Feature acceptance:
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Removing compatibility state breaks UI/CLI | High | A1 staged migration with `FLOW_USE_PROJECTION` feature flag; delete writers only after readers move |
+| Removing compatibility state breaks UI/CLI | High | A1 staged migration with `CPB_USE_PROJECTION` feature flag; delete writers only after readers move |
 | Cancel does not stop active ACP child | High | v1: phase-boundary cancel（runner 在 phase 间检查 cancelRequested）；v2: 需先建立 jobId <-> taskId/PID 绑定，再利用 executor registry 发 SIGTERM |
 | Redirect repeats after recovery | High | Add `job_redirect_consumed` event and materialization rule |
 | Workflow diverges across runner/supervisor/UI | High | Introduce `workflow-definition.js` before reviewer/complex workflow |
-| A1 迁移期 double-write 导致 UI 数据不一致 | High | `FLOW_USE_PROJECTION` feature flag 支持回退；迁移期两种路径都可验证 |
+| A1 迁移期 double-write 导致 UI 数据不一致 | High | `CPB_USE_PROJECTION` feature flag 支持回退；迁移期两种路径都可验证 |
 | `phase_activity` floods event log | Medium | 30s throttle and message truncation |
 | Diff verification violates verifier no-terminal policy | Medium | Runner generates diff artifact; verifier only reads |
 | YAML config adds dependency | Medium | Use `config.json` v1 or local restricted parser |
 | Existing docs mislead operators | Medium | A0 doc sync before runtime changes |
 | A7 profile loader 与现有 profiles/ 内容冲突 | Medium | A0 附加检查审计现有 soul.md；A7 预留 merge 策略 |
-| `FLOW_ACP_TOOL_POLICY` JSON 环境变量维护性差 | Medium | A5 改用扁平格式 `FLOW_ACP_DENY_TOOLS` + 可选 JSON 文件 |
+| `CPB_ACP_TOOL_POLICY` JSON 环境变量维护性差 | Medium | A5 改用扁平格式 `CPB_ACP_DENY_TOOLS` + 可选 JSON 文件 |
 | `workflow-definition.js` 单点故障 | Medium | 100% 分支覆盖单元测试，每个 workflow 变体至少 2 个测试 |
 | Lease TTL 不一致导致 supervisor 误判 | Low | 经核实 lock TTL 和 phase lease TTL 控制不同机制，无需统一，但需在代码中注释语义区分 |
-| 老统合计划 `2026-05-13-flow-unified-master-plan.md` 已 superseded，需保持标记防误用 | Low | A0 已加 superseded 警告头；如后续执行者仍误引用需再提醒 |
+| 老统合计划 `2026-05-13-cpb-unified-master-plan.md` 已 superseded，需保持标记防误用 | Low | A0 已加 superseded 警告头；如后续执行者仍误引用需再提醒 |
 | Event log 无限增长导致 replay 变慢 | Medium | R5 snapshot-based compaction + retention |
 | 工时估算偏乐观（6.5 天） | Low | 按 A0-A4 和 A5-A9 分两个 milestone 验收，中间设 checkpoint |
 
@@ -703,7 +703,7 @@ Feature acceptance:
 
 ## 九、Rejected changes
 
-Rejected: Delete `flow-task/state` immediately | current UI/API/CLI/tests still depend on it.
+Rejected: Delete `cpb-task/state` immediately | current UI/API/CLI/tests still depend on it.
 
 Rejected: Treat `job_cancel_requested` as terminal | request intent is not the same as runner shutdown.
 
@@ -729,9 +729,9 @@ Recommended execution lane:
 
 Suggested commit grouping:
 
-1. `Align runtime docs with flow-task root, audit existing profiles`
+1. `Align runtime docs with cpb-task root, audit existing profiles`
 2. `Serve project pipeline state from durable job projection`
-3. `Add FLOW_USE_PROJECTION feature flag for migration safety`
+3. `Add CPB_USE_PROJECTION feature flag for migration safety`
 4. `Add lease TTL semantics documentation`
 5. `Retire compatibility pipeline state writers`
 6. `Separate cancel and redirect control events`

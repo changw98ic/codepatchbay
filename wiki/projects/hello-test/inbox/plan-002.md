@@ -7,14 +7,14 @@ Phase: plan
 Create the project contribution guideline document `CONTRIBUTING.md` for `hello-test` with clear, enforceable instructions that match existing project decisions and role expectations.
 
 ## Scope
-- Write target: `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/plan-002.md` (this plan file)
-- Final output target (for follow-up implementation): `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/CONTRIBUTING.md`
+- Write target: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/inbox/plan-002.md` (this plan file)
+- Final output target (for follow-up implementation): `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/inbox/CONTRIBUTING.md`
 - Read-only reference scope:  
-  - `/Users/chengwen/dev/flow/profiles/codex/soul.md`
-  - `/Users/chengwen/dev/flow/wiki/projects/hello-test/context.md`
-  - `/Users/chengwen/dev/flow/wiki/projects/hello-test/decisions.md`
-  - `/Users/chengwen/dev/flow/wiki/system/handshake-protocol.md`
-  - `/Users/chengwen/dev/flow/templates/handoff/plan-to-execute.md`
+  - `__ABS_WORKSPACE_CPB_PATH__/profiles/codex/soul.md`
+  - `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/context.md`
+  - `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/decisions.md`
+  - `__ABS_WORKSPACE_CPB_PATH__/wiki/system/handshake-protocol.md`
+  - `__ABS_WORKSPACE_CPB_PATH__/templates/handoff/plan-to-execute.md`
 
 ## Plan (scope-matched: 6 steps)
 
@@ -47,12 +47,12 @@ Create the project contribution guideline document `CONTRIBUTING.md` for `hello-
      - A short glossary or terminology section is included if role/protocol terms are project-specific.
 
 6. Deliver and hand over
-   - Write `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/CONTRIBUTING.md` using the approved content and report back completion markers.
+   - Write `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/inbox/CONTRIBUTING.md` using the approved content and report back completion markers.
    - Acceptance:
      - File created at required location with the title phrase: **Create a CONTRIBUTING.md with contribution guidelines** present in the plan handoff.
      - Document is self-contained and directly executable by contributors without external dependency on this plan file.
 
 ## Execution constraints for Claude
 - Do not execute terminal commands.
-- Only write under `/Users/chengwen/dev/flow/wiki/projects/hello-test/inbox/`.
+- Only write under `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/hello-test/inbox/`.
 - Any assumptions beyond source files must be explicitly marked and justified.

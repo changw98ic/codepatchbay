@@ -1,14 +1,14 @@
 VERDICT: PASS
 
 Verification reference
-- Deliverable: `/Users/chengwen/dev/flow/wiki/projects/fatecat/outputs/deliverable-007.md` (hand-off: `claude -> codex`)
+- Deliverable: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/outputs/deliverable-007.md` (hand-off: `claude -> codex`)
 - Extracted `Task-Ref`: `plan-007`
-- Plan file: `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/plan-007.md`
+- Plan file: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/plan-007.md`
 
 Acceptance-Criteria review against `plan-007.md`
 1. Target file created at exact path
-- Evidence: `deliverable-007.md` states the file `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt` was created.
-- Evidence from direct read: `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt` exists and contains expected payload.
+- Evidence: `deliverable-007.md` states the file `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/hello.txt` was created.
+- Evidence from direct read: `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/hello.txt` exists and contains expected payload.
 - Result: PASS
 
 2. Greeting content is present, clear, and non-empty
@@ -22,7 +22,7 @@ Acceptance-Criteria review against `plan-007.md`
 - Result: PASS
 
 4. No file changes outside inbox path
-- Evidence: `deliverable-007.md` file-changes section lists only `/Users/chengwen/dev/flow/wiki/projects/fatecat/inbox/hello.txt`.
+- Evidence: `deliverable-007.md` file-changes section lists only `__ABS_WORKSPACE_CPB_PATH__/wiki/projects/fatecat/inbox/hello.txt`.
 - Result: PASS (based on provided handoff evidence)
 
 Decision summary

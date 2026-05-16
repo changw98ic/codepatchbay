@@ -4,20 +4,20 @@ set -euo pipefail
 # reviewer-review.sh — ACP + RTK: Reviewer code review
 # Usage: reviewer-review.sh <project> <deliverable-id>
 
-FLOW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=common.sh
-source "$FLOW_ROOT/bridges/common.sh"
+source "$CPB_ROOT/bridges/common.sh"
 
 PROJECT="${1:?Usage: reviewer-review.sh <project> <deliverable-id>}"
 DELIVERABLE_ID="${2:?Usage: reviewer-review.sh <project> <deliverable-id>}"
-WIKI_DIR="$FLOW_ROOT/wiki/projects/$PROJECT"
+WIKI_DIR="$CPB_ROOT/wiki/projects/$PROJECT"
 
 require_safe_name "$PROJECT"
 require_project "$PROJECT"
 require_file "$WIKI_DIR/outputs/deliverable-${DELIVERABLE_ID}.md"
 
-FLOW_ACP_CWD=$(get_project_path "$PROJECT")
-export FLOW_ACP_CWD
+CPB_ACP_CWD=$(get_project_path "$PROJECT")
+export CPB_ACP_CWD
 
 REVIEW_FILE="$WIKI_DIR/outputs/review-${DELIVERABLE_ID}.md"
 
@@ -33,16 +33,16 @@ fi
 DELIVERABLE_FILE="$WIKI_DIR/outputs/deliverable-${DELIVERABLE_ID}.md"
 
 constraints=""
-if [ "${FLOW_DANGEROUS:-0}" != "1" ]; then
+if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
   constraints="## Constraints
 - ONLY write the review to: $REVIEW_FILE
-- ONLY read files under: $FLOW_ROOT/wiki/projects/$PROJECT/ or $FLOW_ROOT/profiles/
+- ONLY read files under: $CPB_ROOT/wiki/projects/$PROJECT/ or $CPB_ROOT/profiles/
 - Do NOT execute terminal commands. This is a review-only phase.
 - Do NOT modify any code files."
 fi
 
 PROMPT=$(cat << PROMPT
-You are Flow Reviewer. Role: Code Review Expert
+You are CodePatchbay Reviewer. Role: Code Review Expert
 
 ## Task
 Review the deliverable for code quality, correctness, maintainability, and security.
@@ -54,7 +54,7 @@ $constraints
 ${PLAN_FILE:+- Implementation plan: $PLAN_FILE}
 - Project context: $WIKI_DIR/context.md
 - Decisions: $WIKI_DIR/decisions.md
-- Role definition: $FLOW_ROOT/profiles/reviewer/soul.md
+- Role definition: $CPB_ROOT/profiles/reviewer/soul.md
 
 ## Review Criteria
 Rate each area: Critical / Major / Minor / Suggestion

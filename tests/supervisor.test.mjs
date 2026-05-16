@@ -25,7 +25,7 @@ import {
 // nextPhaseFor tests (unchanged from original)
 // ---------------------------------------------------------------------------
 
-const root = await mkdtemp(path.join(tmpdir(), "flow-supervisor-"));
+const root = await mkdtemp(path.join(tmpdir(), "cpb-supervisor-"));
 
 const job = await createJob(root, {
   project: "demo",
@@ -358,7 +358,7 @@ assert.equal(autoState.status, "completed");
 // recoverAndRun with empty root (no jobs at all)
 // ---------------------------------------------------------------------------
 
-const emptyRoot = await mkdtemp(path.join(tmpdir(), "flow-supervisor-empty-"));
+const emptyRoot = await mkdtemp(path.join(tmpdir(), "cpb-supervisor-empty-"));
 const emptyResults = await recoverAndRun(emptyRoot);
 assert.deepEqual(emptyResults, []);
 

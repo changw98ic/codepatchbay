@@ -32,7 +32,7 @@ async function mustGit(args, cwd) {
   return result;
 }
 
-const project = await mkdtemp(path.join(tmpdir(), "flow-worktree-project-"));
+const project = await mkdtemp(path.join(tmpdir(), "cpb-worktree-project-"));
 await writeFile(path.join(project, "README.md"), "# Demo\n", "utf8");
 await writeFile(path.join(project, ".env"), "SECRET=do-not-stage\n", "utf8");
 
@@ -60,13 +60,13 @@ for (const pattern of [
   "dist/",
   "build/",
   "coverage/",
-  "flow-task/state/",
-  "flow-task/worktrees/",
+  "cpb-task/state/",
+  "cpb-task/worktrees/",
 ]) {
   assert.match(gitignore, new RegExp(`(^|\\n)${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\n|$)`));
 }
 
-const worktreesRoot = await mkdtemp(path.join(tmpdir(), "flow-worktrees-"));
+const worktreesRoot = await mkdtemp(path.join(tmpdir(), "cpb-worktrees-"));
 const create = await runManager([
   "create",
   "--project",
@@ -81,7 +81,7 @@ const create = await runManager([
 assert.equal(create.code, 0, `create failed\nstdout:\n${create.stdout}\nstderr:\n${create.stderr}`);
 
 const created = JSON.parse(create.stdout);
-assert.equal(created.branch, "flow/job-1-demo");
+assert.equal(created.branch, "cpb/job-1-demo");
 assert.equal(created.path, path.join(worktreesRoot, "job-1-demo"));
 assert.equal(await readFile(path.join(created.path, "README.md"), "utf8"), "# Demo\n");
 
@@ -112,14 +112,14 @@ for (const args of [
   assert.match(unsafe.stderr, /invalid (job-id|slug)/i);
 }
 
-const existingRepo = await mkdtemp(path.join(tmpdir(), "flow-existing-repo-"));
+const existingRepo = await mkdtemp(path.join(tmpdir(), "cpb-existing-repo-"));
 await writeFile(path.join(existingRepo, "README.md"), "# Existing\n", "utf8");
 await writeFile(path.join(existingRepo, ".env"), "SECRET=existing\n", "utf8");
 await mustGit(["init"], existingRepo);
 await mustGit(["add", "README.md"], existingRepo);
 await mustGit(["commit", "-m", "Initial"], existingRepo);
 
-const existingWorktreesRoot = await mkdtemp(path.join(tmpdir(), "flow-existing-worktrees-"));
+const existingWorktreesRoot = await mkdtemp(path.join(tmpdir(), "cpb-existing-worktrees-"));
 const existingCreate = await runManager([
   "create",
   "--project",
@@ -144,7 +144,7 @@ assert.equal(
   "expected required ignores to be committed into existing repo worktrees"
 );
 
-const stagedFeatureRepo = await mkdtemp(path.join(tmpdir(), "flow-staged-feature-"));
+const stagedFeatureRepo = await mkdtemp(path.join(tmpdir(), "cpb-staged-feature-"));
 await writeFile(path.join(stagedFeatureRepo, "README.md"), "# Staged Feature\n", "utf8");
 await mustGit(["init"], stagedFeatureRepo);
 await mustGit(["add", "README.md"], stagedFeatureRepo);
@@ -164,7 +164,7 @@ assert.equal(stagedFeatureIndex.stdout.trim(), "feature.txt");
 const stagedFeatureLog = await runGit(["log", "--format=%s"], stagedFeatureRepo);
 assert.deepEqual(stagedFeatureLog.stdout.trim().split("\n"), ["Initial"]);
 
-const stagedSecretRepo = await mkdtemp(path.join(tmpdir(), "flow-staged-secret-"));
+const stagedSecretRepo = await mkdtemp(path.join(tmpdir(), "cpb-staged-secret-"));
 await writeFile(path.join(stagedSecretRepo, "README.md"), "# Staged Secret\n", "utf8");
 await writeFile(path.join(stagedSecretRepo, ".env"), "SECRET=staged\n", "utf8");
 await mustGit(["init"], stagedSecretRepo);
@@ -180,7 +180,7 @@ assert.equal(stagedTrackedEnv.stdout.trim(), "", "bootstrap must unstage require
 const stagedIndex = await runGit(["diff", "--cached", "--name-only"], stagedSecretRepo);
 assert.equal(stagedIndex.stdout.trim(), "", "bootstrap must not leave required ignored paths staged");
 
-const outerRepo = await mkdtemp(path.join(tmpdir(), "flow-outer-repo-"));
+const outerRepo = await mkdtemp(path.join(tmpdir(), "cpb-outer-repo-"));
 await writeFile(path.join(outerRepo, "README.md"), "# Outer\n", "utf8");
 await mustGit(["init"], outerRepo);
 await mustGit(["add", "README.md"], outerRepo);

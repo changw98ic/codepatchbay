@@ -4,9 +4,9 @@ set -euo pipefail
 # init-project.sh — 初始化项目集成
 # Usage: init-project.sh <project-path> <project-name>
 
-FLOW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=common.sh
-source "$FLOW_ROOT/bridges/common.sh"
+source "$CPB_ROOT/bridges/common.sh"
 
 PROJECT_PATH="${1:?Usage: init-project.sh <project-path> <project-name>}"
 PROJECT_NAME="${2:?Usage: init-project.sh <project-path> <project-name>}"
@@ -23,14 +23,14 @@ if [ ! -d "$PROJECT_PATH" ]; then
   exit 1
 fi
 
-WIKI_DIR="$FLOW_ROOT/wiki/projects/$PROJECT_NAME"
+WIKI_DIR="$CPB_ROOT/wiki/projects/$PROJECT_NAME"
 if [ -d "$WIKI_DIR" ]; then
   echo -e "${RED}Error: '$PROJECT_NAME' already exists${NC}" >&2
   exit 1
 fi
 
 # 1. 从模板创建项目 Wiki
-cp -r "$FLOW_ROOT/wiki/projects/_template" "$WIKI_DIR"
+cp -r "$CPB_ROOT/wiki/projects/_template" "$WIKI_DIR"
 echo "Created: $WIKI_DIR"
 
 # 1.5 Store project metadata (source path for cwd resolution)
@@ -61,31 +61,31 @@ done
 
 # 4. 相对路径 symlink（可移植）
 mkdir -p "$PROJECT_PATH/.omc/wiki"
-if [ ! -L "$PROJECT_PATH/.omc/wiki/flow" ]; then
+if [ ! -L "$PROJECT_PATH/.omc/wiki/cpb" ]; then
   REL_PATH=$(WIKI_DIR="$WIKI_DIR" TARGET="$PROJECT_PATH/.omc/wiki" python3 -c \
     "import os.path; print(os.path.relpath(os.environ['WIKI_DIR'], os.environ['TARGET']))" 2>/dev/null \
     || echo "$WIKI_DIR")
-  ln -s "$REL_PATH" "$PROJECT_PATH/.omc/wiki/flow"
-  echo "Symlink: $PROJECT_PATH/.omc/wiki/flow -> $REL_PATH"
+  ln -s "$REL_PATH" "$PROJECT_PATH/.omc/wiki/cpb"
+  echo "Symlink: $PROJECT_PATH/.omc/wiki/cpb -> $REL_PATH"
 fi
 
-# 5. FLOW.md
-cat > "$PROJECT_PATH/FLOW.md" << EOF
-# Flow Configuration
-flow:
+# 5. CPB.md
+cat > "$PROJECT_PATH/CPB.md" << EOF
+# CodePatchbay Configuration
+cpb:
   project: $PROJECT_NAME
   codex_agent: planner
   claude_agent: executor
-  wiki_root: .omc/wiki/flow/
+  wiki_root: .omc/wiki/cpb/
   phases:
     plan: { agent: planner, model: auto }
     execute: { agent: executor, model: auto }
     verify: { agent: verifier, model: auto }
 EOF
 
-echo "Created: $PROJECT_PATH/FLOW.md"
+echo "Created: $PROJECT_PATH/CPB.md"
 echo ""
 echo "Project '$PROJECT_NAME' ready."
 echo "Wiki: $WIKI_DIR"
 echo ""
-echo "Next: flow plan $PROJECT_NAME \"<task>\""
+echo "Next: cpb plan $PROJECT_NAME \"<task>\""

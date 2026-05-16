@@ -8,24 +8,24 @@
 import { requestCancelJob, requestRedirectJob } from "../server/services/job-store.js";
 
 const [,, action, project, jobId, arg3, ...rest] = process.argv;
-const flowRoot = process.env.FLOW_ROOT;
+const cpbRoot = process.env.CPB_ROOT;
 
-if (!flowRoot) {
-  console.error("FLOW_ROOT env var required");
+if (!cpbRoot) {
+  console.error("CPB_ROOT env var required");
   process.exit(1);
 }
 
 try {
   let job;
   if (action === "cancel") {
-    job = await requestCancelJob(flowRoot, project, jobId, { reason: arg3 || undefined });
+    job = await requestCancelJob(cpbRoot, project, jobId, { reason: arg3 || undefined });
   } else if (action === "redirect") {
     if (!arg3) {
-      console.error("Usage: flow redirect <project> <jobId> \"<instructions>\" [reason]");
+      console.error("Usage: cpb redirect <project> <jobId> \"<instructions>\" [reason]");
       process.exit(1);
     }
     const reason = rest.join(" ") || undefined;
-    job = await requestRedirectJob(flowRoot, project, jobId, { instructions: arg3, reason });
+    job = await requestRedirectJob(cpbRoot, project, jobId, { instructions: arg3, reason });
   } else {
     console.error(`Unknown action: ${action}. Use cancel or redirect.`);
     process.exit(1);

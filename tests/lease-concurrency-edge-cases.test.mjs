@@ -15,7 +15,7 @@ describe('Lease concurrency edge cases', () => {
   let tmpRoot;
 
   beforeEach(async () => {
-    tmpRoot = await mkdtemp(path.join(tmpdir(), 'flow-lease-edge-'));
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-lease-edge-'));
   });
 
   afterEach(async () => {

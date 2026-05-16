@@ -398,7 +398,7 @@ async function waitForJob(project, jobId) {
 // --- Issue handling ---
 
 function scanPrompt() {
-  return `You are Flow Self-Evolve Scanner. Analyze the Flow codebase for improvement opportunities.
+  return `You are CodePatchbay Self-Evolve Scanner. Analyze the CodePatchbay codebase for improvement opportunities.
 
 Examine the codebase at ${CPB_ROOT} and identify issues. For each issue, output EXACTLY:
 
@@ -623,7 +623,7 @@ async function evolve(opts = {}) {
           job = { status: "completed", jobId };
         }
       } else {
-        // Review mode: full review session flow
+        // Review mode: full review session cpb
         const session = await createReviewSession(project, issue.description);
         await startReviewSession(session.sessionId);
         sessionId = session.sessionId;
