@@ -139,13 +139,17 @@ const cpbRoot = path.resolve(process.env.CPB_ROOT);
 const sub = process.env.CPB_HUB_SUB || 'status';
 const asJson = process.env.CPB_HUB_JSON === '1';
 const { hubStatus, listProjects, resolveHubRoot, workerStatus } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const { readHubLiveness } = await import(path.join(cpbRoot, 'server/services/hub-runtime.js'));
 const { AcpPool } = await import(path.join(cpbRoot, 'bridges/acp-pool.mjs'));
 const hubRoot = resolveHubRoot(cpbRoot);
 if (sub === 'status') {
   const status = await hubStatus(hubRoot);
-  if (asJson) console.log(JSON.stringify(status, null, 2));
+  const liveness = await readHubLiveness(hubRoot);
+  if (asJson) console.log(JSON.stringify({ ...status, liveness }, null, 2));
   else {
+    const liveTag = liveness.alive ? 'alive' : `down (${liveness.reason})`;
     console.log(`Hub: ${status.hubRoot}`);
+    console.log(`Server: ${liveTag}`);
     console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
     console.log(`Workers: ${status.workersOnline} online, ${status.workersStale} stale, ${status.workersOffline} offline`);
   }

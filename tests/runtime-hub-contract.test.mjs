@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   acquireLease, readLease, renewLease, releaseLease,
   appendEvent, readEvents, repairEventFile,
+  getJob, listJobs,
   hubQueueEnqueue, hubQueueDequeue, hubQueueList, hubQueueUpdate, hubQueueStatus,
   queuePush, queueList, queueClaim, queueComplete,
   pushBacklogIssue, listBacklog,
@@ -363,4 +364,45 @@ test("lease: renew rejects wrong owner token", skip, async () => {
     () => renewLease(cpbRoot, "lease-bad-1", { ttlMs: 60_000, ownerToken: "wrong-token" }),
     { message: /owner mismatch/ },
   );
+});
+
+// ─── Job Materialization (getJob / listJobs) ─────────────────────────
+
+test("job: getJob materializes events into correct state", skip, async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-job-materialize-"));
+  await appendEvent(cpbRoot, "demo", "j-mat-1", { type: "job_created", jobId: "j-mat-1", project: "demo", task: "materialize test", ts: "T0" });
+  await appendEvent(cpbRoot, "demo", "j-mat-1", { type: "phase_started", jobId: "j-mat-1", phase: "plan", leaseId: "l-1", ts: "T1" });
+  await appendEvent(cpbRoot, "demo", "j-mat-1", { type: "phase_completed", jobId: "j-mat-1", phase: "plan", ts: "T2" });
+  await appendEvent(cpbRoot, "demo", "j-mat-1", { type: "job_completed", jobId: "j-mat-1", ts: "T3" });
+
+  const job = await getJob(cpbRoot, "demo", "j-mat-1");
+  assert.equal(job.jobId, "j-mat-1");
+  assert.equal(job.project, "demo");
+  assert.equal(job.task, "materialize test");
+  assert.equal(job.status, "completed");
+  assert.equal(job.phase, "completed");
+  assert.equal(job.leaseId, null);
+  assert.equal(job.createdAt, "T0");
+});
+
+test("job: listJobs returns materialized jobs across projects", skip, async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-job-list-"));
+  await appendEvent(cpbRoot, "proj-a", "j-la", { type: "job_created", jobId: "j-la", project: "proj-a", task: "task a", ts: "T0" });
+  await appendEvent(cpbRoot, "proj-b", "j-lb", { type: "job_created", jobId: "j-lb", project: "proj-b", task: "task b", ts: "T1" });
+  await appendEvent(cpbRoot, "proj-a", "j-la", { type: "job_completed", jobId: "j-la", ts: "T2" });
+
+  const all = await listJobs(cpbRoot);
+  assert.equal(all.length, 2);
+
+  const filtered = await listJobs(cpbRoot, { project: "proj-a" });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].jobId, "j-la");
+  assert.equal(filtered[0].status, "completed");
+});
+
+test("job: getJob returns null state for missing job", skip, async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-job-missing-"));
+  const job = await getJob(cpbRoot, "demo", "no-such-job");
+  assert.equal(job.jobId, null);
+  assert.equal(job.status, null);
 });

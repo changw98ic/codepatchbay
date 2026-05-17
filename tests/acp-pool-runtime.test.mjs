@@ -59,7 +59,11 @@ test("managed ACP pool exposes live active and queued counts", async () => {
 
   const first = pool.execute("codex", "first");
   const second = pool.execute("codex", "second");
-  await waitFor(() => pool.status().pools.codex.active === 1 && pool.status().pools.codex.queued === 1);
+  await waitFor(() => (
+    pool.status().pools.codex.active === 1
+    && pool.status().pools.codex.queued === 1
+    && releases.length === 1
+  ));
 
   let status = pool.status().pools.codex;
   assert.equal(status.active, 1);

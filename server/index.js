@@ -107,6 +107,7 @@ try {
 // Graceful shutdown
 const shutdown = async (sig) => {
   console.log(`\n${sig} received, shutting down...`);
+  await hubRuntime.markDead().catch((err) => app.log.warn({ err }, 'failed to mark hub dead'));
   closeAll();
   await notifService.close();
   await watchers.stateWatcher?.close();

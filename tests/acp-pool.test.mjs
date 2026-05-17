@@ -365,7 +365,11 @@ test("ACP pool activeRequests reflects queued requests promoted on release", asy
   const first = pool.execute("codex", "first");
   const second = pool.execute("codex", "second");
   try {
-    await waitFor(() => resolvers.length === 1);
+    await waitFor(() => (
+      resolvers.length === 1
+      && pool.status().pools.codex.active === 1
+      && pool.status().pools.codex.queued === 1
+    ));
 
     assert.equal(pool.status().pools.codex.active, 1);
     assert.equal(pool.status().pools.codex.queued, 1);
@@ -455,6 +459,116 @@ test("ACP pool recycles a persistent ACP provider process by request count", asy
     assert.equal(status.sessionRequestCount, 1);
   } finally {
     await pool.stop();
+    if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
+  }
+});
+
+test("ACP pool recycles a persistent ACP provider process by session age", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-age-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-age-cpb-"));
+  const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
+  const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+    maxSessionAgeMs: 1,
+  });
+
+  try {
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "first.md")}`, cpbRoot);
+    const firstPid = pool.status().pools.codex.providerProcessPid;
+    assert.ok(firstPid > 0, "first persistent process should have a pid");
+
+    pool.sessions.get("codex").startedAt = Date.now() - 10_000;
+
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "second.md")}`, cpbRoot);
+
+    const status = pool.status().pools.codex;
+    assert.equal(status.spawnCount, 2, "age recycle should spawn a new process");
+    assert.equal(status.recycleCount, 1);
+    assert.ok(status.providerProcessPid > 0, "new process should have a pid");
+    assert.notEqual(status.providerProcessPid, firstPid, "recycled process should be different");
+  } finally {
+    await pool.stop();
+    if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
+  }
+});
+
+test("ACP pool recycles a persistent ACP provider process by idle timeout", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-idle-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-idle-cpb-"));
+  const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
+  const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+    sessionIdleMs: 1,
+  });
+
+  try {
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "first.md")}`, cpbRoot);
+    const firstPid = pool.status().pools.codex.providerProcessPid;
+    assert.ok(firstPid > 0);
+
+    // Simulate idle: set lastUsedAt far enough in the past to exceed sessionIdleMs
+    pool.sessions.get("codex").lastUsedAt = Date.now() - 10_000;
+
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "second.md")}`, cpbRoot);
+
+    const status = pool.status().pools.codex;
+    assert.equal(status.spawnCount, 2, "idle recycle should spawn a new process");
+    assert.equal(status.recycleCount, 1);
+    assert.notEqual(status.providerProcessPid, firstPid, "idle-recycled process should be different");
+  } finally {
+    await pool.stop();
+    if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
+  }
+});
+
+test("ACP pool stop closes persistent provider processes and clears pid/health", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-stop-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-stop-cpb-"));
+  const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
+  const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+  });
+
+  try {
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "plan.md")}`, cpbRoot);
+
+    const before = pool.status().pools.codex;
+    assert.ok(before.providerProcessPid > 0, "running process should have a pid");
+    assert.equal(before.providerProcessHealthy, true, "running process should be healthy");
+
+    await pool.stop();
+
+    const after = pool.status().pools.codex;
+    assert.equal(after.providerProcessPid, null, "stopped pool should have no pid");
+    assert.equal(after.providerProcessHealthy, null, "stopped pool should have no health state");
+  } finally {
     if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
     else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
     if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;

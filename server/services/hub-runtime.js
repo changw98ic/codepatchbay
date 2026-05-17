@@ -49,10 +49,49 @@ export function getHubRuntime(cpbRoot, hubRoot) {
     status() {
       return { ...meta, statePath };
     },
+
+    async markDead() {
+      const deadMeta = { ...meta, health: "dead", stoppedAt: new Date().toISOString() };
+      await writeAtomic(statePath, `${JSON.stringify(deadMeta, null, 2)}\n`);
+      return deadMeta;
+    },
   };
 
   instances.set(key, runtime);
   return runtime;
+}
+
+function isPidAlive(pid) {
+  if (!pid || typeof pid !== "number") return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function readHubLiveness(hubRoot) {
+  const statePath = path.join(path.resolve(hubRoot), "state", "hub.json");
+  try {
+    const raw = await readFile(statePath, "utf8");
+    const meta = JSON.parse(raw);
+
+    if (meta.health === "dead") {
+      return { alive: false, reason: "shutdown", pid: meta.pid, stoppedAt: meta.stoppedAt, startedAt: meta.startedAt };
+    }
+
+    if (!isPidAlive(meta.pid)) {
+      return { alive: false, reason: "process-gone", pid: meta.pid, startedAt: meta.startedAt };
+    }
+
+    return { alive: true, pid: meta.pid, startedAt: meta.startedAt, version: meta.version, runtime: meta.runtime };
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return { alive: false, reason: "no-hub-json" };
+    }
+    return { alive: false, reason: "read-error", error: err.message };
+  }
 }
 
 export function resetInstances() {

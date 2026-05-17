@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { getHubRuntime, resetInstances, RUNTIME_VERSION } from "../server/services/hub-runtime.js";
+import { getHubRuntime, resetInstances, RUNTIME_VERSION, readHubLiveness } from "../server/services/hub-runtime.js";
 
 describe("hub-runtime singleton", () => {
   let cpbRoot;
@@ -88,5 +88,56 @@ describe("hub-runtime singleton", () => {
     const second = JSON.parse(await readFile(rt.statePath, "utf8"));
     assert.strictEqual(first.startedAt, second.startedAt);
     assert.strictEqual(first.pid, second.pid);
+  });
+
+  it("markDead writes health=dead and stoppedAt", async () => {
+    const rt = getHubRuntime(cpbRoot, hubRoot);
+    await rt.persist();
+    const dead = await rt.markDead();
+    assert.equal(dead.health, "dead");
+    assert.ok(dead.stoppedAt);
+    assert.equal(dead.pid, process.pid);
+    assert.equal(dead.version, RUNTIME_VERSION);
+
+    const raw = JSON.parse(await readFile(rt.statePath, "utf8"));
+    assert.equal(raw.health, "dead");
+    assert.ok(raw.stoppedAt);
+  });
+
+  it("readHubLiveness returns alive for current process after persist", async () => {
+    const rt = getHubRuntime(cpbRoot, hubRoot);
+    await rt.persist();
+    const liveness = await readHubLiveness(hubRoot);
+    assert.equal(liveness.alive, true);
+    assert.equal(liveness.pid, process.pid);
+    assert.equal(liveness.version, RUNTIME_VERSION);
+  });
+
+  it("readHubLiveness returns dead after markDead", async () => {
+    const rt = getHubRuntime(cpbRoot, hubRoot);
+    await rt.persist();
+    await rt.markDead();
+    const liveness = await readHubLiveness(hubRoot);
+    assert.equal(liveness.alive, false);
+    assert.equal(liveness.reason, "shutdown");
+    assert.equal(liveness.pid, process.pid);
+  });
+
+  it("readHubLiveness returns process-gone for stale PID", async () => {
+    const rt = getHubRuntime(cpbRoot, hubRoot);
+    await rt.persist();
+    const raw = JSON.parse(await readFile(rt.statePath, "utf8"));
+    raw.pid = 999999999;
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(rt.statePath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    const liveness = await readHubLiveness(hubRoot);
+    assert.equal(liveness.alive, false);
+    assert.equal(liveness.reason, "process-gone");
+  });
+
+  it("readHubLiveness returns no-hub-json when no state file exists", async () => {
+    const liveness = await readHubLiveness(hubRoot);
+    assert.equal(liveness.alive, false);
+    assert.equal(liveness.reason, "no-hub-json");
   });
 });
