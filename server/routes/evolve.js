@@ -118,15 +118,34 @@ export async function evolveRoutes(fastify, opts) {
     if (!isIdle && state.status !== "running" && state.round > 0) {
       throw fastify.httpErrors.conflict(`cannot start while status is ${state.status}`);
     }
+    const priorStatus = state.status;
+
+    const script = evolveScriptPath(req.cpbRoot);
+    let child;
+    try {
+      child = spawn("node", [script], {
+        cwd: req.cpbRoot,
+        env: { ...process.env, CPB_ROOT: req.cpbRoot },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+      });
+    } catch (err) {
+      state.status = "failed";
+      await saveState(req.cpbRoot, state);
+      throw fastify.httpErrors.internalServerError(`spawn failed: ${err.message}`);
+    }
+
     state.status = "starting";
     await saveState(req.cpbRoot, state);
 
-    const script = evolveScriptPath(req.cpbRoot);
-    const child = spawn("node", [script], {
-      cwd: req.cpbRoot,
-      env: { ...process.env, CPB_ROOT: req.cpbRoot },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
+    child.on("error", async (err) => {
+      if (activeProcess === child) activeProcess = null;
+      const s = await loadState(req.cpbRoot);
+      if (s.status === "starting") {
+        s.status = "failed";
+        await saveState(req.cpbRoot, s);
+      }
+      process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
     });
 
     child.stdout.on("data", (chunk) => {
@@ -135,8 +154,15 @@ export async function evolveRoutes(fastify, opts) {
     child.stderr.on("data", (chunk) => {
       process.stderr.write(`[self-evolve] ${chunk}`);
     });
-    child.on("exit", () => {
+    child.on("exit", async (code) => {
       if (activeProcess === child) activeProcess = null;
+      if (code !== 0) {
+        const s = await loadState(req.cpbRoot);
+        if (s.status === "starting") {
+          s.status = "failed";
+          await saveState(req.cpbRoot, s);
+        }
+      }
     });
     activeProcess = child;
 
