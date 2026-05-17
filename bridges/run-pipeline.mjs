@@ -36,6 +36,7 @@ import {
   markDispatchStarted,
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
+import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
 
 // ─── CLI arg parsing ───
 
@@ -589,7 +590,7 @@ async function main() {
   if (dispatchEnabled() && hubRoot && sourcePath) {
     await guardDispatchSourcePath(hubRoot, project, sourcePath);
     if (!dispatchId) {
-      const dispatch = await recordDispatch(hubRoot, { projectId: project, sourcePath });
+      const dispatch = await recordDispatch(hubRoot, { projectId: project, sourcePath, sessionId: process.env.CPB_SESSION_ID || null, workerId: process.env.CPB_WORKER_ID || null });
       dispatchId = dispatch ? dispatch.dispatchId : null;
     }
     if (dispatchId) {
@@ -634,15 +635,15 @@ async function main() {
   // Create job
   const job = await createJob(cpbRoot, { project, task, workflow, jobId: jobIdOverride });
   const jobId = job.jobId;
-  if (sourcePath) {
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "execution_boundary",
-      jobId,
-      project,
-      sourcePath,
-      cwd: sourcePath,
-      ts: ts(),
-    });
+
+  const meta = buildMeta({
+    sourcePath,
+    sessionId: process.env.CPB_SESSION_ID || null,
+    workerId: process.env.CPB_WORKER_ID || null,
+  });
+
+  if (meta.sourcePath) {
+    await appendEvent(cpbRoot, project, jobId, executionBoundaryEvent(meta, { jobId, project, ts: ts() }));
   }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);

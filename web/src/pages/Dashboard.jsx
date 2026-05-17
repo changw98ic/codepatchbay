@@ -11,6 +11,7 @@ export default function Dashboard() {
   const [knowledgePolicy, setKnowledgePolicy] = useState(null);
   const [queueStatus, setQueueStatus] = useState(null);
   const [queueEntries, setQueueEntries] = useState([]);
+  const [hubDispatches, setHubDispatches] = useState([]);
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
@@ -37,14 +38,16 @@ export default function Dashboard() {
       fetch('/api/hub/knowledge-policy').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/queue/status').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/queue').then((r) => r.ok ? r.json() : []),
+      fetch('/api/hub/dispatches').then((r) => r.ok ? r.json() : []),
     ])
-      .then(([status, registryProjects, acp, policy, qStatus, qEntries]) => {
+      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches]) => {
         setHubStatus(status);
         setHubProjects(Array.isArray(registryProjects) ? registryProjects : []);
         setHubAcp(acp);
         setKnowledgePolicy(policy);
         setQueueStatus(qStatus);
         setQueueEntries(Array.isArray(qEntries) ? qEntries : []);
+        setHubDispatches(Array.isArray(dispatches) ? dispatches : []);
       })
       .catch(() => {});
   }, []);
@@ -124,6 +127,21 @@ export default function Dashboard() {
     return acc;
   }, {});
 
+  // Merge legacy project data into hub projects by matching name/id
+  const legacyByName = new Map(projects.map((p) => [p.name, p]));
+  const primaryProjects = hubProjects.map((hp) => {
+    const legacy = legacyByName.get(hp.id) || legacyByName.get(hp.name);
+    return { ...hp, ...(legacy || {}) };
+  });
+  const hubIds = new Set(hubProjects.map((p) => p.id));
+  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name) && !hubIds.has(p.name));
+
+  // Recent dispatches (non-pending, latest first, capped at 10)
+  const recentDispatches = hubDispatches
+    .filter((d) => d.status && d.status !== 'pending')
+    .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
+    .slice(0, 10);
+
   return (
     <div className="dashboard">
       <div className="dashboard-header">
@@ -150,18 +168,6 @@ export default function Dashboard() {
               <span>Outputs: {outputsTotal}</span>
             </p>
           )}
-          <div className="hub-project-list">
-            {hubProjects.length === 0 ? (
-              <span className="muted">Run <code>cpb attach</code> to register a project.</span>
-            ) : hubProjects.slice(0, 4).map((project) => (
-              <span className="hub-project-pill" key={project.id}>
-                {project.id}
-                {(project.workerDerivedStatus || project.worker?.status) && (
-                  <em>{project.workerDerivedStatus || project.worker.status}</em>
-                )}
-              </span>
-            ))}
-          </div>
           {hubAcp && (
             <div className="hub-acp-list" aria-label="ACP provider status">
               {Object.entries(hubAcp.pools || {}).map(([agent, info]) => {
@@ -202,16 +208,47 @@ export default function Dashboard() {
           )}
         </section>
       )}
-      {projects.length === 0 ? (
+      {/* Primary project grid — Hub-registered projects */}
+      {primaryProjects.length === 0 && secondaryProjects.length === 0 ? (
         <div className="empty-state">
-          <p>No projects found. Run <code>cpb init</code> to create one.</p>
+          <p>No projects found. Run <code>cpb init</code> to create one, or <code>cpb attach</code> to register with the Hub.</p>
         </div>
       ) : (
         <div className="project-grid">
-          {projects.map((p) => (
-            <Link to={`/project/${p.name}`} key={p.name} className="project-card">
+          {primaryProjects.map((p) => (
+            <Link to={`/project/${p.name || p.id}`} key={p.id} className="project-card">
+              <div className="card-header">
+                <h3>{p.name || p.id}</h3>
+                {(p.workerDerivedStatus || p.worker?.status) && (
+                  <span className={`badge badge-worker badge-${p.workerDerivedStatus || p.worker.status}`}>
+                    {p.workerDerivedStatus || p.worker.status}
+                  </span>
+                )}
+                {p.pipelineState && (
+                  <span className={`badge badge-${p.pipelineState.status}`}>
+                    {p.pipelineState.status}
+                  </span>
+                )}
+              </div>
+              {p.pipelineState && <PipelineStatus state={p.pipelineState} />}
+              <div className="card-stats">
+                <span>Inbox: {p.inbox || 0}</span>
+                <span>Outputs: {p.outputs || 0}</span>
+              </div>
+              {p.recentLog?.length > 0 && (
+                <div className="card-log">
+                  {p.recentLog.slice(-2).map((line, i) => (
+                    <div key={i} className="log-line">{line}</div>
+                  ))}
+                </div>
+              )}
+            </Link>
+          ))}
+          {secondaryProjects.map((p) => (
+            <Link to={`/project/${p.name}`} key={p.name} className="project-card project-card-secondary">
               <div className="card-header">
                 <h3>{p.name}</h3>
+                <span className="badge badge-local">local</span>
                 {p.pipelineState && (
                   <span className={`badge badge-${p.pipelineState.status}`}>
                     {p.pipelineState.status}
@@ -223,16 +260,28 @@ export default function Dashboard() {
                 <span>Inbox: {p.inbox}</span>
                 <span>Outputs: {p.outputs}</span>
               </div>
-              {p.recentLog?.length > 0 && (
-                <div className="card-log">
-                  {p.recentLog.slice(-2).map((line, i) => (
-                    <div key={i} className="log-line">{line}</div>
-                  ))}
-                </div>
-              )}
             </Link>
           ))}
         </div>
+      )}
+      {/* Recent Hub dispatches / runs */}
+      {recentDispatches.length > 0 && (
+        <section className="hub-dispatches panel" aria-label="Recent runs">
+          <h2>Recent Runs</h2>
+          {recentDispatches.map((d) => (
+            <div className="dispatch-row" key={d.dispatchId}>
+              <span className="dispatch-id">{d.dispatchId}</span>
+              <span className="dispatch-project">{d.projectId}</span>
+              <span className={`dispatch-status badge badge-${d.status === 'running' ? 'running' : d.status === 'completed' ? 'completed' : d.status === 'failed' ? 'failed' : 'assigned'}`}>
+                {d.status}
+              </span>
+              {d.workerId && <span className="dispatch-worker">{d.workerId}</span>}
+              {d.updatedAt && (
+                <span className="dispatch-time">{new Date(d.updatedAt).toLocaleTimeString()}</span>
+              )}
+            </div>
+          ))}
+        </section>
       )}
       {durableTasks.length > 0 && (
         <section className="durable-jobs panel">

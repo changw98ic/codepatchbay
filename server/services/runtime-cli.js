@@ -224,6 +224,40 @@ export async function queueComplete(cpbRoot, project, id) {
   ]);
 }
 
+export async function hubQueueEnqueue(hubRoot, input) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("hub-queue", "enqueue", hubRoot),
+    "--input", JSON.stringify(input),
+  ]);
+}
+
+export async function hubQueueDequeue(hubRoot) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("hub-queue", "dequeue", hubRoot),
+  ]);
+}
+
+export async function hubQueueList(hubRoot, { status, projectId } = {}) {
+  const args = [...baseArgs("hub-queue", "list", hubRoot)];
+  if (status) args.push("--status", status);
+  if (projectId) args.push("--project-id", projectId);
+  return await runRuntime(hubRoot, args);
+}
+
+export async function hubQueueUpdate(hubRoot, entryId, patch) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("hub-queue", "update", hubRoot),
+    "--entry-id", entryId,
+    "--patch", JSON.stringify(patch),
+  ]);
+}
+
+export async function hubQueueStatus(hubRoot) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("hub-queue", "status", hubRoot),
+  ]);
+}
+
 export async function getRuntimeBackend(cpbRoot) {
   const useRust = shouldUseRustRuntime();
   const bin = resolveRuntimeBin(cpbRoot);

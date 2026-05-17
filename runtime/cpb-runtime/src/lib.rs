@@ -926,6 +926,289 @@ pub fn queue_complete(cpb_root: &Path, project: &str, item_id: &str) -> Result<V
     Ok(json!({ "completed": true, "id": id }))
 }
 
+// --- Hub Queue (global queue at {hubRoot}/queue/queue.json) ---
+
+fn hub_queue_file(hub_root: &Path) -> PathBuf {
+    hub_root.join("queue").join("queue.json")
+}
+
+fn priority_score(priority: &str) -> u8 {
+    match priority {
+        "P0" => 0,
+        "P1" => 1,
+        "P2" => 2,
+        _ => 3,
+    }
+}
+
+fn hub_entry_key(entry: &Value) -> String {
+    let project = entry.get("projectId").and_then(Value::as_str).unwrap_or("");
+    let desc = entry.get("description").and_then(Value::as_str).unwrap_or("");
+    format!("{}::{}", project, desc)
+}
+
+fn generate_hub_queue_id() -> String {
+    let now = Utc::now();
+    let ts = now.timestamp();
+    let nanos = now.timestamp_nanos_opt().unwrap_or_default();
+    let suffix = ((nanos as u32).wrapping_mul(2654435761) >> 16) as u16;
+    format!("q-{:x}-{:04x}", ts, suffix)
+}
+
+fn string_or_null(input: &Map<String, Value>, key: &str) -> Value {
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| json!(value))
+        .unwrap_or(Value::Null)
+}
+
+struct HubQueue {
+    version: u32,
+    entries: Vec<Value>,
+}
+
+fn read_hub_queue(file: &Path) -> Result<HubQueue> {
+    let raw = read_json_or(file, json!({"version": 1, "entries": []}))?;
+    Ok(HubQueue {
+        version: raw.get("version").and_then(Value::as_u64).unwrap_or(1) as u32,
+        entries: raw.get("entries").and_then(Value::as_array).cloned().unwrap_or_default(),
+    })
+}
+
+fn write_hub_queue(file: &Path, queue: &HubQueue) -> Result<()> {
+    write_json_atomic(file, &json!({"version": queue.version, "entries": queue.entries}))
+}
+
+pub fn hub_queue_enqueue(hub_root: &Path, input: &Value) -> Result<Value> {
+    if !input.is_object() {
+        return Err(anyhow!("input must be an object"));
+    }
+    let input_obj = input.as_object().unwrap();
+    let project_id = input_obj
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow!("projectId is required"))?;
+
+    let file = hub_queue_file(hub_root);
+    let mut queue = read_hub_queue(&file)?;
+    let key = hub_entry_key(input);
+
+    for entry in &queue.entries {
+        if entry.get("status").and_then(Value::as_str) == Some("pending")
+            && hub_entry_key(entry) == key
+        {
+            return Ok(entry.clone());
+        }
+    }
+
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let source_path = string_or_null(input_obj, "sourcePath");
+    let session_id = string_or_null(input_obj, "sessionId");
+    let worker_id = string_or_null(input_obj, "workerId");
+    let cwd = match string_or_null(input_obj, "cwd") {
+        Value::Null => source_path.clone(),
+        value => value,
+    };
+    let execution_boundary = input_obj
+        .get("executionBoundary")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("source");
+
+    let mut entry = Map::new();
+    entry.insert("id".into(), json!(generate_hub_queue_id()));
+    entry.insert("projectId".into(), json!(project_id));
+    entry.insert("sourcePath".into(), source_path);
+    entry.insert("sessionId".into(), session_id);
+    entry.insert("workerId".into(), worker_id);
+    entry.insert("cwd".into(), cwd);
+    entry.insert("executionBoundary".into(), json!(execution_boundary));
+    entry.insert(
+        "type".into(),
+        input_obj.get("type").cloned().unwrap_or(json!("candidate")),
+    );
+    entry.insert("status".into(), json!("pending"));
+    entry.insert(
+        "priority".into(),
+        input_obj.get("priority").cloned().unwrap_or(json!("P2")),
+    );
+    entry.insert(
+        "description".into(),
+        input_obj
+            .get("description")
+            .cloned()
+            .unwrap_or(json!("")),
+    );
+    entry.insert(
+        "metadata".into(),
+        input_obj.get("metadata").cloned().unwrap_or(json!({})),
+    );
+    entry.insert("claimedBy".into(), Value::Null);
+    entry.insert("claimedAt".into(), Value::Null);
+    entry.insert("createdAt".into(), json!(now.clone()));
+    entry.insert("updatedAt".into(), json!(now));
+
+    let entry_value = Value::Object(entry);
+    queue.entries.push(entry_value.clone());
+    write_hub_queue(&file, &queue)?;
+    Ok(entry_value)
+}
+
+pub fn hub_queue_dequeue(hub_root: &Path) -> Result<Value> {
+    let file = hub_queue_file(hub_root);
+    let mut queue = read_hub_queue(&file)?;
+
+    let mut best_idx: Option<usize> = None;
+    let mut best_score = u8::MAX;
+    let mut best_time = String::new();
+
+    for (idx, entry) in queue.entries.iter().enumerate() {
+        if entry.get("status").and_then(Value::as_str) != Some("pending") {
+            continue;
+        }
+        let pri = entry
+            .get("priority")
+            .and_then(Value::as_str)
+            .map(priority_score)
+            .unwrap_or(3);
+        let time = entry
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if pri < best_score || (pri == best_score && time < best_time) {
+            best_idx = Some(idx);
+            best_score = pri;
+            best_time = time;
+        }
+    }
+
+    let Some(idx) = best_idx else {
+        return Ok(Value::Null);
+    };
+
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let entry_obj = queue.entries[idx].as_object_mut().unwrap();
+    entry_obj.insert("status".into(), json!("in_progress"));
+    entry_obj.insert("claimedAt".into(), json!(now.clone()));
+    entry_obj.insert("updatedAt".into(), json!(now));
+
+    let claimed = queue.entries[idx].clone();
+    write_hub_queue(&file, &queue)?;
+    Ok(claimed)
+}
+
+pub fn hub_queue_list(
+    hub_root: &Path,
+    status_filter: Option<&str>,
+    project_filter: Option<&str>,
+) -> Result<Vec<Value>> {
+    let queue = read_hub_queue(&hub_queue_file(hub_root))?;
+    Ok(queue
+        .entries
+        .into_iter()
+        .filter(|entry| {
+            if let Some(status) = status_filter {
+                if entry.get("status").and_then(Value::as_str) != Some(status) {
+                    return false;
+                }
+            }
+            if let Some(project) = project_filter {
+                if entry.get("projectId").and_then(Value::as_str) != Some(project) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect())
+}
+
+pub fn hub_queue_update(hub_root: &Path, entry_id: &str, patch: &Value) -> Result<Value> {
+    if !patch.is_object() {
+        return Err(anyhow!("patch must be an object"));
+    }
+    let file = hub_queue_file(hub_root);
+    let mut queue = read_hub_queue(&file)?;
+
+    let entry = queue
+        .entries
+        .iter_mut()
+        .find(|e| e.get("id").and_then(Value::as_str) == Some(entry_id));
+
+    let Some(entry) = entry else {
+        return Ok(Value::Null);
+    };
+
+    let entry_obj = entry.as_object_mut().unwrap();
+    let patch_obj = patch.as_object().unwrap();
+
+    if let Some(status) = patch_obj.get("status") {
+        entry_obj.insert("status".into(), status.clone());
+    }
+    if let Some(metadata) = patch_obj.get("metadata") {
+        let existing = entry_obj.get("metadata").cloned().unwrap_or(json!({}));
+        if let (Some(mut merged), Some(meta_obj)) =
+            (existing.as_object().cloned(), metadata.as_object())
+        {
+            for (k, v) in meta_obj {
+                merged.insert(k.clone(), v.clone());
+            }
+            entry_obj.insert("metadata".into(), Value::Object(merged));
+        }
+    }
+    if let Some(claimed_by) = patch_obj.get("claimedBy") {
+        entry_obj.insert("claimedBy".into(), claimed_by.clone());
+    }
+    if let Some(worker_id) = patch_obj.get("workerId") {
+        entry_obj.insert("workerId".into(), worker_id.clone());
+    }
+    entry_obj.insert(
+        "updatedAt".into(),
+        json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+    );
+
+    let result = entry.clone();
+    write_hub_queue(&file, &queue)?;
+    Ok(result)
+}
+
+pub fn hub_queue_status(hub_root: &Path) -> Result<Value> {
+    let queue = read_hub_queue(&hub_queue_file(hub_root))?;
+
+    let mut pending = 0u64;
+    let mut in_progress = 0u64;
+    let mut completed = 0u64;
+    let mut failed = 0u64;
+    let mut cancelled = 0u64;
+
+    for entry in &queue.entries {
+        match entry
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+        {
+            "pending" => pending += 1,
+            "in_progress" => in_progress += 1,
+            "completed" => completed += 1,
+            "failed" => failed += 1,
+            "cancelled" => cancelled += 1,
+            _ => {}
+        }
+    }
+
+    Ok(json!({
+        "total": queue.entries.len(),
+        "pending": pending,
+        "inProgress": in_progress,
+        "completed": completed,
+        "failed": failed,
+        "cancelled": cancelled,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

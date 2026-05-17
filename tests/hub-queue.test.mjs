@@ -161,4 +161,52 @@ describe("hub-queue service", () => {
     const top = await peekQueue(hubRoot);
     assert.equal(top.description, "a");
   });
+
+  test("enqueue carries workerId and cwd metadata", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
+    const entry = await enqueue(hubRoot, {
+      projectId: "meta-test",
+      sourcePath: "/repos/project",
+      sessionId: "sess-abc",
+      workerId: "worker-2",
+      cwd: "/repos/project/worktree",
+    });
+
+    assert.equal(entry.workerId, "worker-2");
+    assert.equal(entry.cwd, "/repos/project/worktree");
+    assert.equal(entry.sessionId, "sess-abc");
+  });
+
+  test("enqueue makes missing sessionId/workerId explicit null", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
+    const entry = await enqueue(hubRoot, {
+      projectId: "null-meta",
+      sourcePath: "/repos/project",
+    });
+
+    assert.equal(entry.sessionId, null);
+    assert.equal(entry.workerId, null);
+    assert.equal(entry.cwd, "/repos/project");
+  });
+
+  test("enqueue defaults cwd to sourcePath when cwd not provided", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
+    const entry = await enqueue(hubRoot, {
+      projectId: "cwd-default",
+      sourcePath: "/repos/auto-cwd",
+    });
+
+    assert.equal(entry.cwd, "/repos/auto-cwd");
+    assert.equal(entry.sourcePath, "/repos/auto-cwd");
+  });
+
+  test("enqueue makes missing sourcePath explicit null with null cwd", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
+    const entry = await enqueue(hubRoot, {
+      projectId: "no-source",
+    });
+
+    assert.equal(entry.sourcePath, null);
+    assert.equal(entry.cwd, null);
+  });
 });

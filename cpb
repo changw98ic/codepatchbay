@@ -20,7 +20,7 @@ for arg in "$@"; do
   [ "$arg" = "--dangerous" ] && continue
   filtered_args+=("$arg")
 done
-set -- "${filtered_args[@]}"
+set -- "${filtered_args[@]+"${filtered_args[@]}"}"
 
 # Colors (defined here so they're always available even if source fails)
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -40,6 +40,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}attach${NC} [path] [name]                  将当前/指定项目接入全局 Hub
   ${CYAN}hub${NC} [status|projects|acp|queue|queue-status] [--json]    查看全局 Hub 状态
   ${CYAN}worker${NC} heartbeat [path] [name]        上报项目 worker 心跳
+  ${CYAN}worker${NC} run [path] [name] [--once] [--workflow blocked]  启动项目 worker 拉取队列执行
   ${CYAN}knowledge${NC} policy [--json]             查看知识层写入边界
   ${CYAN}plan${NC} <project> "<task>"               Codex 规划
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
@@ -107,7 +108,8 @@ check_deps() {
 
 cmd_init()     { "$CPB_ROOT/bridges/init-project.sh" "$@"; }
 cmd_attach() {
-  local project_path="${1:-$PWD}"
+  local project_path
+  project_path="$(resolve_repo_root "${1:-$PWD}")"
   local project_name="${2:-}"
   CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" PROJECT_PATH="$project_path" PROJECT_NAME="$project_name" node --input-type=module - <<'NODE'
 import path from 'node:path';
@@ -228,7 +230,8 @@ cmd_worker() {
   shift || true
   case "$sub" in
     heartbeat)
-      local project_path="${1:-$PWD}"
+      local project_path
+      project_path="$(resolve_repo_root "${1:-$PWD}")"
       local project_name="${2:-}"
       CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" PROJECT_PATH="$project_path" PROJECT_NAME="$project_name" node --input-type=module - <<'NODE'
 import path from 'node:path';
@@ -247,8 +250,43 @@ const updated = await heartbeatWorker(hubRoot, project.id, {
 console.log(JSON.stringify({ heartbeat: true, hubRoot, project: updated }, null, 2));
 NODE
       ;;
+    run)
+      local project_path="$PWD"
+      if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
+        project_path="$1"
+        shift
+      fi
+      project_path="$(resolve_repo_root "$project_path")"
+      local project_name=""
+      if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
+        project_name="$1"
+        shift
+      fi
+      local worker_args_json
+      worker_args_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- "$@")"
+      # Register project first, then start worker with its ID
+      CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" PROJECT_PATH="$project_path" PROJECT_NAME="$project_name" WORKER_ARGS_JSON="$worker_args_json" node --input-type=module - <<'NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const sourcePath = path.resolve(process.env.PROJECT_PATH || process.cwd());
+const name = process.env.PROJECT_NAME || path.basename(sourcePath);
+const { registerProject, resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const hubRoot = resolveHubRoot(cpbRoot);
+const project = await registerProject(hubRoot, { name, sourcePath });
+const args = JSON.parse(process.env.WORKER_ARGS_JSON || '[]');
+const nodeArgs = ['--project', project.id, ...args];
+const { spawn } = await import('node:child_process');
+const child = spawn(process.execPath, [path.join(cpbRoot, 'bridges', 'project-worker.mjs'), ...nodeArgs], {
+  cwd: cpbRoot,
+  env: { ...process.env, CPB_ROOT: cpbRoot, CPB_HUB_ROOT: hubRoot },
+  stdio: 'inherit',
+});
+child.on('close', (code) => process.exit(code));
+child.on('error', (err) => { console.error(err.message); process.exit(1); });
+NODE
+      ;;
     *)
-      echo -e "${RED}Usage: cpb worker heartbeat [path] [name]${NC}" >&2
+      echo -e "${RED}Usage: cpb worker <heartbeat|run> [path] [name] [flags]${NC}" >&2
       exit 1
       ;;
   esac
@@ -1147,7 +1185,21 @@ cmd_install() {
 }
 
 # Main
-case "${1:-help}" in
+if [ $# -eq 0 ]; then
+  # Auto-discover: if inside a git repo outside CPB install root, attach to Hub
+  _git_root="$(git rev-parse --show-toplevel 2>/dev/null)" || true
+  if [ -n "$_git_root" ] && [ "$_git_root" != "$CPB_ROOT" ] && [[ "$_git_root" != "$CPB_ROOT"/* ]]; then
+    echo -e "${BOLD}Auto-discovered git repo:${NC} $_git_root"
+    cmd_attach "$_git_root" "$(basename "$_git_root")"
+    exit $?
+  fi
+  usage
+  echo ""
+  check_deps
+  exit 0
+fi
+
+case "$1" in
   init)     shift; cmd_init "$@" ;;
   attach)   shift; cmd_attach "$@" ;;
   hub)      shift; cmd_hub "$@" ;;

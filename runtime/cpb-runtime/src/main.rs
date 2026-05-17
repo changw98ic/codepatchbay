@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use cpb_runtime::{
-    acquire_lease, append_event, compile_policy, get_job, get_rate_limit, list_backlog,
+    acquire_lease, append_event, compile_policy, get_job, get_rate_limit, hub_queue_dequeue,
+    hub_queue_enqueue, hub_queue_list, hub_queue_status, hub_queue_update, list_backlog,
     list_jobs, list_registry_projects, push_backlog_issue, queue_claim, queue_complete,
     queue_list, queue_push, read_events, read_lease, release_lease, renew_lease,
     repair_event_file, set_rate_limit, upsert_registry_project,
@@ -175,6 +176,25 @@ fn run() -> Result<()> {
                 "bin": exe.to_string_lossy(),
             }))
         }
+        ("hub-queue", "enqueue") => {
+            let input: Value = serde_json::from_str(required(&options, "input")?)?;
+            print_json(hub_queue_enqueue(&cpb_root(&options)?, &input)?)
+        }
+        ("hub-queue", "dequeue") => print_json(hub_queue_dequeue(&cpb_root(&options)?)?),
+        ("hub-queue", "list") => print_json(Value::Array(hub_queue_list(
+            &cpb_root(&options)?,
+            options.get("status").map(String::as_str),
+            options.get("project-id").map(String::as_str),
+        )?)),
+        ("hub-queue", "update") => {
+            let patch: Value = serde_json::from_str(required(&options, "patch")?)?;
+            print_json(hub_queue_update(
+                &cpb_root(&options)?,
+                required(&options, "entry-id")?,
+                &patch,
+            )?)
+        }
+        ("hub-queue", "status") => print_json(hub_queue_status(&cpb_root(&options)?)?),
         _ => Err(anyhow!("unknown command: {group} {command}")),
     }
 }

@@ -117,6 +117,31 @@ describe("dispatch-state service", () => {
   test("makeDispatchId rejects invalid timestamp", () => {
     assert.throws(() => makeDispatchId("not-a-date"), /invalid timestamp/);
   });
+
+  test("createDispatch carries cwd and defaults it to sourcePath", async () => {
+    const dispatch = await createDispatch(hubRoot, {
+      projectId: "cwd-test",
+      sourcePath: "/repos/project",
+      sessionId: "sess-1",
+      workerId: "worker-1",
+    });
+
+    assert.equal(dispatch.cwd, "/repos/project");
+    assert.equal(dispatch.sourcePath, "/repos/project");
+    assert.equal(dispatch.sessionId, "sess-1");
+    assert.equal(dispatch.workerId, "worker-1");
+  });
+
+  test("createDispatch makes missing sessionId/workerId/cwd explicit null", async () => {
+    const dispatch = await createDispatch(hubRoot, {
+      projectId: "null-fields",
+    });
+
+    assert.equal(dispatch.sourcePath, null);
+    assert.equal(dispatch.sessionId, null);
+    assert.equal(dispatch.workerId, null);
+    assert.equal(dispatch.cwd, null);
+  });
 });
 
 describe("worker-dispatch guard", () => {

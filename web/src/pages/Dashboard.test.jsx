@@ -27,6 +27,7 @@ const baseMap = {
   '/api/hub/knowledge-policy': null,
   '/api/hub/queue/status': null,
   '/api/hub/queue': [],
+  '/api/hub/dispatches': [],
 };
 
 describe('Dashboard Hub panel', () => {
@@ -67,6 +68,7 @@ describe('Dashboard Hub panel', () => {
       }
       if (url === '/api/hub/queue/status') return jsonResponse(null);
       if (url === '/api/hub/queue') return jsonResponse([]);
+      if (url === '/api/hub/dispatches') return jsonResponse([]);
       return jsonResponse(null);
     });
   });
@@ -81,8 +83,6 @@ describe('Dashboard Hub panel', () => {
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.getByText('1 registered projects')).toBeInTheDocument();
     expect(screen.getByText(/1 online/)).toBeInTheDocument();
-    expect(screen.getByText('calc-test')).toBeInTheDocument();
-    expect(screen.getByText('online')).toBeInTheDocument();
     expect(screen.getByLabelText('ACP provider status')).toBeInTheDocument();
     expect(screen.getByText('codex')).toBeInTheDocument();
     expect(screen.getByText('bounded-one-shot')).toBeInTheDocument();
@@ -96,6 +96,7 @@ describe('Dashboard Hub panel', () => {
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/knowledge-policy');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue/status');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/dispatches');
   });
 });
 
@@ -138,6 +139,79 @@ describe('Dashboard Hub worker status aggregation', () => {
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.getByText(/1 online/)).toBeInTheDocument();
     expect(screen.getByText(/1 offline/)).toBeInTheDocument();
+  });
+});
+
+describe('Dashboard Hub projects as primary project list', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('renders Hub-registered projects as primary cards with worker status badges', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+        { id: 'proj-b', sourcePath: '/b', worker: { status: 'offline' }, workerDerivedStatus: 'offline' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    // Hub projects appear as primary cards (h3 headers)
+    await waitFor(() => expect(screen.getByText('proj-a')).toBeInTheDocument());
+    expect(screen.getByText('proj-b')).toBeInTheDocument();
+    // Worker status badges on cards
+    const onlineBadges = screen.getAllByText('online');
+    expect(onlineBadges.length).toBeGreaterThanOrEqual(1);
+    const offlineBadges = screen.getAllByText('offline');
+    expect(offlineBadges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('merges legacy project data (inbox/outputs) into Hub project cards', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/projects': [
+        { name: 'proj-a', inbox: 7, outputs: 3 },
+      ],
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('proj-a')).toBeInTheDocument());
+    // Inbox/outputs from legacy merged into Hub card (appears in panel summary and card stats)
+    expect(screen.getAllByText(/Inbox: 7/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Outputs: 3/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows legacy-only projects as secondary cards with local badge', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/projects': [
+        { name: 'legacy-only', inbox: 2, outputs: 1 },
+      ],
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'hub-proj', sourcePath: '/h', worker: { status: 'online' } },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('legacy-only')).toBeInTheDocument());
+    expect(screen.getByText('local')).toBeInTheDocument();
+    expect(screen.getByText('hub-proj')).toBeInTheDocument();
+  });
+
+  it('shows empty state when no Hub projects and no legacy projects', async () => {
+    global.fetch = mockFetch(baseMap);
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText(/No projects found/)).toBeInTheDocument());
   });
 });
 
@@ -332,5 +406,165 @@ describe('Dashboard Hub queue status display', () => {
     expect(screen.getByText('proj-2')).toBeInTheDocument();
     expect(screen.queryByText('proj-3')).not.toBeInTheDocument();
     expect(screen.queryByText('proj-4')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard Hub dispatches / Recent Runs', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows Recent Runs section when dispatches exist', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': [
+        {
+          dispatchId: 'dispatch-20260517-080000-abc',
+          projectId: 'proj-a',
+          status: 'completed',
+          workerId: 'worker-1',
+          createdAt: '2026-05-17T08:00:00Z',
+          updatedAt: '2026-05-17T08:05:00Z',
+        },
+        {
+          dispatchId: 'dispatch-20260517-090000-def',
+          projectId: 'proj-b',
+          status: 'running',
+          workerId: 'worker-2',
+          createdAt: '2026-05-17T09:00:00Z',
+          updatedAt: '2026-05-17T09:03:00Z',
+        },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByLabelText('Recent runs')).toBeInTheDocument());
+    expect(screen.getByText('Recent Runs')).toBeInTheDocument();
+    expect(screen.getByText('dispatch-20260517-080000-abc')).toBeInTheDocument();
+    expect(screen.getByText('dispatch-20260517-090000-def')).toBeInTheDocument();
+    // proj-a and proj-b appear in both project cards and dispatch rows
+    expect(screen.getAllByText('proj-a').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('proj-b').length).toBeGreaterThanOrEqual(1);
+    // Status badges
+    expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(screen.getByText('running')).toBeInTheDocument();
+    // Worker IDs
+    expect(screen.getByText('worker-1')).toBeInTheDocument();
+    expect(screen.getByText('worker-2')).toBeInTheDocument();
+  });
+
+  it('shows failed dispatch with failed badge', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': [
+        {
+          dispatchId: 'dispatch-20260517-100000-xyz',
+          projectId: 'proj-a',
+          status: 'failed',
+          createdAt: '2026-05-17T10:00:00Z',
+          updatedAt: '2026-05-17T10:02:00Z',
+        },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Recent Runs')).toBeInTheDocument());
+    expect(screen.getByText('failed')).toBeInTheDocument();
+    // No worker ID displayed when absent
+    expect(screen.queryByText('worker-')).not.toBeInTheDocument();
+  });
+
+  it('hides pending dispatches from Recent Runs', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': [
+        {
+          dispatchId: 'dispatch-20260517-110000-pend',
+          projectId: 'proj-a',
+          status: 'pending',
+          createdAt: '2026-05-17T11:00:00Z',
+          updatedAt: '2026-05-17T11:00:00Z',
+        },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
+    expect(screen.queryByText('dispatch-20260517-110000-pend')).not.toBeInTheDocument();
+  });
+
+  it('caps Recent Runs to 10 entries sorted by updatedAt desc', async () => {
+    const dispatches = Array.from({ length: 12 }, (_, i) => ({
+      dispatchId: `dispatch-20260517-${String(i).padStart(6, '0')}-xx`,
+      projectId: `proj-${i}`,
+      status: 'completed',
+      createdAt: `2026-05-17T${String(i).padStart(2, '0')}:00:00Z`,
+      updatedAt: `2026-05-17T${String(i).padStart(2, '0')}:05:00Z`,
+    }));
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': dispatches,
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Recent Runs')).toBeInTheDocument());
+    // Latest dispatch (index 11, sorted desc by updatedAt) should be present
+    expect(screen.getByText('dispatch-20260517-000011-xx')).toBeInTheDocument();
+    // The earliest (index 0, 1) should be hidden (only 10 shown)
+    expect(screen.queryByText('dispatch-20260517-000000-xx')).not.toBeInTheDocument();
+    expect(screen.queryByText('dispatch-20260517-000001-xx')).not.toBeInTheDocument();
+  });
+
+  it('hides Recent Runs section when all dispatches are pending', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': [
+        { dispatchId: 'd1', projectId: 'proj-a', status: 'pending', createdAt: '2026-05-17T08:00:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
+  });
+
+  it('gracefully handles null dispatches response', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/dispatches': null,
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
   });
 });

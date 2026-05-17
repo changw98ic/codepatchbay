@@ -24,6 +24,7 @@ import {
 } from "../server/services/worker-dispatch.js";
 import { checkPolicy } from "../server/services/evolve-policy.js";
 import { closeBudget, consume, createBudget } from "../server/services/evolve-budget.js";
+import { enqueue as hubEnqueue, listQueue as hubListQueue, queueStatus as hubQueueStatus } from "../server/services/hub-queue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -152,19 +153,50 @@ function ageScore(issue) {
 }
 
 export class CrossProjectPriorityQueue {
-  constructor(projects) {
+  constructor(projects, hubRoot = null) {
     this.projects = projects;
+    this.hubRoot = hubRoot;
   }
 
   async candidates() {
     const candidates = [];
+    const seen = new Set();
+
     for (const project of this.projects) {
       if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
       const backlog = await loadBacklog(project.sourcePath, project.id);
       for (const issue of backlog.filter((item) => item.status === "pending")) {
+        const key = `${project.id}::${issue.description}`;
+        seen.add(key);
         candidates.push({ ...issue, project: project.id, sourcePath: project.sourcePath, weight: project.weight || 1 });
       }
     }
+
+    if (this.hubRoot) {
+      try {
+        const hubEntries = await hubListQueue(this.hubRoot, { status: "pending" });
+        for (const entry of hubEntries) {
+          const key = `${entry.projectId}::${entry.description}`;
+          if (seen.has(key)) continue;
+          const project = this.projects.find((p) => p.id === entry.projectId);
+          if (!project) continue;
+          if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
+          seen.add(key);
+          candidates.push({
+            id: entry.id,
+            priority: entry.priority,
+            description: entry.description,
+            status: "pending",
+            createdAt: entry.createdAt,
+            project: entry.projectId,
+            sourcePath: entry.sourcePath || project.sourcePath,
+            weight: project.weight || 1,
+            _source: "hub_queue",
+          });
+        }
+      } catch { /* hub queue read failure must not block candidate selection */ }
+    }
+
     candidates.sort((a, b) => {
       const pa = priorityScore(a.priority);
       const pb = priorityScore(b.priority);
@@ -206,6 +238,25 @@ export class MultiEvolveController {
     const output = fixture || await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs);
     const issues = parseScanResults(output);
     const result = await pushIssues(project.sourcePath, project.id, issues);
+
+    if (this.hubRoot && issues.length > 0) {
+      const sessionId = process.env.CPB_SESSION_ID || "";
+      const executionBoundary = process.env.CPB_EXECUTION_BOUNDARY || "source";
+      for (const issue of issues) {
+        try {
+          await hubEnqueue(this.hubRoot, {
+            projectId: project.id,
+            sourcePath: project.sourcePath,
+            sessionId,
+            executionBoundary,
+            priority: issue.priority,
+            description: issue.description,
+            type: "candidate",
+          });
+        } catch { /* hub queue write failure must not block scan */ }
+      }
+    }
+
     await appendHistory(project.sourcePath, project.id, { action: "scan", issues: issues.length, agent });
     return { project: project.id, issues, ...result };
   }
@@ -254,7 +305,7 @@ export class MultiEvolveController {
   }
 
   async pickNextIssue() {
-    return new CrossProjectPriorityQueue(this.projects).dequeue();
+    return new CrossProjectPriorityQueue(this.projects, this.hubRoot).dequeue();
   }
 
   async executeIssue(issue, { workflow = "standard" } = {}) {
@@ -268,6 +319,8 @@ export class MultiEvolveController {
       const dispatch = await recordDispatch(this.hubRoot, {
         projectId: issue.project,
         sourcePath: issue.sourcePath,
+        sessionId: process.env.CPB_SESSION_ID || null,
+        workerId: process.env.CPB_WORKER_ID || null,
       });
       dispatchId = dispatch ? dispatch.dispatchId : null;
       if (dispatchId) {
@@ -287,7 +340,14 @@ export class MultiEvolveController {
       if (dispatchId) args.push("--dispatch-id", dispatchId);
       const child = spawn(process.execPath, args, {
         cwd: this.cpbRoot,
-        env: { ...process.env, CPB_ROOT: this.cpbRoot, CPB_PROJECT_PATH_OVERRIDE: issue.sourcePath, CPB_ACP_CWD: issue.sourcePath },
+        env: {
+          ...process.env,
+          CPB_ROOT: this.cpbRoot,
+          CPB_PROJECT_PATH_OVERRIDE: issue.sourcePath,
+          CPB_ACP_CWD: issue.sourcePath,
+          CPB_SESSION_ID: process.env.CPB_SESSION_ID || "",
+          CPB_WORKER_ID: process.env.CPB_WORKER_ID || "",
+        },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
@@ -315,11 +375,15 @@ export class MultiEvolveController {
   async runOnce(opts = {}) {
     await this.init(opts);
     if (opts.scan) await this.scanAll(opts);
-    const queue = new CrossProjectPriorityQueue(this.projects);
+    const queue = new CrossProjectPriorityQueue(this.projects, this.hubRoot);
     const candidates = await queue.candidates();
     const next = candidates[0] || null;
     if (opts.dryRun || !next) {
-      return { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
+      const response = { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
+      if (this.hubRoot) {
+        try { response.hubQueue = await hubQueueStatus(this.hubRoot); } catch { /* non-blocking */ }
+      }
+      return response;
     }
     const identity = next.id || next.description;
     const claimed = await claimIssue(next.sourcePath, next.project, identity);
@@ -371,7 +435,7 @@ export class MultiEvolveController {
         }
       }
 
-      const queue = new CrossProjectPriorityQueue(this.projects);
+      const queue = new CrossProjectPriorityQueue(this.projects, this.hubRoot);
       const candidates = await queue.candidates();
       const next = candidates[0] || null;
 
@@ -451,7 +515,7 @@ export class MultiEvolveController {
         }
       }
 
-      const queue = new CrossProjectPriorityQueue(this.projects);
+      const queue = new CrossProjectPriorityQueue(this.projects, this.hubRoot);
       const next = await queue.dequeue();
       if (!next) break;
       totalRounds++;

@@ -6,6 +6,15 @@ import test from "node:test";
 
 import { AcpPool, RateLimitError, sanitizeProviderReason } from "../bridges/acp-pool.mjs";
 
+async function waitFor(predicate, { timeoutMs = 1_000, intervalMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.fail("condition was not met before timeout");
+}
+
 test("ACP pool defaults durable state to the global Hub root", async () => {
   const previousHubRoot = process.env.CPB_HUB_ROOT;
   delete process.env.CPB_HUB_ROOT;
@@ -301,21 +310,25 @@ test("ACP pool activeRequests reflects queued requests promoted on release", asy
 
   const first = pool.execute("codex", "first");
   const second = pool.execute("codex", "second");
-  await new Promise((r) => setTimeout(r, 10));
+  try {
+    await waitFor(() => resolvers.length === 1);
 
-  assert.equal(pool.status().pools.codex.active, 1);
-  assert.equal(pool.status().pools.codex.queued, 1);
+    assert.equal(pool.status().pools.codex.active, 1);
+    assert.equal(pool.status().pools.codex.queued, 1);
 
-  resolvers[0]("ok-1");
-  await first;
-  await new Promise((r) => setTimeout(r, 10));
+    resolvers[0]("ok-1");
+    await first;
+    await waitFor(() => resolvers.length === 2);
 
-  assert.equal(pool.status().pools.codex.active, 1);
-  assert.equal(pool.status().pools.codex.activeRequests.length, 1);
+    assert.equal(pool.status().pools.codex.active, 1);
+    assert.equal(pool.status().pools.codex.activeRequests.length, 1);
 
-  resolvers[1]("ok-2");
-  await second;
+    resolvers[1]("ok-2");
+    await second;
 
-  assert.equal(pool.status().pools.codex.active, 0);
-  assert.equal(pool.status().pools.codex.activeRequests.length, 0);
+    assert.equal(pool.status().pools.codex.active, 0);
+    assert.equal(pool.status().pools.codex.activeRequests.length, 0);
+  } finally {
+    for (const resolve of resolvers) resolve("cleanup");
+  }
 });

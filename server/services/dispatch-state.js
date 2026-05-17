@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { buildMeta } from "./execution-meta.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -52,6 +53,7 @@ export function materializeDispatch(events) {
     sourcePath: null,
     sessionId: null,
     workerId: null,
+    cwd: null,
     queueEntryId: null,
     status: null,
     createdAt: null,
@@ -65,6 +67,7 @@ export function materializeDispatch(events) {
     if (event.projectId !== undefined) state.projectId = event.projectId;
     if (event.sourcePath !== undefined) state.sourcePath = event.sourcePath;
     if (event.sessionId !== undefined) state.sessionId = event.sessionId;
+    if (event.cwd !== undefined) state.cwd = event.cwd;
     if (event.ts !== undefined) state.updatedAt = event.ts;
 
     if (terminal && !POST_TERMINAL.has(event.type)) continue;
@@ -100,14 +103,16 @@ export function materializeDispatch(events) {
 
 export async function createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId, ts = nowIso() } = {}) {
   if (!projectId) throw new Error("projectId is required");
+  const meta = buildMeta({ projectId, sourcePath, sessionId, workerId });
   const dispatchId = makeDispatchId(ts);
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_created",
     dispatchId,
     projectId,
-    sourcePath: sourcePath || null,
-    sessionId: sessionId || null,
-    workerId: workerId || null,
+    sourcePath: meta.sourcePath,
+    sessionId: meta.sessionId,
+    workerId: meta.workerId,
+    cwd: meta.cwd,
     queueEntryId: queueEntryId || null,
     ts,
   });

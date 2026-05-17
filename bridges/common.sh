@@ -47,6 +47,22 @@ get_project_path() {
   fi
 }
 
+# Resolve a directory path to its git repository toplevel when possible,
+# falling back to the resolved absolute path.
+# Usage: resolve_repo_root [path]   (defaults to $PWD)
+resolve_repo_root() {
+  local target="${1:-$PWD}"
+  local resolved
+  resolved="$(cd "$target" 2>/dev/null && pwd -P)" || { echo "$target"; return; }
+  local git_root
+  git_root="$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null)" || true
+  if [ -n "$git_root" ]; then
+    echo "$git_root"
+  else
+    echo "$resolved"
+  fi
+}
+
 # ─── 原子 ID 生成 (mkdir lock, placeholder file prevents race) ───
 # next_id <dir> <prefix>
 next_id() {
