@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import {
-  appendEvent,
   checkpointJob,
   deleteCheckpoint,
   materializeJob,
@@ -8,11 +7,18 @@ import {
   readEvents,
 } from "./event-store.js";
 import { getWorkflow } from "./workflow-definition.js";
+import { appendEvent } from "./runtime-events.js";
+import {
+  getJob as getJobRust,
+  listJobs as listJobsRust,
+  shouldUseRustRuntime,
+} from "./runtime-cli.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 
 function nowIso() {
   return new Date().toISOString();
 }
+
 
 async function getJobAndUpdateIndex(cpbRoot, project, jobId) {
   const state = await getJob(cpbRoot, project, jobId);
@@ -321,11 +327,18 @@ export async function consumeRedirect(
 }
 
 export async function getJob(cpbRoot, project, jobId) {
+  if (shouldUseRustRuntime()) {
+    return await getJobRust(cpbRoot, project, jobId);
+  }
   const checkpoint = await readCheckpoint(cpbRoot, project, jobId);
   if (checkpoint) return checkpoint;
   return materializeJob(await readEvents(cpbRoot, project, jobId));
 }
 
-export async function listJobs(cpbRoot) {
-  return listJobsFromIndex(cpbRoot);
+export async function listJobs(cpbRoot, options = {}) {
+  if (shouldUseRustRuntime()) {
+    return await listJobsRust(cpbRoot, options);
+  }
+  const jobs = await listJobsFromIndex(cpbRoot);
+  return options.project ? jobs.filter((job) => job.project === options.project) : jobs;
 }

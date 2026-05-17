@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent } from "../server/services/runtime-events.js";
 import {
   completeJob,
   completePhase,
@@ -302,12 +302,14 @@ async function parseReviewVerdict(reviewPath) {
 
 async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   const projectJsonPath = path.join(wikiDir, "project.json");
-  let sourcePath;
-  try {
-    const raw = await readFile(projectJsonPath, "utf8");
-    sourcePath = JSON.parse(raw).sourcePath;
-  } catch {
-    return null;
+  let sourcePath = process.env.CPB_PROJECT_PATH_OVERRIDE || null;
+  if (!sourcePath) {
+    try {
+      const raw = await readFile(projectJsonPath, "utf8");
+      sourcePath = JSON.parse(raw).sourcePath;
+    } catch {
+      return null;
+    }
   }
   if (!sourcePath) return null;
 
@@ -333,6 +335,56 @@ async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
     // Non-git project or no changes
   }
   return null;
+}
+
+async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir) {
+  if (process.env.CPB_USE_WORKTREE !== "1") {
+    return null;
+  }
+
+  const projectJsonPath = path.join(wikiDir, "project.json");
+  let sourcePath;
+  try {
+    const raw = await readFile(projectJsonPath, "utf8");
+    sourcePath = JSON.parse(raw).sourcePath;
+  } catch {
+    return null;
+  }
+  if (!sourcePath) return null;
+
+  const worktreesRoot = runtimeDataPath(cpbRoot, "worktrees");
+  const result = await runCommand(
+    process.execPath,
+    [
+      "bridges/worktree-manager.mjs",
+      "create",
+      "--project",
+      sourcePath,
+      "--job-id",
+      jobId,
+      "--slug",
+      "pipeline",
+      "--worktrees-root",
+      worktreesRoot,
+    ],
+    cpbRoot
+  );
+  if (result.exitCode !== 0) {
+    throw result.error || new Error("worktree creation failed");
+  }
+
+  const created = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  process.env.CPB_PROJECT_PATH_OVERRIDE = created.path;
+  process.env.CPB_ACP_CWD = created.path;
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "worktree_created",
+    jobId,
+    project,
+    worktree: created.path,
+    branch: created.branch,
+    ts: ts(),
+  });
+  return created;
 }
 
 async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
@@ -394,6 +446,7 @@ async function main() {
   const jobId = job.jobId;
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
+  await maybeCreateWorktree(cpbRoot, project, jobId, wikiDir);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents

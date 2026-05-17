@@ -37,6 +37,10 @@ require_safe_name() {
 # Usage: get_project_path <project-name>
 get_project_path() {
   local project="$1"
+  if [ -n "${CPB_PROJECT_PATH_OVERRIDE:-}" ]; then
+    printf "%s" "$CPB_PROJECT_PATH_OVERRIDE"
+    return 0
+  fi
   local meta="$CPB_ROOT/wiki/projects/$project/project.json"
   if [ -f "$meta" ]; then
     META_FILE="$meta" node -e "try{const p=JSON.parse(require('fs').readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(p.sourcePath||'')}catch{}" 2>/dev/null

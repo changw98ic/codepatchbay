@@ -26,6 +26,22 @@ jobs:
       - name: Install web dependencies
         run: cd web && npm ci
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust tests
+        run: cd runtime && cargo test
+
+      - name: Runtime adapter contract
+        run: |
+          cd runtime
+          cargo build
+          cd ..
+          CPB_RUNTIME=rust CPB_RUNTIME_BIN="$PWD/runtime/target/debug/cpb-runtime" node --test tests/runtime-adapter-contract.test.mjs
+
+      - name: Run web tests
+        run: cd web && npm test -- --run
+
       - name: Run unit tests
         run: node --test tests/*.mjs
 
@@ -43,6 +59,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust
+        run: cd runtime && cargo check
 
       - name: Check bash scripts syntax
         run: |

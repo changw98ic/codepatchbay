@@ -3,6 +3,13 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
+import {
+  acquireLease as acquireLeaseRust,
+  readLease as readLeaseRust,
+  releaseLease as releaseLeaseRust,
+  renewLease as renewLeaseRust,
+  shouldUseRustRuntime,
+} from "./runtime-cli.js";
 
 const ownedLeaseTokens = new Map();
 // Lock TTL: timeout for mkdir-based atomic lock contention between competing processes.
@@ -205,6 +212,17 @@ export async function acquireLease(
     lockTtlMs,
   }
 ) {
+  if (shouldUseRustRuntime()) {
+    const result = await acquireLeaseRust(cpbRoot, { leaseId, jobId, phase, ttlMs, ownerPid });
+    if (result?.acquired === false) {
+      const err = new Error(`lease already exists: ${leaseId}`);
+      err.code = "EEXIST";
+      throw err;
+    }
+    rememberOwnerToken(cpbRoot, leaseId, result.lease.ownerToken);
+    return result.lease;
+  }
+
   const file = leaseFileFor(cpbRoot, leaseId);
   const lease = createLease({
     leaseId,
@@ -248,6 +266,10 @@ export async function acquireLease(
 }
 
 export async function readLease(cpbRoot, leaseId) {
+  if (shouldUseRustRuntime()) {
+    const lease = await readLeaseRust(cpbRoot, leaseId);
+    return lease ?? null;
+  }
   return await readLeaseFile(leaseFileFor(cpbRoot, leaseId));
 }
 
@@ -273,6 +295,12 @@ export async function renewLease(
   leaseId,
   { ttlMs, now = new Date(), ownerToken, lockTtlMs } = {}
 ) {
+  if (shouldUseRustRuntime()) {
+    const renewed = await renewLeaseRust(cpbRoot, leaseId, { ttlMs, ownerToken: ownerTokenFor(cpbRoot, leaseId, ownerToken) });
+    rememberOwnerToken(cpbRoot, leaseId, renewed.ownerToken);
+    return renewed;
+  }
+
   const file = leaseFileFor(cpbRoot, leaseId);
   return await withLeaseLock(
     file,
@@ -304,6 +332,13 @@ export async function releaseLease(
   leaseId,
   { ownerToken, lockTtlMs } = {}
 ) {
+  if (shouldUseRustRuntime()) {
+    const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
+    await releaseLeaseRust(cpbRoot, leaseId, { ownerToken: effectiveOwnerToken });
+    forgetOwnerToken(cpbRoot, leaseId, effectiveOwnerToken);
+    return;
+  }
+
   const file = leaseFileFor(cpbRoot, leaseId);
 
   await withLeaseLock(

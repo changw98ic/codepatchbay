@@ -10,6 +10,7 @@ flow-task/
 .DS_Store
 web/.omc/
 web/dist/
+runtime/target/
 channels.json
 .omc/
 cpb-task/

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent } from "../server/services/runtime-events.js";
 import {
   acquireLease,
   releaseLease,
