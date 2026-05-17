@@ -95,14 +95,9 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    await updateSession(req.cpbRoot, session.sessionId, {
-      status: "dispatched",
-      userVerdict: "approved",
-    });
-
     const jobId = makeJobId();
     const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const result = spawnBridge(
+    const result = await spawnBridge(
       req.cpbRoot,
       session.project,
       "run-pipeline.sh",
@@ -112,7 +107,13 @@ export async function reviewRoutes(fastify, opts) {
       { CPB_USE_WORKTREE: "1" },
     );
 
+    if (!result.accepted) {
+      throw fastify.httpErrors.internal(`pipeline spawn failed: ${result.error || "unknown"}`);
+    }
+
     await updateSession(req.cpbRoot, session.sessionId, {
+      status: "dispatched",
+      userVerdict: "approved",
       jobId,
       worktreePath: wtPath,
     });
@@ -164,7 +165,7 @@ export async function reviewRoutes(fastify, opts) {
 
     const jobId = makeJobId();
     const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const updated = spawnBridge(
+    const spawnResult = await spawnBridge(
       req.cpbRoot,
       session.project,
       "run-pipeline.sh",
@@ -173,6 +174,10 @@ export async function reviewRoutes(fastify, opts) {
       jobId,
       { CPB_USE_WORKTREE: "1" },
     );
+
+    if (!spawnResult.accepted) {
+      throw fastify.httpErrors.internal(`pipeline spawn failed: ${spawnResult.error || "unknown"}`);
+    }
 
     const refreshed = await updateSession(req.cpbRoot, session.sessionId, {
       ...result,
@@ -194,7 +199,7 @@ export async function reviewRoutes(fastify, opts) {
     return {
       dispatched: true,
       sessionId: session.sessionId,
-      taskId: updated.taskId,
+      taskId: spawnResult.taskId,
     };
   });
 
