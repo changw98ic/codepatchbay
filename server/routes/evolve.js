@@ -10,6 +10,22 @@ import {
 
 let activeProcess = null;
 
+// Promise-based mutex to prevent concurrent /evolve/start spawns.
+// Without this, two simultaneous requests can both pass resolveRunningState()
+// before either sets activeProcess, resulting in duplicate child processes
+// and a stale activeProcess reference.
+class Mutex {
+  #queue = Promise.resolve();
+  acquire() {
+    let release;
+    const next = new Promise((r) => { release = r; });
+    const prev = this.#queue;
+    this.#queue = this.#queue.then(() => next);
+    return prev.then(() => release);
+  }
+}
+const startMutex = new Mutex();
+
 const leaseMetaPath = (cpbRoot) => path.join(cpbRoot, "cpb-task", "self-evolve", ".controller-lock", "meta.json");
 
 function isPidAlive(pid) {
@@ -107,73 +123,84 @@ export async function evolveRoutes(fastify, opts) {
   });
 
   fastify.post("/evolve/start", async (req, res) => {
-    const runningState = await resolveRunningState(req.cpbRoot);
-    if (runningState.running) {
+    // Fast-path check outside lock to avoid contention on the common case
+    const quickCheck = await resolveRunningState(req.cpbRoot);
+    if (quickCheck.running) {
       throw fastify.httpErrors.conflict("self-evolve already running");
     }
 
-    const state = await loadState(req.cpbRoot);
-    const backlog = await loadBacklog(req.cpbRoot);
-    const isIdle = !state.status || state.status === "idle" || state.status === "stopped" || state.status === "completed" || state.status === "error" || state.status === "failed";
-    if (!isIdle && state.status !== "running" && state.round > 0) {
-      throw fastify.httpErrors.conflict(`cannot start while status is ${state.status}`);
-    }
-    const priorStatus = state.status;
-
-    const script = evolveScriptPath(req.cpbRoot);
-    let child;
+    const release = await startMutex.acquire();
     try {
-      child = spawn("node", [script], {
-        cwd: req.cpbRoot,
-        env: { ...process.env, CPB_ROOT: req.cpbRoot },
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
-      });
-    } catch (err) {
-      state.status = "failed";
-      await saveState(req.cpbRoot, state);
-      throw fastify.httpErrors.internalServerError(`spawn failed: ${err.message}`);
-    }
-
-    state.status = "starting";
-    await saveState(req.cpbRoot, state);
-
-    child.on("error", async (err) => {
-      if (activeProcess === child) activeProcess = null;
-      const s = await loadState(req.cpbRoot);
-      if (s.status === "starting") {
-        s.status = "failed";
-        await saveState(req.cpbRoot, s);
+      // Authoritative double-check inside the critical section
+      const runningState = await resolveRunningState(req.cpbRoot);
+      if (runningState.running) {
+        throw fastify.httpErrors.conflict("self-evolve already running");
       }
-      process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
-    });
 
-    child.stdout.on("data", (chunk) => {
-      process.stdout.write(`[self-evolve] ${chunk}`);
-    });
-    child.stderr.on("data", (chunk) => {
-      process.stderr.write(`[self-evolve] ${chunk}`);
-    });
-    child.on("exit", async (code) => {
-      if (activeProcess === child) activeProcess = null;
-      if (code !== 0) {
+      const state = await loadState(req.cpbRoot);
+      const backlog = await loadBacklog(req.cpbRoot);
+      const isIdle = !state.status || state.status === "idle" || state.status === "stopped" || state.status === "completed" || state.status === "error" || state.status === "failed";
+      if (!isIdle && state.status !== "running" && state.round > 0) {
+        throw fastify.httpErrors.conflict(`cannot start while status is ${state.status}`);
+      }
+
+      const script = evolveScriptPath(req.cpbRoot);
+      let child;
+      try {
+        child = spawn("node", [script], {
+          cwd: req.cpbRoot,
+          env: { ...process.env, CPB_ROOT: req.cpbRoot },
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: false,
+        });
+      } catch (err) {
+        state.status = "failed";
+        await saveState(req.cpbRoot, state);
+        throw fastify.httpErrors.internalServerError(`spawn failed: ${err.message}`);
+      }
+
+      state.status = "starting";
+      await saveState(req.cpbRoot, state);
+
+      child.on("error", async (err) => {
+        if (activeProcess === child) activeProcess = null;
         const s = await loadState(req.cpbRoot);
         if (s.status === "starting") {
           s.status = "failed";
           await saveState(req.cpbRoot, s);
         }
-      }
-    });
-    activeProcess = child;
+        process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
+      });
 
-    await appendHistory(req.cpbRoot, {
-      action: "start",
-      source: "ui",
-      backlog: backlog.length,
-    });
+      child.stdout.on("data", (chunk) => {
+        process.stdout.write(`[self-evolve] ${chunk}`);
+      });
+      child.stderr.on("data", (chunk) => {
+        process.stderr.write(`[self-evolve] ${chunk}`);
+      });
+      child.on("exit", async (code) => {
+        if (activeProcess === child) activeProcess = null;
+        if (code !== 0) {
+          const s = await loadState(req.cpbRoot);
+          if (s.status === "starting") {
+            s.status = "failed";
+            await saveState(req.cpbRoot, s);
+          }
+        }
+      });
+      activeProcess = child;
 
-    res.code(202);
-    return { accepted: true, pid: child.pid, status: toResponseState(await loadState(req.cpbRoot), await resolveRunningState(req.cpbRoot)) };
+      await appendHistory(req.cpbRoot, {
+        action: "start",
+        source: "ui",
+        backlog: backlog.length,
+      });
+
+      res.code(202);
+      return { accepted: true, pid: child.pid, status: toResponseState(await loadState(req.cpbRoot), await resolveRunningState(req.cpbRoot)) };
+    } finally {
+      release();
+    }
   });
 
   fastify.post("/evolve/stop", async (req) => {
