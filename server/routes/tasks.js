@@ -88,49 +88,69 @@ export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId 
   const scriptPath = path.join(cpbRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
 
-  const child = spawn('bash', [scriptPath, ...args], {
-    cwd: cpbRoot,
-    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  registerTask(taskId, project, script, child.pid);
-
-  let totalBytes = 0;
-  let tailBuffer = '';
-  let outputTruncated = false;
-
-  function appendOutput(text) {
-    totalBytes += Buffer.byteLength(text, 'utf8');
-    tailBuffer += text;
-    if (tailBuffer.length > MAX_TAIL_BYTES) {
-      tailBuffer = tailBuffer.slice(-MAX_TAIL_BYTES);
-      outputTruncated = true;
-    }
+  let child;
+  try {
+    child = spawn('bash', [scriptPath, ...args], {
+      cwd: cpbRoot,
+      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    log?.error(`spawnBridge sync error for ${taskId}: ${err.message}`);
+    return { accepted: false, taskId, error: err.message };
   }
 
-  // Stream stdout/stderr to WebSocket (incremental chunks, unchanged)
-  child.stdout.on('data', (chunk) => {
-    const text = chunk.toString();
-    appendOutput(text);
-    broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stdout' });
-  });
-  child.stderr.on('data', (chunk) => {
-    const text = chunk.toString();
-    appendOutput(text);
-    broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stderr' });
-  });
+  return new Promise((resolve) => {
+    let settled = false;
+    let registered = false;
+    let totalBytes = 0;
+    let tailBuffer = '';
+    let outputTruncated = false;
 
-  child.on('exit', (code) => {
-    unregisterTask(taskId);
-    broadcast({
-      type: 'task:complete', taskId, project, script, exitCode: code,
-      outputTail: tailBuffer,
-      outputBytes: totalBytes,
-      outputTruncated,
+    function appendOutput(text) {
+      totalBytes += Buffer.byteLength(text, 'utf8');
+      tailBuffer += text;
+      if (tailBuffer.length > MAX_TAIL_BYTES) {
+        tailBuffer = tailBuffer.slice(-MAX_TAIL_BYTES);
+        outputTruncated = true;
+      }
+    }
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      appendOutput(text);
+      broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stdout' });
     });
-    log?.info(`Task ${taskId} exited with code ${code}`);
-  });
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      appendOutput(text);
+      broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stderr' });
+    });
 
-  return { accepted: true, taskId, pid: child.pid };
+    child.on('spawn', () => {
+      if (settled) return;
+      settled = true;
+      registered = true;
+      registerTask(taskId, project, script, child.pid);
+      resolve({ accepted: true, taskId, pid: child.pid });
+    });
+
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      log?.error(`spawnBridge async error for ${taskId}: ${err.message}`);
+      resolve({ accepted: false, taskId, error: err.message });
+    });
+
+    child.on('exit', (code) => {
+      if (registered) unregisterTask(taskId);
+      broadcast({
+        type: 'task:complete', taskId, project, script, exitCode: code,
+        outputTail: tailBuffer,
+        outputBytes: totalBytes,
+        outputTruncated,
+      });
+      log?.info(`Task ${taskId} exited with code ${code}`);
+    });
+  });
 }
