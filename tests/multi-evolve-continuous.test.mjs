@@ -188,6 +188,29 @@ test("runContinuous appends history for each round", async () => {
   assert.equal(continuousEntries.length, 2);
 });
 
+test("runContinuous records scan failures instead of swallowing them", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-cont-scan-fail-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-cont-scan-fail-cpb-"));
+  const { sourcePath, projectName } = await createFixture(hubRoot, "scan-fail");
+
+  const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+  controller.scanProject = async () => {
+    throw new Error("scan timed out");
+  };
+
+  const result = await controller.runContinuous({ maxRounds: 1, intervalMs: 0, scan: true });
+
+  assert.equal(result.scanFailures, 1);
+  const { readFile } = await import("node:fs/promises");
+  const historyPath = path.join(sourcePath, "cpb-task", "evolve", projectName, "history.jsonl");
+  const raw = await readFile(historyPath, "utf8");
+  const entries = raw.trim().split("\n").map((l) => JSON.parse(l));
+  const failure = entries.find((e) => e.action === "scan_failed");
+  assert.ok(failure);
+  assert.equal(failure.error, "scan timed out");
+  assert.equal(failure.rateLimited, false);
+});
+
 test("runContinuous with empty backlog completes gracefully", async () => {
   const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-cont-empty-"));
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-cont-empty-cpb-"));

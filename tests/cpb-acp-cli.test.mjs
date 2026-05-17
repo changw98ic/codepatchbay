@@ -30,5 +30,8 @@ test("cpb hub acp shows durable provider backoff", async () => {
   const status = JSON.parse(stdout);
 
   assert.equal(status.pools.codex.mode, "bounded-one-shot");
+  assert.equal(status.pools.codex.transport, "request-scoped-child-process");
+  assert.equal(status.pools.codex.providerProcessReuse, false);
+  assert.equal(status.providerProcessReuse, false);
   assert.equal(status.rateLimits.codex.reason, "429");
 });

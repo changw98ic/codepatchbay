@@ -9,6 +9,42 @@
 ## 格式说明
 
 每个项目在 `## 活跃项目
+### variant-env-48346
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-17T17:44:54Z
+- **next**: cpb verify variant-env-48346 003
+
+### acp-pipeline-47397
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-17T17:44:54Z
+- **next**: completed
+
+### acp-test-47397
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-17T17:44:52Z
+- **next**: completed
+
+### variant-env-17229
+- **status**: VERIFYING
+- **phase**: execute
+- **updated**: 2026-05-17T16:32:31Z
+- **next**: cpb verify variant-env-17229 003
+
+### acp-pipeline-16405
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-17T16:32:30Z
+- **next**: completed
+
+### acp-test-16405
+- **status**: DONE
+- **phase**: verify
+- **updated**: 2026-05-17T16:32:29Z
+- **next**: completed
+
 ### calc-test
 - **status**: DONE
 - **phase**: verify

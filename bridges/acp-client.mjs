@@ -34,7 +34,7 @@ Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
  *
  * Returns a Map<string, "allow"|"deny"> or null (no policy).
  */
-async function parseToolPolicy() {
+export async function parseToolPolicy() {
   const policyFilePath = process.env.CPB_ACP_TOOL_POLICY_FILE;
 
   // 1. Highest priority: JSON policy file
@@ -193,7 +193,7 @@ function defaultAgentCommand(agent) {
   return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
 }
 
-function resolveAgentCommand(agent) {
+export function resolveAgentCommand(agent) {
   const upper = agent.toUpperCase();
   const defaults = defaultAgentCommand(agent);
   return {
@@ -213,27 +213,51 @@ function jsonRpcError(code, message) {
   return { code, message };
 }
 
-class AcpClient {
-  constructor({ agent, cwd, prompt, writeAllowPaths, terminalPolicy, toolPolicy }) {
+export function resolveWriteAllowPaths(cwd = process.cwd()) {
+  return process.env.CPB_ACP_WRITE_ALLOW
+    ? process.env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
+        p.trim().includes("*") ? path.resolve(cwd, p.trim()) : path.resolve(p.trim())
+      )
+    : null;
+}
+
+export class AcpClient {
+  constructor({
+    agent,
+    cwd,
+    prompt,
+    writeAllowPaths,
+    terminalPolicy,
+    toolPolicy,
+    outputSink = (chunk) => process.stdout.write(chunk),
+    errorSink = (chunk) => process.stderr.write(chunk),
+    env = process.env,
+  }) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
     this.writeAllowPaths = writeAllowPaths || null;
     this.terminalPolicy = terminalPolicy || "allow";
     this.toolPolicy = toolPolicy || null;
+    this.outputSink = outputSink;
+    this.errorSink = errorSink;
+    this.env = env;
     this.nextId = 1;
     this.pending = new Map();
     this.terminals = new Map();
     this.nextTerminalId = 1;
     this.closed = false;
+    this.initialized = null;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
-    this.idleTimeoutMs = Number.parseInt(process.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
+    this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
   }
 
-  async run() {
+  async start() {
+    if (this.child && !this.closed && this.initialized) return this.initialized;
+
     const { command, args } = resolveAgentCommand(this.agent);
-    const env = { ...process.env };
+    const env = { ...this.env };
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(instanceCache, { recursive: true });
@@ -248,7 +272,7 @@ class AcpClient {
 
     this.child.stderr.on("data", (chunk) => {
       this.markActivity();
-      process.stderr.write(chunk);
+      this.errorSink(chunk);
     });
 
     this.child.on("error", (error) => {
@@ -274,53 +298,75 @@ class AcpClient {
 
     this.markActivity();
 
-    try {
-      const initialized = await this.request("initialize", {
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: {
-            readTextFile: true,
-            writeTextFile: true,
-          },
-          terminal: true,
+    const initialized = await this.request("initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      clientCapabilities: {
+        fs: {
+          readTextFile: true,
+          writeTextFile: true,
         },
-        clientInfo: {
-          name: "cpb",
-          title: "CodePatchbay",
-          version: "0.1.0",
-        },
-      });
+        terminal: true,
+      },
+      clientInfo: {
+        name: "cpb",
+        title: "CodePatchbay",
+        version: "0.1.0",
+      },
+    });
 
-      if (initialized.protocolVersion !== PROTOCOL_VERSION) {
-        throw new Error(`unsupported ACP protocol version: ${initialized.protocolVersion}`);
-      }
-
-      const session = await this.request("session/new", {
-        cwd: this.cwd,
-        mcpServers: [],
-      });
-
-      await this.request("session/prompt", {
-        sessionId: session.sessionId,
-        prompt: [
-          {
-            type: "text",
-            text: this.prompt,
-          },
-        ],
-      });
-      await this.lineQueue;
-
-      if (initialized.agentCapabilities?.sessionCapabilities?.close) {
-        await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
-      }
-    } finally {
-      this.clearIdleTimer();
-      this.child.stdin.end();
-      setTimeout(() => {
-        if (!this.closed) this.terminateAgent("SIGTERM");
-      }, 500).unref();
+    if (initialized.protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error(`unsupported ACP protocol version: ${initialized.protocolVersion}`);
     }
+
+    this.initialized = initialized;
+    return initialized;
+  }
+
+  async promptOnce(prompt = this.prompt, cwd = this.cwd) {
+    const initialized = await this.start();
+    const session = await this.request("session/new", {
+      cwd,
+      mcpServers: [],
+    });
+
+    await this.request("session/prompt", {
+      sessionId: session.sessionId,
+      prompt: [
+        {
+          type: "text",
+          text: prompt,
+        },
+      ],
+    });
+    await this.lineQueue;
+
+    if (initialized.agentCapabilities?.sessionCapabilities?.close) {
+      await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
+    }
+  }
+
+  async run() {
+    try {
+      await this.promptOnce(this.prompt, this.cwd);
+    } finally {
+      await this.close();
+    }
+  }
+
+  async close() {
+    this.clearIdleTimer();
+    if (!this.child || this.closed) return;
+    const child = this.child;
+    const closed = new Promise((resolve) => {
+      child.once("close", resolve);
+    });
+    child.stdin.end();
+    const terminateTimer = setTimeout(() => {
+      if (!this.closed) this.terminateAgent("SIGTERM");
+    }, 500).unref();
+    const waitTimer = new Promise((resolve) => setTimeout(resolve, 1_000));
+    await Promise.race([closed, waitTimer]);
+    clearTimeout(terminateTimer);
   }
 
   request(method, params) {
@@ -395,7 +441,7 @@ class AcpClient {
     try {
       message = JSON.parse(line);
     } catch (error) {
-      process.stderr.write(`[acp:${this.agent}] non-JSON stdout: ${line}\n`);
+      this.errorSink(`[acp:${this.agent}] non-JSON stdout: ${line}\n`);
       return;
     }
 
@@ -465,7 +511,7 @@ class AcpClient {
       if (Object.hasOwn(message, "id")) {
         this.respondError(message.id, -32000, error.message);
       } else {
-        process.stderr.write(`[acp:${this.agent}] ${error.message}\n`);
+        this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
       }
     }
   }
@@ -475,14 +521,14 @@ class AcpClient {
     if (!update) return;
 
     if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
-      process.stdout.write(update.content.text);
+      this.outputSink(update.content.text);
     } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
       const title = update.title || update.toolCallId || "tool";
       const status = update.status ? ` ${update.status}` : "";
-      process.stderr.write(`[acp:${this.agent}] ${title}${status}\n`);
+      this.errorSink(`[acp:${this.agent}] ${title}${status}\n`);
     } else if (update.sessionUpdate === "plan" && Array.isArray(update.entries)) {
       for (const entry of update.entries) {
-        process.stderr.write(`[acp:${this.agent}] plan ${entry.status}: ${entry.content}\n`);
+        this.errorSink(`[acp:${this.agent}] plan ${entry.status}: ${entry.content}\n`);
       }
     }
   }
@@ -637,21 +683,21 @@ class AcpClient {
   }
 }
 
-try {
+async function main() {
   const options = parseCli(process.argv.slice(2));
   const prompt = await readStdin();
 
-  const writeAllowPaths = process.env.CPB_ACP_WRITE_ALLOW
-    ? process.env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
-        p.trim().includes("*") ? path.resolve(options.cwd, p.trim()) : path.resolve(p.trim())
-      )
-    : null;
+  const writeAllowPaths = resolveWriteAllowPaths(options.cwd);
 
   const terminalPolicy = process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow";
   const toolPolicy = await parseToolPolicy();
 
   await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy }).run();
-} catch (error) {
-  process.stderr.write(`${error.message}\n`);
-  process.exit(1);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await main().catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  });
 }

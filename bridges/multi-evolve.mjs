@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpPool, RateLimitError } from "./acp-pool.mjs";
+import { ProjectWorker } from "./project-worker.mjs";
 import { getManagedAcpPool } from "../server/services/acp-pool-runtime.js";
 import { listProjects, resolveHubRoot } from "../server/services/hub-registry.js";
 import {
@@ -14,17 +14,14 @@ import {
   pushIssues,
   updateIssueStatus,
 } from "../server/services/multi-evolve-state.js";
-import {
-  dispatchEnabled,
-  guardSourcePath,
-  markDispatchCompleted,
-  markDispatchFailed,
-  markDispatchStarted,
-  recordDispatch,
-} from "../server/services/worker-dispatch.js";
 import { checkPolicy } from "../server/services/evolve-policy.js";
 import { closeBudget, consume, createBudget } from "../server/services/evolve-budget.js";
-import { enqueue as hubEnqueue, listQueue as hubListQueue, queueStatus as hubQueueStatus } from "../server/services/hub-queue.js";
+import {
+  enqueue as hubEnqueue,
+  listQueue as hubListQueue,
+  queueStatus as hubQueueStatus,
+  syncBacklogResult,
+} from "../server/services/hub-queue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -220,6 +217,7 @@ export class MultiEvolveController {
       ? new AcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot })
       : getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot }));
     this.projects = [];
+    this.workerRunner = opts.workerRunner || null;
     this._stopRequested = false;
   }
 
@@ -308,68 +306,73 @@ export class MultiEvolveController {
     return new CrossProjectPriorityQueue(this.projects, this.hubRoot).dequeue();
   }
 
+  async runProjectWorker(issue, { workflow, queueEntry } = {}) {
+    if (this.workerRunner) {
+      return this.workerRunner({
+        issue,
+        queueEntry,
+        workflow,
+        cpbRoot: this.cpbRoot,
+        hubRoot: this.hubRoot,
+      });
+    }
+
+    const worker = new ProjectWorker({
+      projectId: issue.project,
+      once: true,
+      workflow,
+      cpbRoot: this.cpbRoot,
+      hubRoot: this.hubRoot,
+      workerId: process.env.CPB_WORKER_ID || `multi-evolve-${process.pid}`,
+    });
+    const run = await worker.run();
+    if (run?.result) return run.result;
+    if (run?.idle) {
+      return { ok: false, code: 1, error: "project-worker found no pending queue entry", stdout: "", stderr: "" };
+    }
+    return { ok: false, code: 1, error: "project-worker returned no result", stdout: "", stderr: "" };
+  }
+
   async executeIssue(issue, { workflow = "standard" } = {}) {
-    let dispatchId = null;
-    if (dispatchEnabled() && this.hubRoot) {
-      try {
-        await guardSourcePath(this.hubRoot, issue.project, issue.sourcePath);
-      } catch (err) {
-        return { ok: false, code: 1, error: `sourcePath guard: ${err.message}`, stdout: "", stderr: "" };
-      }
-      const dispatch = await recordDispatch(this.hubRoot, {
+    let queueEntry;
+    try {
+      queueEntry = await hubEnqueue(this.hubRoot, {
         projectId: issue.project,
         sourcePath: issue.sourcePath,
         sessionId: process.env.CPB_SESSION_ID || null,
         workerId: process.env.CPB_WORKER_ID || null,
-      });
-      dispatchId = dispatch ? dispatch.dispatchId : null;
-      if (dispatchId) {
-        await markDispatchStarted(this.hubRoot, dispatchId).catch(() => {});
-      }
-    }
-
-    const result = await new Promise((resolve) => {
-      const stream = process.env.CPB_MULTI_EVOLVE_STREAM === "1";
-      const args = [
-        path.join(this.cpbRoot, "bridges", "run-pipeline.mjs"),
-        "--project", issue.project,
-        "--task", issue.description,
-        "--source-path", issue.sourcePath,
-        "--workflow", workflow,
-      ];
-      if (dispatchId) args.push("--dispatch-id", dispatchId);
-      const child = spawn(process.execPath, args, {
-        cwd: this.cpbRoot,
-        env: {
-          ...process.env,
-          CPB_ROOT: this.cpbRoot,
-          CPB_PROJECT_PATH_OVERRIDE: issue.sourcePath,
-          CPB_ACP_CWD: issue.sourcePath,
-          CPB_SESSION_ID: process.env.CPB_SESSION_ID || "",
-          CPB_WORKER_ID: process.env.CPB_WORKER_ID || "",
+        executionBoundary: process.env.CPB_EXECUTION_BOUNDARY || "source",
+        priority: issue.priority || "P2",
+        description: issue.description,
+        type: "candidate",
+        metadata: {
+          issueId: issue.id || null,
+          source: "multi-evolve",
+          workflow,
         },
-        stdio: ["ignore", "pipe", "pipe"],
       });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        if (stream) process.stdout.write(chunk);
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-        if (stream) process.stderr.write(chunk);
-      });
-      child.on("close", (code) => resolve({ ok: code === 0, code, stdout, stderr }));
-      child.on("error", (error) => resolve({ ok: false, code: 1, error: error.message, stdout, stderr }));
-    });
-
-    if (dispatchEnabled() && this.hubRoot && dispatchId) {
-      const fn = result.ok ? markDispatchCompleted : markDispatchFailed;
-      await fn(this.hubRoot, dispatchId).catch(() => {});
+    } catch (err) {
+      return { ok: false, code: 1, error: `hub queue enqueue: ${err.message}`, stdout: "", stderr: "" };
     }
 
-    return result;
+    try {
+      return await this.runProjectWorker(issue, { workflow, queueEntry });
+    } catch (err) {
+      return { ok: false, code: 1, error: `project-worker: ${err.message}`, stdout: "", stderr: "" };
+    }
+  }
+
+  async completeIssueAndSync(issue, result) {
+    await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+    if (!this.hubRoot) return;
+    await syncBacklogResult(this.hubRoot, {
+      projectId: issue.project,
+      description: issue.description,
+      result: {
+        ...result,
+        backlogIssueId: issue.id || null,
+      },
+    }).catch(() => {});
   }
 
   async runOnce(opts = {}) {
@@ -393,7 +396,7 @@ export class MultiEvolveController {
     const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
     await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description });
     const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
-    await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+    await this.completeIssueAndSync(issue, result);
     await appendHistory(issue.sourcePath, issue.project, {
       action: result.ok ? "execute_completed" : "execute_failed",
       issue: issue.description,
@@ -412,6 +415,7 @@ export class MultiEvolveController {
     let totalRounds = 0;
     let issuesExecuted = 0;
     let rateLimitedSkipped = 0;
+    let scanFailures = 0;
 
     while (!this._stopRequested) {
       if (maxRounds > 0 && totalRounds >= maxRounds) break;
@@ -427,10 +431,18 @@ export class MultiEvolveController {
           try {
             await this.scanProject(project, opts);
           } catch (error) {
+            scanFailures++;
             if (error instanceof RateLimitError) {
               project.rateLimitedUntil = error.untilTs;
               rateLimitedSkipped++;
             }
+            await appendHistory(project.sourcePath, project.id, {
+              action: "scan_failed",
+              error: error.message,
+              rateLimited: error instanceof RateLimitError,
+              rateLimitedUntil: error instanceof RateLimitError ? error.untilTs : null,
+              round: totalRounds,
+            });
           }
         }
       }
@@ -465,7 +477,7 @@ export class MultiEvolveController {
       await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description });
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
-      await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+      await this.completeIssueAndSync(issue, result);
       issuesExecuted++;
 
       if (intervalMs > 0 && !this._stopRequested && (maxRounds === 0 || totalRounds < maxRounds)) {
@@ -478,6 +490,7 @@ export class MultiEvolveController {
       totalRounds,
       issuesExecuted,
       rateLimitedSkipped,
+      scanFailures,
       stopped: this._stopRequested,
     };
   }
@@ -559,7 +572,7 @@ export class MultiEvolveController {
       });
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
-      await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+      await this.completeIssueAndSync(issue, result);
       issuesExecuted++;
 
       if (intervalMs > 0 && !this._stopRequested && (maxRounds === 0 || totalRounds < maxRounds)) {

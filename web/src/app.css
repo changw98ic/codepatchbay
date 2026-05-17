@@ -207,6 +207,88 @@ body {
   text-transform: uppercase;
 }
 
+.hub-lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 160px;
+}
+
+.lifecycle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15,17,23,0.6);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.lifecycle-agent {
+  color: var(--text);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.lifecycle-pill > span {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.lifecycle-pill .lifecycle-age {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.lifecycle-pill strong {
+  color: var(--error);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.hub-dispatch-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.hub-dispatch-summary > span:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hub-dispatch-summary em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.hub-dispatch-summary strong {
+  color: var(--error);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.badge-worker {
+  font-size: 10px;
+}
+
+.badge-online { background: rgba(76,175,80,0.15); color: var(--success); }
+.badge-stale { background: rgba(255,152,0,0.15); color: var(--warning); }
+.badge-offline { background: rgba(136,136,136,0.15); color: var(--text-dim); }
+
+.badge-age {
+  background: rgba(136,136,136,0.1);
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+}
+
 .project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

@@ -10,8 +10,9 @@ import {
   workerStatus,
 } from "../services/hub-registry.js";
 import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge-policy.js";
-import { getPoolRuntime } from "../services/acp-pool-runtime.js";
+import { getManagedAcpPool } from "../services/acp-pool-runtime.js";
 import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
+import { buildObservabilitySummary } from "../services/observability.js";
 import {
   dequeue as dequeueEntry,
   enqueue,
@@ -39,7 +40,7 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/acp", async (req) => {
-    const pool = getPoolRuntime(hubRoot(req), req.cpbRoot);
+    const pool = getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot });
     return {
       ...pool.status(),
       rateLimits: await pool.readDurableRateLimits(),
@@ -126,7 +127,15 @@ export async function hubRoutes(fastify) {
     return gatherDiagnostics({
       cpbRoot: req.cpbRoot,
       hubRoot: hubRoot(req),
-      acpPool: getPoolRuntime(hubRoot(req), req.cpbRoot),
+      acpPool: getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot }),
+    });
+  });
+
+  fastify.get("/hub/observability", async (req) => {
+    return buildObservabilitySummary({
+      cpbRoot: req.cpbRoot,
+      hubRoot: hubRoot(req),
+      acpPool: getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot }),
     });
   });
 

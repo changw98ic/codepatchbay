@@ -33,6 +33,7 @@ export function parseArgs(argv) {
     once: false,
     heartbeatMs: 30_000,
     pollMs: 5_000,
+    claimTimeoutMs: 120_000,
     workflow: process.env.CPB_WORKER_WORKFLOW || "standard",
     cpbRoot: CPB_ROOT,
     hubRoot: null,
@@ -49,6 +50,7 @@ export function parseArgs(argv) {
     else if (arg === "--once") opts.once = true;
     else if (arg === "--heartbeat-ms") opts.heartbeatMs = Number(valueAfter(i++, "--heartbeat-ms"));
     else if (arg === "--poll-ms") opts.pollMs = Number(valueAfter(i++, "--poll-ms"));
+    else if (arg === "--claim-timeout-ms") opts.claimTimeoutMs = Number(valueAfter(i++, "--claim-timeout-ms"));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, "--workflow");
     else if (arg === "--cpb-root") opts.cpbRoot = valueAfter(i++, "--cpb-root");
     else if (arg === "--hub-root") opts.hubRoot = valueAfter(i++, "--hub-root");
@@ -67,10 +69,12 @@ export class ProjectWorker {
     this.once = opts.once || false;
     this.heartbeatMs = opts.heartbeatMs || 30_000;
     this.pollMs = opts.pollMs || 5_000;
+    this.claimTimeoutMs = opts.claimTimeoutMs ?? 120_000;
     this.workflow = opts.workflow || "standard";
     this._runPipelineFn = opts.runPipelineFn || null;
     this._heartbeatTimer = null;
     this._stopRequested = false;
+    this._activeEntryId = null;
     this.project = null;
   }
 
@@ -91,6 +95,7 @@ export class ProjectWorker {
       pid: process.pid,
       status: "online",
       capabilities: ["scan", "execute", "pipeline"],
+      claimTimeoutMs: this.claimTimeoutMs,
     });
   }
 
@@ -106,6 +111,49 @@ export class ProjectWorker {
     }
   }
 
+  async recoverStaleEntries() {
+    if (!this.project || this.claimTimeoutMs <= 0) return [];
+    const inProgress = await listQueue(this.hubRoot, { status: "in_progress", projectId: this.project.id });
+    const now = Date.now();
+    const recovered = [];
+    for (const entry of inProgress) {
+      const claimedAt = entry.claimedAt ? new Date(entry.claimedAt).getTime() : 0;
+      if (!Number.isFinite(claimedAt) || now - claimedAt < this.claimTimeoutMs) continue;
+
+      if (entry.claimedBy === this.workerId) {
+        const patch = { claimedAt: new Date().toISOString() };
+        await updateEntry(this.hubRoot, entry.id, patch);
+        recovered.push({ id: entry.id, action: "reclaimed" });
+      } else {
+        await updateEntry(this.hubRoot, entry.id, {
+          status: "pending",
+          claimedBy: null,
+          claimedAt: null,
+          workerId: null,
+        });
+        recovered.push({ id: entry.id, action: "reset" });
+      }
+    }
+    return recovered;
+  }
+
+  async releaseOwnEntries() {
+    if (!this.project) return [];
+    const inProgress = await listQueue(this.hubRoot, { status: "in_progress", projectId: this.project.id });
+    const released = [];
+    for (const entry of inProgress) {
+      if (entry.claimedBy !== this.workerId || entry.id === this._activeEntryId) continue;
+      await updateEntry(this.hubRoot, entry.id, {
+        status: "pending",
+        claimedBy: null,
+        claimedAt: null,
+        workerId: null,
+      });
+      released.push(entry.id);
+    }
+    return released;
+  }
+
   async claimNext() {
     const pending = await listQueue(this.hubRoot, { status: "pending", projectId: this.project.id });
     if (pending.length === 0) return null;
@@ -114,7 +162,13 @@ export class ProjectWorker {
       (a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt),
     );
     const entry = pending[0];
-    return updateEntry(this.hubRoot, entry.id, { status: "in_progress", claimedBy: this.workerId, workerId: this.workerId });
+    const now = new Date().toISOString();
+    return updateEntry(this.hubRoot, entry.id, {
+      status: "in_progress",
+      claimedBy: this.workerId,
+      workerId: this.workerId,
+      claimedAt: now,
+    });
   }
 
   async executeEntry(entry) {
@@ -187,7 +241,9 @@ export class ProjectWorker {
     const entry = await this.claimNext();
     if (!entry) return { idle: true };
 
+    this._activeEntryId = entry.id;
     const result = await this.executeEntry(entry);
+    this._activeEntryId = null;
     const finalStatus = result.ok ? "completed" : "failed";
     await updateEntry(this.hubRoot, entry.id, { status: finalStatus }).catch(() => {});
 
@@ -199,6 +255,8 @@ export class ProjectWorker {
     this.startHeartbeat();
 
     try {
+      await this.recoverStaleEntries();
+
       if (this.once) {
         return await this.poll();
       }
@@ -210,6 +268,7 @@ export class ProjectWorker {
         }
       }
 
+      await this.releaseOwnEntries();
       return { stopped: true };
     } finally {
       this.stopHeartbeat();
@@ -221,13 +280,14 @@ function usage() {
   return `Usage: node bridges/project-worker.mjs --project <id> [options]
 
 Options:
-  --project <id>       Project ID to serve (required)
-  --once               Process one entry then exit
-  --heartbeat-ms <n>   Heartbeat interval in ms (default: 30000)
-  --poll-ms <n>        Queue poll interval in ms (default: 5000)
-  --workflow <type>    Pipeline workflow: standard|blocked (default: standard)
-  --cpb-root <path>    CPB root directory
-  --hub-root <path>    Hub root directory`;
+  --project <id>             Project ID to serve (required)
+  --once                     Process one entry then exit
+  --heartbeat-ms <n>         Heartbeat interval in ms (default: 30000)
+  --poll-ms <n>              Queue poll interval in ms (default: 5000)
+  --claim-timeout-ms <n>     Stale claim timeout in ms (default: 120000, 0 to disable)
+  --workflow <type>          Pipeline workflow: standard|blocked (default: standard)
+  --cpb-root <path>          CPB root directory
+  --hub-root <path>          Hub root directory`;
 }
 
 async function main() {
@@ -243,6 +303,7 @@ async function main() {
     once: opts.once,
     heartbeatMs: opts.heartbeatMs,
     pollMs: opts.pollMs,
+    claimTimeoutMs: opts.claimTimeoutMs,
     workflow: opts.workflow,
     cpbRoot: opts.cpbRoot,
     hubRoot: opts.hubRoot,

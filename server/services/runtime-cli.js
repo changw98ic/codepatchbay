@@ -258,6 +258,14 @@ export async function hubQueueStatus(hubRoot) {
   ]);
 }
 
+export async function repairEventFile(cpbRoot, project, jobId) {
+  return await runRuntime(cpbRoot, [
+    ...baseArgs("events", "repair", cpbRoot),
+    "--project", project,
+    "--job-id", jobId,
+  ]);
+}
+
 export async function getRuntimeBackend(cpbRoot) {
   const useRust = shouldUseRustRuntime();
   const bin = resolveRuntimeBin(cpbRoot);

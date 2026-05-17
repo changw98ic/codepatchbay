@@ -96,8 +96,15 @@ describe('Hub routes', () => {
 
     const acp = await app.inject({ method: 'GET', url: '/api/hub/acp' });
     assert.equal(acp.statusCode, 200);
-    assert.equal(acp.json().pools.codex.mode, 'bounded-one-shot');
-    assert.equal(acp.json().rateLimits.codex.reason, '429');
+    const acpBody = acp.json();
+    assert.equal(acpBody.pools.codex.mode, 'pool-admission-singleton');
+    assert.equal(acpBody.pools.codex.transport, 'persistent-acp-agent-process');
+    assert.equal(acpBody.pools.codex.providerProcessReuse, true);
+    assert.equal(acpBody.providerProcessReuse, true);
+    assert.equal(acpBody.poolSingleton, true);
+    assert.ok(acpBody.pools.codex.capabilities.includes('pool-singleton'));
+    assert.ok(acpBody.pools.codex.capabilities.includes('provider-process-reuse'));
+    assert.equal(acpBody.rateLimits.codex.reason, '429');
   });
 
   it('shares the same pool instance across /api/hub/acp calls', async () => {
@@ -185,5 +192,49 @@ describe('Hub routes', () => {
     assert.equal(entry.candidates.length, 1);
     assert.equal(entry.candidates[0].kind, 'session-memory');
     assert.equal(entry.candidates[0].targetKind, 'project-memory');
+  });
+
+  it('returns observability summary via /api/hub/observability', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: projectRoot, name: 'obs-route-project' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/obs-route-project/heartbeat',
+      payload: { workerId: 'obs-worker', status: 'online', capabilities: ['scan'] },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/observability' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.ok(body.generatedAt);
+    assert.equal(body.workers.online, 1);
+    assert.equal(body.workers.details.length, 1);
+    assert.equal(body.workers.details[0].id, 'obs-route-project');
+    assert.equal(body.workers.details[0].status, 'online');
+    assert.ok(typeof body.workers.details[0].ageMs === 'number');
+    assert.ok(body.queue);
+    assert.ok(body.pools);
+    assert.ok(body.dispatchSummary);
+    assert.equal(body.dispatchSummary.total, 0);
+  });
+
+  it('observability pool lifecycle includes requestCount and errorCount', async () => {
+    const { getPoolRuntime } = await import('../server/services/acp-pool-runtime.js');
+    const pool = getPoolRuntime(hubRoot, cpbRoot);
+    pool.requestCount.set('codex', 10);
+    pool.errorCount.set('codex', 1);
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/observability' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.pools.codex.requestCount, 10);
+    assert.equal(body.pools.codex.errorCount, 1);
+    assert.ok(typeof body.pools.codex.processAgeMs === 'number' || body.pools.codex.processAgeMs === null);
+    assert.ok(body.pools.codex.mode);
+    assert.ok(body.pools.codex.transport);
+    assert.equal(body.pools.codex.providerProcessReuse, true);
   });
 });

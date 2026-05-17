@@ -52,7 +52,10 @@ describe("MultiEvolveController dispatch integration", () => {
   test("executeIssue is unaffected when dispatch not enabled", async () => {
     process.env.CPB_WORKER_DISPATCH_ENABLED = undefined;
 
-    const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+    const controller = new MultiEvolveController(cpbRoot, {
+      hubRoot,
+      workerRunner: async () => ({ ok: true, code: 0 }),
+    });
     const result = await controller.executeIssue({
       project: "any",
       sourcePath: sourceDir,
@@ -66,7 +69,10 @@ describe("MultiEvolveController dispatch integration", () => {
     process.env.CPB_WORKER_DISPATCH_ENABLED = undefined;
     await registerProject(hubRoot, { name: "no-dispatch", sourcePath: sourceDir });
 
-    const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+    const controller = new MultiEvolveController(cpbRoot, {
+      hubRoot,
+      workerRunner: async () => ({ ok: true, code: 0 }),
+    });
     await controller.executeIssue({
       project: "no-dispatch",
       sourcePath: sourceDir,

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { AcpPool, RateLimitError, sanitizeProviderReason } from "../bridges/acp-pool.mjs";
+
+const fakeAcpAgent = path.join(process.cwd(), "tests", "fixtures", "fake-acp-agent.mjs");
 
 async function waitFor(predicate, { timeoutMs = 1_000, intervalMs = 5 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -123,9 +125,13 @@ test("ACP pool status exposes lifecycle metrics per agent", async () => {
   assert.equal(codex.requestCount, 2);
   assert.equal(claude.requestCount, 1);
 
-  // recycle count — one-shot mode: each spawn is a recycle
-  assert.equal(codex.recycleCount, 2);
-  assert.equal(claude.recycleCount, 1);
+  // lifecycle counters distinguish successful requests from recycle events
+  assert.equal(codex.recycleCount, 0);
+  assert.equal(claude.recycleCount, 0);
+  assert.equal(codex.sessionRequestCount, 2);
+  assert.equal(claude.sessionRequestCount, 1);
+  assert.equal(codex.spawnCount, 2);
+  assert.equal(claude.spawnCount, 1);
 
   // last spawn timestamp
   assert.ok(Number.isFinite(codex.lastSpawnAt));
@@ -142,13 +148,19 @@ test("ACP pool status exposes lifecycle metrics per agent", async () => {
   assert.ok(codex.capabilities.includes("concurrency-bound"));
   assert.ok(codex.capabilities.includes("durable-state"));
   assert.ok(codex.capabilities.includes("live-requests"));
+  assert.ok(codex.capabilities.includes("session-recycle-policy"));
 
   // activeRequests is empty when idle
   assert.ok(Array.isArray(codex.activeRequests));
   assert.equal(codex.activeRequests.length, 0);
 
-  // mode
-  assert.equal(codex.mode, "bounded-one-shot");
+  // mode and transport honestly describe the execution model
+  assert.equal(codex.mode, "managed-reusable");
+  assert.equal(codex.transport, "injected-runner-function");
+  assert.equal(codex.providerProcessReuse, false);
+  assert.equal(s.providerProcessReuse, false);
+  assert.ok(Number.isFinite(codex.sessionStartedAt));
+  assert.ok(Number.isFinite(codex.sessionAgeMs));
 
   // pool-level createdAt
   assert.ok(Number.isFinite(s.createdAt));
@@ -175,7 +187,7 @@ test("ACP pool tracks error count per agent on non-429 failures", async () => {
   const s = pool.status();
   assert.equal(s.pools.codex.errorCount, 2);
   assert.equal(s.pools.codex.requestCount, 1);
-  assert.equal(s.pools.codex.recycleCount, 3);
+  assert.equal(s.pools.codex.recycleCount, 2);
 });
 
 test("ACP pool 429 on one provider does not block another", async () => {
@@ -245,6 +257,48 @@ test("ACP pool recycleCount tracks 429-triggered spawns correctly", async () => 
   assert.equal(s.pools.codex.recycleCount, 1);
   assert.equal(s.pools.codex.errorCount, 1);
   assert.equal(s.pools.codex.requestCount, 0);
+});
+
+test("ACP pool recycles reusable runner session by request count", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-max-requests-"));
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { codex: 1 },
+    maxSessionRequests: 2,
+    runner: async () => "ok",
+  });
+
+  await pool.execute("codex", "a");
+  await pool.execute("codex", "b");
+  let s = pool.status().pools.codex;
+  assert.equal(s.sessionRequestCount, 2);
+  assert.equal(s.recycleCount, 0);
+
+  await pool.execute("codex", "c");
+  s = pool.status().pools.codex;
+  assert.equal(s.sessionRequestCount, 1);
+  assert.equal(s.recycleCount, 1);
+  assert.equal(s.recycleReason, null);
+});
+
+test("ACP pool recycles reusable runner session by age", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-max-age-"));
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { codex: 1 },
+    maxSessionAgeMs: 1,
+    runner: async () => "ok",
+  });
+
+  await pool.execute("codex", "a");
+  const firstStartedAt = pool.status().pools.codex.sessionStartedAt;
+  pool.sessions.get("codex").startedAt = Date.now() - 10_000;
+
+  await pool.execute("codex", "b");
+  const s = pool.status().pools.codex;
+  assert.equal(s.recycleCount, 1);
+  assert.equal(s.sessionRequestCount, 1);
+  assert.ok(s.sessionStartedAt >= firstStartedAt);
 });
 
 test("ACP pool redacts provider secrets before durable rate-limit writes", async () => {
@@ -330,5 +384,80 @@ test("ACP pool activeRequests reflects queued requests promoted on release", asy
     assert.equal(pool.status().pools.codex.activeRequests.length, 0);
   } finally {
     for (const resolve of resolvers) resolve("cleanup");
+  }
+});
+
+test("ACP pool reuses a persistent ACP provider process across prompts", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-cpb-"));
+  const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
+  const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+  });
+
+  try {
+    const firstPath = path.join(cpbRoot, "first-plan.md");
+    const secondPath = path.join(cpbRoot, "second-plan.md");
+
+    assert.equal(await pool.execute("codex", `Write the plan to: ${firstPath}`, cpbRoot), "done");
+    assert.equal(await pool.execute("codex", `Write the plan to: ${secondPath}`, cpbRoot), "done");
+    assert.match(await readFile(firstPath, "utf8"), /Written through ACP/);
+    assert.match(await readFile(secondPath, "utf8"), /Written through ACP/);
+
+    const status = pool.status();
+    assert.equal(status.providerProcessReuse, true);
+    assert.equal(status.pools.codex.providerProcessReuse, true);
+    assert.equal(status.pools.codex.transport, "persistent-acp-agent-process");
+    assert.equal(status.pools.codex.mode, "persistent-provider-process");
+    assert.equal(status.pools.codex.spawnCount, 1);
+    assert.equal(status.pools.codex.requestCount, 2);
+    assert.equal(status.pools.codex.sessionRequestCount, 2);
+    assert.ok(status.pools.codex.providerProcessPid > 0);
+    assert.ok(status.pools.codex.capabilities.includes("provider-process-reuse"));
+  } finally {
+    await pool.stop();
+    if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
+  }
+});
+
+test("ACP pool recycles a persistent ACP provider process by request count", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-recycle-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-recycle-cpb-"));
+  const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
+  const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+    maxSessionRequests: 1,
+  });
+
+  try {
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "first-plan.md")}`, cpbRoot);
+    await pool.execute("codex", `Write the plan to: ${path.join(cpbRoot, "second-plan.md")}`, cpbRoot);
+
+    const status = pool.status().pools.codex;
+    assert.equal(status.providerProcessReuse, true);
+    assert.equal(status.spawnCount, 2);
+    assert.equal(status.recycleCount, 1);
+    assert.equal(status.sessionRequestCount, 1);
+  } finally {
+    await pool.stop();
+    if (previousCommand === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
   }
 });

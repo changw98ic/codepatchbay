@@ -4,6 +4,7 @@ import { hubStatus, listProjects, workerStatus } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { shouldUseRustRuntime } from "./runtime-cli.js";
+import { listDispatches } from "./dispatch-state.js";
 
 const SENSITIVE_KEY = /authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|webhook/i;
 const WEBHOOK_URL = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
@@ -29,6 +30,75 @@ export function redactDiagnostics(value, key = "") {
     }
   }
   return redacted;
+}
+
+export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = {}) {
+  const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
+  const now = Date.now();
+
+  const [hub, projects, queue, acpStatus, rateLimits, dispatches] = await Promise.all([
+    hubStatus(hubRoot),
+    listProjects(hubRoot),
+    queueStatus(hubRoot),
+    pool.status(),
+    pool.readDurableRateLimits(),
+    listDispatches(hubRoot),
+  ]);
+
+  const workerDetails = projects.map((p) => {
+    const derived = workerStatus(p);
+    const lastSeen = p.worker?.lastSeenAt;
+    const ageMs = lastSeen ? now - new Date(lastSeen).getTime() : null;
+    return {
+      id: p.id,
+      name: p.name,
+      status: derived,
+      workerId: p.worker?.workerId || null,
+      lastSeenAt: lastSeen || null,
+      ageMs,
+      capabilities: p.worker?.capabilities || [],
+    };
+  });
+
+  const pools = {};
+  for (const [agent, state] of Object.entries(acpStatus.pools || {})) {
+    const spawnAge = state.lastSpawnAt ? now - new Date(state.lastSpawnAt).getTime() : null;
+    pools[agent] = {
+      active: state.active ?? 0,
+      limit: state.limit ?? 1,
+      queued: state.queued ?? 0,
+      requestCount: state.requestCount ?? 0,
+      errorCount: state.errorCount ?? 0,
+      recycleCount: state.recycleCount ?? 0,
+      lastSpawnAt: state.lastSpawnAt || null,
+      processAgeMs: spawnAge,
+      rateLimitedUntil: state.rateLimitedUntil || null,
+      mode: state.mode || "bounded-one-shot",
+      transport: state.transport || "request-scoped-child-process",
+      providerProcessReuse: state.providerProcessReuse ?? false,
+      activeRequests: Array.isArray(state.activeRequests) ? state.activeRequests.length : 0,
+    };
+  }
+
+  const dispatchSummary = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
+  for (const d of dispatches) {
+    dispatchSummary.total++;
+    if (dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    workers: {
+      online: hub.workersOnline,
+      stale: hub.workersStale,
+      offline: hub.workersOffline,
+      details: workerDetails,
+    },
+    queue,
+    pools,
+    rateLimits,
+    dispatchSummary,
+  };
 }
 
 export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) {

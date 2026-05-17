@@ -304,4 +304,215 @@ describe("parseArgs", () => {
     const opts = parseArgs(["node", "script", "--help"]);
     assert.equal(opts.help, true);
   });
+
+  test("parses --claim-timeout-ms", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--claim-timeout-ms", "60000"]);
+    assert.equal(opts.claimTimeoutMs, 60000);
+  });
+
+  test("default claim-timeout-ms is 120000", () => {
+    const opts = parseArgs(["node", "script", "--project", "p"]);
+    assert.equal(opts.claimTimeoutMs, 120_000);
+  });
+});
+
+describe("ProjectWorker stale queue recovery", () => {
+  let hubRoot;
+  let sourceDir;
+  let projectId;
+
+  beforeEach(async () => {
+    hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
+    sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    projectId = project.id;
+  });
+
+  function makeWorker(opts = {}) {
+    return new ProjectWorker({
+      projectId,
+      hubRoot,
+      once: true,
+      runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
+      ...opts,
+    });
+  }
+
+  async function claimAs(workerId, entryId, claimedAtIso) {
+    const { updateEntry } = await import("../server/services/hub-queue.js");
+    return updateEntry(hubRoot, entryId, {
+      status: "in_progress",
+      claimedBy: workerId,
+      workerId,
+      claimedAt: claimedAtIso,
+    });
+  }
+
+  test("recoverStaleEntries resets expired entries claimed by another worker", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "stale-task", sourcePath: sourceDir });
+    const oldTime = new Date(Date.now() - 200_000).toISOString();
+    await claimAs("worker-dead", queued.id, oldTime);
+
+    const worker = makeWorker({ workerId: "worker-b", claimTimeoutMs: 100_000 });
+    await worker.init();
+    const recovered = await worker.recoverStaleEntries();
+
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].id, queued.id);
+    assert.equal(recovered[0].action, "reset");
+
+    const entries = await listQueue(hubRoot, { projectId });
+    assert.equal(entries[0].status, "pending");
+    assert.equal(entries[0].claimedBy, null);
+  });
+
+  test("recoverStaleEntries reclaims expired entries claimed by same workerId", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "own-stale", sourcePath: sourceDir });
+    const oldTime = new Date(Date.now() - 200_000).toISOString();
+    await claimAs("worker-restart", queued.id, oldTime);
+
+    const worker = makeWorker({ workerId: "worker-restart", claimTimeoutMs: 100_000 });
+    await worker.init();
+    const recovered = await worker.recoverStaleEntries();
+
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].action, "reclaimed");
+
+    const entries = await listQueue(hubRoot, { projectId });
+    assert.equal(entries[0].status, "in_progress");
+    assert.equal(entries[0].claimedBy, "worker-restart");
+    assert.ok(new Date(entries[0].claimedAt).getTime() > new Date(oldTime).getTime());
+  });
+
+  test("recoverStaleEntries does not touch entries before timeout", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "fresh-task", sourcePath: sourceDir });
+    const recentTime = new Date(Date.now() - 5_000).toISOString();
+    await claimAs("worker-a", queued.id, recentTime);
+
+    const worker = makeWorker({ workerId: "worker-b", claimTimeoutMs: 100_000 });
+    await worker.init();
+    const recovered = await worker.recoverStaleEntries();
+
+    assert.equal(recovered.length, 0);
+
+    const entries = await listQueue(hubRoot, { projectId });
+    assert.equal(entries[0].status, "in_progress");
+    assert.equal(entries[0].claimedBy, "worker-a");
+  });
+
+  test("recoverStaleEntries does not touch other project entries", async () => {
+    const otherDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-other-"));
+    const other = await registerProject(hubRoot, { name: "other-proj", sourcePath: otherDir });
+    const otherEntry = await enqueue(hubRoot, { projectId: other.id, description: "other-stale" });
+    const oldTime = new Date(Date.now() - 200_000).toISOString();
+    await claimAs("worker-x", otherEntry.id, oldTime);
+
+    const worker = makeWorker({ workerId: "worker-b", claimTimeoutMs: 100_000 });
+    await worker.init();
+    const recovered = await worker.recoverStaleEntries();
+
+    assert.equal(recovered.length, 0);
+
+    const entries = await listQueue(hubRoot, { projectId: other.id });
+    assert.equal(entries[0].status, "in_progress");
+    assert.equal(entries[0].claimedBy, "worker-x");
+  });
+
+  test("recoverStaleEntries is no-op when claimTimeoutMs is 0", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "no-recover", sourcePath: sourceDir });
+    const oldTime = new Date(Date.now() - 200_000).toISOString();
+    await claimAs("worker-dead", queued.id, oldTime);
+
+    const worker = makeWorker({ workerId: "worker-b", claimTimeoutMs: 0 });
+    await worker.init();
+    const recovered = await worker.recoverStaleEntries();
+
+    assert.equal(recovered.length, 0);
+  });
+
+  test("releaseOwnEntries resets only own non-active entries on graceful stop", async () => {
+    const entry1 = await enqueue(hubRoot, { projectId, description: "owned-a", sourcePath: sourceDir });
+    const entry2 = await enqueue(hubRoot, { projectId, description: "owned-b", sourcePath: sourceDir });
+    await claimAs("worker-stop", entry1.id, new Date().toISOString());
+    await claimAs("worker-stop", entry2.id, new Date().toISOString());
+
+    const worker = makeWorker({ workerId: "worker-stop" });
+    await worker.init();
+    worker._activeEntryId = entry1.id;
+
+    const released = await worker.releaseOwnEntries();
+    assert.deepEqual(released, [entry2.id]);
+
+    const entries = await listQueue(hubRoot, { projectId });
+    const e1 = entries.find((e) => e.id === entry1.id);
+    const e2 = entries.find((e) => e.id === entry2.id);
+    assert.equal(e1.status, "in_progress");
+    assert.equal(e2.status, "pending");
+  });
+
+  test("releaseOwnEntries does not touch entries from other workers", async () => {
+    const entry = await enqueue(hubRoot, { projectId, description: "other-owned", sourcePath: sourceDir });
+    await claimAs("worker-other", entry.id, new Date().toISOString());
+
+    const worker = makeWorker({ workerId: "worker-stop" });
+    await worker.init();
+    const released = await worker.releaseOwnEntries();
+    assert.equal(released.length, 0);
+
+    const entries = await listQueue(hubRoot, { projectId });
+    assert.equal(entries[0].status, "in_progress");
+    assert.equal(entries[0].claimedBy, "worker-other");
+  });
+
+  test("claimNext sets claimedAt on claim", async () => {
+    await enqueue(hubRoot, { projectId, description: "claim-time", sourcePath: sourceDir });
+
+    const worker = makeWorker();
+    await worker.init();
+    const before = Date.now();
+    const claimed = await worker.claimNext();
+    const after = Date.now();
+
+    assert.ok(claimed.claimedAt);
+    const claimedMs = new Date(claimed.claimedAt).getTime();
+    assert.ok(claimedMs >= before && claimedMs <= after);
+  });
+
+  test("heartbeat includes claimTimeoutMs", async () => {
+    const worker = makeWorker({ workerId: "hb-meta", claimTimeoutMs: 45_000 });
+    await worker.init();
+    await worker.heartbeat();
+
+    const project = await getProject(hubRoot, projectId);
+    assert.equal(project.worker.claimTimeoutMs, 45_000);
+  });
+
+  test("worker B claims entry after timeout expires following worker A crash", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "crash-recover", sourcePath: sourceDir });
+    const oldTime = new Date(Date.now() - 300_000).toISOString();
+    await claimAs("worker-a", queued.id, oldTime);
+
+    const workerB = makeWorker({ workerId: "worker-b", claimTimeoutMs: 100_000 });
+    await workerB.init();
+    await workerB.recoverStaleEntries();
+
+    const reclaimed = await workerB.claimNext();
+    assert.ok(reclaimed);
+    assert.equal(reclaimed.id, queued.id);
+    assert.equal(reclaimed.claimedBy, "worker-b");
+    assert.equal(reclaimed.status, "in_progress");
+  });
+
+  test("worker B cannot claim before timeout expires", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "not-yet", sourcePath: sourceDir });
+    const recentTime = new Date(Date.now() - 5_000).toISOString();
+    await claimAs("worker-a", queued.id, recentTime);
+
+    const workerB = makeWorker({ workerId: "worker-b", claimTimeoutMs: 100_000 });
+    await workerB.init();
+    await workerB.recoverStaleEntries();
+
+    const claimed = await workerB.claimNext();
+    assert.equal(claimed, null);
+  });
 });

@@ -148,6 +148,7 @@ export async function updateEntry(hubRoot, entryId, patch = {}) {
   if (patch.status !== undefined) entry.status = patch.status;
   if (patch.metadata) entry.metadata = { ...entry.metadata, ...patch.metadata };
   if (patch.claimedBy !== undefined) entry.claimedBy = patch.claimedBy;
+  if (patch.claimedAt !== undefined) entry.claimedAt = patch.claimedAt;
   if (patch.workerId !== undefined) entry.workerId = patch.workerId;
   entry.updatedAt = nowIso();
 
@@ -163,6 +164,36 @@ export async function listQueue(hubRoot, { status, projectId } = {}) {
     if (projectId && e.projectId !== projectId) return false;
     return true;
   });
+}
+
+export async function syncBacklogResult(hubRoot, { projectId, description, result } = {}) {
+  if (!projectId || !description) return { synced: 0, entries: [] };
+
+  const queue = await loadQueue(hubRoot);
+  const targetStatus = result.ok ? "completed" : "failed";
+  const key = `${projectId}::${description}`;
+
+  const matches = queue.entries.filter(
+    (e) => entryKey(e) === key && (e.status === "pending" || e.status === "in_progress"),
+  );
+
+  if (matches.length === 0) return { synced: 0, entries: [] };
+
+  const metadata = {
+    syncedFrom: "backlog",
+    backlogIssueId: result.backlogIssueId || null,
+    syncReason: result.ok ? "backlog_completed" : "backlog_failed",
+  };
+  if (result.error) metadata.error = result.error;
+
+  for (const entry of matches) {
+    entry.status = targetStatus;
+    entry.metadata = { ...entry.metadata, ...metadata };
+    entry.updatedAt = nowIso();
+  }
+
+  await saveQueue(hubRoot, queue);
+  return { synced: matches.length, entries: matches };
 }
 
 export async function queueStatus(hubRoot) {

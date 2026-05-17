@@ -6,8 +6,8 @@ import test, { describe } from "node:test";
 
 import { MultiEvolveController, CrossProjectPriorityQueue, parseScanResults } from "../bridges/multi-evolve.mjs";
 import { registerProject } from "../server/services/hub-registry.js";
-import { pushIssues, loadBacklog } from "../server/services/multi-evolve-state.js";
-import { enqueue, listQueue, queueStatus } from "../server/services/hub-queue.js";
+import { pushIssues, loadBacklog, completeIssue } from "../server/services/multi-evolve-state.js";
+import { enqueue, listQueue, queueStatus, syncBacklogResult, updateEntry } from "../server/services/hub-queue.js";
 
 async function createFixture(hubRoot, projectName) {
   const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-bridge-src-"));
@@ -188,5 +188,131 @@ describe("dry-run exposes Hub queue status", () => {
     assert.ok(result.hubQueue, "dry-run response should include hubQueue");
     assert.equal(result.hubQueue.pending, 1);
     assert.equal(result.hubQueue.total, 1);
+  });
+});
+
+describe("Hub queue lifecycle sync from backlog", () => {
+  test("pending Hub entry synced to completed after backlog completion", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-comp-"));
+    const projA = { id: "proj-a", sourcePath: await mkdtemp(path.join(tmpdir(), "cpb-sync-a-")) };
+
+    // Seed issue in both backlog and Hub queue
+    await pushIssues(projA.sourcePath, projA.id, [
+      { id: "bl-1", priority: "P1", description: "Fix memory leak" },
+    ]);
+    await enqueue(hubRoot, {
+      projectId: projA.id,
+      sourcePath: projA.sourcePath,
+      priority: "P1",
+      description: "Fix memory leak",
+    });
+
+    // Complete in backlog
+    await completeIssue(projA.sourcePath, projA.id, "bl-1", { ok: true });
+
+    // Sync Hub queue
+    const res = await syncBacklogResult(hubRoot, {
+      projectId: projA.id,
+      description: "Fix memory leak",
+      result: { ok: true, backlogIssueId: "bl-1" },
+    });
+
+    assert.equal(res.synced, 1);
+    assert.equal(res.entries[0].status, "completed");
+    assert.equal(res.entries[0].metadata.syncedFrom, "backlog");
+    assert.equal(res.entries[0].metadata.backlogIssueId, "bl-1");
+
+    const remaining = await listQueue(hubRoot, { status: "pending" });
+    assert.equal(remaining.length, 0);
+  });
+
+  test("pending Hub entry synced to failed after backlog failure", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-fail-"));
+    const projB = { id: "proj-b", sourcePath: await mkdtemp(path.join(tmpdir(), "cpb-sync-b-")) };
+
+    await pushIssues(projB.sourcePath, projB.id, [
+      { id: "bl-2", priority: "P0", description: "Fix crash" },
+    ]);
+    await enqueue(hubRoot, {
+      projectId: projB.id,
+      sourcePath: projB.sourcePath,
+      priority: "P0",
+      description: "Fix crash",
+    });
+
+    await completeIssue(projB.sourcePath, projB.id, "bl-2", { ok: false, error: "timeout" });
+
+    const res = await syncBacklogResult(hubRoot, {
+      projectId: projB.id,
+      description: "Fix crash",
+      result: { ok: false, backlogIssueId: "bl-2", error: "timeout" },
+    });
+
+    assert.equal(res.synced, 1);
+    assert.equal(res.entries[0].status, "failed");
+    assert.equal(res.entries[0].metadata.error, "timeout");
+    assert.equal(res.entries[0].metadata.syncReason, "backlog_failed");
+  });
+
+  test("sync does not update entries from other projects", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-xproj-"));
+    const projA = { id: "proj-a", sourcePath: await mkdtemp(path.join(tmpdir(), "cpb-xp-a-")) };
+    const projB = { id: "proj-b", sourcePath: await mkdtemp(path.join(tmpdir(), "cpb-xp-b-")) };
+
+    // Same description, different project
+    await enqueue(hubRoot, { projectId: projA.id, sourcePath: projA.sourcePath, priority: "P1", description: "Shared issue name" });
+    await enqueue(hubRoot, { projectId: projB.id, sourcePath: projB.sourcePath, priority: "P1", description: "Shared issue name" });
+
+    const res = await syncBacklogResult(hubRoot, {
+      projectId: projA.id,
+      description: "Shared issue name",
+      result: { ok: true, backlogIssueId: "bl-x" },
+    });
+
+    assert.equal(res.synced, 1);
+    assert.equal(res.entries[0].projectId, projA.id);
+
+    // proj-B entry still pending
+    const projBEntries = await listQueue(hubRoot, { projectId: projB.id, status: "pending" });
+    assert.equal(projBEntries.length, 1);
+  });
+
+  test("in_progress Hub entry is also synced", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-wip-"));
+    const proj = { id: "proj-wip", sourcePath: await mkdtemp(path.join(tmpdir(), "cpb-sync-wip-")) };
+
+    await enqueue(hubRoot, { projectId: proj.id, sourcePath: proj.sourcePath, priority: "P1", description: "Active work" });
+    // Simulate dequeue (moves to in_progress)
+    const [entry] = await listQueue(hubRoot, { status: "pending" });
+    await updateEntry(hubRoot, entry.id, { status: "in_progress" });
+
+    const res = await syncBacklogResult(hubRoot, {
+      projectId: proj.id,
+      description: "Active work",
+      result: { ok: true, backlogIssueId: "bl-wip" },
+    });
+
+    assert.equal(res.synced, 1);
+    assert.equal(res.entries[0].status, "completed");
+  });
+
+  test("no matching Hub entry returns synced 0", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-nomatch-"));
+
+    const res = await syncBacklogResult(hubRoot, {
+      projectId: "proj-none",
+      description: "Nonexistent issue",
+      result: { ok: true },
+    });
+
+    assert.equal(res.synced, 0);
+    assert.deepEqual(res.entries, []);
+  });
+
+  test("missing projectId or description returns synced 0", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-sync-missing-"));
+
+    assert.deepEqual(await syncBacklogResult(hubRoot, { description: "x", result: { ok: true } }), { synced: 0, entries: [] });
+    assert.deepEqual(await syncBacklogResult(hubRoot, { projectId: "x", result: { ok: true } }), { synced: 0, entries: [] });
   });
 });

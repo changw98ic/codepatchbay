@@ -12,6 +12,7 @@ export default function Dashboard() {
   const [queueStatus, setQueueStatus] = useState(null);
   const [queueEntries, setQueueEntries] = useState([]);
   const [hubDispatches, setHubDispatches] = useState([]);
+  const [observability, setObservability] = useState(null);
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
@@ -39,8 +40,9 @@ export default function Dashboard() {
       fetch('/api/hub/queue/status').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/queue').then((r) => r.ok ? r.json() : []),
       fetch('/api/hub/dispatches').then((r) => r.ok ? r.json() : []),
+      fetch('/api/hub/observability').then((r) => r.ok ? r.json() : null),
     ])
-      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches]) => {
+      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches, obs]) => {
         setHubStatus(status);
         setHubProjects(Array.isArray(registryProjects) ? registryProjects : []);
         setHubAcp(acp);
@@ -48,6 +50,7 @@ export default function Dashboard() {
         setQueueStatus(qStatus);
         setQueueEntries(Array.isArray(qEntries) ? qEntries : []);
         setHubDispatches(Array.isArray(dispatches) ? dispatches : []);
+        setObservability(obs);
       })
       .catch(() => {});
   }, []);
@@ -142,6 +145,18 @@ export default function Dashboard() {
     .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
     .slice(0, 10);
 
+  // Worker age lookup from observability
+  const workerAgeById = new Map(
+    (observability?.workers?.details || []).map((w) => [w.id, w])
+  );
+
+  function formatAge(ageMs) {
+    if (ageMs == null) return null;
+    if (ageMs < 60000) return `${Math.round(ageMs / 1000)}s`;
+    if (ageMs < 3600000) return `${Math.round(ageMs / 60000)}m`;
+    return `${(ageMs / 3600000).toFixed(1)}h`;
+  }
+
   return (
     <div className="dashboard">
       <div className="dashboard-header">
@@ -192,6 +207,37 @@ export default function Dashboard() {
               <em>{knowledgePolicy.forbiddenMarkdownState?.length || 0} state guards</em>
             </div>
           )}
+          {observability && Object.keys(observability.pools || {}).length > 0 && (
+            <div className="hub-lifecycle" aria-label="ACP lifecycle">
+              {Object.entries(observability.pools).map(([agent, pool]) => (
+                <span className="lifecycle-pill" key={agent}>
+                  <em className="lifecycle-agent">{agent}</em>
+                  {pool.requestCount > 0 && <span>{pool.requestCount} req</span>}
+                  {pool.errorCount > 0 && <strong>{pool.errorCount} err</strong>}
+                  {pool.recycleCount > 0 && <span>{pool.recycleCount} recycled</span>}
+                  {pool.processAgeMs != null && (
+                    <span className="lifecycle-age">
+                      {pool.processAgeMs < 60000
+                        ? `${Math.round(pool.processAgeMs / 1000)}s`
+                        : pool.processAgeMs < 3600000
+                          ? `${Math.round(pool.processAgeMs / 60000)}m`
+                          : `${(pool.processAgeMs / 3600000).toFixed(1)}h`}
+                    </span>
+                  )}
+                  {pool.rateLimitedUntil && <strong>rate-limited</strong>}
+                </span>
+              ))}
+            </div>
+          )}
+          {observability?.dispatchSummary && observability.dispatchSummary.total > 0 && (
+            <div className="hub-dispatch-summary">
+              <span>Runs</span>
+              <em>{observability.dispatchSummary.total} total</em>
+              {observability.dispatchSummary.completed > 0 && <em>{observability.dispatchSummary.completed} done</em>}
+              {observability.dispatchSummary.failed > 0 && <strong>{observability.dispatchSummary.failed} failed</strong>}
+              {observability.dispatchSummary.running > 0 && <em>{observability.dispatchSummary.running} active</em>}
+            </div>
+          )}
           {queueStatus && queueStatus.total > 0 && (
             <div className="hub-queue-summary">
               <span>Queue</span>
@@ -223,6 +269,9 @@ export default function Dashboard() {
                   <span className={`badge badge-worker badge-${p.workerDerivedStatus || p.worker.status}`}>
                     {p.workerDerivedStatus || p.worker.status}
                   </span>
+                )}
+                {workerAgeById.get(p.id)?.ageMs != null && (
+                  <span className="badge badge-age">{formatAge(workerAgeById.get(p.id).ageMs)}</span>
                 )}
                 {p.pipelineState && (
                   <span className={`badge badge-${p.pipelineState.status}`}>

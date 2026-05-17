@@ -29,9 +29,14 @@ test("managed ACP pool is a singleton per Hub process root", async () => {
   const second = getManagedAcpPool({ cpbRoot, hubRoot, limits: { codex: 2 } });
 
   assert.equal(first, second);
-  assert.equal(first.status().mode, "managed-shared");
-  assert.equal(first.status().pools.codex.mode, "managed-shared");
-  assert.ok(first.status().pools.codex.capabilities.includes("process-singleton"));
+  assert.equal(first.status().poolSingleton, true);
+  assert.equal(first.status().providerProcessReuse, true);
+  assert.equal(first.status().pools.codex.mode, "pool-admission-singleton");
+  assert.equal(first.status().pools.codex.poolSingleton, true);
+  assert.equal(first.status().pools.codex.providerProcessReuse, true);
+  assert.equal(first.status().pools.codex.transport, "persistent-acp-agent-process");
+  assert.ok(first.status().pools.codex.capabilities.includes("pool-singleton"));
+  assert.ok(first.status().pools.codex.capabilities.includes("provider-process-reuse"));
 });
 
 test("managed ACP pool exposes live active and queued counts", async () => {

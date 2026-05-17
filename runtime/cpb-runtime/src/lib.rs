@@ -1162,6 +1162,9 @@ pub fn hub_queue_update(hub_root: &Path, entry_id: &str, patch: &Value) -> Resul
     if let Some(claimed_by) = patch_obj.get("claimedBy") {
         entry_obj.insert("claimedBy".into(), claimed_by.clone());
     }
+    if let Some(claimed_at) = patch_obj.get("claimedAt") {
+        entry_obj.insert("claimedAt".into(), claimed_at.clone());
+    }
     if let Some(worker_id) = patch_obj.get("workerId") {
         entry_obj.insert("workerId".into(), worker_id.clone());
     }

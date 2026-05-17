@@ -247,6 +247,7 @@ export async function heartbeatWorker(hubRoot, id, worker = {}) {
     pid: worker.pid || process.pid,
     status: worker.status || "online",
     capabilities: Array.isArray(worker.capabilities) ? worker.capabilities : [],
+    claimTimeoutMs: worker.claimTimeoutMs ?? undefined,
     lastSeenAt: nowIso(),
   };
   return updateProject(hubRoot, id, { worker: heartbeat });

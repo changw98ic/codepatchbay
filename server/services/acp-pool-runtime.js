@@ -8,12 +8,14 @@ function managedStatus(pool) {
   return {
     ...status,
     mode: "managed-shared",
+    poolSingleton: true,
     pools: Object.fromEntries(Object.entries(status.pools).map(([agent, state]) => [
       agent,
       {
         ...state,
-        mode: "managed-shared",
-        capabilities: [...new Set([...(state.capabilities || []), "process-singleton"])],
+        mode: "pool-admission-singleton",
+        poolSingleton: true,
+        capabilities: [...new Set([...(state.capabilities || []), "pool-singleton"])],
       },
     ])),
   };
@@ -31,7 +33,10 @@ function managedView(pool) {
 
 export function getPoolRuntime(hubRoot, cpbRoot, opts = {}) {
   if (!runtimes.has(hubRoot)) {
-    runtimes.set(hubRoot, new AcpPool({ ...opts, cpbRoot, hubRoot }));
+    const persistentProcesses = opts.persistentProcesses ?? (
+      opts.runner ? false : process.env.CPB_ACP_PERSISTENT_PROCESS !== "0"
+    );
+    runtimes.set(hubRoot, new AcpPool({ ...opts, cpbRoot, hubRoot, persistentProcesses }));
   }
   return runtimes.get(hubRoot);
 }

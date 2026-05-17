@@ -28,6 +28,7 @@ const baseMap = {
   '/api/hub/queue/status': null,
   '/api/hub/queue': [],
   '/api/hub/dispatches': [],
+  '/api/hub/observability': null,
 };
 
 describe('Dashboard Hub panel', () => {
@@ -69,6 +70,7 @@ describe('Dashboard Hub panel', () => {
       if (url === '/api/hub/queue/status') return jsonResponse(null);
       if (url === '/api/hub/queue') return jsonResponse([]);
       if (url === '/api/hub/dispatches') return jsonResponse([]);
+      if (url === '/api/hub/observability') return jsonResponse(null);
       return jsonResponse(null);
     });
   });
@@ -566,5 +568,194 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
 
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard ACP lifecycle display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('renders pool lifecycle stats from observability endpoint', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: { online: 1, stale: 0, offline: 0, details: [] },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {
+          codex: {
+            active: 0, limit: 2, queued: 0,
+            requestCount: 42, errorCount: 1, recycleCount: 3,
+            lastSpawnAt: '2026-05-17T23:00:00Z', processAgeMs: 3600000,
+            rateLimitedUntil: null, mode: 'bounded-one-shot', activeRequests: 0,
+          },
+        },
+        rateLimits: {},
+        dispatchSummary: { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByLabelText('ACP lifecycle')).toBeInTheDocument());
+    expect(screen.getByText('42 req')).toBeInTheDocument();
+    expect(screen.getByText('1 err')).toBeInTheDocument();
+    expect(screen.getByText('3 recycled')).toBeInTheDocument();
+  });
+
+  it('renders rate-limited indicator when pool is rate-limited', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: { online: 1, stale: 0, offline: 0, details: [] },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {
+          claude: {
+            active: 0, limit: 1, queued: 0,
+            requestCount: 0, errorCount: 0, recycleCount: 0,
+            lastSpawnAt: null, processAgeMs: null,
+            rateLimitedUntil: '2026-05-18T01:00:00Z', mode: 'bounded-one-shot', activeRequests: 0,
+          },
+        },
+        rateLimits: {},
+        dispatchSummary: { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('rate-limited')).toBeInTheDocument());
+  });
+
+  it('omits lifecycle section when observability has no pools', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: { online: 1, stale: 0, offline: 0, details: [] },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {},
+        rateLimits: {},
+        dispatchSummary: { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByLabelText('ACP lifecycle')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard dispatch summary display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('renders dispatch summary counts from observability', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: { online: 1, stale: 0, offline: 0, details: [] },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {},
+        rateLimits: {},
+        dispatchSummary: { total: 5, completed: 3, failed: 1, running: 1, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Runs')).toBeInTheDocument());
+    expect(screen.getByText('5 total')).toBeInTheDocument();
+    expect(screen.getByText('3 done')).toBeInTheDocument();
+    expect(screen.getByText('1 failed')).toBeInTheDocument();
+    expect(screen.getByText('1 active')).toBeInTheDocument();
+  });
+
+  it('hides dispatch summary when total is 0', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: { online: 1, stale: 0, offline: 0, details: [] },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {},
+        rateLimits: {},
+        dispatchSummary: { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByText('Runs')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard worker age badge', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows worker age badge on project cards from observability details', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+      ],
+      '/api/hub/observability': {
+        generatedAt: '2026-05-18T00:00:00Z',
+        workers: {
+          online: 1, stale: 0, offline: 0,
+          details: [
+            { id: 'proj-a', name: 'proj-a', status: 'online', workerId: 'w1', lastSeenAt: '2026-05-18T00:00:00Z', ageMs: 30000, capabilities: [] },
+          ],
+        },
+        queue: { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+        pools: {},
+        rateLimits: {},
+        dispatchSummary: { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 },
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('proj-a')).toBeInTheDocument());
+    expect(screen.getByText('30s')).toBeInTheDocument();
+  });
+
+  it('omits age badge when observability has no worker detail for project', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+      ],
+      '/api/hub/observability': null,
+    });
+
+    const { container } = render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('proj-a')).toBeInTheDocument());
+    expect(container.querySelector('.badge-age')).toBeNull();
   });
 });
