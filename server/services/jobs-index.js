@@ -5,6 +5,20 @@ import { listEventFiles, materializeJob, readEvents } from "./event-store.js";
 
 const INDEX_VERSION = 1;
 
+// In-memory promise-chain lock: serializes concurrent index writes per cpbRoot.
+// Each cpbRoot gets its own chain; callers wait for the previous write to settle.
+const _writeQueues = new Map();
+
+function enqueueWrite(cpbRoot, fn) {
+  const key = indexFilePath(cpbRoot);
+  // prev is always a settled promise (either resolved or catch'd to resolved)
+  const prev = _writeQueues.get(key) || Promise.resolve();
+  const next = prev.then(() => fn());
+  // Store a never-rejecting tail so the next writer always proceeds
+  _writeQueues.set(key, next.catch(() => {}));
+  return next;
+}
+
 function indexFilePath(cpbRoot) {
   return path.join(runtimeDataPath(cpbRoot), "jobs-index.json");
 }
@@ -39,16 +53,19 @@ async function writeJobsIndex(cpbRoot, index) {
 }
 
 export async function updateJobsIndexEntry(cpbRoot, project, jobId, state) {
-  const index = await readJobsIndex(cpbRoot) || {
-    _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
-    jobs: {},
-  };
+  return enqueueWrite(cpbRoot, async () => {
+    // Re-read latest index while holding the lock
+    const index = await readJobsIndex(cpbRoot) || {
+      _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
+      jobs: {},
+    };
 
-  index.jobs[compositeKey(project, jobId)] = state;
-  index._meta.updatedAt = new Date().toISOString();
-  index._meta.jobCount = Object.keys(index.jobs).length;
+    index.jobs[compositeKey(project, jobId)] = state;
+    index._meta.updatedAt = new Date().toISOString();
+    index._meta.jobCount = Object.keys(index.jobs).length;
 
-  await writeJobsIndex(cpbRoot, index);
+    await writeJobsIndex(cpbRoot, index);
+  });
 }
 
 export async function rebuildJobsIndex(cpbRoot) {
