@@ -11,33 +11,62 @@ function spawnPipeline(cpbRoot, project, task, log) {
   const scriptPath = path.join(cpbRoot, "bridges", "run-pipeline.sh");
   const taskId = `channel:${project}:pipeline:${Date.now()}`;
 
-  const child = spawn("bash", [scriptPath, project, task, "3", "0"], {
-    cwd: cpbRoot,
-    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  let child;
+  try {
+    child = spawn("bash", [scriptPath, project, task, "3", "0"], {
+      cwd: cpbRoot,
+      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err) {
+    log?.error(`spawnPipeline sync error for ${taskId}: ${err.message}`);
+    return { accepted: false, taskId, error: err.message };
+  }
 
-  registerTask(taskId, project, "run-pipeline.sh", child.pid);
+  return new Promise((resolve) => {
+    let settled = false;
+    let registered = false;
+    let output = "";
 
-  let output = "";
-  child.stdout.on("data", (chunk) => {
-    const text = chunk.toString();
-    output += text;
-    broadcast({ type: "task:output", taskId, project, output: text, stream: "stdout" });
-  });
-  child.stderr.on("data", (chunk) => {
-    const text = chunk.toString();
-    output += text;
-    broadcast({ type: "task:output", taskId, project, output: text, stream: "stderr" });
-  });
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      log?.error(`spawnPipeline async error for ${taskId}: ${err.message}`);
+      broadcast({
+        type: "task:error",
+        taskId,
+        project,
+        error: err.message,
+        code: err.code || "SPAWN_FAILURE",
+      });
+      resolve({ accepted: false, taskId, error: err.message });
+    });
 
-  child.on("exit", (code) => {
-    unregisterTask(taskId);
-    broadcast({ type: "task:complete", taskId, project, script: "run-pipeline.sh", exitCode: code, output });
-    log?.info(`Channel pipeline ${taskId} exited with code ${code}`);
-  });
+    child.on("spawn", () => {
+      if (settled) return;
+      settled = true;
+      registered = true;
+      registerTask(taskId, project, "run-pipeline.sh", child.pid);
+      resolve({ accepted: true, taskId, pid: child.pid });
+    });
 
-  return { accepted: true, taskId, pid: child.pid };
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      output += text;
+      broadcast({ type: "task:output", taskId, project, output: text, stream: "stdout" });
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      output += text;
+      broadcast({ type: "task:output", taskId, project, output: text, stream: "stderr" });
+    });
+
+    child.on("exit", (code) => {
+      if (registered) unregisterTask(taskId);
+      broadcast({ type: "task:complete", taskId, project, script: "run-pipeline.sh", exitCode: code, output });
+      log?.info(`Channel pipeline ${taskId} exited with code ${code}`);
+    });
+  });
 }
 
 /**
@@ -107,7 +136,7 @@ async function handleReviewCommand(cpbRoot, cmd, log) {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
     await updateSession(cpbRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" });
-    const result = spawnPipeline(cpbRoot, session.project, session.intent, log);
+    const result = await spawnPipeline(cpbRoot, session.project, session.intent, log);
     await updateSession(cpbRoot, session.sessionId, { jobId: result.taskId });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "dispatched", jobId: result.taskId, project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "approved", taskId: result.taskId };

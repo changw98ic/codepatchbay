@@ -23,3 +23,6 @@
 - **2026-05-17T00:29:15Z** | codex | plan | Created plan-005 for: `server/services/review-session.js: sessionFile/getSession/updateSession` derive session paths from unvalidated `sessionId` values, so crafted IDs with separators can escape `reviewsDir` and target arbitrary JSON files outside the session store. | SUCCESS
 - **2026-05-17T00:32:38Z** | claude | execute | deliverable-003 from plan-005 | SUCCESS
 - **2026-05-17T00:33:06Z** | codex | verify | deliverable-003 | PASS
+- **2026-05-17T02:58:46Z** | codex | plan | Created plan-006 for: server/routes/channels.js:spawnPipeline — spawns `bash` without an `'error'` listener, so process launch failures (`ENOENT`, exec permission, EACCES, etc.) can emit uncaught child-process errors and destabilize the server; add bounded error handling and return a failure payload instead of relying on default error behavior. | SUCCESS
+- **2026-05-17T03:03:33Z** | claude | execute | deliverable-004 from plan-006 | SUCCESS
+- **2026-05-17T03:03:57Z** | codex | verify | deliverable-004 | PASS
