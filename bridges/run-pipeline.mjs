@@ -322,6 +322,8 @@ async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   const diffPath = path.join(artifactsDir, "diff-execute.patch");
 
   try {
+    // Include untracked files in diff via intent-to-add (no content staged)
+    await runCommand("git", ["add", "-N", "."], sourcePath).catch(() => {});
     const result = await runCommand("git", ["diff", "HEAD"], sourcePath);
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       await writeFile(diffPath, result.stdout, "utf8");
