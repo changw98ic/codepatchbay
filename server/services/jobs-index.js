@@ -94,10 +94,37 @@ export async function rebuildJobsIndex(cpbRoot) {
   return index;
 }
 
+async function mergeMissingEventStreams(cpbRoot, index) {
+  const files = await listEventFiles(cpbRoot);
+  let changed = false;
+
+  for (const { project, jobId } of files) {
+    const key = compositeKey(project, jobId);
+    if (index.jobs[key]) continue;
+    const events = await readEvents(cpbRoot, project, jobId);
+    if (events.length === 0) continue;
+    const state = materializeJob(events);
+    if (state.createdAt && state.project && state.jobId) {
+      index.jobs[key] = state;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    index._meta.updatedAt = new Date().toISOString();
+    index._meta.jobCount = Object.keys(index.jobs).length;
+    await writeJobsIndex(cpbRoot, index);
+  }
+
+  return index;
+}
+
 export async function listJobsFromIndex(cpbRoot) {
   let index = await readJobsIndex(cpbRoot);
   if (!index) {
     index = await rebuildJobsIndex(cpbRoot);
+  } else {
+    index = await mergeMissingEventStreams(cpbRoot, index);
   }
 
   return Object.values(index.jobs)

@@ -138,18 +138,18 @@ permissions:
   fs:
     read:
       - project
-      - flow_project_wiki
-      - flow_system_readonly
+      - cpb_project_wiki
+      - cpb_system_readonly
     write:
       - project
-      - flow_project_outputs
+      - cpb_project_outputs
   terminal:
     allow: true
     policy: project_only
   forbidden:
-    - flow_profiles
-    - flow_bridges
-    - flow_system_write
+    - cpb_profiles
+    - cpb_bridges
+    - cpb_system_write
     - secrets
 
 handoff:
@@ -408,10 +408,10 @@ Allowed roots should be derived from profile permissions:
 | `project` | The active workspace for the phase: primary project for read-only phases, task worktree for write phases. |
 | `project_source` | `wiki/projects/{project}/project.json.sourcePath` |
 | `project_worktree` | The task-specific worktree path for code-writing phases. |
-| `flow_project_wiki` | `wiki/projects/{project}/` |
-| `flow_project_outputs` | `wiki/projects/{project}/outputs/` |
-| `flow_system_readonly` | selected files under `wiki/system/` |
-| `flow_profiles_readonly` | selected role profile files |
+| `cpb_project_wiki` | `wiki/projects/{project}/` |
+| `cpb_project_outputs` | `wiki/projects/{project}/outputs/` |
+| `cpb_system_readonly` | selected files under `wiki/system/` |
+| `cpb_profiles_readonly` | selected role profile files |
 
 Writes must reject paths outside allowed write roots. Reads must reject secrets and unrelated projects.
 

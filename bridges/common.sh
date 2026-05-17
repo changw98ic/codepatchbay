@@ -104,6 +104,9 @@ log_append() {
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 # Set CPB_DANGEROUS=1 to disable all constraints (unrestricted agent access)
 
+# Pre-read a file, return empty string if missing
+_pre_read() { [ -f "$1" ] && cat "$1" 2>/dev/null || echo "[file not found: $1]"; }
+
 # rtk_codex_plan <project> <task> <plan_file>
 rtk_codex_plan() {
   local project="$1" task="$2" plan_file="$3"
@@ -113,11 +116,22 @@ rtk_codex_plan() {
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
-- ONLY read files under: $CPB_ROOT/wiki/projects/$project/ or $CPB_ROOT/profiles/ or $CPB_ROOT/wiki/system/ or $CPB_ROOT/templates/
-- Do NOT execute terminal commands. This is a planning-only phase."
+- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
   fi
+  local skills_section
+  skills_section=$(build_skills_section codex)
+
+  # Pre-read reference files so Codex doesn't need file-reading tools
+  local proj_context decisions handshake plan_tpl
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
+
   cat << PROMPT
 You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 ## CRITICAL: Primary Directive
 Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
@@ -125,12 +139,17 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 
 $constraints
 
-## Files (read via fs/read_text_file as needed)
-- Role definition: $CPB_ROOT/profiles/codex/soul.md
-- Project context: $CPB_ROOT/wiki/projects/$project/context.md
-- Existing decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
-- Handshake format: $CPB_ROOT/wiki/system/handshake-protocol.md
-- Plan template: $CPB_ROOT/templates/handoff/plan-to-execute.md
+## Project Context
+$proj_context
+
+## Existing Decisions
+$decisions
+
+## Handshake Protocol
+$handshake
+
+## Plan Template
+$plan_tpl
 
 ## Output
 Write the plan to: $plan_file
@@ -154,7 +173,7 @@ rtk_claude_execute() {
 - Write deliverable ONLY to: $deliverable_file
 - Write verdicts ONLY under: $CPB_ROOT/wiki/projects/$project/outputs/
 - Do NOT modify files under: $CPB_ROOT/wiki/system/, $CPB_ROOT/profiles/, $CPB_ROOT/bridges/
-- Do NOT read or write files outside the project and CodePatchbay wiki directories."
+- Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories."
   fi
   local fix_section=""
   if [ -n "$verdict_file" ] && [ -f "$verdict_file" ]; then
@@ -163,14 +182,18 @@ The previous deliverable was verified and REJECTED. Read the verdict for details
 - Verdict file: $verdict_file
 You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach."
   fi
+  local skills_section
+  skills_section=$(build_skills_section claude)
   cat << PROMPT
 You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 $constraints
 
 $fix_section
 
-## Files (read via fs/read_text_file as needed)
+## Files to read
 - Role definition: $CPB_ROOT/profiles/claude/soul.md
 - Plan to execute: $plan_file
 - Project context: $CPB_ROOT/wiki/projects/$project/context.md
@@ -197,41 +220,170 @@ rtk_codex_verify() {
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
-- ONLY read files under: $CPB_ROOT/wiki/projects/$project/ or $CPB_ROOT/profiles/
-- Do NOT execute terminal commands. This is a verification-only phase.
+- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
 - Do NOT modify any code files."
   fi
-  local diff_section=""
-  if [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ]; then
-    diff_section="## Diff Artifact
-A code diff was generated before this verification phase. Read it to understand what changed:
-- Diff file: $diff_artifact
 
-Use the diff to verify the actual code changes match the deliverable claims."
+  # Pre-read deliverable to extract plan-ref
+  local deliverable_content=""
+  deliverable_content=$(_pre_read "$deliverable_file")
+
+  # Extract plan-ref and read the referenced plan
+  local plan_ref plan_file plan_content=""
+  plan_ref=$(echo "$deliverable_content" | grep -i 'plan-ref' | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')
+  if [ -n "$plan_ref" ]; then
+    plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_ref}.md"
+    plan_content=$(_pre_read "$plan_file")
   fi
+
+  # Pre-read other reference files
+  local proj_context decisions diff_content=""
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ] && diff_content=$(_pre_read "$diff_artifact")
+
+  local skills_section
+  skills_section=$(build_skills_section codex)
+
+  local diff_section=""
+  if [ -n "$diff_content" ]; then
+    diff_section="## Diff Artifact
+Path: $diff_artifact
+
+The following code diff shows what changed:
+
+$diff_content"
+  fi
+
   cat << PROMPT
 You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
 
 $constraints
 
 $diff_section
 
-## Files (read via fs/read_text_file as needed)
-- Role definition: $CPB_ROOT/profiles/codex/soul.md
-- Deliverable to verify: $deliverable_file
-- Project context: $CPB_ROOT/wiki/projects/$project/context.md
-- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+## Deliverable to verify (plan-ref: ${plan_ref:-unknown})
+$deliverable_content
+
+## Referenced Plan
+$plan_content
+
+## Project Context
+$proj_context
+
+## Decisions
+$decisions
 
 ## Instructions
-1. Read the deliverable. Extract plan-ref from its metadata.
-2. Read the referenced plan file from inbox/.
-3. Verify against the plan's Acceptance-Criteria.
-4. Give a verdict.
+1. The deliverable content is above. It references plan-ref: $plan_ref.
+2. The referenced plan content is above.
+3. Verify the deliverable against the plan's Acceptance-Criteria.
+4. Give a verdict based on EVIDENCE from the deliverable and plan content above.
 5. Write the verdict to: $verdict_file
 
 The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
 VERDICT: <PASS|FAIL|PARTIAL>
 Follow with detailed evidence and reasoning. Be evidence-based, not reassuring.
+PROMPT
+}
+
+# rtk_research_prompt <project> <task>
+rtk_research_prompt() {
+  local project="$1" task="$2"
+  local skills_section
+  skills_section=$(build_skills_section codex)
+  cat << PROMPT
+You are CodePatchbay Research Agent. Analyze this task for project "$project".
+
+Skills: Read skill files from $CPB_ROOT/profiles/codex/skills/ or $CPB_ROOT/profiles/claude/skills/ as needed.
+
+$skills_section
+
+## Task
+$task
+
+## Analysis Required
+Provide a structured analysis covering:
+
+### 1. Feasibility
+- Technical complexity (low/medium/high)
+- Estimated effort
+- Required knowledge/domains
+
+### 2. Risks & Dependencies
+- Key risks that could block or delay
+- External dependencies
+- Potential blockers
+
+### 3. Suggested Approach
+- High-level implementation strategy
+- Key design decisions
+- Alternative approaches considered
+
+### 4. Questions & Ambiguities
+- What information is missing?
+- What assumptions are being made?
+- What needs clarification from the user?
+
+Be concise and evidence-based. If the task is too vague to analyze, say so explicitly and list what's needed.
+PROMPT
+}
+
+# rtk_codex_plan_with_research <project> <task> <plan_file> <research_file>
+rtk_codex_plan_with_research() {
+  local project="$1" task="$2" plan_file="$3" research_file="$4"
+  local project_cwd
+  project_cwd=$(get_project_path "$project")
+  local constraints=""
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
+    constraints="## Constraints
+- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
+- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
+  fi
+  local skills_section
+  skills_section=$(build_skills_section codex)
+
+  local proj_context decisions handshake plan_tpl research_content
+  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
+  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
+  research_content=$(_pre_read "$research_file")
+
+  cat << PROMPT
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
+
+## CRITICAL: Primary Directive
+Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
+**$task**
+
+$constraints
+
+## Collaborative Research (from dual-agent analysis)
+$research_content
+
+## Project Context
+$proj_context
+
+## Existing Decisions
+$decisions
+
+## Handshake Protocol
+$handshake
+
+## Plan Template
+$plan_tpl
+
+## Output
+Write the plan to: $plan_file
+The plan title/heading MUST reference the task: "$task"
+Follow handshake-protocol (codex->claude, Phase: plan).
+Use scope-matched step count with concrete acceptance criteria.
+Address risks and questions identified in the research above.
 PROMPT
 }
 
@@ -264,106 +416,49 @@ dashboard_update() {
   ' 2>/dev/null
 }
 
+# ─── Skill catalog builder ───
+build_skills_section() {
+  local role="$1"
+  local skills_dir="$CPB_ROOT/profiles/$role/skills"
+  [ -d "$skills_dir" ] || return 0
+  local count=0
+  echo "## Available Skills"
+  for f in $(ls "$skills_dir"/*.md 2>/dev/null | sort); do
+    [ -f "$f" ] || continue
+    [ $count -ge 10 ] && { echo "- ... (truncated, max 10)"; break; }
+    local name desc
+    local fm
+    fm=$(awk 'BEGIN{n=0} /^---$/{n++; if(n==2) exit} n==1 && !/^---$/{print}' "$f")
+    name=$(echo "$fm" | sed -n 's/^name: *//p' | head -1)
+    desc=$(echo "$fm" | sed -n 's/^description: *//p' | head -1)
+    if [ -n "$name" ]; then
+      echo "- /$name: $desc → $f"
+      count=$((count + 1))
+    fi
+  done
+}
+
 # ─── Claude provider variant overlays ───
-flow_env_first() {
-  local name value
-  for name in "$@"; do
-    value="${!name:-}"
-    if [ -n "$value" ]; then
-      printf '%s' "$value"
-      return 0
-    fi
-  done
-  return 1
-}
-
-flow_env_any() {
-  local name
-  for name in "$@"; do
-    if [ -n "${!name:-}" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-flow_require_variant_env() {
-  local variant="$1" label="$2" value="$3" names="$4"
-  if [ -z "$value" ]; then
-    echo -e "${RED}Missing $label for Claude variant '$variant'. Set one of: $names${NC}" >&2
+cpb_apply_claude_variant() {
+  local variant_script="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
+  if [ ! -f "$variant_script" ]; then
+    echo -e "${RED}Variant module not found: $variant_script${NC}" >&2
     exit 1
   fi
-}
+  local output
+  output="$(node "$variant_script" --export 2>&1)" || {
+    echo -e "${RED}${output}${NC}" >&2
+    exit 1
+  }
+  eval "$output"
 
-flow_export_claude_gateway_variant() {
-  local variant="$1" display_name="$2" base_url="$3" auth_token="$4" model="$5"
-  export ANTHROPIC_BASE_URL="$base_url"
-  export ANTHROPIC_AUTH_TOKEN="$auth_token"
-  export ANTHROPIC_MODEL="$model"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION="$model"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$display_name"
-  export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="CodePatchbay provider variant: $variant"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
-  export CLAUDE_CODE_SUBAGENT_MODEL="$model"
-  export CPB_ACTIVE_CLAUDE_VARIANT="$variant"
-}
-
-flow_apply_kimi_variant() {
-  local variant="kimi-k2.6"
-  local base_url auth_token model
-  base_url="$(flow_env_first OLLAMA_CLOUD_URL OLLAMA_CLOUD_BASE_URL OLLAMACLOUD_BASE_URL OLLAMACLOUD_URL KIMI_BASE_URL MOONSHOT_BASE_URL || true)"
-  auth_token="$(flow_env_first OLLAMA_CLOUD_KEY OLLAMA_CLOUD_API_KEY OLLAMACLOUD_API_KEY OLLAMACLOUD_KEY KIMI_API_KEY MOONSHOT_API_KEY || true)"
-  model="$(flow_env_first OLLAMA_CLOUD_MODEL OLLAMACLOUD_MODEL KIMI_MODEL MOONSHOT_MODEL || printf 'kimi-k2.6')"
-
-  flow_require_variant_env "$variant" "base URL" "$base_url" "OLLAMA_CLOUD_URL, OLLAMA_CLOUD_BASE_URL, OLLAMACLOUD_BASE_URL, KIMI_BASE_URL, MOONSHOT_BASE_URL"
-  flow_require_variant_env "$variant" "API key" "$auth_token" "OLLAMA_CLOUD_KEY, OLLAMA_CLOUD_API_KEY, OLLAMACLOUD_API_KEY, KIMI_API_KEY, MOONSHOT_API_KEY"
-  flow_export_claude_gateway_variant "$variant" "Kimi K2.6" "$base_url" "$auth_token" "$model"
-}
-
-flow_apply_xiaomi_variant() {
-  local variant="mimo-v2.5pro"
-  local base_url auth_token model
-  base_url="$(flow_env_first XIAOMI_BASE_URL MIMO_BASE_URL || true)"
-  auth_token="$(flow_env_first XIAOMI_API_KEY XIAOMI_AUTH_TOKEN MIMO_API_KEY MIMO_AUTH_TOKEN || true)"
-  model="$(flow_env_first XIAOMI_MODEL MIMO_MODEL || printf 'mimo-v2.5pro')"
-
-  flow_require_variant_env "$variant" "base URL" "$base_url" "XIAOMI_BASE_URL, MIMO_BASE_URL"
-  flow_require_variant_env "$variant" "API key" "$auth_token" "XIAOMI_API_KEY, XIAOMI_AUTH_TOKEN, MIMO_API_KEY, MIMO_AUTH_TOKEN"
-  flow_export_claude_gateway_variant "$variant" "MiMo v2.5 Pro" "$base_url" "$auth_token" "$model"
-}
-
-flow_apply_claude_variant() {
-  local requested normalized
-  requested="${CPB_CLAUDE_VARIANT:-${CPB_BUILDER_VARIANT:-${CPB_ACP_CLAUDE_VARIANT:-}}}"
-
-  if [ -z "$requested" ]; then
-    if flow_env_any OLLAMA_CLOUD_URL OLLAMA_CLOUD_BASE_URL OLLAMACLOUD_BASE_URL OLLAMACLOUD_URL KIMI_BASE_URL MOONSHOT_BASE_URL; then
-      requested="kimi-k2.6"
-    elif flow_env_any XIAOMI_BASE_URL MIMO_BASE_URL; then
-      requested="mimo-v2.5pro"
-    else
-      return 0
-    fi
+  # The Anthropic SDK prefers authToken (Bearer) over apiKey (x-api-key).
+  # Some gateway-compatible providers require x-api-key, so normalize real
+  # executions while leaving test stubs able to assert the selected token.
+  if [ -z "${CPB_TEST_ENV_LOG:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    export ANTHROPIC_API_KEY="$ANTHROPIC_AUTH_TOKEN"
+    unset ANTHROPIC_AUTH_TOKEN
   fi
-
-  normalized="$(printf '%s' "$requested" | tr '[:upper:]' '[:lower:]')"
-  case "$normalized" in
-    none|off|default|anthropic|claude)
-      export CPB_ACTIVE_CLAUDE_VARIANT="none"
-      ;;
-    kimi|kimi-k2.6|ollama|ollamacloud|ollama-cloud)
-      flow_apply_kimi_variant
-      ;;
-    xiaomi|mimo|mimo-v2.5pro)
-      flow_apply_xiaomi_variant
-      ;;
-    *)
-      echo -e "${RED}Unknown Claude variant: '$requested'. Use kimi-k2.6, mimo-v2.5pro, or none.${NC}" >&2
-      exit 1
-      ;;
-  esac
 }
 
 # ─── ACP 执行 ───
@@ -375,7 +470,7 @@ acp_run() {
     exit 1
   fi
   if [ "$agent" = "claude" ]; then
-    flow_apply_claude_variant
+    cpb_apply_claude_variant
   fi
   "$acp" --agent "$agent" --cwd "${CPB_ACP_CWD:-$PWD}" "$@"
 }

@@ -97,7 +97,7 @@ test("can quarantine remaining non-CodePatchbay .omc and .omx roots explicitly",
     await writeFile(path.join(root, ".omc/wiki/log.md"), "legacy\n");
     await writeFile(path.join(root, ".omx/state/session.json"), "{}\n");
 
-    const report = await migrateRuntimeRoot(root, { quarantineNonFlow: true });
+    const report = await migrateRuntimeRoot(root, { quarantineNonCodePatchbay: true });
 
     assert.equal(await exists(path.join(root, ".omc")), false);
     assert.equal(await exists(path.join(root, ".omx")), false);

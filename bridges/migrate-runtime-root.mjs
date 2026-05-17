@@ -145,10 +145,13 @@ async function quarantineRemainingRoot(root, dirName, report) {
   report.quarantined.push(`${rel(root, src)} -> ${rel(root, dest)}`);
 }
 
-async function cleanupLegacyRoots(root, report, { quarantineNonFlow = false } = {}) {
+async function cleanupLegacyRoots(root, report, {
+  quarantineNonCodePatchbay = false,
+  quarantineNonFlow = false,
+} = {}) {
   await removeIfEmptyOrOnlyGitignore(root, path.join(root, ".omc", "leases"), report);
 
-  if (quarantineNonFlow) {
+  if (quarantineNonCodePatchbay || quarantineNonFlow) {
     await quarantineRemainingRoot(root, ".omc", report);
     await quarantineRemainingRoot(root, ".omx", report);
     return;
@@ -208,8 +211,8 @@ export function printReport(report) {
 
 async function main() {
   const cpbRoot = process.env.CPB_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const quarantineNonFlow = process.argv.includes("--quarantine-non-cpb");
-  const report = await migrateRuntimeRoot(cpbRoot, { quarantineNonFlow });
+  const quarantineNonCodePatchbay = process.argv.includes("--quarantine-non-cpb");
+  const report = await migrateRuntimeRoot(cpbRoot, { quarantineNonCodePatchbay });
   printReport(report);
   return report.conflicts.length > 0 ? 2 : 0;
 }

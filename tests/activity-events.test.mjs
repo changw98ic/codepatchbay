@@ -99,6 +99,9 @@ describe('A4: activity/liveness events', () => {
         ts: staleTs,
       });
 
+      // Grace period: need 3 consecutive stale detections
+      await recoverJobs(tmpRoot);
+      await recoverJobs(tmpRoot);
       const recoverable = await recoverJobs(tmpRoot);
       assert.ok(recoverable.some(r => r.jobId === job.jobId));
     } finally {

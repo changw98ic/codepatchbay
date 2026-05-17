@@ -8,16 +8,6 @@ CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=common.sh
 source "$CPB_ROOT/bridges/common.sh"
 
-# Ensure SDK uses x-api-key auth (not Bearer) when using a gateway.
-# The Anthropic SDK prefers authToken (Bearer) over apiKey (x-api-key).
-# When only ANTHROPIC_AUTH_TOKEN is set (no ANTHROPIC_API_KEY), the SDK
-# sends Bearer auth which some gateways reject. Fix: promote token to apiKey.
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-  export ANTHROPIC_API_KEY="$ANTHROPIC_AUTH_TOKEN"
-fi
-unset ANTHROPIC_AUTH_TOKEN
-export CPB_CLAUDE_VARIANT=none
-
 PROJECT="${1:?Usage: claude-execute.sh <project> <plan-id> [verdict-file]}"
 PLAN_ID="${2:?Usage: claude-execute.sh <project> <plan-id> [verdict-file]}"
 VERDICT_FILE="${3:-}"

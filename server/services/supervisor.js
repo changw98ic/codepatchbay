@@ -6,6 +6,8 @@ import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+const STALE_GRACE_COUNT = parseInt(process.env.CPB_STALE_GRACE_COUNT, 10) || 3;
+const staleTracker = new Map();
 
 function hasArtifact(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -55,8 +57,11 @@ export async function recoverJobs(cpbRoot, { now } = {}) {
   const { listJobs } = await import("./job-store.js");
   const jobs = await listJobs(cpbRoot);
   const recoverable = [];
+  const activeJobIds = new Set();
 
   for (const job of jobs) {
+    activeJobIds.add(job.jobId);
+
     // Cancel-requested jobs with no active lease should be terminated first
     if (job.cancelRequested) {
       if (job.leaseId) {
@@ -65,6 +70,7 @@ export async function recoverJobs(cpbRoot, { now } = {}) {
           continue;
         }
       }
+      staleTracker.delete(job.jobId);
       await cancelJob(cpbRoot, job.project, job.jobId, {
         reason: job.cancelReason ?? "cancelled during recovery",
       });
@@ -72,29 +78,63 @@ export async function recoverJobs(cpbRoot, { now } = {}) {
     }
 
     if (nextPhaseFor(job) === "") {
+      staleTracker.delete(job.jobId);
       continue;
     }
 
+    let leaseIsStale = false;
     if (job.leaseId) {
       const lease = await readLease(cpbRoot, job.leaseId);
       if (lease !== null && !isLeaseStale(lease, now)) {
+        staleTracker.delete(job.jobId);
         continue;
       }
+      leaseIsStale = true;
+    }
+
+    if (!leaseIsStale && nextPhaseFor(job) === "complete") {
+      staleTracker.delete(job.jobId);
+      recoverable.push(job);
+      continue;
     }
 
     // Fallback: if no lease or lease is stale, check lastActivityAt
-    if (job.lastActivityAt) {
+    if (!leaseIsStale && job.lastActivityAt) {
       const nowMs = now instanceof Date ? now.getTime() : Date.now();
       const activityAge = nowMs - new Date(job.lastActivityAt).getTime();
       if (activityAge < (parseInt(process.env.CPB_ACTIVITY_STALE_MS, 10) || 300_000)) {
+        staleTracker.delete(job.jobId);
         continue;
       }
     }
 
+    const entry = staleTracker.get(job.jobId);
+    if (entry) {
+      entry.count += 1;
+    } else {
+      staleTracker.set(job.jobId, { count: 1, firstStaleAt: Date.now() });
+    }
+
+    const current = staleTracker.get(job.jobId);
+    if (current.count < STALE_GRACE_COUNT) {
+      continue;
+    }
+
+    staleTracker.delete(job.jobId);
     recoverable.push(job);
   }
 
+  for (const id of staleTracker.keys()) {
+    if (!activeJobIds.has(id)) {
+      staleTracker.delete(id);
+    }
+  }
+
   return recoverable;
+}
+
+export function getStaleTrackerSnapshot() {
+  return Object.fromEntries(staleTracker);
 }
 
 /**

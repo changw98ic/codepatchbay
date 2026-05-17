@@ -52,6 +52,9 @@ describe('R3: E2E pipeline drill', () => {
     // Wait for lease to become stale
     await new Promise((r) => setTimeout(r, 200));
 
+    // Grace period: need 3 consecutive stale detections
+    await recoverJobs(tmpRoot);
+    await recoverJobs(tmpRoot);
     const recoverable = await recoverJobs(tmpRoot);
     assert.equal(recoverable.length, 1);
     assert.equal(recoverable[0].jobId, job.jobId);
@@ -153,8 +156,12 @@ describe('R3: E2E pipeline drill', () => {
     // Wait for lease to expire
     await new Promise((r) => setTimeout(r, 150));
 
+    // Grace period: need 3 consecutive stale detections via recoverJobs
+    await recoverJobs(tmpRoot);
+    await recoverJobs(tmpRoot);
+
     // Simulate supervisor restart: call recoverAndRun
-    // This should find the job and attempt recovery
+    // This should find the job and attempt recovery (3rd stale detection)
     const results = await recoverAndRun(tmpRoot, { maxConcurrent: 1 });
     assert.equal(results.length, 1);
     assert.equal(results[0].jobId, job.jobId);

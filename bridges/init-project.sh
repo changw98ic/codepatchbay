@@ -45,11 +45,19 @@ RESOLVED_PATH="$(cd "$PROJECT_PATH" && pwd)" || {
   exit 1
 }
 
+CPB_TEMP_ROOTS="${TMPDIR:-/tmp}:/tmp:/private/tmp:/var/folders"
+IS_TEMP_PROJECT=0
+if _cpb_contains_path "$RESOLVED_PATH" "$CPB_TEMP_ROOTS"; then
+  IS_TEMP_PROJECT=1
+fi
+
 # Block system-critical directories
 case "$RESOLVED_PATH" in
   /etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/var|/var/*|/sys|/sys/*|/proc|/proc/*|/dev|/dev/*|/boot|/boot/*|/lib|/lib/*|/lib64|/lib64/*|/snap|/snap/*)
-    echo -e "${RED}Error: Cannot initialize project in a system directory${NC}" >&2
-    exit 1
+    if [ "$IS_TEMP_PROJECT" != "1" ]; then
+      echo -e "${RED}Error: Cannot initialize project in a system directory${NC}" >&2
+      exit 1
+    fi
     ;;
 esac
 
@@ -60,7 +68,7 @@ if [ "$RESOLVED_PATH" = "$CPB_ROOT" ] || [[ "$RESOLVED_PATH" == "$CPB_ROOT/"* ]]
 fi
 
 # Verify containment within allowed project roots
-ALLOWED_ROOTS="${CPB_PROJECT_ROOTS:-${HOME:-}}"
+ALLOWED_ROOTS="${CPB_PROJECT_ROOTS:-${HOME:-}:$CPB_TEMP_ROOTS}"
 if [ -z "$ALLOWED_ROOTS" ]; then
   echo -e "${RED}Error: No project roots configured (set CPB_PROJECT_ROOTS env var)${NC}" >&2
   exit 1
@@ -81,6 +89,7 @@ fi
 
 # 1. 从模板创建项目 Wiki
 cp -r "$CPB_ROOT/wiki/projects/_template" "$WIKI_DIR"
+mkdir -p "$WIKI_DIR/inbox" "$WIKI_DIR/outputs"
 echo "Created: $WIKI_DIR"
 
 # 1.5 Store project metadata (source path for cwd resolution)

@@ -1,4 +1,4 @@
-const WORKFLOWS = {
+const WORKCPBS = {
   standard: {
     name: "standard",
     phases: ["plan", "execute", "verify"],
@@ -29,7 +29,7 @@ const WORKFLOWS = {
 };
 
 export function getWorkflow(name) {
-  return WORKFLOWS[name] ?? WORKFLOWS.standard;
+  return WORKCPBS[name] ?? WORKCPBS.standard;
 }
 
 export function nextPhase(workflow, currentPhase) {
