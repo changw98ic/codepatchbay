@@ -62,7 +62,12 @@ export function WebSocketProvider({ children }) {
   const subscribe = useCallback((type, fn) => {
     if (!listeners.current.has(type)) listeners.current.set(type, new Set());
     listeners.current.get(type).add(fn);
-    return () => listeners.current.get(type)?.delete(fn);
+    return () => {
+      const cbs = listeners.current.get(type);
+      if (!cbs) return;
+      cbs.delete(fn);
+      if (cbs.size === 0) listeners.current.delete(type);
+    };
   }, []);
 
   const value = { connected, send, subscribe };
