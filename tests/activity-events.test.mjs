@@ -8,7 +8,7 @@ import path from 'node:path';
 
 import { appendEvent } from '../server/services/event-store.js';
 import { materializeJob } from '../server/services/event-store.js';
-import { createJob, getJob } from '../server/services/job-store.js';
+import { createJob, getJob, startPhase, recordActivity } from '../server/services/job-store.js';
 import { recoverJobs } from '../server/services/supervisor.js';
 
 describe('A4: activity/liveness events', () => {
@@ -59,18 +59,13 @@ describe('A4: activity/liveness events', () => {
     const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-activity-test-'));
     try {
       const job = await createJob(tmpRoot, { project: 'test', task: 'activity test' });
-      await appendEvent(tmpRoot, 'test', job.jobId, {
-        type: 'phase_started',
-        jobId: job.jobId,
-        project: 'test',
+      await startPhase(tmpRoot, 'test', job.jobId, {
         phase: 'plan',
         attempt: 1,
         ts: new Date().toISOString(),
       });
       // Recent activity (within 5 minutes)
-      await appendEvent(tmpRoot, 'test', job.jobId, {
-        type: 'phase_activity',
-        jobId: job.jobId,
+      await recordActivity(tmpRoot, 'test', job.jobId, {
         message: 'still working',
         ts: new Date().toISOString(),
       });
@@ -116,9 +111,7 @@ describe('A4: activity/liveness events', () => {
     try {
       const { projectPipelineState } = await import('../server/services/job-projection.js');
       const job = await createJob(tmpRoot, { project: 'test', task: 'proj test' });
-      await appendEvent(tmpRoot, 'test', job.jobId, {
-        type: 'phase_activity',
-        jobId: job.jobId,
+      await recordActivity(tmpRoot, 'test', job.jobId, {
         message: 'some work',
         ts: '2026-01-01T00:01:00Z',
       });

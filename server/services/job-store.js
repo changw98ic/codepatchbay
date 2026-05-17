@@ -3,15 +3,21 @@ import {
   appendEvent,
   checkpointJob,
   deleteCheckpoint,
-  listEventFiles,
   materializeJob,
   readCheckpoint,
   readEvents,
 } from "./event-store.js";
 import { getWorkflow } from "./workflow-definition.js";
+import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+async function getJobAndUpdateIndex(cpbRoot, project, jobId) {
+  const state = await getJob(cpbRoot, project, jobId);
+  await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
+  return state;
 }
 
 export const FAILURE_CODES = Object.freeze({
@@ -44,7 +50,7 @@ export async function createJob(
     workflow,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function startPhase(
@@ -62,7 +68,7 @@ export async function startPhase(
     leaseId,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function completePhase(
@@ -79,7 +85,7 @@ export async function completePhase(
     artifact,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function blockJob(
@@ -96,7 +102,7 @@ export async function blockJob(
     ts,
   });
   await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function failJob(
@@ -126,7 +132,7 @@ export async function failJob(
     ts,
   });
   await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 function inferRetryPhase(job) {
@@ -196,7 +202,7 @@ export async function retryJob(
     ts,
   });
   await deleteCheckpoint(cpbRoot, project, jobId);
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function budgetExceeded(
@@ -212,7 +218,7 @@ export async function budgetExceeded(
     reason,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function completeJob(
@@ -228,7 +234,23 @@ export async function completeJob(
     ts,
   });
   await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+}
+
+export async function recordActivity(
+  cpbRoot,
+  project,
+  jobId,
+  { message, ts = nowIso() }
+) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "phase_activity",
+    jobId,
+    project,
+    message,
+    ts,
+  });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function requestCancelJob(
@@ -244,7 +266,7 @@ export async function requestCancelJob(
     reason,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function cancelJob(
@@ -260,7 +282,7 @@ export async function cancelJob(
     reason,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function requestRedirectJob(
@@ -279,7 +301,7 @@ export async function requestRedirectJob(
     redirectEventId,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function consumeRedirect(
@@ -295,7 +317,7 @@ export async function consumeRedirect(
     redirectEventId,
     ts,
   });
-  return getJob(cpbRoot, project, jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, jobId);
 }
 
 export async function getJob(cpbRoot, project, jobId) {
@@ -305,14 +327,5 @@ export async function getJob(cpbRoot, project, jobId) {
 }
 
 export async function listJobs(cpbRoot) {
-  const files = await listEventFiles(cpbRoot);
-  const jobs = await Promise.all(
-    files.map(({ project, jobId }) => getJob(cpbRoot, project, jobId))
-  );
-
-  return jobs.filter((job) => job.createdAt && job.project && job.jobId).sort((a, b) => {
-    const aUpdatedAt = a.updatedAt ?? "";
-    const bUpdatedAt = b.updatedAt ?? "";
-    return bUpdatedAt.localeCompare(aUpdatedAt);
-  });
+  return listJobsFromIndex(cpbRoot);
 }
