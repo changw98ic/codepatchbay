@@ -887,7 +887,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 // --- Entry ---
 
 function parseEntryArgs(argv) {
-  const opts = { variant: undefined, scanAgent: "claude", cmd: null, direct: false };
+  const opts = { variant: undefined, scanAgent: "claude", cmd: null, direct: false, multiProject: false, dryRun: false, scan: false, once: false, project: null };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--variant" && args[i + 1]) {
@@ -896,6 +896,16 @@ function parseEntryArgs(argv) {
       opts.scanAgent = args[++i];
     } else if (args[i] === "--direct") {
       opts.direct = true;
+    } else if (args[i] === "--multi-project") {
+      opts.multiProject = true;
+    } else if (args[i] === "--dry-run") {
+      opts.dryRun = true;
+    } else if (args[i] === "--scan") {
+      opts.scan = true;
+    } else if (args[i] === "--once") {
+      opts.once = true;
+    } else if (args[i] === "--project" && args[i + 1]) {
+      opts.project = args[++i];
     } else if (!opts.cmd && !args[i].startsWith("--")) {
       opts.cmd = args[i];
     }
@@ -905,7 +915,18 @@ function parseEntryArgs(argv) {
 
 const entryOpts = parseEntryArgs(process.argv);
 const cmd = entryOpts.cmd;
-if (cmd === "scan") {
+if (entryOpts.multiProject) {
+  validateCpbRoot(CPB_ROOT);
+  const { MultiEvolveController } = await import("./multi-evolve.mjs");
+  const controller = new MultiEvolveController(CPB_ROOT);
+  const result = await controller.runOnce({
+    dryRun: entryOpts.dryRun || !entryOpts.once,
+    scan: entryOpts.scan,
+    project: entryOpts.project,
+    agent: entryOpts.scanAgent,
+  });
+  console.log(JSON.stringify(result, null, 2));
+} else if (cmd === "scan") {
   validateCpbRoot(CPB_ROOT);
   const result = await acpRun("codex", scanPrompt());
   const issues = parseScanResults(result);

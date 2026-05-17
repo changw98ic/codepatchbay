@@ -7,8 +7,14 @@ import {
   loadBacklog,
   saveState,
 } from "../services/evolve-state.js";
+import { listProjects, resolveHubRoot } from "../services/hub-registry.js";
+import {
+  loadProjectState as loadMultiProjectState,
+  loadBacklog as loadMultiBacklog,
+} from "../services/multi-evolve-state.js";
 
 let activeProcess = null;
+let activeMultiProcess = null;
 
 // Promise-based mutex to prevent concurrent /evolve/start spawns.
 // Without this, two simultaneous requests can both pass resolveRunningState()
@@ -81,6 +87,10 @@ async function resolveRunningState(cpbRoot) {
 
 function evolveScriptPath(cpbRoot) {
   return path.join(cpbRoot, "bridges", "self-evolve.mjs");
+}
+
+function multiEvolveScriptPath(cpbRoot) {
+  return path.join(cpbRoot, "bridges", "multi-evolve.mjs");
 }
 
 async function readHistory(cpbRoot) {
@@ -165,6 +175,7 @@ export async function evolveRoutes(fastify, opts) {
           stdio: ["ignore", "pipe", "pipe"],
           detached: false,
         });
+        activeProcess = child;
       } catch (err) {
         state.status = "failed";
         await saveState(req.cpbRoot, state);
@@ -174,14 +185,18 @@ export async function evolveRoutes(fastify, opts) {
       state.status = "starting";
       await saveState(req.cpbRoot, state);
 
-      child.on("error", async (err) => {
+      child.on("error", (err) => {
         if (activeProcess === child) activeProcess = null;
-        const s = await loadState(req.cpbRoot);
-        if (s.status === "starting") {
-          s.status = "failed";
-          await saveState(req.cpbRoot, s);
-        }
-        process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
+        (async () => {
+          const s = await loadState(req.cpbRoot);
+          if (s.status === "starting") {
+            s.status = "failed";
+            await saveState(req.cpbRoot, s);
+          }
+          process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
+        })().catch((writeErr) => {
+          process.stderr.write(`[self-evolve] failed to record spawn error: ${writeErr.message}\n`);
+        });
       });
 
       child.stdout.on("data", (chunk) => {
@@ -190,17 +205,20 @@ export async function evolveRoutes(fastify, opts) {
       child.stderr.on("data", (chunk) => {
         process.stderr.write(`[self-evolve] ${chunk}`);
       });
-      child.on("exit", async (code) => {
+      child.on("exit", (code) => {
         if (activeProcess === child) activeProcess = null;
         if (code !== 0) {
-          const s = await loadState(req.cpbRoot);
-          if (s.status === "starting") {
-            s.status = "failed";
-            await saveState(req.cpbRoot, s);
-          }
+          (async () => {
+            const s = await loadState(req.cpbRoot);
+            if (s.status === "starting") {
+              s.status = "failed";
+              await saveState(req.cpbRoot, s);
+            }
+          })().catch((err) => {
+            process.stderr.write(`[self-evolve] failed to record exit state: ${err.message}\n`);
+          });
         }
       });
-      activeProcess = child;
 
       await appendHistory(req.cpbRoot, {
         action: "start",
@@ -271,5 +289,75 @@ export async function evolveRoutes(fastify, opts) {
     });
 
     return { stopped: true, pid: runningState.pid, source: runningState.source, sigtermSent };
+  });
+
+  fastify.get("/evolve/multi/status", async (req) => {
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+    const projects = await listProjects(hubRoot, { enabledOnly: false });
+    const rows = await Promise.all(projects.map(async (project) => {
+      const [state, backlog] = await Promise.all([
+        loadMultiProjectState(project.sourcePath, project.id),
+        loadMultiBacklog(project.sourcePath, project.id),
+      ]);
+      return {
+        id: project.id,
+        name: project.name,
+        sourcePath: project.sourcePath,
+        enabled: project.enabled !== false,
+        worker: project.worker || null,
+        state,
+        backlog: {
+          total: backlog.length,
+          pending: backlog.filter((issue) => issue.status === "pending").length,
+          inProgress: backlog.filter((issue) => issue.status === "in_progress").length,
+        },
+      };
+    }));
+    return {
+      running: Boolean(activeMultiProcess),
+      pid: activeMultiProcess?.pid || null,
+      projects: rows,
+    };
+  });
+
+  fastify.post("/evolve/multi/start", async (req, res) => {
+    if (activeMultiProcess) {
+      throw fastify.httpErrors.conflict("multi-evolve already running");
+    }
+    const body = req.body || {};
+    const args = [];
+    if (body.dryRun !== false) args.push("--dry-run");
+    if (body.scan === true) args.push("--scan");
+    if (body.once === true) args.push("--once");
+    if (body.project) args.push("--project", String(body.project));
+    if (body.agent) args.push("--agent", String(body.agent));
+
+    const child = spawn("node", [multiEvolveScriptPath(req.cpbRoot), ...args], {
+      cwd: req.cpbRoot,
+      env: { ...process.env, CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: req.cpbHubRoot || resolveHubRoot(req.cpbRoot) },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: false,
+    });
+    activeMultiProcess = child;
+    child.stdout.on("data", (chunk) => process.stdout.write(`[multi-evolve] ${chunk}`));
+    child.stderr.on("data", (chunk) => process.stderr.write(`[multi-evolve] ${chunk}`));
+    child.on("exit", () => {
+      if (activeMultiProcess === child) activeMultiProcess = null;
+    });
+    child.on("error", () => {
+      if (activeMultiProcess === child) activeMultiProcess = null;
+    });
+    res.code(202);
+    return { accepted: true, pid: child.pid };
+  });
+
+  fastify.post("/evolve/multi/stop", async () => {
+    if (!activeMultiProcess) {
+      return { stopped: false, reason: "not_running" };
+    }
+    const pid = activeMultiProcess.pid;
+    activeMultiProcess.kill("SIGTERM");
+    activeMultiProcess = null;
+    return { stopped: true, pid };
   });
 }

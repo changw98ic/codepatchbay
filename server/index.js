@@ -11,6 +11,8 @@ import { taskRoutes } from './routes/tasks.js';
 import { channelRoutes } from './routes/channels.js';
 import { reviewRoutes } from './routes/review.js';
 import { evolveRoutes } from './routes/evolve.js';
+import { hubRoutes } from './routes/hub.js';
+import { resolveHubRoot } from './services/hub-registry.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
 import { initNotificationService } from './services/notification/index.js';
 
@@ -54,6 +56,7 @@ app.register(async function (fastify) {
 // Inject CPB_ROOT into requests
 app.addHook('onRequest', (req, _res, done) => {
   req.cpbRoot = CPB_ROOT;
+  req.cpbHubRoot = resolveHubRoot(CPB_ROOT);
   done();
 });
 
@@ -73,6 +76,7 @@ app.register(taskRoutes, { prefix: '/api' });
 app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
+app.register(hubRoutes, { prefix: '/api' });
 
 const watchers = registerWatcher(CPB_ROOT, notifBroadcast);
 

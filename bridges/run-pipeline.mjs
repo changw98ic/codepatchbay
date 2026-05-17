@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // run-pipeline.mjs — Full automated pipeline using job-store as single source of truth
-// Usage: node bridges/run-pipeline.mjs --project <name> --task "<desc>" [--max-retries N] [--timeout-min M]
+// Usage: node bridges/run-pipeline.mjs --project <name> --task "<desc>" [--source-path <repo>] [--max-retries N] [--timeout-min M]
 
-import { access, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, stat, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -50,7 +50,7 @@ function parseArgs(argv) {
   const task = options.get("--task");
 
   if (!project || !task) {
-    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--max-retries N] [--timeout-min M] [--workflow standard|blocked]");
+    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|blocked]");
   }
 
   if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
@@ -62,8 +62,9 @@ function parseArgs(argv) {
   const workflow = options.get("--workflow") || "standard";
 
   const jobIdOverride = options.get("--job-id") || null;
+  const sourcePath = options.get("--source-path") ? path.resolve(options.get("--source-path")) : null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride };
+  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, sourcePath };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -102,6 +103,15 @@ function failure(reason, { code = FAILURE_CODES.FATAL, phase, cause, retryable }
     retryable: retryable ?? code === FAILURE_CODES.RECOVERABLE,
     cause,
   };
+}
+
+export async function canonicalSourcePath(sourcePath) {
+  const canonical = await realpath(path.resolve(sourcePath));
+  const info = await stat(canonical);
+  if (!info.isDirectory()) {
+    throw new Error(`--source-path is not a directory: ${sourcePath}`);
+  }
+  return canonical;
 }
 
 function printFailureSummary(cpbRoot, project, jobId, { phase, reason, deliverableId, verdictFile }) {
@@ -199,6 +209,44 @@ function runBridge(script, scriptArgs, cwd) {
 function combineChunks(chunks) {
   if (chunks.length === 0) return "";
   return Buffer.concat(chunks).toString("utf8");
+}
+
+async function writeIfMissing(filePath, content) {
+  try {
+    await access(filePath);
+  } catch {
+    await writeFile(filePath, content, "utf8");
+  }
+}
+
+async function readJsonObject(filePath) {
+  try {
+    const parsed = JSON.parse(await readFile(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
+  if (!sourcePath) return;
+  const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
+  await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
+  await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
+  const projectJsonPath = path.join(wikiDir, "project.json");
+  const existing = await readJsonObject(projectJsonPath);
+  await writeFile(
+    projectJsonPath,
+    `${JSON.stringify({ ...existing, name: existing.name || project, sourcePath }, null, 2)}\n`,
+    "utf8",
+  );
+  await writeIfMissing(
+    path.join(wikiDir, "context.md"),
+    `# ${project}\n\nSource path: ${sourcePath}\n\nThis project was attached through CPB Hub. Expand this context as the project is onboarded.\n`,
+  );
+  await writeIfMissing(path.join(wikiDir, "tasks.md"), `# ${project} Tasks\n`);
+  await writeIfMissing(path.join(wikiDir, "decisions.md"), `# ${project} Decisions\n`);
+  await writeIfMissing(path.join(wikiDir, "log.md"), `# ${project} Log\n`);
 }
 
 // ─── Lease + heartbeat wrapper for a phase ───
@@ -337,18 +385,20 @@ async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   return null;
 }
 
-async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir) {
+async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePathOverride = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
     return null;
   }
 
   const projectJsonPath = path.join(wikiDir, "project.json");
-  let sourcePath;
-  try {
-    const raw = await readFile(projectJsonPath, "utf8");
-    sourcePath = JSON.parse(raw).sourcePath;
-  } catch {
-    return null;
+  let sourcePath = sourcePathOverride || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
+  if (!sourcePath) {
+    try {
+      const raw = await readFile(projectJsonPath, "utf8");
+      sourcePath = JSON.parse(raw).sourcePath;
+    } catch {
+      return null;
+    }
   }
   if (!sourcePath) return null;
 
@@ -413,7 +463,20 @@ async function main() {
   }
 
   const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride } = parsed;
-  const cpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  let { sourcePath } = parsed;
+  const defaultCpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultCpbRoot);
+  if (sourcePath) {
+    try {
+      sourcePath = await canonicalSourcePath(sourcePath);
+    } catch (err) {
+      console.error(err.message);
+      return 1;
+    }
+    process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
+    process.env.CPB_ACP_CWD = sourcePath;
+    await ensureWikiProjectBoundary(cpbRoot, project, sourcePath);
+  }
   const workflowDef = getWorkflow(workflow);
   const phaseTotal = workflowDef.phases.length || 0;
   const phaseIndex = (phase) => {
@@ -444,9 +507,19 @@ async function main() {
   // Create job
   const job = await createJob(cpbRoot, { project, task, workflow, jobId: jobIdOverride });
   const jobId = job.jobId;
+  if (sourcePath) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "execution_boundary",
+      jobId,
+      project,
+      sourcePath,
+      cwd: sourcePath,
+      ts: ts(),
+    });
+  }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
-  await maybeCreateWorktree(cpbRoot, project, jobId, wikiDir);
+  await maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePath);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents
@@ -892,4 +965,6 @@ async function main() {
   }
 }
 
-process.exitCode = await main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exitCode = await main();
+}

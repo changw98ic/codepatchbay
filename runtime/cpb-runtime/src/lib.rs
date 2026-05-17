@@ -623,6 +623,257 @@ pub fn compile_policy(role: &str, phase: &str) -> Value {
     })
 }
 
+fn hub_registry_file(hub_root: &Path) -> PathBuf {
+    hub_root.join("projects.json")
+}
+
+fn evolve_backlog_file(project_root: &Path, project: &str) -> Result<PathBuf> {
+    validate_component("project", project)?;
+    Ok(project_root
+        .join("cpb-task")
+        .join("evolve")
+        .join(project)
+        .join("backlog.json"))
+}
+
+fn rate_limit_file(hub_root: &Path) -> PathBuf {
+    hub_root.join("providers").join("rate-limits.json")
+}
+
+fn read_json_or(file: &Path, fallback: Value) -> Result<Value> {
+    match fs::read_to_string(file) {
+        Ok(raw) => Ok(serde_json::from_str(&raw).with_context(|| format!("parse {}", file.display()))?),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(fallback),
+        Err(err) => Err(err).with_context(|| format!("read {}", file.display())),
+    }
+}
+
+fn write_json_atomic(file: &Path, value: &Value) -> Result<()> {
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let temp = file.with_extension(format!("json.{}.tmp", process::id()));
+    fs::write(&temp, format!("{}\n", serde_json::to_string_pretty(value)?))
+        .with_context(|| format!("write {}", temp.display()))?;
+    fs::rename(&temp, file).with_context(|| format!("rename {}", file.display()))?;
+    Ok(())
+}
+
+fn registry_default() -> Value {
+    json!({
+        "version": 1,
+        "updatedAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        "projects": {}
+    })
+}
+
+pub fn upsert_registry_project(hub_root: &Path, project: &Value) -> Result<Value> {
+    let project_obj = project
+        .as_object()
+        .ok_or_else(|| anyhow!("project must be an object"))?;
+    let id = project_obj
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("project.id is required"))?;
+    validate_component("project", id)?;
+    let source_path = project_obj
+        .get("sourcePath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("project.sourcePath is required"))?;
+    if source_path.trim().is_empty() {
+        return Err(anyhow!("project.sourcePath is required"));
+    }
+
+    let file = hub_registry_file(hub_root);
+    let mut registry = read_json_or(&file, registry_default())?;
+    if !registry.get("projects").is_some_and(Value::is_object) {
+        registry["projects"] = json!({});
+    }
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut next = project.clone();
+    if next.get("createdAt").is_none() {
+        next["createdAt"] = json!(now.clone());
+    }
+    next["updatedAt"] = json!(now.clone());
+    registry["version"] = json!(1);
+    registry["updatedAt"] = json!(now);
+    registry["projects"][id] = next.clone();
+    write_json_atomic(&file, &registry)?;
+    Ok(next)
+}
+
+pub fn list_registry_projects(hub_root: &Path) -> Result<Vec<Value>> {
+    let registry = read_json_or(&hub_registry_file(hub_root), registry_default())?;
+    let mut projects: Vec<Value> = registry
+        .get("projects")
+        .and_then(Value::as_object)
+        .map(|projects| projects.values().cloned().collect())
+        .unwrap_or_default();
+    projects.sort_by(|a, b| {
+        a.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(b.get("id").and_then(Value::as_str).unwrap_or_default())
+    });
+    Ok(projects)
+}
+
+pub fn push_backlog_issue(project_root: &Path, project: &str, issue: &Value) -> Result<Value> {
+    if !issue.is_object() {
+        return Err(anyhow!("issue must be an object"));
+    }
+    let file = evolve_backlog_file(project_root, project)?;
+    let mut backlog = read_json_or(&file, json!([]))?;
+    let items = backlog
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("backlog must be an array"))?;
+    let description = issue.get("description").and_then(Value::as_str).unwrap_or_default();
+    let duplicate = !description.is_empty()
+        && items
+            .iter()
+            .any(|item| item.get("description").and_then(Value::as_str) == Some(description));
+    if !duplicate {
+        let mut next = issue.clone();
+        next["project"] = json!(project);
+        if next.get("status").is_none() {
+            next["status"] = json!("pending");
+        }
+        if next.get("createdAt").is_none() {
+            next["createdAt"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+        }
+        items.push(next);
+    }
+    let total = items.len();
+    write_json_atomic(&file, &backlog)?;
+    Ok(json!({ "total": total, "added": !duplicate }))
+}
+
+pub fn list_backlog(project_root: &Path, project: &str) -> Result<Vec<Value>> {
+    let backlog = read_json_or(&evolve_backlog_file(project_root, project)?, json!([]))?;
+    Ok(backlog.as_array().cloned().unwrap_or_default())
+}
+
+pub fn set_rate_limit(hub_root: &Path, agent: &str, until_ts: &str, reason: &str) -> Result<Value> {
+    validate_component("agent", agent)?;
+    let file = rate_limit_file(hub_root);
+    let mut state = read_json_or(&file, json!({}))?;
+    if !state.is_object() {
+        state = json!({});
+    }
+    state[agent] = json!({
+        "agent": agent,
+        "untilTs": until_ts,
+        "reason": reason,
+        "updatedAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    });
+    write_json_atomic(&file, &state)?;
+    Ok(state[agent].clone())
+}
+
+pub fn get_rate_limit(hub_root: &Path, agent: Option<&str>) -> Result<Value> {
+    let state = read_json_or(&rate_limit_file(hub_root), json!({}))?;
+    if let Some(agent) = agent {
+        validate_component("agent", agent)?;
+        return Ok(state.get(agent).cloned().unwrap_or(Value::Null));
+    }
+    Ok(state)
+}
+
+fn queue_file(cpb_root: &Path, project: &str) -> Result<PathBuf> {
+    validate_component("project", project)?;
+    Ok(runtime_root(cpb_root).join("queue").join(project).join("queue.json"))
+}
+
+fn read_queue(file: &Path) -> Result<Vec<Value>> {
+    let raw = read_json_or(file, json!([]))?;
+    Ok(raw.as_array().cloned().unwrap_or_default())
+}
+
+pub fn queue_push(cpb_root: &Path, project: &str, item: &Value) -> Result<Value> {
+    if !item.is_object() {
+        return Err(anyhow!("queue item must be an object"));
+    }
+    let id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("queue item.id is required"))?;
+    if id.trim().is_empty() {
+        return Err(anyhow!("queue item.id must not be empty"));
+    }
+    let file = queue_file(cpb_root, project)?;
+    let mut queue = read_queue(&file)?;
+    let duplicate = queue.iter().any(|q| q.get("id").and_then(Value::as_str) == Some(id));
+    if duplicate {
+        return Ok(json!({ "pushed": false, "id": id }));
+    }
+    let mut entry = item.clone();
+    entry["project"] = json!(project);
+    if entry.get("status").is_none() {
+        entry["status"] = json!("pending");
+    }
+    if entry.get("createdAt").is_none() {
+        entry["createdAt"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    }
+    entry["updatedAt"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    let id_owned = id.to_string();
+    queue.push(entry);
+    write_json_atomic(&file, &Value::Array(queue))?;
+    Ok(json!({ "pushed": true, "id": id_owned }))
+}
+
+pub fn queue_list(cpb_root: &Path, project: &str, status_filter: Option<&str>) -> Result<Vec<Value>> {
+    let file = queue_file(cpb_root, project)?;
+    let queue = read_queue(&file)?;
+    Ok(match status_filter {
+        Some(filter) => queue
+            .into_iter()
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some(filter))
+            .collect(),
+        None => queue,
+    })
+}
+
+pub fn queue_claim(cpb_root: &Path, project: &str, worker: Option<&str>) -> Result<Value> {
+    let file = queue_file(cpb_root, project)?;
+    let mut queue = read_queue(&file)?;
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let index = queue
+        .iter()
+        .position(|item| item.get("status").and_then(Value::as_str) == Some("pending"));
+    let Some(index) = index else {
+        return Ok(Value::Null);
+    };
+    queue[index]["status"] = json!("claimed");
+    queue[index]["claimedBy"] = json!(worker.unwrap_or("unknown"));
+    queue[index]["claimedAt"] = json!(now.clone());
+    queue[index]["updatedAt"] = json!(now);
+    let claimed = queue[index].clone();
+    write_json_atomic(&file, &Value::Array(queue))?;
+    Ok(claimed)
+}
+
+pub fn queue_complete(cpb_root: &Path, project: &str, item_id: &str) -> Result<Value> {
+    let file = queue_file(cpb_root, project)?;
+    let mut queue = read_queue(&file)?;
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let index = queue
+        .iter()
+        .position(|item| item.get("id").and_then(Value::as_str) == Some(item_id));
+    let Some(index) = index else {
+        return Ok(json!({ "completed": false, "id": item_id, "reason": "not found" }));
+    };
+    let current_status = queue[index].get("status").and_then(Value::as_str).unwrap_or_default();
+    if current_status != "claimed" {
+        return Ok(json!({ "completed": false, "id": item_id, "reason": "not claimed" }));
+    }
+    queue[index]["status"] = json!("completed");
+    queue[index]["completedAt"] = json!(now.clone());
+    queue[index]["updatedAt"] = json!(now);
+    let id = item_id.to_string();
+    write_json_atomic(&file, &Value::Array(queue))?;
+    Ok(json!({ "completed": true, "id": id }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,5 +908,40 @@ mod tests {
         assert_eq!(job["phase"], "completed");
         assert_eq!(job["leaseId"], Value::Null);
         assert_eq!(job["lastActivityMessage"], "late");
+    }
+
+    #[test]
+    fn registry_backlog_and_rate_limit_are_durable() {
+        let hub = temp_root("hub");
+        let project_root = temp_root("project");
+        let project = json!({
+            "id": "calc-test",
+            "name": "calc-test",
+            "sourcePath": project_root.to_string_lossy()
+        });
+        let saved = upsert_registry_project(&hub, &project).unwrap();
+        assert_eq!(saved["id"], "calc-test");
+        let projects = list_registry_projects(&hub).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0]["sourcePath"].as_str(),
+            Some(project_root.to_string_lossy().as_ref())
+        );
+
+        let pushed = push_backlog_issue(&project_root, "calc-test", &json!({
+            "priority": "P1",
+            "description": "tighten calculator parsing"
+        })).unwrap();
+        assert_eq!(pushed["added"], true);
+        let duplicate = push_backlog_issue(&project_root, "calc-test", &json!({
+            "priority": "P1",
+            "description": "tighten calculator parsing"
+        })).unwrap();
+        assert_eq!(duplicate["added"], false);
+        assert_eq!(list_backlog(&project_root, "calc-test").unwrap().len(), 1);
+
+        let limit = set_rate_limit(&hub, "codex", "2026-05-17T00:00:00.000Z", "429").unwrap();
+        assert_eq!(limit["agent"], "codex");
+        assert_eq!(get_rate_limit(&hub, Some("codex")).unwrap()["reason"], "429");
     }
 }

@@ -37,6 +37,10 @@ ${BOLD}Usage:${NC}
 
 ${BOLD}Commands:${NC}
   ${CYAN}init${NC} <path> <name>                    初始化项目集成
+  ${CYAN}attach${NC} [path] [name]                  将当前/指定项目接入全局 Hub
+  ${CYAN}hub${NC} [status|projects|acp|queue|queue-status] [--json]    查看全局 Hub 状态
+  ${CYAN}worker${NC} heartbeat [path] [name]        上报项目 worker 心跳
+  ${CYAN}knowledge${NC} policy [--json]             查看知识层写入边界
   ${CYAN}plan${NC} <project> "<task>"               Codex 规划
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
@@ -49,6 +53,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}inbox${NC} <project>                        列出计划文件
   ${CYAN}outputs${NC} <project>                      列出产出文件
   ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
+  ${CYAN}evolve-multi${NC} [--dry-run] [--scan] [--project name] [--workflow blocked]  多项目 evolve
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
   ${CYAN}recover${NC} <project> <jobId>              强制恢复卡住的 job (跳过 grace period)
@@ -69,6 +74,10 @@ ${BOLD}Global flags:${NC}
 
 ${BOLD}Examples:${NC}
   cpb init ./my-project my-project
+  cpb attach ./my-project my-project
+  cpb hub projects
+  cpb worker heartbeat ./my-project my-project
+  cpb knowledge policy
   cpb plan my-project "Add dark mode"
   cpb execute my-project 001
   cpb verify my-project 001
@@ -97,6 +106,163 @@ check_deps() {
 }
 
 cmd_init()     { "$CPB_ROOT/bridges/init-project.sh" "$@"; }
+cmd_attach() {
+  local project_path="${1:-$PWD}"
+  local project_name="${2:-}"
+  CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" PROJECT_PATH="$project_path" PROJECT_NAME="$project_name" node --input-type=module - <<'NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const sourcePath = path.resolve(process.env.PROJECT_PATH || process.cwd());
+const name = process.env.PROJECT_NAME || path.basename(sourcePath);
+const { registerProject, resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const hubRoot = resolveHubRoot(cpbRoot);
+const project = await registerProject(hubRoot, { name, sourcePath });
+console.log(JSON.stringify({ attached: true, hubRoot, project }, null, 2));
+NODE
+}
+cmd_hub() {
+  local sub="${1:-status}"
+  local json=0
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      *) echo -e "${RED}Unknown hub flag: $1${NC}" >&2; exit 1 ;;
+    esac
+    shift
+  done
+  CPB_ROOT="$CPB_ROOT" CPB_HUB_JSON="$json" CPB_HUB_SUB="$sub" node --input-type=module - <<'NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const sub = process.env.CPB_HUB_SUB || 'status';
+const asJson = process.env.CPB_HUB_JSON === '1';
+const { hubStatus, listProjects, resolveHubRoot, workerStatus } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const { AcpPool } = await import(path.join(cpbRoot, 'bridges/acp-pool.mjs'));
+const hubRoot = resolveHubRoot(cpbRoot);
+if (sub === 'status') {
+  const status = await hubStatus(hubRoot);
+  if (asJson) console.log(JSON.stringify(status, null, 2));
+  else {
+    console.log(`Hub: ${status.hubRoot}`);
+    console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
+    console.log(`Workers: ${status.workersOnline} online, ${status.workersStale} stale, ${status.workersOffline} offline`);
+  }
+} else if (sub === 'projects') {
+  const projects = await listProjects(hubRoot);
+  if (asJson) console.log(JSON.stringify(projects, null, 2));
+  else {
+    if (projects.length === 0) console.log('No Hub projects. Run: cpb attach [path] [name]');
+    for (const project of projects) {
+      const worker = project.worker?.lastSeenAt ? ` worker:${workerStatus(project)}` : '';
+      console.log(`${project.enabled === false ? '-' : '+'} ${project.id}\t${project.sourcePath}${worker}`);
+    }
+  }
+} else if (sub === 'acp') {
+  const pool = new AcpPool({ cpbRoot, hubRoot });
+  const status = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
+  if (asJson) console.log(JSON.stringify(status, null, 2));
+  else {
+    console.log('ACP pools:');
+    for (const [agent, info] of Object.entries(status.pools || {})) {
+      const limit = status.rateLimits?.[agent];
+      const backoff = limit?.untilTs ? ` backoff:${limit.untilTs}` : '';
+      console.log(`  ${agent}\tmode:${info.mode} limit:${info.limit} active:${info.active} queued:${info.queued}${backoff}`);
+    }
+    const extra = Object.keys(status.rateLimits || {}).filter((agent) => !status.pools?.[agent]);
+    for (const agent of extra) {
+      console.log(`  ${agent}\tbackoff:${status.rateLimits[agent].untilTs}`);
+    }
+  }
+} else if (sub === 'queue' || sub === 'queue-status') {
+  const { listQueue, queueStatus } = await import(path.join(cpbRoot, 'server/services/hub-queue.js'));
+  if (sub === 'queue-status') {
+    const qs = await queueStatus(hubRoot);
+    if (asJson) console.log(JSON.stringify(qs, null, 2));
+    else {
+      console.log(`Queue: ${qs.total} entries`);
+      console.log(`  pending:${qs.pending} in_progress:${qs.inProgress} completed:${qs.completed} failed:${qs.failed} cancelled:${qs.cancelled}`);
+    }
+  } else {
+    const entries = await listQueue(hubRoot);
+    if (asJson) console.log(JSON.stringify(entries, null, 2));
+    else {
+      if (entries.length === 0) console.log('Queue is empty');
+      for (const e of entries) {
+        console.log(`${e.status}\t${e.priority}\t${e.projectId}\t${e.description || e.id}`);
+      }
+    }
+  }
+} else {
+  console.error(`Unknown hub subcommand: ${sub}`);
+  process.exit(1);
+}
+NODE
+}
+cmd_worker() {
+  local sub="${1:-heartbeat}"
+  shift || true
+  case "$sub" in
+    heartbeat)
+      local project_path="${1:-$PWD}"
+      local project_name="${2:-}"
+      CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" PROJECT_PATH="$project_path" PROJECT_NAME="$project_name" node --input-type=module - <<'NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const sourcePath = path.resolve(process.env.PROJECT_PATH || process.cwd());
+const name = process.env.PROJECT_NAME || path.basename(sourcePath);
+const { heartbeatWorker, registerProject, resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const hubRoot = resolveHubRoot(cpbRoot);
+const project = await registerProject(hubRoot, { name, sourcePath });
+const updated = await heartbeatWorker(hubRoot, project.id, {
+  workerId: `cli-${process.pid}`,
+  pid: process.pid,
+  status: 'online',
+  capabilities: ['scan', 'execute'],
+});
+console.log(JSON.stringify({ heartbeat: true, hubRoot, project: updated }, null, 2));
+NODE
+      ;;
+    *)
+      echo -e "${RED}Usage: cpb worker heartbeat [path] [name]${NC}" >&2
+      exit 1
+      ;;
+  esac
+}
+cmd_knowledge() {
+  local sub="${1:-policy}"
+  local json=0
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      *) echo -e "${RED}Unknown knowledge flag: $1${NC}" >&2; exit 1 ;;
+    esac
+    shift
+  done
+  case "$sub" in
+    policy)
+      CPB_ROOT="$CPB_ROOT" CPB_KNOWLEDGE_JSON="$json" node --input-type=module - <<'NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const asJson = process.env.CPB_KNOWLEDGE_JSON === '1';
+const { knowledgePolicySummary } = await import(path.join(cpbRoot, 'server/services/knowledge-policy.js'));
+const policy = knowledgePolicySummary();
+if (asJson) console.log(JSON.stringify(policy, null, 2));
+else {
+  console.log('Knowledge policy:');
+  console.log(`  automatic: ${policy.automaticWrites.join(', ')}`);
+  console.log(`  semi-automatic: ${policy.semiAutomaticWrites.join(', ')}`);
+  console.log(`  explicit confirmation: ${policy.explicitConfirmationWrites.join(', ')}`);
+  console.log(`  forbidden markdown state: ${policy.forbiddenMarkdownState.join(', ')}`);
+}
+NODE
+      ;;
+    *)
+      echo -e "${RED}Usage: cpb knowledge policy [--json]${NC}" >&2
+      exit 1
+      ;;
+  esac
+}
 cmd_plan()     { "$CPB_ROOT/bridges/codex-plan.sh" "$@"; }
 cmd_execute()  { "$CPB_ROOT/bridges/claude-execute.sh" "$@"; }
 cmd_verify()   { "$CPB_ROOT/bridges/codex-verify.sh" "$@"; }
@@ -642,6 +808,9 @@ cmd_gc() {
 }
 cmd_supervisor() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/supervisor-loop.mjs"; }
 cmd_migrate_runtime_root() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/migrate-runtime-root.mjs" "$@"; }
+cmd_evolve_multi() {
+  CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" node "$CPB_ROOT/bridges/multi-evolve.mjs" "$@"
+}
 
 cmd_status() {
   local project="${1:?Usage: cpb status <project>}"
@@ -955,6 +1124,10 @@ cmd_install() {
 # Main
 case "${1:-help}" in
   init)     shift; cmd_init "$@" ;;
+  attach)   shift; cmd_attach "$@" ;;
+  hub)      shift; cmd_hub "$@" ;;
+  worker)   shift; cmd_worker "$@" ;;
+  knowledge) shift; cmd_knowledge "$@" ;;
   plan)     shift; cmd_plan "$@" ;;
   execute)  shift; cmd_execute "$@" ;;
   verify)   shift; cmd_verify "$@" ;;
@@ -967,6 +1140,7 @@ case "${1:-help}" in
   inbox)    shift; cmd_inbox "$@" ;;
   outputs)  shift; cmd_outputs "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
+  evolve-multi|multi-evolve) shift; cmd_evolve_multi "$@" ;;
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
   recover)  shift; cmd_recover "$@" ;;

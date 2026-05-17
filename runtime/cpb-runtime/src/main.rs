@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use cpb_runtime::{
-    acquire_lease, append_event, compile_policy, get_job, list_jobs, read_events, read_lease,
-    release_lease, renew_lease,
+    acquire_lease, append_event, compile_policy, get_job, get_rate_limit, list_backlog,
+    list_jobs, list_registry_projects, push_backlog_issue, queue_claim, queue_complete,
+    queue_list, queue_push, read_events, read_lease, release_lease, renew_lease,
+    set_rate_limit, upsert_registry_project,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -110,6 +112,56 @@ fn run() -> Result<()> {
             required(&options, "role")?,
             options.get("phase").map(String::as_str).unwrap_or(""),
         )),
+        ("registry", "upsert") => {
+            let project: Value = serde_json::from_str(required(&options, "project-json")?)?;
+            print_json(upsert_registry_project(&cpb_root(&options)?, &project)?)
+        }
+        ("registry", "list") => print_json(Value::Array(list_registry_projects(&cpb_root(&options)?)?)),
+        ("backlog", "push") => {
+            let issue: Value = serde_json::from_str(required(&options, "issue")?)?;
+            print_json(push_backlog_issue(
+                &cpb_root(&options)?,
+                required(&options, "project")?,
+                &issue,
+            )?)
+        }
+        ("backlog", "list") => print_json(Value::Array(list_backlog(
+            &cpb_root(&options)?,
+            required(&options, "project")?,
+        )?)),
+        ("rate-limit", "set") => print_json(set_rate_limit(
+            &cpb_root(&options)?,
+            required(&options, "agent")?,
+            required(&options, "until-ts")?,
+            options.get("reason").map(String::as_str).unwrap_or(""),
+        )?),
+        ("rate-limit", "get") => print_json(get_rate_limit(
+            &cpb_root(&options)?,
+            options.get("agent").map(String::as_str),
+        )?),
+        ("queue", "push") => {
+            let item: Value = serde_json::from_str(required(&options, "item")?)?;
+            print_json(queue_push(
+                &cpb_root(&options)?,
+                required(&options, "project")?,
+                &item,
+            )?)
+        }
+        ("queue", "list") => print_json(Value::Array(queue_list(
+            &cpb_root(&options)?,
+            required(&options, "project")?,
+            options.get("status").map(String::as_str),
+        )?)),
+        ("queue", "claim") => print_json(queue_claim(
+            &cpb_root(&options)?,
+            required(&options, "project")?,
+            options.get("worker").map(String::as_str),
+        )?),
+        ("queue", "complete") => print_json(queue_complete(
+            &cpb_root(&options)?,
+            required(&options, "project")?,
+            required(&options, "id")?,
+        )?),
         _ => Err(anyhow!("unknown command: {group} {command}")),
     }
 }
