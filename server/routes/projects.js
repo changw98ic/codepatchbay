@@ -83,22 +83,35 @@ export async function projectRoutes(fastify, opts) {
     const { name } = req.params;
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
     const filePath = req.params['*'];
-    // Reject any path segment that could escape the project directory
     const normalized = path.normalize(filePath);
     if (normalized.startsWith('..') || path.isAbsolute(normalized)) {
       throw fastify.httpErrors.badRequest('Invalid file path');
     }
-    const fullPath = path.join(req.cpbRoot, 'wiki/projects', name, filePath);
-
-    // Security: prevent path traversal (defense in depth)
     const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
-    const resolved = path.resolve(fullPath);
-    if (!resolved.startsWith(path.resolve(projDir) + path.sep) && resolved !== path.resolve(projDir)) {
+    const fullPath = path.join(projDir, filePath);
+
+    // Resolve real paths to defeat symlink-based escapes.
+    // path.resolve only normalizes the string; fs.realpath follows symlinks.
+    let projectRealRoot;
+    try {
+      projectRealRoot = await fs.realpath(projDir);
+    } catch {
+      throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+    }
+
+    let candidateRealPath;
+    try {
+      candidateRealPath = await fs.realpath(fullPath);
+    } catch {
+      throw fastify.httpErrors.notFound(`File not found: ${filePath}`);
+    }
+
+    if (!candidateRealPath.startsWith(projectRealRoot + path.sep) && candidateRealPath !== projectRealRoot) {
       throw fastify.httpErrors.forbidden('Path traversal denied');
     }
 
     try {
-      const content = await fs.readFile(fullPath, 'utf8');
+      const content = await fs.readFile(candidateRealPath, 'utf8');
       return { path: filePath, content };
     } catch {
       throw fastify.httpErrors.notFound(`File not found: ${filePath}`);

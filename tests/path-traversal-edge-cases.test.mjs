@@ -93,11 +93,9 @@ describe('Path traversal edge cases', () => {
       `Expected 400/403/404, got ${res.statusCode}`);
   });
 
-  // 9. Symlink escape — path.resolve normalizes the string but does NOT follow
-  //    symlinks, so a symlink within projDir passes the startsWith check.
-  //    However readFile *does* follow it, leaking content outside projDir.
-  //    This test documents the current behavior as a known gap.
-  it('symlink escape — documents current traversal check gap', async () => {
+  // 9. Symlink escape — realpath resolves symlinks before boundary check,
+  //    so a symlink pointing outside projDir is rejected.
+  it('rejects symlink pointing outside project root', async () => {
     const secretFile = path.join(tmpRoot, 'secret.txt');
     await fs.writeFile(secretFile, 'top-secret');
 
@@ -109,13 +107,35 @@ describe('Path traversal edge cases', () => {
       url: '/api/projects/proj/files/escape-link.txt',
     });
 
-    // path.resolve does not follow symlinks, so the string-based check passes
-    // and readFile follows the symlink, returning 200 with external content.
-    // This is a known gap in the current traversal defense — a real fix would
-    // need to use fs.realpath or openat-based containment.
-    assert.equal(res.statusCode, 200,
-      'Current server allows symlink escape (known gap)');
-    assert.equal(res.json().content, 'top-secret');
+    assert.equal(res.statusCode, 403,
+      'Symlink escape must be rejected');
+  });
+
+  // 10. Symlink within project — still allowed after realpath fix
+  it('allows symlink pointing to file within project', async () => {
+    const linkPath = path.join(projDir, 'link-to-context.md');
+    await fs.symlink('context.md', linkPath);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/projects/proj/files/link-to-context.md',
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().content, '# context');
+  });
+
+  // 11. Dangling symlink — realpath fails with ENOENT, returns 404 (not 500)
+  it('returns 404 for dangling symlink', async () => {
+    const linkPath = path.join(projDir, 'dangling.md');
+    await fs.symlink('nonexistent.md', linkPath);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/projects/proj/files/dangling.md',
+    });
+
+    assert.equal(res.statusCode, 404);
   });
 });
 
