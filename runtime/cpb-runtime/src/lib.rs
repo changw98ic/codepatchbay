@@ -770,6 +770,99 @@ pub fn list_registry_projects(hub_root: &Path) -> Result<Vec<Value>> {
     Ok(projects)
 }
 
+pub fn get_registry_project(hub_root: &Path, id: &str) -> Result<Value> {
+    validate_component("project", id)?;
+    let registry = read_json_or(&hub_registry_file(hub_root), registry_default())?;
+    Ok(registry
+        .get("projects")
+        .and_then(|p| p.get(id))
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+pub fn update_registry_project(hub_root: &Path, id: &str, patch: &Value) -> Result<Value> {
+    validate_component("project", id)?;
+    if !patch.is_object() {
+        return Err(anyhow!("patch must be an object"));
+    }
+    let file = hub_registry_file(hub_root);
+    let mut registry = read_json_or(&file, registry_default())?;
+    let projects = registry
+        .get_mut("projects")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow!("registry.projects is not an object"))?;
+    let existing = projects
+        .get(id)
+        .ok_or_else(|| anyhow!("project not found: {id}"))?
+        .clone();
+    let mut merged = existing.as_object().cloned().unwrap_or_default();
+    for (key, value) in patch.as_object().unwrap() {
+        if key != "id" {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged.insert("id".into(), json!(id));
+    merged.insert(
+        "updatedAt".into(),
+        json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+    );
+    let result = Value::Object(merged);
+    projects.insert(id.to_string(), result.clone());
+    registry["updatedAt"] = json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    write_json_atomic(&file, &registry)?;
+    Ok(result)
+}
+
+pub fn heartbeat_worker(hub_root: &Path, id: &str, worker_info: &Value) -> Result<Value> {
+    validate_component("project", id)?;
+    if !worker_info.is_object() {
+        return Err(anyhow!("workerInfo must be an object"));
+    }
+    let info = worker_info.as_object().unwrap();
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut worker = Map::new();
+    worker.insert(
+        "workerId".into(),
+        info.get("workerId").cloned().unwrap_or(json!(format!("worker-{}", process::id()))),
+    );
+    worker.insert(
+        "pid".into(),
+        info.get("pid").cloned().unwrap_or(json!(process::id())),
+    );
+    worker.insert(
+        "status".into(),
+        info.get("status").cloned().unwrap_or(json!("online")),
+    );
+    worker.insert(
+        "capabilities".into(),
+        info.get("capabilities").cloned().unwrap_or(json!([])),
+    );
+    worker.insert("lastSeenAt".into(), json!(now));
+    if let Some(timeout) = info.get("claimTimeoutMs") {
+        worker.insert("claimTimeoutMs".into(), timeout.clone());
+    }
+    update_registry_project(hub_root, id, &json!({ "worker": Value::Object(worker) }))
+}
+
+pub fn worker_status(project: &Value, ttl_ms: i64) -> Value {
+    let last_seen = project
+        .get("worker")
+        .and_then(|w| w.get("lastSeenAt"))
+        .and_then(Value::as_str);
+    let Some(last_seen) = last_seen else {
+        return json!("offline");
+    };
+    let Ok(parsed) = DateTime::parse_from_rfc3339(last_seen) else {
+        return json!("offline");
+    };
+    let age = Utc::now() - parsed.with_timezone(&Utc);
+    if age.num_milliseconds() <= ttl_ms {
+        json!("online")
+    } else {
+        json!("stale")
+    }
+}
+
 pub fn push_backlog_issue(project_root: &Path, project: &str, issue: &Value) -> Result<Value> {
     if !issue.is_object() {
         return Err(anyhow!("issue must be an object"));

@@ -38,7 +38,7 @@ ${BOLD}Usage:${NC}
 ${BOLD}Commands:${NC}
   ${CYAN}init${NC} <path> <name>                    初始化项目集成
   ${CYAN}attach${NC} [path] [name]                  将当前/指定项目接入全局 Hub
-  ${CYAN}hub${NC} [status|projects|acp|queue|queue-status] [--json]    查看全局 Hub 状态
+  ${CYAN}hub${NC} [status|start|stop|projects|acp|queue|queue-status] [--json]    查看/管理全局 Hub
   ${CYAN}worker${NC} heartbeat [path] [name]        上报项目 worker 心跳
   ${CYAN}worker${NC} run [path] [name] [--once] [--workflow blocked]  启动项目 worker 拉取队列执行
   ${CYAN}knowledge${NC} policy [--json]             查看知识层写入边界
@@ -55,6 +55,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}outputs${NC} <project>                      列出产出文件
   ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  全自动流水线
   ${CYAN}evolve-multi${NC} [--dry-run] [--scan] [--project name] [--workflow blocked]  多项目 evolve
+  ${CYAN}soak${NC} [--dry-run] [--max-duration-ms N] [--max-rounds N]  运营级 soak 验证 (过夜/长期)
   ${CYAN}cancel${NC} <project> <jobId> [reason]      请求取消运行中的 job
   ${CYAN}redirect${NC} <project> <jobId> "<instructions>" [reason]  重定向运行中的 job
   ${CYAN}recover${NC} <project> <jobId>              强制恢复卡住的 job (跳过 grace period)
@@ -122,6 +123,106 @@ const project = await registerProject(hubRoot, { name, sourcePath });
 console.log(JSON.stringify({ attached: true, hubRoot, project }, null, 2));
 NODE
 }
+cmd_hub_start() {
+  CPB_ROOT="$CPB_ROOT" node --input-type=module - <<'NODE'
+import path from 'node:path';
+import { openSync } from 'node:fs';
+import { readFile, mkdir, stat } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const { resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const hubRoot = resolveHubRoot(cpbRoot);
+const statePath = path.join(hubRoot, 'state', 'hub.json');
+
+// Check existing liveness
+let alive = false;
+let existingPid = null;
+try {
+  const raw = await readFile(statePath, 'utf8');
+  const meta = JSON.parse(raw);
+  if (meta.health !== 'dead') {
+    try { process.kill(meta.pid, 0); alive = true; existingPid = meta.pid; } catch {}
+  }
+} catch {}
+
+if (alive) {
+  console.log(`Hub is already running (pid: ${existingPid}).`);
+  process.exit(0);
+}
+
+// Ensure server deps
+try { await stat(path.join(cpbRoot, 'server', 'node_modules')); }
+catch {
+  console.log('Installing server deps...');
+  const { execSync } = await import('node:child_process');
+  execSync('npm install --silent', { cwd: path.join(cpbRoot, 'server'), stdio: 'pipe' });
+}
+
+const port = process.env.CPB_PORT || '3456';
+const host = process.env.CPB_HOST || '127.0.0.1';
+await mkdir(hubRoot, { recursive: true });
+const logFd = openSync(path.join(hubRoot, 'hub.log'), 'a');
+const child = spawn(process.execPath, [path.join(cpbRoot, 'server', 'index.js')], {
+  cwd: cpbRoot,
+  env: { ...process.env, CPB_ROOT: cpbRoot, CPB_HUB_ROOT: hubRoot, CPB_PORT: port, CPB_HOST: host },
+  detached: true,
+  stdio: ['ignore', logFd, logFd],
+});
+child.unref();
+
+// Wait for hub.json (up to 5s)
+for (let i = 0; i < 50; i++) {
+  await new Promise(r => setTimeout(r, 100));
+  try {
+    const raw = await readFile(statePath, 'utf8');
+    const meta = JSON.parse(raw);
+    if (meta.health === 'alive') {
+      console.log(`Hub started on http://${host}:${port} (pid: ${meta.pid})`);
+      process.exit(0);
+    }
+  } catch {}
+}
+console.error(`Hub failed to start within 5 seconds. Check ${path.join(hubRoot, 'hub.log')}`);
+process.exit(1);
+NODE
+}
+
+cmd_hub_stop() {
+  CPB_ROOT="$CPB_ROOT" node --input-type=module - <<'NODE'
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const { resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const hubRoot = resolveHubRoot(cpbRoot);
+const statePath = path.join(hubRoot, 'state', 'hub.json');
+
+let meta;
+try { meta = JSON.parse(await readFile(statePath, 'utf8')); }
+catch { console.log('Hub is not running (no state file).'); process.exit(0); }
+
+if (meta.health === 'dead') {
+  console.log('Hub is not running (graceful shutdown recorded).');
+  process.exit(0);
+}
+
+try { process.kill(meta.pid, 0); }
+catch { console.log(`Hub process ${meta.pid} is not running.`); process.exit(0); }
+
+process.kill(meta.pid, 'SIGTERM');
+
+// Wait for shutdown (up to 5s)
+for (let i = 0; i < 50; i++) {
+  await new Promise(r => setTimeout(r, 100));
+  try { process.kill(meta.pid, 0); } catch {
+    console.log(`Hub stopped (was pid: ${meta.pid}).`);
+    process.exit(0);
+  }
+}
+try { process.kill(meta.pid, 9); } catch {}
+console.log(`Hub force-stopped (was pid: ${meta.pid}).`);
+NODE
+}
+
 cmd_hub() {
   local sub="${1:-status}"
   local json=0
@@ -133,6 +234,10 @@ cmd_hub() {
     esac
     shift
   done
+  case "$sub" in
+    start) cmd_hub_start; return $? ;;
+    stop)  cmd_hub_stop;  return $? ;;
+  esac
   CPB_ROOT="$CPB_ROOT" CPB_HUB_JSON="$json" CPB_HUB_SUB="$sub" node --input-type=module - <<'NODE'
 import path from 'node:path';
 const cpbRoot = path.resolve(process.env.CPB_ROOT);
@@ -878,6 +983,9 @@ cmd_migrate_runtime_root() { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/migrate-run
 cmd_evolve_multi() {
   CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" node "$CPB_ROOT/bridges/multi-evolve.mjs" "$@"
 }
+cmd_soak() {
+  CPB_ROOT="$CPB_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" node "$CPB_ROOT/bridges/provider-soak.mjs" "$@"
+}
 
 cmd_status() {
   local project="${1:?Usage: cpb status <project>}"
@@ -1195,7 +1303,17 @@ if [ $# -eq 0 ]; then
   if [ -n "$_git_root" ] && [ "$_git_root" != "$CPB_ROOT" ] && [[ "$_git_root" != "$CPB_ROOT"/* ]]; then
     echo -e "${BOLD}Auto-discovered git repo:${NC} $_git_root"
     cmd_attach "$_git_root" "$(basename "$_git_root")"
-    exit $?
+    _attach_rc=$?
+    CPB_ROOT="$CPB_ROOT" node --input-type=module - <<'HUBCHECK' 2>/dev/null || true
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const { resolveHubRoot } = await import(path.join(cpbRoot, 'server/services/hub-registry.js'));
+const { readHubLiveness } = await import(path.join(cpbRoot, 'server/services/hub-runtime.js'));
+const l = await readHubLiveness(resolveHubRoot(cpbRoot));
+if (l.alive) console.log(`Hub: alive (pid: ${l.pid})`);
+else console.log(`Hub: ${l.reason} — run 'cpb hub start' to start the server`);
+HUBCHECK
+    exit $_attach_rc
   fi
   usage
   echo ""
@@ -1222,6 +1340,7 @@ case "$1" in
   outputs)  shift; cmd_outputs "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
   evolve-multi|multi-evolve) shift; cmd_evolve_multi "$@" ;;
+  soak)     shift; cmd_soak "$@" ;;
   cancel)   shift; cmd_cancel "$@" ;;
   redirect) shift; cmd_redirect "$@" ;;
   recover)  shift; cmd_recover "$@" ;;

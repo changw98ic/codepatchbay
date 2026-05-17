@@ -13,7 +13,9 @@ import {
   queuePush, queueList, queueClaim, queueComplete,
   pushBacklogIssue, listBacklog,
   setRateLimit, getRateLimit,
-  upsertRegistryProject, listRegistryProjects,
+  upsertRegistryProject, listRegistryProjects, getRegistryProject, updateRegistryProject,
+  heartbeatWorker, workerStatus,
+  compilePolicy,
   resolveRuntimeBin, getRuntimeBackend,
 } from "../server/services/runtime-cli.js";
 
@@ -405,4 +407,120 @@ test("job: getJob returns null state for missing job", skip, async () => {
   const job = await getJob(cpbRoot, "demo", "no-such-job");
   assert.equal(job.jobId, null);
   assert.equal(job.status, null);
+});
+
+// ─── Registry Get / Update ───────────────────────────────────────────
+
+test("registry: get returns project by id", skip, async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-reg-get-"));
+  await upsertRegistryProject(hubRoot, { id: "alpha", name: "Alpha", sourcePath: "/a" });
+  await upsertRegistryProject(hubRoot, { id: "beta", name: "Beta", sourcePath: "/b" });
+
+  const alpha = await getRegistryProject(hubRoot, "alpha");
+  assert.equal(alpha.id, "alpha");
+  assert.equal(alpha.name, "Alpha");
+  assert.equal(alpha.sourcePath, "/a");
+
+  const missing = await getRegistryProject(hubRoot, "nope");
+  assert.equal(missing, null);
+});
+
+test("registry: update patches fields and preserves id", skip, async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-reg-patch-"));
+  await upsertRegistryProject(hubRoot, { id: "patch-me", name: "Before", sourcePath: "/before" });
+
+  const updated = await updateRegistryProject(hubRoot, "patch-me", { name: "After", enabled: false });
+  assert.equal(updated.id, "patch-me");
+  assert.equal(updated.name, "After");
+  assert.equal(updated.sourcePath, "/before");
+  assert.equal(updated.enabled, false);
+  assert.ok(updated.updatedAt);
+
+  const reloaded = await getRegistryProject(hubRoot, "patch-me");
+  assert.equal(reloaded.name, "After");
+  assert.equal(reloaded.enabled, false);
+});
+
+test("registry: update returns error for unknown project", skip, async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-reg-patch-unknown-"));
+  await assert.rejects(
+    () => updateRegistryProject(hubRoot, "ghost", { name: "X" }),
+    { message: /not found/ },
+  );
+});
+
+// ─── Worker Heartbeat ────────────────────────────────────────────────
+
+test("worker: heartbeat writes worker metadata into project", skip, async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hb-"));
+  await upsertRegistryProject(hubRoot, { id: "hb-proj", name: "HB", sourcePath: "/hb" });
+
+  const result = await heartbeatWorker(hubRoot, "hb-proj", {
+    workerId: "w-001",
+    pid: 1234,
+    status: "online",
+    capabilities: ["plan", "execute"],
+  });
+  assert.equal(result.id, "hb-proj");
+  assert.equal(result.worker.workerId, "w-001");
+  assert.equal(result.worker.pid, 1234);
+  assert.equal(result.worker.status, "online");
+  assert.deepEqual(result.worker.capabilities, ["plan", "execute"]);
+  assert.ok(result.worker.lastSeenAt);
+});
+
+test("worker: heartbeat updates existing worker data", skip, async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hb-update-"));
+  await upsertRegistryProject(hubRoot, { id: "hb-up", name: "HB", sourcePath: "/hb-up" });
+
+  const first = await heartbeatWorker(hubRoot, "hb-up", { workerId: "w-001", status: "online" });
+  const second = await heartbeatWorker(hubRoot, "hb-up", { workerId: "w-002", status: "online" });
+
+  assert.equal(second.worker.workerId, "w-002");
+  assert.notEqual(second.worker.lastSeenAt, first.worker.lastSeenAt);
+});
+
+// ─── Worker Status (deterministic policy check) ──────────────────────
+
+test("worker: status returns offline for no worker data", skip, async () => {
+  const status = await workerStatus({ id: "p1" });
+  assert.equal(status, "offline");
+});
+
+test("worker: status returns online for recent heartbeat", skip, async () => {
+  const project = {
+    id: "p1",
+    worker: { lastSeenAt: new Date().toISOString() },
+  };
+  const status = await workerStatus(project);
+  assert.equal(status, "online");
+});
+
+test("worker: status returns stale for old heartbeat", skip, async () => {
+  const project = {
+    id: "p1",
+    worker: { lastSeenAt: new Date(Date.now() - 200_000).toISOString() },
+  };
+  const status = await workerStatus(project);
+  assert.equal(status, "stale");
+});
+
+// ─── Policy Compile ──────────────────────────────────────────────────
+
+test("policy: compile returns correct env for codex plan", skip, async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-policy-"));
+  const policy = await compilePolicy(cpbRoot, { role: "codex", phase: "plan" });
+  assert.equal(policy.role, "codex");
+  assert.equal(policy.phase, "plan");
+  assert.equal(policy.env.CPB_ACP_PERMISSION, "reject");
+  assert.equal(policy.env.CPB_ACP_TERMINAL, "limited");
+  assert.equal(policy.env.CPB_ACP_WRITE_ALLOW, "wiki");
+  assert.equal(policy.experimental, true);
+});
+
+test("policy: compile returns verify terminal for claude verify", skip, async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-policy-verify-"));
+  const policy = await compilePolicy(cpbRoot, { role: "claude", phase: "verify" });
+  assert.equal(policy.env.CPB_ACP_TERMINAL, "read-only");
+  assert.equal(policy.env.CPB_ACP_WRITE_ALLOW, "project,wiki-output");
 });

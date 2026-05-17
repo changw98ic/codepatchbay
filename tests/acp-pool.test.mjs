@@ -575,3 +575,137 @@ test("ACP pool stop closes persistent provider processes and clears pid/health",
     else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
   }
 });
+
+test("ACP pool recycles persistent provider process on 429 error", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-429-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-429-cpb-"));
+  const prevCmd = process.env.CPB_ACP_CODEX_COMMAND;
+  const prevArgs = process.env.CPB_ACP_CODEX_ARGS;
+  const prevErr = process.env.FAKE_ACP_ERROR;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  process.env.FAKE_ACP_ERROR = "429 rate limit: retry after 60 seconds";
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+    backoffMs: 60_000,
+  });
+
+  try {
+    await assert.rejects(() => pool.execute("codex", "trigger 429", cpbRoot), RateLimitError);
+
+    const s = pool.status().pools.codex;
+    assert.equal(s.recycleCount, 1);
+    assert.equal(s.lastRecycleReason, "rate_limit");
+    assert.equal(s.errorCount, 1);
+    assert.ok(s.rateLimitedUntil > Date.now());
+    assert.equal(s.providerProcessHealthy, null, "429 should close persistent client");
+  } finally {
+    await pool.stop();
+    if (prevCmd === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = prevCmd;
+    if (prevArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = prevArgs;
+    if (prevErr === undefined) delete process.env.FAKE_ACP_ERROR;
+    else process.env.FAKE_ACP_ERROR = prevErr;
+  }
+});
+
+test("ACP pool recycles persistent provider process on generic error", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-err-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-err-cpb-"));
+  const prevCmd = process.env.CPB_ACP_CODEX_COMMAND;
+  const prevArgs = process.env.CPB_ACP_CODEX_ARGS;
+  const prevErr = process.env.FAKE_ACP_ERROR;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  process.env.FAKE_ACP_ERROR = "internal server error";
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+  });
+
+  try {
+    await assert.rejects(() => pool.execute("codex", "trigger error", cpbRoot), { message: /internal server error/ });
+
+    const s = pool.status().pools.codex;
+    assert.equal(s.recycleCount, 1);
+    assert.equal(s.lastRecycleReason, "error");
+    assert.equal(s.errorCount, 1);
+    assert.equal(s.providerProcessHealthy, null, "error should close persistent client");
+  } finally {
+    await pool.stop();
+    if (prevCmd === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = prevCmd;
+    if (prevArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = prevArgs;
+    if (prevErr === undefined) delete process.env.FAKE_ACP_ERROR;
+    else process.env.FAKE_ACP_ERROR = prevErr;
+  }
+});
+
+test("ACP pool cleans up persistent provider process on timeout", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-timeout-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-timeout-cpb-"));
+  const prevCmd = process.env.CPB_ACP_CODEX_COMMAND;
+  const prevArgs = process.env.CPB_ACP_CODEX_ARGS;
+  const prevDelay = process.env.FAKE_ACP_DELAY_MS;
+  process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
+  process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  process.env.FAKE_ACP_DELAY_MS = "5000";
+  const pool = new AcpPool({
+    hubRoot,
+    cpbRoot,
+    limits: { codex: 1 },
+    persistentProcesses: true,
+  });
+
+  try {
+    await assert.rejects(
+      () => pool.execute("codex", "slow prompt", cpbRoot, 50),
+      { message: /timed out/ },
+    );
+
+    const s = pool.status().pools.codex;
+    assert.equal(s.recycleCount, 1, "timeout should trigger recycle");
+    assert.equal(s.lastRecycleReason, "error");
+    assert.equal(s.errorCount, 1);
+    assert.equal(s.providerProcessHealthy, null, "timeout should close persistent client");
+  } finally {
+    await pool.stop();
+    if (prevCmd === undefined) delete process.env.CPB_ACP_CODEX_COMMAND;
+    else process.env.CPB_ACP_CODEX_COMMAND = prevCmd;
+    if (prevArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
+    else process.env.CPB_ACP_CODEX_ARGS = prevArgs;
+    if (prevDelay === undefined) delete process.env.FAKE_ACP_DELAY_MS;
+    else process.env.FAKE_ACP_DELAY_MS = prevDelay;
+  }
+});
+
+test("ACP pool lastRecycleReason persists across successful requests", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-recycle-reason-"));
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { codex: 1 },
+    maxSessionRequests: 1,
+    runner: async () => "ok",
+  });
+
+  await pool.execute("codex", "a");
+  assert.equal(pool.status().pools.codex.recycleCount, 0);
+  assert.equal(pool.status().pools.codex.lastRecycleReason, null);
+
+  await pool.execute("codex", "b");
+  assert.equal(pool.status().pools.codex.recycleCount, 1);
+  assert.equal(pool.status().pools.codex.lastRecycleReason, "max_requests");
+
+  await pool.execute("codex", "c");
+  const s = pool.status().pools.codex;
+  assert.equal(s.recycleCount, 2);
+  assert.equal(s.lastRecycleReason, "max_requests", "reason should persist after subsequent success");
+  assert.equal(s.recycleReason, null, "session-level reason is ephemeral");
+});

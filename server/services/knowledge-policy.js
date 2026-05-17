@@ -83,6 +83,47 @@ export function knowledgePolicySummary() {
   };
 }
 
+export async function scanKnowledgeContamination(sourcePath, { fs: fsMod } = {}) {
+  const realFs = fsMod || await import("node:fs/promises");
+  const src = path.resolve(sourcePath);
+  const issues = [];
+  const wikiRoot = path.join(src, ".cpb", "wiki");
+  const memoryFile = path.join(src, ".cpb", "memory.md");
+
+  const machineStatePatterns = [
+    /"leaseId"/, /"rateLimit"/, /"heartbeat"/, /"workerId"/,
+    /"dispatchState"/, /"backlogEntry"/, /"eventLog"/,
+  ];
+
+  async function scanDir(dir, relBase) {
+    let entries;
+    try { entries = await realFs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const rel = path.join(relBase, entry.name);
+      if (entry.isDirectory()) {
+        await scanDir(full, rel);
+      } else if (entry.name.endsWith(".json") || entry.name.endsWith(".jsonl")) {
+        issues.push({ path: rel, reason: "non-markdown state file in wiki directory" });
+      }
+    }
+  }
+
+  await scanDir(wikiRoot, ".cpb/wiki");
+
+  try {
+    const content = await realFs.readFile(memoryFile, "utf8");
+    for (const pattern of machineStatePatterns) {
+      if (pattern.test(content)) {
+        issues.push({ path: ".cpb/memory.md", reason: `machine-state pattern ${pattern} found in project memory` });
+        break;
+      }
+    }
+  } catch {}
+
+  return issues;
+}
+
 export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null } = {}) {
   const realFs = fs || await import("node:fs/promises");
   const src = path.resolve(sourcePath);

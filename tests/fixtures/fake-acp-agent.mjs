@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import readline from "node:readline";
 
+const errorMode = process.env.FAKE_ACP_ERROR || null;
+const delayMs = Number(process.env.FAKE_ACP_DELAY_MS || 0);
+
 const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity,
@@ -10,9 +13,11 @@ const write = (message) => {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 let sessionId = "fake-session";
 
-rl.on("line", (line) => {
+rl.on("line", async (line) => {
   if (!line.trim()) return;
 
   const message = JSON.parse(line);
@@ -40,6 +45,15 @@ rl.on("line", (line) => {
   }
 
   if (message.method === "session/prompt") {
+    if (delayMs > 0) await sleep(delayMs);
+    if (errorMode) {
+      write({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32000, message: errorMode },
+      });
+      return;
+    }
     const prompt = message.params.prompt
       .filter((block) => block.type === "text")
       .map((block) => block.text)

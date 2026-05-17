@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
 use cpb_runtime::{
-    acquire_lease, append_event, compile_policy, get_job, get_rate_limit, hub_queue_dequeue,
-    hub_queue_enqueue, hub_queue_list, hub_queue_status, hub_queue_update, list_backlog,
-    list_jobs, list_registry_projects, push_backlog_issue, queue_claim, queue_complete,
-    queue_list, queue_push, read_events, read_lease, release_lease, renew_lease,
-    repair_event_file, set_rate_limit, upsert_registry_project,
+    acquire_lease, append_event, compile_policy, get_job, get_rate_limit,
+    get_registry_project, heartbeat_worker, hub_queue_dequeue, hub_queue_enqueue,
+    hub_queue_list, hub_queue_status, hub_queue_update, list_backlog, list_jobs,
+    list_registry_projects, push_backlog_issue, queue_claim, queue_complete, queue_list,
+    queue_push, read_events, read_lease, release_lease, renew_lease, repair_event_file,
+    set_rate_limit, update_registry_project, upsert_registry_project, worker_status,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -118,6 +119,34 @@ fn run() -> Result<()> {
             print_json(upsert_registry_project(&cpb_root(&options)?, &project)?)
         }
         ("registry", "list") => print_json(Value::Array(list_registry_projects(&cpb_root(&options)?)?)),
+        ("registry", "get") => print_json(get_registry_project(
+            &cpb_root(&options)?,
+            required(&options, "id")?,
+        )?),
+        ("registry", "update") => {
+            let patch: Value = serde_json::from_str(required(&options, "patch")?)?;
+            print_json(update_registry_project(
+                &cpb_root(&options)?,
+                required(&options, "id")?,
+                &patch,
+            )?)
+        }
+        ("heartbeat", "worker") => {
+            let worker_info: Value = serde_json::from_str(required(&options, "worker")?)?;
+            print_json(heartbeat_worker(
+                &cpb_root(&options)?,
+                required(&options, "id")?,
+                &worker_info,
+            )?)
+        }
+        ("worker", "status") => {
+            let project: Value = serde_json::from_str(required(&options, "project")?)?;
+            let ttl_ms: i64 = options
+                .get("ttl-ms")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(120_000);
+            print_json(worker_status(&project, ttl_ms))
+        }
         ("backlog", "push") => {
             let issue: Value = serde_json::from_str(required(&options, "issue")?)?;
             print_json(push_backlog_issue(

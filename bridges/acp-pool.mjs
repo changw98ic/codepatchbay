@@ -100,6 +100,7 @@ export class AcpPool {
     this.sessions = new Map();
     this.persistentClients = new Map();
     this.persistentChains = new Map();
+    this.lastRecycleReason = new Map();
     this.toolPolicyPromise = null;
     this._seq = 0;
     this.createdAt = Date.now();
@@ -162,6 +163,7 @@ export class AcpPool {
         sessionAgeMs: session?.startedAt ? Math.max(0, now - session.startedAt) : null,
         lastRecycleAt: session?.recycledAt || null,
         recycleReason: session?.recycleReason || null,
+        lastRecycleReason: this.lastRecycleReason.get(agent) || null,
         rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
         mode: this.runner ? "managed-reusable" : providerProcessReuse ? "persistent-provider-process" : "bounded-one-shot",
         transport: this.runner
@@ -326,6 +328,7 @@ export class AcpPool {
 
   async #recycleSession(agent, reason) {
     this.recycleCount.set(agent, (this.recycleCount.get(agent) || 0) + 1);
+    this.lastRecycleReason.set(agent, reason);
     await this.#closePersistentClient(agent);
     return this.#newSession(agent, reason, Date.now());
   }

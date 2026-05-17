@@ -43,6 +43,7 @@ function parseArgs(argv) {
     agent: process.env.CPB_MULTI_EVOLVE_AGENT || "codex",
     timeoutMs: Number(process.env.CPB_MULTI_EVOLVE_TIMEOUT_MS || 300_000),
     workflow: process.env.CPB_MULTI_EVOLVE_WORKFLOW || "standard",
+    maxDurationMs: Number(process.env.CPB_MULTI_EVOLVE_MAX_DURATION_MS || 0),
     localAcpPool: false,
     explicitDryRun: false,
   };
@@ -76,6 +77,7 @@ function parseArgs(argv) {
     else if (arg === "--agent") opts.agent = valueAfter(i++, arg);
     else if (arg === "--timeout-ms") opts.timeoutMs = Number(valueAfter(i++, arg));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, arg);
+    else if (arg === "--max-duration-ms") opts.maxDurationMs = Number(valueAfter(i++, arg));
     else if (arg === "--local-acp-pool") opts.localAcpPool = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
@@ -119,6 +121,7 @@ Options:
   --agent codex|claude
   --workflow standard|blocked
   --timeout-ms <n>    per-agent timeout (default: 300000)
+  --max-duration-ms <n> wall-clock duration limit for loop modes (0 = unlimited)
   --local-acp-pool    bypass Hub managed pool for isolated debugging`;
 }
 
@@ -407,11 +410,12 @@ export class MultiEvolveController {
   }
 
   async runContinuous(opts = {}) {
-    const { maxRounds = 0, intervalMs = 60_000, scan = false, execute = false } = opts;
+    const { maxRounds = 0, intervalMs = 60_000, scan = false, execute = false, maxDurationMs = 0 } = opts;
     this._stopRequested = false;
 
     await this.init(opts);
 
+    const startedAt = Date.now();
     let totalRounds = 0;
     let issuesExecuted = 0;
     let rateLimitedSkipped = 0;
@@ -419,6 +423,7 @@ export class MultiEvolveController {
 
     while (!this._stopRequested) {
       if (maxRounds > 0 && totalRounds >= maxRounds) break;
+      if (maxDurationMs > 0 && Date.now() - startedAt >= maxDurationMs) break;
 
       totalRounds++;
 
@@ -492,6 +497,7 @@ export class MultiEvolveController {
       rateLimitedSkipped,
       scanFailures,
       stopped: this._stopRequested,
+      durationMs: Date.now() - startedAt,
     };
   }
 
@@ -635,6 +641,7 @@ async function main() {
       intervalMs: opts.intervalMs,
       scan: opts.scan,
       execute,
+      maxDurationMs: opts.maxDurationMs,
       project: opts.project,
       agent: opts.agent,
       timeoutMs: opts.timeoutMs,

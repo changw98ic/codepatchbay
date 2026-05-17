@@ -166,6 +166,37 @@ export async function listRegistryProjects(hubRoot) {
   ]);
 }
 
+export async function getRegistryProject(hubRoot, id) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("registry", "get", hubRoot),
+    "--id", id,
+  ]);
+}
+
+export async function updateRegistryProject(hubRoot, id, patch) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("registry", "update", hubRoot),
+    "--id", id,
+    "--patch", JSON.stringify(patch),
+  ]);
+}
+
+export async function heartbeatWorker(hubRoot, id, workerInfo) {
+  return await runRuntime(hubRoot, [
+    ...baseArgs("heartbeat", "worker", hubRoot),
+    "--id", id,
+    "--worker", JSON.stringify(workerInfo),
+  ]);
+}
+
+export async function workerStatus(project, ttlMs = 120_000, cpbRoot = DEFAULT_CPB_INSTALL_ROOT) {
+  return await runRuntime(cpbRoot, [
+    ...baseArgs("worker", "status", cpbRoot),
+    "--project", JSON.stringify(project),
+    "--ttl-ms", String(ttlMs),
+  ]);
+}
+
 export async function pushBacklogIssue(projectRoot, project, issue) {
   return await runRuntime(projectRoot, [
     ...baseArgs("backlog", "push", projectRoot),

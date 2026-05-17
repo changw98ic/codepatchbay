@@ -90,13 +90,18 @@ export class ProjectWorker {
 
   async heartbeat() {
     if (!this.project) return;
-    await heartbeatWorker(this.hubRoot, this.project.id, {
-      workerId: this.workerId,
-      pid: process.pid,
-      status: "online",
-      capabilities: ["scan", "execute", "pipeline"],
-      claimTimeoutMs: this.claimTimeoutMs,
-    });
+    try {
+      await heartbeatWorker(this.hubRoot, this.project.id, {
+        workerId: this.workerId,
+        pid: process.pid,
+        status: "online",
+        capabilities: ["scan", "execute", "pipeline"],
+        claimTimeoutMs: this.claimTimeoutMs,
+      });
+    } catch {
+      // Transient heartbeat failure — worker continues, next heartbeat
+      // will refresh the registry.
+    }
   }
 
   startHeartbeat() {
@@ -242,8 +247,12 @@ export class ProjectWorker {
     if (!entry) return { idle: true };
 
     this._activeEntryId = entry.id;
-    const result = await this.executeEntry(entry);
-    this._activeEntryId = null;
+    let result;
+    try {
+      result = await this.executeEntry(entry);
+    } finally {
+      this._activeEntryId = null;
+    }
     const finalStatus = result.ok ? "completed" : "failed";
     await updateEntry(this.hubRoot, entry.id, { status: finalStatus }).catch(() => {});
 
@@ -262,8 +271,13 @@ export class ProjectWorker {
       }
 
       while (!this._stopRequested) {
-        const result = await this.poll();
-        if (result.idle) {
+        try {
+          const result = await this.poll();
+          if (result.idle) {
+            await new Promise((resolve) => setTimeout(resolve, this.pollMs));
+          }
+        } catch (err) {
+          process.stderr.write(`[project-worker] poll error: ${err.message}\n`);
           await new Promise((resolve) => setTimeout(resolve, this.pollMs));
         }
       }

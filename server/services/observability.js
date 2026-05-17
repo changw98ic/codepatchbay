@@ -70,6 +70,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
       requestCount: state.requestCount ?? 0,
       errorCount: state.errorCount ?? 0,
       recycleCount: state.recycleCount ?? 0,
+      lastRecycleReason: state.lastRecycleReason || null,
       lastSpawnAt: state.lastSpawnAt || null,
       processAgeMs: spawnAge,
       rateLimitedUntil: state.rateLimitedUntil || null,

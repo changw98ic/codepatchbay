@@ -124,3 +124,98 @@ test("multi-evolve can opt into an isolated local ACP pool", async () => {
   assert.equal(controller.pool.hubRoot, hubRoot);
   assert.equal(controller.pool.status().pools.codex.mode, "bounded-one-shot");
 });
+
+test("multi-evolve dry-run shows all project queues across multiple projects", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-dry-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-dry-cpb-"));
+  const sourceA = await mkdtemp(path.join(tmpdir(), "cpb-multi-dry-a-"));
+  const sourceB = await mkdtemp(path.join(tmpdir(), "cpb-multi-dry-b-"));
+  const projA = await registerProject(hubRoot, { name: "proj-a", sourcePath: sourceA });
+  const projB = await registerProject(hubRoot, { name: "proj-b", sourcePath: sourceB });
+  await pushIssues(sourceA, projA.id, [{ id: "ia-1", priority: "P0", description: "critical fix a" }]);
+  await pushIssues(sourceB, projB.id, [{ id: "ib-1", priority: "P1", description: "minor fix b" }]);
+
+  const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+  const result = await controller.runOnce({ dryRun: true });
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.projects.length, 2);
+  const ids = result.projects.map((p) => p.id);
+  assert.ok(ids.includes(projA.id));
+  assert.ok(ids.includes(projB.id));
+
+  const projAStatus = result.projects.find((p) => p.id === projA.id);
+  const projBStatus = result.projects.find((p) => p.id === projB.id);
+  assert.equal(projAStatus.backlog.pending, 1);
+  assert.equal(projBStatus.backlog.pending, 1);
+
+  assert.equal(result.candidates.length, 2);
+  const candidateProjects = result.candidates.map((c) => c.project);
+  assert.ok(candidateProjects.includes(projA.id));
+  assert.ok(candidateProjects.includes(projB.id));
+
+  assert.equal(result.next.project, projA.id);
+  assert.equal(result.next.priority, "P0");
+});
+
+test("multi-evolve dry-run does not mutate project backlog or create history", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-nomut-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-nomut-cpb-"));
+  const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-multi-nomut-src-"));
+  const project = await registerProject(hubRoot, { name: "no-mutate", sourcePath });
+  await pushIssues(project.sourcePath, project.id, [
+    { id: "i-1", priority: "P1", description: "read only" },
+  ]);
+
+  const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+  const result = await controller.runOnce({ dryRun: true });
+
+  assert.equal(result.dryRun, true);
+  assert.ok(result.next);
+
+  const backlog = await loadBacklog(project.sourcePath, project.id);
+  assert.equal(backlog[0].status, "pending");
+
+  const { access } = await import("node:fs/promises");
+  const historyPath = path.join(project.sourcePath, "cpb-task", "evolve", project.id, "history.jsonl");
+  await assert.rejects(() => access(historyPath), /ENOENT/);
+});
+
+test("multi-evolve execute-once leaves traceable event history from Hub dispatch to completion", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-trace-hub-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-trace-cpb-"));
+  const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-multi-trace-src-"));
+  const project = await registerProject(hubRoot, { name: "trace-proj", sourcePath });
+  await pushIssues(project.sourcePath, project.id, [
+    { id: "i-trace", priority: "P1", description: "traceable issue" },
+  ]);
+
+  const controller = new MultiEvolveController(cpbRoot, {
+    hubRoot,
+    workerRunner: async () => ({ ok: true, code: 0, stdout: "ok", stderr: "" }),
+  });
+
+  const result = await controller.runOnce({ project: project.id });
+  assert.equal(result.result.ok, true);
+
+  const { readFile } = await import("node:fs/promises");
+  const historyPath = path.join(project.sourcePath, "cpb-task", "evolve", project.id, "history.jsonl");
+  const raw = await readFile(historyPath, "utf8");
+  const entries = raw.trim().split("\n").map((l) => JSON.parse(l));
+
+  const started = entries.find((e) => e.action === "execute_started");
+  const completed = entries.find((e) => e.action === "execute_completed");
+  assert.ok(started, "execute_started history entry missing");
+  assert.ok(completed, "execute_completed history entry missing");
+  assert.equal(started.issue, "traceable issue");
+  assert.equal(completed.issue, "traceable issue");
+  assert.equal(completed.exitCode, 0);
+
+  const queue = await listQueue(hubRoot);
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].status, "completed");
+  assert.equal(queue[0].metadata.syncedFrom, "backlog");
+
+  const backlog = await loadBacklog(project.sourcePath, project.id);
+  assert.equal(backlog[0].status, "completed");
+});

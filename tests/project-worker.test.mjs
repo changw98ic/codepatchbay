@@ -516,3 +516,216 @@ describe("ProjectWorker stale queue recovery", () => {
     assert.equal(claimed, null);
   });
 });
+
+describe("ProjectWorker crash and reconnect resilience", () => {
+  let hubRoot;
+  let sourceDir;
+  let projectId;
+
+  beforeEach(async () => {
+    hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
+    sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    projectId = project.id;
+  });
+
+  function makeWorker(opts = {}) {
+    return new ProjectWorker({
+      projectId,
+      hubRoot,
+      once: true,
+      runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
+      ...opts,
+    });
+  }
+
+  test("heartbeat suppresses transient errors and worker continues processing", async () => {
+    await enqueue(hubRoot, { projectId, description: "heartbeat-resilience", sourcePath: sourceDir });
+
+    let heartbeatAttempts = 0;
+    const worker = new ProjectWorker({
+      projectId,
+      hubRoot,
+      once: true,
+      heartbeatMs: 10,
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" }),
+    });
+
+    // Monkey-patch init to intercept heartbeat: after init, sabotage the hubRoot
+    // so the first heartbeat fails, then restore it.
+    const origInit = worker.init.bind(worker);
+    worker.init = async () => {
+      const result = await origInit();
+      // Temporarily corrupt hubRoot to force heartbeat failure
+      const goodHubRoot = worker.hubRoot;
+      worker.hubRoot = "/nonexistent/path/for/heartbeat/test";
+      // Schedule restore after a tick
+      setImmediate(() => { worker.hubRoot = goodHubRoot; });
+      return result;
+    };
+
+    // Should not throw despite heartbeat failure
+    const result = await worker.run();
+    assert.ok(result.entry);
+    assert.equal(result.result.ok, true);
+
+    // Worker should have processed the entry regardless
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+  });
+
+  test("poll cleans up _activeEntryId when executeEntry throws", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "throw-cleanup", sourcePath: sourceDir });
+
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.reject(new Error("pipeline exploded")),
+    });
+    await worker.init();
+
+    // poll should throw because executeEntry rejects
+    await assert.rejects(() => worker.poll(), /pipeline exploded/);
+
+    // _activeEntryId must be reset even after the throw
+    assert.equal(worker._activeEntryId, null);
+  });
+
+  test("continuous loop survives transient poll errors", async () => {
+    let pollCount = 0;
+    let pipelineCalls = 0;
+
+    const worker = new ProjectWorker({
+      projectId,
+      hubRoot,
+      once: false,
+      pollMs: 10,
+      heartbeatMs: 50,
+      runPipelineFn: () => {
+        pipelineCalls++;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+
+    // Enqueue one entry
+    await enqueue(hubRoot, { projectId, description: "resilient-task", sourcePath: sourceDir });
+
+    // Monkey-patch claimNext to throw on first call, succeed after
+    const origClaimNext = worker.claimNext.bind(worker);
+    let firstCall = true;
+    worker.claimNext = async () => {
+      pollCount++;
+      if (firstCall) {
+        firstCall = false;
+        throw new Error("transient queue read error");
+      }
+      const entry = await origClaimNext();
+      // After successful claim+execute, stop the loop
+      if (entry) worker.requestStop();
+      return entry;
+    };
+
+    await worker.init();
+    // run() should complete without throwing despite the first poll error
+    const result = await worker.run();
+    assert.equal(result.stopped, true);
+    assert.ok(pipelineCalls >= 1, "pipeline should have run after recovery");
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+  });
+
+  test("worker A crash does not affect project B queue or state", async () => {
+    // Set up two projects
+    const sourceDirB = await mkdtemp(path.join(tmpdir(), "cpb-pw-srcB-"));
+    const projectB = await registerProject(hubRoot, { name: "proj-b", sourcePath: sourceDirB });
+
+    // Both projects have pending entries
+    const entryA = await enqueue(hubRoot, { projectId, description: "proj-a-task", sourcePath: sourceDir });
+    const entryB = await enqueue(hubRoot, { projectId: projectB.id, description: "proj-b-task", sourcePath: sourceDirB });
+
+    // Worker A claims and "crashes" mid-execution
+    const workerA = makeWorker({ workerId: "worker-a-crash" });
+    await workerA.init();
+    await workerA.heartbeat();
+    const claimed = await workerA.claimNext();
+    assert.ok(claimed);
+    assert.equal(claimed.id, entryA.id);
+
+    // Simulate crash: leave entry in_progress, don't release or complete
+    // (worker just stops without cleanup)
+
+    // Worker B should see project B's entry untouched
+    const workerB = new ProjectWorker({
+      projectId: projectB.id,
+      hubRoot,
+      once: true,
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" }),
+    });
+    await workerB.init();
+    await workerB.heartbeat();
+    const result = await workerB.run();
+
+    assert.ok(result.entry);
+    assert.equal(result.entry.id, entryB.id);
+    assert.equal(result.result.ok, true);
+
+    // Project A's entry should still be in_progress (claimed by dead worker A)
+    const entriesA = await listQueue(hubRoot, { projectId, status: "in_progress" });
+    assert.equal(entriesA.length, 1);
+    assert.equal(entriesA[0].claimedBy, "worker-a-crash");
+
+    // Project B's entry should be completed
+    const entriesB = await listQueue(hubRoot, { projectId: projectB.id });
+    assert.equal(entriesB[0].status, "completed");
+
+    // Project A worker should show stale/offline, project B should show online
+    const projA = await getProject(hubRoot, projectId);
+    const projB = await getProject(hubRoot, projectB.id);
+    assert.equal(projA.worker.workerId, "worker-a-crash");
+    assert.equal(projB.worker.workerId.startsWith("worker-"), true);
+  });
+
+  test("full crash-reconnect lifecycle: crash → recover → re-claim → complete", async () => {
+    const queued = await enqueue(hubRoot, { projectId, description: "lifecycle-task", sourcePath: sourceDir });
+
+    // Phase 1: Worker A starts, claims, heartbeat, then "crashes" mid-execution
+    const workerA = makeWorker({ workerId: "lifecycle-a", claimTimeoutMs: 1_000 });
+    await workerA.init();
+    await workerA.heartbeat();
+    const claimed = await workerA.claimNext();
+    assert.ok(claimed);
+    assert.equal(claimed.status, "in_progress");
+
+    // Simulate crash: worker A stops without cleanup
+    // (no releaseOwnEntries, no final status update)
+
+    // Phase 2: Make the claim old enough to be stale
+    const { updateEntry } = await import("../server/services/hub-queue.js");
+    await updateEntry(hubRoot, queued.id, {
+      claimedAt: new Date(Date.now() - 5_000).toISOString(),
+    });
+
+    // Phase 3: Worker B starts with short timeout, recovers stale entry, reclaims
+    const workerB = makeWorker({ workerId: "lifecycle-b", claimTimeoutMs: 1_000 });
+    await workerB.init();
+    await workerB.heartbeat();
+
+    const recovered = await workerB.recoverStaleEntries();
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].id, queued.id);
+    assert.equal(recovered[0].action, "reset");
+
+    // Entry should be back to pending
+    const afterRecover = await listQueue(hubRoot, { projectId });
+    assert.equal(afterRecover[0].status, "pending");
+    assert.equal(afterRecover[0].claimedBy, null);
+
+    // Phase 4: Worker B claims and completes
+    const result = await workerB.run();
+    assert.ok(result.entry);
+    assert.equal(result.entry.id, queued.id);
+    assert.equal(result.result.ok, true);
+
+    const final = await listQueue(hubRoot, { projectId });
+    assert.equal(final[0].status, "completed");
+  });
+});
