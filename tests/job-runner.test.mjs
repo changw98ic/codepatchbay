@@ -1,12 +1,22 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readLease } from "../server/services/lease-manager.js";
 import { spawnFile } from "./helpers/spawn-file.mjs";
 
 const runner = path.resolve("bridges/job-runner.mjs");
+
+async function waitFor(predicate, { timeoutMs = 2_000 } = {}) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("timed out waiting for condition");
+}
 
 async function readJobEvents(root, project = "demo", jobId = "job-1") {
   const eventFile = path.join(root, "cpb-task", "events", project, `${jobId}.jsonl`);
@@ -137,4 +147,64 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
     () => readFile(path.join(root, "cpb-task", "events", "demo", "job-4.jsonl"), "utf8"),
     { code: "ENOENT" }
   );
+}
+
+{
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-job-runner-lease-lost-"));
+  const child = spawn(process.execPath, [
+    runner,
+    "--cpb-root",
+    root,
+    "--project",
+    "demo",
+    "--job-id",
+    "job-5",
+    "--phase",
+    "execute",
+    "--script",
+    "node",
+    "--",
+    "-e",
+    "setTimeout(() => { console.log('should not finish'); }, 1000)",
+  ], {
+    cwd: path.resolve("."),
+    env: {
+      ...process.env,
+      CPB_LEASE_TTL_MS: "300",
+      CPB_LEASE_RENEW_INTERVAL_MS: "50",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+  const leasePath = path.join(root, "cpb-task", "leases", "lease-job-5-execute.json");
+  await waitFor(async () => {
+    try {
+      await readFile(leasePath, "utf8");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  const stolen = JSON.parse(await readFile(leasePath, "utf8"));
+  await writeFile(
+    leasePath,
+    `${JSON.stringify({ ...stolen, ownerToken: "stolen-owner-token" }, null, 2)}\n`,
+    "utf8",
+  );
+
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  assert.notEqual(code, 0);
+  assert.doesNotMatch(stdout, /should not finish/);
+  assert.match(stderr, /lease ownership lost|lease owner mismatch/);
+
+  const events = await readJobEvents(root, "demo", "job-5");
+  const failed = events.find(e => e.type === "phase_failed");
+  assert.ok(failed);
+  assert.match(failed.error, /lease ownership lost|lease owner mismatch/);
 }

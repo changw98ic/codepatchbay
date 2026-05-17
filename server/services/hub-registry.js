@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
 
 const REGISTRY_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+const REGISTRY_LOCK_TTL_MS = 30_000;
 
 export function resolveHubRoot(cpbRoot = process.cwd()) {
   if (process.env.CPB_HUB_ROOT) return path.resolve(process.env.CPB_HUB_ROOT);
@@ -50,6 +51,60 @@ async function writeAtomic(filePath, content) {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
+}
+
+async function registryLockIsStale(lockDir) {
+  const now = Date.now();
+  try {
+    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+    const lock = JSON.parse(raw);
+    const acquiredAt = new Date(lock.acquiredAt).getTime();
+    return Number.isNaN(acquiredAt) || now - acquiredAt >= REGISTRY_LOCK_TTL_MS;
+  } catch {
+    try {
+      const info = await stat(lockDir);
+      return now - info.mtimeMs >= REGISTRY_LOCK_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function withRegistryLock(hubRoot, callback) {
+  const file = registryPath(hubRoot);
+  const lockDir = `${file}.lock`;
+  await mkdir(path.dirname(file), { recursive: true });
+
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(
+        path.join(lockDir, "lock.json"),
+        `${JSON.stringify({ acquiredAt: nowIso(), ownerPid: process.pid }, null, 2)}\n`,
+        "utf8",
+      );
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      if (await registryLockIsStale(lockDir)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (!acquired) {
+    throw new Error(`registry lock busy: ${path.basename(file)}`);
+  }
+
+  try {
+    return await callback();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
 }
 
 async function canonicalSourcePath(sourcePath) {
@@ -117,31 +172,33 @@ function resolveProjectId(registry, preferredId, sourcePath) {
 
 export async function registerProject(hubRoot, input = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
-  const registry = await loadRegistry(hubRoot);
-  const id = resolveProjectId(registry, input.id || input.name, sourcePath);
-  const existing = registry.projects[id] || {};
-  const timestamp = nowIso();
-  const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
+  return await withRegistryLock(hubRoot, async () => {
+    const registry = await loadRegistry(hubRoot);
+    const id = resolveProjectId(registry, input.id || input.name, sourcePath);
+    const existing = registry.projects[id] || {};
+    const timestamp = nowIso();
+    const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
 
-  const project = {
-    ...existing,
-    id,
-    name: input.name || existing.name || id,
-    sourcePath,
-    projectRoot,
-    enabled: input.enabled ?? existing.enabled ?? true,
-    weight: Number.isFinite(Number(input.weight)) ? Number(input.weight) : existing.weight ?? 1,
-    createdAt: existing.createdAt || timestamp,
-    updatedAt: timestamp,
-    metadata: {
-      ...(existing.metadata || {}),
-      ...(input.metadata || {}),
-    },
-  };
+    const project = {
+      ...existing,
+      id,
+      name: input.name || existing.name || id,
+      sourcePath,
+      projectRoot,
+      enabled: input.enabled ?? existing.enabled ?? true,
+      weight: Number.isFinite(Number(input.weight)) ? Number(input.weight) : existing.weight ?? 1,
+      createdAt: existing.createdAt || timestamp,
+      updatedAt: timestamp,
+      metadata: {
+        ...(existing.metadata || {}),
+        ...(input.metadata || {}),
+      },
+    };
 
-  registry.projects[id] = project;
-  await saveRegistry(hubRoot, registry);
-  return project;
+    registry.projects[id] = project;
+    await saveRegistry(hubRoot, registry);
+    return project;
+  });
 }
 
 export async function listProjects(hubRoot, { enabledOnly = false } = {}) {
@@ -158,20 +215,22 @@ export async function getProject(hubRoot, id) {
 
 export async function updateProject(hubRoot, id, patch = {}) {
   if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
-  const registry = await loadRegistry(hubRoot);
-  const existing = registry.projects[id];
-  if (!existing) return null;
-  const updated = {
-    ...existing,
-    ...patch,
-    id,
-    sourcePath: existing.sourcePath,
-    projectRoot: patch.projectRoot ? path.resolve(patch.projectRoot) : existing.projectRoot,
-    updatedAt: nowIso(),
-  };
-  registry.projects[id] = updated;
-  await saveRegistry(hubRoot, registry);
-  return updated;
+  return await withRegistryLock(hubRoot, async () => {
+    const registry = await loadRegistry(hubRoot);
+    const existing = registry.projects[id];
+    if (!existing) return null;
+    const updated = {
+      ...existing,
+      ...patch,
+      id,
+      sourcePath: existing.sourcePath,
+      projectRoot: patch.projectRoot ? path.resolve(patch.projectRoot) : existing.projectRoot,
+      updatedAt: nowIso(),
+    };
+    registry.projects[id] = updated;
+    await saveRegistry(hubRoot, registry);
+    return updated;
+  });
 }
 
 const DEFAULT_WORKER_TTL = 120_000;

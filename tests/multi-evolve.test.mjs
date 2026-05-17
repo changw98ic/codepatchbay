@@ -41,3 +41,12 @@ test("multi-evolve execute-once marks failed execution and removes it from pendi
   assert.equal(backlog[0].status, "failed");
   assert.equal(backlog.filter((issue) => issue.status === "pending").length, 0);
 });
+
+test("multi-evolve default ACP pool uses the controller Hub root", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-hub-pool-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-cpb-pool-"));
+
+  const controller = new MultiEvolveController(cpbRoot, { hubRoot });
+
+  assert.equal(controller.pool.hubRoot, hubRoot);
+});

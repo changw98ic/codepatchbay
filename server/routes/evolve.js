@@ -186,15 +186,16 @@ export async function evolveRoutes(fastify, opts) {
       await saveState(req.cpbRoot, state);
 
       child.on("error", (err) => {
-        if (activeProcess === child) activeProcess = null;
         (async () => {
           const s = await loadState(req.cpbRoot);
           if (s.status === "starting") {
             s.status = "failed";
             await saveState(req.cpbRoot, s);
           }
+          if (activeProcess === child) activeProcess = null;
           process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
         })().catch((writeErr) => {
+          if (activeProcess === child) activeProcess = null;
           process.stderr.write(`[self-evolve] failed to record spawn error: ${writeErr.message}\n`);
         });
       });
@@ -206,7 +207,6 @@ export async function evolveRoutes(fastify, opts) {
         process.stderr.write(`[self-evolve] ${chunk}`);
       });
       child.on("exit", (code) => {
-        if (activeProcess === child) activeProcess = null;
         if (code !== 0) {
           (async () => {
             const s = await loadState(req.cpbRoot);
@@ -214,9 +214,13 @@ export async function evolveRoutes(fastify, opts) {
               s.status = "failed";
               await saveState(req.cpbRoot, s);
             }
+            if (activeProcess === child) activeProcess = null;
           })().catch((err) => {
+            if (activeProcess === child) activeProcess = null;
             process.stderr.write(`[self-evolve] failed to record exit state: ${err.message}\n`);
           });
+        } else if (activeProcess === child) {
+          activeProcess = null;
         }
       });
 

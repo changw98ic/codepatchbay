@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/runtime-events.js";
+import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import {
   completeJob,
   completePhase,
@@ -159,27 +160,65 @@ function ts() {
 
 // ─── Run a bridge script as child process ───
 
-function runCommand(command, commandArgs, cwd) {
+function killChildProcess(proc) {
+  try {
+    if (proc.detached && process.platform !== "win32") {
+      process.kill(-proc.pid, "SIGTERM");
+    } else {
+      proc.kill("SIGTERM");
+    }
+  } catch {
+    try { proc.kill("SIGTERM"); } catch {}
+  }
+  setTimeout(() => {
+    try {
+      if (proc.detached && process.platform !== "win32") {
+        process.kill(-proc.pid, "SIGKILL");
+      } else {
+        proc.kill("SIGKILL");
+      }
+    } catch {
+      try { proc.kill("SIGKILL"); } catch {}
+    }
+  }, 2_000).unref?.();
+}
+
+function runCommand(command, commandArgs, cwd, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
     const stdoutChunks = [];
+    const detached = Boolean(options.signal) && process.platform !== "win32";
 
     function finish(result) {
       if (settled) return;
       settled = true;
+      if (options.signal && proc) {
+        options.signal.removeEventListener("abort", onAbort);
+      }
       resolve(result);
     }
 
     let proc;
+    const onAbort = () => {
+      if (!settled && proc) {
+        killChildProcess(proc);
+      }
+    };
     try {
       proc = spawn(command, commandArgs, {
         cwd,
         env: process.env,
+        detached,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
       finish({ exitCode: 1, stdout: "", error: err });
       return;
+    }
+    proc.detached = detached;
+    if (options.signal) {
+      if (options.signal.aborted) onAbort();
+      else options.signal.addEventListener("abort", onAbort, { once: true });
     }
 
     proc.stdout.on("data", (chunk) => {
@@ -202,8 +241,8 @@ function runCommand(command, commandArgs, cwd) {
   });
 }
 
-function runBridge(script, scriptArgs, cwd) {
-  return runCommand("bash", [script, ...scriptArgs], cwd);
+function runBridge(script, scriptArgs, cwd, options = {}) {
+  return runCommand("bash", [script, ...scriptArgs], cwd, options);
 }
 
 function combineChunks(chunks) {
@@ -228,6 +267,33 @@ async function readJsonObject(filePath) {
   }
 }
 
+function sourcePathRebindAllowed() {
+  return process.env.CPB_ALLOW_SOURCEPATH_REBIND === "1";
+}
+
+async function canonicalSourcePathOrThrow(sourcePath, label) {
+  try {
+    return await canonicalSourcePath(sourcePath);
+  } catch (err) {
+    throw new Error(`${label} sourcePath is invalid: ${err.message}`);
+  }
+}
+
+async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
+  if (!process.env.CPB_HUB_ROOT) return;
+
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const registered = await getProject(hubRoot, project);
+  if (!registered?.sourcePath) return;
+
+  const registeredSourcePath = await canonicalSourcePathOrThrow(registered.sourcePath, "registered project");
+  if (registeredSourcePath !== sourcePath) {
+    throw new Error(
+      `project/sourcePath mismatch: project '${project}' is registered to ${registeredSourcePath}, not ${sourcePath}`
+    );
+  }
+}
+
 export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
   if (!sourcePath) return;
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
@@ -235,6 +301,24 @@ export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   const projectJsonPath = path.join(wikiDir, "project.json");
   const existing = await readJsonObject(projectJsonPath);
+  if (existing.sourcePath) {
+    let existingSourcePath = null;
+    try {
+      existingSourcePath = await canonicalSourcePath(existing.sourcePath);
+    } catch (err) {
+      if (!sourcePathRebindAllowed()) {
+        throw new Error(
+          `project/sourcePath mismatch: existing project '${project}' sourcePath is invalid (${err.message}); set CPB_ALLOW_SOURCEPATH_REBIND=1 to rebind explicitly`
+        );
+      }
+    }
+    if (existingSourcePath && existingSourcePath !== sourcePath && !sourcePathRebindAllowed()) {
+      throw new Error(
+        `project/sourcePath mismatch: existing project '${project}' is bound to ${existingSourcePath}, not ${sourcePath}`
+      );
+    }
+  }
+  await assertHubProjectBoundary(cpbRoot, project, sourcePath);
   await writeFile(
     projectJsonPath,
     `${JSON.stringify({ ...existing, name: existing.name || project, sourcePath }, null, 2)}\n`,
@@ -263,6 +347,8 @@ async function runPhaseWithLease(cpbRoot, project, jobId, phase, script, scriptA
 
   let lease = null;
   let heartbeat = null;
+  let leaseLostError = null;
+  const abortController = new AbortController();
   let result = { exitCode: 1, stdout: "" };
 
   try {
@@ -272,12 +358,21 @@ async function runPhaseWithLease(cpbRoot, project, jobId, phase, script, scriptA
 
     heartbeat = setInterval(() => {
       renewLease(cpbRoot, leaseId, { ttlMs, ownerToken: lease.ownerToken }).catch((err) => {
+        leaseLostError = err;
         console.error(`failed to renew lease ${leaseId}: ${err.message}`);
+        abortController.abort();
       });
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    result = await runBridge(script, scriptArgs, cpbRoot);
+    result = await runBridge(script, scriptArgs, cpbRoot, { signal: abortController.signal });
+    if (leaseLostError) {
+      result = {
+        ...result,
+        exitCode: 1,
+        error: new Error(`lease ownership lost for ${leaseId}: ${leaseLostError.message}`),
+      };
+    }
   } catch (err) {
     result = { exitCode: 1, stdout: "", error: err };
   } finally {

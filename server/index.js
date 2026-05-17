@@ -30,7 +30,17 @@ try {
   process.exit(1);
 }
 
-const app = Fastify({ logger: { level: 'info' } });
+const app = Fastify({
+  logger: {
+    level: 'info',
+    redact: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      'req.headers["x-api-key"]',
+      'req.headers["x-auth-token"]',
+    ],
+  },
+});
 
 const corsOrigins = process.env.CPB_CORS_ORIGINS
   ? process.env.CPB_CORS_ORIGINS.split(',').map(s => s.trim())

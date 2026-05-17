@@ -102,29 +102,68 @@ function createActivityTracker(cpbRoot, project, jobId) {
   return { track };
 }
 
-function runChild(command, args, cwd, onOutput) {
+function killChildProcess(child) {
+  try {
+    if (child.detached && process.platform !== "win32") {
+      process.kill(-child.pid, "SIGTERM");
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {
+    try { child.kill("SIGTERM"); } catch {}
+  }
+  setTimeout(() => {
+    try {
+      if (child.detached && process.platform !== "win32") {
+        process.kill(-child.pid, "SIGKILL");
+      } else {
+        child.kill("SIGKILL");
+      }
+    } catch {
+      try { child.kill("SIGKILL"); } catch {}
+    }
+  }, 2_000).unref?.();
+}
+
+function runChild(command, args, cwd, onOutput, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
     let child;
+    const detached = Boolean(options.signal) && process.platform !== "win32";
 
     function finish(result) {
       if (settled) {
         return;
       }
       settled = true;
+      if (options.signal && child) {
+        options.signal.removeEventListener("abort", onAbort);
+      }
       resolve(result);
     }
+
+    const onAbort = () => {
+      if (!settled && child) {
+        killChildProcess(child);
+      }
+    };
 
     try {
       child = spawn(command, args, {
         cwd,
         env: process.env,
+        detached,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
       finish({ exitCode: 1, error: err });
       return;
+    }
+    child.detached = detached;
+    if (options.signal) {
+      if (options.signal.aborted) onAbort();
+      else options.signal.addEventListener("abort", onAbort, { once: true });
     }
 
     child.stdout.on("data", (chunk) => {
@@ -173,6 +212,8 @@ async function main() {
 
   let lease = null;
   let heartbeat = null;
+  let leaseLostError = null;
+  const abortController = new AbortController();
   let childResult = { exitCode: 1 };
 
   try {
@@ -196,7 +237,9 @@ async function main() {
         ttlMs,
         ownerToken: lease.ownerToken,
       }).catch((err) => {
+        leaseLostError = err;
         console.error(`failed to renew lease ${leaseId}: ${err.message}`);
+        abortController.abort();
       });
     }, renewEveryMs);
     heartbeat.unref?.();
@@ -205,7 +248,14 @@ async function main() {
     childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {
       const line = output.trim();
       if (line) activity.track(line);
-    });
+    }, { signal: abortController.signal });
+    if (leaseLostError) {
+      childResult = {
+        ...childResult,
+        exitCode: 1,
+        error: new Error(`lease ownership lost for ${leaseId}: ${leaseLostError.message}`),
+      };
+    }
   } catch (err) {
     childResult = { exitCode: 1, error: err };
   } finally {

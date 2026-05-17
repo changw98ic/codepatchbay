@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { AcpPool, RateLimitError } from "../bridges/acp-pool.mjs";
+import { AcpPool, RateLimitError, sanitizeProviderReason } from "../bridges/acp-pool.mjs";
 
 test("ACP pool defaults durable state to the global Hub root", async () => {
   const previousHubRoot = process.env.CPB_HUB_ROOT;
@@ -231,4 +231,27 @@ test("ACP pool recycleCount tracks 429-triggered spawns correctly", async () => 
   assert.equal(s.pools.codex.recycleCount, 1);
   assert.equal(s.pools.codex.errorCount, 1);
   assert.equal(s.pools.codex.requestCount, 0);
+});
+
+test("ACP pool redacts provider secrets before durable rate-limit writes", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-redact-"));
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { claude: 1 },
+    backoffMs: 60_000,
+    runner: async () => {
+      throw new Error("429 Authorization: Bearer sk-secret ANTHROPIC_AUTH_TOKEN=topsecret retry after 60 seconds");
+    },
+  });
+
+  await assert.rejects(() => pool.execute("claude", "a"), RateLimitError);
+
+  const limits = await pool.readDurableRateLimits();
+  assert.match(limits.claude.reason, /Bearer \[REDACTED\]/);
+  assert.match(limits.claude.reason, /ANTHROPIC_AUTH_TOKEN=\[REDACTED\]/);
+  assert.doesNotMatch(limits.claude.reason, /sk-secret|topsecret/);
+  assert.equal(
+    sanitizeProviderReason("api_key='abc123' token=def456"),
+    "api_key='[REDACTED]' token=[REDACTED]",
+  );
 });

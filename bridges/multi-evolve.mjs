@@ -131,7 +131,7 @@ export class MultiEvolveController {
   constructor(cpbRoot = CPB_ROOT, opts = {}) {
     this.cpbRoot = path.resolve(cpbRoot);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(cpbRoot));
-    this.pool = opts.pool || new AcpPool({ cpbRoot: this.cpbRoot });
+    this.pool = opts.pool || new AcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot });
     this.projects = [];
     this._stopRequested = false;
   }

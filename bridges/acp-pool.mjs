@@ -36,6 +36,16 @@ function parseResetTime(message, fallbackMs) {
   return Date.now() + fallbackMs;
 }
 
+export function sanitizeProviderReason(message) {
+  return String(message || "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
+    .replace(
+      /\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+/gi,
+      "$1$2$3[REDACTED]",
+    )
+    .slice(0, 500);
+}
+
 function normalizeLimits(limits = {}) {
   return {
     codex: Number(limits.codex || process.env.CPB_ACP_POOL_CODEX || 2),
@@ -144,7 +154,7 @@ export class AcpPool {
         await setRateLimit(this.hubRoot, {
           agent,
           untilTs: new Date(state.untilTs).toISOString(),
-          reason: state.message || "",
+          reason: sanitizeProviderReason(state.message),
         });
         return;
       } catch {
@@ -156,7 +166,7 @@ export class AcpPool {
     current[agent] = {
       agent,
       untilTs: new Date(state.untilTs).toISOString(),
-      reason: state.message || "",
+      reason: sanitizeProviderReason(state.message),
       updatedAt: new Date().toISOString(),
     };
     await mkdir(path.dirname(filePath), { recursive: true });

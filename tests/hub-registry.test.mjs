@@ -41,3 +41,17 @@ test("hub registry records worker heartbeat without changing sourcePath", async 
   assert.equal(updated.worker.workerId, "worker-1");
   assert.deepEqual(updated.worker.capabilities, ["scan", "execute"]);
 });
+
+test("hub registry preserves concurrent project registrations", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hub-concurrent-"));
+  const sourceA = await mkdtemp(path.join(tmpdir(), "cpb-project-concurrent-a-"));
+  const sourceB = await mkdtemp(path.join(tmpdir(), "cpb-project-concurrent-b-"));
+
+  await Promise.all([
+    registerProject(hubRoot, { name: "concurrent-a", sourcePath: sourceA }),
+    registerProject(hubRoot, { name: "concurrent-b", sourcePath: sourceB }),
+  ]);
+
+  const projects = await listProjects(hubRoot);
+  assert.deepEqual(projects.map((project) => project.id), ["concurrent-a", "concurrent-b"]);
+});
