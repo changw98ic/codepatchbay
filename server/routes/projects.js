@@ -3,6 +3,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
+import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project-loader.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -13,33 +14,34 @@ export async function projectRoutes(fastify, opts) {
   fastify.get('/projects', async (req) => {
     const wikiDir = path.join(req.cpbRoot, 'wiki/projects');
     const entries = await fs.readdir(wikiDir).catch(() => []);
-    const projects = [];
 
     const projectionStates = await listProjectPipelineStates(req.cpbRoot);
 
-    for (const name of entries) {
-      if (name === '_template' || name.startsWith('.')) continue;
-      const projDir = path.join(wikiDir, name);
-      const stat = await fs.stat(projDir).catch(() => null);
-      if (!stat?.isDirectory()) continue;
+    const projectData = await Promise.all(
+      entries
+        .filter(name => name !== '_template' && !name.startsWith('.'))
+        .map(async (name) => {
+          const projDir = path.join(wikiDir, name);
+          const stat = await fs.stat(projDir).catch(() => null);
+          if (!stat?.isDirectory()) return null;
 
-      // Read last 3 log lines
-      let recentLog = [];
-      try {
-        const log = await fs.readFile(path.join(projDir, 'log.md'), 'utf8');
-        recentLog = log.split('\n').filter(l => l.startsWith('- **')).slice(-3);
-      } catch {}
+          const [files, inboxEntries, outputEntries] = await Promise.all([
+            loadProjectFiles(projDir, { files: ['log'] }),
+            fs.readdir(path.join(projDir, 'inbox')).catch(() => []),
+            fs.readdir(path.join(projDir, 'outputs')).catch(() => []),
+          ]);
 
-      const pipelineState = projectionStates[name] ?? null;
+          return {
+            name,
+            recentLog: extractLogTail(files.log),
+            pipelineState: projectionStates[name] ?? null,
+            inbox: inboxEntries.filter(f => f.endsWith('.md')).length,
+            outputs: outputEntries.filter(f => f.endsWith('.md')).length,
+          };
+        })
+    );
 
-      // Count inbox/outputs
-      const inbox = (await fs.readdir(path.join(projDir, 'inbox')).catch(() => [])).filter(f => f.endsWith('.md')).length;
-      const outputs = (await fs.readdir(path.join(projDir, 'outputs')).catch(() => [])).filter(f => f.endsWith('.md')).length;
-
-      projects.push({ name, recentLog, pipelineState, inbox, outputs });
-    }
-
-    return projects;
+    return projectData.filter(Boolean);
   });
 
   // Project detail
@@ -49,15 +51,15 @@ export async function projectRoutes(fastify, opts) {
     const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
     await fs.access(projDir).catch(() => { throw fastify.httpErrors.notFound(`Project '${name}' not found`); });
 
-    const readFile = async (f) => { try { return await fs.readFile(path.join(projDir, f), 'utf8'); } catch { return null; } };
-    const context = await readFile('context.md');
-    const tasks = await readFile('tasks.md');
-    const decisions = await readFile('decisions.md');
-    const log = await readFile('log.md');
+    const fieldsParam = req.query.fields;
+    const requestedFiles = fieldsParam
+      ? fieldsParam.split(',').filter(f => ALL_FILES.includes(f))
+      : ALL_FILES;
 
+    const files = await loadProjectFiles(projDir, { files: requestedFiles });
     const pipelineState = await projectPipelineState(req.cpbRoot, name);
 
-    return { name, context, tasks, decisions, log, pipelineState };
+    return { name, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState };
   });
 
   // List inbox files
