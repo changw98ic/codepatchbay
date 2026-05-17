@@ -1,5 +1,5 @@
 import { readFile, rm } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import {
   loadState,
@@ -33,6 +33,18 @@ function isPidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSelfEvolveProcess(pid) {
+  try {
+    const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 2000,
+    }).trim();
+    return cmd.includes("self-evolve.mjs");
   } catch {
     return false;
   }
@@ -209,15 +221,42 @@ export async function evolveRoutes(fastify, opts) {
       return { stopped: false, reason: "not_running" };
     }
 
+    const logCtx = {
+      pid: runningState.pid,
+      source: runningState.source,
+      leaseStartedAt: runningState.startedAt,
+    };
+    let sigtermSent = false;
+
     if (activeProcess && runningState.pid === activeProcess.pid) {
       activeProcess.kill("SIGTERM");
       activeProcess = null;
+      sigtermSent = true;
     } else if (runningState.pid) {
-      try {
-        process.kill(runningState.pid, "SIGTERM");
-      } catch {
-        // ignore termination failures to keep endpoint idempotent
+      const pidAlive = isPidAlive(runningState.pid);
+
+      if (!pidAlive) {
+        req.log.warn(
+          { ...logCtx, validation: "stale_pid_dead" },
+          "evolve stop: stale lease — pid no longer exists, cleaning up lease only",
+        );
+      } else if (!isSelfEvolveProcess(runningState.pid)) {
+        req.log.warn(
+          { ...logCtx, validation: "pid_recycled" },
+          "evolve stop: pid recycled to non-self-evolve process, refusing SIGTERM",
+        );
+      } else {
+        try {
+          process.kill(runningState.pid, "SIGTERM");
+          sigtermSent = true;
+        } catch (err) {
+          req.log.warn(
+            { ...logCtx, validation: "sigterm_failed", error: err.message },
+            "evolve stop: SIGTERM failed on verified process",
+          );
+        }
       }
+
       await rm(path.join(req.cpbRoot, "cpb-task", "self-evolve", ".controller-lock"), { recursive: true, force: true });
     }
 
@@ -228,8 +267,9 @@ export async function evolveRoutes(fastify, opts) {
       action: "stop",
       source: "ui",
       targetPid: runningState.pid,
+      sigtermSent,
     });
 
-    return { stopped: true, pid: runningState.pid, source: runningState.source };
+    return { stopped: true, pid: runningState.pid, source: runningState.source, sigtermSent };
   });
 }
