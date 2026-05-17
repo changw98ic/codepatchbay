@@ -20,3 +20,6 @@
 - **2026-05-16T23:22:26Z** | codex | plan | Created plan-004 for: server/routes/review.js:stopReviewProcess/activeReviewProcesses — Declared but never populated or referenced anywhere else, so cancellation/cleanup paths are dead code and add maintenance overhead while obscuring intended review-process lifecycle behavior. | SUCCESS
 - **2026-05-16T23:24:59Z** | claude | execute | deliverable-002 from plan-004 | SUCCESS
 - **2026-05-16T23:25:23Z** | codex | verify | deliverable-002 | PASS
+- **2026-05-17T00:29:15Z** | codex | plan | Created plan-005 for: `server/services/review-session.js: sessionFile/getSession/updateSession` derive session paths from unvalidated `sessionId` values, so crafted IDs with separators can escape `reviewsDir` and target arbitrary JSON files outside the session store. | SUCCESS
+- **2026-05-17T00:32:38Z** | claude | execute | deliverable-003 from plan-005 | SUCCESS
+- **2026-05-17T00:33:06Z** | codex | verify | deliverable-003 | PASS

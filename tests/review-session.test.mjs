@@ -186,6 +186,51 @@ describe("withFileLock concurrency", () => {
   });
 });
 
+const TRAVERSAL_IDS = [
+  "../etc/passwd",
+  "..\\windows\\system32",
+  "../../secret",
+  "foo/../../../etc",
+  "foo\\bar",
+  "..%2F..%2Fetc",
+  "%2e%2e%2f",
+  "rev-20260101000000-abcdef\x00.json",
+  "rev-20260101000000\ncmd",
+  "",
+  123,
+  null,
+  undefined,
+  "rev-./../escape",
+];
+
+describe("path traversal prevention", () => {
+  it("getSession rejects traversal sessionIds", async () => {
+    for (const id of TRAVERSAL_IDS) {
+      await assert.rejects(
+        () => getSession(TMP, id),
+        /invalid sessionId/,
+      );
+    }
+  });
+
+  it("updateSession rejects traversal sessionIds", async () => {
+    for (const id of TRAVERSAL_IDS) {
+      await assert.rejects(
+        () => updateSession(TMP, id, { round: 1 }),
+        /invalid sessionId/,
+      );
+    }
+  });
+
+  it("valid IDs still work after validation", async () => {
+    const s = await createSession(TMP, { project: "p1", intent: "test" });
+    const loaded = await getSession(TMP, s.sessionId);
+    assert.equal(loaded.sessionId, s.sessionId);
+    const updated = await updateSession(TMP, s.sessionId, { round: 5 });
+    assert.equal(updated.round, 5);
+  });
+});
+
 describe("parseIssues", () => {
   it("extracts issues with severity", () => {
     const text = "[P0] Critical bug here\nSome details\n[P2] Medium issue\n[P3] Minor thing";

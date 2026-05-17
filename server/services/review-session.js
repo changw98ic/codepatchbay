@@ -42,12 +42,30 @@ const VALID_TRANSITIONS = {
   expired: [],
 };
 
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function validateSessionId(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw new Error("invalid sessionId: must be a non-empty string");
+  }
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`invalid sessionId: ${sessionId}`);
+  }
+  return sessionId;
+}
+
 function reviewsDir(cpbRoot) {
   return runtimeDataPath(cpbRoot, "reviews");
 }
 
 function sessionFile(cpbRoot, sessionId) {
-  return path.join(reviewsDir(cpbRoot), `${sessionId}.json`);
+  const safeId = validateSessionId(sessionId);
+  const resolved = path.resolve(reviewsDir(cpbRoot), `${safeId}.json`);
+  const base = path.resolve(reviewsDir(cpbRoot));
+  if (!resolved.startsWith(base + path.sep) && resolved !== path.join(base, `${safeId}.json`)) {
+    throw new Error("sessionId escapes reviews directory");
+  }
+  return resolved;
 }
 
 export function makeSessionId() {
@@ -78,6 +96,7 @@ export async function createSession(cpbRoot, { project, intent }) {
 }
 
 export async function getSession(cpbRoot, sessionId) {
+  validateSessionId(sessionId);
   try {
     const raw = await readFile(sessionFile(cpbRoot, sessionId), "utf8");
     return JSON.parse(raw);
@@ -108,11 +127,12 @@ export async function listSessions(cpbRoot) {
 }
 
 export async function updateSession(cpbRoot, sessionId, patch, options = {}) {
+  const safeId = validateSessionId(sessionId);
   const { skipTransitionCheck = false } = options;
 
   const dir = reviewsDir(cpbRoot);
   await mkdir(dir, { recursive: true });
-  const lockDir = path.join(dir, `.lock-${sessionId}`);
+  const lockDir = path.join(dir, `.lock-${safeId}`);
   return withFileLock(lockDir, async () => {
     const session = await getSession(cpbRoot, sessionId);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
