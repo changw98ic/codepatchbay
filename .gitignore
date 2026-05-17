@@ -37,3 +37,5 @@ pnpm-debug.log*
 .DS_Store
 .vscode/
 .idea/
+cpb-task/state/
+cpb-task/worktrees/
