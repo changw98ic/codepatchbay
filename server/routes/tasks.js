@@ -82,6 +82,8 @@ export async function taskRoutes(fastify, opts) {
   });
 }
 
+const MAX_TAIL_BYTES = 65536; // 64KB tail buffer
+
 export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = '', extraEnv = {}) {
   const scriptPath = path.join(cpbRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
@@ -94,22 +96,39 @@ export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId 
 
   registerTask(taskId, project, script, child.pid);
 
-  // Stream stdout/stderr to WebSocket
-  let output = '';
+  let totalBytes = 0;
+  let tailBuffer = '';
+  let outputTruncated = false;
+
+  function appendOutput(text) {
+    totalBytes += Buffer.byteLength(text, 'utf8');
+    tailBuffer += text;
+    if (tailBuffer.length > MAX_TAIL_BYTES) {
+      tailBuffer = tailBuffer.slice(-MAX_TAIL_BYTES);
+      outputTruncated = true;
+    }
+  }
+
+  // Stream stdout/stderr to WebSocket (incremental chunks, unchanged)
   child.stdout.on('data', (chunk) => {
     const text = chunk.toString();
-    output += text;
+    appendOutput(text);
     broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stdout' });
   });
   child.stderr.on('data', (chunk) => {
     const text = chunk.toString();
-    output += text;
+    appendOutput(text);
     broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stderr' });
   });
 
   child.on('exit', (code) => {
     unregisterTask(taskId);
-    broadcast({ type: 'task:complete', taskId, project, script, exitCode: code, output });
+    broadcast({
+      type: 'task:complete', taskId, project, script, exitCode: code,
+      outputTail: tailBuffer,
+      outputBytes: totalBytes,
+      outputTruncated,
+    });
     log?.info(`Task ${taskId} exited with code ${code}`);
   });
 
