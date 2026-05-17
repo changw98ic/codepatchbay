@@ -69,6 +69,20 @@ pub fn append_event(cpb_root: &Path, project: &str, job_id: &str, event: &Value)
     Ok(event.clone())
 }
 
+fn truncate_corrupt_jsonl_tail(file: &Path, raw: &str) -> Result<()> {
+    let valid_len = raw
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    OpenOptions::new()
+        .write(true)
+        .open(file)
+        .with_context(|| format!("open {}", file.display()))?
+        .set_len(valid_len as u64)
+        .with_context(|| format!("truncate {}", file.display()))?;
+    Ok(())
+}
+
 pub fn read_events(cpb_root: &Path, project: &str, job_id: &str) -> Result<Vec<Value>> {
     let file = event_file(cpb_root, project, job_id)?;
     if !file.exists() {
@@ -88,6 +102,7 @@ pub fn read_events(cpb_root: &Path, project: &str, job_id: &str) -> Result<Vec<V
             Ok(value) => value,
             Err(err) => {
                 if index == lines.len() - 1 && !has_trailing_newline {
+                    truncate_corrupt_jsonl_tail(&file, &raw)?;
                     break;
                 }
                 return Err(anyhow!(
@@ -908,6 +923,20 @@ mod tests {
         assert_eq!(job["phase"], "completed");
         assert_eq!(job["leaseId"], Value::Null);
         assert_eq!(job["lastActivityMessage"], "late");
+    }
+
+    #[test]
+    fn read_events_repairs_corrupt_trailing_jsonl_tail() {
+        let root = temp_root("event-repair");
+        let file = event_file(&root, "demo", "job-1").unwrap();
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let valid = json!({"type":"job_created","jobId":"job-1","project":"demo"});
+        fs::write(&file, format!("{}\n{{\"type\":\"phase_started\"", valid)).unwrap();
+
+        let events = read_events(&root, "demo", "job-1").unwrap();
+
+        assert_eq!(events, vec![valid.clone()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{}\n", valid));
     }
 
     #[test]

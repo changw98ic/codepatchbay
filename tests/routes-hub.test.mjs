@@ -10,6 +10,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { hubRoutes } from '../server/routes/hub.js';
+import {
+  getManagedAcpPool,
+  resetManagedAcpPoolsForTests,
+} from '../server/services/acp-pool-runtime.js';
 
 async function buildApp(cpbRoot, hubRoot) {
   const app = Fastify({ logger: false });
@@ -23,6 +27,14 @@ async function buildApp(cpbRoot, hubRoot) {
   await app.register(hubRoutes, { prefix: '/api' });
   await app.ready();
   return app;
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('condition was not met');
 }
 
 describe('Hub routes', () => {
@@ -40,6 +52,7 @@ describe('Hub routes', () => {
 
   afterEach(async () => {
     await app.close();
+    resetManagedAcpPoolsForTests();
     await rm(cpbRoot, { recursive: true, force: true });
     await rm(hubRoot, { recursive: true, force: true });
     await rm(projectRoot, { recursive: true, force: true });
@@ -90,7 +103,39 @@ describe('Hub routes', () => {
 
     const acp = await app.inject({ method: 'GET', url: '/api/hub/acp' });
     assert.equal(acp.statusCode, 200);
-    assert.equal(acp.json().pools.codex.mode, 'bounded-one-shot');
+    assert.equal(acp.json().pools.codex.mode, 'managed-shared');
     assert.equal(acp.json().rateLimits.codex.reason, '429');
+  });
+
+  it('returns live ACP pool counters from the shared Hub runtime', async () => {
+    const releases = [];
+    getManagedAcpPool({
+      cpbRoot,
+      hubRoot,
+      limits: { codex: 1 },
+      runner: async () => {
+        await new Promise((resolve) => {
+          releases.push(resolve);
+        });
+        return 'ok';
+      },
+    });
+    const pool = getManagedAcpPool({ cpbRoot, hubRoot });
+
+    const first = pool.execute('codex', 'first');
+    const second = pool.execute('codex', 'second');
+    await waitFor(() => pool.status().pools.codex.active === 1 && pool.status().pools.codex.queued === 1);
+
+    const acp = await app.inject({ method: 'GET', url: '/api/hub/acp' });
+    assert.equal(acp.statusCode, 200);
+    assert.equal(acp.json().pools.codex.active, 1);
+    assert.equal(acp.json().pools.codex.queued, 1);
+    assert.equal(acp.json().mode, 'managed-shared');
+
+    releases.shift()();
+    await first;
+    await waitFor(() => releases.length === 1);
+    releases.shift()();
+    await second;
   });
 });

@@ -10,7 +10,12 @@ import {
   workerStatus,
 } from "../services/hub-registry.js";
 import { knowledgePolicySummary } from "../services/knowledge-policy.js";
-import { AcpPool } from "../../bridges/acp-pool.mjs";
+import {
+  promoteKnowledge,
+  writePromotionCandidate,
+} from "../services/knowledge-promotion.js";
+import { getManagedAcpPool } from "../services/acp-pool-runtime.js";
+import { buildDiagnosticBundle } from "../services/observability.js";
 import {
   dequeue as dequeueEntry,
   enqueue,
@@ -29,7 +34,7 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/acp", async (req) => {
-    const pool = new AcpPool({ cpbRoot: req.cpbRoot, hubRoot: hubRoot(req) });
+    const pool = getManagedAcpPool({ cpbRoot: req.cpbRoot, hubRoot: hubRoot(req) });
     return {
       ...pool.status(),
       rateLimits: await pool.readDurableRateLimits(),
@@ -75,9 +80,28 @@ export async function hubRoutes(fastify) {
 
   fastify.get("/hub/knowledge-policy", async () => knowledgePolicySummary());
 
+  fastify.post("/hub/knowledge/candidates", async (req) => {
+    const candidate = await writePromotionCandidate(req.body || {});
+    return { created: true, candidate };
+  });
+
+  fastify.post("/hub/knowledge/promote", async (req) => {
+    const promotion = await promoteKnowledge({
+      hubRoot: hubRoot(req),
+      ...(req.body || {}),
+    });
+    return { promoted: true, promotion };
+  });
+
   fastify.get("/hub/roots", async (req) => ({
     hubRoot: hubRoot(req),
     cpbRoot: path.resolve(req.cpbRoot),
+  }));
+
+  fastify.get("/hub/diagnostics", async (req) => buildDiagnosticBundle({
+    cpbRoot: req.cpbRoot,
+    hubRoot: hubRoot(req),
+    acpPool: getManagedAcpPool({ cpbRoot: req.cpbRoot, hubRoot: hubRoot(req) }),
   }));
 
   fastify.get("/hub/queue/status", async (req) => queueStatus(hubRoot(req)));

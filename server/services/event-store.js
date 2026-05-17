@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
@@ -32,6 +32,12 @@ function serializeEvent(event) {
 
 function malformedEventError(file, lineNumber, reason) {
   return new Error(`${file} at line ${lineNumber}: malformed event: ${reason}`);
+}
+
+async function truncateCorruptJsonlTail(file, raw) {
+  const lastNewline = raw.lastIndexOf("\n");
+  const validPrefix = lastNewline >= 0 ? raw.slice(0, lastNewline + 1) : "";
+  await truncate(file, Buffer.byteLength(validPrefix, "utf8"));
 }
 
 export function eventFileFor(cpbRoot, project, jobId) {
@@ -130,6 +136,7 @@ export async function readEvents(cpbRoot, project, jobId) {
         event = JSON.parse(line);
       } catch (err) {
         if (lineNumber === lines[lines.length - 1].lineNumber && !hasTrailingNewline) {
+          await truncateCorruptJsonlTail(file, raw);
           break;
         }
         throw new Error(`malformed event JSON in ${file} at line ${lineNumber}: ${err.message}`);

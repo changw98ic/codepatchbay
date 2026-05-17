@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpPool, RateLimitError } from "./acp-pool.mjs";
+import { getManagedAcpPool } from "../server/services/acp-pool-runtime.js";
 import { listProjects, resolveHubRoot } from "../server/services/hub-registry.js";
 import {
   appendHistory,
@@ -11,7 +12,19 @@ import {
   loadBacklog,
   loadProjectState,
   pushIssues,
+  updateIssueStatus,
 } from "../server/services/multi-evolve-state.js";
+import {
+  evaluateGuardedRepair,
+  loadEvolvePolicy,
+  normalizeEvolvePolicy,
+} from "../server/services/evolve-policy.js";
+import {
+  assertRepairBudget,
+  createEvolveBudget,
+  recordRepairResult,
+  recordRepairStart,
+} from "../server/services/evolve-budget.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -22,12 +35,14 @@ function parseArgs(argv) {
     once: false,
     scan: false,
     continuous: false,
+    guardedRepair: false,
     intervalMs: Number(process.env.CPB_MULTI_EVOLVE_INTERVAL_MS || 60_000),
     maxRounds: Number(process.env.CPB_MULTI_EVOLVE_MAX_ROUNDS || 0),
     project: null,
     agent: process.env.CPB_MULTI_EVOLVE_AGENT || "codex",
     timeoutMs: Number(process.env.CPB_MULTI_EVOLVE_TIMEOUT_MS || 300_000),
     workflow: process.env.CPB_MULTI_EVOLVE_WORKFLOW || "standard",
+    localAcpPool: false,
     explicitDryRun: false,
   };
   const args = argv.slice(2);
@@ -47,12 +62,17 @@ function parseArgs(argv) {
     else if (arg === "--once") opts.once = true;
     else if (arg === "--scan") opts.scan = true;
     else if (arg === "--continuous") opts.continuous = true;
+    else if (arg === "--guarded-repair") {
+      opts.guardedRepair = true;
+      opts.once = true;
+    }
     else if (arg === "--interval") opts.intervalMs = Number(valueAfter(i++, arg));
     else if (arg === "--max-rounds") opts.maxRounds = Number(valueAfter(i++, arg));
     else if (arg === "--project") opts.project = valueAfter(i++, arg);
     else if (arg === "--agent") opts.agent = valueAfter(i++, arg);
     else if (arg === "--timeout-ms") opts.timeoutMs = Number(valueAfter(i++, arg));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, arg);
+    else if (arg === "--local-acp-pool") opts.localAcpPool = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -68,7 +88,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node bridges/multi-evolve.mjs [--dry-run] [--scan] [--once] [--continuous] [--interval <ms>] [--max-rounds <n>] [--project <id>] [--agent codex|claude] [--workflow standard|blocked]\n\nModes:\n  Default (no flags)  dry-run read of existing backlogs\n  --scan              refresh backlogs through the global ACP pool\n  --once              execute one issue then exit (defaults to live execution)\n  --continuous        run in a loop until max-rounds or signal\n                      defaults to dry-run; add --once or use with --workflow blocked for safe execution\n\nOptions:\n  --interval <ms>     sleep between continuous rounds (default: 60000)\n  --max-rounds <n>    stop after N rounds in continuous mode (default: 0 = unlimited)\n  --project <id>      restrict to a single project\n  --workflow standard|blocked  execution workflow`;
+  return `Usage: node bridges/multi-evolve.mjs [--dry-run] [--scan] [--once] [--guarded-repair] [--continuous] [--interval <ms>] [--max-rounds <n>] [--project <id>] [--agent codex|claude] [--workflow standard|blocked] [--local-acp-pool]\n\nModes:\n  Default (no flags)  dry-run read of existing backlogs\n  --scan              refresh backlogs through the global ACP pool\n  --once              execute one issue then exit (defaults to live execution)\n  --guarded-repair    execute one policy-allowed repair with allowlist, risk, cleanliness, and budget gates\n  --continuous        run in a loop until max-rounds or signal\n                      defaults to dry-run; add --once or use with --workflow blocked for safe execution\n\nOptions:\n  --interval <ms>     sleep between continuous rounds (default: 60000)\n  --max-rounds <n>    stop after N rounds in continuous mode (default: 0 = unlimited)\n  --project <id>      restrict to a single project\n  --workflow standard|blocked  execution workflow\n  --local-acp-pool    bypass Hub managed pool for isolated debugging`;
 }
 
 function scanPrompt(project) {
@@ -131,7 +151,9 @@ export class MultiEvolveController {
   constructor(cpbRoot = CPB_ROOT, opts = {}) {
     this.cpbRoot = path.resolve(cpbRoot);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(cpbRoot));
-    this.pool = opts.pool || new AcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot });
+    this.pool = opts.pool || (opts.localAcpPool
+      ? new AcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot })
+      : getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot }));
     this.projects = [];
     this._stopRequested = false;
   }
@@ -231,14 +253,55 @@ export class MultiEvolveController {
     });
   }
 
+  async resolveGuardedRepair(opts = {}) {
+    const policy = opts.policy
+      ? normalizeEvolvePolicy(opts.policy)
+      : await loadEvolvePolicy(this.hubRoot);
+    return {
+      policy,
+      budget: opts.budget || createEvolveBudget(policy),
+    };
+  }
+
+  async guardRepair(issue, { policy, budget } = {}) {
+    const project = this.projects.find((item) => item.id === issue.project || item.name === issue.project);
+    const budgetCheck = assertRepairBudget(budget);
+    if (!budgetCheck.allowed) {
+      return { allowed: false, reason: budgetCheck.reason, policy, budget };
+    }
+    const evaluation = await evaluateGuardedRepair({ project, issue, policy });
+    return { ...evaluation, budget };
+  }
+
+  async blockIssue(issue, reason) {
+    await updateIssueStatus(issue.sourcePath, issue.project, issue.id || issue.description, "blocked", {
+      blockedAt: new Date().toISOString(),
+      blockedReason: reason,
+    });
+    await appendHistory(issue.sourcePath, issue.project, {
+      action: "guarded_repair_blocked",
+      issue: issue.description,
+      reason,
+    });
+  }
+
   async runOnce(opts = {}) {
     await this.init(opts);
     if (opts.scan) await this.scanAll(opts);
+    const guarded = opts.guardedRepair ? await this.resolveGuardedRepair(opts) : null;
     const queue = new CrossProjectPriorityQueue(this.projects);
     const candidates = await queue.candidates();
     const next = candidates[0] || null;
     if (opts.dryRun || !next) {
       return { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
+    }
+    if (guarded) {
+      const guard = await this.guardRepair(next, guarded);
+      if (!guard.allowed) {
+        await this.blockIssue(next, guard.reason);
+        return { blocked: true, reason: guard.reason, next, budget: guard.budget };
+      }
+      recordRepairStart(guarded.budget);
     }
     const identity = next.id || next.description;
     const claimed = await claimIssue(next.sourcePath, next.project, identity);
@@ -248,6 +311,7 @@ export class MultiEvolveController {
     const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
     await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description });
     const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+    if (guarded) recordRepairResult(guarded.budget, result);
     await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
     await appendHistory(issue.sourcePath, issue.project, {
       action: result.ok ? "execute_completed" : "execute_failed",
@@ -255,7 +319,7 @@ export class MultiEvolveController {
       exitCode: result.code ?? null,
       error: result.error || null,
     });
-    return { next: issue, result };
+    return { next: issue, result, budget: guarded?.budget };
   }
 
   async runContinuous(opts = {}) {
@@ -263,10 +327,12 @@ export class MultiEvolveController {
     this._stopRequested = false;
 
     await this.init(opts);
+    const guarded = opts.guardedRepair ? await this.resolveGuardedRepair(opts) : null;
 
     let totalRounds = 0;
     let issuesExecuted = 0;
     let rateLimitedSkipped = 0;
+    let repairsBlocked = 0;
 
     while (!this._stopRequested) {
       if (maxRounds > 0 && totalRounds >= maxRounds) break;
@@ -310,6 +376,16 @@ export class MultiEvolveController {
         continue;
       }
 
+      if (guarded) {
+        const guard = await this.guardRepair(next, guarded);
+        if (!guard.allowed) {
+          repairsBlocked++;
+          await this.blockIssue(next, guard.reason);
+          continue;
+        }
+        recordRepairStart(guarded.budget);
+      }
+
       const identity = next.id || next.description;
       const claimed = await claimIssue(next.sourcePath, next.project, identity);
       if (!claimed) {
@@ -320,6 +396,7 @@ export class MultiEvolveController {
       await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description });
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+      if (guarded) recordRepairResult(guarded.budget, result);
       await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
       issuesExecuted++;
 
@@ -332,7 +409,9 @@ export class MultiEvolveController {
       dryRun: !execute,
       totalRounds,
       issuesExecuted,
+      repairsBlocked,
       rateLimitedSkipped,
+      stopReason: guarded?.budget.stopReason || null,
       stopped: this._stopRequested,
     };
   }
@@ -344,7 +423,7 @@ async function main() {
     console.log(usage());
     return 0;
   }
-  const controller = new MultiEvolveController(CPB_ROOT);
+  const controller = new MultiEvolveController(CPB_ROOT, { localAcpPool: opts.localAcpPool });
 
   if (opts.continuous) {
     const execute = opts.once;
@@ -364,6 +443,7 @@ async function main() {
       agent: opts.agent,
       timeoutMs: opts.timeoutMs,
       workflow: opts.workflow,
+      guardedRepair: opts.guardedRepair,
     });
     console.log(JSON.stringify(result, null, 2));
     return 0;

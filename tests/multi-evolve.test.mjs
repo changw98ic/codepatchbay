@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 
 import { MultiEvolveController } from "../bridges/multi-evolve.mjs";
 import { registerProject } from "../server/services/hub-registry.js";
 import { loadBacklog, pushIssues } from "../server/services/multi-evolve-state.js";
+import { resetManagedAcpPoolsForTests } from "../server/services/acp-pool-runtime.js";
+
+afterEach(() => {
+  resetManagedAcpPoolsForTests();
+});
 
 test("multi-evolve execute-once claims and completes a pending issue", async () => {
   const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-hub-"));
@@ -42,11 +47,22 @@ test("multi-evolve execute-once marks failed execution and removes it from pendi
   assert.equal(backlog.filter((issue) => issue.status === "pending").length, 0);
 });
 
-test("multi-evolve default ACP pool uses the controller Hub root", async () => {
+test("multi-evolve default ACP pool uses the controller Hub root through the managed runtime", async () => {
   const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-hub-pool-"));
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-cpb-pool-"));
 
   const controller = new MultiEvolveController(cpbRoot, { hubRoot });
 
   assert.equal(controller.pool.hubRoot, hubRoot);
+  assert.equal(controller.pool.status().mode, "managed-shared");
+});
+
+test("multi-evolve can opt into an isolated local ACP pool", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-hub-local-pool-"));
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-multi-cpb-local-pool-"));
+
+  const controller = new MultiEvolveController(cpbRoot, { hubRoot, localAcpPool: true });
+
+  assert.equal(controller.pool.hubRoot, hubRoot);
+  assert.equal(controller.pool.status().pools.codex.mode, "bounded-one-shot");
 });

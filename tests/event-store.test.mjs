@@ -144,6 +144,8 @@ await writeFile(
 const recoveredEvents = await readEvents(trailingPartialRoot, project, jobId);
 assert.equal(recoveredEvents.length, 1);
 assert.equal(recoveredEvents[0].type, "job_created");
+const repairedPartialRaw = await readFile(trailingPartialFile, "utf8");
+assert.equal(repairedPartialRaw, `${JSON.stringify(createdEvent)}\n`);
 
 const malformedFinalNewlineRoot = await mkdtemp(
   path.join(tmpdir(), "cpb-event-store-malformed-final-")
