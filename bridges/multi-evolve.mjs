@@ -15,16 +15,15 @@ import {
   updateIssueStatus,
 } from "../server/services/multi-evolve-state.js";
 import {
-  evaluateGuardedRepair,
-  loadEvolvePolicy,
-  normalizeEvolvePolicy,
-} from "../server/services/evolve-policy.js";
-import {
-  assertRepairBudget,
-  createEvolveBudget,
-  recordRepairResult,
-  recordRepairStart,
-} from "../server/services/evolve-budget.js";
+  dispatchEnabled,
+  guardSourcePath,
+  markDispatchCompleted,
+  markDispatchFailed,
+  markDispatchStarted,
+  recordDispatch,
+} from "../server/services/worker-dispatch.js";
+import { checkPolicy } from "../server/services/evolve-policy.js";
+import { closeBudget, consume, createBudget } from "../server/services/evolve-budget.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -37,7 +36,11 @@ function parseArgs(argv) {
     continuous: false,
     guardedRepair: false,
     intervalMs: Number(process.env.CPB_MULTI_EVOLVE_INTERVAL_MS || 60_000),
+    explicitInterval: false,
     maxRounds: Number(process.env.CPB_MULTI_EVOLVE_MAX_ROUNDS || 0),
+    maxIssues: Number(process.env.CPB_MULTI_EVOLVE_MAX_ISSUES || 0),
+    allowlist: [],
+    noCleanCheck: false,
     project: null,
     agent: process.env.CPB_MULTI_EVOLVE_AGENT || "codex",
     timeoutMs: Number(process.env.CPB_MULTI_EVOLVE_TIMEOUT_MS || 300_000),
@@ -62,12 +65,15 @@ function parseArgs(argv) {
     else if (arg === "--once") opts.once = true;
     else if (arg === "--scan") opts.scan = true;
     else if (arg === "--continuous") opts.continuous = true;
-    else if (arg === "--guarded-repair") {
-      opts.guardedRepair = true;
-      opts.once = true;
+    else if (arg === "--guarded-repair") opts.guardedRepair = true;
+    else if (arg === "--interval") {
+      opts.intervalMs = Number(valueAfter(i++, arg));
+      opts.explicitInterval = true;
     }
-    else if (arg === "--interval") opts.intervalMs = Number(valueAfter(i++, arg));
     else if (arg === "--max-rounds") opts.maxRounds = Number(valueAfter(i++, arg));
+    else if (arg === "--max-issues") opts.maxIssues = Number(valueAfter(i++, arg));
+    else if (arg === "--allowlist") opts.allowlist = valueAfter(i++, arg).split(",").map((s) => s.trim()).filter(Boolean);
+    else if (arg === "--no-clean-check") opts.noCleanCheck = true;
     else if (arg === "--project") opts.project = valueAfter(i++, arg);
     else if (arg === "--agent") opts.agent = valueAfter(i++, arg);
     else if (arg === "--timeout-ms") opts.timeoutMs = Number(valueAfter(i++, arg));
@@ -79,7 +85,12 @@ function parseArgs(argv) {
   if (!["standard", "blocked"].includes(opts.workflow)) {
     throw new Error(`invalid workflow: ${opts.workflow}`);
   }
-  if (!opts.once) {
+  if (opts.guardedRepair) {
+    opts.dryRun = false;
+    opts.once = false;
+    opts.continuous = false;
+    if (!opts.explicitInterval) opts.intervalMs = 0;
+  } else if (!opts.once) {
     opts.dryRun = true;
   } else if (!opts.explicitDryRun) {
     opts.dryRun = false;
@@ -88,7 +99,29 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node bridges/multi-evolve.mjs [--dry-run] [--scan] [--once] [--guarded-repair] [--continuous] [--interval <ms>] [--max-rounds <n>] [--project <id>] [--agent codex|claude] [--workflow standard|blocked] [--local-acp-pool]\n\nModes:\n  Default (no flags)  dry-run read of existing backlogs\n  --scan              refresh backlogs through the global ACP pool\n  --once              execute one issue then exit (defaults to live execution)\n  --guarded-repair    execute one policy-allowed repair with allowlist, risk, cleanliness, and budget gates\n  --continuous        run in a loop until max-rounds or signal\n                      defaults to dry-run; add --once or use with --workflow blocked for safe execution\n\nOptions:\n  --interval <ms>     sleep between continuous rounds (default: 60000)\n  --max-rounds <n>    stop after N rounds in continuous mode (default: 0 = unlimited)\n  --project <id>      restrict to a single project\n  --workflow standard|blocked  execution workflow\n  --local-acp-pool    bypass Hub managed pool for isolated debugging`;
+  return `Usage: node bridges/multi-evolve.mjs [mode] [options]
+
+Modes:
+  (default)           dry-run read of existing backlogs
+  --scan              refresh backlogs through the global ACP pool
+  --once              execute one issue then exit (defaults to live execution)
+  --continuous        run in a loop until max-rounds or signal
+                      defaults to dry-run; add --once for live execution
+  --guarded-repair    policy-gated loop: each issue must pass safety checks
+                      before execution. Always live (never dry-run).
+                      Stops on budget exhaustion or signal.
+
+Options:
+  --interval <ms>     sleep between rounds
+  --max-rounds <n>    stop after N rounds in loop modes (0 = unlimited)
+  --max-issues <n>    budget ceiling for guarded-repair (0 = unlimited)
+  --allowlist <a,b>   comma-separated project IDs allowed in guarded-repair
+  --no-clean-check    skip dirty-worktree check in guarded-repair
+  --project <id>      restrict to a single project
+  --agent codex|claude
+  --workflow standard|blocked
+  --timeout-ms <n>    per-agent timeout (default: 300000)
+  --local-acp-pool    bypass Hub managed pool for isolated debugging`;
 }
 
 function scanPrompt(project) {
@@ -224,16 +257,35 @@ export class MultiEvolveController {
     return new CrossProjectPriorityQueue(this.projects).dequeue();
   }
 
-  executeIssue(issue, { workflow = "standard" } = {}) {
-    return new Promise((resolve) => {
+  async executeIssue(issue, { workflow = "standard" } = {}) {
+    let dispatchId = null;
+    if (dispatchEnabled() && this.hubRoot) {
+      try {
+        await guardSourcePath(this.hubRoot, issue.project, issue.sourcePath);
+      } catch (err) {
+        return { ok: false, code: 1, error: `sourcePath guard: ${err.message}`, stdout: "", stderr: "" };
+      }
+      const dispatch = await recordDispatch(this.hubRoot, {
+        projectId: issue.project,
+        sourcePath: issue.sourcePath,
+      });
+      dispatchId = dispatch ? dispatch.dispatchId : null;
+      if (dispatchId) {
+        await markDispatchStarted(this.hubRoot, dispatchId).catch(() => {});
+      }
+    }
+
+    const result = await new Promise((resolve) => {
       const stream = process.env.CPB_MULTI_EVOLVE_STREAM === "1";
-      const child = spawn(process.execPath, [
+      const args = [
         path.join(this.cpbRoot, "bridges", "run-pipeline.mjs"),
         "--project", issue.project,
         "--task", issue.description,
         "--source-path", issue.sourcePath,
         "--workflow", workflow,
-      ], {
+      ];
+      if (dispatchId) args.push("--dispatch-id", dispatchId);
+      const child = spawn(process.execPath, args, {
         cwd: this.cpbRoot,
         env: { ...process.env, CPB_ROOT: this.cpbRoot, CPB_PROJECT_PATH_OVERRIDE: issue.sourcePath, CPB_ACP_CWD: issue.sourcePath },
         stdio: ["ignore", "pipe", "pipe"],
@@ -251,57 +303,23 @@ export class MultiEvolveController {
       child.on("close", (code) => resolve({ ok: code === 0, code, stdout, stderr }));
       child.on("error", (error) => resolve({ ok: false, code: 1, error: error.message, stdout, stderr }));
     });
-  }
 
-  async resolveGuardedRepair(opts = {}) {
-    const policy = opts.policy
-      ? normalizeEvolvePolicy(opts.policy)
-      : await loadEvolvePolicy(this.hubRoot);
-    return {
-      policy,
-      budget: opts.budget || createEvolveBudget(policy),
-    };
-  }
-
-  async guardRepair(issue, { policy, budget } = {}) {
-    const project = this.projects.find((item) => item.id === issue.project || item.name === issue.project);
-    const budgetCheck = assertRepairBudget(budget);
-    if (!budgetCheck.allowed) {
-      return { allowed: false, reason: budgetCheck.reason, policy, budget };
+    if (dispatchEnabled() && this.hubRoot && dispatchId) {
+      const fn = result.ok ? markDispatchCompleted : markDispatchFailed;
+      await fn(this.hubRoot, dispatchId).catch(() => {});
     }
-    const evaluation = await evaluateGuardedRepair({ project, issue, policy });
-    return { ...evaluation, budget };
-  }
 
-  async blockIssue(issue, reason) {
-    await updateIssueStatus(issue.sourcePath, issue.project, issue.id || issue.description, "blocked", {
-      blockedAt: new Date().toISOString(),
-      blockedReason: reason,
-    });
-    await appendHistory(issue.sourcePath, issue.project, {
-      action: "guarded_repair_blocked",
-      issue: issue.description,
-      reason,
-    });
+    return result;
   }
 
   async runOnce(opts = {}) {
     await this.init(opts);
     if (opts.scan) await this.scanAll(opts);
-    const guarded = opts.guardedRepair ? await this.resolveGuardedRepair(opts) : null;
     const queue = new CrossProjectPriorityQueue(this.projects);
     const candidates = await queue.candidates();
     const next = candidates[0] || null;
     if (opts.dryRun || !next) {
       return { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
-    }
-    if (guarded) {
-      const guard = await this.guardRepair(next, guarded);
-      if (!guard.allowed) {
-        await this.blockIssue(next, guard.reason);
-        return { blocked: true, reason: guard.reason, next, budget: guard.budget };
-      }
-      recordRepairStart(guarded.budget);
     }
     const identity = next.id || next.description;
     const claimed = await claimIssue(next.sourcePath, next.project, identity);
@@ -311,7 +329,6 @@ export class MultiEvolveController {
     const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
     await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description });
     const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
-    if (guarded) recordRepairResult(guarded.budget, result);
     await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
     await appendHistory(issue.sourcePath, issue.project, {
       action: result.ok ? "execute_completed" : "execute_failed",
@@ -319,7 +336,7 @@ export class MultiEvolveController {
       exitCode: result.code ?? null,
       error: result.error || null,
     });
-    return { next: issue, result, budget: guarded?.budget };
+    return { next: issue, result };
   }
 
   async runContinuous(opts = {}) {
@@ -327,12 +344,10 @@ export class MultiEvolveController {
     this._stopRequested = false;
 
     await this.init(opts);
-    const guarded = opts.guardedRepair ? await this.resolveGuardedRepair(opts) : null;
 
     let totalRounds = 0;
     let issuesExecuted = 0;
     let rateLimitedSkipped = 0;
-    let repairsBlocked = 0;
 
     while (!this._stopRequested) {
       if (maxRounds > 0 && totalRounds >= maxRounds) break;
@@ -376,16 +391,6 @@ export class MultiEvolveController {
         continue;
       }
 
-      if (guarded) {
-        const guard = await this.guardRepair(next, guarded);
-        if (!guard.allowed) {
-          repairsBlocked++;
-          await this.blockIssue(next, guard.reason);
-          continue;
-        }
-        recordRepairStart(guarded.budget);
-      }
-
       const identity = next.id || next.description;
       const claimed = await claimIssue(next.sourcePath, next.project, identity);
       if (!claimed) {
@@ -396,7 +401,6 @@ export class MultiEvolveController {
       await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description });
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
-      if (guarded) recordRepairResult(guarded.budget, result);
       await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
       issuesExecuted++;
 
@@ -409,9 +413,103 @@ export class MultiEvolveController {
       dryRun: !execute,
       totalRounds,
       issuesExecuted,
-      repairsBlocked,
       rateLimitedSkipped,
-      stopReason: guarded?.budget.stopReason || null,
+      stopped: this._stopRequested,
+    };
+  }
+
+  async runGuardedRepair(opts = {}) {
+    const {
+      maxRounds = 0,
+      intervalMs = 0,
+      scan = false,
+      allowlist = [],
+      noCleanCheck = false,
+      maxIssues = 0,
+    } = opts;
+
+    this._stopRequested = false;
+    await this.init(opts);
+
+    let budget = createBudget({ maxIssues });
+    let totalRounds = 0;
+    let issuesExecuted = 0;
+    let policyBlocked = 0;
+    const policyOpts = { allowlist, requireCleanWorktree: !noCleanCheck };
+
+    while (!this._stopRequested) {
+      if (maxRounds > 0 && totalRounds >= maxRounds) break;
+
+      if (scan) {
+        for (const project of this.projects) {
+          if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
+          try {
+            await this.scanProject(project, opts);
+          } catch {
+            // Rate-limited or transient scans should not stop a guarded repair pass.
+          }
+        }
+      }
+
+      const queue = new CrossProjectPriorityQueue(this.projects);
+      const next = await queue.dequeue();
+      if (!next) break;
+      totalRounds++;
+
+      const policy = checkPolicy(next, policyOpts);
+      if (!policy.allowed) {
+        policyBlocked++;
+        await updateIssueStatus(next.sourcePath, next.project, next.id || next.description, "policy_blocked", {
+          reasons: policy.reasons,
+        });
+        await appendHistory(next.sourcePath, next.project, {
+          action: "guarded_blocked",
+          round: totalRounds,
+          issue: next.description,
+          reasons: policy.reasons,
+        });
+        continue;
+      }
+
+      const budgetCheck = consume(budget);
+      if (!budgetCheck.ok) {
+        budget = closeBudget(budgetCheck.budget, "budget_exhausted");
+        await appendHistory(next.sourcePath, next.project, {
+          action: "guarded_budget_exhausted",
+          round: totalRounds,
+          budget,
+        });
+        break;
+      }
+      budget = budgetCheck.budget;
+
+      const identity = next.id || next.description;
+      const claimed = await claimIssue(next.sourcePath, next.project, identity);
+      if (!claimed) continue;
+
+      const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
+      await appendHistory(issue.sourcePath, issue.project, {
+        action: "guarded_execute",
+        round: totalRounds,
+        issue: issue.description,
+      });
+
+      const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+      await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+      issuesExecuted++;
+
+      if (intervalMs > 0 && !this._stopRequested && (maxRounds === 0 || totalRounds < maxRounds)) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    budget = closeBudget(budget, this._stopRequested ? "signal" : "backlog_empty");
+    return {
+      mode: "guarded_repair",
+      totalRounds,
+      issuesExecuted,
+      policyBlocked,
+      budget,
       stopped: this._stopRequested,
     };
   }
@@ -425,12 +523,33 @@ async function main() {
   }
   const controller = new MultiEvolveController(CPB_ROOT, { localAcpPool: opts.localAcpPool });
 
+  const onSignal = (sig) => {
+    process.stderr.write(`[multi-evolve] ${sig} received, stopping after current round\n`);
+    controller.requestStop();
+  };
+
+  if (opts.guardedRepair) {
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+
+    const result = await controller.runGuardedRepair({
+      maxRounds: opts.maxRounds,
+      intervalMs: opts.intervalMs,
+      scan: opts.scan,
+      allowlist: opts.allowlist,
+      noCleanCheck: opts.noCleanCheck,
+      maxIssues: opts.maxIssues,
+      project: opts.project,
+      agent: opts.agent,
+      timeoutMs: opts.timeoutMs,
+      workflow: opts.workflow,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
   if (opts.continuous) {
     const execute = opts.once;
-    const onSignal = (sig) => {
-      process.stderr.write(`[multi-evolve] ${sig} received, stopping after current round\n`);
-      controller.requestStop();
-    };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
 
@@ -443,7 +562,6 @@ async function main() {
       agent: opts.agent,
       timeoutMs: opts.timeoutMs,
       workflow: opts.workflow,
-      guardedRepair: opts.guardedRepair,
     });
     console.log(JSON.stringify(result, null, 2));
     return 0;

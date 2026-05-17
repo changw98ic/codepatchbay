@@ -67,6 +67,8 @@ export class AcpPool {
     this.errorCount = new Map();
     this.lastSpawnAt = new Map();
     this.recycleCount = new Map();
+    this.liveRequests = new Map();
+    this._seq = 0;
     this.createdAt = Date.now();
   }
 
@@ -82,34 +84,44 @@ export class AcpPool {
       }
     }
     this.pending.clear();
+    this.liveRequests.clear();
   }
 
   status() {
     const agents = [...new Set([...Object.keys(this.limits), ...this.active.keys(), ...this.pending.keys()])];
+    const allLive = [...this.liveRequests.entries()]
+      .map(([id, v]) => ({ requestId: id, startedAt: v.startedAt, promptSnippet: v.promptSnippet || null }));
     const pools = {};
     for (const agent of agents) {
       pools[agent] = {
         limit: this.limits[agent] || 1,
         active: this.active.get(agent) || 0,
         queued: this.pending.get(agent)?.length || 0,
+        activeRequests: allLive.filter((r) => r.requestId.startsWith(`${agent}-`)),
         requestCount: this.requestCount.get(agent) || 0,
         errorCount: this.errorCount.get(agent) || 0,
         recycleCount: this.recycleCount.get(agent) || 0,
         lastSpawnAt: this.lastSpawnAt.get(agent) || null,
         rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
         mode: "bounded-one-shot",
-        capabilities: ["rate-limit-backoff", "concurrency-bound", "durable-state"],
+        capabilities: ["rate-limit-backoff", "concurrency-bound", "durable-state", "live-requests"],
       };
     }
     return { createdAt: this.createdAt, pools };
+  }
+
+  _nextId(agent) {
+    return `${agent}-${Date.now()}-${++this._seq}`;
   }
 
   acquire(agent) {
     const limit = Math.max(1, this.limits[agent] || 1);
     const active = this.active.get(agent) || 0;
     if (active < limit) {
+      const requestId = this._nextId(agent);
       this.active.set(agent, active + 1);
-      return Promise.resolve({ agent, release: () => this.release(agent) });
+      this.liveRequests.set(requestId, { agent, startedAt: Date.now() });
+      return Promise.resolve({ agent, requestId, release: () => this.release(agent, requestId) });
     }
     return new Promise((resolve, reject) => {
       const queue = this.pending.get(agent) || [];
@@ -118,14 +130,17 @@ export class AcpPool {
     });
   }
 
-  release(agent) {
+  release(agent, requestId) {
     const active = Math.max(0, (this.active.get(agent) || 1) - 1);
     this.active.set(agent, active);
+    if (requestId) this.liveRequests.delete(requestId);
     const queue = this.pending.get(agent) || [];
     const next = queue.shift();
     if (!next) return;
+    const nextId = this._nextId(agent);
     this.active.set(agent, (this.active.get(agent) || 0) + 1);
-    next.resolve({ agent, release: () => this.release(agent) });
+    this.liveRequests.set(nextId, { agent, startedAt: Date.now() });
+    next.resolve({ agent, requestId: nextId, release: () => this.release(agent, nextId) });
   }
 
   rateLimitFile() {
@@ -208,6 +223,10 @@ export class AcpPool {
     }
     await this.assertNotRateLimited(agent);
     const session = await this.acquire(agent);
+    if (session.requestId) {
+      const entry = this.liveRequests.get(session.requestId);
+      if (entry) entry.promptSnippet = String(prompt).slice(0, 120);
+    }
     this.lastSpawnAt.set(agent, Date.now());
     this.recycleCount.set(agent, (this.recycleCount.get(agent) || 0) + 1);
     try {

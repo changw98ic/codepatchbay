@@ -1,3 +1,4 @@
+import { access, constants as fsConstants } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -221,4 +222,19 @@ export async function queueComplete(cpbRoot, project, id) {
     "--project", project,
     "--id", id,
   ]);
+}
+
+export async function getRuntimeBackend(cpbRoot) {
+  const useRust = shouldUseRustRuntime();
+  const bin = resolveRuntimeBin(cpbRoot);
+  let binExists = false;
+  try {
+    await access(bin, fsConstants.X_OK);
+    binExists = true;
+  } catch {}
+  return {
+    backend: useRust ? "rust" : "js",
+    bin,
+    binExists,
+  };
 }

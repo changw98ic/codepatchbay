@@ -140,6 +140,49 @@ body {
   color: var(--accent);
 }
 
+.hub-queue-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.hub-queue-summary > span:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hub-queue-summary em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.hub-queue-summary strong {
+  color: var(--error);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.hub-queue-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15,17,23,0.6);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.hub-queue-pill em {
+  font-style: normal;
+  font-size: 10px;
+}
+
+.hub-queue-pill .queue-pending { color: var(--text-dim); }
+.hub-queue-pill .queue-in_progress { color: var(--accent); }
+
 .hub-project-pill,
 .hub-acp-pill {
   display: inline-flex;

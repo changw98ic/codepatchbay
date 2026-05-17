@@ -132,6 +132,11 @@ test("ACP pool status exposes lifecycle metrics per agent", async () => {
   assert.ok(codex.capabilities.includes("rate-limit-backoff"));
   assert.ok(codex.capabilities.includes("concurrency-bound"));
   assert.ok(codex.capabilities.includes("durable-state"));
+  assert.ok(codex.capabilities.includes("live-requests"));
+
+  // activeRequests is empty when idle
+  assert.ok(Array.isArray(codex.activeRequests));
+  assert.equal(codex.activeRequests.length, 0);
 
   // mode
   assert.equal(codex.mode, "bounded-one-shot");
@@ -254,4 +259,63 @@ test("ACP pool redacts provider secrets before durable rate-limit writes", async
     sanitizeProviderReason("api_key='abc123' token=def456"),
     "api_key='[REDACTED]' token=[REDACTED]",
   );
+});
+
+test("ACP pool tracks active requests with live request IDs and prompt snippets", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-live-"));
+  let resolveRun;
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { codex: 1 },
+    runner: async () => new Promise((resolve) => { resolveRun = resolve; }),
+  });
+
+  const execPromise = pool.execute("codex", "test prompt content for visibility");
+  await new Promise((r) => setTimeout(r, 10));
+
+  const s = pool.status();
+  assert.equal(s.pools.codex.active, 1);
+  assert.equal(s.pools.codex.activeRequests.length, 1);
+  const req = s.pools.codex.activeRequests[0];
+  assert.ok(req.requestId.startsWith("codex-"));
+  assert.ok(Number.isFinite(req.startedAt));
+  assert.equal(req.promptSnippet, "test prompt content for visibility");
+  assert.ok(s.pools.codex.capabilities.includes("live-requests"));
+
+  resolveRun("ok");
+  await execPromise;
+
+  const after = pool.status();
+  assert.equal(after.pools.codex.active, 0);
+  assert.equal(after.pools.codex.activeRequests.length, 0);
+});
+
+test("ACP pool activeRequests reflects queued requests promoted on release", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-queue-live-"));
+  const resolvers = [];
+  const pool = new AcpPool({
+    hubRoot,
+    limits: { codex: 1 },
+    runner: async () => new Promise((resolve) => { resolvers.push(resolve); }),
+  });
+
+  const first = pool.execute("codex", "first");
+  const second = pool.execute("codex", "second");
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(pool.status().pools.codex.active, 1);
+  assert.equal(pool.status().pools.codex.queued, 1);
+
+  resolvers[0]("ok-1");
+  await first;
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(pool.status().pools.codex.active, 1);
+  assert.equal(pool.status().pools.codex.activeRequests.length, 1);
+
+  resolvers[1]("ok-2");
+  await second;
+
+  assert.equal(pool.status().pools.codex.active, 0);
+  assert.equal(pool.status().pools.codex.activeRequests.length, 0);
 });

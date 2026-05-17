@@ -82,3 +82,57 @@ export function knowledgePolicySummary() {
     forbiddenMarkdownState: [...RUNTIME_STATE_KINDS],
   };
 }
+
+export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null } = {}) {
+  const realFs = fs || await import("node:fs/promises");
+  const src = path.resolve(sourcePath);
+  const candidates = [];
+
+  const sessionBase = sessionId
+    ? path.join(src, "cpb-task", "sessions", sessionId)
+    : null;
+
+  if (sessionBase) {
+    const memFile = path.join(sessionBase, "memory.md");
+    try {
+      const content = await realFs.readFile(memFile, "utf8");
+      if (content.trim().length > 0) {
+        candidates.push({
+          from: memFile,
+          kind: "session-memory",
+          targetKind: "project-memory",
+          targetPath: path.join(src, ".cpb", "memory.md"),
+          reason: "session memory contains insights promotable to project memory",
+          size: content.length,
+        });
+      }
+    } catch {}
+  }
+
+  const sessionsDir = path.join(src, "cpb-task", "sessions");
+  try {
+    const entries = await realFs.readdir(sessionsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (sessionId && entry.name === sessionId) continue;
+      const memFile = path.join(sessionsDir, entry.name, "memory.md");
+      try {
+        const content = await realFs.readFile(memFile, "utf8");
+        if (content.trim().length > 0) {
+          candidates.push({
+            from: memFile,
+            kind: "session-memory",
+            targetKind: "project-memory",
+            targetPath: path.join(src, ".cpb", "memory.md"),
+            reason: `session ${entry.name} memory contains insights`,
+            session: entry.name,
+            size: content.length,
+          });
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // Ensure no machine-state candidates
+  return candidates.filter((c) => classifyKnowledgeKind(c.kind) !== "machine-state");
+}

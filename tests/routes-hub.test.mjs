@@ -10,31 +10,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { hubRoutes } from '../server/routes/hub.js';
-import {
-  getManagedAcpPool,
-  resetManagedAcpPoolsForTests,
-} from '../server/services/acp-pool-runtime.js';
+import { resetAllPoolRuntimes } from '../server/services/acp-pool-runtime.js';
+import { getHubRuntime, resetInstances as resetHubRuntimeInstances } from '../server/services/hub-runtime.js';
 
 async function buildApp(cpbRoot, hubRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
+  resetHubRuntimeInstances();
+  const hubRuntime = getHubRuntime(cpbRoot, hubRoot);
   app.addHook('onRequest', (req, _res, done) => {
     req.cpbRoot = cpbRoot;
     req.cpbHubRoot = hubRoot;
+    req.hubRuntime = hubRuntime;
     done();
   });
   await app.register(hubRoutes, { prefix: '/api' });
   await app.ready();
   return app;
-}
-
-async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('condition was not met');
 }
 
 describe('Hub routes', () => {
@@ -52,7 +45,7 @@ describe('Hub routes', () => {
 
   afterEach(async () => {
     await app.close();
-    resetManagedAcpPoolsForTests();
+    resetAllPoolRuntimes();
     await rm(cpbRoot, { recursive: true, force: true });
     await rm(hubRoot, { recursive: true, force: true });
     await rm(projectRoot, { recursive: true, force: true });
@@ -103,39 +96,94 @@ describe('Hub routes', () => {
 
     const acp = await app.inject({ method: 'GET', url: '/api/hub/acp' });
     assert.equal(acp.statusCode, 200);
-    assert.equal(acp.json().pools.codex.mode, 'managed-shared');
+    assert.equal(acp.json().pools.codex.mode, 'bounded-one-shot');
     assert.equal(acp.json().rateLimits.codex.reason, '429');
   });
 
-  it('returns live ACP pool counters from the shared Hub runtime', async () => {
-    const releases = [];
-    getManagedAcpPool({
-      cpbRoot,
-      hubRoot,
-      limits: { codex: 1 },
-      runner: async () => {
-        await new Promise((resolve) => {
-          releases.push(resolve);
-        });
-        return 'ok';
-      },
-    });
-    const pool = getManagedAcpPool({ cpbRoot, hubRoot });
+  it('shares the same pool instance across /api/hub/acp calls', async () => {
+    const first = await app.inject({ method: 'GET', url: '/api/hub/acp' });
+    const second = await app.inject({ method: 'GET', url: '/api/hub/acp' });
 
-    const first = pool.execute('codex', 'first');
-    const second = pool.execute('codex', 'second');
-    await waitFor(() => pool.status().pools.codex.active === 1 && pool.status().pools.codex.queued === 1);
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.equal(first.json().createdAt, second.json().createdAt);
+    assert.ok(first.json().pools.codex.capabilities.includes('live-requests'));
+    assert.ok(Array.isArray(first.json().pools.codex.activeRequests));
+  });
+
+  it('reflects pool singleton state changes through /api/hub/acp', async () => {
+    const { getPoolRuntime } = await import('../server/services/acp-pool-runtime.js');
+    const pool = getPoolRuntime(hubRoot, cpbRoot);
+
+    pool.requestCount.set('codex', 42);
+    pool.errorCount.set('codex', 3);
 
     const acp = await app.inject({ method: 'GET', url: '/api/hub/acp' });
-    assert.equal(acp.statusCode, 200);
-    assert.equal(acp.json().pools.codex.active, 1);
-    assert.equal(acp.json().pools.codex.queued, 1);
-    assert.equal(acp.json().mode, 'managed-shared');
+    assert.equal(acp.json().pools.codex.requestCount, 42);
+    assert.equal(acp.json().pools.codex.errorCount, 3);
+  });
 
-    releases.shift()();
-    await first;
-    await waitFor(() => releases.length === 1);
-    releases.shift()();
-    await second;
+  it('includes runtime metadata in /api/hub/status', async () => {
+    const status = await app.inject({ method: 'GET', url: '/api/hub/status' });
+    assert.equal(status.statusCode, 200);
+    const body = status.json();
+    assert.ok(body.runtime, 'response should contain runtime');
+    assert.equal(body.runtime.pid, process.pid);
+    assert.equal(body.runtime.version, '0.2.0');
+    assert.equal(body.runtime.health, 'alive');
+    assert.equal(body.runtime.runtime, 'node');
+    assert.ok(body.runtime.startedAt);
+    assert.ok(body.runtime.statePath);
+  });
+
+  it('returns diagnostics bundle without secrets', async () => {
+    await mkdir(path.join(hubRoot, 'providers'), { recursive: true });
+    await writeFile(
+      path.join(hubRoot, 'providers', 'rate-limits.json'),
+      JSON.stringify({
+        claude: {
+          agent: 'claude',
+          untilTs: '2026-05-17T12:00:00.000Z',
+          reason: 'api_key=sk-secret Bearer tok_hidden',
+        },
+      }),
+      'utf8',
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/diagnostics' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.ok(body.gatheredAt);
+    assert.ok(body.hub);
+    assert.ok(body.queue);
+    assert.ok(body.acp);
+    assert.ok(body.knowledgePolicy);
+    assert.ok(Array.isArray(body.recentJobs));
+
+    const reason = body.acp?.rateLimits?.claude?.reason || '';
+    assert.ok(!reason.includes('sk-secret'));
+    assert.ok(!reason.includes('tok_hidden'));
+  });
+
+  it('returns promotion candidates for projects with session memory', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: projectRoot, name: 'promo-project' },
+    });
+
+    const sessionDir = path.join(projectRoot, 'cpb-task', 'sessions', 'sess-001');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, 'memory.md'), 'useful insight', 'utf8');
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/knowledge/promotion-candidates' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.ok(Array.isArray(body.candidates));
+    const entry = body.candidates.find((c) => c.projectId === 'promo-project');
+    assert.ok(entry, 'should have promotion candidates for promo-project');
+    assert.equal(entry.candidates.length, 1);
+    assert.equal(entry.candidates[0].kind, 'session-memory');
+    assert.equal(entry.candidates[0].targetKind, 'project-memory');
   });
 });

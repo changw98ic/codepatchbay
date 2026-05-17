@@ -83,6 +83,43 @@ fn truncate_corrupt_jsonl_tail(file: &Path, raw: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn repair_event_file(cpb_root: &Path, project: &str, job_id: &str) -> Result<Value> {
+    let file = event_file(cpb_root, project, job_id)?;
+    if !file.exists() {
+        return Ok(json!({"repaired": false, "removedBytes": 0}));
+    }
+    let raw = fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
+    if raw.ends_with('\n') || raw.is_empty() {
+        return Ok(json!({"repaired": false, "removedBytes": 0}));
+    }
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let last_non_empty = lines.iter().rev().find(|l| !l.trim().is_empty());
+    match last_non_empty {
+        None => {
+            let removed = raw.len();
+            fs::write(&file, "").with_context(|| format!("repair {}", file.display()))?;
+            Ok(json!({"repaired": true, "removedBytes": removed}))
+        }
+        Some(line) => match serde_json::from_str::<Value>(line) {
+            Ok(_) => {
+                fs::write(&file, format!("{}\n", raw))
+                    .with_context(|| format!("repair {}", file.display()))?;
+                Ok(json!({"repaired": true, "removedBytes": 0, "addedNewline": true}))
+            }
+            Err(_) => {
+                let last_newline = raw.rfind('\n');
+                let fixed = match last_newline {
+                    None => String::new(),
+                    Some(pos) => raw[..=pos].to_string(),
+                };
+                let removed = raw.len() - fixed.len();
+                fs::write(&file, &fixed).with_context(|| format!("repair {}", file.display()))?;
+                Ok(json!({"repaired": true, "removedBytes": removed}))
+            }
+        },
+    }
+}
+
 pub fn read_events(cpb_root: &Path, project: &str, job_id: &str) -> Result<Vec<Value>> {
     let file = event_file(cpb_root, project, job_id)?;
     if !file.exists() {

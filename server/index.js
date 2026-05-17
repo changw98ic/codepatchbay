@@ -13,6 +13,7 @@ import { reviewRoutes } from './routes/review.js';
 import { evolveRoutes } from './routes/evolve.js';
 import { hubRoutes } from './routes/hub.js';
 import { resolveHubRoot } from './services/hub-registry.js';
+import { getHubRuntime } from './services/hub-runtime.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
 import { initNotificationService } from './services/notification/index.js';
 
@@ -20,6 +21,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.resolve(__dirname, '..'));
 const PORT = parseInt(process.env.CPB_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
 const HOST = process.env.CPB_HOST || '127.0.0.1';
+
+const hubRuntime = getHubRuntime(CPB_ROOT, resolveHubRoot(CPB_ROOT));
 
 try {
   accessSync(CPB_ROOT, constants.F_OK | constants.R_OK);
@@ -66,7 +69,8 @@ app.register(async function (fastify) {
 // Inject CPB_ROOT into requests
 app.addHook('onRequest', (req, _res, done) => {
   req.cpbRoot = CPB_ROOT;
-  req.cpbHubRoot = resolveHubRoot(CPB_ROOT);
+  req.cpbHubRoot = hubRuntime.hubRoot;
+  req.hubRuntime = hubRuntime;
   done();
 });
 
@@ -93,6 +97,7 @@ const watchers = registerWatcher(CPB_ROOT, notifBroadcast);
 // Start
 try {
   await app.listen({ port: PORT, host: HOST });
+  await hubRuntime.persist().catch((err) => app.log.warn({ err }, 'failed to persist hub.json'));
   console.log(`CodePatchbay UI server running at http://localhost:${PORT}`);
 } catch (err) {
   app.log.error(err);

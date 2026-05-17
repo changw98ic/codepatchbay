@@ -1,65 +1,62 @@
-import path from "node:path";
-
 import { AcpPool } from "../../bridges/acp-pool.mjs";
-import { resolveHubRoot } from "./hub-registry.js";
 
 const runtimes = new Map();
+const managedViews = new Map();
 
-function runtimeKey({ cpbRoot, hubRoot }) {
-  return `${path.resolve(cpbRoot || process.cwd())}::${path.resolve(hubRoot || resolveHubRoot(cpbRoot))}`;
+function managedStatus(pool) {
+  const status = pool.status();
+  return {
+    ...status,
+    mode: "managed-shared",
+    pools: Object.fromEntries(Object.entries(status.pools).map(([agent, state]) => [
+      agent,
+      {
+        ...state,
+        mode: "managed-shared",
+        capabilities: [...new Set([...(state.capabilities || []), "process-singleton"])],
+      },
+    ])),
+  };
 }
 
-export class ManagedAcpPool extends AcpPool {
-  constructor(opts = {}) {
-    super(opts);
-    this.poolId = opts.poolId || `managed-acp-${process.pid}-${Date.now().toString(36)}`;
-    this.mode = "managed-shared";
-  }
+function managedView(pool) {
+  return new Proxy(pool, {
+    get(target, prop, receiver) {
+      if (prop === "status") return () => managedStatus(target);
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
-  status() {
-    const base = super.status();
-    const pools = {};
-    for (const [agent, pool] of Object.entries(base.pools)) {
-      pools[agent] = {
-        ...pool,
-        mode: this.mode,
-        capabilities: [
-          ...new Set([
-            ...(pool.capabilities || []),
-            "process-singleton",
-            "live-queue-status",
-          ]),
-        ],
-      };
-    }
-    return {
-      ...base,
-      poolId: this.poolId,
-      mode: this.mode,
-      ownerPid: process.pid,
-      hubRoot: this.hubRoot,
-      cpbRoot: this.cpbRoot,
-      pools,
-    };
+export function getPoolRuntime(hubRoot, cpbRoot, opts = {}) {
+  if (!runtimes.has(hubRoot)) {
+    runtimes.set(hubRoot, new AcpPool({ ...opts, cpbRoot, hubRoot }));
+  }
+  return runtimes.get(hubRoot);
+}
+
+export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
+  const pool = getPoolRuntime(hubRoot, cpbRoot, opts);
+  if (!managedViews.has(hubRoot)) {
+    managedViews.set(hubRoot, managedView(pool));
+  }
+  return managedViews.get(hubRoot);
+}
+
+export function resetPoolRuntime(hubRoot) {
+  const pool = runtimes.get(hubRoot);
+  if (pool) {
+    pool.stop();
+    runtimes.delete(hubRoot);
+    managedViews.delete(hubRoot);
   }
 }
 
-export function getManagedAcpPool(opts = {}) {
-  const cpbRoot = path.resolve(opts.cpbRoot || process.env.CPB_ROOT || process.cwd());
-  const hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(cpbRoot));
-  const key = runtimeKey({ cpbRoot, hubRoot });
-  if (!runtimes.has(key)) {
-    runtimes.set(key, new ManagedAcpPool({ ...opts, cpbRoot, hubRoot }));
-  }
-  return runtimes.get(key);
-}
-
-export async function stopManagedAcpPools() {
-  const pools = [...runtimes.values()];
+export function resetAllPoolRuntimes() {
+  for (const pool of runtimes.values()) pool.stop();
   runtimes.clear();
-  await Promise.all(pools.map((pool) => pool.stop()));
+  managedViews.clear();
 }
 
-export function resetManagedAcpPoolsForTests() {
-  runtimes.clear();
-}
+export const resetManagedAcpPoolsForTests = resetAllPoolRuntimes;

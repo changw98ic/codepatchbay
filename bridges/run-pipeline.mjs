@@ -27,6 +27,15 @@ import {
   renewLease,
 } from "../server/services/lease-manager.js";
 import { bridgeForPhase, getWorkflow } from "../server/services/workflow-definition.js";
+import {
+  dispatchEnabled,
+  guardSourcePath as guardDispatchSourcePath,
+  lookupDispatch,
+  markDispatchCompleted,
+  markDispatchFailed,
+  markDispatchStarted,
+  recordDispatch,
+} from "../server/services/worker-dispatch.js";
 
 // ─── CLI arg parsing ───
 
@@ -63,9 +72,10 @@ function parseArgs(argv) {
   const workflow = options.get("--workflow") || "standard";
 
   const jobIdOverride = options.get("--job-id") || null;
+  const dispatchId = options.get("--dispatch-id") || null;
   const sourcePath = options.get("--source-path") ? path.resolve(options.get("--source-path")) : null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, sourcePath };
+  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -557,7 +567,7 @@ async function main() {
     return 1;
   }
 
-  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride } = parsed;
+  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId: providedDispatchId } = parsed;
   let { sourcePath } = parsed;
   const defaultCpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultCpbRoot);
@@ -572,6 +582,28 @@ async function main() {
     process.env.CPB_ACP_CWD = sourcePath;
     await ensureWikiProjectBoundary(cpbRoot, project, sourcePath);
   }
+
+  const hubRoot = process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : null;
+  let dispatchId = providedDispatchId || null;
+
+  if (dispatchEnabled() && hubRoot && sourcePath) {
+    await guardDispatchSourcePath(hubRoot, project, sourcePath);
+    if (!dispatchId) {
+      const dispatch = await recordDispatch(hubRoot, { projectId: project, sourcePath });
+      dispatchId = dispatch ? dispatch.dispatchId : null;
+    }
+    if (dispatchId) {
+      await markDispatchStarted(hubRoot, dispatchId).catch(() => {});
+    }
+  }
+
+  async function markDispatchDone(ok) {
+    if (!dispatchEnabled() || !hubRoot || !dispatchId) return;
+    const fn = ok ? markDispatchCompleted : markDispatchFailed;
+    await fn(hubRoot, dispatchId).catch(() => {});
+  }
+
+  let pipelineOk = false;
   const workflowDef = getWorkflow(workflow);
   const phaseTotal = workflowDef.phases.length || 0;
   const phaseIndex = (phase) => {
@@ -631,6 +663,8 @@ async function main() {
     const { blockJob } = await import("../server/services/job-store.js");
     await blockJob(cpbRoot, project, jobId, { reason: "blocked by operator" });
     log(project, `Job ${jobId} blocked. No agents launched.`);
+    pipelineOk = true;
+    await markDispatchDone(true);
     return 0;
   }
 
@@ -905,6 +939,7 @@ async function main() {
           artifact: `verdict-${deliverableId}`,
         });
         await completeJob(cpbRoot, project, jobId);
+        pipelineOk = true;
         return 0;
       }
 
@@ -1057,6 +1092,7 @@ async function main() {
     if (watchdogTimer !== null) {
       clearTimeout(watchdogTimer);
     }
+    await markDispatchDone(pipelineOk);
   }
 }
 

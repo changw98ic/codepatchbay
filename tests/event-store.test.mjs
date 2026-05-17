@@ -8,6 +8,7 @@ import {
   readEvents,
   materializeJob,
   eventFileFor,
+  repairEventFile,
 } from "../server/services/event-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-event-store-"));
@@ -133,6 +134,8 @@ await assert.rejects(() => stat(eventFileFor(invalidEventRoot, project, jobId)),
   code: "ENOENT",
 });
 
+// --- Crash repair tests ---
+
 const trailingPartialRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-partial-"));
 const trailingPartialFile = eventFileFor(trailingPartialRoot, project, jobId);
 await mkdir(path.dirname(trailingPartialFile), { recursive: true });
@@ -146,6 +149,22 @@ assert.equal(recoveredEvents.length, 1);
 assert.equal(recoveredEvents[0].type, "job_created");
 const repairedPartialRaw = await readFile(trailingPartialFile, "utf8");
 assert.equal(repairedPartialRaw, `${JSON.stringify(createdEvent)}\n`);
+
+// After readEvents auto-repair, the corrupt tail is removed from the file
+const repairedRaw = await readFile(trailingPartialFile, "utf8");
+assert.equal(repairedRaw.trim().split("\n").length, 1);
+assert.ok(repairedRaw.endsWith("\n"), "file should end with newline after repair");
+
+// Subsequent append should work cleanly after auto-repair
+const appended = await appendEvent(trailingPartialRoot, project, jobId, {
+  type: "phase_started",
+  jobId,
+  phase: "plan",
+  ts: "2026-05-13T00:01:00.000Z",
+});
+assert.equal(appended.type, "phase_started");
+const afterAppend = await readFile(trailingPartialFile, "utf8");
+assert.equal(afterAppend.trim().split("\n").length, 2);
 
 const malformedFinalNewlineRoot = await mkdtemp(
   path.join(tmpdir(), "cpb-event-store-malformed-final-")
@@ -196,3 +215,52 @@ await assert.rejects(
   () => readEvents(malformedMiddleRoot, project, jobId),
   new RegExp(`${malformedMiddleFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*line 2`)
 );
+
+// --- repairEventFile explicit tests ---
+
+const repairCorruptRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-repair-corrupt-"));
+const repairCorruptFile = eventFileFor(repairCorruptRoot, project, jobId);
+await mkdir(path.dirname(repairCorruptFile), { recursive: true });
+await writeFile(
+  repairCorruptFile,
+  `${JSON.stringify(createdEvent)}\n{"broken":`,
+  "utf8"
+);
+const repairResult = await repairEventFile(repairCorruptRoot, project, jobId);
+assert.equal(repairResult.repaired, true);
+assert.ok(repairResult.removedBytes > 0);
+const afterRepair = await readFile(repairCorruptFile, "utf8");
+assert.equal(afterRepair, `${JSON.stringify(createdEvent)}\n`);
+
+const repairHealthyRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-repair-healthy-"));
+const repairHealthyFile = eventFileFor(repairHealthyRoot, project, jobId);
+await mkdir(path.dirname(repairHealthyFile), { recursive: true });
+await writeFile(
+  repairHealthyFile,
+  `${JSON.stringify(createdEvent)}\n`,
+  "utf8"
+);
+const healthyResult = await repairEventFile(repairHealthyRoot, project, jobId);
+assert.equal(healthyResult.repaired, false);
+assert.equal(healthyResult.removedBytes, 0);
+
+const repairMissingNewlineRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-repair-missing-nl-"));
+const repairMissingNewlineFile = eventFileFor(repairMissingNewlineRoot, project, jobId);
+await mkdir(path.dirname(repairMissingNewlineFile), { recursive: true });
+await writeFile(
+  repairMissingNewlineFile,
+  JSON.stringify(createdEvent),
+  "utf8"
+);
+const missingNlResult = await repairEventFile(repairMissingNewlineRoot, project, jobId);
+assert.equal(missingNlResult.repaired, true);
+assert.equal(missingNlResult.removedBytes, 0);
+assert.equal(missingNlResult.addedNewline, true);
+const afterMissingNl = await readFile(repairMissingNewlineFile, "utf8");
+assert.ok(afterMissingNl.endsWith("\n"), "should have trailing newline after repair");
+assert.equal(afterMissingNl.trim(), JSON.stringify(createdEvent));
+
+const repairMissingRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-repair-missing-"));
+const missingResult = await repairEventFile(repairMissingRoot, "nonexist", "job-nope");
+assert.equal(missingResult.repaired, false);
+assert.equal(missingResult.removedBytes, 0);

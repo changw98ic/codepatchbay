@@ -25,6 +25,8 @@ const baseMap = {
   '/api/hub/projects': [],
   '/api/hub/acp': null,
   '/api/hub/knowledge-policy': null,
+  '/api/hub/queue/status': null,
+  '/api/hub/queue': [],
 };
 
 describe('Dashboard Hub panel', () => {
@@ -63,6 +65,8 @@ describe('Dashboard Hub panel', () => {
           forbiddenMarkdownState: ['queue', 'lease'],
         });
       }
+      if (url === '/api/hub/queue/status') return jsonResponse(null);
+      if (url === '/api/hub/queue') return jsonResponse([]);
       return jsonResponse(null);
     });
   });
@@ -90,6 +94,8 @@ describe('Dashboard Hub panel', () => {
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/acp');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/knowledge-policy');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue/status');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue');
   });
 });
 
@@ -251,5 +257,80 @@ describe('Dashboard queue/backlog compact summary', () => {
 
     await waitFor(() => expect(screen.getByText(/No projects found/)).toBeInTheDocument());
     expect(screen.queryByText(/Inbox:/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard Hub queue status display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows queue counts and recent pending/in_progress entries', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': { total: 4, pending: 2, inProgress: 1, completed: 0, failed: 1, cancelled: 0 },
+      '/api/hub/queue': [
+        { id: 'q1', projectId: 'proj-a', status: 'in_progress', priority: 'P1', createdAt: '2026-05-17T08:00:00Z' },
+        { id: 'q2', projectId: 'proj-b', status: 'pending', priority: 'P2', createdAt: '2026-05-17T08:01:00Z' },
+        { id: 'q3', projectId: 'proj-c', status: 'pending', priority: 'P2', createdAt: '2026-05-17T08:02:00Z' },
+        { id: 'q4', projectId: 'proj-d', status: 'failed', priority: 'P3', createdAt: '2026-05-17T08:03:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    expect(screen.getByText('2 pending')).toBeInTheDocument();
+    expect(screen.getByText('1 active')).toBeInTheDocument();
+    expect(screen.getByText('1 failed')).toBeInTheDocument();
+    // Only pending/in_progress entries shown as pills; proj-a appears in both project list and queue
+    expect(screen.getAllByText('proj-a').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('running')).toBeInTheDocument();
+    expect(screen.getByText('proj-b')).toBeInTheDocument();
+    expect(screen.getAllByText('pending').length).toBeGreaterThanOrEqual(2);
+    // proj-c is the 3rd entry shown; proj-d is failed so no pill
+    expect(screen.getByText('proj-c')).toBeInTheDocument();
+    expect(screen.queryByText('proj-d')).not.toBeInTheDocument();
+  });
+
+  it('hides queue section when queue is empty', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+      '/api/hub/queue': [],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
+    expect(screen.queryByText('Queue')).not.toBeInTheDocument();
+  });
+
+  it('caps displayed entries to 3', async () => {
+    const entries = Array.from({ length: 5 }, (_, i) => ({
+      id: `q${i}`, projectId: `proj-${i}`, status: 'pending', priority: 'P2', createdAt: `2026-05-17T08:0${i}:00Z`,
+    }));
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [{ id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } }],
+      '/api/hub/queue/status': { total: 5, pending: 5, inProgress: 0, completed: 0, failed: 0, cancelled: 0 },
+      '/api/hub/queue': entries,
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    // First 3 shown, rest hidden
+    expect(screen.getByText('proj-0')).toBeInTheDocument();
+    expect(screen.getByText('proj-2')).toBeInTheDocument();
+    expect(screen.queryByText('proj-3')).not.toBeInTheDocument();
+    expect(screen.queryByText('proj-4')).not.toBeInTheDocument();
   });
 });

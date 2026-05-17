@@ -3,7 +3,7 @@ use cpb_runtime::{
     acquire_lease, append_event, compile_policy, get_job, get_rate_limit, list_backlog,
     list_jobs, list_registry_projects, push_backlog_issue, queue_claim, queue_complete,
     queue_list, queue_push, read_events, read_lease, release_lease, renew_lease,
-    set_rate_limit, upsert_registry_project,
+    repair_event_file, set_rate_limit, upsert_registry_project,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -162,6 +162,19 @@ fn run() -> Result<()> {
             required(&options, "project")?,
             required(&options, "id")?,
         )?),
+        ("events", "repair") => print_json(repair_event_file(
+            &cpb_root(&options)?,
+            required(&options, "project")?,
+            required(&options, "job-id")?,
+        )?),
+        ("runtime", "status") => {
+            let exe = std::env::current_exe()?;
+            print_json(serde_json::json!({
+                "backend": "rust",
+                "version": env!("CARGO_PKG_VERSION"),
+                "bin": exe.to_string_lossy(),
+            }))
+        }
         _ => Err(anyhow!("unknown command: {group} {command}")),
     }
 }

@@ -9,6 +9,8 @@ export default function Dashboard() {
   const [hubProjects, setHubProjects] = useState([]);
   const [hubAcp, setHubAcp] = useState(null);
   const [knowledgePolicy, setKnowledgePolicy] = useState(null);
+  const [queueStatus, setQueueStatus] = useState(null);
+  const [queueEntries, setQueueEntries] = useState([]);
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
@@ -33,12 +35,16 @@ export default function Dashboard() {
       fetch('/api/hub/projects').then((r) => r.ok ? r.json() : []),
       fetch('/api/hub/acp').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/knowledge-policy').then((r) => r.ok ? r.json() : null),
+      fetch('/api/hub/queue/status').then((r) => r.ok ? r.json() : null),
+      fetch('/api/hub/queue').then((r) => r.ok ? r.json() : []),
     ])
-      .then(([status, registryProjects, acp, policy]) => {
+      .then(([status, registryProjects, acp, policy, qStatus, qEntries]) => {
         setHubStatus(status);
         setHubProjects(Array.isArray(registryProjects) ? registryProjects : []);
         setHubAcp(acp);
         setKnowledgePolicy(policy);
+        setQueueStatus(qStatus);
+        setQueueEntries(Array.isArray(qEntries) ? qEntries : []);
       })
       .catch(() => {});
   }, []);
@@ -178,6 +184,20 @@ export default function Dashboard() {
               <span>Knowledge</span>
               <em>{knowledgePolicy.automaticWrites?.length || 0} auto</em>
               <em>{knowledgePolicy.forbiddenMarkdownState?.length || 0} state guards</em>
+            </div>
+          )}
+          {queueStatus && queueStatus.total > 0 && (
+            <div className="hub-queue-summary">
+              <span>Queue</span>
+              <em>{queueStatus.pending} pending</em>
+              <em>{queueStatus.inProgress} active</em>
+              {queueStatus.failed > 0 && <strong>{queueStatus.failed} failed</strong>}
+              {queueEntries.filter((e) => e.status === 'pending' || e.status === 'in_progress').slice(0, 3).map((entry) => (
+                <span className="hub-queue-pill" key={entry.id}>
+                  {entry.projectId}
+                  <em className={`queue-${entry.status}`}>{entry.status === 'in_progress' ? 'running' : entry.status}</em>
+                </span>
+              ))}
             </div>
           )}
         </section>

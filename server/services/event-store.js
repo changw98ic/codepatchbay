@@ -110,6 +110,40 @@ export async function listEventFiles(cpbRoot) {
   return files.sort((a, b) => a.file.localeCompare(b.file));
 }
 
+export async function repairEventFile(cpbRoot, project, jobId) {
+  const file = eventFileFor(cpbRoot, project, jobId);
+  try {
+    const raw = await readFile(file, "utf8");
+    if (raw.endsWith("\n") || raw.length === 0) {
+      return { repaired: false, removedBytes: 0 };
+    }
+
+    const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+    if (lines.length === 0) {
+      await writeFile(file, "", "utf8");
+      return { repaired: true, removedBytes: Buffer.byteLength(raw) };
+    }
+
+    const lastLine = lines[lines.length - 1];
+    try {
+      JSON.parse(lastLine);
+      await writeFile(file, raw + "\n", "utf8");
+      return { repaired: true, removedBytes: 0, addedNewline: true };
+    } catch {
+      const lastNewline = raw.lastIndexOf("\n");
+      const trimmed = lastNewline === -1 ? "" : raw.substring(0, lastNewline + 1);
+      const removedBytes = Buffer.byteLength(raw) - Buffer.byteLength(trimmed);
+      await writeFile(file, trimmed, "utf8");
+      return { repaired: true, removedBytes };
+    }
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      return { repaired: false, removedBytes: 0 };
+    }
+    throw err;
+  }
+}
+
 export async function appendEvent(cpbRoot, project, jobId, event) {
   const serialized = serializeEvent(event);
   const file = eventFileFor(cpbRoot, project, jobId);

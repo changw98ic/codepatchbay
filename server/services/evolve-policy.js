@@ -1,135 +1,66 @@
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { promisify } from "node:util";
+import { execSync } from "node:child_process";
 
-const execFileAsync = promisify(execFile);
-
-const DEFAULT_BLOCKED_KEYWORDS = [
-  "secret",
-  "token",
-  "auth",
-  "credential",
-  "destructive",
-  "migration",
-  "public api",
-  "breaking",
-  "delete",
+const HIGH_RISK_PATTERNS = [
+  { pattern: /\b(?:secret|api[_-]?key|password|token|credential)\b/i, reason: "involves secrets or credentials" },
+  { pattern: /\b(?:auth(?:entication|orization)?)\b/i, reason: "modifies authentication or authorization" },
+  { pattern: /\b(?:drop[_\s-]?table|delete\s+from|truncate\b|\bdestroy\b)/i, reason: "potentially destructive database operation" },
+  { pattern: /\b(?:migration|schema\s+change)\b/i, reason: "database schema migration" },
+  { pattern: /\b(?:public\s+api|breaking\s+change|deprecat)/i, reason: "affects public API surface" },
 ];
 
-export const DEFAULT_EVOLVE_POLICY = Object.freeze({
-  allowProjects: [],
-  maxConcurrentRepairs: 1,
-  maxRepairsPerRun: 1,
-  maxFailuresPerRun: 1,
-  maxFilesChanged: 12,
-  maxPatchBytes: 60_000,
-  requireCleanWorktree: true,
-  blockedPriorities: ["P0", "P1"],
-  blockedKeywords: DEFAULT_BLOCKED_KEYWORDS,
-});
+/**
+ * Check whether an issue passes all guarded-repair policy checks.
+ *
+ * @param {object} issue - The issue to validate
+ * @param {string} issue.description - Issue description text
+ * @param {string} issue.project - Project identifier
+ * @param {string} issue.sourcePath - Project source path on disk
+ * @param {object} [opts]
+ * @param {string[]} [opts.allowlist] - Allowed project IDs (empty = all allowed)
+ * @param {boolean} [opts.requireCleanWorktree=true] - Reject if git working tree is dirty
+ * @returns {{ allowed: boolean, reasons: string[] }}
+ */
+export function checkPolicy(issue, opts = {}) {
+  const reasons = [];
+  const allowlist = opts.allowlist || [];
+  const requireCleanWorktree = opts.requireCleanWorktree !== false;
 
-function splitList(value) {
-  if (Array.isArray(value)) return value.filter(Boolean).map(String);
-  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
-  return [];
-}
-
-export function normalizeEvolvePolicy(input = {}) {
-  return {
-    ...DEFAULT_EVOLVE_POLICY,
-    ...input,
-    allowProjects: splitList(input.allowProjects ?? process.env.CPB_EVOLVE_ALLOW_PROJECTS),
-    blockedPriorities: splitList(input.blockedPriorities ?? DEFAULT_EVOLVE_POLICY.blockedPriorities),
-    blockedKeywords: splitList(input.blockedKeywords ?? DEFAULT_EVOLVE_POLICY.blockedKeywords).map((item) => item.toLowerCase()),
-    maxConcurrentRepairs: Number(input.maxConcurrentRepairs ?? DEFAULT_EVOLVE_POLICY.maxConcurrentRepairs),
-    maxRepairsPerRun: Number(input.maxRepairsPerRun ?? DEFAULT_EVOLVE_POLICY.maxRepairsPerRun),
-    maxFailuresPerRun: Number(input.maxFailuresPerRun ?? DEFAULT_EVOLVE_POLICY.maxFailuresPerRun),
-    maxFilesChanged: Number(input.maxFilesChanged ?? DEFAULT_EVOLVE_POLICY.maxFilesChanged),
-    maxPatchBytes: Number(input.maxPatchBytes ?? DEFAULT_EVOLVE_POLICY.maxPatchBytes),
-    requireCleanWorktree: input.requireCleanWorktree ?? DEFAULT_EVOLVE_POLICY.requireCleanWorktree,
-  };
-}
-
-export async function loadEvolvePolicy(hubRoot) {
-  const filePath = path.join(path.resolve(hubRoot), "evolve", "policy.json");
-  try {
-    return normalizeEvolvePolicy(JSON.parse(await readFile(filePath, "utf8")));
-  } catch {
-    return normalizeEvolvePolicy();
-  }
-}
-
-export function isProjectAllowed(project, policy = DEFAULT_EVOLVE_POLICY) {
-  const allow = new Set(policy.allowProjects || []);
-  return allow.has("*") || allow.has(project.id) || allow.has(project.name);
-}
-
-export function classifyRepairRisk(issue = {}, policy = DEFAULT_EVOLVE_POLICY) {
-  const priority = String(issue.priority || "P3").toUpperCase();
-  if ((policy.blockedPriorities || []).includes(priority)) {
-    return { blocked: true, reason: `${priority} issues require human review` };
+  // Project allowlist
+  if (allowlist.length > 0 && !allowlist.includes(issue.project)) {
+    reasons.push(`project '${issue.project}' not in allowlist`);
   }
 
-  const description = String(issue.description || "").toLowerCase();
-  const keyword = (policy.blockedKeywords || []).find((item) => item && description.includes(item));
-  if (keyword) {
-    return { blocked: true, reason: `issue mentions high-risk keyword '${keyword}'` };
-  }
-
-  return { blocked: false, reason: null };
-}
-
-function statusLinePath(line) {
-  const rawPath = line.slice(3).trim();
-  return rawPath.includes(" -> ") ? rawPath.split(" -> ").pop() : rawPath;
-}
-
-function isCpbRuntimeStatusLine(line) {
-  const statusPath = statusLinePath(line);
-  return statusPath === "cpb-task"
-    || statusPath.startsWith("cpb-task/")
-    || statusPath === ".cpb"
-    || statusPath.startsWith(".cpb/");
-}
-
-export async function worktreeCleanStatus(sourcePath) {
-  try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
-      cwd: path.resolve(sourcePath),
-      timeout: 10_000,
-    });
-    const dirty = stdout
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .filter(Boolean)
-      .filter((line) => !isCpbRuntimeStatusLine(line));
-    return { clean: dirty.length === 0, reason: dirty.length > 0 ? "source worktree is dirty" : null };
-  } catch {
-    return { clean: false, reason: "sourcePath is not a readable git worktree" };
-  }
-}
-
-export async function evaluateGuardedRepair({ project, issue, policy, cleanStatus } = {}) {
-  const normalized = normalizeEvolvePolicy(policy);
-  if (!project) return { allowed: false, reason: "project is required", policy: normalized };
-  if (!issue) return { allowed: false, reason: "issue is required", policy: normalized };
-
-  if (!isProjectAllowed(project, normalized)) {
-    return { allowed: false, reason: `project '${project.id || project.name}' is not allowlisted`, policy: normalized };
-  }
-
-  const risk = classifyRepairRisk(issue, normalized);
-  if (risk.blocked) {
-    return { allowed: false, reason: risk.reason, policy: normalized };
-  }
-
-  if (normalized.requireCleanWorktree) {
-    const status = cleanStatus || await worktreeCleanStatus(project.sourcePath);
-    if (!status.clean) {
-      return { allowed: false, reason: status.reason || "source worktree is not clean", policy: normalized };
+  // High-risk description patterns
+  for (const { pattern, reason } of HIGH_RISK_PATTERNS) {
+    if (pattern.test(issue.description || "")) {
+      reasons.push(`high-risk description: ${reason}`);
     }
   }
 
-  return { allowed: true, reason: null, policy: normalized };
+  // Clean worktree check
+  if (requireCleanWorktree && issue.sourcePath) {
+    try {
+      const output = execSync("git status --porcelain", {
+        cwd: issue.sourcePath,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const dirtyLines = output
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .filter((line) => {
+          const filePath = line.slice(3).replace(/^"|"$/g, "");
+          return !(filePath === "cpb-task" || filePath.startsWith("cpb-task/") || filePath === ".cpb" || filePath.startsWith(".cpb/"));
+        });
+      if (dirtyLines.length > 0) {
+        reasons.push(`dirty worktree: ${dirtyLines.length} uncommitted change(s)`);
+      }
+    } catch {
+      // Not a git repo or git unavailable - skip check
+    }
+  }
+
+  return { allowed: reasons.length === 0, reasons };
 }

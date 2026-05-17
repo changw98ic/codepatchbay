@@ -192,6 +192,31 @@ if (sub === 'status') {
       }
     }
   }
+} else if (sub === 'diagnostics') {
+  const { gatherDiagnostics } = await import(path.join(cpbRoot, 'server/services/diagnostics-bundle.js'));
+  const diag = await gatherDiagnostics({ cpbRoot, hubRoot });
+  if (asJson) console.log(JSON.stringify(diag, null, 2));
+  else {
+    console.log(`Diagnostics gathered at: ${diag.gatheredAt}`);
+    console.log(`Hub: ${diag.hub.hubRoot}`);
+    console.log(`Projects: ${diag.hub.enabledProjectCount}/${diag.hub.projectCount} enabled`);
+    console.log(`Workers: ${diag.hub.workersOnline} online, ${diag.hub.workersStale} stale, ${diag.hub.workersOffline} offline`);
+    console.log(`Queue: ${diag.queue.total} (${diag.queue.pending} pending, ${diag.queue.inProgress} active)`);
+    const pools = diag.acp?.pools || {};
+    for (const [agent, info] of Object.entries(pools)) {
+      const rl = diag.acp?.rateLimits?.[agent];
+      const backoff = rl?.untilTs ? ` backoff:${rl.untilTs}` : '';
+      console.log(`ACP ${agent}: active:${info.active} queued:${info.queued} requests:${info.requestCount}${backoff}`);
+    }
+    console.log(`Recent jobs: ${diag.recentJobs.length}`);
+    for (const job of diag.recentJobs) {
+      console.log(`  ${job.jobId} ${job.status} ${job.project} phase:${job.currentPhase || '-'}`);
+    }
+    if (diag.errors?.length) {
+      console.log(`Errors: ${diag.errors.length}`);
+      for (const e of diag.errors) console.log(`  ${e.source}: ${e.message}`);
+    }
+  }
 } else {
   console.error(`Unknown hub subcommand: ${sub}`);
   process.exit(1);
