@@ -168,14 +168,19 @@ describe('Project name validation edge cases', () => {
   //    This documents that the server does NOT enforce length constraints.
   it('long project name passes validation but fails at init script (no length limit)', async () => {
     const longName = 'a'.repeat(300);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/projects/init',
-      payload: { path: '/tmp', name: longName },
-    });
-    // SAFE_NAME regex accepts any length, so this hits execFileAsync (500)
-    assert.equal(res.statusCode, 500,
-      'Long name passes SAFE_NAME but fails at exec — no length guard exists');
+    const validPath = await mkdtemp(path.join(process.env.HOME, '.cpb-test-'));
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/projects/init',
+        payload: { path: validPath, name: longName },
+      });
+      // SAFE_NAME regex accepts any length, so this hits execFileAsync (500 — script missing in test env)
+      assert.equal(res.statusCode, 500,
+        'Long name passes SAFE_NAME but fails at exec — no length guard exists');
+    } finally {
+      await rm(validPath, { recursive: true }).catch(() => {});
+    }
   });
 
   // 7. Project name with only hyphens

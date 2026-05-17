@@ -7,6 +7,60 @@ import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project
 
 const execFileAsync = promisify(execFile);
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+const BLOCKED_PATH_PREFIXES = [
+  '/etc', '/usr', '/bin', '/sbin', '/var', '/sys', '/proc', '/dev', '/boot', '/lib', '/lib64', '/snap',
+];
+
+function getProjectRoots() {
+  const env = process.env.CPB_PROJECT_ROOTS;
+  if (env) return env.split(':').filter(Boolean).map(p => path.resolve(p.trim()));
+  const home = process.env.HOME;
+  return home ? [path.resolve(home)] : [];
+}
+
+async function validateProjectPath(projectPath, cpbRoot) {
+  const normalized = path.resolve(projectPath);
+
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (normalized === prefix || normalized.startsWith(prefix + path.sep)) {
+      return { ok: false, reason: 'blocked_system_path', resolved: null };
+    }
+  }
+
+  let resolved;
+  try {
+    resolved = await fs.realpath(normalized);
+  } catch {
+    return { ok: false, reason: 'path_resolution_failed', resolved: null };
+  }
+
+  let stat;
+  try {
+    stat = await fs.stat(resolved);
+  } catch {
+    return { ok: false, reason: 'path_not_accessible', resolved: null };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, reason: 'not_a_directory', resolved };
+  }
+
+  if (resolved === cpbRoot || resolved.startsWith(cpbRoot + path.sep)) {
+    return { ok: false, reason: 'inside_cpb_root', resolved };
+  }
+
+  const roots = getProjectRoots();
+  if (roots.length === 0) {
+    return { ok: false, reason: 'no_project_roots_configured', resolved };
+  }
+  const contained = roots.some(root =>
+    resolved === root || resolved.startsWith(root + path.sep)
+  );
+  if (!contained) {
+    return { ok: false, reason: 'outside_project_scope', resolved };
+  }
+
+  return { ok: true, resolved };
+}
 
 export async function projectRoutes(fastify, opts) {
 
@@ -126,10 +180,22 @@ export async function projectRoutes(fastify, opts) {
     if (!projectPath || !name) throw fastify.httpErrors.badRequest('path and name required');
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
 
+    const validation = await validateProjectPath(projectPath, req.cpbRoot);
+    if (!validation.ok) {
+      const securityReasons = ['blocked_system_path', 'outside_project_scope', 'inside_cpb_root'];
+      const method = securityReasons.includes(validation.reason) ? 'forbidden' : 'badRequest';
+      req.log.warn({
+        projectPath,
+        cpbRoot: req.cpbRoot,
+        validationFailureReason: validation.reason,
+      }, 'Project init rejected: path validation failed');
+      throw fastify.httpErrors[method]('Invalid project path');
+    }
+
     try {
       const { stdout } = await execFileAsync(
         req.cpbRoot + '/bridges/init-project.sh',
-        [projectPath, name],
+        [validation.resolved, name],
         { timeout: 10000, cwd: req.cpbRoot }
       );
       return { success: true, output: stdout };

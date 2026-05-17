@@ -23,6 +23,56 @@ if [ ! -d "$PROJECT_PATH" ]; then
   exit 1
 fi
 
+# --- Path scope validation (defense-in-depth) ---
+_cpb_contains_path() {
+  local candidate="$1" roots="$2" root rroot
+  local old_ifs="$IFS"
+  IFS=':'
+  for root in $roots; do
+    [ -z "$root" ] && continue
+    rroot="$(cd "$root" 2>/dev/null && pwd)" || continue
+    if [ "$candidate" = "$rroot" ] || [[ "$candidate" == "$rroot/"* ]]; then
+      IFS="$old_ifs"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+RESOLVED_PATH="$(cd "$PROJECT_PATH" && pwd)" || {
+  echo -e "${RED}Error: Cannot resolve project path${NC}" >&2
+  exit 1
+}
+
+# Block system-critical directories
+case "$RESOLVED_PATH" in
+  /etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/var|/var/*|/sys|/sys/*|/proc|/proc/*|/dev|/dev/*|/boot|/boot/*|/lib|/lib/*|/lib64|/lib64/*|/snap|/snap/*)
+    echo -e "${RED}Error: Cannot initialize project in a system directory${NC}" >&2
+    exit 1
+    ;;
+esac
+
+# Block paths inside CPB_ROOT (prevent self-modification)
+if [ "$RESOLVED_PATH" = "$CPB_ROOT" ] || [[ "$RESOLVED_PATH" == "$CPB_ROOT/"* ]]; then
+  echo -e "${RED}Error: Cannot initialize project inside CPB installation directory${NC}" >&2
+  exit 1
+fi
+
+# Verify containment within allowed project roots
+ALLOWED_ROOTS="${CPB_PROJECT_ROOTS:-${HOME:-}}"
+if [ -z "$ALLOWED_ROOTS" ]; then
+  echo -e "${RED}Error: No project roots configured (set CPB_PROJECT_ROOTS env var)${NC}" >&2
+  exit 1
+fi
+if ! _cpb_contains_path "$RESOLVED_PATH" "$ALLOWED_ROOTS"; then
+  echo -e "${RED}Error: Project path outside allowed scope${NC}" >&2
+  exit 1
+fi
+
+# Use canonical resolved path for all subsequent operations
+PROJECT_PATH="$RESOLVED_PATH"
+
 WIKI_DIR="$CPB_ROOT/wiki/projects/$PROJECT_NAME"
 if [ -d "$WIKI_DIR" ]; then
   echo -e "${RED}Error: '$PROJECT_NAME' already exists${NC}" >&2
