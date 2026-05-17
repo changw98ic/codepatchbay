@@ -19,7 +19,7 @@ const EVOLVE_DIR = path.join(CPB_ROOT, "cpb-task", "self-evolve");
 const EVOLVE_LEASE_DIR = path.join(EVOLVE_DIR, ".controller-lock");
 const PORT = parseInt(process.env.CPB_PORT || "3456", 10);
 const COOLDOWN_MS = parseInt(process.env.EVOLVE_COOLDOWN_MS || "60000", 10);
-const MAX_ROUNDS = parseInt(process.env.EVOLVE_MAX_ROUNDS || "50", 10);
+const IDLE_SLEEP_MS = parseInt(process.env.EVOLVE_IDLE_SLEEP_MS || "300000", 10);
 const REVIEW_TIMEOUT_MS = parseInt(process.env.EVOLVE_REVIEW_TIMEOUT_MS || "0", 10);
 const PIPELINE_TIMEOUT_MS = parseInt(process.env.EVOLVE_PIPELINE_TIMEOUT_MS || "0", 10);
 const STUCK_THRESHOLD_MS = parseInt(process.env.EVOLVE_STUCK_MS || "600000", 10);
@@ -585,7 +585,7 @@ async function evolve(opts = {}) {
   const state = await loadState(CPB_ROOT);
   state.status = "running";
   state.round = state.round || 0;
-  state.maxRounds = MAX_ROUNDS;
+  state.maxRounds = 0; // 0 = unlimited, driven by issues not round count
   state.knownGoodCommit = state.knownGoodCommit || gitSafe("rev-parse", "HEAD");
   await saveState(CPB_ROOT, state);
 
@@ -601,7 +601,7 @@ async function evolve(opts = {}) {
   // Prime project list cache (for issue->project resolution)
   const projects = await listProjects();
 
-  for (let round = state.round + 1; round <= MAX_ROUNDS; round++) {
+  for (let round = state.round + 1; ; round++) {
     if (shuttingDown) break;
 
     let stashLabel = null;
@@ -626,10 +626,10 @@ async function evolve(opts = {}) {
         const issues = parseScanResults(scanResult);
 
         if (issues.length === 0) {
-          log("scan", `round ${round} — no issues found`);
+          log("scan", `round ${round} — no issues found, sleeping ${IDLE_SLEEP_MS / 1000}s`);
           await appendHistory(CPB_ROOT, { round, action: "scan", result: "empty" });
           await saveState(CPB_ROOT, state);
-          await wait(COOLDOWN_MS);
+          await wait(IDLE_SLEEP_MS);
           continue;
         }
 
@@ -656,7 +656,7 @@ async function evolve(opts = {}) {
       startBackgroundScan();
 
       stashLabel = await stashRound(round);
-      log("stash", `${round}/${MAX_ROUNDS} — stashed local changes with ${stashLabel || "none"}`);
+      log("stash", `round ${round} — stashed local changes with ${stashLabel || "none"}`);
 
       state.status = "reviewing";
       await saveState(CPB_ROOT, state);
@@ -864,7 +864,7 @@ async function evolve(opts = {}) {
 
   state.status = "completed";
   await saveState(CPB_ROOT, state);
-  log("done", `completed ${state.round} rounds`);
+  log("done", `stopped after ${state.round} rounds (shutdown requested)`);
 }
 
 // --- Shutdown ---
@@ -921,7 +921,7 @@ if (cmd === "scan") {
   const backlog = await loadBacklog(CPB_ROOT);
   const pending = backlog.filter((i) => i.status === "pending").length;
   console.log(`Status: ${state.status}`);
-  console.log(`Round: ${state.round}/${state.maxRounds}`);
+  console.log(`Round: ${state.round}${state.maxRounds > 0 ? `/${state.maxRounds}` : " (unlimited)"}`);
   console.log(`Known good: ${state.knownGoodCommit?.slice(0, 8) || "none"}`);
   console.log(`Backlog: ${pending} pending / ${backlog.length} total`);
 } else {
