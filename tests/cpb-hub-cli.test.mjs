@@ -57,3 +57,22 @@ test("cpb evolve-multi dry-run consumes Hub registry projects", async () => {
   assert.equal(result.projects[0].id, "cli-evolve");
   assert.equal(result.projects[0].sourcePath, canonicalProjectRoot);
 });
+
+test("cpb hub acp reports the Hub-managed shared pool", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-cli-hub-acp-"));
+
+  const { stdout } = await execFileAsync("./cpb", ["hub", "acp", "--json"], {
+    cwd: process.cwd(),
+    env: envFor(hubRoot),
+  });
+  const status = JSON.parse(stdout);
+
+  assert.equal(status.mode, "managed-shared");
+  assert.equal(status.poolSingleton, true);
+  assert.equal(status.providerProcessReuse, true);
+  assert.equal(status.pools.codex.mode, "pool-admission-singleton");
+  assert.equal(status.pools.codex.poolSingleton, true);
+  assert.equal(status.pools.codex.providerProcessReuse, true);
+  assert.ok(status.pools.codex.capabilities.includes("pool-singleton"));
+  assert.ok(status.pools.codex.capabilities.includes("provider-process-reuse"));
+});
