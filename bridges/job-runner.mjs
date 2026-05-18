@@ -8,6 +8,11 @@ import {
   renewLease,
 } from "../server/services/lease-manager.js";
 import { cancelJob, getJob } from "../server/services/job-store.js";
+import {
+  classifyDeleteRisk,
+  formatDeleteBlockedMessage,
+  logDeleteBlock,
+} from "./delete-guard.mjs";
 
 const rawArgs = process.argv.slice(2);
 
@@ -126,6 +131,15 @@ function killChildProcess(child) {
 }
 
 function runChild(command, args, cwd, onOutput, options = {}) {
+  const guardResult = classifyDeleteRisk(command, args, { cwd, repoRoot: cwd });
+  if (!guardResult.allowed) {
+    const message = formatDeleteBlockedMessage(guardResult);
+    logDeleteBlock(command, args, cwd, guardResult);
+    const error = new Error(message);
+    error.guardResult = guardResult;
+    return Promise.resolve({ exitCode: 1, error });
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     let child;
@@ -289,7 +303,8 @@ async function main() {
   }
 
   if (childResult.error) {
-    console.error(`failed to spawn ${script}: ${childResult.error.message}`);
+    const guardTag = childResult.error.guardResult ? ` [delete_blocked reason=${childResult.error.guardResult.reason}]` : "";
+    console.error(`failed to spawn ${script}: ${childResult.error.message}${guardTag}`);
     // Check if cancel was requested during execution
     const jobAfterError = await getJob(cpbRoot, project, jobId);
     if (jobAfterError.cancelRequested) {
