@@ -39,6 +39,7 @@ import {
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
+import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -222,7 +223,7 @@ function runCommand(command, commandArgs, cwd, options = {}) {
     try {
       proc = spawn(command, commandArgs, {
         cwd,
-        env: process.env,
+        env: options.env || process.env,
         detached,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -257,7 +258,10 @@ function runCommand(command, commandArgs, cwd, options = {}) {
 }
 
 function runBridge(script, scriptArgs, cwd, options = {}) {
-  return runCommand("bash", [script, ...scriptArgs], cwd, options);
+  const bridgeScript = path.isAbsolute(script)
+    ? script
+    : path.join(options.executorRoot || cwd, script);
+  return runCommand("bash", [bridgeScript, ...scriptArgs], cwd, options);
 }
 
 function combineChunks(chunks) {
@@ -402,7 +406,7 @@ export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
 
 // ─── Lease + heartbeat wrapper for a phase ───
 
-async function runPhaseWithLease(cpbRoot, project, jobId, phase, script, scriptArgs) {
+async function runPhaseWithLease(cpbRoot, executorRoot, project, jobId, phase, script, scriptArgs) {
   const leaseId = `lease-${jobId}-${phase}`;
   // Phase lease TTL: how long a lease is valid before considered stale.
   // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
@@ -432,7 +436,11 @@ async function runPhaseWithLease(cpbRoot, project, jobId, phase, script, scriptA
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    result = await runBridge(script, scriptArgs, cpbRoot, { signal: abortController.signal });
+    result = await runBridge(script, scriptArgs, cpbRoot, {
+      signal: abortController.signal,
+      executorRoot,
+      env: executorEnv(process.env, { cpbRoot, executorRoot }),
+    });
     if (leaseLostError) {
       result = {
         ...result,
@@ -618,7 +626,7 @@ async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
   return null;
 }
 
-async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePathOverride = null) {
+async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
     return null;
   }
@@ -639,7 +647,7 @@ async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePathO
   const result = await runCommand(
     process.execPath,
     [
-      "bridges/worktree-manager.mjs",
+      path.join(executorRoot, "bridges", "worktree-manager.mjs"),
       "create",
       "--project",
       sourcePath,
@@ -650,7 +658,8 @@ async function maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePathO
       "--worktrees-root",
       worktreesRoot,
     ],
-    cpbRoot
+    cpbRoot,
+    { env: executorEnv(process.env, { cpbRoot, executorRoot }) }
   );
   if (result.exitCode !== 0) {
     throw result.error || new Error("worktree creation failed");
@@ -697,8 +706,11 @@ async function main() {
 
   const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId: providedDispatchId } = parsed;
   let { sourcePath } = parsed;
-  const defaultCpbRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultCpbRoot);
+  const defaultExecutorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const executorRoot = resolveExecutorRoot({ fallbackRoot: defaultExecutorRoot });
+  const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultExecutorRoot);
+  process.env.CPB_ROOT = cpbRoot;
+  process.env.CPB_EXECUTOR_ROOT = executorRoot;
   if (sourcePath) {
     try {
       sourcePath = await canonicalSourcePath(sourcePath);
@@ -760,7 +772,13 @@ async function main() {
   }
 
   // Create job
-  const job = await createJob(cpbRoot, { project, task, workflow, jobId: jobIdOverride });
+  const job = await createJob(cpbRoot, {
+    project,
+    task,
+    workflow,
+    jobId: jobIdOverride,
+    executor: await executorMetadata(executorRoot),
+  });
   const jobId = job.jobId;
 
   const meta = buildMeta({
@@ -774,7 +792,7 @@ async function main() {
   }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
-  await maybeCreateWorktree(cpbRoot, project, jobId, wikiDir, sourcePath);
+  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents
@@ -819,7 +837,7 @@ async function main() {
     }
     log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
     const planResult = await runPhaseWithLease(
-      cpbRoot, project, jobId, "plan",
+      cpbRoot, executorRoot, project, jobId, "plan",
       `bridges/${bridgeForPhase(workflowDef, "plan")}`,
       [project, task]
     );
@@ -880,7 +898,7 @@ async function main() {
 
       log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude) attempt ${attempt}/${maxRetries}`);
       const execResult = await runPhaseWithLease(
-        cpbRoot, project, jobId,
+        cpbRoot, executorRoot, project, jobId,
         `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
         `bridges/${bridgeForPhase(workflowDef, "execute")}`,
         [project, planId]
@@ -929,7 +947,7 @@ async function main() {
         const reviewPhaseName = reviewCycle === 1 ? "review" : `review-retry-${reviewCycle}`;
         log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewCycle}/${maxRetries}`);
         const reviewResult = await runPhaseWithLease(
-          cpbRoot, project, jobId, reviewPhaseName,
+          cpbRoot, executorRoot, project, jobId, reviewPhaseName,
           `bridges/${bridgeForPhase(workflowDef, "review")}`,
           [project, deliverableId]
         );
@@ -971,7 +989,7 @@ async function main() {
         log(project, "Re-executing (Claude review fix)...");
         const fixPhaseName = `review-fix-${reviewCycle}`;
         const fixResult = await runPhaseWithLease(
-          cpbRoot, project, jobId, fixPhaseName,
+          cpbRoot, executorRoot, project, jobId, fixPhaseName,
           `bridges/${bridgeForPhase(workflowDef, "execute")}`,
           [project, planId, reviewPath]
         );
@@ -1061,7 +1079,7 @@ async function main() {
         verificationManifest?.manifestPath || "",
       ];
       await runPhaseWithLease(
-        cpbRoot, project, jobId, verifyPhaseName,
+        cpbRoot, executorRoot, project, jobId, verifyPhaseName,
         `bridges/${bridgeForPhase(workflowDef, "verify")}`,
         verifyArgs
       );
@@ -1127,7 +1145,7 @@ async function main() {
         log(project, "Re-executing (Claude fix)...");
         const fixPhaseName = `fix-${cycle}`;
         const fixResult = await runPhaseWithLease(
-          cpbRoot, project, jobId, fixPhaseName,
+          cpbRoot, executorRoot, project, jobId, fixPhaseName,
           `bridges/${bridgeForPhase(workflowDef, "execute")}`,
           [project, planId, verdictPath]
         );
@@ -1157,7 +1175,7 @@ async function main() {
               const reviewPhaseName = `post-verify-review-${cycle}-${reviewCycle}`;
               log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review after verify fix attempt ${reviewCycle}/${maxRetries}`);
               const reviewResult = await runPhaseWithLease(
-                cpbRoot, project, jobId, reviewPhaseName,
+                cpbRoot, executorRoot, project, jobId, reviewPhaseName,
                 `bridges/${bridgeForPhase(workflowDef, "review")}`,
                 [project, deliverableId]
               );
@@ -1199,7 +1217,7 @@ async function main() {
               log(project, "Re-executing (Claude post-verify review fix)...");
               const reviewFixPhaseName = `post-verify-review-fix-${cycle}-${reviewCycle}`;
               const reviewFixResult = await runPhaseWithLease(
-                cpbRoot, project, jobId, reviewFixPhaseName,
+                cpbRoot, executorRoot, project, jobId, reviewFixPhaseName,
                 `bridges/${bridgeForPhase(workflowDef, "execute")}`,
                 [project, planId, reviewPath]
               );

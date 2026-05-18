@@ -4,9 +4,10 @@ set -euo pipefail
 # reviewer-review.sh — ACP + RTK: Reviewer code review
 # Usage: reviewer-review.sh <project> <deliverable-id>
 
-CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
-source "$CPB_ROOT/bridges/common.sh"
+source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
 PROJECT="${1:?Usage: reviewer-review.sh <project> <deliverable-id>}"
 DELIVERABLE_ID="${2:?Usage: reviewer-review.sh <project> <deliverable-id>}"
@@ -36,7 +37,7 @@ constraints=""
 if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
   constraints="## Constraints
 - ONLY write the review to: $REVIEW_FILE
-- ONLY read files under: $CPB_ROOT/wiki/projects/$PROJECT/ or $CPB_ROOT/profiles/
+- ONLY read files under: $CPB_ROOT/wiki/projects/$PROJECT/ or $CPB_EXECUTOR_ROOT/profiles/
 - Do NOT execute terminal commands. This is a review-only phase.
 - Do NOT modify any code files."
 fi
@@ -54,7 +55,7 @@ $constraints
 ${PLAN_FILE:+- Implementation plan: $PLAN_FILE}
 - Project context: $WIKI_DIR/context.md
 - Decisions: $WIKI_DIR/decisions.md
-- Role definition: $CPB_ROOT/profiles/reviewer/soul.md
+- Role definition: $CPB_EXECUTOR_ROOT/profiles/reviewer/soul.md
 
 ## Review Criteria
 Rate each area: Critical / Major / Minor / Suggestion

@@ -203,6 +203,7 @@ export function materializeJob(events) {
     phase: null,
     attempt: null,
     workflow: null,
+    executor: null,
     artifacts: {},
     leaseId: null,
     worktree: null,
@@ -240,6 +241,7 @@ export function materializeJob(events) {
     switch (event.type) {
       case "job_created":
         state.task = event.task ?? state.task;
+        state.executor = event.executor ?? state.executor;
         state.status = "running";
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;

@@ -4,9 +4,10 @@ set -euo pipefail
 # codex-plan.sh — ACP + RTK：Codex 规划
 # Usage: codex-plan.sh <project> "<task>"
 
-CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
-source "$CPB_ROOT/bridges/common.sh"
+source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
 PROJECT="${1:?Usage: codex-plan.sh <project> '<task>'}"
 TASK="${2:?Usage: codex-plan.sh <project> '<task>'}"

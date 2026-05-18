@@ -4,9 +4,10 @@ set -euo pipefail
 # init-project.sh — 初始化项目集成
 # Usage: init-project.sh <project-path> <project-name>
 
-CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
-source "$CPB_ROOT/bridges/common.sh"
+source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
 PROJECT_PATH="${1:?Usage: init-project.sh <project-path> <project-name>}"
 PROJECT_NAME="${2:?Usage: init-project.sh <project-path> <project-name>}"
@@ -88,7 +89,7 @@ if [ -d "$WIKI_DIR" ]; then
 fi
 
 # 1. 从模板创建项目 Wiki
-cp -r "$CPB_ROOT/wiki/projects/_template" "$WIKI_DIR"
+cp -r "$CPB_EXECUTOR_ROOT/wiki/projects/_template" "$WIKI_DIR"
 mkdir -p "$WIKI_DIR/inbox" "$WIKI_DIR/outputs"
 echo "Created: $WIKI_DIR"
 

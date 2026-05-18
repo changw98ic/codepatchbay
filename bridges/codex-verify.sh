@@ -4,9 +4,10 @@ set -euo pipefail
 # codex-verify.sh — ACP + RTK：Codex 验证
 # Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]
 
-CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
-source "$CPB_ROOT/bridges/common.sh"
+source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
 PROJECT="${1:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]}"
 DELIVERABLE_ID="${2:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]}"

@@ -45,7 +45,7 @@ export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")
 
 export async function createJob(
   cpbRoot,
-  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId }
+  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null }
 ) {
   const jobId = providedJobId || makeJobId(ts);
   await appendEvent(cpbRoot, project, jobId, {
@@ -54,6 +54,7 @@ export async function createJob(
     project,
     task,
     workflow,
+    executor,
     ts,
   });
   return getJobAndUpdateIndex(cpbRoot, project, jobId);

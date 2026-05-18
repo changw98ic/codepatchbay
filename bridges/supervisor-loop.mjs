@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { recoverAndRun } from "../server/services/supervisor.js";
+import { resolveExecutorRoot } from "../server/services/executor-root.js";
 
 const cpbRoot = path.resolve(
   process.env.CPB_ROOT || path.join(import.meta.dirname, "..")
 );
+const executorRoot = resolveExecutorRoot({
+  fallbackRoot: path.join(import.meta.dirname, ".."),
+});
 const intervalMs = Number(
   process.env.CPB_SUPERVISOR_INTERVAL_MS || 30_000
 );
@@ -21,7 +25,7 @@ async function tick() {
 
   let results;
   try {
-    results = await recoverAndRun(cpbRoot, { maxConcurrent });
+    results = await recoverAndRun(cpbRoot, { maxConcurrent, executorRoot });
   } catch (err) {
     log("error", `recovery scan failed: ${err.message}`);
     return;

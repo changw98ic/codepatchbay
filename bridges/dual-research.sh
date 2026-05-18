@@ -4,9 +4,10 @@ set -euo pipefail
 # dual-research.sh — Dual-agent parallel research
 # Usage: dual-research.sh <project> "<task>"
 
-CPB_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
-source "$CPB_ROOT/bridges/common.sh"
+source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
 PROJECT="${1:?Usage: dual-research.sh <project> '<task>'}"
 TASK="${2:?Usage: dual-research.sh <project> '<task>'}"
@@ -56,7 +57,7 @@ if [ "$CODEX_EXIT" -ne 0 ] && [ "$CLAUDE_EXIT" -ne 0 ]; then
 fi
 
 # Merge results
-node "$CPB_ROOT/bridges/merge-research.mjs" \
+node "$CPB_EXECUTOR_ROOT/bridges/merge-research.mjs" \
   --codex "$CODEX_OUT" --codex-exit "$CODEX_EXIT" \
   --claude "$CLAUDE_OUT" --claude-exit "$CLAUDE_EXIT" \
   --task "$TASK" \

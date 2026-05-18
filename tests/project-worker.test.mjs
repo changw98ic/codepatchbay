@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { describe, beforeEach, afterEach } from "node:test";
@@ -126,6 +126,58 @@ describe("ProjectWorker", () => {
 
     assert.equal(result.ok, true);
     assert.equal(capturedEntry.id, queued.id);
+  });
+
+  test("runPipeline executes from executorRoot while preserving cpbRoot state path", async () => {
+    const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-state-root-"));
+    const executorRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-executor-root-"));
+    const capturePath = path.join(executorRoot, "capture.json");
+    await mkdir(path.join(executorRoot, "bridges"), { recursive: true });
+    await writeFile(
+      path.join(executorRoot, "bridges", "run-pipeline.mjs"),
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        "await writeFile(process.env.CAPTURE_PATH, JSON.stringify({",
+        "  cwd: process.cwd(),",
+        "  cpbRoot: process.env.CPB_ROOT,",
+        "  executorRoot: process.env.CPB_EXECUTOR_ROOT,",
+        "  acpCwd: process.env.CPB_ACP_CWD,",
+        "  args: process.argv.slice(2),",
+        "}, null, 2));",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "executor root run",
+    });
+    const previousCapturePath = process.env.CAPTURE_PATH;
+    process.env.CAPTURE_PATH = capturePath;
+    try {
+      const worker = new ProjectWorker({
+        projectId,
+        hubRoot,
+        cpbRoot,
+        executorRoot,
+        once: true,
+        agentHealthFn: async () => ({ codex: true, claude: true }),
+      });
+      await worker.init();
+      const result = await worker.executeEntry(queued);
+      assert.equal(result.ok, true);
+    } finally {
+      if (previousCapturePath === undefined) delete process.env.CAPTURE_PATH;
+      else process.env.CAPTURE_PATH = previousCapturePath;
+    }
+
+    const capture = JSON.parse(await readFile(capturePath, "utf8"));
+    assert.equal(capture.cwd, await realpath(cpbRoot));
+    assert.equal(capture.cpbRoot, path.resolve(cpbRoot));
+    assert.equal(capture.executorRoot, path.resolve(executorRoot));
+    assert.equal(capture.acpCwd, path.resolve(sourceDir));
+    assert.ok(capture.args.includes("--source-path"));
   });
 
   test("executeEntry fails on sourcePath guard mismatch when dispatch enabled", async () => {
@@ -345,6 +397,11 @@ describe("parseArgs", () => {
   test("parses --workflow", () => {
     const opts = parseArgs(["node", "script", "--project", "p", "--workflow", "blocked"]);
     assert.equal(opts.workflow, "blocked");
+  });
+
+  test("parses --executor-root", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--executor-root", "/tmp/cpb-release"]);
+    assert.equal(opts.executorRoot, "/tmp/cpb-release");
   });
 
   test("parses --poll-ms and --heartbeat-ms", () => {

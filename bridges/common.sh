@@ -2,7 +2,8 @@
 # common.sh — CodePatchbay bridge 共享函数库
 # source "$(dirname "$0")/common.sh"
 
-CPB_ROOT="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 
 # ─── 颜色 ───
@@ -141,11 +142,11 @@ rtk_codex_plan() {
   local proj_context decisions handshake plan_tpl
   proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
   decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
-  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
-  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
+  handshake=$(_pre_read "$CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_EXECUTOR_ROOT/templates/handoff/plan-to-execute.md")
 
   cat << PROMPT
-You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -188,7 +189,7 @@ rtk_claude_execute() {
 - Write code ONLY in the target project directory${project_cwd:+: $project_cwd}
 - Write deliverable ONLY to: $deliverable_file
 - Write verdicts ONLY under: $CPB_ROOT/wiki/projects/$project/outputs/
-- Do NOT modify files under: $CPB_ROOT/wiki/system/, $CPB_ROOT/profiles/, $CPB_ROOT/bridges/
+- Do NOT modify files under: $CPB_EXECUTOR_ROOT/wiki/system/, $CPB_EXECUTOR_ROOT/profiles/, $CPB_EXECUTOR_ROOT/bridges/
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories."
   fi
   local fix_section=""
@@ -201,7 +202,7 @@ You MUST address the specific failures listed in the verdict. Do NOT repeat the 
   local skills_section
   skills_section=$(build_skills_section claude)
   cat << PROMPT
-You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -210,12 +211,12 @@ $constraints
 $fix_section
 
 ## Files to read
-- Role definition: $CPB_ROOT/profiles/claude/soul.md
+- Role definition: $CPB_EXECUTOR_ROOT/profiles/claude/soul.md
 - Plan to execute: $plan_file
 - Project context: $CPB_ROOT/wiki/projects/$project/context.md
 - Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
-- Deliverable template: $CPB_ROOT/templates/handoff/execute-to-review.md
-- Handshake format: $CPB_ROOT/wiki/system/handshake-protocol.md
+- Deliverable template: $CPB_EXECUTOR_ROOT/templates/handoff/execute-to-review.md
+- Handshake format: $CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md
 
 ## Instructions
 1. Read the plan file first.
@@ -285,7 +286,7 @@ $manifest_content"
   fi
 
   cat << PROMPT
-You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -330,7 +331,7 @@ rtk_research_prompt() {
   cat << PROMPT
 You are CodePatchbay Research Agent. Analyze this task for project "$project".
 
-Skills: Read skill files from $CPB_ROOT/profiles/codex/skills/ or $CPB_ROOT/profiles/claude/skills/ as needed.
+Skills: Read skill files from $CPB_EXECUTOR_ROOT/profiles/codex/skills/ or $CPB_EXECUTOR_ROOT/profiles/claude/skills/ as needed.
 
 $skills_section
 
@@ -381,12 +382,12 @@ rtk_codex_plan_with_research() {
   local proj_context decisions handshake plan_tpl research_content
   proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
   decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
-  handshake=$(_pre_read "$CPB_ROOT/wiki/system/handshake-protocol.md")
-  plan_tpl=$(_pre_read "$CPB_ROOT/templates/handoff/plan-to-execute.md")
+  handshake=$(_pre_read "$CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md")
+  plan_tpl=$(_pre_read "$CPB_EXECUTOR_ROOT/templates/handoff/plan-to-execute.md")
   research_content=$(_pre_read "$research_file")
 
   cat << PROMPT
-You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -452,7 +453,7 @@ dashboard_update() {
 # ─── Skill catalog builder ───
 build_skills_section() {
   local role="$1"
-  local skills_dir="$CPB_ROOT/profiles/$role/skills"
+  local skills_dir="$CPB_EXECUTOR_ROOT/profiles/$role/skills"
   [ -d "$skills_dir" ] || return 0
   local count=0
   echo "## Available Skills"
@@ -473,7 +474,7 @@ build_skills_section() {
 
 # ─── Claude provider variant overlays ───
 cpb_apply_claude_variant() {
-  local variant_script="${CPB_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
+  local variant_script="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/bridges/apply-variant.mjs"
   if [ ! -f "$variant_script" ]; then
     echo -e "${RED}Variant module not found: $variant_script${NC}" >&2
     exit 1
@@ -497,7 +498,7 @@ cpb_apply_claude_variant() {
 # ─── ACP 执行 ───
 acp_run() {
   local agent="$1"; shift
-  local acp="${CPB_ACP_CLIENT:-$CPB_ROOT/bridges/acp-client.mjs}"
+  local acp="${CPB_ACP_CLIENT:-$CPB_EXECUTOR_ROOT/bridges/acp-client.mjs}"
   if [ ! -x "$acp" ]; then
     echo -e "${RED}ACP client not executable: $acp${NC}" >&2
     exit 1

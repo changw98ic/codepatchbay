@@ -16,9 +16,13 @@ import {
   markDispatchStarted,
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
+import { executorEnv, resolveExecutorRoot } from "../server/services/executor-root.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
+const CPB_EXECUTOR_ROOT = resolveExecutorRoot({
+  fallbackRoot: path.join(__dirname, ".."),
+});
 export const AGENT_OUTAGE_EXIT_CODE = 2;
 
 function numericOption(value, fallback) {
@@ -36,18 +40,17 @@ function truncateOutput(output, maxLength = 2_000) {
   return `${output.slice(0, maxLength)}\n[truncated ${output.length - maxLength} chars]`;
 }
 
-function runAgentSmoke({ agent, cpbRoot, cwd, timeoutMs }) {
+function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const script = [
-      'source "$CPB_ROOT/bridges/common.sh"',
+      'source "$CPB_EXECUTOR_ROOT/bridges/common.sh"',
       'printf "%s" "$CPB_AGENT_PREFLIGHT_PROMPT" | CPB_ACP_TIMEOUT_MS="$CPB_AGENT_PREFLIGHT_TIMEOUT_MS" acp_run "$CPB_AGENT_PREFLIGHT_AGENT"',
     ].join("; ");
     const child = spawn("bash", ["-lc", script], {
       cwd: cpbRoot,
       env: {
-        ...process.env,
-        CPB_ROOT: cpbRoot,
+        ...executorEnv(process.env, { cpbRoot, executorRoot }),
         CPB_ACP_CWD: cwd || cpbRoot,
         CPB_AGENT_PREFLIGHT_AGENT: agent,
         CPB_AGENT_PREFLIGHT_TIMEOUT_MS: String(timeoutMs),
@@ -107,10 +110,10 @@ function runAgentSmoke({ agent, cpbRoot, cwd, timeoutMs }) {
   });
 }
 
-async function defaultAgentHealth({ cpbRoot, cwd, timeoutMs }) {
+async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }) {
   const [codex, claude] = await Promise.all([
-    runAgentSmoke({ agent: "codex", cpbRoot, cwd, timeoutMs }),
-    runAgentSmoke({ agent: "claude", cpbRoot, cwd, timeoutMs }),
+    runAgentSmoke({ agent: "codex", cpbRoot, executorRoot, cwd, timeoutMs }),
+    runAgentSmoke({ agent: "claude", cpbRoot, executorRoot, cwd, timeoutMs }),
   ]);
   return {
     codex: codex.ok,
@@ -138,6 +141,7 @@ export function parseArgs(argv) {
     agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
     workflow: process.env.CPB_WORKER_WORKFLOW || "standard",
     cpbRoot: CPB_ROOT,
+    executorRoot: CPB_EXECUTOR_ROOT,
     hubRoot: null,
   };
   const args = argv.slice(2);
@@ -158,6 +162,7 @@ export function parseArgs(argv) {
     else if (arg === "--agent-preflight-timeout-ms") opts.agentPreflightTimeoutMs = Number(valueAfter(i++, "--agent-preflight-timeout-ms"));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, "--workflow");
     else if (arg === "--cpb-root") opts.cpbRoot = valueAfter(i++, "--cpb-root");
+    else if (arg === "--executor-root") opts.executorRoot = valueAfter(i++, "--executor-root");
     else if (arg === "--hub-root") opts.hubRoot = valueAfter(i++, "--hub-root");
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
@@ -168,6 +173,7 @@ export function parseArgs(argv) {
 export class ProjectWorker {
   constructor(opts = {}) {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
+    this.executorRoot = path.resolve(opts.executorRoot || CPB_EXECUTOR_ROOT);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(this.cpbRoot));
     this.projectId = opts.projectId;
     this.workerId = opts.workerId || `worker-${process.pid}`;
@@ -296,6 +302,7 @@ export class ProjectWorker {
   async checkAgentHealth() {
     return this._agentHealthFn({
       cpbRoot: this.cpbRoot,
+      executorRoot: this.executorRoot,
       cwd: this.project?.sourcePath || this.cpbRoot,
       timeoutMs: this.agentPreflightTimeoutMs,
     });
@@ -371,7 +378,7 @@ export class ProjectWorker {
 
     return new Promise((resolve) => {
       const args = [
-        path.join(this.cpbRoot, "bridges", "run-pipeline.mjs"),
+        path.join(this.executorRoot, "bridges", "run-pipeline.mjs"),
         "--project", this.project.id,
         "--task", entry.description || entry.id,
         "--workflow", this.workflow,
@@ -382,8 +389,10 @@ export class ProjectWorker {
       const child = spawn(process.execPath, args, {
         cwd: this.cpbRoot,
         env: {
-          ...process.env,
-          CPB_ROOT: this.cpbRoot,
+          ...executorEnv(process.env, {
+            cpbRoot: this.cpbRoot,
+            executorRoot: this.executorRoot,
+          }),
           CPB_PROJECT_PATH_OVERRIDE: sourcePath || "",
           CPB_ACP_CWD: sourcePath || "",
           CPB_SESSION_ID: entry.sessionId || "",
@@ -487,6 +496,7 @@ Options:
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
   --workflow <type>          Pipeline workflow: standard|blocked (default: standard)
   --cpb-root <path>          CPB root directory
+  --executor-root <path>     CPB executor/release root directory
   --hub-root <path>          Hub root directory`;
 }
 
@@ -509,6 +519,7 @@ async function main() {
     agentPreflightTimeoutMs: opts.agentPreflightTimeoutMs,
     workflow: opts.workflow,
     cpbRoot: opts.cpbRoot,
+    executorRoot: opts.executorRoot,
     hubRoot: opts.hubRoot,
   });
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
+import { executorEnv, resolveExecutorRoot } from "./executor-root.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 const STALE_GRACE_COUNT = parseInt(process.env.CPB_STALE_GRACE_COUNT, 10) || 3;
@@ -187,7 +188,7 @@ export function bridgeForPhase(phase, project, job) {
 /**
  * Spawn a child process and return { exitCode, signal }.
  */
-function runChild(command, args, cwd) {
+function runChild(command, args, cwd, { env = process.env } = {}) {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -201,7 +202,7 @@ function runChild(command, args, cwd) {
     try {
       child = spawn(command, args, {
         cwd,
-        env: process.env,
+        env,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -225,7 +226,8 @@ function runChild(command, args, cwd) {
  *
  * Returns { jobId, project, phase, exitCode } on success or error.
  */
-export async function recoverOneJob(cpbRoot, job) {
+export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
+  const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const phase = nextPhaseFor(job);
   if (phase === "") {
     return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
@@ -242,7 +244,7 @@ export async function recoverOneJob(cpbRoot, job) {
     return { jobId: job.jobId, project: job.project, phase, exitCode: 1, error: "no bridge for phase" };
   }
 
-  const jobRunner = path.resolve(cpbRoot, "bridges", "job-runner.mjs");
+  const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
   if (!await fileExists(jobRunner)) {
     return {
       jobId: job.jobId,
@@ -259,12 +261,17 @@ export async function recoverOneJob(cpbRoot, job) {
     "--project", job.project,
     "--job-id", job.jobId,
     "--phase", phase,
-    "--script", path.resolve(cpbRoot, bridge.script),
+    "--script", path.resolve(resolvedExecutorRoot, bridge.script),
     "--",
     ...bridge.args,
   ];
 
-  const result = await runChild("node", runnerArgs, cpbRoot);
+  const result = await runChild("node", runnerArgs, cpbRoot, {
+    env: executorEnv(process.env, {
+      cpbRoot,
+      executorRoot: resolvedExecutorRoot,
+    }),
+  });
 
   return {
     jobId: job.jobId,
@@ -281,8 +288,9 @@ export async function recoverOneJob(cpbRoot, job) {
  *
  * Returns an array of recovery results.
  */
-export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1 } = {}) {
+export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorRoot } = {}) {
   const jobs = await recoverJobs(cpbRoot, { now });
+  const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const results = [];
 
   // Process in batches of maxConcurrent.
@@ -290,7 +298,7 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1 } = {}) {
     const batch = jobs.slice(i, i + maxConcurrent);
     const batchResults = await Promise.all(
       batch.map((job) =>
-        recoverOneJob(cpbRoot, job).catch((err) => ({
+        recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot }).catch((err) => ({
           jobId: job.jobId,
           project: job.project,
           phase: nextPhaseFor(job),
