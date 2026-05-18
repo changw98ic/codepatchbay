@@ -1,0 +1,502 @@
+import { execFile } from "node:child_process";
+import {
+  access,
+  constants as fsConstants,
+  readdir,
+  readFile,
+  mkdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
+import { promisify } from "node:util";
+
+import { redactSecrets } from "./diagnostics-bundle.js";
+import { listJobs } from "./job-store.js";
+import { hubStatus, loadRegistry, resolveHubRoot, workerStatus } from "./hub-registry.js";
+import { readHubLiveness } from "./hub-runtime.js";
+import { readLease, isLeaseStale } from "./lease-manager.js";
+import { runtimeDataPath } from "./runtime-root.js";
+import { resolveRuntimeBin, shouldUseRustRuntime } from "./runtime-cli.js";
+import { sanitizeProviderReason } from "../../bridges/acp-pool.mjs";
+
+const execFileAsync = promisify(execFile);
+const SUBPROCESS_TIMEOUT_MS = 5_000;
+const MIN_NODE_MAJOR = 18;
+const DISK_WARN_BYTES = 100 * 1024 * 1024;
+const HUB_WORKER_TTL = 120_000;
+
+// --- Result model ---
+
+function makeCheck(id, category, status, severity, message, { details, remediation } = {}) {
+  const check = { id, category, status, severity, message };
+  if (details !== undefined) check.details = details;
+  if (remediation !== undefined) check.remediation = remediation;
+  return check;
+}
+
+function ok(id, category, message, opts) {
+  return makeCheck(id, category, "ok", "info", message, opts);
+}
+
+function warn(id, category, message, opts) {
+  return makeCheck(id, category, "warn", "important", message, opts);
+}
+
+function error(id, category, message, opts) {
+  return makeCheck(id, category, "error", "critical", message, opts);
+}
+
+function skipped(id, category, message, opts) {
+  return makeCheck(id, category, "skipped", "info", message, opts);
+}
+
+export function deriveSummary(checks) {
+  const counts = { ok: 0, warn: 0, error: 0, skipped: 0 };
+  for (const check of checks) counts[check.status]++;
+  return { ...counts, success: counts.error === 0 };
+}
+
+// --- Individual checks ---
+
+async function checkNode() {
+  const ver = process.version;
+  const major = parseInt(ver.slice(1).split(".")[0], 10);
+  if (major < MIN_NODE_MAJOR) {
+    return error("node-version", "toolchain", `Node.js ${ver} is below minimum v${MIN_NODE_MAJOR}`, {
+      remediation: `Install Node.js v${MIN_NODE_MAJOR} or later.`,
+    });
+  }
+  return ok("node-version", "toolchain", `Node.js ${ver}`);
+}
+
+async function checkNpm() {
+  try {
+    const { stdout } = await execFileAsync("npm", ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
+    return ok("npm-version", "toolchain", `npm ${stdout.trim()}`);
+  } catch {
+    return warn("npm-version", "toolchain", "npm not found", {
+      remediation: "Install npm (usually bundled with Node.js).",
+    });
+  }
+}
+
+async function checkGit() {
+  try {
+    const { stdout } = await execFileAsync("git", ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const ver = stdout.trim().replace("git version ", "");
+    return ok("git-version", "toolchain", `Git ${ver}`);
+  } catch {
+    return error("git-version", "toolchain", "Git not found", {
+      remediation: "Install Git.",
+    });
+  }
+}
+
+async function checkDiskSpace(dirPath, label) {
+  const id = `disk-${label}`;
+  try {
+    const resolved = path.resolve(dirPath);
+    try { await mkdir(resolved, { recursive: true }); } catch {}
+    const { stdout } = await execFileAsync("df", ["-k", resolved], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const lines = stdout.trim().split("\n");
+    if (lines.length < 2) return skipped(id, "disk", `Cannot parse df output for ${label}`);
+    const parts = lines[lines.length - 1].split(/\s+/);
+    const freeKb = parseInt(parts[3], 10);
+    if (Number.isNaN(freeKb)) return skipped(id, "disk", `Cannot parse free space for ${label}`);
+    const freeBytes = freeKb * 1024;
+    if (freeBytes < DISK_WARN_BYTES) {
+      return warn(id, "disk", `Low disk space (${label}): ${(freeBytes / 1024 / 1024).toFixed(0)} MB free`, {
+        details: { path: resolved, freeBytes },
+        remediation: `Free at least ${DISK_WARN_BYTES / 1024 / 1024} MB on the ${label} volume.`,
+      });
+    }
+    return ok(id, "disk", `${label}: ${(freeBytes / 1024 / 1024).toFixed(0)} MB free`);
+  } catch {
+    return skipped(id, "disk", `Cannot check disk space for ${label}`);
+  }
+}
+
+async function checkAcpAdapter(adapterName, command, args) {
+  const id = `acp-adapter-${adapterName}`;
+  const npxPkg = adapterName === "codex"
+    ? "@zed-industries/codex-acp"
+    : "@agentclientprotocol/claude-agent-acp";
+
+  let stdout;
+  try {
+    const result = await execFileAsync(command, [...args], { timeout: SUBPROCESS_TIMEOUT_MS });
+    stdout = result.stdout || "";
+  } catch (e) {
+    return error(id, "acp", `${adapterName} adapter not found`, {
+      details: { command, fallback: `npx -y ${npxPkg}`, error: e.message },
+      remediation: `Install adapter: npx -y ${npxPkg}`,
+    });
+  }
+
+  // Try to extract version from --help output or run --version
+  let version;
+  try {
+    const verResult = await execFileAsync(command, ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
+    version = (verResult.stdout || "").trim();
+  } catch {}
+  if (!version) {
+    const verMatch = stdout.match(/version[:\s]+([0-9]+\.[0-9]+\.[0-9]+)/i);
+    version = verMatch ? verMatch[1] : undefined;
+  }
+
+  const msg = version
+    ? `${adapterName} adapter available (v${version})`
+    : `${adapterName} adapter available`;
+  return ok(id, "acp", msg, { details: version ? { version } : undefined });
+}
+
+async function checkRustRuntime(cpbRoot) {
+  if (!shouldUseRustRuntime()) {
+    return skipped("rust-runtime", "runtime", "Rust runtime disabled (CPB_RUNTIME != rust)");
+  }
+  const bin = resolveRuntimeBin(cpbRoot);
+  try {
+    await access(bin, fsConstants.X_OK);
+    return ok("rust-runtime", "runtime", `Rust runtime binary available`);
+  } catch {
+    return error("rust-runtime", "runtime", "Rust runtime enabled but binary not found", {
+      details: { expectedPath: bin },
+      remediation: "Build the runtime: cd runtime && cargo build, or set CPB_RUNTIME_BIN.",
+    });
+  }
+}
+
+async function checkHubLiveness(hubRoot) {
+  try {
+    const liveness = await readHubLiveness(hubRoot);
+    if (liveness.alive) {
+      return ok("hub-liveness", "hub", `Hub alive (pid: ${liveness.pid})`, {
+        details: { pid: liveness.pid, startedAt: liveness.startedAt, version: liveness.version },
+      });
+    }
+    const reason = liveness.reason || "unknown";
+    const messages = {
+      "no-hub-json": "Hub not started (no hub.json found)",
+      "process-gone": `Hub process gone (pid: ${liveness.pid})`,
+      "shutdown": `Hub shut down (pid: ${liveness.pid})`,
+    };
+    return warn("hub-liveness", "hub", messages[reason] || `Hub not alive: ${reason}`, {
+      details: liveness,
+      remediation: "Run: cpb hub start",
+    });
+  } catch (e) {
+    return error("hub-liveness", "hub", `Hub liveness check failed: ${e.message}`);
+  }
+}
+
+async function checkHubWritability(hubRoot) {
+  const probeDir = path.join(path.resolve(hubRoot), "state");
+  const probeFile = path.join(probeDir, `.readiness-probe-${process.pid}`);
+  try {
+    await mkdir(probeDir, { recursive: true });
+    await writeFile(probeFile, "probe", "utf8");
+    await readFile(probeFile, "utf8");
+    await rm(probeFile, { force: true });
+    return ok("hub-writability", "hub", "Hub state directory writable");
+  } catch (e) {
+    try { await rm(probeFile, { force: true }); } catch {}
+    return error("hub-writability", "hub", "Hub state directory not writable", {
+      details: { path: probeDir, error: e.message },
+      remediation: `Ensure write permissions on ${probeDir}`,
+    });
+  }
+}
+
+async function checkRegistryConsistency(hubRoot) {
+  try {
+    const registry = await loadRegistry(hubRoot);
+    const projects = Object.values(registry.projects);
+    const issues = [];
+    for (const project of projects) {
+      if (!project.id) {
+        issues.push({ project: "unknown", issue: "missing id" });
+      } else if (!project.sourcePath) {
+        issues.push({ project: project.id, issue: "missing sourcePath" });
+      }
+      if (project.worker && project.worker.pid) {
+        try { process.kill(project.worker.pid, 0); } catch {
+          issues.push({ project: project.id, issue: `worker pid ${project.worker.pid} not alive` });
+        }
+      }
+    }
+    if (issues.length > 0) {
+      return warn("registry-consistency", "registry", `${issues.length} registry issue(s)`, {
+        details: issues,
+        remediation: "Run: cpb hub projects to inspect, or restart workers.",
+      });
+    }
+    return ok("registry-consistency", "registry", `${projects.length} project(s) registered`);
+  } catch (e) {
+    return error("registry-consistency", "registry", `Registry read failed: ${e.message}`);
+  }
+}
+
+async function checkStaleJobs(cpbRoot) {
+  try {
+    const allJobs = await listJobs(cpbRoot);
+    const terminalStates = ["completed", "failed", "blocked", "cancelled"];
+    const running = allJobs.filter((j) => !terminalStates.includes(j.status));
+    if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
+
+    const stale = [];
+    const missingLeases = [];
+    for (const job of running) {
+      if (!job.leaseId) {
+        stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, issue: "no lease" });
+        continue;
+      }
+      try {
+        const lease = await readLease(cpbRoot, job.leaseId);
+        if (lease === null) {
+          missingLeases.push({ jobId: job.jobId, project: job.project, leaseId: job.leaseId, issue: "lease file missing" });
+        } else if (isLeaseStale(lease)) {
+          stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, issue: "expired lease" });
+        }
+      } catch {
+        stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, issue: "lease read error" });
+      }
+    }
+    const allIssues = [...stale, ...missingLeases];
+    if (allIssues.length > 0) {
+      return warn("stale-jobs", "jobs", `${allIssues.length} stale job(s) (${stale.length} stale, ${missingLeases.length} missing lease)`, {
+        details: allIssues,
+        remediation: "Run: cpb recover <project> <jobId> or cpb jobs reconcile",
+      });
+    }
+    return ok("stale-jobs", "jobs", `${running.length} running job(s), all leases active`);
+  } catch (e) {
+    return warn("stale-jobs", "jobs", `Cannot check stale jobs: ${e.message}`);
+  }
+}
+
+async function checkOrphanLeases(cpbRoot) {
+  try {
+    const leasesDir = runtimeDataPath(cpbRoot, "leases");
+    let files;
+    try {
+      files = await readdir(leasesDir);
+    } catch {
+      return ok("orphan-leases", "leases", "No leases directory");
+    }
+    const leaseFiles = files.filter((f) => f.endsWith(".json"));
+    if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
+
+    const allJobs = await listJobs(cpbRoot);
+    const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
+    const orphans = [];
+    for (const f of leaseFiles) {
+      const leaseId = f.replace(".json", "");
+      if (!jobLeaseIds.has(leaseId)) {
+        orphans.push({ leaseId });
+      }
+    }
+    if (orphans.length > 0) {
+      return warn("orphan-leases", "leases", `${orphans.length} orphan lease(s) not tied to any job`, {
+        details: orphans,
+        remediation: "Run: cpb gc to clean up orphan leases from completed jobs.",
+      });
+    }
+    return ok("orphan-leases", "leases", `${leaseFiles.length} lease(s), all tied to jobs`);
+  } catch (e) {
+    return warn("orphan-leases", "leases", `Cannot check orphan leases: ${e.message}`);
+  }
+}
+
+async function checkStaleWorkers(hubRoot) {
+  try {
+    const registry = await loadRegistry(hubRoot);
+    const projects = Object.values(registry.projects);
+    const stale = [];
+    for (const project of projects) {
+      const status = workerStatus(project, HUB_WORKER_TTL);
+      if (status === "stale") {
+        stale.push({ id: project.id, lastSeenAt: project.worker?.lastSeenAt });
+      }
+    }
+    if (stale.length > 0) {
+      return warn("stale-workers", "workers", `${stale.length} stale worker(s)`, {
+        details: stale,
+        remediation: "Stale workers self-recover on next heartbeat. Check worker process health.",
+      });
+    }
+    return ok("stale-workers", "workers", "No stale workers");
+  } catch (e) {
+    return warn("stale-workers", "workers", `Cannot check stale workers: ${e.message}`);
+  }
+}
+
+async function checkProviderBackoff(hubRoot) {
+  try {
+    const rateLimitsPath = path.join(path.resolve(hubRoot), "providers", "rate-limits.json");
+    let limits;
+    try {
+      const raw = await readFile(rateLimitsPath, "utf8");
+      limits = JSON.parse(raw);
+    } catch {
+      return ok("provider-backoff", "provider", "No active provider backoff");
+    }
+
+    const active = [];
+    const now = Date.now();
+    for (const [agent, info] of Object.entries(limits)) {
+      if (!info || typeof info !== "object") continue;
+      const untilTs = Date.parse(info.untilTs);
+      if (Number.isFinite(untilTs) && untilTs > now) {
+        active.push({
+          agent,
+          untilTs: info.untilTs,
+          reason: sanitizeProviderReason(info.reason || ""),
+        });
+      }
+    }
+    if (active.length > 0) {
+      return warn("provider-backoff", "provider", `${active.length} provider(s) in rate-limit backoff`, {
+        details: active,
+        remediation: "Wait for rate limit to expire, or reduce request frequency.",
+      });
+    }
+    return ok("provider-backoff", "provider", "No active provider backoff");
+  } catch (e) {
+    return warn("provider-backoff", "provider", `Cannot check provider backoff: ${e.message}`);
+  }
+}
+
+// --- Orchestrator ---
+
+async function checkCommonSh(cpbRoot) {
+  const shPath = path.join(path.resolve(cpbRoot), "bridges", "common.sh");
+  try {
+    await access(shPath, fsConstants.R_OK);
+    return ok("common-sh", "toolchain", "bridges/common.sh present");
+  } catch {
+    return warn("common-sh", "toolchain", "bridges/common.sh not found", {
+      remediation: "Ensure the cpb installation includes bridges/common.sh.",
+    });
+  }
+}
+
+async function checkServerDeps(cpbRoot) {
+  const nmPath = path.join(path.resolve(cpbRoot), "server", "node_modules");
+  try {
+    await access(nmPath, fsConstants.R_OK);
+    return ok("server-deps", "toolchain", "Server dependencies installed");
+  } catch {
+    return warn("server-deps", "toolchain", "Server dependencies not installed", {
+      remediation: "Run: cd server && npm install",
+    });
+  }
+}
+
+export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } = {}) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd());
+  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
+
+  const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: ["--help"] };
+  const claudeAdapter = adapterOverrides?.claude || { command: "claude-agent-acp", args: ["--help"] };
+
+  const results = await Promise.all([
+    checkNode(),
+    checkNpm(),
+    checkGit(),
+    checkCommonSh(resolvedCpbRoot),
+    checkServerDeps(resolvedCpbRoot),
+    checkDiskSpace(resolvedCpbRoot, "project"),
+    checkDiskSpace(resolvedHubRoot, "hub"),
+    checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args),
+    checkAcpAdapter("claude", claudeAdapter.command, claudeAdapter.args),
+    checkRustRuntime(resolvedCpbRoot),
+    checkHubLiveness(resolvedHubRoot),
+    checkHubWritability(resolvedHubRoot),
+    checkRegistryConsistency(resolvedHubRoot),
+    checkStaleJobs(resolvedCpbRoot),
+    checkStaleWorkers(resolvedHubRoot),
+    checkOrphanLeases(resolvedCpbRoot),
+    checkProviderBackoff(resolvedHubRoot),
+  ]);
+
+  const summary = deriveSummary(results);
+
+  return {
+    command: "cpb doctor",
+    generatedAt: new Date().toISOString(),
+    summary,
+    checks: results,
+  };
+}
+
+// --- Output formatters ---
+
+const CATEGORY_ORDER = ["toolchain", "disk", "acp", "runtime", "hub", "registry", "jobs", "workers", "leases", "provider"];
+const CATEGORY_LABELS = {
+  toolchain: "Toolchain",
+  disk: "Disk",
+  acp: "ACP Adapters",
+  runtime: "Runtime",
+  hub: "Hub",
+  registry: "Registry",
+  jobs: "Jobs",
+  workers: "Workers",
+  leases: "Leases",
+  provider: "Provider",
+};
+
+const STATUS_ICON = { ok: "✓", warn: "!", error: "✗", skipped: "-" };
+const STATUS_COLOR = {
+  ok: "\x1b[0;32m",
+  warn: "\x1b[1;33m",
+  error: "\x1b[0;31m",
+  skipped: "\x1b[0;36m",
+};
+const NC = "\x1b[0m";
+const BOLD = "\x1b[1m";
+
+export function formatReadinessHuman(result) {
+  const redacted = redactSecrets(result);
+  const { summary, checks } = redacted;
+  const lines = [];
+
+  lines.push(`${BOLD}CodePatchbay Doctor${NC}`);
+
+  const byCategory = new Map();
+  for (const check of checks) {
+    if (!byCategory.has(check.category)) byCategory.set(check.category, []);
+    byCategory.get(check.category).push(check);
+  }
+
+  for (const cat of CATEGORY_ORDER) {
+    const catChecks = byCategory.get(cat);
+    if (!catChecks) continue;
+    lines.push("");
+    lines.push(`  ${BOLD}${CATEGORY_LABELS[cat] || cat}:${NC}`);
+    for (const check of catChecks) {
+      const color = STATUS_COLOR[check.status];
+      const icon = STATUS_ICON[check.status];
+      let line = `    ${color}${icon}${NC} ${check.message}`;
+      if (check.remediation) line += ` ${color}→ ${check.remediation}${NC}`;
+      lines.push(line);
+    }
+  }
+
+  lines.push("");
+  if (summary.success) {
+    if (summary.warn > 0) {
+      lines.push(`  ${STATUS_COLOR.warn}${summary.warn} warning(s)${NC}, ${summary.ok} passed, ${summary.skipped} skipped.`);
+    } else {
+      lines.push(`  ${STATUS_COLOR.ok}All checks passed.${NC}`);
+    }
+  } else {
+    lines.push(`  ${STATUS_COLOR.error}${summary.error} error(s)${NC}, ${summary.warn} warning(s), ${summary.ok} passed.`);
+  }
+
+  return lines.join("\n");
+}
+
+export function formatReadinessJson(result) {
+  return JSON.stringify(redactSecrets(result), null, 2);
+}
