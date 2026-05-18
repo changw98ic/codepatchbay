@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { registerTask, unregisterTask } from "../services/executor.js";
 import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
+import { buildChildEnv } from "../services/secret-policy.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -15,7 +16,7 @@ function spawnPipeline(cpbRoot, project, task, log) {
   try {
     child = spawn("bash", [scriptPath, project, task, "3", "0"], {
       cwd: cpbRoot,
-      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" },
+      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" }),
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
@@ -120,7 +121,7 @@ async function handleReviewCommand(cpbRoot, cmd, log) {
     const scriptPath = path.join(cpbRoot, "bridges/review-dispatch.mjs");
     spawn("node", [scriptPath, cpbRoot, session.sessionId], {
       cwd: cpbRoot,
-      env: { ...process.env, CPB_ROOT: cpbRoot },
+      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot }),
       stdio: "ignore",
       detached: true,
     }).unref();

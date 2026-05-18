@@ -118,6 +118,27 @@ test("composePromptContext returns null content for missing files", async () => 
   assert.equal(ctx.source, "file");
 });
 
+test("composePromptContext logs secret_blocked for brokered secret-path reads", async () => {
+  const sourcePath = path.join(tmpDir, ".ssh", "secretrepo");
+  await fs.mkdir(path.join(sourcePath, ".cpb"), { recursive: true });
+  await fs.writeFile(path.join(sourcePath, ".cpb", "context.md"), "private context", "utf8");
+  const blocked = [];
+
+  const result = await composePromptContext({
+    hubRoot,
+    sourcePath,
+    sessionId: "s-secret",
+    task: "test",
+    onSecretBlocked: (event) => blocked.push(event),
+  });
+
+  const ctx = result.layers.find((l) => l.name === "project-context");
+  assert.equal(ctx.content, null);
+  assert.ok(blocked.length >= 1);
+  assert.equal(blocked[0].type, "secret_blocked");
+  assert.equal(blocked[0].messageKey, "secret_blocked");
+});
+
 // --- write policy integration ---
 
 test("composePromptContext result exposes write policy per layer", async () => {

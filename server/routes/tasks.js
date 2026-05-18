@@ -3,6 +3,7 @@ import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
 import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
+import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -92,7 +93,7 @@ export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId 
   try {
     child = spawn('bash', [scriptPath, ...args], {
       cwd: cpbRoot,
-      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv },
+      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
@@ -119,12 +120,12 @@ export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId 
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       appendOutput(text);
-      broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stdout' });
+      broadcast({ type: 'task:output', taskId, project, output: redactSecrets(text), stream: 'stdout' });
     });
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
       appendOutput(text);
-      broadcast({ type: 'task:output', taskId, project, output: text, stream: 'stderr' });
+      broadcast({ type: 'task:output', taskId, project, output: redactSecrets(text), stream: 'stderr' });
     });
 
     child.on('spawn', () => {
@@ -146,7 +147,7 @@ export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId 
       if (registered) unregisterTask(taskId);
       broadcast({
         type: 'task:complete', taskId, project, script, exitCode: code,
-        outputTail: tailBuffer,
+        outputTail: redactSecrets(tailBuffer),
         outputBytes: totalBytes,
         outputTruncated,
       });

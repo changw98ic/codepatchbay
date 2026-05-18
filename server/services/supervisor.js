@@ -5,6 +5,7 @@ import { isLeaseStale, readLease } from "./lease-manager.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
 import { executorEnv, resolveExecutorRoot } from "./executor-root.js";
+import { buildChildEnv } from "./secret-policy.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 const STALE_GRACE_COUNT = parseInt(process.env.CPB_STALE_GRACE_COUNT, 10) || 3;
@@ -202,7 +203,7 @@ function runChild(command, args, cwd, { env = process.env } = {}) {
     try {
       child = spawn(command, args, {
         cwd,
-        env,
+        env: buildChildEnv(env),
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
       });

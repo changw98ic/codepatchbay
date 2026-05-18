@@ -10,6 +10,7 @@ import {
   listSessions,
   updateSession,
 } from "../services/review-session.js";
+import { buildChildEnv } from "../services/secret-policy.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -76,7 +77,7 @@ export async function reviewRoutes(fastify, opts) {
 
     const child = spawn("node", [scriptPath, req.cpbRoot, session.sessionId], {
       cwd: req.cpbRoot,
-      env: { ...process.env, CPB_ROOT: req.cpbRoot },
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot }),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });

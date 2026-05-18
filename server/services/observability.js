@@ -5,31 +5,10 @@ import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { shouldUseRustRuntime } from "./runtime-cli.js";
 import { listDispatches } from "./dispatch-state.js";
-
-const SENSITIVE_KEY = /authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|webhook/i;
-const WEBHOOK_URL = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
-
-function redactString(value, key = "") {
-  if (SENSITIVE_KEY.test(key)) return "[REDACTED]";
-  return sanitizeProviderReason(String(value))
-    .replace(WEBHOOK_URL, "[REDACTED_URL]")
-    .replace(/([?&](?:token|secret|key|signature)=)[^&\s"']+/gi, "$1[REDACTED]");
-}
+import { redactSecrets } from "./secret-policy.js";
 
 export function redactDiagnostics(value, key = "") {
-  if (typeof value === "string") return redactString(value, key);
-  if (Array.isArray(value)) return value.map((item) => redactDiagnostics(item));
-  if (!value || typeof value !== "object") return value;
-
-  const redacted = {};
-  for (const [entryKey, entryValue] of Object.entries(value)) {
-    if (SENSITIVE_KEY.test(entryKey)) {
-      redacted[entryKey] = "[REDACTED]";
-    } else {
-      redacted[entryKey] = redactDiagnostics(entryValue, entryKey);
-    }
-  }
-  return redacted;
+  return redactSecrets(value, key);
 }
 
 export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = {}) {

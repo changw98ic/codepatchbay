@@ -1,6 +1,13 @@
 import { appendFile, mkdir, readFile, readdir, rm, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
+import {
+  isSecretArtifact,
+  isSecretContent,
+  isSecretPath,
+  makeSecretBlockedEvent,
+  redactSecrets,
+} from "./secret-policy.js";
 
 function validatePathComponent(name, value) {
   if (
@@ -145,11 +152,50 @@ export async function repairEventFile(cpbRoot, project, jobId) {
 }
 
 export async function appendEvent(cpbRoot, project, jobId, event) {
-  const serialized = serializeEvent(event);
+  // Validate event structure first (throws on invalid input)
+  serializeEvent(event);
+
+  const writeBlocked = async (artifactName, reason) => {
+    const blocked = makeSecretBlockedEvent(artifactName, reason);
+    blocked.jobId = event.jobId || jobId;
+    blocked.project = event.project || project;
+    const serialized = serializeEvent(blocked);
+    const file = eventFileFor(cpbRoot, project, jobId);
+    await mkdir(path.dirname(file), { recursive: true });
+    await appendFile(file, `${serialized}\n`, "utf8");
+    return blocked;
+  };
+
+  // Block secret-like artifacts before persisting
+  if (event.artifact && isSecretPath(event.artifact)) {
+    return writeBlocked(event.artifact, "secret-like artifact path blocked");
+  }
+
+  // Block events with secret-like content in artifact fields
+  if (event.artifact && typeof event.artifact === "string" && isSecretArtifact(event.artifact, event.artifact)) {
+    return writeBlocked(event.artifact, "secret-like artifact content blocked");
+  }
+
+  if (event.artifact && typeof event.artifact === "string") {
+    const artifactPayload = [
+      event.content,
+      event.output,
+      event.stdout,
+      event.stderr,
+      event.body,
+    ].filter((value) => value !== undefined && value !== null);
+    if (artifactPayload.some((value) => isSecretContent(typeof value === "string" ? value : JSON.stringify(value)))) {
+      return writeBlocked(event.artifact, "secret-like artifact content blocked");
+    }
+  }
+
+  // Redact secrets from event payload before persisting
+  const redacted = redactSecrets(event);
+  const serialized = JSON.stringify(redacted);
   const file = eventFileFor(cpbRoot, project, jobId);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${serialized}\n`, "utf8");
-  return event;
+  return redacted;
 }
 
 export async function readEvents(cpbRoot, project, jobId) {
