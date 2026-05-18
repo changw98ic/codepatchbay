@@ -52,7 +52,8 @@ ${BOLD}Commands:${NC}
   ${CYAN}merge-preview${NC} <project> <candidate> [--base ref] [--json]  保守预检 LLM merge-steward
   ${CYAN}review${NC} <project> [deliverable-id] [--agent] 审查产出；--agent 运行 reviewer
   ${CYAN}log${NC} <project> [lines]                   查看项目日志
-  ${CYAN}doctor${NC}                                  环境健康检查
+  ${CYAN}doctor${NC} [--json]                         环境健康检查
+  ${CYAN}report${NC} [--json]                         就绪状态报告
   ${CYAN}remove${NC} <project> [--force]              删除项目 wiki 数据
   ${CYAN}inbox${NC} <project>                        列出计划文件
   ${CYAN}outputs${NC} <project>                      列出产出文件
@@ -689,190 +690,56 @@ cmd_outputs() {
 }
 
 cmd_doctor() {
-  local issues=0
-  echo -e "${BOLD}CodePatchbay Doctor${NC}"
-  echo ""
-
-  # Node.js
-  if command -v node &>/dev/null; then
-    local node_ver
-    node_ver=$(node --version 2>/dev/null)
-    echo -e "  ${GREEN}✓${NC} Node.js $node_ver"
-  else
-    echo -e "  ${RED}✗${NC} Node.js not found"
-    issues=$((issues + 1))
-  fi
-
-  # Git
-  if command -v git &>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Git $(git --version | awk '{print $3}')"
-  else
-    echo -e "  ${RED}✗${NC} Git not found"
-    issues=$((issues + 1))
-  fi
-
-  # ACP client
-  local acp="$CPB_EXECUTOR_ROOT/bridges/acp-client.mjs"
-  if [ -x "$acp" ]; then
-    echo -e "  ${GREEN}✓${NC} ACP client executable"
-  elif [ -f "$acp" ]; then
-    echo -e "  ${YELLOW}!${NC} ACP client exists but not executable (chmod +x bridges/acp-client.mjs)"
-    issues=$((issues + 1))
-  else
-    echo -e "  ${RED}✗${NC} ACP client missing: $acp"
-    issues=$((issues + 1))
-  fi
-
-  # ACP adapters
-  if command -v npx &>/dev/null; then
-    if npx -y @zed-industries/codex-acp --help &>/dev/null 2>&1; then
-      echo -e "  ${GREEN}✓${NC} codex-acp adapter available"
-    else
-      echo -e "  ${YELLOW}!${NC} codex-acp adapter not cached (will download on first use)"
-    fi
-    if npx -y @agentclientprotocol/claude-agent-acp --help &>/dev/null 2>&1; then
-      echo -e "  ${GREEN}✓${NC} claude-agent-acp adapter available"
-    else
-      echo -e "  ${YELLOW}!${NC} claude-agent-acp adapter not cached (will download on first use)"
-    fi
-  else
-    echo -e "  ${YELLOW}!${NC} npx not found — cannot verify ACP adapters"
-  fi
-
-  # common.sh
-  if [ -f "$CPB_EXECUTOR_ROOT/bridges/common.sh" ]; then
-    echo -e "  ${GREEN}✓${NC} common.sh present"
-  else
-    echo -e "  ${RED}✗${NC} common.sh missing"
-    issues=$((issues + 1))
-  fi
-
-  # Server deps
-  if [ -d "$CPB_ROOT/server/node_modules" ]; then
-    echo -e "  ${GREEN}✓${NC} Server dependencies installed"
-  else
-    echo -e "  ${YELLOW}!${NC} Server dependencies not installed (cpb ui will auto-install)"
-  fi
-
-  # Runtime data directory
-  local runtime_dir
-  runtime_dir=$(CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
-    import { runtimeDataPath } from '$CPB_EXECUTOR_ROOT/server/services/runtime-root.js';
-    console.log(runtimeDataPath('$CPB_ROOT', ''));
-  " 2>/dev/null)
-  if [ -n "$runtime_dir" ] && [ -d "$runtime_dir" ]; then
-    local lease_count
-    lease_count=$(find "$runtime_dir/leases" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
-    local event_count
-    event_count=$(find "$runtime_dir/events" -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
-    echo -e "  ${GREEN}✓${NC} Runtime data: $runtime_dir (leases:$lease_count events:$event_count)"
-  elif [ -n "$runtime_dir" ]; then
-    echo -e "  ${YELLOW}!${NC} Runtime data dir missing: $runtime_dir"
-  fi
-
-  # Supervisor env vars (non-zero = configured)
-  echo ""
-  echo -e "${BOLD}Supervisor settings:${NC}"
-  local env_vars=(
-    "CPB_STALE_GRACE_COUNT:3:stale grace detections before recovery"
-    "CPB_ACTIVITY_STALE_MS:300000:activity stale threshold (ms)"
-    "CPB_LEASE_TTL_MS:120000:phase lease TTL (ms)"
-    "CPB_SUPERVISOR_INTERVAL_MS:30000:supervisor poll interval (ms)"
-    "CPB_LEASE_LOCK_TTL_MS:30000:lock contention TTL (ms)"
-  )
-  local has_overrides=0
-  for entry in "${env_vars[@]}"; do
-    local var_name="${entry%%:*}"
-    local rest="${entry#*:}"
-    local default_val="${rest%%:*}"
-    local desc="${rest#*:}"
-    local val="${!var_name:-}"
-    if [ -n "$val" ]; then
-      echo -e "  ${CYAN}~${NC} $var_name=$val ($desc, default $default_val)"
-      has_overrides=1
-    fi
-  done
-  if [ "$has_overrides" -eq 0 ]; then
-    echo -e "  ${GREEN}(using defaults)${NC}"
-  fi
-
-  # Check for stale jobs
-  echo ""
-  echo -e "${BOLD}Running jobs:${NC}"
-  local stale_jobs
-  stale_jobs=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node --input-type=module -e "
-    import path from 'node:path';
-    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
-    const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
-    const { listJobs } = await import(path.join(executorRoot, 'server/services/job-store.js'));
-    const { readLease, isLeaseStale } = await import(path.join(executorRoot, 'server/services/lease-manager.js'));
-    const jobs = await listJobs(cpbRoot);
-    const running = jobs.filter(j => !['completed','failed','blocked','cancelled'].includes(j.status));
-    if (running.length === 0) { console.log('  (none)'); process.exit(0); }
-    for (const j of running) {
-      let lease = '-';
-      if (j.leaseId) {
-        try {
-          const l = await readLease(cpbRoot, j.leaseId);
-          lease = l === null ? 'missing' : isLeaseStale(l) ? 'stale' : 'active';
-        } catch { lease = 'error'; }
-      }
-      console.log('  ' + j.jobId + '  ' + j.project + '  ' + j.status + '  ' + (j.phase||'-') + '  ' + lease);
-    }
-  " 2>/dev/null)
-  if [ -n "$stale_jobs" ]; then
-    echo "$stale_jobs"
-    local stale_count=$(echo "$stale_jobs" | grep -c 'stale' || true)
-    if [ "$stale_count" -gt 0 ]; then
-      echo -e "  ${YELLOW}!${NC} $stale_count job(s) with stale leases. Run: ${CYAN}cpb recover <project> <jobId>${NC}"
-    fi
-  else
-    echo -e "  ${GREEN}(none)${NC}"
-  fi
-
-  # Self-evolve state
-  local evolve_state="$CPB_ROOT/cpb-task/self-evolve/state.json"
-  if [ -f "$evolve_state" ]; then
-    local round known_good
-    round=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$evolve_state','utf8')).round || 0)" 2>/dev/null)
-    known_good=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$evolve_state','utf8')).knownGoodCommit?.slice(0,8) || 'none')" 2>/dev/null)
-    echo -e "  ${CYAN}Self-evolve:${NC} round $round, known-good $known_good"
-  fi
-
-  echo ""
-
-  # Check projects
-  echo -e "${BOLD}Projects:${NC}"
-  for dir in "$CPB_ROOT/wiki/projects"/*/; do
-    [ -d "$dir" ] || continue
-    local name
-    name=$(basename "$dir")
-    [ "$name" = "_template" ] && continue
-
-    local p_issues=0
-    local missing=""
-    [ ! -f "$dir/project.json" ] && { p_issues=$((p_issues + 1)); missing="$missing project.json"; }
-    [ ! -d "$dir/inbox" ] && { p_issues=$((p_issues + 1)); missing="$missing inbox/"; }
-    [ ! -d "$dir/outputs" ] && { p_issues=$((p_issues + 1)); missing="$missing outputs/"; }
-
-    if [ "$p_issues" -gt 0 ]; then
-      local label="issue"
-      [ "$p_issues" -gt 1 ] && label="issues"
-      echo -e "  ${YELLOW}!${NC} $name: $p_issues structural $label (missing:$missing)"
-      issues=$((issues + 1))
-    else
-      echo -e "  ${GREEN}✓${NC} $name"
-    fi
+  local use_json=0
+  for arg in "$@"; do
+    case "$arg" in
+      --json) use_json=1 ;;
+    esac
   done
 
-  echo ""
-  if [ "$issues" -eq 0 ]; then
-    echo -e "${GREEN}All checks passed.${NC}"
-  else
-    echo -e "${YELLOW}$issues issue(s) found.${NC}"
-  fi
-  return 0
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node --input-type=module - "${use_json}" <<'DOCTOR_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const { runReadinessChecks, formatReadinessHuman, formatReadinessJson } = await import(
+  path.join(executorRoot, "server/services/readiness-checks.js")
+);
+const result = await runReadinessChecks({ cpbRoot });
+const jsonMode = process.argv[2] === "1";
+if (jsonMode) {
+  process.stdout.write(formatReadinessJson(result) + "\n");
+} else {
+  process.stdout.write(formatReadinessHuman(result) + "\n");
 }
+DOCTOR_NODE
+}
+
+cmd_report() {
+  local use_json=0
+  for arg in "$@"; do
+    case "$arg" in
+      --json) use_json=1 ;;
+    esac
+  done
+
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node --input-type=module - "${use_json}" <<'REPORT_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const { runReadinessChecks, formatReadinessJson, formatReadinessHuman } = await import(
+  path.join(executorRoot, "server/services/readiness-checks.js")
+);
+const result = await runReadinessChecks({ cpbRoot });
+result.command = "cpb report";
+const jsonMode = process.argv[2] === "1";
+if (jsonMode) {
+  process.stdout.write(formatReadinessJson(result) + "\n");
+} else {
+  process.stdout.write(formatReadinessHuman(result) + "\n");
+}
+REPORT_NODE
+}
+
 
 cmd_pipeline() {
   if [ "${1:-}" = "--interactive" ]; then
@@ -1364,7 +1231,8 @@ case "$1" in
   diff)     shift; cmd_diff "$@" ;;
   review)   shift; cmd_review "$@" ;;
   log)      shift; cmd_log "$@" ;;
-  doctor)   cmd_doctor ;;
+  doctor)   shift; cmd_doctor "$@" ;;
+  report)   shift; cmd_report "$@" ;;
   remove)   shift; cmd_remove "$@" ;;
   inbox)    shift; cmd_inbox "$@" ;;
   outputs)  shift; cmd_outputs "$@" ;;
