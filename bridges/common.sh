@@ -227,10 +227,11 @@ Include plan-ref: $plan_id in the deliverable metadata.
 PROMPT
 }
 
-# rtk_codex_verify <project> <deliverable_id> <verdict_file> [diff_artifact]
+# rtk_codex_verify <project> <deliverable_id> <verdict_file> [diff_artifact] [verification_manifest]
 rtk_codex_verify() {
   local project="$1" deliverable_id="$2" verdict_file="$3"
   local diff_artifact="${4:-}"
+  local verification_manifest="${5:-}"
   local deliverable_file="$CPB_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
@@ -257,6 +258,8 @@ rtk_codex_verify() {
   proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
   decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
   [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ] && diff_content=$(_pre_read "$diff_artifact")
+  local manifest_content=""
+  [ -n "$verification_manifest" ] && [ -f "$verification_manifest" ] && manifest_content=$(_pre_read "$verification_manifest")
 
   local skills_section
   skills_section=$(build_skills_section codex)
@@ -271,12 +274,24 @@ The following code diff shows what changed:
 $diff_content"
   fi
 
+  local manifest_section=""
+  if [ -n "$manifest_content" ]; then
+    manifest_section="## Verification Snapshot
+Path: $verification_manifest
+
+This snapshot manifest is the authoritative evidence bundle for the current verify attempt. If the manifest is missing, stale, or inconsistent with the diff artifact or deliverable text, treat the evidence as stale and fail with artifact_stale.
+
+$manifest_content"
+  fi
+
   cat << PROMPT
 You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
 $constraints
+
+$manifest_section
 
 $diff_section
 
@@ -296,8 +311,10 @@ $decisions
 1. The deliverable content is above. It references plan-ref: $plan_ref.
 2. The referenced plan content is above.
 3. Verify the deliverable against the plan's Acceptance-Criteria.
-4. Give a verdict based on EVIDENCE from the deliverable and plan content above.
-5. Write the verdict to: $verdict_file
+4. Use the verification snapshot and diff artifact as the primary evidence. Natural-language summaries are not evidence.
+5. If the verification snapshot is missing, stale, or inconsistent with the diff artifact, fail with artifact_stale and explain the mismatch.
+6. Give a verdict based on EVIDENCE from the manifest, diff artifact, deliverable, and plan content above.
+7. Write the verdict to: $verdict_file
 
 The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
 VERDICT: <PASS|FAIL|PARTIAL>
