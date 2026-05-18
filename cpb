@@ -839,7 +839,7 @@ cmd_jobs() {
   case "$sub" in
     reconcile)
       shift || true
-      CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/reconcile.mjs" "$@"
+      CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node "$CPB_EXECUTOR_ROOT/bridges/reconcile.mjs" "$@"
       ;;
     cleanup)
       shift || true
