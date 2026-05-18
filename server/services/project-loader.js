@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { isSecretPath, notifySecretBlocked } from './secret-policy.js';
 
 /**
  * In-process memoized cache for project wiki files.
@@ -24,7 +25,11 @@ async function statFile(filePath) {
   }
 }
 
-async function readFileOrNull(filePath) {
+async function readFileOrNull(filePath, onSecretBlocked) {
+  if (isSecretPath(filePath)) {
+    notifySecretBlocked(onSecretBlocked, filePath, 'secret path read blocked');
+    return null;
+  }
   try {
     return await fs.readFile(filePath, 'utf8');
   } catch {
@@ -48,11 +53,12 @@ function statsEqual(a, b) {
  */
 export async function loadProjectFiles(projDir, opts = {}) {
   const requested = opts.files || ALL_FILES;
+  const onSecretBlocked = opts.onSecretBlocked;
 
   if (!CACHE_ENABLED) {
     const entries = await Promise.all(
       requested.map(async (name) => {
-        const content = await readFileOrNull(path.join(projDir, `${name}.md`));
+        const content = await readFileOrNull(path.join(projDir, `${name}.md`), onSecretBlocked);
         return [name, content];
       })
     );
@@ -83,7 +89,7 @@ export async function loadProjectFiles(projDir, opts = {}) {
   const loaded = await Promise.all(
     toLoad.map(async ({ name, stat }) => ({
       name,
-      content: await readFileOrNull(path.join(projDir, `${name}.md`)),
+      content: await readFileOrNull(path.join(projDir, `${name}.md`), onSecretBlocked),
       stat,
     }))
   );

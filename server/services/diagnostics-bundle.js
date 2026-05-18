@@ -3,40 +3,10 @@ import { hubStatus, listProjects } from "./hub-registry.js";
 import { queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listJobs } from "./job-store.js";
-
-const SECRET_PATTERN = /\b(Bearer\s+[A-Za-z0-9._~+/-]+=*|([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+)/gi;
+import { redactSecrets as sharedRedactSecrets } from "./secret-policy.js";
 
 function redactSecrets(obj) {
-  const seen = new WeakSet();
-  function walk(value) {
-    if (value === null || value === undefined) return value;
-    if (typeof value === "string") {
-      return value.replace(SECRET_PATTERN, (match, bearer, key, op, q) => {
-        if (bearer) return "Bearer [REDACTED]";
-        return `${key}${op}${q}[REDACTED]`;
-      });
-    }
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return "[Circular]";
-      seen.add(value);
-      return value.map(walk);
-    }
-    if (typeof value === "object") {
-      if (seen.has(value)) return "[Circular]";
-      seen.add(value);
-      const out = {};
-      for (const [k, v] of Object.entries(value)) {
-        if (k === "sourcePath") {
-          out[k] = v;
-        } else {
-          out[k] = walk(v);
-        }
-      }
-      return out;
-    }
-    return value;
-  }
-  return walk(obj);
+  return sharedRedactSecrets(obj);
 }
 
 function jobSummary(job) {

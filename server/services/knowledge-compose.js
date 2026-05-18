@@ -4,8 +4,13 @@ import path from "node:path";
 import {
   PROMPT_COMPOSITION_ORDER,
 } from "./knowledge-policy.js";
+import { isSecretPath, notifySecretBlocked } from "./secret-policy.js";
 
-async function readFileOrNull(filePath) {
+async function readFileOrNull(filePath, onSecretBlocked) {
+  if (isSecretPath(filePath)) {
+    notifySecretBlocked(onSecretBlocked, filePath, "secret path read blocked");
+    return null;
+  }
   try {
     return await fs.readFile(filePath, "utf8");
   } catch {
@@ -23,39 +28,39 @@ function writePolicyForLayer(layerName) {
   return "unknown";
 }
 
-async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, profile, task }) {
+async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, profile, task, onSecretBlocked }) {
   const hub = path.resolve(hubRoot);
   const src = path.resolve(sourcePath);
 
   switch (layerName) {
     case "global-soul-profile": {
       const soulPath = path.join(hub, "profiles", profile || "default", "soul.md");
-      return { content: await readFileOrNull(soulPath), source: "file" };
+      return { content: await readFileOrNull(soulPath, onSecretBlocked), source: "file" };
     }
     case "global-provider-runtime-policy": {
       const policyPath = path.join(hub, "providers", "policy.md");
-      return { content: await readFileOrNull(policyPath), source: "file" };
+      return { content: await readFileOrNull(policyPath, onSecretBlocked), source: "file" };
     }
     case "project-context": {
       const ctxPath = path.join(src, ".cpb", "context.md");
-      return { content: await readFileOrNull(ctxPath), source: "file" };
+      return { content: await readFileOrNull(ctxPath, onSecretBlocked), source: "file" };
     }
     case "project-wiki-excerpts": {
       const wikiFiles = ["overview.md", "architecture.md", "conventions.md", "workflows.md"];
       const parts = [];
       for (const f of wikiFiles) {
-        const c = await readFileOrNull(path.join(src, ".cpb", "wiki", f));
+        const c = await readFileOrNull(path.join(src, ".cpb", "wiki", f), onSecretBlocked);
         if (c) parts.push(`### ${f}\n${c}`);
       }
       return { content: parts.length ? parts.join("\n\n") : null, source: "file" };
     }
     case "project-memory": {
       const memPath = path.join(src, ".cpb", "memory.md");
-      return { content: await readFileOrNull(memPath), source: "file" };
+      return { content: await readFileOrNull(memPath, onSecretBlocked), source: "file" };
     }
     case "session-memory": {
       const sessMemPath = path.join(src, "cpb-task", "sessions", sessionId, "memory.md");
-      return { content: await readFileOrNull(sessMemPath), source: "file" };
+      return { content: await readFileOrNull(sessMemPath, onSecretBlocked), source: "file" };
     }
     case "current-task": {
       return { content: task || null, source: "inline" };
@@ -65,7 +70,7 @@ async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, 
   }
 }
 
-export async function composePromptContext({ hubRoot, sourcePath, sessionId, task, profile } = {}) {
+export async function composePromptContext({ hubRoot, sourcePath, sessionId, task, profile, onSecretBlocked } = {}) {
   const layers = [];
 
   for (const layerName of PROMPT_COMPOSITION_ORDER) {
@@ -75,6 +80,7 @@ export async function composePromptContext({ hubRoot, sourcePath, sessionId, tas
       sessionId,
       task,
       profile,
+      onSecretBlocked,
     });
     layers.push({
       name: layerName,

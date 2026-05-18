@@ -166,6 +166,32 @@ assert.equal(appended.type, "phase_started");
 const afterAppend = await readFile(trailingPartialFile, "utf8");
 assert.equal(afterAppend.trim().split("\n").length, 2);
 
+const secretArtifactRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-secret-artifact-"));
+const rawSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+const blockedSecret = await appendEvent(secretArtifactRoot, project, jobId, {
+  type: "phase_completed",
+  jobId,
+  phase: "execute",
+  artifact: rawSecret,
+  ts: "2026-05-13T00:06:00.000Z",
+});
+assert.equal(blockedSecret.type, "secret_blocked");
+const secretArtifactRaw = await readFile(eventFileFor(secretArtifactRoot, project, jobId), "utf8");
+assert.ok(!secretArtifactRaw.includes(rawSecret), "secret_blocked event must not persist raw secret artifact text");
+
+const secretContentRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-secret-content-"));
+const blockedContent = await appendEvent(secretContentRoot, project, jobId, {
+  type: "phase_completed",
+  jobId,
+  phase: "execute",
+  artifact: "deliverable-999.md",
+  content: `accidental credential ${rawSecret}`,
+  ts: "2026-05-13T00:07:00.000Z",
+});
+assert.equal(blockedContent.type, "secret_blocked");
+const secretContentRaw = await readFile(eventFileFor(secretContentRoot, project, jobId), "utf8");
+assert.ok(!secretContentRaw.includes(rawSecret), "secret artifact content must be blocked instead of redacted in-place");
+
 const malformedFinalNewlineRoot = await mkdtemp(
   path.join(tmpdir(), "cpb-event-store-malformed-final-")
 );

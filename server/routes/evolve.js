@@ -12,6 +12,7 @@ import {
   loadProjectState as loadMultiProjectState,
   loadBacklog as loadMultiBacklog,
 } from "../services/multi-evolve-state.js";
+import { buildChildEnv } from "../services/secret-policy.js";
 
 let activeProcess = null;
 let activeMultiProcess = null;
@@ -171,7 +172,7 @@ export async function evolveRoutes(fastify, opts) {
       try {
         child = spawn("node", [script], {
           cwd: req.cpbRoot,
-          env: { ...process.env, CPB_ROOT: req.cpbRoot },
+          env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot }),
           stdio: ["ignore", "pipe", "pipe"],
           detached: false,
         });
@@ -338,7 +339,7 @@ export async function evolveRoutes(fastify, opts) {
 
     const child = spawn("node", [multiEvolveScriptPath(req.cpbRoot), ...args], {
       cwd: req.cpbRoot,
-      env: { ...process.env, CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: req.cpbHubRoot || resolveHubRoot(req.cpbRoot) },
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: req.cpbHubRoot || resolveHubRoot(req.cpbRoot) }),
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     });

@@ -80,6 +80,23 @@ describe('loadProjectFiles', () => {
     assert.ok(!('decisions' in result), 'decisions should not be loaded');
   });
 
+  it('logs secret_blocked when a brokered project file read targets a secret path', async () => {
+    const projDir = path.join(tmpRoot, '.ssh', 'secret-project');
+    await fs.mkdir(projDir, { recursive: true });
+    await fs.writeFile(path.join(projDir, 'context.md'), 'private context');
+    const blocked = [];
+
+    const result = await loadProjectFiles(projDir, {
+      files: ['context'],
+      onSecretBlocked: (event) => blocked.push(event),
+    });
+
+    assert.equal(result.context, null);
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0].type, 'secret_blocked');
+    assert.equal(blocked[0].messageKey, 'secret_blocked');
+  });
+
   it('serves from cache on second call without re-reading files', async () => {
     const projDir = await createProjectDir(tmpRoot, 'proj', {
       context: '# ctx v1',
