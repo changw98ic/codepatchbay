@@ -480,6 +480,17 @@ function extractDeliverableId(stdout) {
 
 // ─── Verdict parsing from verdict file ───
 
+function hasArtifactStaleMarker(content) {
+  return content
+    .split(/\r?\n/)
+    .some((line) => {
+      if (!/\bartifact_stale\b/i.test(line)) {
+        return false;
+      }
+      return !/\bnot\s+`?artifact_stale`?\b/i.test(line);
+    });
+}
+
 export async function parseVerdict(verdictPath) {
   try {
     const content = await readFile(verdictPath, "utf8");
@@ -487,7 +498,7 @@ export async function parseVerdict(verdictPath) {
     for (const line of lines) {
       const structured = line.match(/^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i);
       if (structured) {
-        if (structured[1].toUpperCase() === "FAIL" && /\bartifact_stale\b/i.test(content)) {
+        if (structured[1].toUpperCase() === "FAIL" && hasArtifactStaleMarker(content)) {
           return "ARTIFACT_STALE";
         }
         return structured[1].toUpperCase();
@@ -496,7 +507,7 @@ export async function parseVerdict(verdictPath) {
     for (const line of lines) {
       const legacy = line.match(/^\s*(PASS|FAIL|PARTIAL)\b/i);
       if (legacy) {
-        if (legacy[1].toUpperCase() === "FAIL" && /\bartifact_stale\b/i.test(content)) {
+        if (legacy[1].toUpperCase() === "FAIL" && hasArtifactStaleMarker(content)) {
           return "ARTIFACT_STALE";
         }
         return legacy[1].toUpperCase();
@@ -1059,7 +1070,11 @@ async function main() {
       }
     }
 
-    for (let cycle = 1; cycle <= maxRetries; cycle++) {
+    let verifyAttempt = 0;
+    let evidenceRetryCount = 0;
+    let qualityFailureCount = 0;
+
+    while (qualityFailureCount < maxRetries) {
       if (checkTimeout()) {
         await failJob(cpbRoot, project, jobId, failure("timed out during verify phase", {
           code: FAILURE_CODES.RECOVERABLE,
@@ -1068,9 +1083,10 @@ async function main() {
         return 1;
       }
 
-      log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${cycle}/${maxRetries}`);
+      verifyAttempt += 1;
+      log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
 
-      const verifyPhaseName = cycle === 1 ? "verify" : `verify-retry-${cycle}`;
+      const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
       await refreshVerificationEvidence(verifyPhaseName);
       const verifyArgs = [
         project,
@@ -1088,14 +1104,44 @@ async function main() {
       const verdict = await parseVerdict(verdictPath);
 
       if (verdict === null) {
-        warn(`No verdict file. Retry ${cycle}/${maxRetries}`);
+        evidenceRetryCount += 1;
+        warn(`No verdict file. Verification retry ${evidenceRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        if (evidenceRetryCount >= maxRetries) {
+          await failJob(cpbRoot, project, jobId, failure("verification artifact missing after retries", {
+            code: FAILURE_CODES.RECOVERABLE,
+            phase: "verify",
+            retryable: true,
+          }));
+          printFailureSummary(cpbRoot, project, jobId, {
+            phase: "verify",
+            reason: "verification artifact missing after retries",
+            deliverableId,
+            verdictFile: verdictPath,
+          });
+          return 1;
+        }
         continue;
       }
 
       if (verdict === "UNKNOWN") {
-        warn(`Unclear verdict: ${verdict}`);
+        evidenceRetryCount += 1;
+        warn(`Unclear verdict: ${verdict}. Verification retry ${evidenceRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        if (evidenceRetryCount >= maxRetries) {
+          await failJob(cpbRoot, project, jobId, failure("verification verdict unclear after retries", {
+            code: FAILURE_CODES.RECOVERABLE,
+            phase: "verify",
+            retryable: true,
+          }));
+          printFailureSummary(cpbRoot, project, jobId, {
+            phase: "verify",
+            reason: "verification verdict unclear after retries",
+            deliverableId,
+            verdictFile: verdictPath,
+          });
+          return 1;
+        }
         continue;
       }
 
@@ -1111,12 +1157,13 @@ async function main() {
       }
 
       if (verdict === "ARTIFACT_STALE") {
-        warn(`Verification evidence was stale. Regenerating evidence (${cycle}/${maxRetries}).`);
+        evidenceRetryCount += 1;
+        warn(`Verification evidence was stale. Regenerating evidence (${evidenceRetryCount}/${maxRetries}).`);
         await completePhase(cpbRoot, project, jobId, {
           phase: verifyPhaseName,
           artifact: `verdict-${deliverableId}`,
         });
-        if (cycle < maxRetries) {
+        if (evidenceRetryCount < maxRetries) {
           continue;
         }
         await failJob(cpbRoot, project, jobId, failure("verification artifact stale after retries", {
@@ -1134,16 +1181,17 @@ async function main() {
       }
 
       // FAIL or PARTIAL — fix loop
-      warn(`Verdict: ${verdict}. Fix attempt ${cycle}/${maxRetries}`);
+      qualityFailureCount += 1;
+      warn(`Verdict: ${verdict}. Quality failure ${qualityFailureCount}/${maxRetries}`);
 
       await completePhase(cpbRoot, project, jobId, {
         phase: verifyPhaseName,
         artifact: `verdict-${deliverableId}`,
       });
 
-      if (cycle < maxRetries) {
+      if (qualityFailureCount < maxRetries) {
         log(project, "Re-executing (Claude fix)...");
-        const fixPhaseName = `fix-${cycle}`;
+        const fixPhaseName = `fix-${qualityFailureCount}`;
         const fixResult = await runPhaseWithLease(
           cpbRoot, executorRoot, project, jobId, fixPhaseName,
           `bridges/${bridgeForPhase(workflowDef, "execute")}`,
@@ -1172,7 +1220,7 @@ async function main() {
                 return 1;
               }
 
-              const reviewPhaseName = `post-verify-review-${cycle}-${reviewCycle}`;
+              const reviewPhaseName = `post-verify-review-${qualityFailureCount}-${reviewCycle}`;
               log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review after verify fix attempt ${reviewCycle}/${maxRetries}`);
               const reviewResult = await runPhaseWithLease(
                 cpbRoot, executorRoot, project, jobId, reviewPhaseName,
@@ -1215,7 +1263,7 @@ async function main() {
               }
 
               log(project, "Re-executing (Claude post-verify review fix)...");
-              const reviewFixPhaseName = `post-verify-review-fix-${cycle}-${reviewCycle}`;
+              const reviewFixPhaseName = `post-verify-review-fix-${qualityFailureCount}-${reviewCycle}`;
               const reviewFixResult = await runPhaseWithLease(
                 cpbRoot, executorRoot, project, jobId, reviewFixPhaseName,
                 `bridges/${bridgeForPhase(workflowDef, "execute")}`,
@@ -1258,13 +1306,13 @@ async function main() {
       }
     }
 
-    fail(`Pipeline failed after ${maxRetries} cycles.`);
-    await failJob(cpbRoot, project, jobId, failure(`pipeline failed after ${maxRetries} verify cycles`, {
+    fail(`Pipeline failed after ${maxRetries} quality verification failures.`);
+    await failJob(cpbRoot, project, jobId, failure(`pipeline failed after ${maxRetries} quality verification failures`, {
       code: FAILURE_CODES.FATAL,
       phase: "verify",
     }));
     const vf = deliverableId ? path.join(wikiDir, "outputs", `verdict-${deliverableId}.md`) : undefined;
-    printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} cycles`, deliverableId, verdictFile: vf });
+    printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
     return 1;
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);

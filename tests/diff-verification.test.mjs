@@ -219,6 +219,23 @@ describe('A9: diff-based verification', () => {
     }
   });
 
+  it('parseVerdict does not treat negated artifact_stale text as stale evidence', async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-not-artifact-stale-verdict-'));
+    try {
+      const verdictPath = path.join(tmpRoot, 'verdict-001.md');
+      await writeFile(verdictPath, [
+        'VERDICT: FAIL',
+        '',
+        'Artifact status: usable, not `artifact_stale`.',
+        'The implementation failed acceptance criteria.',
+      ].join('\n'), 'utf8');
+
+      assert.equal(await parseVerdict(verdictPath), 'FAIL');
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('missing diff does not block verification', async () => {
     // When diff artifact is null/missing, verify still runs without diff
     const { execSync } = await import('node:child_process');
