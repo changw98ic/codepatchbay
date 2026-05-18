@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
+import {
+  classifyDeleteRisk,
+  formatDeleteBlockedMessage,
+  logDeleteBlock,
+} from "./delete-guard.mjs";
 
 const PROTOCOL_VERSION = 1;
 
@@ -209,8 +214,10 @@ async function readStdin() {
   return input;
 }
 
-function jsonRpcError(code, message) {
-  return { code, message };
+function jsonRpcError(code, message, data) {
+  const err = { code, message };
+  if (data) err.data = data;
+  return err;
 }
 
 export function resolveWriteAllowPaths(cwd = process.cwd()) {
@@ -383,9 +390,9 @@ export class AcpClient {
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  respondError(id, code, message) {
+  respondError(id, code, message, data) {
     this.markActivity();
-    this.write({ jsonrpc: "2.0", id, error: jsonRpcError(code, message) });
+    this.write({ jsonrpc: "2.0", id, error: jsonRpcError(code, message, data) });
   }
 
   write(message) {
@@ -509,7 +516,7 @@ export class AcpClient {
       }
     } catch (error) {
       if (Object.hasOwn(message, "id")) {
-        this.respondError(message.id, -32000, error.message);
+        this.respondError(message.id, -32000, error.message, error.guardResult);
       } else {
         this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
       }
@@ -608,6 +615,16 @@ export class AcpClient {
     if (this.terminalPolicy === "deny") {
       throw new Error("terminal access denied for this phase");
     }
+
+    const terminalCwd = params.cwd || this.cwd;
+    const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });
+    if (!guardResult.allowed) {
+      logDeleteBlock(params.command, params.args || [], terminalCwd, guardResult, this.errorSink);
+      const err = new Error(formatDeleteBlockedMessage(guardResult));
+      err.guardResult = guardResult;
+      throw err;
+    }
+
     const terminalId = `term-${this.nextTerminalId++}`;
     const env = { ...process.env };
     for (const item of params.env || []) env[item.name] = item.value;
