@@ -63,7 +63,9 @@ ${BOLD}Commands:${NC}
   ${CYAN}status${NC} <project>                       查看项目状态
   ${CYAN}list${NC}                                   列出所有项目
   ${CYAN}jobs${NC}                                     列出 durable jobs
-  ${CYAN}gc${NC}                                       清理已完成 job 的孤立 lease 文件
+  ${CYAN}jobs reconcile${NC} [--dry-run]               检测并修复 stale jobs/orphan leases/event streams
+  ${CYAN}jobs cleanup${NC} [--dry-run]                 清理已完成 job 的孤立 lease 文件
+  ${CYAN}gc${NC}                                       (alias: jobs cleanup)
   ${CYAN}supervisor${NC}                               启动长时运行 supervisor 原型
   ${CYAN}migrate-runtime-root${NC} [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/
   ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
@@ -949,7 +951,45 @@ cmd_pipeline_interactive() {
     --skip-plan \
     --plan-id "$plan_id"
 }
-cmd_jobs()      { CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/list-jobs.mjs"; }
+cmd_jobs() {
+  local sub="${1:-}"
+  case "$sub" in
+    reconcile)
+      shift || true
+      CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/reconcile.mjs" "$@"
+      ;;
+    cleanup)
+      shift || true
+      if echo "$*" | grep -q '\-\-dry-run'; then
+        echo -e "${BOLD}Cleanup dry-run report...${NC}"
+        CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+          import path from 'node:path';
+          const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+          const { cleanupDryRun } = await import(path.join(cpbRoot, 'server/services/reconcile.js'));
+          const report = await cleanupDryRun(cpbRoot);
+          console.log('Total jobs:', report.totalJobCount);
+          console.log('Lease files:', report.totalLeaseFiles);
+          console.log('Would remove leases (' + report.leasesToRemove.length + '):');
+          for (const id of report.leasesToRemove) console.log('  ' + id);
+          console.log('Worktrees preserved (' + report.worktreesPreserved.length + '):');
+          for (const w of report.worktreesPreserved) console.log('  ' + w.jobId + ' (' + w.status + '): ' + w.worktree);
+        "
+      else
+        echo -e "${BOLD}Cleaning up stale leases...${NC}"
+        CPB_ROOT="$CPB_ROOT" node --input-type=module -e "
+          import path from 'node:path';
+          const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+          const { cleanupJobs } = await import(path.join(cpbRoot, 'server/services/reconcile.js'));
+          const result = await cleanupJobs(cpbRoot);
+          console.log(result.cleaned + ' stale lease(s) cleaned.');
+        "
+      fi
+      ;;
+    *)
+      CPB_ROOT="$CPB_ROOT" "$CPB_ROOT/bridges/list-jobs.mjs"
+      ;;
+  esac
+}
 cmd_gc() {
   echo -e "${BOLD}Garbage collecting stale runtime data...${NC}"
   CPB_ROOT="$CPB_ROOT" node --input-type=module -e "

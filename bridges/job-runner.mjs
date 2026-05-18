@@ -215,6 +215,17 @@ async function main() {
   let leaseLostError = null;
   const abortController = new AbortController();
   let childResult = { exitCode: 1 };
+  let signalReceived = null;
+
+  // Trap SIGINT/SIGTERM in CPB-owned job-runner process
+  async function handleShutdownSignal(sig) {
+    if (signalReceived) return;
+    signalReceived = sig;
+    console.error(`\n${sig} received, shutting down job ${jobId} phase ${phase}...`);
+    abortController.abort();
+  }
+  process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
+  process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
   try {
     lease = await acquireLease(cpbRoot, {
@@ -285,6 +296,14 @@ async function main() {
       await cancelJob(cpbRoot, project, jobId, { reason: jobAfterError.cancelReason ?? "cancelled during execution" });
       return 1;
     }
+    // Record signal interruption evidence
+    if (signalReceived) {
+      await appendPhaseFailed(cpbRoot, project, jobId, phase, {
+        exitCode: 130,
+        error: `interrupted by ${signalReceived}`,
+      });
+      return 130;
+    }
     await appendPhaseFailed(cpbRoot, project, jobId, phase, {
       exitCode: childResult.exitCode,
       error: childResult.error.message,
@@ -308,6 +327,15 @@ async function main() {
   if (jobAfter.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: jobAfter.cancelReason ?? "cancelled during execution" });
     return 1;
+  }
+
+  // Record signal interruption evidence
+  if (signalReceived) {
+    await appendPhaseFailed(cpbRoot, project, jobId, phase, {
+      exitCode: 130,
+      error: `interrupted by ${signalReceived}`,
+    });
+    return 130;
   }
 
   await appendPhaseFailed(cpbRoot, project, jobId, phase, {
