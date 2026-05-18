@@ -217,6 +217,63 @@ describe("ProjectWorker", () => {
     assert.equal(entries[0].status, "failed");
   });
 
+  test("poll runs when at least one agent passes preflight", async () => {
+    await enqueue(hubRoot, { projectId, description: "one-agent-ok", sourcePath: sourceDir });
+
+    let pipelineCalls = 0;
+    let healthCalls = 0;
+    const worker = makeWorker({
+      agentHealthFn: async () => {
+        healthCalls++;
+        return { codex: true, claude: false };
+      },
+      runPipelineFn: () => {
+        pipelineCalls++;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(healthCalls, 1);
+    assert.equal(pipelineCalls, 1);
+    assert.ok(result.entry);
+    assert.equal(result.result.ok, true);
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+  });
+
+  test("poll backs off three times and stops without leaving a claim when both agents fail preflight", async () => {
+    await enqueue(hubRoot, { projectId, description: "both-agents-down", sourcePath: sourceDir });
+
+    let healthCalls = 0;
+    let pipelineCalls = 0;
+    const worker = makeWorker({
+      agentPreflightRetries: 3,
+      agentPreflightBackoffMs: 1,
+      agentHealthFn: async () => {
+        healthCalls++;
+        return { codex: false, claude: false };
+      },
+      runPipelineFn: () => {
+        pipelineCalls++;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(healthCalls, 3);
+    assert.equal(pipelineCalls, 0);
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, "agents_unavailable");
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "pending");
+    assert.equal(entries[0].claimedBy, null);
+  });
+
   test("poll returns idle when no entries", async () => {
     const worker = makeWorker();
     await worker.init();
@@ -313,6 +370,24 @@ describe("parseArgs", () => {
   test("default claim-timeout-ms is 120000", () => {
     const opts = parseArgs(["node", "script", "--project", "p"]);
     assert.equal(opts.claimTimeoutMs, 120_000);
+  });
+
+  test("parses agent preflight retry options", () => {
+    const opts = parseArgs([
+      "node",
+      "script",
+      "--project",
+      "p",
+      "--agent-preflight-retries",
+      "3",
+      "--agent-preflight-backoff-ms",
+      "250",
+      "--agent-preflight-timeout-ms",
+      "1000",
+    ]);
+    assert.equal(opts.agentPreflightRetries, 3);
+    assert.equal(opts.agentPreflightBackoffMs, 250);
+    assert.equal(opts.agentPreflightTimeoutMs, 1000);
   });
 });
 

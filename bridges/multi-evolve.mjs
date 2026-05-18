@@ -2,7 +2,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpPool, RateLimitError } from "./acp-pool.mjs";
-import { ProjectWorker } from "./project-worker.mjs";
+import { AGENT_OUTAGE_EXIT_CODE, ProjectWorker } from "./project-worker.mjs";
 import { getManagedAcpPool } from "../server/services/acp-pool-runtime.js";
 import { listProjects, resolveHubRoot } from "../server/services/hub-registry.js";
 import {
@@ -330,6 +330,16 @@ export class MultiEvolveController {
     });
     const run = await worker.run();
     if (run?.result) return run.result;
+    if (run?.reason === "agents_unavailable") {
+      return {
+        ok: false,
+        code: AGENT_OUTAGE_EXIT_CODE,
+        error: "agents_unavailable",
+        preflight: run.preflight,
+        stdout: "",
+        stderr: "",
+      };
+    }
     if (run?.idle) {
       return { ok: false, code: 1, error: "project-worker found no pending queue entry", stdout: "", stderr: "" };
     }

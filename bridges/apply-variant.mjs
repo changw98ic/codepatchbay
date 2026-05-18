@@ -16,10 +16,6 @@ function envFirst(...names) {
   return undefined;
 }
 
-function envAny(...names) {
-  return names.some((name) => process.env[name]);
-}
-
 function normalizeVariant(requested) {
   return (requested || "").trim().toLowerCase();
 }
@@ -32,14 +28,6 @@ function resolveVariant() {
     "";
 
   if (requested) return normalizeVariant(requested);
-
-  if (envAny("OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL", "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL", "KIMI_BASE_URL", "MOONSHOT_BASE_URL")) {
-    return "kimi-k2.6";
-  }
-
-  if (envAny("XIAOMI_BASE_URL", "MIMO_BASE_URL")) {
-    return "mimo-v2.5pro";
-  }
 
   return "none";
 }

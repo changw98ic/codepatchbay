@@ -118,9 +118,10 @@ CPB_ACP_TIMEOUT_MS=1800000
 
 默认选择规则：
 
-- 如果存在 Kimi/Ollama Cloud 变量，默认使用 `kimi-k2.6`
-- 否则如果存在小米变量，默认使用 `mimo-v2.5pro`
-- 设置 `CPB_CLAUDE_VARIANT=none` 可完全禁用 overlay，直接继承当前 `ANTHROPIC_*`
+- 未显式设置 `CPB_CLAUDE_VARIANT` 时，默认不启用 overlay，直接继承当前 `ANTHROPIC_*`
+- 设置 `CPB_CLAUDE_VARIANT=kimi-k2.6` 才使用 Kimi/Ollama Cloud 变量
+- 设置 `CPB_CLAUDE_VARIANT=mimo-v2.5pro` 才使用小米变量
+- 设置 `CPB_CLAUDE_VARIANT=none` 可显式禁用 overlay
 
 显式切换：
 

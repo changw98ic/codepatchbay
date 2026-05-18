@@ -19,6 +19,105 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
+export const AGENT_OUTAGE_EXIT_CODE = 2;
+
+function numericOption(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function truncateOutput(output, maxLength = 2_000) {
+  if (!output || output.length <= maxLength) return output || "";
+  return `${output.slice(0, maxLength)}\n[truncated ${output.length - maxLength} chars]`;
+}
+
+function runAgentSmoke({ agent, cpbRoot, cwd, timeoutMs }) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const script = [
+      'source "$CPB_ROOT/bridges/common.sh"',
+      'printf "%s" "$CPB_AGENT_PREFLIGHT_PROMPT" | CPB_ACP_TIMEOUT_MS="$CPB_AGENT_PREFLIGHT_TIMEOUT_MS" acp_run "$CPB_AGENT_PREFLIGHT_AGENT"',
+    ].join("; ");
+    const child = spawn("bash", ["-lc", script], {
+      cwd: cpbRoot,
+      env: {
+        ...process.env,
+        CPB_ROOT: cpbRoot,
+        CPB_ACP_CWD: cwd || cpbRoot,
+        CPB_AGENT_PREFLIGHT_AGENT: agent,
+        CPB_AGENT_PREFLIGHT_TIMEOUT_MS: String(timeoutMs),
+        CPB_AGENT_PREFLIGHT_PROMPT: "Reply with OK only. Do not use tools.\n",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGTERM"); } catch {}
+      resolve({
+        ok: false,
+        agent,
+        code: null,
+        timedOut: true,
+        elapsedMs: Date.now() - startedAt,
+        stdout: truncateOutput(stdout),
+        stderr: truncateOutput(stderr),
+      });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        ok: false,
+        agent,
+        code: 1,
+        error: error.message,
+        elapsedMs: Date.now() - startedAt,
+        stdout: truncateOutput(stdout),
+        stderr: truncateOutput(stderr),
+      });
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        ok: code === 0,
+        agent,
+        code,
+        elapsedMs: Date.now() - startedAt,
+        stdout: truncateOutput(stdout),
+        stderr: truncateOutput(stderr),
+      });
+    });
+  });
+}
+
+async function defaultAgentHealth({ cpbRoot, cwd, timeoutMs }) {
+  const [codex, claude] = await Promise.all([
+    runAgentSmoke({ agent: "codex", cpbRoot, cwd, timeoutMs }),
+    runAgentSmoke({ agent: "claude", cpbRoot, cwd, timeoutMs }),
+  ]);
+  return {
+    codex: codex.ok,
+    claude: claude.ok,
+    checks: { codex, claude },
+  };
+}
 
 function priorityScore(p) {
   if (p === "P0") return 0;
@@ -34,6 +133,9 @@ export function parseArgs(argv) {
     heartbeatMs: 30_000,
     pollMs: 5_000,
     claimTimeoutMs: 120_000,
+    agentPreflightRetries: numericOption(process.env.CPB_AGENT_PREFLIGHT_RETRIES, 3),
+    agentPreflightBackoffMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_BACKOFF_MS, 30_000),
+    agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
     workflow: process.env.CPB_WORKER_WORKFLOW || "standard",
     cpbRoot: CPB_ROOT,
     hubRoot: null,
@@ -51,6 +153,9 @@ export function parseArgs(argv) {
     else if (arg === "--heartbeat-ms") opts.heartbeatMs = Number(valueAfter(i++, "--heartbeat-ms"));
     else if (arg === "--poll-ms") opts.pollMs = Number(valueAfter(i++, "--poll-ms"));
     else if (arg === "--claim-timeout-ms") opts.claimTimeoutMs = Number(valueAfter(i++, "--claim-timeout-ms"));
+    else if (arg === "--agent-preflight-retries") opts.agentPreflightRetries = Number(valueAfter(i++, "--agent-preflight-retries"));
+    else if (arg === "--agent-preflight-backoff-ms") opts.agentPreflightBackoffMs = Number(valueAfter(i++, "--agent-preflight-backoff-ms"));
+    else if (arg === "--agent-preflight-timeout-ms") opts.agentPreflightTimeoutMs = Number(valueAfter(i++, "--agent-preflight-timeout-ms"));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, "--workflow");
     else if (arg === "--cpb-root") opts.cpbRoot = valueAfter(i++, "--cpb-root");
     else if (arg === "--hub-root") opts.hubRoot = valueAfter(i++, "--hub-root");
@@ -70,8 +175,14 @@ export class ProjectWorker {
     this.heartbeatMs = opts.heartbeatMs || 30_000;
     this.pollMs = opts.pollMs || 5_000;
     this.claimTimeoutMs = opts.claimTimeoutMs ?? 120_000;
+    this.agentPreflightRetries = numericOption(opts.agentPreflightRetries, 3);
+    this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
+    this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
     this.workflow = opts.workflow || "standard";
     this._runPipelineFn = opts.runPipelineFn || null;
+    this._agentHealthFn = opts.agentHealthFn || (opts.runPipelineFn
+      ? async () => ({ codex: true, claude: true, checks: {} })
+      : defaultAgentHealth);
     this._heartbeatTimer = null;
     this._stopRequested = false;
     this._activeEntryId = null;
@@ -160,13 +271,9 @@ export class ProjectWorker {
   }
 
   async claimNext() {
-    const pending = await listQueue(this.hubRoot, { status: "pending", projectId: this.project.id });
-    if (pending.length === 0) return null;
+    const entry = await this.peekNext();
+    if (!entry) return null;
 
-    pending.sort(
-      (a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt),
-    );
-    const entry = pending[0];
     const now = new Date().toISOString();
     return updateEntry(this.hubRoot, entry.id, {
       status: "in_progress",
@@ -174,6 +281,44 @@ export class ProjectWorker {
       workerId: this.workerId,
       claimedAt: now,
     });
+  }
+
+  async peekNext() {
+    const pending = await listQueue(this.hubRoot, { status: "pending", projectId: this.project.id });
+    if (pending.length === 0) return null;
+
+    pending.sort(
+      (a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt),
+    );
+    return pending[0];
+  }
+
+  async checkAgentHealth() {
+    return this._agentHealthFn({
+      cpbRoot: this.cpbRoot,
+      cwd: this.project?.sourcePath || this.cpbRoot,
+      timeoutMs: this.agentPreflightTimeoutMs,
+    });
+  }
+
+  async waitForAgentAvailability() {
+    const attempts = Math.max(1, this.agentPreflightRetries);
+    let lastHealth = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      lastHealth = await this.checkAgentHealth();
+      if (lastHealth?.codex || lastHealth?.claude) {
+        return { available: true, attempt, attempts, health: lastHealth };
+      }
+
+      if (attempt < attempts) {
+        process.stderr.write(
+          `[project-worker] both agents unavailable; retrying preflight ${attempt + 1}/${attempts}\n`,
+        );
+        await sleep(this.agentPreflightBackoffMs);
+      }
+    }
+
+    return { available: false, attempt: attempts, attempts, health: lastHealth };
   }
 
   async executeEntry(entry) {
@@ -186,6 +331,20 @@ export class ProjectWorker {
       } catch (err) {
         return { ok: false, error: `sourcePath guard: ${err.message}` };
       }
+    }
+
+    const availability = await this.waitForAgentAvailability();
+    if (!availability.available) {
+      return {
+        ok: false,
+        code: AGENT_OUTAGE_EXIT_CODE,
+        agentOutage: true,
+        error: "agents_unavailable",
+        preflight: availability,
+      };
+    }
+
+    if (dispatchEnabled() && sourcePath) {
       const dispatch = await recordDispatch(this.hubRoot, {
         projectId: this.project.id,
         sourcePath,
@@ -253,6 +412,30 @@ export class ProjectWorker {
     } finally {
       this._activeEntryId = null;
     }
+
+    if (result.agentOutage) {
+      await updateEntry(this.hubRoot, entry.id, {
+        status: "pending",
+        claimedBy: null,
+        claimedAt: null,
+        workerId: null,
+        metadata: {
+          agentPreflight: {
+            status: "unavailable",
+            attempts: result.preflight?.attempts ?? null,
+            checkedAt: new Date().toISOString(),
+          },
+        },
+      }).catch(() => {});
+      this.requestStop();
+      return {
+        stopped: true,
+        reason: "agents_unavailable",
+        entry,
+        preflight: result.preflight,
+      };
+    }
+
     const finalStatus = result.ok ? "completed" : "failed";
     await updateEntry(this.hubRoot, entry.id, { status: finalStatus }).catch(() => {});
 
@@ -299,6 +482,9 @@ Options:
   --heartbeat-ms <n>         Heartbeat interval in ms (default: 30000)
   --poll-ms <n>              Queue poll interval in ms (default: 5000)
   --claim-timeout-ms <n>     Stale claim timeout in ms (default: 120000, 0 to disable)
+  --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
+  --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
+  --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
   --workflow <type>          Pipeline workflow: standard|blocked (default: standard)
   --cpb-root <path>          CPB root directory
   --hub-root <path>          Hub root directory`;
@@ -318,6 +504,9 @@ async function main() {
     heartbeatMs: opts.heartbeatMs,
     pollMs: opts.pollMs,
     claimTimeoutMs: opts.claimTimeoutMs,
+    agentPreflightRetries: opts.agentPreflightRetries,
+    agentPreflightBackoffMs: opts.agentPreflightBackoffMs,
+    agentPreflightTimeoutMs: opts.agentPreflightTimeoutMs,
     workflow: opts.workflow,
     cpbRoot: opts.cpbRoot,
     hubRoot: opts.hubRoot,
@@ -332,6 +521,7 @@ async function main() {
 
   const result = await worker.run();
   console.log(JSON.stringify(result, null, 2));
+  if (result.reason === "agents_unavailable") return AGENT_OUTAGE_EXIT_CODE;
   return result.result && !result.result.ok ? 1 : 0;
 }
 

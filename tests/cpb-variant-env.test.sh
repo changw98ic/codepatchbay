@@ -27,6 +27,22 @@ CPB_TEST_ENV_LOG="$ENV_LOG" \
 OLLAMA_CLOUD_URL="https://kimi.example/v1" \
 OLLAMA_CLOUD_KEY="kimi-token" \
 OLLAMA_CLOUD_MODEL="kimi-custom-model" \
+ANTHROPIC_BASE_URL="https://existing.example/v1" \
+ANTHROPIC_AUTH_TOKEN="existing-token" \
+ANTHROPIC_MODEL="existing-model" \
+ANTHROPIC_DEFAULT_SONNET_MODEL="existing-sonnet" \
+ANTHROPIC_CUSTOM_MODEL_OPTION="existing-custom" \
+  "$ROOT/cpb" execute "$project" "001" >/dev/null
+
+grep -qx 'claude|https://existing.example/v1|existing-token|existing-model|existing-sonnet|existing-custom' "$ENV_LOG"
+
+CPB_ACP_CLIENT="$ROOT/tests/fixtures/acp-client-stub.sh" \
+CPB_TEST_AGENT_LOG="$AGENT_LOG" \
+CPB_TEST_ENV_LOG="$ENV_LOG" \
+CPB_CLAUDE_VARIANT="kimi-k2.6" \
+OLLAMA_CLOUD_URL="https://kimi.example/v1" \
+OLLAMA_CLOUD_KEY="kimi-token" \
+OLLAMA_CLOUD_MODEL="kimi-custom-model" \
   "$ROOT/cpb" execute "$project" "001" >/dev/null
 
 grep -qx 'claude|https://kimi.example/v1|kimi-token|kimi-custom-model|kimi-custom-model|kimi-custom-model' "$ENV_LOG"
