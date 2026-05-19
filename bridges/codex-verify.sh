@@ -2,17 +2,20 @@
 set -euo pipefail
 
 # codex-verify.sh — ACP + RTK：Codex 验证
-# Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]
+# Usage: codex-verify.sh <project> <deliverable-id>
 
 CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
 # shellcheck source=common.sh
 source "$CPB_EXECUTOR_ROOT/bridges/common.sh"
 
-PROJECT="${1:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]}"
-DELIVERABLE_ID="${2:?Usage: codex-verify.sh <project> <deliverable-id> [diff-artifact] [verification-manifest]}"
-DIFF_ARTIFACT="${3:-}"
-VERIFICATION_MANIFEST="${4:-}"
+if [ "$#" -ne 2 ]; then
+  echo "Usage: codex-verify.sh <project> <deliverable-id>" >&2
+  exit 2
+fi
+
+PROJECT="$1"
+DELIVERABLE_ID="$2"
 WIKI_DIR="$CPB_ROOT/wiki/projects/$PROJECT"
 
 require_safe_name "$PROJECT"
@@ -28,7 +31,7 @@ VERDICT_FILE="$WIKI_DIR/outputs/verdict-${DELIVERABLE_ID}.md"
 echo "Verifying [$PROJECT] deliverable-$DELIVERABLE_ID..."
 echo "Output: $VERDICT_FILE"
 
-PROMPT=$(rtk_codex_verify "$PROJECT" "$DELIVERABLE_ID" "$VERDICT_FILE" "$DIFF_ARTIFACT" "$VERIFICATION_MANIFEST")
+PROMPT=$(rtk_codex_verify "$PROJECT" "$DELIVERABLE_ID" "$VERDICT_FILE")
 printf '%s' "$PROMPT" | acp_run codex 2>&1
 
 if [ -f "$VERDICT_FILE" ]; then
@@ -44,11 +47,7 @@ if [ -f "$VERDICT_FILE" ]; then
 
   echo ""
   echo "Verdict: $VERDICT"
-  if grep -qi "artifact_stale" "$VERDICT_FILE"; then
-    dashboard_update "$PROJECT" "verify" "UNCLEAR" "verification evidence stale"
-    echo "Evidence stale: $VERDICT_FILE"
-    echo "Next: regenerate verification manifest and retry verify"
-  elif echo "$VERDICT" | grep -qi "FAIL"; then
+  if echo "$VERDICT" | grep -qi "FAIL"; then
     dashboard_update "$PROJECT" "verify" "FIXING" "cpb execute $PROJECT (fix)"
     echo "Fix needed: $VERDICT_FILE"
     echo "Next: cpb execute $PROJECT <plan-id>"

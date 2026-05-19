@@ -47,6 +47,7 @@ ${BOLD}Commands:${NC}
   ${CYAN}plan${NC} <project> "<task>"               Codex 规划
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
+  ${CYAN}repair${NC} <project> <jobId>                Claude 外部修复 CPB 自身失败并投递新任务
   ${CYAN}research${NC} <project> "<task>"              双 agent 协同研究
   ${CYAN}diff${NC} <project>                           查看项目源码变更
   ${CYAN}merge-preview${NC} <project> <candidate> [--base ref] [--json]  保守预检 LLM merge-steward
@@ -452,6 +453,7 @@ NODE
 cmd_plan()     { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-plan.sh" "$@"; }
 cmd_execute()  { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/claude-execute.sh" "$@"; }
 cmd_verify()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-verify.sh" "$@"; }
+cmd_repair()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" "$CPB_EXECUTOR_ROOT/bridges/claude-repair.sh" "$@"; }
 cmd_research() {
   local project="${1:?Usage: cpb research <project> '<task>'}"
   local task="${2:?Usage: cpb research <project> '<task>'}"
@@ -1268,6 +1270,7 @@ case "$1" in
   plan)     shift; cmd_plan "$@" ;;
   execute)  shift; cmd_execute "$@" ;;
   verify)   shift; cmd_verify "$@" ;;
+  repair)   shift; cmd_repair "$@" ;;
   research) shift; cmd_research "$@" ;;
   merge-preview) shift; cmd_merge_preview "$@" ;;
   diff)     shift; cmd_diff "$@" ;;

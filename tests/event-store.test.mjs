@@ -125,6 +125,59 @@ const completed = materializeJob([
 assert.equal(completed.status, "completed");
 assert.equal(completed.phase, "completed");
 
+const externallyRepaired = materializeJob([
+  ...events,
+  {
+    type: "job_failed",
+    jobId,
+    project,
+    reason: "verifier bridge bug",
+    ts: "2026-05-13T00:03:00.000Z",
+  },
+  {
+    type: "external_repair_started",
+    jobId,
+    project,
+    artifact: "repair-001",
+    ts: "2026-05-13T00:04:00.000Z",
+  },
+  {
+    type: "external_repair_completed",
+    jobId,
+    project,
+    artifact: "repair-001",
+    repairStatus: "FIXED",
+    ts: "2026-05-13T00:05:00.000Z",
+  },
+]);
+assert.equal(externallyRepaired.status, "failed");
+assert.equal(externallyRepaired.externalRepairStatus, "FIXED");
+assert.equal(externallyRepaired.externalRepairArtifact, "repair-001");
+assert.equal(externallyRepaired.externalRepairAt, "2026-05-13T00:05:00.000Z");
+
+const externalRepairFailed = materializeJob([
+  ...events,
+  {
+    type: "job_failed",
+    jobId,
+    project,
+    reason: "verifier bridge bug",
+    ts: "2026-05-13T00:03:00.000Z",
+  },
+  {
+    type: "external_repair_failed",
+    jobId,
+    project,
+    artifact: "repair-002",
+    error: "report missing",
+    ts: "2026-05-13T00:04:00.000Z",
+  },
+]);
+assert.equal(externalRepairFailed.status, "failed");
+assert.equal(externalRepairFailed.externalRepairStatus, "FAILED");
+assert.equal(externalRepairFailed.externalRepairArtifact, "repair-002");
+assert.equal(externalRepairFailed.externalRepairError, "report missing");
+
 const invalidEventRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-store-invalid-"));
 await assert.rejects(
   () => appendEvent(invalidEventRoot, project, jobId, undefined),

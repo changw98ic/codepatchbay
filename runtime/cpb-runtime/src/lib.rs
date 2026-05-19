@@ -212,6 +212,9 @@ fn post_terminal_allowed() -> HashSet<&'static str> {
         "job_retried",
         "phase_activity",
         "workflow_selected",
+        "external_repair_started",
+        "external_repair_completed",
+        "external_repair_failed",
     ])
 }
 
@@ -242,7 +245,11 @@ pub fn materialize_job(events: &[Value]) -> Value {
         "redirectEventId": null,
         "consumedRedirectIds": [],
         "lastActivityAt": null,
-        "lastActivityMessage": null
+        "lastActivityMessage": null,
+        "externalRepairStatus": null,
+        "externalRepairArtifact": null,
+        "externalRepairAt": null,
+        "externalRepairError": null
     })
     .as_object()
     .expect("state object")
@@ -412,6 +419,29 @@ pub fn materialize_job(events: &[Value]) -> Value {
             }
             "workflow_selected" => {
                 copy_if_present(&mut state, event, "workflow");
+            }
+            "external_repair_started" => {
+                set(&mut state, "externalRepairStatus", "STARTED");
+                set_from_event_or_existing(&mut state, event, "externalRepairArtifact", "artifact", Value::Null);
+                set_from_event_or_existing(&mut state, event, "externalRepairAt", "ts", Value::Null);
+                set(&mut state, "externalRepairError", Value::Null);
+            }
+            "external_repair_completed" => {
+                set_from_event_or_existing(&mut state, event, "externalRepairStatus", "repairStatus", json!("UNKNOWN"));
+                set_from_event_or_existing(&mut state, event, "externalRepairArtifact", "artifact", Value::Null);
+                set_from_event_or_existing(&mut state, event, "externalRepairAt", "ts", Value::Null);
+                set(&mut state, "externalRepairError", Value::Null);
+            }
+            "external_repair_failed" => {
+                set(&mut state, "externalRepairStatus", "FAILED");
+                set_from_event_or_existing(&mut state, event, "externalRepairArtifact", "artifact", Value::Null);
+                set_from_event_or_existing(&mut state, event, "externalRepairAt", "ts", Value::Null);
+                let error = event
+                    .get("error")
+                    .cloned()
+                    .or_else(|| event.get("reason").cloned())
+                    .unwrap_or(Value::Null);
+                set(&mut state, "externalRepairError", error);
             }
             _ => {}
         }
@@ -1037,7 +1067,13 @@ fn priority_score(priority: &str) -> u8 {
 fn hub_entry_key(entry: &Value) -> String {
     let project = entry.get("projectId").and_then(Value::as_str).unwrap_or("");
     let desc = entry.get("description").and_then(Value::as_str).unwrap_or("");
-    format!("{}::{}", project, desc)
+    let lineage = entry
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("originJobId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    format!("{}::{}::{}", project, desc, lineage)
 }
 
 fn generate_hub_queue_id() -> String {

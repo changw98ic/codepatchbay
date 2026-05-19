@@ -152,6 +152,32 @@ describe("hub-queue service", () => {
     assert.equal(all.length, 1);
   });
 
+  test("enqueue keeps repair lineage task distinct from the original task", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
+    const original = await enqueue(hubRoot, {
+      projectId: "p1",
+      sourcePath: "/a",
+      description: "fix login",
+    });
+    const followup = await enqueue(hubRoot, {
+      projectId: "p1",
+      sourcePath: "/a",
+      description: "fix login",
+      metadata: {
+        originJobId: "job-123",
+        originQueueEntryId: original.id,
+        repairArtifact: "repair-001",
+        repairStatus: "FIXED",
+        lineageReason: "external_repair_fixed_cpb_self_bug",
+      },
+    });
+
+    assert.notEqual(original.id, followup.id);
+    const all = await listQueue(hubRoot);
+    assert.equal(all.length, 2);
+    assert.equal(followup.metadata.originJobId, "job-123");
+  });
+
   test("entries are ordered by priority then createdAt", async () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hq-"));
     await enqueue(hubRoot, { projectId: "p1", sourcePath: "/a", priority: "P2", description: "c" });

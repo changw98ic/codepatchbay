@@ -238,6 +238,7 @@ export async function readEvents(cpbRoot, project, jobId) {
 const POST_TERMINAL_ALLOWED = new Set([
   "job_completed", "job_failed", "job_blocked", "job_cancelled",
   "job_cancel_requested", "job_redirect_consumed", "job_retried", "phase_activity", "workflow_selected",
+  "external_repair_started", "external_repair_completed", "external_repair_failed",
 ]);
 
 export function materializeJob(events) {
@@ -269,6 +270,10 @@ export function materializeJob(events) {
     consumedRedirectIds: [],
     lastActivityAt: null,
     lastActivityMessage: null,
+    externalRepairStatus: null,
+    externalRepairArtifact: null,
+    externalRepairAt: null,
+    externalRepairError: null,
   };
 
   let terminal = false;
@@ -408,6 +413,24 @@ export function materializeJob(events) {
       case "phase_activity":
         state.lastActivityAt = event.ts ?? state.lastActivityAt;
         state.lastActivityMessage = event.message ?? state.lastActivityMessage;
+        break;
+      case "external_repair_started":
+        state.externalRepairStatus = "STARTED";
+        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
+        state.externalRepairAt = event.ts ?? state.externalRepairAt;
+        state.externalRepairError = null;
+        break;
+      case "external_repair_completed":
+        state.externalRepairStatus = event.repairStatus ?? "UNKNOWN";
+        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
+        state.externalRepairAt = event.ts ?? state.externalRepairAt;
+        state.externalRepairError = null;
+        break;
+      case "external_repair_failed":
+        state.externalRepairStatus = "FAILED";
+        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
+        state.externalRepairAt = event.ts ?? state.externalRepairAt;
+        state.externalRepairError = event.error ?? event.reason ?? null;
         break;
     }
   }

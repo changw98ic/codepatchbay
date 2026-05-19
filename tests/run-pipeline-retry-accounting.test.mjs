@@ -51,7 +51,10 @@ case "$agent" in
       printf '%s\\n' "$count" > "$count_file"
       case "$count" in
         1)
-          printf 'VERDICT: FAIL\\nReason: artifact_stale, regenerate the verification bundle.\\n' > "$output_file"
+          # Simulate a verifier run that exits but does not produce a parseable
+          # verdict file. This should consume a verifier retry, not an executor
+          # fix attempt.
+          rm -f "$output_file"
           ;;
         2|3)
           printf 'VERDICT: FAIL\\nThe implementation still misses acceptance criteria.\\n' > "$output_file"
@@ -80,7 +83,7 @@ esac
   await chmod(stubPath, 0o755);
 }
 
-test("run-pipeline keeps verifier evidence retries from consuming executor fix attempts", async () => {
+test("run-pipeline keeps missing-verdict retries from consuming executor fix attempts", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-retry-accounting-"));
   const cpbRoot = path.join(root, "cpb");
   const sourcePath = path.join(root, "source");
@@ -128,7 +131,7 @@ test("run-pipeline keeps verifier evidence retries from consuming executor fix a
     );
     assert.ok(
       phases.includes("verify-retry-4"),
-      "final PASS should run after stale evidence retry plus two executor fixes",
+      "final PASS should run after missing-verdict retry plus two executor fixes",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

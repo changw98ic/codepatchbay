@@ -191,6 +191,33 @@ describe("hub-queue JS/Rust contract", () => {
     assert.equal(all.length, 1);
   });
 
+  test("Dedup: Rust keeps repair lineage entry distinct", { skip: !hasRuntimeBinary }, async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-contract-lineage-"));
+
+    const first = await runtimeCli.hubQueueEnqueue(hubRoot, {
+      projectId: "dedup",
+      sourcePath: "/a",
+      description: "fix login",
+    });
+    const second = await runtimeCli.hubQueueEnqueue(hubRoot, {
+      projectId: "dedup",
+      sourcePath: "/a",
+      description: "fix login",
+      metadata: {
+        originJobId: "job-123",
+        originQueueEntryId: first.id,
+        repairArtifact: "repair-001",
+        repairStatus: "FIXED",
+        lineageReason: "external_repair_fixed_cpb_self_bug",
+      },
+    });
+
+    assert.notEqual(first.id, second.id);
+    const all = await runtimeCli.hubQueueList(hubRoot);
+    assert.equal(all.length, 2);
+    assert.equal(second.metadata.originJobId, "job-123");
+  });
+
   test("hubQueueList filters by status and projectId via Rust", { skip: !hasRuntimeBinary }, async () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-contract-list-filter-"));
 

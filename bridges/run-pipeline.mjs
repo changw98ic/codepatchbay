@@ -3,12 +3,10 @@
 // Usage: node bridges/run-pipeline.mjs --project <name> --task "<desc>" [--source-path <repo>] [--max-retries N] [--timeout-min M]
 
 import { access, mkdir, readFile, realpath, stat, writeFile, rm } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/runtime-events.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
@@ -40,8 +38,6 @@ import {
 } from "../server/services/worker-dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
-
-const execFileAsync = promisify(execFile);
 
 // ─── CLI arg parsing ───
 
@@ -269,64 +265,12 @@ function combineChunks(chunks) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function sha256(content) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-async function readGitSnapshot(sourcePath) {
-  const gitCommands = [
-    ["rev-parse", "--show-toplevel"],
-    ["rev-parse", "HEAD"],
-    ["rev-parse", "--short=12", "HEAD"],
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    ["status", "--porcelain=v1", "--untracked-files=all"],
-  ];
-
-  const outputs = {};
-  for (const [key, args] of [
-    ["gitRoot", gitCommands[0]],
-    ["head", gitCommands[1]],
-    ["shortHead", gitCommands[2]],
-    ["branch", gitCommands[3]],
-    ["status", gitCommands[4]],
-  ]) {
-    try {
-      const { stdout } = await execFileAsync("git", args, { cwd: sourcePath, timeout: 10_000 });
-      outputs[key] = stdout.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  outputs.statusHash = sha256(outputs.status || "");
-  return outputs;
-}
-
 async function writeIfMissing(filePath, content) {
   try {
     await access(filePath);
   } catch {
     await writeFile(filePath, content, "utf8");
   }
-}
-
-async function resolveJobSourcePath(wikiDir) {
-  let sourcePath = process.env.CPB_PROJECT_PATH_OVERRIDE || null;
-  if (!sourcePath) {
-    const projectJsonPath = path.join(wikiDir, "project.json");
-    try {
-      const raw = await readFile(projectJsonPath, "utf8");
-      sourcePath = JSON.parse(raw).sourcePath;
-    } catch {
-      return null;
-    }
-  }
-  return sourcePath ? path.resolve(sourcePath) : null;
-}
-
-async function fileSha256(filePath) {
-  const buf = await readFile(filePath);
-  return sha256(buf);
 }
 
 async function readJsonObject(filePath) {
@@ -480,17 +424,6 @@ function extractDeliverableId(stdout) {
 
 // ─── Verdict parsing from verdict file ───
 
-function hasArtifactStaleMarker(content) {
-  return content
-    .split(/\r?\n/)
-    .some((line) => {
-      if (!/\bartifact_stale\b/i.test(line)) {
-        return false;
-      }
-      return !/\bnot\s+`?artifact_stale`?\b/i.test(line);
-    });
-}
-
 export async function parseVerdict(verdictPath) {
   try {
     const content = await readFile(verdictPath, "utf8");
@@ -498,18 +431,12 @@ export async function parseVerdict(verdictPath) {
     for (const line of lines) {
       const structured = line.match(/^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i);
       if (structured) {
-        if (structured[1].toUpperCase() === "FAIL" && hasArtifactStaleMarker(content)) {
-          return "ARTIFACT_STALE";
-        }
         return structured[1].toUpperCase();
       }
     }
     for (const line of lines) {
       const legacy = line.match(/^\s*(PASS|FAIL|PARTIAL)\b/i);
       if (legacy) {
-        if (legacy[1].toUpperCase() === "FAIL" && hasArtifactStaleMarker(content)) {
-          return "ARTIFACT_STALE";
-        }
         return legacy[1].toUpperCase();
       }
     }
@@ -517,76 +444,6 @@ export async function parseVerdict(verdictPath) {
   } catch {
     return null;
   }
-}
-
-export async function buildVerificationManifest({
-  cpbRoot,
-  project,
-  jobId,
-  wikiDir,
-  deliverableId = null,
-  phase = "verify",
-  diffArtifactPath = null,
-}) {
-  const sourcePath = await resolveJobSourcePath(wikiDir);
-  if (!sourcePath) {
-    return null;
-  }
-
-  const git = await readGitSnapshot(sourcePath);
-  if (!git) {
-    return null;
-  }
-
-  const artifactsDir = runtimeDataPath(cpbRoot, path.join("artifacts", project, jobId));
-  await mkdir(artifactsDir, { recursive: true });
-  const manifestPath = path.join(artifactsDir, "verification-manifest.json");
-  const diffArtifactHash = diffArtifactPath ? await fileSha256(diffArtifactPath) : null;
-  const manifest = {
-    schema: "cpb-verification-manifest-v1",
-    generatedAt: new Date().toISOString(),
-    project,
-    jobId,
-    deliverableId,
-    phase,
-    sourcePath: path.resolve(sourcePath),
-    git,
-    diffArtifact: diffArtifactPath
-      ? {
-          path: path.resolve(diffArtifactPath),
-          sha256: diffArtifactHash,
-        }
-      : null,
-  };
-  manifest.snapshotId = sha256(JSON.stringify({
-    schema: manifest.schema,
-    project: manifest.project,
-    jobId: manifest.jobId,
-    deliverableId: manifest.deliverableId,
-    phase: manifest.phase,
-    sourcePath: manifest.sourcePath,
-    git: {
-      gitRoot: manifest.git.gitRoot,
-      head: manifest.git.head,
-      shortHead: manifest.git.shortHead,
-      branch: manifest.git.branch,
-      statusHash: manifest.git.statusHash,
-    },
-    diffArtifact: manifest.diffArtifact?.sha256 || null,
-  }));
-  manifest.artifactsDir = artifactsDir;
-  manifest.manifestPath = manifestPath;
-  return manifest;
-}
-
-export async function writeVerificationManifest(options) {
-  const manifest = await buildVerificationManifest(options);
-  if (!manifest) {
-    return null;
-  }
-  const { manifestPath, artifactsDir, ...payload } = manifest;
-  await writeFile(manifestPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return { ...payload, manifestPath };
 }
 
 async function parseReviewVerdict(reviewPath) {
@@ -608,34 +465,6 @@ async function parseReviewVerdict(reviewPath) {
 }
 
 // ─── Phase execution ───
-
-async function generateDiffArtifact(cpbRoot, project, jobId, wikiDir) {
-  const sourcePath = await resolveJobSourcePath(wikiDir);
-  if (!sourcePath) return null;
-
-  try {
-    await access(path.join(sourcePath, ".git"));
-  } catch {
-    return null;
-  }
-
-  const artifactsDir = runtimeDataPath(cpbRoot, path.join("artifacts", project, jobId));
-  await mkdir(artifactsDir, { recursive: true });
-  const diffPath = path.join(artifactsDir, "diff-execute.patch");
-
-  try {
-    // Include untracked files in diff via intent-to-add (no content staged)
-    await runCommand("git", ["add", "-N", "."], sourcePath).catch(() => {});
-    const result = await runCommand("git", ["diff", "HEAD"], sourcePath);
-    if (result.exitCode === 0 && result.stdout.trim().length > 0) {
-      await writeFile(diffPath, result.stdout, "utf8");
-      return diffPath;
-    }
-  } catch {
-    // Non-git project or no changes
-  }
-  return null;
-}
 
 async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
@@ -1048,30 +877,8 @@ async function main() {
     }
 
     // ─── Phase 3: Verify (+ fix loop) ───
-    let diffArtifactPath = null;
-    let verificationManifest = null;
-
-    async function refreshVerificationEvidence(phaseName) {
-      diffArtifactPath = await generateDiffArtifact(cpbRoot, project, jobId, wikiDir);
-      if (diffArtifactPath) {
-        log(project, `Diff artifact generated: ${diffArtifactPath}`);
-      }
-      verificationManifest = await writeVerificationManifest({
-        cpbRoot,
-        project,
-        jobId,
-        wikiDir,
-        deliverableId,
-        phase: phaseName,
-        diffArtifactPath,
-      });
-      if (verificationManifest?.manifestPath) {
-        log(project, `Verification manifest generated: ${verificationManifest.manifestPath}`);
-      }
-    }
-
     let verifyAttempt = 0;
-    let evidenceRetryCount = 0;
+    let verdictRetryCount = 0;
     let qualityFailureCount = 0;
 
     while (qualityFailureCount < maxRetries) {
@@ -1087,13 +894,7 @@ async function main() {
       log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
 
       const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
-      await refreshVerificationEvidence(verifyPhaseName);
-      const verifyArgs = [
-        project,
-        deliverableId,
-        diffArtifactPath || "",
-        verificationManifest?.manifestPath || "",
-      ];
+      const verifyArgs = [project, deliverableId];
       await runPhaseWithLease(
         cpbRoot, executorRoot, project, jobId, verifyPhaseName,
         `bridges/${bridgeForPhase(workflowDef, "verify")}`,
@@ -1104,18 +905,18 @@ async function main() {
       const verdict = await parseVerdict(verdictPath);
 
       if (verdict === null) {
-        evidenceRetryCount += 1;
-        warn(`No verdict file. Verification retry ${evidenceRetryCount}/${maxRetries}`);
+        verdictRetryCount += 1;
+        warn(`No verdict file. Verification retry ${verdictRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (evidenceRetryCount >= maxRetries) {
-          await failJob(cpbRoot, project, jobId, failure("verification artifact missing after retries", {
+        if (verdictRetryCount >= maxRetries) {
+          await failJob(cpbRoot, project, jobId, failure("verification verdict missing after retries", {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "verify",
             retryable: true,
           }));
           printFailureSummary(cpbRoot, project, jobId, {
             phase: "verify",
-            reason: "verification artifact missing after retries",
+            reason: "verification verdict missing after retries",
             deliverableId,
             verdictFile: verdictPath,
           });
@@ -1125,10 +926,10 @@ async function main() {
       }
 
       if (verdict === "UNKNOWN") {
-        evidenceRetryCount += 1;
-        warn(`Unclear verdict: ${verdict}. Verification retry ${evidenceRetryCount}/${maxRetries}`);
+        verdictRetryCount += 1;
+        warn(`Unclear verdict: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (evidenceRetryCount >= maxRetries) {
+        if (verdictRetryCount >= maxRetries) {
           await failJob(cpbRoot, project, jobId, failure("verification verdict unclear after retries", {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "verify",
@@ -1154,30 +955,6 @@ async function main() {
         await completeJob(cpbRoot, project, jobId);
         pipelineOk = true;
         return 0;
-      }
-
-      if (verdict === "ARTIFACT_STALE") {
-        evidenceRetryCount += 1;
-        warn(`Verification evidence was stale. Regenerating evidence (${evidenceRetryCount}/${maxRetries}).`);
-        await completePhase(cpbRoot, project, jobId, {
-          phase: verifyPhaseName,
-          artifact: `verdict-${deliverableId}`,
-        });
-        if (evidenceRetryCount < maxRetries) {
-          continue;
-        }
-        await failJob(cpbRoot, project, jobId, failure("verification artifact stale after retries", {
-          code: FAILURE_CODES.RECOVERABLE,
-          phase: "verify",
-          retryable: true,
-        }));
-        printFailureSummary(cpbRoot, project, jobId, {
-          phase: "verify",
-          reason: "verification artifact stale after retries",
-          deliverableId,
-          verdictFile: verdictPath,
-        });
-        return 1;
       }
 
       // FAIL or PARTIAL — fix loop

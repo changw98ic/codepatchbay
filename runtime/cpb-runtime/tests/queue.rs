@@ -186,6 +186,29 @@ fn hub_enqueue_deduplicates_by_project_and_description() {
 }
 
 #[test]
+fn hub_enqueue_keeps_repair_lineage_distinct() {
+    let root = temp_root("hub-lineage");
+    let first = hub_queue_enqueue(&root, &json!({"projectId": "p1", "description": "fix login"}))
+        .unwrap();
+    let second = hub_queue_enqueue(&root, &json!({
+        "projectId": "p1",
+        "description": "fix login",
+        "metadata": {
+            "originJobId": "job-123",
+            "originQueueEntryId": first["id"],
+            "repairArtifact": "repair-001",
+            "repairStatus": "FIXED",
+            "lineageReason": "external_repair_fixed_cpb_self_bug"
+        }
+    }))
+    .unwrap();
+
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(hub_queue_list(&root, None, None).unwrap().len(), 2);
+    assert_eq!(second["metadata"]["originJobId"], "job-123");
+}
+
+#[test]
 fn hub_dequeue_picks_highest_priority() {
     let root = temp_root("hub-dequeue-pri");
     hub_queue_enqueue(&root, &json!({"projectId": "low", "priority": "P2", "description": "low"}))

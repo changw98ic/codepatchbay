@@ -228,11 +228,13 @@ Include plan-ref: $plan_id in the deliverable metadata.
 PROMPT
 }
 
-# rtk_codex_verify <project> <deliverable_id> <verdict_file> [diff_artifact] [verification_manifest]
+# rtk_codex_verify <project> <deliverable_id> <verdict_file>
 rtk_codex_verify() {
+  if [ "$#" -ne 3 ]; then
+    echo "Usage: rtk_codex_verify <project> <deliverable_id> <verdict_file>" >&2
+    return 2
+  fi
   local project="$1" deliverable_id="$2" verdict_file="$3"
-  local diff_artifact="${4:-}"
-  local verification_manifest="${5:-}"
   local deliverable_file="$CPB_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
@@ -242,48 +244,8 @@ rtk_codex_verify() {
 - Do NOT modify any code files."
   fi
 
-  # Pre-read deliverable to extract plan-ref
-  local deliverable_content=""
-  deliverable_content=$(_pre_read "$deliverable_file")
-
-  # Extract plan-ref and read the referenced plan
-  local plan_ref plan_file plan_content=""
-  plan_ref=$(echo "$deliverable_content" | grep -i 'plan-ref' | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')
-  if [ -n "$plan_ref" ]; then
-    plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_ref}.md"
-    plan_content=$(_pre_read "$plan_file")
-  fi
-
-  # Pre-read other reference files
-  local proj_context decisions diff_content=""
-  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
-  [ -n "$diff_artifact" ] && [ -f "$diff_artifact" ] && diff_content=$(_pre_read "$diff_artifact")
-  local manifest_content=""
-  [ -n "$verification_manifest" ] && [ -f "$verification_manifest" ] && manifest_content=$(_pre_read "$verification_manifest")
-
   local skills_section
   skills_section=$(build_skills_section codex)
-
-  local diff_section=""
-  if [ -n "$diff_content" ]; then
-    diff_section="## Diff Artifact
-Path: $diff_artifact
-
-The following code diff shows what changed:
-
-$diff_content"
-  fi
-
-  local manifest_section=""
-  if [ -n "$manifest_content" ]; then
-    manifest_section="## Verification Snapshot
-Path: $verification_manifest
-
-This snapshot manifest is the authoritative evidence bundle for the current verify attempt. If the manifest is missing, stale, or inconsistent with the diff artifact or deliverable text, treat the evidence as stale and fail with artifact_stale.
-
-$manifest_content"
-  fi
 
   cat << PROMPT
 You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
@@ -292,34 +254,77 @@ $skills_section
 
 $constraints
 
-$manifest_section
-
-$diff_section
-
-## Deliverable to verify (plan-ref: ${plan_ref:-unknown})
-$deliverable_content
-
-## Referenced Plan
-$plan_content
-
-## Project Context
-$proj_context
-
-## Decisions
-$decisions
+## Verification locators
+- Deliverable file: $deliverable_file
+- Plans directory: $CPB_ROOT/wiki/projects/$project/inbox
+- Outputs directory: $CPB_ROOT/wiki/projects/$project/outputs
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Project metadata: $CPB_ROOT/wiki/projects/$project/project.json
 
 ## Instructions
-1. The deliverable content is above. It references plan-ref: $plan_ref.
-2. The referenced plan content is above.
-3. Verify the deliverable against the plan's Acceptance-Criteria.
-4. Use the verification snapshot and diff artifact as the primary evidence. Natural-language summaries are not evidence.
-5. If the verification snapshot is missing, stale, or inconsistent with the diff artifact, fail with artifact_stale and explain the mismatch.
-6. Give a verdict based on EVIDENCE from the manifest, diff artifact, deliverable, and plan content above.
-7. Write the verdict to: $verdict_file
+1. Read the deliverable file and referenced plan from the locators above.
+2. Verify the deliverable against the task goal and plan Acceptance-Criteria.
+3. Give a verdict based on your own inspection of the current files and task intent.
+4. Write the verdict to: $verdict_file
 
 The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
 VERDICT: <PASS|FAIL|PARTIAL>
-Follow with detailed evidence and reasoning. Be evidence-based, not reassuring.
+Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.
+PROMPT
+}
+
+# rtk_claude_repair <project> <job-id> <repair-report-file>
+rtk_claude_repair() {
+  if [ "$#" -ne 3 ]; then
+    echo "Usage: rtk_claude_repair <project> <job-id> <repair-report-file>" >&2
+    return 2
+  fi
+  local project="$1" job_id="$2" repair_file="$3"
+  local wiki_dir="$CPB_ROOT/wiki/projects/$project"
+  local event_log="$CPB_ROOT/cpb-task/events/$project/$job_id.jsonl"
+  local project_cwd
+  project_cwd=$(get_project_path "$project")
+  local constraints=""
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
+    constraints="## Scope
+- Work in the CodePatchbay executor root: $CPB_EXECUTOR_ROOT
+- Use the target project only for direct inspection when needed: ${project_cwd:-[missing project root]}
+- Write the repair report only to: $repair_file
+- Leave verifier, retry, recover, and pipeline execution paths outside this repair run."
+  fi
+
+  cat << PROMPT
+You are CodePatchbay Claude (External Repair). Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
+
+$constraints
+
+## Locators
+- CPB executor root: $CPB_EXECUTOR_ROOT
+- CPB runtime root: $CPB_ROOT
+- Target project root: ${project_cwd:-[missing project root]}
+- Job event log: $event_log
+- Project context: $wiki_dir/context.md
+- Decisions: $wiki_dir/decisions.md
+- Project log: $wiki_dir/log.md
+- Outputs directory: $wiki_dir/outputs
+- Project metadata: $wiki_dir/project.json
+
+## Instructions
+1. Read the logs and code from the locators above. Treat copied summaries as stale.
+2. Diagnose whether the failure is caused by CPB executor/runtime logic.
+3. If it is a CPB self-bug, make the smallest code change that repairs that bug.
+4. After a successful repair, the execution channel points to a new task carrying repair lineage metadata; the original failed job remains an audit record.
+5. Write the repair report at the path below.
+
+Write the repair report to: $repair_file
+
+The report's first line MUST be exactly one of:
+REPAIR: FIXED
+REPAIR: NOOP
+REPAIR: BLOCKED
+
+After the first line, include concise findings, changed files, and verification you ran.
 PROMPT
 }
 

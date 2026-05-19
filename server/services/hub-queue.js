@@ -69,7 +69,8 @@ function priorityScore(priority) {
 }
 
 function entryKey(entry) {
-  return `${entry.projectId}::${entry.description}`;
+  const lineage = entry.metadata?.originJobId || "";
+  return `${entry.projectId}::${entry.description}::${lineage}`;
 }
 
 export async function enqueue(hubRoot, input = {}) {
@@ -171,7 +172,7 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 
   const queue = await loadQueue(hubRoot);
   const targetStatus = result.ok ? "completed" : "failed";
-  const key = `${projectId}::${description}`;
+  const key = entryKey({ projectId, description, metadata: {} });
 
   const matches = queue.entries.filter(
     (e) => entryKey(e) === key && (e.status === "pending" || e.status === "in_progress"),
