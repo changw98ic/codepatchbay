@@ -399,6 +399,18 @@ describe("parseArgs", () => {
     assert.equal(opts.workflow, "blocked");
   });
 
+  test("parses accelerated --workflow", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--workflow", "accelerated"]);
+    assert.equal(opts.workflow, "accelerated");
+  });
+
+  test("rejects unknown --workflow", () => {
+    assert.throws(
+      () => parseArgs(["node", "script", "--project", "p", "--workflow", "surprise"]),
+      /invalid workflow: surprise/,
+    );
+  });
+
   test("parses --executor-root", () => {
     const opts = parseArgs(["node", "script", "--project", "p", "--executor-root", "/tmp/cpb-release"]);
     assert.equal(opts.executorRoot, "/tmp/cpb-release");

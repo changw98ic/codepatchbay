@@ -99,6 +99,19 @@ test("cpb evolve-multi rejects invalid workflow names", async () => {
   );
 });
 
+test("cpb evolve-multi accepts accelerated workflow in dry-run mode", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-cli-accelerated-workflow-hub-"));
+
+  const { stdout } = await execFileAsync("./cpb", ["evolve-multi", "--workflow", "accelerated"], {
+    cwd: process.cwd(),
+    env: envFor(hubRoot),
+  });
+  const result = JSON.parse(stdout);
+
+  assert.equal(result.dryRun, true);
+  assert.ok(Array.isArray(result.candidates));
+});
+
 test("cpb evolve-multi rejects missing workflow value under --once", async () => {
   const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-cli-missing-workflow-hub-"));
 

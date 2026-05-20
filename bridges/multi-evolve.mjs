@@ -16,6 +16,7 @@ import {
 } from "../server/services/multi-evolve-state.js";
 import { checkPolicy } from "../server/services/evolve-policy.js";
 import { closeBudget, consume, createBudget } from "../server/services/evolve-budget.js";
+import { isWorkflowName } from "../server/services/workflow-definition.js";
 import {
   enqueue as hubEnqueue,
   listQueue as hubListQueue,
@@ -82,7 +83,7 @@ function parseArgs(argv) {
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
-  if (!["standard", "blocked"].includes(opts.workflow)) {
+  if (!isWorkflowName(opts.workflow)) {
     throw new Error(`invalid workflow: ${opts.workflow}`);
   }
   if (opts.guardedRepair) {
@@ -119,7 +120,7 @@ Options:
   --no-clean-check    skip dirty-worktree check in guarded-repair
   --project <id>      restrict to a single project
   --agent codex|claude
-  --workflow standard|blocked
+  --workflow standard|complex|blocked|accelerated
   --timeout-ms <n>    per-agent timeout (default: 300000)
   --max-duration-ms <n> wall-clock duration limit for loop modes (0 = unlimited)
   --local-acp-pool    bypass Hub managed pool for isolated debugging`;

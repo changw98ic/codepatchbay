@@ -1,5 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  getWorkflow,
+  phaseRequiresSubagents,
+  getVerificationLayers,
+  getSubagentConfig,
+} from "./workflow-definition.js";
+import { loadProfile } from "./profile-loader.js";
 
 async function preRead(filePath) {
   try {
@@ -59,9 +66,65 @@ async function readRoleTitle(executorRoot, role) {
   return role;
 }
 
+const LAYER_DESCRIPTIONS = {
+  fast: "Fast focused tests - targeted tests for directly changed code paths (under 60s total).",
+  changed: "Changed-scope checks - test suites for the specific modules/files modified.",
+  regression: "Broad regression tests - full project test suite to catch unintended side effects.",
+  acceptance: "Acceptance and static checks - linting, type checking, and plan acceptance criteria verification.",
+};
+
+function buildSubagentGuidance(phase, profile) {
+  const wfName = process.env.CPB_WORKFLOW;
+  const wf = wfName ? getWorkflow(wfName) : null;
+  const wfRequires = wf ? phaseRequiresSubagents(wf, phase) : false;
+  const profileGuidance = profile?.subagentGuidance;
+  const profileRequired = profileGuidance?.required === true;
+  const profilePhases = profileGuidance?.phases;
+  const profileApplies = profileRequired && (!profilePhases || profilePhases.includes(phase));
+
+  if (!wfRequires && !profileApplies) return "";
+
+  const wfConfig = wf ? getSubagentConfig(wf) : null;
+  const maxConcurrency = profileApplies && profileGuidance?.maxConcurrency
+    ? profileGuidance.maxConcurrency
+    : (wfConfig?.maxConcurrency ?? 3);
+  const isClaudePhase = phase === "execute" || phase === "repair";
+  const runtimeLine = isClaudePhase
+    ? "This phase runs under Claude ACP. You MUST use Claude Code native subagents / Task tool for parallel work."
+    : "This phase runs under Codex. You MUST use Codex native subagents for parallel work.";
+
+  return `\n## Subagent Requirements (MANDATORY)
+${runtimeLine}
+This phase REQUIRES you to dispatch bounded native subagents for independent subtasks when throughput benefits.
+- Maximum concurrent subagents: ${maxConcurrency}
+- Each subagent must be bounded: no commits, pushes, merges, wiki modifications, or runtime artifact changes.
+- You MUST integrate every subagent result into your final output.
+- If your runtime cannot dispatch subagents, stop and report: BLOCKED: subagent tool unavailable.
+- If no independent subagent lane exists (single-step task with no parallelizable work), report: BLOCKED: no independent subagent lane with reason.
+- Include a "Subagents used" section in your final output listing each lane, findings, and integration summary.`;
+}
+
+function buildLayeredVerification() {
+  const wfName = process.env.CPB_WORKFLOW;
+  if (!wfName) return "";
+  const wf = getWorkflow(wfName);
+  const layers = getVerificationLayers(wf);
+  if (!layers) return "";
+
+  const layerList = layers.map((l) => `- **${l}**: ${LAYER_DESCRIPTIONS[l] || l}`).join("\n");
+
+  return `\n## Layered Verification
+Run verification in these distinct layers instead of treating tests as one serial bucket. Use independent subagent lanes for safe parallel execution of non-conflicting layers:
+
+${layerList}
+
+For each layer, report: what was run, pass/fail status, any issues found, and the subagent lane status. Aggregate results into the final verdict JSON envelope.`;
+}
+
 export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner");
+  const profile = await loadProfile(executorRoot, "planner");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const projContext = await preRead(path.join(wikiDir, "context.md"));
@@ -79,7 +142,7 @@ export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, p
   return `You are CodePatchbay Planner. Role: ${roleTitle}
 
 ${skillsSection}
-
+${buildSubagentGuidance("plan", profile)}
 ## CRITICAL: Primary Directive
 Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardless of project context:
 **${task}**
@@ -108,6 +171,7 @@ Use scope-matched step count with concrete acceptance criteria.`;
 export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
+  const profile = await loadProfile(executorRoot, "executor");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
@@ -145,7 +209,7 @@ ${skillsSection}
 ${constraints}
 
 ${fixSection}
-
+${buildSubagentGuidance("execute", profile)}
 ## Files to read
 - Role definition: ${path.join(executorRoot, "profiles", "executor", "soul.md")}
 - Plan to execute: ${planFile}
@@ -166,6 +230,7 @@ Include plan-ref: ${planId} in the deliverable metadata.`;
 export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier");
+  const profile = await loadProfile(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
@@ -184,7 +249,8 @@ export async function buildVerifierPrompt(executorRoot, cpbRoot, project, delive
 ${skillsSection}
 
 ${constraints}
-
+${buildSubagentGuidance("verify", profile)}
+${buildLayeredVerification()}
 ## Verification locators
 - Deliverable file: ${deliverableFile}
 - Plans directory: ${path.join(wikiDir, "inbox")}
@@ -227,6 +293,7 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier");
+  const profile = await loadProfile(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -244,7 +311,8 @@ export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, job
 ${skillsSection}
 
 ${constraints}
-
+${buildSubagentGuidance("verify", profile)}
+${buildLayeredVerification()}
 ## Verification locators
 - Job ID: ${jobId}
 - Event log: ${path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`)}
@@ -288,6 +356,7 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
   const skillsSection = await buildSkillsSection(executorRoot, "repairer");
+  const profile = await loadProfile(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
@@ -308,6 +377,7 @@ ${skillsSection}
 Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
 
 ${constraints}
+${buildSubagentGuidance("repair", profile)}
 
 ## Locators
 - CPB executor root: ${executorRoot}
