@@ -15,6 +15,10 @@ function hasArtifact(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function hasCompletedPhase(state, phase) {
+  return state.completedPhases?.includes(phase) || hasArtifact(state.artifacts?.[phase]);
+}
+
 function artifactId(value, prefix) {
   if (!hasArtifact(value)) return "";
   const base = path.basename(value, ".md");
@@ -48,7 +52,7 @@ export function nextPhaseFor(state) {
   // Determine current phase from artifacts
   const artifacts = state.artifacts ?? {};
   for (const phase of workflow.phases) {
-    if (!hasArtifact(artifacts[phase])) {
+    if (!hasCompletedPhase(state, phase)) {
       return phase;
     }
   }
@@ -164,7 +168,7 @@ export function bridgeForPhase(phase, project, job) {
       const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
         script: path.join(bridgesDir, "codex-verify.sh"),
-        args: [project, deliverableId],
+        args: deliverableId ? [project, deliverableId] : [project, "--job-id", job.jobId],
       };
     }
     case "review": {

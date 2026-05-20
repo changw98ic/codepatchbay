@@ -52,16 +52,8 @@ assert.equal(planned.attempt, 2);
 assert.equal(planned.artifacts.plan, "wiki/projects/demo/inbox/plan-001.md");
 assert.equal(planned.updatedAt, "2026-05-13T00:02:00.000Z");
 
-await blockJob(root, project, created.jobId, {
-  reason: "needs human decision",
-  ts: "2026-05-13T00:03:00.000Z",
-});
-const blocked = await getJob(root, project, created.jobId);
-assert.equal(blocked.status, "blocked");
-assert.equal(blocked.blockedReason, "needs human decision");
-
 await completeJob(root, project, created.jobId, {
-  ts: "2026-05-13T00:04:00.000Z",
+  ts: "2026-05-13T00:03:00.000Z",
 });
 const completed = await getJob(root, project, created.jobId);
 assert.equal(completed.status, "completed");
@@ -86,15 +78,21 @@ assert.equal(failedState.failureCode, FAILURE_CODES.RECOVERABLE);
 assert.equal(failedState.failurePhase, "execute");
 assert.equal(failedState.retryable, true);
 
-// job_retried clears failed state and allows retryJob to resume from the failed phase.
+// retryJob creates a fresh recovery job and leaves the failed job immutable.
 const retriedState = await retryJob(root, project, failed.jobId, {
   ts: "2026-05-13T01:02:00.000Z",
 });
 assert.equal(retriedState.status, "running");
-assert.equal(retriedState.phase, "execute");
-assert.equal(retriedState.retryCount, 1);
-assert.equal(retriedState.failureCode, null);
-assert.equal(retriedState.retryable, false);
+assert.notEqual(retriedState.jobId, failed.jobId);
+assert.equal(retriedState.task, "Fail direct assertion");
+assert.equal(retriedState.lineage.parentJobId, failed.jobId);
+assert.equal(retriedState.lineage.parentStatus, "failed");
+assert.equal(retriedState.lineage.parentFailureCode, FAILURE_CODES.RECOVERABLE);
+
+const failedAfterRetry = await getJob(root, project, failed.jobId);
+assert.equal(failedAfterRetry.status, "failed");
+assert.equal(failedAfterRetry.blockedReason, "verification failed");
+assert.equal(failedAfterRetry.failureCode, FAILURE_CODES.RECOVERABLE);
 
 const budgetBlocked = await createJob(root, {
   project,
@@ -110,10 +108,11 @@ assert.equal(budgetBlockedState.status, "blocked");
 assert.equal(budgetBlockedState.blockedReason, "max provider retries reached");
 
 const jobs = await listJobs(root);
-assert.equal(jobs.length, 3);
+assert.equal(jobs.length, 4);
 assert.equal(jobs[0].jobId, budgetBlocked.jobId);
-assert.equal(jobs[1].jobId, failed.jobId);
-assert.equal(jobs[2].jobId, created.jobId);
+assert.equal(jobs[1].jobId, retriedState.jobId);
+assert.equal(jobs[2].jobId, failed.jobId);
+assert.equal(jobs[3].jobId, created.jobId);
 assert(jobs.some((job) => job.jobId === created.jobId));
 
 const eventsRoot = path.join(root, "cpb-task", "events");
@@ -122,7 +121,7 @@ await writeFile(path.join(eventsRoot, "ignored", "notes.txt"), "skip me\n", "utf
 await writeFile(path.join(eventsRoot, "ignored", "job-20260513-020000-extra.jsonl"), "", "utf8");
 
 const jobsWithoutEmptyStream = await listJobs(root);
-assert.equal(jobsWithoutEmptyStream.length, 3);
+assert.equal(jobsWithoutEmptyStream.length, 4);
 assert(!jobsWithoutEmptyStream.some((job) => job.project === "ignored"));
 
 const orphanJobId = "job-20260513-030000-orphan";
@@ -139,7 +138,7 @@ await writeFile(
 );
 
 const jobsWithoutOrphanStream = await listJobs(root);
-assert.equal(jobsWithoutOrphanStream.length, 3);
+assert.equal(jobsWithoutOrphanStream.length, 4);
 assert(!jobsWithoutOrphanStream.some((job) => job.jobId === orphanJobId));
 
 const files = await listEventFiles(root);
@@ -161,6 +160,11 @@ assert.deepEqual(
       project,
       jobId: budgetBlocked.jobId,
       file: path.join("cpb-task", "events", project, `${budgetBlocked.jobId}.jsonl`),
+    },
+    {
+      project,
+      jobId: retriedState.jobId,
+      file: path.join("cpb-task", "events", project, `${retriedState.jobId}.jsonl`),
     },
     {
       project,

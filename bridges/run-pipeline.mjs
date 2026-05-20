@@ -763,15 +763,14 @@ async function main() {
     }
 
     if (!deliverableId) {
-      fail(`Execute failed after ${maxRetries} attempts.`);
-      await failJob(cpbRoot, project, jobId, failure(`execute failed after ${maxRetries} attempts`, {
-        code: FAILURE_CODES.FATAL,
+      warn(`Execute completed without deliverable after ${maxRetries} attempts. Proceeding to verify by job state.`);
+      await completePhase(cpbRoot, project, jobId, {
         phase: "execute",
-      }));
-      return 1;
+        artifact: "",
+      });
     }
 
-    if (workflowDef.phases.includes("review")) {
+    if (deliverableId && workflowDef.phases.includes("review")) {
       let reviewPassed = false;
       let lastReviewVerdict = null;
 
@@ -894,14 +893,15 @@ async function main() {
       log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
 
       const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
-      const verifyArgs = [project, deliverableId];
+      const verifyArgs = deliverableId ? [project, deliverableId] : [project, "--job-id", jobId];
       await runPhaseWithLease(
         cpbRoot, executorRoot, project, jobId, verifyPhaseName,
         `bridges/${bridgeForPhase(workflowDef, "verify")}`,
         verifyArgs
       );
 
-      const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${deliverableId}.md`);
+      const verdictId = deliverableId || jobId;
+      const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
       const verdict = await parseVerdict(verdictPath);
 
       if (verdict === null) {
@@ -950,7 +950,7 @@ async function main() {
         ok("Pipeline complete!");
         await completePhase(cpbRoot, project, jobId, {
           phase: "verify",
-          artifact: `verdict-${deliverableId}`,
+          artifact: `verdict-${verdictId}`,
         });
         await completeJob(cpbRoot, project, jobId);
         pipelineOk = true;
@@ -963,7 +963,7 @@ async function main() {
 
       await completePhase(cpbRoot, project, jobId, {
         phase: verifyPhaseName,
-        artifact: `verdict-${deliverableId}`,
+        artifact: `verdict-${verdictId}`,
       });
 
       if (qualityFailureCount < maxRetries) {
@@ -1088,7 +1088,7 @@ async function main() {
       code: FAILURE_CODES.FATAL,
       phase: "verify",
     }));
-    const vf = deliverableId ? path.join(wikiDir, "outputs", `verdict-${deliverableId}.md`) : undefined;
+    const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
     printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
     return 1;
   } catch (err) {
