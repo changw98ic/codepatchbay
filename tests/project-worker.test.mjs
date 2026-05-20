@@ -296,6 +296,34 @@ describe("ProjectWorker", () => {
     assert.equal(entries[0].status, "completed");
   });
 
+  test("poll skips agent preflight for blocked workflow", async () => {
+    await enqueue(hubRoot, { projectId, description: "blocked-no-agent", sourcePath: sourceDir });
+
+    let pipelineCalls = 0;
+    let healthCalls = 0;
+    const worker = makeWorker({
+      workflow: "blocked",
+      agentHealthFn: async () => {
+        healthCalls++;
+        return { codex: false, claude: false };
+      },
+      runPipelineFn: () => {
+        pipelineCalls++;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(healthCalls, 0);
+    assert.equal(pipelineCalls, 1);
+    assert.ok(result.entry);
+    assert.equal(result.result.ok, true);
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+  });
+
   test("poll backs off three times and stops without leaving a claim when both agents fail preflight", async () => {
     await enqueue(hubRoot, { projectId, description: "both-agents-down", sourcePath: sourceDir });
 
@@ -397,6 +425,18 @@ describe("parseArgs", () => {
   test("parses --workflow", () => {
     const opts = parseArgs(["node", "script", "--project", "p", "--workflow", "blocked"]);
     assert.equal(opts.workflow, "blocked");
+  });
+
+  test("parses accelerated --workflow", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--workflow", "accelerated"]);
+    assert.equal(opts.workflow, "accelerated");
+  });
+
+  test("rejects unknown --workflow", () => {
+    assert.throws(
+      () => parseArgs(["node", "script", "--project", "p", "--workflow", "surprise"]),
+      /invalid workflow: surprise/,
+    );
   });
 
   test("parses --executor-root", () => {

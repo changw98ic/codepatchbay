@@ -9,6 +9,7 @@ function defaultProfile(role) {
     soulMd: null,
     permissions: { write_paths: [], deny_tools: [], deny_commands: false },
     agent: { command: null, args: [] },
+    subagentGuidance: null,
   };
 }
 
@@ -39,6 +40,9 @@ export async function loadProfile(cpbRoot, role) {
         command: config.agent.command ?? null,
         args: config.agent.args ?? [],
       };
+    }
+    if (config.subagentGuidance) {
+      profile.subagentGuidance = config.subagentGuidance;
     }
   } catch {
     // config.json is optional

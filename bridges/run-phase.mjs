@@ -31,6 +31,7 @@ import {
   dashboardPath,
 } from "../server/services/artifact-locator.js";
 import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
+import { isWorkflowName, listWorkflows } from "../server/services/workflow-definition.js";
 import { applyVariant } from "./apply-variant.mjs";
 
 // --- CLI arg parsing ---
@@ -58,12 +59,16 @@ function parseArgs(argv) {
   const executorRoot = options.get("--executor-root") || process.env.CPB_EXECUTOR_ROOT || path.resolve(path.dirname(import.meta.url.replace("file://", "")), "..");
   const cpbRoot = options.get("--cpb-root") || process.env.CPB_ROOT || executorRoot;
   const project = options.get("--project") || "";
+  const workflow = options.get("--workflow") || process.env.CPB_WORKFLOW || "";
+  if (workflow && !isWorkflowName(workflow)) {
+    throw new Error(`invalid workflow: ${workflow} (valid: ${listWorkflows().join(", ")})`);
+  }
 
   if (!project || !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
     throw new Error(`invalid project name: ${project}`);
   }
 
-  return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, options };
+  return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, workflow, options };
 }
 
 // --- Logging helpers ---
@@ -425,7 +430,7 @@ async function handleRepair(args) {
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
 
-  const repairFile = repairFilePath(cpbRoot, project, jobId);
+  const repairFile = options.get("--repair-file") || repairFilePath(cpbRoot, project, jobId);
   console.log(`Repairing [${project}] job-${jobId}...`);
   console.log(`Output: ${repairFile}`);
 
@@ -469,6 +474,7 @@ async function main() {
   // Propagate env
   process.env.CPB_EXECUTOR_ROOT = parsed.executorRoot;
   process.env.CPB_ROOT = parsed.cpbRoot;
+  if (parsed.workflow) process.env.CPB_WORKFLOW = parsed.workflow;
 
   // Permission matrix context for ACP enforcement
   const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };

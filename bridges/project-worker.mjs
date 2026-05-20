@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // project-worker.mjs — Per-project worker that polls Hub queue and runs pipeline
-// Usage: node bridges/project-worker.mjs --project <id> [--once] [--workflow blocked]
+// Usage: node bridges/project-worker.mjs --project <id> [--once] [--workflow standard|complex|blocked|accelerated]
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -17,6 +17,7 @@ import {
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
 import { executorEnv, resolveExecutorRoot } from "../server/services/executor-root.js";
+import { isWorkflowName, listWorkflows } from "../server/services/workflow-definition.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -170,6 +171,9 @@ export function parseArgs(argv) {
     else if (arg === "--hub-root") opts.hubRoot = valueAfter(i++, "--hub-root");
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
+  }
+  if (!isWorkflowName(opts.workflow)) {
+    throw new Error(`invalid workflow: ${opts.workflow} (valid: ${listWorkflows().join(", ")})`);
   }
   return opts;
 }
@@ -353,15 +357,17 @@ export class ProjectWorker {
       }
     }
 
-    const availability = await this.waitForAgentAvailability();
-    if (!availability.available) {
-      return {
-        ok: false,
-        code: AGENT_OUTAGE_EXIT_CODE,
-        agentOutage: true,
-        error: "agents_unavailable",
-        preflight: availability,
-      };
+    if (this.workflow !== "blocked") {
+      const availability = await this.waitForAgentAvailability();
+      if (!availability.available) {
+        return {
+          ok: false,
+          code: AGENT_OUTAGE_EXIT_CODE,
+          agentOutage: true,
+          error: "agents_unavailable",
+          preflight: availability,
+        };
+      }
     }
 
     if (dispatchEnabled() && sourcePath) {
@@ -511,7 +517,7 @@ Options:
   --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
-  --workflow <type>          Pipeline workflow: standard|blocked (default: standard)
+  --workflow <type>          Pipeline workflow: standard|complex|blocked|accelerated (default: standard)
   --cpb-root <path>          CPB root directory
   --executor-root <path>     CPB executor/release root directory
   --hub-root <path>          Hub root directory`;

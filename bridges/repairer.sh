@@ -31,6 +31,35 @@ REPAIR_ID="$(next_id "$WIKI_DIR/outputs" "repair")"
 REPAIR_FILE="$WIKI_DIR/outputs/repair-${REPAIR_ID}.md"
 REPAIR_ARTIFACT="repair-${REPAIR_ID}"
 
+TARGET_PROJECT_ROOT="$(get_project_path "$PROJECT")"
+if [ -n "$TARGET_PROJECT_ROOT" ]; then
+  CPB_PROJECT_PATH_OVERRIDE="$TARGET_PROJECT_ROOT"
+  export CPB_PROJECT_PATH_OVERRIDE
+fi
+
+JOB_WORKFLOW="$(
+  CPB_REPAIR_PROJECT="$PROJECT" \
+  CPB_REPAIR_JOB_ID="$JOB_ID" \
+  CPB_ROOT="$CPB_ROOT" \
+  CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" \
+  node --input-type=module - <<'NODE'
+import path from "node:path";
+
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const project = process.env.CPB_REPAIR_PROJECT;
+const jobId = process.env.CPB_REPAIR_JOB_ID;
+
+const { materializeJob, readEvents } = await import(path.join(executorRoot, "server/services/event-store.js"));
+const job = materializeJob(await readEvents(cpbRoot, project, jobId));
+if (job?.workflow) process.stdout.write(job.workflow);
+NODE
+)"
+if [ -n "$JOB_WORKFLOW" ]; then
+  CPB_WORKFLOW="$JOB_WORKFLOW"
+  export CPB_WORKFLOW
+fi
+
 record_repair_event() {
   local event_type="$1"
   local repair_status="${2:-}"
@@ -157,9 +186,13 @@ record_repair_event "external_repair_started"
 CPB_ACP_CWD="$CPB_EXECUTOR_ROOT"
 export CPB_ACP_CWD
 
-PROMPT="$(rtk_repairer "$PROJECT" "$JOB_ID" "$REPAIR_FILE")"
 set +e
-printf '%s' "$PROMPT" | acp_run claude 2>&1
+node "$CPB_EXECUTOR_ROOT/bridges/run-phase.mjs" repair \
+  --executor-root "$CPB_EXECUTOR_ROOT" \
+  --cpb-root "$CPB_ROOT" \
+  --project "$PROJECT" \
+  --job-id "$JOB_ID" \
+  --repair-file "$REPAIR_FILE"
 ACP_RC=$?
 set -e
 

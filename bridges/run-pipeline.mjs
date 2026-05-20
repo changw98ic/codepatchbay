@@ -27,7 +27,7 @@ import {
   releaseLease,
   renewLease,
 } from "../server/services/lease-manager.js";
-import { bridgeForPhase, getWorkflow } from "../server/services/workflow-definition.js";
+import { bridgeForPhase, getWorkflow, isWorkflowName } from "../server/services/workflow-definition.js";
 import {
   dispatchEnabled,
   guardSourcePath as guardDispatchSourcePath,
@@ -63,7 +63,7 @@ function parseArgs(argv) {
   const task = options.get("--task");
 
   if (!project || !task) {
-    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|blocked]");
+    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|complex|blocked|accelerated]");
   }
 
   if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
@@ -73,6 +73,9 @@ function parseArgs(argv) {
   const maxRetries = Math.max(1, parseInt(options.get("--max-retries") || "3", 10) || 3);
   const timeoutMin = Math.max(0, parseInt(options.get("--timeout-min") || "0", 10) || 0);
   const workflow = options.get("--workflow") || "standard";
+  if (!isWorkflowName(workflow)) {
+    throw new Error(`invalid workflow: ${workflow}`);
+  }
 
   const jobIdOverride = options.get("--job-id") || null;
   const dispatchId = options.get("--dispatch-id") || null;
@@ -541,6 +544,7 @@ async function main() {
   const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultExecutorRoot);
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
+  process.env.CPB_WORKFLOW = workflow;
   if (sourcePath) {
     try {
       sourcePath = await canonicalSourcePath(sourcePath);
