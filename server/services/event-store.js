@@ -236,8 +236,8 @@ export async function readEvents(cpbRoot, project, jobId) {
 }
 
 const POST_TERMINAL_ALLOWED = new Set([
-  "job_completed", "job_failed", "job_blocked", "job_cancelled",
-  "job_cancel_requested", "job_redirect_consumed", "job_retried", "phase_activity", "workflow_selected",
+  "job_redirect_consumed", "phase_activity",
+  "permission_denied",
   "external_repair_started", "external_repair_completed", "external_repair_failed",
 ]);
 
@@ -252,6 +252,7 @@ export function materializeJob(events) {
     workflow: null,
     executor: null,
     artifacts: {},
+    completedPhases: [],
     leaseId: null,
     worktree: null,
     createdAt: null,
@@ -274,20 +275,24 @@ export function materializeJob(events) {
     externalRepairArtifact: null,
     externalRepairAt: null,
     externalRepairError: null,
+    lineage: null,
+    permissionDenials: [],
+    infraStatus: null,
   };
 
   let terminal = false;
 
   for (const event of events) {
-    if (event.jobId !== undefined) state.jobId = event.jobId;
-    if (event.project !== undefined) state.project = event.project;
-    if (event.attempt !== undefined) state.attempt = event.attempt;
-    if (event.workflow !== undefined) state.workflow = event.workflow;
-    if (event.ts !== undefined) state.updatedAt = event.ts;
-
-    if (terminal && !POST_TERMINAL_ALLOWED.has(event.type)) {
+    const isPostTerminalEvent = terminal;
+    if (isPostTerminalEvent && !POST_TERMINAL_ALLOWED.has(event.type)) {
       continue;
     }
+
+    if (event.jobId !== undefined) state.jobId = event.jobId;
+    if (event.project !== undefined) state.project = event.project;
+    if (!isPostTerminalEvent && event.attempt !== undefined) state.attempt = event.attempt;
+    if (!isPostTerminalEvent && event.workflow !== undefined) state.workflow = event.workflow;
+    if (event.ts !== undefined) state.updatedAt = event.ts;
 
     switch (event.type) {
       case "job_created":
@@ -311,6 +316,9 @@ export function materializeJob(events) {
         state.phase = event.phase ?? state.phase;
         state.leaseId = null;
         state.status = "running";
+        if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) {
+          state.completedPhases = [...state.completedPhases, event.phase];
+        }
         if (event.phase !== undefined && event.artifact !== undefined) {
           state.artifacts[event.phase] = event.artifact;
         }
@@ -386,6 +394,35 @@ export function materializeJob(events) {
           delete state.artifacts[artifactPhase];
         }
         terminal = false;
+        break;
+      case "recovery_created":
+        state.lineage = {
+          parentJobId: event.lineage?.parentJobId ?? null,
+          parentStatus: event.lineage?.parentStatus ?? null,
+          parentFailureCode: event.lineage?.parentFailureCode ?? null,
+          parentFailurePhase: event.lineage?.parentFailurePhase ?? null,
+          parentBlockedReason: event.lineage?.parentBlockedReason ?? null,
+          recoveryReason: event.recoveryReason ?? null,
+          trigger: event.trigger ?? null,
+        };
+        break;
+      case "permission_denied":
+        state.permissionDenials = [
+          ...state.permissionDenials,
+          {
+            category: event.category ?? "infra",
+            phase: event.phase ?? null,
+            role: event.role ?? null,
+            action: event.action ?? null,
+            deniedOperation: event.deniedOperation ?? event.action ?? null,
+            targetPath: event.targetPath ?? "",
+            reason: event.reason ?? "permission denied",
+            allowedBoundary: event.allowedBoundary ?? "",
+            recoveryGuidance: event.recoveryGuidance ?? "",
+            ts: event.ts ?? null,
+          },
+        ];
+        state.infraStatus = "blocked";
         break;
       case "job_redirect_requested":
         if (!terminal) {

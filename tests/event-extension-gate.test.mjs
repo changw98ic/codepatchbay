@@ -24,6 +24,8 @@ const EVENT_REGISTRY = {
   job_redirect_requested: { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_redirect_requested', 'requestRedirectJob'] },
   job_redirect_consumed:  { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_redirect_consumed', 'consumeRedirect'] },
   job_retried:            { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_retried', 'retryJob'] },
+  recovery_created:       { class: 'audit',    consumer: 'job-store, job-recovery',    testFile: 'job-recovery.test.mjs', testMatch: ['recovery_created', 'recoverAsNewJob'] },
+  permission_denied:      { class: 'control',  consumer: 'permission-matrix, verifier', testFile: 'permission-matrix.test.mjs', testMatch: ['permission_denied', 'recordPermissionDenial'] },
   workflow_selected:      { class: 'state',    consumer: 'supervisor',                testFile: 'workflow-definition.test.mjs', testMatch: ['workflow_selected'] },
   phase_activity:         { class: 'activity', consumer: 'job-projection, dashboard', testFile: 'activity-events.test.mjs', testMatch: ['phase_activity'] },
   external_repair_started:   { class: 'audit', consumer: 'claude-repair, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_started'] },

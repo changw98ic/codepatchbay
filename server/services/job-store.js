@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
   checkpointJob,
-  deleteCheckpoint,
   materializeJob,
   readCheckpoint,
   readEvents,
@@ -15,8 +14,21 @@ import {
 } from "./runtime-cli.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+
 function nowIso() {
   return new Date().toISOString();
+}
+
+async function requireNotTerminal(cpbRoot, project, jobId, { allowMissing = false } = {}) {
+  const job = await getJob(cpbRoot, project, jobId);
+  if (!job?.jobId) {
+    if (allowMissing) return;
+    throw new Error(`job not found: ${jobId}`);
+  }
+  if (TERMINAL_STATUSES.has(job.status)) {
+    throw new Error(`job is terminal: ${job.status}`);
+  }
 }
 
 
@@ -66,6 +78,7 @@ export async function startPhase(
   jobId,
   { phase, attempt = 1, leaseId, ts = nowIso() }
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_started",
     jobId,
@@ -84,6 +97,7 @@ export async function completePhase(
   jobId,
   { phase, artifact = "", ts = nowIso() }
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_completed",
     jobId,
@@ -101,6 +115,7 @@ export async function blockJob(
   jobId,
   { reason, ts = nowIso() }
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_blocked",
     jobId,
@@ -126,6 +141,7 @@ export async function failJob(
     ts = nowIso(),
   }
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_failed",
     jobId,
@@ -153,6 +169,16 @@ function inferRetryPhase(job) {
   return workflow.phases[workflow.phases.length - 1] ?? null;
 }
 
+function terminalJobLineage(job) {
+  return {
+    parentJobId: job.jobId,
+    parentStatus: job.status ?? null,
+    parentFailureCode: job.failureCode ?? null,
+    parentFailurePhase: job.failurePhase ?? null,
+    parentBlockedReason: job.blockedReason ?? null,
+  };
+}
+
 export async function retryJob(
   cpbRoot,
   project,
@@ -169,15 +195,18 @@ export async function retryJob(
   if (!job?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
-  if (job.status !== "failed") {
-    throw new Error(`job is not failed: ${job.status ?? "unknown"}`);
+  if (!["failed", "blocked", "cancelled"].includes(job.status)) {
+    throw new Error(`job is not recoverable: ${job.status ?? "unknown"}`);
+  }
+  if (job.status === "cancelled" && !force) {
+    throw new Error("cancelled job requires --force to recover");
   }
 
   const code = job.failureCode ?? FAILURE_CODES.FATAL;
-  if (code === FAILURE_CODES.FATAL) {
+  if (job.status === "failed" && code === FAILURE_CODES.FATAL && !force) {
     throw new Error(`fatal job is not retryable: ${job.blockedReason ?? "unknown failure"}`);
   }
-  if (!job.retryable && !force) {
+  if (job.status === "failed" && !job.retryable && !force) {
     throw new Error(`job requires --force to retry: ${code}`);
   }
 
@@ -192,24 +221,28 @@ export async function retryJob(
     throw new Error(`invalid retry phase: ${retryPhase ?? "unknown"}`);
   }
 
-  const phaseIndex = workflow.phases.indexOf(retryPhase);
-  const clearArtifacts = workflow.phases.slice(phaseIndex);
-
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "job_retried",
-    jobId,
+  const recovered = await createJob(cpbRoot, {
     project,
+    task: job.task,
+    workflow: job.workflow,
+    ts,
+    executor: job.executor ?? null,
+  });
+
+  await appendEvent(cpbRoot, project, recovered.jobId, {
+    type: "recovery_created",
+    jobId: recovered.jobId,
+    project,
+    lineage: terminalJobLineage(job),
+    recoveryReason: `fresh recovery from ${job.status} job ${jobId}`,
+    trigger,
     fromPhase: retryPhase,
     retryCount,
     maxRetries,
-    trigger,
-    previousReason: job.blockedReason,
-    previousCode: code,
-    clearArtifacts,
     ts,
   });
-  await deleteCheckpoint(cpbRoot, project, jobId);
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+
+  return getJobAndUpdateIndex(cpbRoot, project, recovered.jobId);
 }
 
 export async function budgetExceeded(
@@ -218,6 +251,7 @@ export async function budgetExceeded(
   jobId,
   { reason, ts = nowIso() }
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "budget_exceeded",
     jobId,
@@ -234,6 +268,7 @@ export async function completeJob(
   jobId,
   { ts = nowIso() } = {}
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_completed",
     jobId,
@@ -266,6 +301,7 @@ export async function requestCancelJob(
   jobId,
   { reason, ts = nowIso() } = {}
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancel_requested",
     jobId,
@@ -282,6 +318,7 @@ export async function cancelJob(
   jobId,
   { reason, ts = nowIso() } = {}
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId);
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancelled",
     jobId,
@@ -298,6 +335,7 @@ export async function requestRedirectJob(
   jobId,
   { instructions, reason, ts = nowIso() } = {}
 ) {
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
   const redirectEventId = `${jobId}-redirect-${Date.now()}`;
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_redirect_requested",

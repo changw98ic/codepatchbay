@@ -52,23 +52,47 @@ describe('Terminal event state priority', () => {
     assert.equal(state.blockedReason, 'approval');
   });
 
-  it('last terminal event wins: failed then completed', () => {
+  it('first terminal event wins: failed then completed is ignored', () => {
     const state = materializeJob([
       ...baseEvents,
       { type: 'job_failed', jobId: 'j1', reason: 'timeout', ts: 'T3' },
       { type: 'job_completed', jobId: 'j1', ts: 'T4' },
     ]);
-    assert.equal(state.status, 'completed');
+    assert.equal(state.status, 'failed');
+    assert.equal(state.blockedReason, 'timeout');
+    assert.equal(state.updatedAt, 'T3');
   });
 
-  it('last terminal event wins: cancelled then failed', () => {
+  it('first terminal event wins: cancelled then failed is ignored', () => {
     const state = materializeJob([
       ...baseEvents,
       { type: 'job_cancelled', jobId: 'j1', ts: 'T3' },
       { type: 'job_failed', jobId: 'j1', reason: 'died', ts: 'T4' },
     ]);
-    assert.equal(state.status, 'failed');
-    assert.equal(state.blockedReason, 'died');
+    assert.equal(state.status, 'cancelled');
+    assert.equal(state.blockedReason, null);
+    assert.equal(state.updatedAt, 'T3');
+  });
+
+  it('ignored post-terminal phase events do not update generic state fields', () => {
+    const state = materializeJob([
+      ...baseEvents,
+      { type: 'job_completed', jobId: 'j1', ts: 'T3' },
+      {
+        type: 'phase_started',
+        jobId: 'j1',
+        phase: 'verify',
+        attempt: 9,
+        workflow: 'mutated',
+        leaseId: 'late',
+        ts: 'T4',
+      },
+    ]);
+    assert.equal(state.status, 'completed');
+    assert.equal(state.phase, 'completed');
+    assert.equal(state.attempt, null);
+    assert.equal(state.workflow, null);
+    assert.equal(state.updatedAt, 'T3');
   });
 
   it('phase_activity after terminal status records activity but preserves status', () => {

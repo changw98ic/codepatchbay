@@ -274,6 +274,52 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 PROMPT
 }
 
+# rtk_codex_verify_job <project> <job_id> <verdict_file>
+rtk_codex_verify_job() {
+  if [ "$#" -ne 3 ]; then
+    echo "Usage: rtk_codex_verify_job <project> <job_id> <verdict_file>" >&2
+    return 2
+  fi
+  local project="$1" job_id="$2" verdict_file="$3"
+  local constraints=""
+  if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
+    constraints="## Constraints
+- ONLY write the verdict to: $verdict_file
+- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
+- Do NOT modify any code files."
+  fi
+
+  local skills_section
+  skills_section=$(build_skills_section codex)
+
+  cat << PROMPT
+You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+
+$skills_section
+
+$constraints
+
+## Verification locators
+- Job ID: $job_id
+- Event log: $CPB_ROOT/cpb-task/events/$project/$job_id.jsonl
+- Plans directory: $CPB_ROOT/wiki/projects/$project/inbox
+- Outputs directory: $CPB_ROOT/wiki/projects/$project/outputs
+- Project context: $CPB_ROOT/wiki/projects/$project/context.md
+- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Project metadata: $CPB_ROOT/wiki/projects/$project/project.json
+
+## Instructions
+1. Reconstruct the task goal and phase history from the job/event locators above.
+2. Inspect current project state from the locators; executor deliverables are optional audit context, not required truth.
+3. If data is missing, return a diagnostic verdict instead of crashing.
+4. Write the verdict to: $verdict_file
+
+The verdict file MUST have this as the VERY FIRST LINE (no markdown, no headers before it):
+VERDICT: <PASS|FAIL|PARTIAL>
+Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.
+PROMPT
+}
+
 # rtk_claude_repair <project> <job-id> <repair-report-file>
 rtk_claude_repair() {
   if [ "$#" -ne 3 ]; then

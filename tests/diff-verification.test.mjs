@@ -103,6 +103,37 @@ describe("prompt locator contract and verdict parsing", () => {
     }
   });
 
+  it("rtk_codex_verify_job uses job/event locators without requiring deliverable content", async () => {
+    const fixture = await setupVerifyFixture();
+    try {
+      const { stdout } = await execFileAsync(
+        "bash",
+        [
+          "-c",
+          [
+            "source bridges/common.sh",
+            "rtk_codex_verify_job testproj job-20260520-000000-deadbe /tmp/verdict.md",
+          ].join(" && "),
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            CPB_ROOT: fixture.cpbRoot,
+            CPB_EXECUTOR_ROOT: repoRoot,
+            CPB_DANGEROUS: "1",
+          },
+        },
+      );
+
+      assert.match(stdout, new RegExp(`Event log: ${path.join(fixture.cpbRoot, "cpb-task", "events", "testproj", "job-20260520-000000-deadbe.jsonl")}`));
+      assert.match(stdout, /executor deliverables are optional audit context/i);
+      assert.doesNotMatch(stdout, /UNIQUE_DELIVERABLE_BODY_SHOULD_NOT_BE_EMBEDDED/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("codex-verify.sh rejects legacy diff and manifest arguments at the CLI boundary", async () => {
     const fixture = await setupVerifyFixture();
     const stub = path.join(fixture.root, "acp-stub.sh");

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { getWorkflow, nextPhase, bridgeForPhase, roleForPhase } from '../server/services/workflow-definition.js';
 import { bridgeForRole } from '../server/services/role-bridge.js';
 import { materializeJob } from '../server/services/event-store.js';
-import { nextPhaseFor } from '../server/services/supervisor.js';
+import { bridgeForPhase as supervisorBridgeForPhase, nextPhaseFor } from '../server/services/supervisor.js';
 
 describe('workflow-definition', () => {
   it('getWorkflow returns standard for known name', () => {
@@ -108,6 +108,17 @@ describe('supervisor nextPhaseFor with workflow', () => {
     assert.equal(nextPhaseFor(state), 'execute');
   });
 
+  it('returns verify after execute completes without a deliverable artifact', () => {
+    const state = {
+      status: 'running',
+      workflow: 'standard',
+      artifacts: { plan: 'plan-001', execute: '' },
+      completedPhases: ['plan', 'execute'],
+      cancelRequested: false,
+    };
+    assert.equal(nextPhaseFor(state), 'verify');
+  });
+
   it('returns empty for blocked workflow', () => {
     const state = { status: 'running', workflow: 'blocked', artifacts: {}, cancelRequested: false };
     assert.equal(nextPhaseFor(state), '');
@@ -120,5 +131,16 @@ describe('supervisor nextPhaseFor with workflow', () => {
       cancelRequested: false,
     };
     assert.equal(nextPhaseFor(state), 'complete');
+  });
+
+  it('uses job-id verifier mode when execute completed without deliverable artifact', () => {
+    const job = {
+      jobId: 'job-20260520-000000-deadbe',
+      workflow: 'standard',
+      artifacts: { plan: 'plan-001', execute: '' },
+      task: 'verify without deliverable',
+    };
+    const bridge = supervisorBridgeForPhase('verify', 'demo', job);
+    assert.deepEqual(bridge.args, ['demo', '--job-id', 'job-20260520-000000-deadbe']);
   });
 });
