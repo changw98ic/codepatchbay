@@ -88,6 +88,7 @@ fn heartbeat_updates_existing_worker() {
 
     let first = heartbeat_worker(&root, "hb-up", &json!({"workerId": "w-001", "status": "online"}))
         .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
     let second = heartbeat_worker(&root, "hb-up", &json!({"workerId": "w-002", "status": "online"}))
         .unwrap();
 
