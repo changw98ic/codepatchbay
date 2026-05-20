@@ -8,19 +8,21 @@ import { checkPermission } from "./permission-matrix.js";
 
 export function roleForBridge(scriptPath) {
   const base = path.basename(scriptPath);
-  if (base.includes("codex-plan")) return "codex-plan";
-  if (base.includes("claude-execute") || base.includes("claude-repair")) return "claude-execute";
-  if (base.includes("codex-verify")) return "codex-verify";
-  if (base.includes("reviewer-review")) return "reviewer-review";
+  if (base === "planner.sh") return "planner";
+  if (base === "executor.sh") return "executor";
+  if (base === "repairer.sh") return "repairer";
+  if (base === "verifier.sh") return "verifier";
+  if (base === "reviewer.sh") return "reviewer";
   return null;
 }
 
 export function phaseRole(phase) {
   switch (phase) {
-    case "plan": return "codex-plan";
-    case "execute": return "claude-execute";
-    case "verify": return "codex-verify";
-    case "review": return "reviewer-review";
+    case "plan": return "planner";
+    case "execute": return "executor";
+    case "verify": return "verifier";
+    case "review": return "reviewer";
+    case "repair": return "repairer";
     default: return null;
   }
 }

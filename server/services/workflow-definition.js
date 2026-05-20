@@ -2,22 +2,22 @@ const WORKCPBS = {
   standard: {
     name: "standard",
     phases: ["plan", "execute", "verify"],
-    roleForPhase: { plan: "codex", execute: "claude", verify: "codex" },
+    roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     bridgeForPhase: {
-      plan: "codex-plan.sh",
-      execute: "claude-execute.sh",
-      verify: "codex-verify.sh",
+      plan: "planner.sh",
+      execute: "executor.sh",
+      verify: "verifier.sh",
     },
   },
   complex: {
     name: "complex",
     phases: ["plan", "execute", "review", "verify"],
-    roleForPhase: { plan: "codex", execute: "claude", review: "codex", verify: "codex" },
+    roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     bridgeForPhase: {
-      plan: "codex-plan.sh",
-      execute: "claude-execute.sh",
-      review: "reviewer-review.sh",
-      verify: "codex-verify.sh",
+      plan: "planner.sh",
+      execute: "executor.sh",
+      review: "reviewer.sh",
+      verify: "verifier.sh",
     },
   },
   blocked: {

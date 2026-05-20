@@ -41,7 +41,7 @@ describe("verifier independence from deliverable artifacts", () => {
       artifacts: {},
     });
     assert.deepEqual(result, {
-      script: path.join("bridges", "codex-verify.sh"),
+      script: path.join("bridges", "verifier.sh"),
       args: ["myapp", "--job-id", "job-20260520-000000-abc123"],
     });
   });
@@ -52,12 +52,12 @@ describe("verifier independence from deliverable artifacts", () => {
       artifacts: { execute: "deliverable-001" },
     });
     assert.deepEqual(result, {
-      script: path.join("bridges", "codex-verify.sh"),
+      script: path.join("bridges", "verifier.sh"),
       args: ["myapp", "001"],
     });
   });
 
-  it("codex-verify.sh --job-id routes to rtk_codex_verify_job prompt", async () => {
+  it("verifier.sh --job-id routes to rtk_verifier_job prompt", async () => {
     const fixture = await setupFixture();
     try {
       const { stdout } = await execFileAsync(
@@ -66,7 +66,7 @@ describe("verifier independence from deliverable artifacts", () => {
           "-c",
           [
             "source bridges/common.sh",
-            "rtk_codex_verify_job testproj job-20260520-120000-feedbe /tmp/verdict.md",
+            "rtk_verifier_job testproj job-20260520-120000-feedbe /tmp/verdict.md",
           ].join(" && "),
         ],
         {
@@ -88,7 +88,7 @@ describe("verifier independence from deliverable artifacts", () => {
     }
   });
 
-  it("codex-verify.sh --job-id produces verdict path based on jobId, not deliverable", async () => {
+  it("verifier.sh --job-id produces verdict path based on jobId, not deliverable", async () => {
     const fixture = await setupFixture();
     const jobId = "job-20260520-120000-feedbe";
     const expectedVerdict = path.join(fixture.wikiDir, "outputs", `verdict-${jobId}.md`);
@@ -110,7 +110,7 @@ describe("verifier independence from deliverable artifacts", () => {
 
       const { stdout } = await execFileAsync(
         "bash",
-        ["bridges/codex-verify.sh", "testproj", "--job-id", jobId],
+        ["bridges/verifier.sh", "testproj", "--job-id", jobId],
         {
           cwd: repoRoot,
           env: {
@@ -135,7 +135,7 @@ describe("verifier independence from deliverable artifacts", () => {
     }
   });
 
-  it("codex-verify.sh --job-id does not require deliverable file to exist", async () => {
+  it("verifier.sh --job-id does not require deliverable file to exist", async () => {
     const fixture = await setupFixture();
     const jobId = "job-20260520-120000-feedbe";
     const expectedVerdict = path.join(fixture.wikiDir, "outputs", `verdict-${jobId}.md`);
@@ -157,7 +157,7 @@ describe("verifier independence from deliverable artifacts", () => {
 
       const { stdout } = await execFileAsync(
         "bash",
-        ["bridges/codex-verify.sh", "testproj", "--job-id", jobId],
+        ["bridges/verifier.sh", "testproj", "--job-id", jobId],
         {
           cwd: repoRoot,
           env: {

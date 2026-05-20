@@ -31,18 +31,22 @@ await writeFile(
 );
 
 // --- roleForBridge ---
-assert.equal(roleForBridge("bridges/codex-plan.sh"), "codex-plan");
-assert.equal(roleForBridge("bridges/claude-execute.sh"), "claude-execute");
-assert.equal(roleForBridge("bridges/codex-verify.sh"), "codex-verify");
-assert.equal(roleForBridge("bridges/reviewer-review.sh"), "reviewer-review");
-assert.equal(roleForBridge("bridges/claude-repair.sh"), "claude-execute");
+assert.equal(roleForBridge("bridges/planner.sh"), "planner");
+assert.equal(roleForBridge("bridges/executor.sh"), "executor");
+assert.equal(roleForBridge("bridges/verifier.sh"), "verifier");
+assert.equal(roleForBridge("bridges/reviewer.sh"), "reviewer");
+assert.equal(roleForBridge("bridges/repairer.sh"), "repairer");
+assert.equal(roleForBridge("bridges/codex-plan.sh"), null);
+assert.equal(roleForBridge("bridges/claude-execute.sh"), null);
+assert.equal(roleForBridge("bridges/codex-verify.sh"), null);
 assert.equal(roleForBridge("bridges/unknown.sh"), null);
 
 // --- phaseRole ---
-assert.equal(phaseRole("plan"), "codex-plan");
-assert.equal(phaseRole("execute"), "claude-execute");
-assert.equal(phaseRole("verify"), "codex-verify");
-assert.equal(phaseRole("review"), "reviewer-review");
+assert.equal(phaseRole("plan"), "planner");
+assert.equal(phaseRole("execute"), "executor");
+assert.equal(phaseRole("verify"), "verifier");
+assert.equal(phaseRole("review"), "reviewer");
+assert.equal(phaseRole("repair"), "repairer");
 assert.equal(phaseRole("unknown"), null);
 
 // --- extractPlanId ---

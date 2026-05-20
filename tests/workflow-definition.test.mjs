@@ -52,9 +52,9 @@ describe('workflow-definition', () => {
 
   it('bridgeForPhase returns correct bridge scripts', () => {
     const wf = getWorkflow('standard');
-    assert.equal(bridgeForPhase(wf, 'plan'), 'codex-plan.sh');
-    assert.equal(bridgeForPhase(wf, 'execute'), 'claude-execute.sh');
-    assert.equal(bridgeForPhase(wf, 'verify'), 'codex-verify.sh');
+    assert.equal(bridgeForPhase(wf, 'plan'), 'planner.sh');
+    assert.equal(bridgeForPhase(wf, 'execute'), 'executor.sh');
+    assert.equal(bridgeForPhase(wf, 'verify'), 'verifier.sh');
   });
 
   it('bridgeForPhase returns null for unknown phase', () => {
@@ -64,15 +64,20 @@ describe('workflow-definition', () => {
 
   it('roleForPhase returns correct roles', () => {
     const wf = getWorkflow('standard');
-    assert.equal(roleForPhase(wf, 'plan'), 'codex');
-    assert.equal(roleForPhase(wf, 'execute'), 'claude');
-    assert.equal(roleForPhase(wf, 'verify'), 'codex');
+    assert.equal(roleForPhase(wf, 'plan'), 'planner');
+    assert.equal(roleForPhase(wf, 'execute'), 'executor');
+    assert.equal(roleForPhase(wf, 'verify'), 'verifier');
   });
 
   it('role-bridge maps roles to bridge scripts', () => {
-    assert.equal(bridgeForRole('codex'), 'codex-plan.sh');
-    assert.equal(bridgeForRole('claude'), 'claude-execute.sh');
-    assert.equal(bridgeForRole('codex_verify'), 'codex-verify.sh');
+    assert.equal(bridgeForRole('planner'), 'planner.sh');
+    assert.equal(bridgeForRole('executor'), 'executor.sh');
+    assert.equal(bridgeForRole('verifier'), 'verifier.sh');
+    assert.equal(bridgeForRole('reviewer'), 'reviewer.sh');
+    assert.equal(bridgeForRole('repairer'), 'repairer.sh');
+    assert.equal(bridgeForRole('codex'), null);
+    assert.equal(bridgeForRole('claude'), null);
+    assert.equal(bridgeForRole('codex_verify'), null);
     assert.equal(bridgeForRole('unknown'), null);
   });
 });

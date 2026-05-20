@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "write_paths": ["wiki/projects/*/outputs/verdict-*"],
+    "deny_tools": [],
+    "deny_commands": false
+  },
+  "agent": {
+    "command": "codex-acp",
+    "args": []
+  }
+}

@@ -13,6 +13,8 @@ export default function Dashboard() {
   const [queueEntries, setQueueEntries] = useState([]);
   const [hubDispatches, setHubDispatches] = useState([]);
   const [observability, setObservability] = useState(null);
+  const [taskLedger, setTaskLedger] = useState(null);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
@@ -41,8 +43,9 @@ export default function Dashboard() {
       fetch('/api/hub/queue').then((r) => r.ok ? r.json() : []),
       fetch('/api/hub/dispatches').then((r) => r.ok ? r.json() : []),
       fetch('/api/hub/observability').then((r) => r.ok ? r.json() : null),
+      fetch('/api/hub/task-ledger?limit=50').then((r) => r.ok ? r.json() : null),
     ])
-      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches, obs]) => {
+      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches, obs, ledger]) => {
         setHubStatus(status);
         setHubProjects(Array.isArray(registryProjects) ? registryProjects : []);
         setHubAcp(acp);
@@ -51,6 +54,10 @@ export default function Dashboard() {
         setQueueEntries(Array.isArray(qEntries) ? qEntries : []);
         setHubDispatches(Array.isArray(dispatches) ? dispatches : []);
         setObservability(obs);
+        setTaskLedger(ledger && Array.isArray(ledger.tasks) ? ledger : null);
+        if (ledger && Array.isArray(ledger.tasks) && ledger.tasks.length > 0) {
+          setSelectedTaskId((current) => current || ledger.tasks[0].id);
+        }
       })
       .catch(() => {});
   }, []);
@@ -149,6 +156,8 @@ export default function Dashboard() {
   const workerAgeById = new Map(
     (observability?.workers?.details || []).map((w) => [w.id, w])
   );
+  const ledgerTasks = taskLedger?.tasks || [];
+  const selectedTask = ledgerTasks.find((task) => task.id === selectedTaskId) || ledgerTasks[0] || null;
 
   function formatAge(ageMs) {
     if (ageMs == null) return null;
@@ -244,6 +253,17 @@ export default function Dashboard() {
               <em>{queueStatus.pending} pending</em>
               <em>{queueStatus.inProgress} active</em>
               {queueStatus.failed > 0 && <strong>{queueStatus.failed} failed</strong>}
+              {queueStatus.activeProjects && queueStatus.activeProjects.length > 0 && (
+                <span className="hub-active-projects">
+                  {queueStatus.activeProjects.map((ap) => (
+                    <span className="hub-active-project" key={ap.projectId}>
+                      {ap.projectId}
+                      <em className="queue-busy">{ap.busyReason || 'busy'}</em>
+                      {ap.workerId && <em className="queue-worker">{ap.workerId}</em>}
+                    </span>
+                  ))}
+                </span>
+              )}
               {queueEntries.filter((e) => e.status === 'pending' || e.status === 'in_progress').slice(0, 3).map((entry) => (
                 <span className="hub-queue-pill" key={entry.id}>
                   {entry.projectId}
@@ -330,6 +350,98 @@ export default function Dashboard() {
               )}
             </div>
           ))}
+        </section>
+      )}
+      {ledgerTasks.length > 0 && (
+        <section className="task-ledger panel" aria-label="Task ledger">
+          <div className="section-header">
+            <h2>Task Ledger</h2>
+            <p className="muted">
+              {taskLedger.summary?.total || ledgerTasks.length} total
+              {taskLedger.summary?.visible != null && (
+                <span> · {taskLedger.summary.visible} shown</span>
+              )}
+            </p>
+          </div>
+          <div className="task-ledger-summary">
+            {taskLedger.summary?.ready > 0 && <em>{taskLedger.summary.ready} ready</em>}
+            {taskLedger.summary?.running > 0 && <em>{taskLedger.summary.running} running</em>}
+            {taskLedger.summary?.open > 0 && <em>{taskLedger.summary.open} source-only</em>}
+            {taskLedger.summary?.failed > 0 && <strong>{taskLedger.summary.failed} failed</strong>}
+            {taskLedger.summary?.archived > 0 && <span>{taskLedger.summary.archived} archived</span>}
+          </div>
+          <div className="task-ledger-layout">
+            <div className="task-ledger-list">
+              {ledgerTasks.map((task) => {
+                const source = task.source || {};
+                const statusClass = String(task.progress?.stage || task.status || 'unknown').replace(/[^a-z0-9_-]/gi, '-');
+                const active = selectedTask?.id === task.id;
+                return (
+                  <button
+                    className={`ledger-row ${active ? 'active' : ''}`}
+                    key={task.id}
+                    type="button"
+                    onClick={() => setSelectedTaskId(task.id)}
+                  >
+                    <span className={`ledger-progress-dot progress-${statusClass}`} />
+                    <span className="ledger-main">
+                      <span className="ledger-title">{task.title}</span>
+                      <span className="ledger-meta">
+                        {task.progress?.label || task.status}
+                        {task.projectId && <span> · {task.projectId}</span>}
+                        {task.priority && <span> · {task.priority}</span>}
+                      </span>
+                    </span>
+                    <span className="ledger-source">{source.label || source.kind || 'source'}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {selectedTask && (
+              <div className="task-detail" aria-label="Task detail">
+                <div className="task-detail-header">
+                  <div>
+                    <div className="section-eyebrow">{selectedTask.source?.label || 'Task source'}</div>
+                    <h3>{selectedTask.title}</h3>
+                  </div>
+                  <span className={`badge badge-${String(selectedTask.progress?.stage || selectedTask.status).replace(/[^a-z0-9_-]/gi, '-')}`}>
+                    {selectedTask.progress?.label || selectedTask.status}
+                  </span>
+                </div>
+                <div className="task-progress-bar" aria-label="Task progress">
+                  <span style={{ width: `${selectedTask.progress?.percent ?? 0}%` }} />
+                </div>
+                <div className="task-detail-grid">
+                  <section className="task-view">
+                    <h4>Human View</h4>
+                    <p>{selectedTask.human?.summary}</p>
+                    <dl>
+                      <dt>Progress</dt>
+                      <dd>{selectedTask.human?.progress}</dd>
+                      <dt>Source</dt>
+                      <dd>
+                        {selectedTask.source?.url ? (
+                          <a href={selectedTask.source.url} target="_blank" rel="noreferrer">{selectedTask.human?.source}</a>
+                        ) : selectedTask.human?.source}
+                      </dd>
+                      <dt>Next</dt>
+                      <dd>{selectedTask.human?.nextAction}</dd>
+                    </dl>
+                  </section>
+                  <section className="task-view agent-view">
+                    <h4>Agent View</h4>
+                    <pre>{JSON.stringify(selectedTask.agent, null, 2)}</pre>
+                  </section>
+                </div>
+                {selectedTask.human?.description && (
+                  <details className="task-description">
+                    <summary>Full description</summary>
+                    <p>{selectedTask.human.description}</p>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
         </section>
       )}
       {durableTasks.length > 0 && (

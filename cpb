@@ -454,10 +454,10 @@ NODE
       ;;
   esac
 }
-cmd_plan()     { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-plan.sh" "$@"; }
-cmd_execute()  { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/claude-execute.sh" "$@"; }
-cmd_verify()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-verify.sh" "$@"; }
-cmd_repair()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" "$CPB_EXECUTOR_ROOT/bridges/claude-repair.sh" "$@"; }
+cmd_plan()     { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/planner.sh" "$@"; }
+cmd_execute()  { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/executor.sh" "$@"; }
+cmd_verify()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/verifier.sh" "$@"; }
+cmd_repair()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" "$CPB_EXECUTOR_ROOT/bridges/repairer.sh" "$@"; }
 cmd_research() {
   local project="${1:?Usage: cpb research <project> '<task>'}"
   local task="${2:?Usage: cpb research <project> '<task>'}"
@@ -518,7 +518,7 @@ cmd_review() {
   require_file "$deliverable"
 
   if [ "$mode" = "--agent" ] || [ "$mode" = "--ai" ]; then
-    CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/reviewer-review.sh" "$project" "$did"
+    CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/reviewer.sh" "$project" "$did"
     return
   fi
 
@@ -785,8 +785,8 @@ cmd_pipeline_interactive() {
   echo -e "  ${GREEN}Research done:${NC} $research_file"
 
   # Phase 2: Plan (with research)
-  echo -e "\n${BOLD}Phase 2/4: Plan (Codex)${NC}"
-  plan_file=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-plan.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
+  echo -e "\n${BOLD}Phase 2/4: Plan${NC}"
+  plan_file=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/planner.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
   if [ ! -f "$plan_file" ]; then
     echo -e "${RED}Plan generation failed.${NC}" >&2
     exit 1
@@ -815,7 +815,7 @@ cmd_pipeline_interactive() {
       [eE])
         read -rp "$(echo -e "${CYAN}New task description: ${NC}")" task
         echo -e "\n${BOLD}Re-generating plan...${NC}"
-        plan_file=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/codex-plan.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
+        plan_file=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/planner.sh" "$project" "$task" "$research_file" | grep '^Plan: ' | sed 's/^Plan: //')
         if [ ! -f "$plan_file" ]; then
           echo -e "${RED}Plan regeneration failed.${NC}" >&2
           exit 1

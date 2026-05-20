@@ -13,7 +13,10 @@ import { knowledgePolicySummary, findPromotionCandidates } from "../services/kno
 import { getManagedAcpPool } from "../services/acp-pool-runtime.js";
 import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
 import { buildObservabilitySummary } from "../services/observability.js";
+import { buildTaskHistory } from "../services/task-history.js";
+import { buildTaskLedger } from "../services/task-ledger.js";
 import {
+  claimEligible,
   dequeue as dequeueEntry,
   enqueue,
   listQueue,
@@ -86,10 +89,18 @@ export async function hubRoutes(fastify) {
 
   fastify.get("/hub/knowledge-policy", async () => knowledgePolicySummary());
 
-  fastify.get("/hub/roots", async (req) => ({
-    hubRoot: hubRoot(req),
-    cpbRoot: path.resolve(req.cpbRoot),
-  }));
+  fastify.get("/hub/roots", async (req) => {
+    const projects = await listProjects(hubRoot(req));
+    const projectRoots = {};
+    for (const p of projects) {
+      projectRoots[p.id] = p.projectRuntimeRoot || null;
+    }
+    return {
+      executorRoot: path.resolve(req.cpbRoot),
+      hubRoot: hubRoot(req),
+      projectRuntimeRoots: projectRoots,
+    };
+  });
 
   fastify.get("/hub/queue/status", async (req) => queueStatus(hubRoot(req)));
 
@@ -117,6 +128,31 @@ export async function hubRoutes(fastify) {
     return { dequeued: true, entry, dispatch };
   });
 
+  fastify.post("/hub/queue/claim", async (req) => {
+    const body = req.body || {};
+    const result = await claimEligible(hubRoot(req), {
+      workerId: body.workerId,
+      projectId: body.projectId || null,
+      maxActivePerProject: body.maxActivePerProject ?? 1,
+      claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
+      providerSlotsAvailable: body.providerSlotsAvailable !== false,
+    });
+    if (!result.entry) {
+      return { claimed: false, reason: result.reason, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy };
+    }
+    let dispatch = null;
+    if (result.entry.sourcePath) {
+      dispatch = await recordDispatch(hubRoot(req), {
+        projectId: result.entry.projectId,
+        sourcePath: result.entry.sourcePath,
+        sessionId: result.entry.sessionId,
+        workerId: result.entry.workerId,
+        queueEntryId: result.entry.id,
+      });
+    }
+    return { claimed: true, entry: result.entry, dispatch, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy };
+  });
+
   fastify.patch("/hub/queue/:entryId", async (req) => {
     const updated = await updateEntry(hubRoot(req), req.params.entryId, req.body || {});
     if (!updated) throw fastify.httpErrors.notFound(`Queue entry '${req.params.entryId}' not found`);
@@ -136,6 +172,28 @@ export async function hubRoutes(fastify) {
       cpbRoot: req.cpbRoot,
       hubRoot: hubRoot(req),
       acpPool: getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot }),
+    });
+  });
+
+  fastify.get("/hub/task-history", async (req) => {
+    const kinds = typeof req.query.kinds === "string"
+      ? req.query.kinds.split(",").map((kind) => kind.trim()).filter(Boolean)
+      : undefined;
+    return buildTaskHistory({
+      cpbRoot: req.cpbRoot,
+      hubRoot: hubRoot(req),
+      limit: req.query.limit,
+      projectId: req.query.projectId,
+      kinds,
+    });
+  });
+
+  fastify.get("/hub/task-ledger", async (req) => {
+    return buildTaskLedger({
+      cpbRoot: req.cpbRoot,
+      hubRoot: hubRoot(req),
+      limit: req.query.limit,
+      projectId: req.query.projectId,
     });
   });
 

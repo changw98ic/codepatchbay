@@ -28,9 +28,9 @@ const EVENT_REGISTRY = {
   permission_denied:      { class: 'control',  consumer: 'permission-matrix, verifier', testFile: 'permission-matrix.test.mjs', testMatch: ['permission_denied', 'recordPermissionDenial'] },
   workflow_selected:      { class: 'state',    consumer: 'supervisor',                testFile: 'workflow-definition.test.mjs', testMatch: ['workflow_selected'] },
   phase_activity:         { class: 'activity', consumer: 'job-projection, dashboard', testFile: 'activity-events.test.mjs', testMatch: ['phase_activity'] },
-  external_repair_started:   { class: 'audit', consumer: 'claude-repair, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_started'] },
-  external_repair_completed: { class: 'audit', consumer: 'claude-repair, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_completed'] },
-  external_repair_failed:    { class: 'audit', consumer: 'claude-repair, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_failed'] },
+  external_repair_started:   { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_started'] },
+  external_repair_completed: { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_completed'] },
+  external_repair_failed:    { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_failed'] },
 };
 
 const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);

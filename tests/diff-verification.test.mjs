@@ -39,7 +39,7 @@ async function setupVerifyFixture(prefix = "cpb-verify-locator-") {
 }
 
 describe("prompt locator contract and verdict parsing", () => {
-  it("rtk_codex_verify passes deliverable and project locators without embedding upstream bodies", async () => {
+  it("rtk_verifier passes deliverable and project locators without embedding upstream bodies", async () => {
     const fixture = await setupVerifyFixture();
     try {
       const { stdout } = await execFileAsync(
@@ -48,7 +48,7 @@ describe("prompt locator contract and verdict parsing", () => {
           "-c",
           [
             "source bridges/common.sh",
-            "rtk_codex_verify testproj 001 /tmp/verdict.md",
+            "rtk_verifier testproj 001 /tmp/verdict.md",
           ].join(" && "),
         ],
         {
@@ -74,7 +74,7 @@ describe("prompt locator contract and verdict parsing", () => {
     }
   });
 
-  it("rtk_codex_verify rejects legacy diff and manifest arguments instead of ignoring them", async () => {
+  it("rtk_verifier rejects legacy diff and manifest arguments instead of ignoring them", async () => {
     const fixture = await setupVerifyFixture();
     try {
       await assert.rejects(
@@ -84,7 +84,7 @@ describe("prompt locator contract and verdict parsing", () => {
             "-c",
             [
               "source bridges/common.sh",
-              "rtk_codex_verify testproj 001 /tmp/verdict.md /tmp/diff.patch /tmp/manifest.json",
+              "rtk_verifier testproj 001 /tmp/verdict.md /tmp/diff.patch /tmp/manifest.json",
             ].join(" && "),
           ],
           {
@@ -103,7 +103,7 @@ describe("prompt locator contract and verdict parsing", () => {
     }
   });
 
-  it("rtk_codex_verify_job uses job/event locators without requiring deliverable content", async () => {
+  it("rtk_verifier_job uses job/event locators without requiring deliverable content", async () => {
     const fixture = await setupVerifyFixture();
     try {
       const { stdout } = await execFileAsync(
@@ -112,7 +112,7 @@ describe("prompt locator contract and verdict parsing", () => {
           "-c",
           [
             "source bridges/common.sh",
-            "rtk_codex_verify_job testproj job-20260520-000000-deadbe /tmp/verdict.md",
+            "rtk_verifier_job testproj job-20260520-000000-deadbe /tmp/verdict.md",
           ].join(" && "),
         ],
         {
@@ -134,7 +134,7 @@ describe("prompt locator contract and verdict parsing", () => {
     }
   });
 
-  it("codex-verify.sh rejects legacy diff and manifest arguments at the CLI boundary", async () => {
+  it("verifier.sh rejects legacy diff and manifest arguments at the CLI boundary", async () => {
     const fixture = await setupVerifyFixture();
     const stub = path.join(fixture.root, "acp-stub.sh");
     try {
@@ -144,7 +144,7 @@ describe("prompt locator contract and verdict parsing", () => {
       await assert.rejects(
         execFileAsync(
           "bash",
-          ["bridges/codex-verify.sh", "testproj", "001", "/tmp/diff.patch", "/tmp/manifest.json"],
+          ["bridges/verifier.sh", "testproj", "001", "/tmp/diff.patch", "/tmp/manifest.json"],
           {
             cwd: repoRoot,
             env: {

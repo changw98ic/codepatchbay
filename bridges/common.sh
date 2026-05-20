@@ -4,6 +4,30 @@
 
 CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
+CPB_HUB_ROOT="${CPB_HUB_ROOT:-$HOME/.cpb}"
+
+# Resolve a project's wiki directory: runtime root first, legacy fallback
+# Usage: resolve_wiki_dir <project-name>
+resolve_wiki_dir() {
+  local project="$1"
+  if [ -n "${CPB_PROJECT_RUNTIME_ROOT:-}" ]; then
+    echo "$CPB_PROJECT_RUNTIME_ROOT/wiki"
+  else
+    echo "$CPB_ROOT/wiki/projects/$project"
+  fi
+}
+
+# Resolve project inbox directory
+resolve_inbox_dir() {
+  local project="$1"
+  echo "$(resolve_wiki_dir "$project")/inbox"
+}
+
+# Resolve project outputs directory
+resolve_outputs_dir() {
+  local project="$1"
+  echo "$(resolve_wiki_dir "$project")/outputs"
+}
 # ─── RTK Prompt 构建器 (with cwd + permission constraints) ───
 
 # ─── 颜色 ───
@@ -11,7 +35,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC
 
 # ─── 项目校验 ───
 require_project() {
-  local project="$1" wiki_dir="$CPB_ROOT/wiki/projects/$1"
+  local project="$1"
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
   if [ ! -d "$wiki_dir" ]; then
     echo -e "${RED}Project '$project' not found. Run 'cpb init' first.${NC}" >&2
     exit 1
@@ -124,29 +150,32 @@ log_append() {
 # Pre-read a file, return empty string if missing
 _pre_read() { [ -f "$1" ] && cat "$1" 2>/dev/null || echo "[file not found: $1]"; }
 
-# rtk_codex_plan <project> <task> <plan_file>
-rtk_codex_plan() {
+# rtk_planner <project> <task> <plan_file>
+rtk_planner() {
   local project="$1" task="$2" plan_file="$3"
   local project_cwd
   project_cwd=$(get_project_path "$project")
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local inbox_dir="$wiki_dir/inbox"
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
-- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
-- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
+- ONLY write files under: $inbox_dir/
+- You may run read-only local inspection commands only."
   fi
   local skills_section
-  skills_section=$(build_skills_section codex)
+  skills_section=$(build_skills_section planner)
 
-  # Pre-read reference files so Codex doesn't need file-reading tools
+  # Pre-read reference files so planner doesn't need file-reading tools
   local proj_context decisions handshake plan_tpl
-  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  proj_context=$(_pre_read "$wiki_dir/context.md")
+  decisions=$(_pre_read "$wiki_dir/decisions.md")
   handshake=$(_pre_read "$CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md")
   plan_tpl=$(_pre_read "$CPB_EXECUTOR_ROOT/templates/handoff/plan-to-execute.md")
 
   cat << PROMPT
-You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Planner. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/planner/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -171,16 +200,20 @@ $plan_tpl
 ## Output
 Write the plan to: $plan_file
 The plan title/heading MUST reference the task: "$task"
-Follow handshake-protocol (codex->claude, Phase: plan).
+Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.
 PROMPT
 }
 
-# rtk_claude_execute <project> <plan_id> <deliverable_file> [verdict_file]
-rtk_claude_execute() {
+# rtk_executor <project> <plan_id> <deliverable_file> [verdict_file]
+rtk_executor() {
   local project="$1" plan_id="$2" deliverable_file="$3"
   local verdict_file="${4:-}"
-  local plan_file="$CPB_ROOT/wiki/projects/$project/inbox/plan-${plan_id}.md"
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local inbox_dir="$wiki_dir/inbox"
+  local outputs_dir="$wiki_dir/outputs"
+  local plan_file="$inbox_dir/plan-${plan_id}.md"
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
@@ -188,8 +221,9 @@ rtk_claude_execute() {
     constraints="## Constraints
 - Write code ONLY in the target project directory${project_cwd:+: $project_cwd}
 - Write deliverable ONLY to: $deliverable_file
-- Write verdicts ONLY under: $CPB_ROOT/wiki/projects/$project/outputs/
+- Write verdicts ONLY under: $outputs_dir/
 - Do NOT modify files under: $CPB_EXECUTOR_ROOT/wiki/system/, $CPB_EXECUTOR_ROOT/profiles/, $CPB_EXECUTOR_ROOT/bridges/
+- Do NOT mutate git history, publish, deploy, or run destructive shell commands.
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories."
   fi
   local fix_section=""
@@ -200,9 +234,9 @@ The previous deliverable was verified and REJECTED. Read the verdict for details
 You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach."
   fi
   local skills_section
-  skills_section=$(build_skills_section claude)
+  skills_section=$(build_skills_section executor)
   cat << PROMPT
-You are CodePatchbay Claude (Executor). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/claude/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Executor. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/executor/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -211,10 +245,10 @@ $constraints
 $fix_section
 
 ## Files to read
-- Role definition: $CPB_EXECUTOR_ROOT/profiles/claude/soul.md
+- Role definition: $CPB_EXECUTOR_ROOT/profiles/executor/soul.md
 - Plan to execute: $plan_file
-- Project context: $CPB_ROOT/wiki/projects/$project/context.md
-- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
+- Project context: $wiki_dir/context.md
+- Decisions: $wiki_dir/decisions.md
 - Deliverable template: $CPB_EXECUTOR_ROOT/templates/handoff/execute-to-review.md
 - Handshake format: $CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md
 
@@ -223,32 +257,36 @@ $fix_section
 2. Implement code changes described in the plan.
 3. Run tests and record results.
 4. Write the deliverable to: $deliverable_file
-Follow handshake-protocol (claude->codex, Phase: execute).
+Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: $plan_id in the deliverable metadata.
 PROMPT
 }
 
-# rtk_codex_verify <project> <deliverable_id> <verdict_file>
-rtk_codex_verify() {
+# rtk_verifier <project> <deliverable_id> <verdict_file>
+rtk_verifier() {
   if [ "$#" -ne 3 ]; then
-    echo "Usage: rtk_codex_verify <project> <deliverable_id> <verdict_file>" >&2
+    echo "Usage: rtk_verifier <project> <deliverable_id> <verdict_file>" >&2
     return 2
   fi
   local project="$1" deliverable_id="$2" verdict_file="$3"
-  local deliverable_file="$CPB_ROOT/wiki/projects/$project/outputs/deliverable-${deliverable_id}.md"
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local inbox_dir="$wiki_dir/inbox"
+  local outputs_dir="$wiki_dir/outputs"
+  local deliverable_file="$outputs_dir/deliverable-${deliverable_id}.md"
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
-- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
-- Do NOT modify any code files."
+- You may run read-only inspection commands and safe validation commands.
+- Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state."
   fi
 
   local skills_section
-  skills_section=$(build_skills_section codex)
+  skills_section=$(build_skills_section verifier)
 
   cat << PROMPT
-You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Verifier. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/verifier/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -256,11 +294,11 @@ $constraints
 
 ## Verification locators
 - Deliverable file: $deliverable_file
-- Plans directory: $CPB_ROOT/wiki/projects/$project/inbox
-- Outputs directory: $CPB_ROOT/wiki/projects/$project/outputs
-- Project context: $CPB_ROOT/wiki/projects/$project/context.md
-- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
-- Project metadata: $CPB_ROOT/wiki/projects/$project/project.json
+- Plans directory: $inbox_dir
+- Outputs directory: $outputs_dir
+- Project context: $wiki_dir/context.md
+- Decisions: $wiki_dir/decisions.md
+- Project metadata: $wiki_dir/project.json
 
 ## Instructions
 1. Read the deliverable file and referenced plan from the locators above.
@@ -274,26 +312,36 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 PROMPT
 }
 
-# rtk_codex_verify_job <project> <job_id> <verdict_file>
-rtk_codex_verify_job() {
+# rtk_verifier_job <project> <job_id> <verdict_file>
+rtk_verifier_job() {
   if [ "$#" -ne 3 ]; then
-    echo "Usage: rtk_codex_verify_job <project> <job_id> <verdict_file>" >&2
+    echo "Usage: rtk_verifier_job <project> <job_id> <verdict_file>" >&2
     return 2
   fi
   local project="$1" job_id="$2" verdict_file="$3"
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local inbox_dir="$wiki_dir/inbox"
+  local outputs_dir="$wiki_dir/outputs"
+  local event_log
+  if [ -n "${CPB_PROJECT_RUNTIME_ROOT:-}" ]; then
+    event_log="$CPB_PROJECT_RUNTIME_ROOT/events/$project/$job_id.jsonl"
+  else
+    event_log="$CPB_ROOT/cpb-task/events/$project/$job_id.jsonl"
+  fi
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
 - ONLY write the verdict to: $verdict_file
-- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
-- Do NOT modify any code files."
+- You may run read-only inspection commands and safe validation commands.
+- Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state."
   fi
 
   local skills_section
-  skills_section=$(build_skills_section codex)
+  skills_section=$(build_skills_section verifier)
 
   cat << PROMPT
-You are CodePatchbay Codex (Verifier). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Verifier. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/verifier/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -301,12 +349,12 @@ $constraints
 
 ## Verification locators
 - Job ID: $job_id
-- Event log: $CPB_ROOT/cpb-task/events/$project/$job_id.jsonl
-- Plans directory: $CPB_ROOT/wiki/projects/$project/inbox
-- Outputs directory: $CPB_ROOT/wiki/projects/$project/outputs
-- Project context: $CPB_ROOT/wiki/projects/$project/context.md
-- Decisions: $CPB_ROOT/wiki/projects/$project/decisions.md
-- Project metadata: $CPB_ROOT/wiki/projects/$project/project.json
+- Event log: $event_log
+- Plans directory: $inbox_dir
+- Outputs directory: $outputs_dir
+- Project context: $wiki_dir/context.md
+- Decisions: $wiki_dir/decisions.md
+- Project metadata: $wiki_dir/project.json
 
 ## Instructions
 1. Reconstruct the task goal and phase history from the job/event locators above.
@@ -320,15 +368,21 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 PROMPT
 }
 
-# rtk_claude_repair <project> <job-id> <repair-report-file>
-rtk_claude_repair() {
+# rtk_repairer <project> <job-id> <repair-report-file>
+rtk_repairer() {
   if [ "$#" -ne 3 ]; then
-    echo "Usage: rtk_claude_repair <project> <job-id> <repair-report-file>" >&2
+    echo "Usage: rtk_repairer <project> <job-id> <repair-report-file>" >&2
     return 2
   fi
   local project="$1" job_id="$2" repair_file="$3"
-  local wiki_dir="$CPB_ROOT/wiki/projects/$project"
-  local event_log="$CPB_ROOT/cpb-task/events/$project/$job_id.jsonl"
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local event_log
+  if [ -n "${CPB_PROJECT_RUNTIME_ROOT:-}" ]; then
+    event_log="$CPB_PROJECT_RUNTIME_ROOT/events/$project/$job_id.jsonl"
+  else
+    event_log="$CPB_ROOT/cpb-task/events/$project/$job_id.jsonl"
+  fi
   local project_cwd
   project_cwd=$(get_project_path "$project")
   local constraints=""
@@ -341,7 +395,9 @@ rtk_claude_repair() {
   fi
 
   cat << PROMPT
-You are CodePatchbay Claude (External Repair). Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
+You are CodePatchbay Repairer. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/repairer/soul.md" | tail -1 | sed 's/^# //')
+
+Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
 
 $constraints
 
@@ -378,11 +434,11 @@ PROMPT
 rtk_research_prompt() {
   local project="$1" task="$2"
   local skills_section
-  skills_section=$(build_skills_section codex)
+  skills_section=$(build_skills_section planner)
   cat << PROMPT
 You are CodePatchbay Research Agent. Analyze this task for project "$project".
 
-Skills: Read skill files from $CPB_EXECUTOR_ROOT/profiles/codex/skills/ or $CPB_EXECUTOR_ROOT/profiles/claude/skills/ as needed.
+Skills: Read skill files from role profiles under $CPB_EXECUTOR_ROOT/profiles/ as needed.
 
 $skills_section
 
@@ -416,29 +472,32 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 PROMPT
 }
 
-# rtk_codex_plan_with_research <project> <task> <plan_file> <research_file>
-rtk_codex_plan_with_research() {
+# rtk_planner_with_research <project> <task> <plan_file> <research_file>
+rtk_planner_with_research() {
   local project="$1" task="$2" plan_file="$3" research_file="$4"
   local project_cwd
   project_cwd=$(get_project_path "$project")
+  local wiki_dir
+  wiki_dir=$(resolve_wiki_dir "$project")
+  local inbox_dir="$wiki_dir/inbox"
   local constraints=""
   if [ "${CPB_DANGEROUS:-0}" != "1" ]; then
     constraints="## Constraints
-- ONLY write files under: $CPB_ROOT/wiki/projects/$project/inbox/
-- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase."
+- ONLY write files under: $inbox_dir/
+- You may run read-only local inspection commands only."
   fi
   local skills_section
-  skills_section=$(build_skills_section codex)
+  skills_section=$(build_skills_section planner)
 
   local proj_context decisions handshake plan_tpl research_content
-  proj_context=$(_pre_read "$CPB_ROOT/wiki/projects/$project/context.md")
-  decisions=$(_pre_read "$CPB_ROOT/wiki/projects/$project/decisions.md")
+  proj_context=$(_pre_read "$wiki_dir/context.md")
+  decisions=$(_pre_read "$wiki_dir/decisions.md")
   handshake=$(_pre_read "$CPB_EXECUTOR_ROOT/wiki/system/handshake-protocol.md")
   plan_tpl=$(_pre_read "$CPB_EXECUTOR_ROOT/templates/handoff/plan-to-execute.md")
   research_content=$(_pre_read "$research_file")
 
   cat << PROMPT
-You are CodePatchbay Codex (Planner). Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/codex/soul.md" | tail -1 | sed 's/^# //')
+You are CodePatchbay Planner. Role: $(head -3 "$CPB_EXECUTOR_ROOT/profiles/planner/soul.md" | tail -1 | sed 's/^# //')
 
 $skills_section
 
@@ -466,7 +525,7 @@ $plan_tpl
 ## Output
 Write the plan to: $plan_file
 The plan title/heading MUST reference the task: "$task"
-Follow handshake-protocol (codex->claude, Phase: plan).
+Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.
 Address risks and questions identified in the research above.
 PROMPT

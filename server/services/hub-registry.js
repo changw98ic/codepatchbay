@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { defaultProjectRuntimeRoot } from "./runtime-root.js";
 import {
   shouldUseRustRuntime,
   upsertRegistryProject,
@@ -179,12 +180,17 @@ export async function registerProject(hubRoot, input = {}) {
     const timestamp = nowIso();
     const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
 
+    const projectRuntimeRoot = input.projectRuntimeRoot
+      ? path.resolve(input.projectRuntimeRoot)
+      : existing.projectRuntimeRoot || defaultProjectRuntimeRoot(id);
+
     const project = {
       ...existing,
       id,
       name: input.name || existing.name || id,
       sourcePath,
       projectRoot,
+      projectRuntimeRoot,
       enabled: input.enabled ?? existing.enabled ?? true,
       weight: Number.isFinite(Number(input.weight)) ? Number(input.weight) : existing.weight ?? 1,
       createdAt: existing.createdAt || timestamp,
@@ -225,6 +231,7 @@ export async function updateProject(hubRoot, id, patch = {}) {
       id,
       sourcePath: existing.sourcePath,
       projectRoot: patch.projectRoot ? path.resolve(patch.projectRoot) : existing.projectRoot,
+      projectRuntimeRoot: patch.projectRuntimeRoot ? path.resolve(patch.projectRuntimeRoot) : existing.projectRuntimeRoot,
       updatedAt: nowIso(),
     };
     registry.projects[id] = updated;

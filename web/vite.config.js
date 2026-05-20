@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const apiTarget = process.env.CPB_API_TARGET || 'http://localhost:3456';
+const wsTarget = process.env.CPB_WS_TARGET || apiTarget.replace(/^http/, 'ws');
+
 export default defineConfig({
   plugins: [react()],
   test: {
@@ -11,9 +14,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:3456',
+      '/api': apiTarget,
       '/ws': {
-        target: 'ws://localhost:3456',
+        target: wsTarget,
         ws: true,
       },
     },

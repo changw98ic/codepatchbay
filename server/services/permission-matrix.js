@@ -2,10 +2,11 @@ import path from "node:path";
 import { appendEvent } from "./runtime-events.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
-const ROLES = new Set(["codex-plan", "codex-verify", "claude-execute", "claude-repair", "reviewer-review"]);
+const ROLES = new Set(["planner", "executor", "verifier", "repairer", "reviewer"]);
+const READ_ALLOWED_PATHS = Object.freeze(["*"]);
 
 const WRITE_SCOPES = {
-  "codex-plan": {
+  planner: {
     allowed: [
       (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "inbox"),
     ],
@@ -13,7 +14,7 @@ const WRITE_SCOPES = {
       (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
     ],
   },
-  "claude-execute": {
+  executor: {
     allowed: [
       (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
       (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
@@ -25,7 +26,7 @@ const WRITE_SCOPES = {
       (cpbRoot) => path.resolve(cpbRoot, "bridges"),
     ],
   },
-  "codex-verify": {
+  verifier: {
     allowed: [
       (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
     ],
@@ -34,13 +35,13 @@ const WRITE_SCOPES = {
       (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
     ],
   },
-  "claude-repair": {
+  repairer: {
     allowed: [
       (cpbRoot) => path.resolve(cpbRoot),
     ],
     denied: [],
   },
-  "reviewer-review": {
+  reviewer: {
     allowed: [
       (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
     ],
@@ -49,14 +50,14 @@ const WRITE_SCOPES = {
 };
 
 const OBSERVATION_PATHS = {
-  "codex-plan": [
+  planner: [
     (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
     (cpbRoot) => path.resolve(cpbRoot, "profiles"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
-  "codex-verify": [
+  verifier: [
     (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
@@ -65,17 +66,18 @@ const OBSERVATION_PATHS = {
     (cpbRoot, project) => runtimeDataPath(cpbRoot, "state"),
     (cpbRoot) => runtimeDataPath(cpbRoot, "checkpoints"),
   ],
-  "claude-execute": [
+  executor: [
     (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
     (cpbRoot) => path.resolve(cpbRoot, "profiles"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
-  "claude-repair": [
+  repairer: [
     (cpbRoot) => path.resolve(cpbRoot),
+    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
-  "reviewer-review": [
+  reviewer: [
     (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
@@ -86,6 +88,7 @@ export function validateRole(role) {
   if (!ROLES.has(role)) {
     throw new Error(`unknown role: ${role}`);
   }
+  return role;
 }
 
 function matchesPath(targetPath, boundaryPath) {
@@ -116,7 +119,8 @@ function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath
 }
 
 export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) {
-  const scope = WRITE_SCOPES[role];
+  const canonicalRole = validateRole(role);
+  const scope = WRITE_SCOPES[canonicalRole];
   if (!scope) return { allowed: false, reason: `unknown role: ${role}` };
 
   const resolved = path.resolve(targetPath);
@@ -142,7 +146,7 @@ export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) 
   if (winner?.effect === "deny") {
     return {
       allowed: false,
-      reason: `${role} cannot write to ${resolved}`,
+      reason: `${canonicalRole} cannot write to ${resolved}`,
       allowedBoundary: allowedDirs.join(", "),
       recoveryGuidance: `Write only under allowed boundaries: ${allowedDirs.join(", ")}`,
     };
@@ -150,25 +154,259 @@ export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) 
 
   return {
     allowed: false,
-    reason: `${role} write to ${resolved} outside allowed scope: ${allowedDirs.join(", ")}`,
+    reason: `${canonicalRole} write to ${resolved} outside allowed scope: ${allowedDirs.join(", ")}`,
     allowedBoundary: allowedDirs.join(", "),
     recoveryGuidance: `Write only under allowed boundaries: ${allowedDirs.join(", ")}`,
   };
 }
 
-export function canRead(_role, _targetPath, _cpbRoot, _project, _sourcePath, _jobId) {
+export function canRead(role, _targetPath, _cpbRoot, _project, _sourcePath, _jobId) {
+  validateRole(role);
   return { allowed: true };
 }
 
-export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId } = {}) {
+export function getReadAllowedPaths(role) {
   validateRole(role);
+  return [...READ_ALLOWED_PATHS];
+}
+
+const VERIFIER_READ_ONLY_COMMANDS = new Set([
+  "pwd",
+  "ls",
+  "find",
+  "cat",
+  "sed",
+  "head",
+  "tail",
+  "wc",
+  "rg",
+  "grep",
+]);
+
+const VERIFIER_READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "status",
+  "diff",
+  "show",
+  "log",
+  "rev-parse",
+  "ls-files",
+  "grep",
+]);
+
+const VERIFIER_VALIDATION_SCRIPTS = new Set([
+  "test",
+  "lint",
+  "typecheck",
+  "type-check",
+  "check",
+  "build",
+]);
+
+const VERIFIER_DIRECT_TEST_COMMANDS = new Set([
+  "jest",
+  "mocha",
+  "vitest",
+  "ava",
+  "pytest",
+]);
+
+function splitCommandWords(commandLine) {
+  return String(commandLine || "")
+    .match(/"[^"]*"|'[^']*'|\S+/g)
+    ?.map((word) => word.replace(/^['"]|['"]$/g, "")) || [];
+}
+
+function shellWrappedCommand(commandLine) {
+  const words = splitCommandWords(commandLine);
+  const command = path.basename(words[0] || "");
+  if (!["sh", "bash", "zsh"].includes(command)) return null;
+
+  const shellFlagIndex = words.findIndex((word) => /^-[a-z]*c$/.test(word));
+  if (shellFlagIndex < 0 || shellFlagIndex >= words.length - 1) return null;
+  return words.slice(shellFlagIndex + 1).join(" ");
+}
+
+function hasShellMutationSyntax(commandLine) {
+  return /[;&|<>`$\\\n\r]/.test(String(commandLine || ""));
+}
+
+function isVerifierReadOnlyCommand(commandLine) {
+  const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
+  if (!unwrapped.trim() || hasShellMutationSyntax(unwrapped)) return false;
+
+  const words = splitCommandWords(unwrapped);
+  const command = path.basename(words[0] || "");
+  if (!command) return false;
+
+  if (command === "git") {
+    const subcommand = words.slice(1).find((word) => !word.startsWith("-"));
+    return VERIFIER_READ_ONLY_GIT_SUBCOMMANDS.has(subcommand || "");
+  }
+
+  if (command === "find") {
+    return !words.some((word) => ["-exec", "-execdir", "-delete", "-ok", "-okdir"].includes(word));
+  }
+
+  return VERIFIER_READ_ONLY_COMMANDS.has(command);
+}
+
+function isValidationScriptName(scriptName) {
+  if (!scriptName) return false;
+  if (VERIFIER_VALIDATION_SCRIPTS.has(scriptName)) return true;
+  return /^(test|lint|typecheck|type-check|check|build):[A-Za-z0-9:_-]+$/.test(scriptName);
+}
+
+function isVerifierValidationCommand(commandLine) {
+  const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
+  if (!unwrapped.trim() || hasShellMutationSyntax(unwrapped)) return false;
+
+  const words = splitCommandWords(unwrapped);
+  const command = path.basename(words[0] || "");
+  if (!command) return false;
+
+  if (command === "npm") {
+    const subcommand = words.slice(1).find((word) => !word.startsWith("-"));
+    if (subcommand === "test" || subcommand === "t") return true;
+    if (subcommand !== "run") return false;
+    const runIndex = words.indexOf(subcommand);
+    const scriptName = words.slice(runIndex + 1).find((word) => !word.startsWith("-"));
+    return isValidationScriptName(scriptName);
+  }
+
+  if (["pnpm", "yarn", "bun"].includes(command)) {
+    const subcommand = words.slice(1).find((word) => !word.startsWith("-"));
+    if (subcommand === "test") return true;
+    if (subcommand === "run") {
+      const runIndex = words.indexOf(subcommand);
+      const scriptName = words.slice(runIndex + 1).find((word) => !word.startsWith("-"));
+      return isValidationScriptName(scriptName);
+    }
+    return isValidationScriptName(subcommand);
+  }
+
+  if (command === "node") {
+    return words.slice(1).some((word) => word === "--test" || word.startsWith("--test-"));
+  }
+
+  if (command === "python" || command === "python3") {
+    const moduleIndex = words.indexOf("-m");
+    return moduleIndex >= 0 && words[moduleIndex + 1] === "pytest";
+  }
+
+  if (command === "go") {
+    return words.slice(1).find((word) => !word.startsWith("-")) === "test";
+  }
+
+  if (command === "cargo") {
+    return words.slice(1).find((word) => !word.startsWith("-")) === "test";
+  }
+
+  if (command === "mvn" || command === "mvnw" || command === "gradle" || command === "gradlew") {
+    return words.slice(1).some((word) => word === "test" || word === "check" || word.endsWith(":test"));
+  }
+
+  return VERIFIER_DIRECT_TEST_COMMANDS.has(command);
+}
+
+function isKnownUnsafeCommand(commandLine) {
+  const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
+  if (!unwrapped.trim()) return true;
+  if (/\b(curl|wget)\b[\s\S]*\|\s*(sh|bash|zsh)\b/.test(unwrapped)) return true;
+
+  const words = splitCommandWords(unwrapped);
+  const command = path.basename(words[0] || "");
+  if (!command) return true;
+
+  if (["sudo", "su", "rm", "rmdir", "dd", "mkfs", "chmod", "chown", "killall", "pkill"].includes(command)) {
+    return true;
+  }
+
+  if (command === "git") {
+    const subcommand = words.slice(1).find((word) => !word.startsWith("-"));
+    return ["reset", "clean", "checkout", "restore", "rebase", "merge", "push", "commit", "tag"].includes(subcommand || "");
+  }
+
+  if (["npm", "pnpm", "yarn", "bun"].includes(command)) {
+    const subcommand = words.slice(1).find((word) => !word.startsWith("-"));
+    if (["publish", "deploy"].includes(subcommand || "")) return true;
+    if (subcommand === "run") {
+      const runIndex = words.indexOf(subcommand);
+      const scriptName = words.slice(runIndex + 1).find((word) => !word.startsWith("-")) || "";
+      return /(^|:)(release|deploy|publish)($|:)/.test(scriptName);
+    }
+    return /^(release|deploy|publish)(:|$)/.test(subcommand || "");
+  }
+
+  return false;
+}
+
+export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = null) {
+  const canonicalRole = validateRole(role);
+
+  if (canonicalRole === "planner") {
+    if (isVerifierReadOnlyCommand(commandLine)) {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      reason: "planner may only execute read-only inspection commands",
+      recoveryGuidance: "Use read-only local inspection commands such as pwd, ls, cat, sed, rg, git status, or git diff. Leave validation and mutation to later phases.",
+    };
+  }
+
+  if (canonicalRole === "reviewer") {
+    if (isVerifierReadOnlyCommand(commandLine) || isVerifierValidationCommand(commandLine)) {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      reason: "reviewer may only execute inspection or validation commands",
+      recoveryGuidance: "Use read-only inspection or validation commands such as npm test, npm run test:*, node --test, pytest, go test, or cargo test.",
+    };
+  }
+
+  if (canonicalRole === "executor" || canonicalRole === "repairer") {
+    if (isKnownUnsafeCommand(commandLine)) {
+      return {
+        allowed: false,
+        reason: `${canonicalRole} cannot execute destructive or publishing commands`,
+        recoveryGuidance: "Use local build, test, lint, install, and inspection commands. Do not mutate git history, publish/deploy, remove files with shell commands, or pipe remote scripts into a shell.",
+      };
+    }
+    return { allowed: true };
+  }
+
+  if (canonicalRole === "verifier") {
+    if (isVerifierReadOnlyCommand(commandLine) || isVerifierValidationCommand(commandLine)) {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      reason: "verifier may only execute inspection or validation commands",
+      recoveryGuidance: "Use read-only inspection commands or validation commands such as npm test, npm run test:*, node --test, pytest, go test, or cargo test; write the verdict through the verdict file only.",
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: `${canonicalRole} cannot execute terminal commands`,
+    recoveryGuidance: "Use file-reading tools or the provided locators for observation in this phase.",
+  };
+}
+
+export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId } = {}) {
+  const canonicalRole = validateRole(role);
 
   if (action === "read") {
-    return canRead(role, targetPath, cpbRoot, project, sourcePath, jobId);
+    return canRead(canonicalRole, targetPath, cpbRoot, project, sourcePath, jobId);
   }
 
   if (action === "write") {
-    return canWrite(role, targetPath, cpbRoot, project, sourcePath);
+    return canWrite(canonicalRole, targetPath, cpbRoot, project, sourcePath);
+  }
+
+  if (action === "execute") {
+    return canExecute(canonicalRole, targetPath, cpbRoot, project, sourcePath, jobId);
   }
 
   return { allowed: false, reason: `unknown action: ${action}` };
@@ -188,13 +426,14 @@ export async function recordPermissionDenial(
     recoveryGuidance,
   }
 ) {
+  const eventRole = role ? validateRole(role) : null;
   await appendEvent(cpbRoot, project, jobId, {
     type: "permission_denied",
     category: "infra",
     jobId,
     project,
-    phase: phase || role || null,
-    role,
+    phase: phase || eventRole || null,
+    role: eventRole,
     action,
     deniedOperation: action || "write",
     targetPath: targetPath || "",
@@ -206,7 +445,8 @@ export async function recordPermissionDenial(
 }
 
 export function getObservablePaths(role, cpbRoot, project, { sourcePath = null } = {}) {
-  const resolvers = OBSERVATION_PATHS[role];
+  const canonicalRole = validateRole(role);
+  const resolvers = OBSERVATION_PATHS[canonicalRole];
   if (!resolvers) return [];
   return resolvers
     .map((r) => r(cpbRoot, project, sourcePath))
@@ -218,11 +458,13 @@ export function isInfraDenial(event) {
 }
 
 export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null } = {}) {
-  validateRole(role);
-  const scope = WRITE_SCOPES[role];
-  const observable = getObservablePaths(role, cpbRoot, project, { sourcePath });
+  const canonicalRole = validateRole(role);
+  const scope = WRITE_SCOPES[canonicalRole];
+  const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath });
   return {
-    role,
+    role: canonicalRole,
+    readScope: "unrestricted",
+    readAllowed: getReadAllowedPaths(canonicalRole),
     writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
     writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
     observablePaths: observable,

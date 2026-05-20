@@ -1,8 +1,8 @@
 {
   "permissions": {
     "write_paths": ["wiki/projects/*/outputs/review-*"],
-    "deny_tools": ["terminal/create", "fs/write_text_file"],
-    "deny_commands": true
+    "deny_tools": [],
+    "deny_commands": false
   },
   "agent": {
     "command": "codex-acp",

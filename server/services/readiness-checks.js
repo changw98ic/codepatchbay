@@ -422,9 +422,25 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
 
   const summary = deriveSummary(results);
 
+  // Collect per-project runtime roots
+  let projectRuntimeRoots = {};
+  try {
+    const registry = await loadRegistry(resolvedHubRoot);
+    for (const project of Object.values(registry.projects)) {
+      if (project.projectRuntimeRoot) {
+        projectRuntimeRoots[project.id] = project.projectRuntimeRoot;
+      }
+    }
+  } catch {}
+
   return {
     command: "cpb doctor",
     generatedAt: new Date().toISOString(),
+    roots: {
+      executorRoot: resolvedCpbRoot,
+      hubRoot: resolvedHubRoot,
+      projectRuntimeRoots,
+    },
     summary,
     checks: results,
   };

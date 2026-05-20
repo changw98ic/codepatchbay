@@ -12,6 +12,7 @@ const fakeActiveAgent = path.join(root, "tests", "fixtures", "fake-active-acp-ag
 const fakeHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-handoff.mjs");
 const fakeBadHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-bad-handoff.mjs");
 const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-terminal.mjs");
+const fakePermissionTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-permission-terminal.mjs");
 
 async function runClient({ env, prompt, cwd }) {
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
@@ -289,6 +290,72 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
+}
+
+// --- permission matrix allows verifier read-only terminal inspection ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-readonly-terminal-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      CPB_EXECUTOR_ROOT: root,
+      CPB_ROOT: tempDir,
+      CPB_ACP_CPB_ROOT: tempDir,
+      CPB_ACP_ROLE: "verifier",
+      CPB_ACP_PROJECT: "verifyproj",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakePermissionTerminalAgent,
+    },
+    prompt: "ACTION: read_only_terminal\n",
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /terminal-allowed/);
+}
+
+// --- permission matrix allows verifier test suite execution ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-test-terminal-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      CPB_EXECUTOR_ROOT: root,
+      CPB_ROOT: tempDir,
+      CPB_ACP_CPB_ROOT: tempDir,
+      CPB_ACP_ROLE: "verifier",
+      CPB_ACP_PROJECT: "verifyproj",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakePermissionTerminalAgent,
+    },
+    prompt: "ACTION: test_terminal\n",
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /terminal-allowed/);
+}
+
+// --- permission matrix denies verifier arbitrary terminal execution ---
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-unsafe-terminal-"));
+
+  const { exitCode, stdout, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      CPB_EXECUTOR_ROOT: root,
+      CPB_ROOT: tempDir,
+      CPB_ACP_CPB_ROOT: tempDir,
+      CPB_ACP_ROLE: "verifier",
+      CPB_ACP_PROJECT: "verifyproj",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakePermissionTerminalAgent,
+    },
+    prompt: "ACTION: unsafe_terminal\n",
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  assert.match(stdout, /terminal-denied/);
 }
 
 // --- CPB_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly ---

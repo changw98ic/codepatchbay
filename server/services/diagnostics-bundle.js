@@ -87,6 +87,14 @@ export async function gatherDiagnostics({
   const result = {
     gatheredAt: new Date().toISOString(),
     cpbRoot: path.resolve(cpbRoot),
+    roots: {
+      executorRoot: path.resolve(cpbRoot),
+      hubRoot: path.resolve(hubRoot),
+      projectRuntimeRoots: projects.reduce((acc, p) => {
+        if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
+        return acc;
+      }, {}),
+    },
     hub: {
       hubRoot: hub.hubRoot,
       projectCount: hub.projectCount,

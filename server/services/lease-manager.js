@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
+import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import {
   acquireLease as acquireLeaseRust,
   readLease as readLeaseRust,
@@ -10,6 +10,10 @@ import {
   renewLease as renewLeaseRust,
   shouldUseRustRuntime,
 } from "./runtime-cli.js";
+
+function _base(cpbRoot, opts) {
+  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
+}
 
 const ownedLeaseTokens = new Map();
 // Lock TTL: timeout for mkdir-based atomic lock contention between competing processes.
@@ -25,10 +29,10 @@ function validateLeaseId(leaseId) {
   }
 }
 
-function leaseFileFor(cpbRoot, leaseId) {
+function leaseFileFor(cpbRoot, leaseId, opts = {}) {
   validateLeaseId(leaseId);
 
-  const leasesRoot = runtimeDataPath(cpbRoot, "leases");
+  const leasesRoot = path.join(_base(cpbRoot, opts), "leases");
   const file = path.resolve(leasesRoot, `${leaseId}.json`);
   const relative = path.relative(leasesRoot, file);
 
@@ -210,6 +214,7 @@ export async function acquireLease(
     now = new Date(),
     ownerPid = process.pid,
     lockTtlMs,
+    dataRoot,
   }
 ) {
   if (shouldUseRustRuntime()) {
@@ -223,7 +228,7 @@ export async function acquireLease(
     return result.lease;
   }
 
-  const file = leaseFileFor(cpbRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
   const lease = createLease({
     leaseId,
     jobId,
@@ -265,10 +270,16 @@ export async function acquireLease(
   );
 }
 
-export async function readLease(cpbRoot, leaseId) {
+export async function readLease(cpbRoot, leaseId, { dataRoot } = {}) {
   if (shouldUseRustRuntime()) {
     const lease = await readLeaseRust(cpbRoot, leaseId);
     return lease ?? null;
+  }
+  // Try dataRoot first, then legacy
+  if (dataRoot && dataRoot !== runtimeDataRoot(cpbRoot)) {
+    const rtFile = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+    const rtLease = await readLeaseFile(rtFile);
+    if (rtLease !== null) return rtLease;
   }
   return await readLeaseFile(leaseFileFor(cpbRoot, leaseId));
 }
@@ -293,7 +304,7 @@ export function isLeaseStale(lease, now = new Date()) {
 export async function renewLease(
   cpbRoot,
   leaseId,
-  { ttlMs, now = new Date(), ownerToken, lockTtlMs } = {}
+  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot } = {}
 ) {
   if (shouldUseRustRuntime()) {
     const renewed = await renewLeaseRust(cpbRoot, leaseId, { ttlMs, ownerToken: ownerTokenFor(cpbRoot, leaseId, ownerToken) });
@@ -301,7 +312,7 @@ export async function renewLease(
     return renewed;
   }
 
-  const file = leaseFileFor(cpbRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
   return await withLeaseLock(
     file,
     async () => {
@@ -330,7 +341,7 @@ export async function renewLease(
 export async function releaseLease(
   cpbRoot,
   leaseId,
-  { ownerToken, lockTtlMs } = {}
+  { ownerToken, lockTtlMs, dataRoot } = {}
 ) {
   if (shouldUseRustRuntime()) {
     const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
@@ -339,7 +350,7 @@ export async function releaseLease(
     return;
   }
 
-  const file = leaseFileFor(cpbRoot, leaseId);
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
 
   await withLeaseLock(
     file,

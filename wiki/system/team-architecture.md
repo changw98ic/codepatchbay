@@ -26,9 +26,9 @@ CodePatchbay currently has this shape:
 
 ```text
 cpb CLI
-  -> bridges/codex-plan.sh
-  -> bridges/claude-execute.sh
-  -> bridges/codex-verify.sh
+  -> bridges/planner.sh
+  -> bridges/executor.sh
+  -> bridges/verifier.sh
   -> bridges/acp-client.mjs
   -> codex-acp / claude-agent-acp
   -> wiki/projects/{project}/inbox|outputs
@@ -37,8 +37,11 @@ cpb CLI
 Existing profiles:
 
 ```text
-profiles/codex/soul.md
-profiles/claude/soul.md
+profiles/planner/soul.md
+profiles/executor/soul.md
+profiles/verifier/soul.md
+profiles/reviewer/soul.md
+profiles/repairer/soul.md
 ```
 
 Target architecture generalizes those provider profiles into role profiles.
@@ -488,10 +491,10 @@ Coordinator classifications are task records, not inbox handoffs:
 wiki/projects/{project}/tasks/{task-id}/classification.yaml
 ```
 
-The existing `handshake-protocol.md` should evolve from `codex | claude` sender names to role names:
+The existing `handshake-protocol.md` uses role names:
 
 ```text
-coordinator | researcher | planner | builder | reviewer | verifier | writer | security
+planner | executor | reviewer | verifier | repairer
 ```
 
 ## Failure and Escalation
@@ -517,7 +520,7 @@ coordinator | researcher | planner | builder | reviewer | verifier | writer | se
 ### Phase 2: Profile Scaffolding
 
 - Add role directories with `soul.md`, `user.md`, `memory.md`, `config.yaml`（future；v1 使用 config.json）, `env.schema`.
-- Keep existing `profiles/codex` and `profiles/claude` as compatibility aliases.
+- Do not keep provider-name compatibility aliases for phase roles.
 - Add variant files for `glm5.1`, `kimi-k2.6`, and `mimo-v2.5pro`.
 
 ### Phase 3: Runtime Loader

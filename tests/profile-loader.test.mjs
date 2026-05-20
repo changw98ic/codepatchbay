@@ -10,24 +10,34 @@ import { loadProfile, listProfiles } from '../server/services/profile-loader.js'
 import { bridgeEnvFromProfile } from '../server/services/role-bridge.js';
 
 describe('profile-loader', () => {
-  it('loads codex profile with config.json', async () => {
+  it('loads planner profile with config.json', async () => {
     const cpbRoot = path.resolve('.');
-    const profile = await loadProfile(cpbRoot, 'codex');
-    assert.equal(profile.role, 'codex');
+    const profile = await loadProfile(cpbRoot, 'planner');
+    assert.equal(profile.role, 'planner');
     assert.ok(profile.soulMd);
-    assert.ok(profile.soulMd.includes('Codex'));
-    assert.deepEqual(profile.permissions.deny_tools, ['terminal/create']);
+    assert.ok(profile.soulMd.includes('Planner'));
+    assert.deepEqual(profile.permissions.deny_tools, []);
     assert.equal(profile.agent.command, 'codex-acp');
   });
 
-  it('loads claude profile with config.json', async () => {
+  it('loads executor profile with config.json', async () => {
     const cpbRoot = path.resolve('.');
-    const profile = await loadProfile(cpbRoot, 'claude');
-    assert.equal(profile.role, 'claude');
+    const profile = await loadProfile(cpbRoot, 'executor');
+    assert.equal(profile.role, 'executor');
     assert.ok(profile.soulMd);
-    assert.ok(profile.soulMd.includes('Claude'));
+    assert.ok(profile.soulMd.includes('Executor'));
     assert.deepEqual(profile.permissions.deny_tools, []);
     assert.equal(profile.agent.command, 'claude-agent-acp');
+  });
+
+  it('loads verifier profile without planner terminal deny', async () => {
+    const cpbRoot = path.resolve('.');
+    const profile = await loadProfile(cpbRoot, 'verifier');
+    assert.equal(profile.role, 'verifier');
+    assert.ok(profile.soulMd);
+    assert.ok(profile.soulMd.includes('Verifier'));
+    assert.deepEqual(profile.permissions.deny_tools, []);
+    assert.equal(profile.agent.command, 'codex-acp');
   });
 
   it('returns defaults for unknown role', async () => {
@@ -92,8 +102,11 @@ describe('profile-loader', () => {
   it('listProfiles returns available profile directories', async () => {
     const cpbRoot = path.resolve('.');
     const profiles = await listProfiles(cpbRoot);
-    assert.ok(profiles.includes('codex'));
-    assert.ok(profiles.includes('claude'));
+    assert.ok(profiles.includes('planner'));
+    assert.ok(profiles.includes('executor'));
+    assert.ok(profiles.includes('verifier'));
+    assert.ok(!profiles.includes('codex'));
+    assert.ok(!profiles.includes('claude'));
   });
 
   it('listProfiles skips dot-prefixed dirs', async () => {
@@ -111,16 +124,29 @@ describe('profile-loader', () => {
 });
 
 describe('role-bridge with profile', () => {
-  it('bridgeEnvFromProfile returns deny_tools env for codex', async () => {
+  it('bridgeEnvFromProfile lets permission matrix control planner terminal access', async () => {
     const cpbRoot = path.resolve('.');
-    const env = await bridgeEnvFromProfile(cpbRoot, 'codex');
-    assert.equal(env.CPB_ACP_DENY_TOOLS, 'terminal/create');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'planner');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
   });
 
-  it('bridgeEnvFromProfile returns empty env for claude (no deny_tools)', async () => {
+  it('bridgeEnvFromProfile returns empty env for executor (no deny_tools)', async () => {
     const cpbRoot = path.resolve('.');
-    const env = await bridgeEnvFromProfile(cpbRoot, 'claude');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'executor');
     assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
+  });
+
+  it('bridgeEnvFromProfile does not reuse planner terminal denial for verifier', async () => {
+    const cpbRoot = path.resolve('.');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'verifier');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
+  });
+
+  it('bridgeEnvFromProfile does not accept provider profile aliases', async () => {
+    const cpbRoot = path.resolve('.');
+    const env = await bridgeEnvFromProfile(cpbRoot, 'codex');
+    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
+    assert.equal(env.CPB_ACP_CLAUDE_COMMAND, undefined);
   });
 
   it('bridgeEnvFromProfile returns defaults for unknown role', async () => {

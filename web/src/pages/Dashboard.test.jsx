@@ -29,6 +29,7 @@ const baseMap = {
   '/api/hub/queue': [],
   '/api/hub/dispatches': [],
   '/api/hub/observability': null,
+  '/api/hub/task-ledger?limit=50': null,
 };
 
 describe('Dashboard Hub panel', () => {
@@ -71,6 +72,7 @@ describe('Dashboard Hub panel', () => {
       if (url === '/api/hub/queue') return jsonResponse([]);
       if (url === '/api/hub/dispatches') return jsonResponse([]);
       if (url === '/api/hub/observability') return jsonResponse(null);
+      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
       return jsonResponse(null);
     });
   });
@@ -99,6 +101,7 @@ describe('Dashboard Hub panel', () => {
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue/status');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue');
     expect(global.fetch).toHaveBeenCalledWith('/api/hub/dispatches');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/task-ledger?limit=50');
   });
 });
 
@@ -571,6 +574,100 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
   });
 });
 
+describe('Dashboard task ledger display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('renders the task list and human/agent detail views from the ledger endpoint', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
+      ],
+      '/api/hub/task-ledger?limit=50': {
+        generatedAt: '2026-05-20T06:40:50.000Z',
+        summary: {
+          total: 2,
+          visible: 2,
+          ready: 1,
+          open: 1,
+          failed: 0,
+          archived: 0,
+        },
+        tasks: [
+          {
+            id: 'github:example/repo#20',
+            title: 'P0.8a: Add CPB version and runtime identity report',
+            status: 'ready',
+            progress: { stage: 'ready', label: 'Ready to run', detail: 'Queued in Hub', percent: 10 },
+            projectId: 'flow',
+            priority: 'P1',
+            source: { kind: 'github', label: 'GitHub issue #20', url: 'https://github.com/example/repo/issues/20', issueNumber: 20 },
+            updatedAt: '2026-05-20T06:40:50.000Z',
+            human: {
+              summary: 'Expose a machine-readable CPB identity report.',
+              progress: 'Ready to run · Queued in Hub',
+              source: 'GitHub issue #20',
+              nextAction: 'Start a CPB worker or let the queue dispatcher pick it up.',
+              description: '## Goal\n\nExpose a machine-readable CPB identity report.',
+            },
+            agent: {
+              objective: '## Goal\n\nExpose a machine-readable CPB identity report.',
+              status: { stage: 'ready', queueStatus: 'pending', githubState: 'OPEN' },
+              execution: { queueEntryId: 'q1', projectId: 'flow', priority: 'P1', executionBoundary: 'worktree' },
+              evidence: [{ kind: 'queue', id: 'q1', status: 'pending' }],
+            },
+          },
+          {
+            id: 'github:example/repo#15',
+            title: 'Add context budget reporting for composed prompt layers',
+            status: 'open',
+            progress: { stage: 'open', label: 'Open, not queued', detail: 'Known from source ledger only', percent: 0 },
+            projectId: 'flow',
+            source: { kind: 'github', label: 'GitHub issue #15', url: 'https://github.com/example/repo/issues/15', issueNumber: 15 },
+            human: {
+              summary: 'Show prompt context budgets to operators.',
+              progress: 'Open, not queued · Known from source ledger only',
+              source: 'GitHub issue #15',
+              nextAction: 'Import or queue this issue before expecting CPB to execute it.',
+              description: '## Goal\n\nShow prompt context budgets.',
+            },
+            agent: {
+              objective: '## Goal\n\nShow prompt context budgets.',
+              status: { stage: 'open', queueStatus: null, githubState: 'OPEN' },
+              execution: { queueEntryId: null },
+              evidence: [],
+            },
+          },
+        ],
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByLabelText('Task ledger')).toBeInTheDocument());
+    expect(screen.getByText('Task Ledger')).toBeInTheDocument();
+    expect(screen.getByText(/2 total/)).toBeInTheDocument();
+    expect(screen.getByText('1 ready')).toBeInTheDocument();
+    expect(screen.getByText('1 source-only')).toBeInTheDocument();
+    expect(screen.getAllByText('P0.8a: Add CPB version and runtime identity report').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('GitHub issue #20').some((el) => el.getAttribute('href') === 'https://github.com/example/repo/issues/20')).toBe(true);
+    expect(screen.getByText('Human View')).toBeInTheDocument();
+    expect(screen.getByText('Agent View')).toBeInTheDocument();
+    expect(screen.getByText(/queueStatus/)).toBeInTheDocument();
+    expect(screen.getByText('Start a CPB worker or let the queue dispatcher pick it up.')).toBeInTheDocument();
+  });
+
+  it('hides task ledger when the projection is empty or unavailable', async () => {
+    global.fetch = mockFetch(baseMap);
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Loading projects...')).toBeInTheDocument());
+    expect(screen.queryByText('Task Ledger')).not.toBeInTheDocument();
+  });
+});
+
 describe('Dashboard ACP lifecycle display', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -757,5 +854,80 @@ describe('Dashboard worker age badge', () => {
 
     await waitFor(() => expect(screen.getByText('proj-a')).toBeInTheDocument());
     expect(container.querySelector('.badge-age')).toBeNull();
+  });
+});
+
+describe('Dashboard active projects in queue status', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows active projects with busy reason and worker ID', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+        { id: 'proj-b', sourcePath: '/b', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': {
+        total: 3,
+        pending: 1,
+        inProgress: 1,
+        completed: 0,
+        failed: 1,
+        cancelled: 0,
+        projects: {
+          'proj-a': { pending: 0, inProgress: 1, completed: 0, failed: 1, cancelled: 0, activeMutating: 1, busy: true, busyReason: 'active-mutating-task', claimedBy: 'w1', workerId: 'w1' },
+          'proj-b': { pending: 1, inProgress: 0, completed: 0, failed: 0, cancelled: 0, activeMutating: 0, busy: false },
+        },
+        activeProjects: [
+          { projectId: 'proj-a', activeMutating: 1, busy: true, busyReason: 'active-mutating-task', workerId: 'w1' },
+        ],
+      },
+      '/api/hub/queue': [
+        { id: 'q1', projectId: 'proj-a', status: 'in_progress', priority: 'P1', createdAt: '2026-05-20T08:00:00Z' },
+        { id: 'q2', projectId: 'proj-b', status: 'pending', priority: 'P2', createdAt: '2026-05-20T08:01:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    // Active project with busy reason
+    expect(screen.getByText('active-mutating-task')).toBeInTheDocument();
+    // Worker ID shown for active project
+    expect(screen.getByText('w1')).toBeInTheDocument();
+    // proj-a appears in active project badge
+    expect(screen.getAllByText('proj-a').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('hides active projects section when no active projects', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': {
+        total: 2,
+        pending: 2,
+        inProgress: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+        projects: {
+          'proj-a': { pending: 2, inProgress: 0, completed: 0, failed: 0, cancelled: 0, activeMutating: 0, busy: false },
+        },
+        activeProjects: [],
+      },
+      '/api/hub/queue': [
+        { id: 'q1', projectId: 'proj-a', status: 'pending', priority: 'P2', createdAt: '2026-05-20T08:00:00Z' },
+        { id: 'q2', projectId: 'proj-b', status: 'pending', priority: 'P2', createdAt: '2026-05-20T08:01:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    expect(screen.queryByText('active-mutating-task')).not.toBeInTheDocument();
   });
 });

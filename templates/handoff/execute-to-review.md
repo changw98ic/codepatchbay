@@ -1,7 +1,7 @@
-## Handoff: claude -> codex
+## Handoff: executor -> verifier
 
-- **From**: claude
-- **To**: codex
+- **From**: executor
+- **To**: verifier
 - **Project**: {project-name}
 - **Phase**: execute
 - **Task-Ref**: TASK-{id}

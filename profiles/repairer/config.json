@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "write_paths": ["**/*"],
+    "deny_tools": [],
+    "deny_commands": false
+  },
+  "agent": {
+    "command": "claude-agent-acp",
+    "args": []
+  }
+}

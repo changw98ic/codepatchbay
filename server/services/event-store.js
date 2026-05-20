@@ -1,6 +1,6 @@
-import { appendFile, mkdir, readFile, readdir, rm, truncate, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
+import { runtimeDataRoot, runtimeDataPath } from "./runtime-root.js";
 import {
   isSecretArtifact,
   isSecretContent,
@@ -8,6 +8,10 @@ import {
   makeSecretBlockedEvent,
   redactSecrets,
 } from "./secret-policy.js";
+
+function _base(cpbRoot, opts) {
+  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
+}
 
 function validatePathComponent(name, value) {
   if (
@@ -47,11 +51,11 @@ async function truncateCorruptJsonlTail(file, raw) {
   await truncate(file, Buffer.byteLength(validPrefix, "utf8"));
 }
 
-export function eventFileFor(cpbRoot, project, jobId) {
+export function eventFileFor(cpbRoot, project, jobId, opts = {}) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
 
-  const eventsRoot = runtimeDataPath(cpbRoot, "events");
+  const eventsRoot = path.join(_base(cpbRoot, opts), "events");
   const file = path.resolve(eventsRoot, project, `${jobId}.jsonl`);
   const relative = path.relative(eventsRoot, file);
 
@@ -62,63 +66,62 @@ export function eventFileFor(cpbRoot, project, jobId) {
   return file;
 }
 
-export async function listEventFiles(cpbRoot) {
-  const eventsRoot = runtimeDataPath(cpbRoot, "events");
-
+async function _scanEventsDir(eventsRoot) {
   let projectEntries;
   try {
     projectEntries = await readdir(eventsRoot, { withFileTypes: true });
   } catch (err) {
-    if (err && err.code === "ENOENT") {
-      return [];
-    }
+    if (err && err.code === "ENOENT") return [];
     throw err;
   }
 
   const files = [];
   for (const projectEntry of projectEntries) {
-    if (!projectEntry.isDirectory()) {
-      continue;
-    }
-
+    if (!projectEntry.isDirectory()) continue;
     const project = projectEntry.name;
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(project)) {
-      continue;
-    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(project)) continue;
 
     let jobEntries;
     try {
       jobEntries = await readdir(path.join(eventsRoot, project), { withFileTypes: true });
     } catch (err) {
-      if (err && err.code === "ENOENT") {
-        continue;
-      }
+      if (err && err.code === "ENOENT") continue;
       throw err;
     }
 
     for (const jobEntry of jobEntries) {
-      if (!jobEntry.isFile() || !jobEntry.name.endsWith(".jsonl")) {
-        continue;
-      }
-
+      if (!jobEntry.isFile() || !jobEntry.name.endsWith(".jsonl")) continue;
       const jobId = jobEntry.name.slice(0, -".jsonl".length);
-      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) {
-        continue;
-      }
-
-      files.push({
-        project,
-        jobId,
-        file: path.join(eventsRoot, project, jobEntry.name),
-      });
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) continue;
+      files.push({ project, jobId, file: path.join(eventsRoot, project, jobEntry.name) });
     }
   }
-
-  return files.sort((a, b) => a.file.localeCompare(b.file));
+  return files;
 }
 
-export async function repairEventFile(cpbRoot, project, jobId) {
-  const file = eventFileFor(cpbRoot, project, jobId);
+export async function listEventFiles(cpbRoot, opts = {}) {
+  const rtRoot = opts.dataRoot ? path.join(opts.dataRoot, "events") : null;
+  const legacyRoot = runtimeDataPath(cpbRoot, "events");
+
+  const seen = new Set();
+  const allFiles = [];
+
+  if (rtRoot && rtRoot !== legacyRoot) {
+    for (const f of await _scanEventsDir(rtRoot)) {
+      const key = `${f.project}/${f.jobId}`;
+      if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
+    }
+  }
+  for (const f of await _scanEventsDir(legacyRoot)) {
+    const key = `${f.project}/${f.jobId}`;
+    if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
+  }
+
+  return allFiles.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+export async function repairEventFile(cpbRoot, project, jobId, opts = {}) {
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
   try {
     const raw = await readFile(file, "utf8");
     if (raw.endsWith("\n") || raw.length === 0) {
@@ -151,7 +154,7 @@ export async function repairEventFile(cpbRoot, project, jobId) {
   }
 }
 
-export async function appendEvent(cpbRoot, project, jobId, event) {
+export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
   // Validate event structure first (throws on invalid input)
   serializeEvent(event);
 
@@ -160,7 +163,7 @@ export async function appendEvent(cpbRoot, project, jobId, event) {
     blocked.jobId = event.jobId || jobId;
     blocked.project = event.project || project;
     const serialized = serializeEvent(blocked);
-    const file = eventFileFor(cpbRoot, project, jobId);
+    const file = eventFileFor(cpbRoot, project, jobId, opts);
     await mkdir(path.dirname(file), { recursive: true });
     await appendFile(file, `${serialized}\n`, "utf8");
     return blocked;
@@ -192,15 +195,13 @@ export async function appendEvent(cpbRoot, project, jobId, event) {
   // Redact secrets from event payload before persisting
   const redacted = redactSecrets(event);
   const serialized = JSON.stringify(redacted);
-  const file = eventFileFor(cpbRoot, project, jobId);
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${serialized}\n`, "utf8");
   return redacted;
 }
 
-export async function readEvents(cpbRoot, project, jobId) {
-  const file = eventFileFor(cpbRoot, project, jobId);
-
+async function _parseEventFile(file) {
   try {
     const raw = await readFile(file, "utf8");
     const hasTrailingNewline = raw.endsWith("\n");
@@ -228,11 +229,23 @@ export async function readEvents(cpbRoot, project, jobId) {
     }
     return events;
   } catch (err) {
-    if (err && err.code === "ENOENT") {
-      return [];
-    }
+    if (err && err.code === "ENOENT") return null;
     throw err;
   }
+}
+
+export async function readEvents(cpbRoot, project, jobId, opts = {}) {
+  // Try runtime root first when dataRoot is provided and differs from legacy
+  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
+    const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
+    const rtEvents = await _parseEventFile(rtFile);
+    if (rtEvents !== null) return rtEvents;
+  }
+
+  // Legacy path
+  const file = eventFileFor(cpbRoot, project, jobId);
+  const result = await _parseEventFile(file);
+  return result ?? [];
 }
 
 const POST_TERMINAL_ALLOWED = new Set([
@@ -477,15 +490,15 @@ export function materializeJob(events) {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function checkpointFileFor(cpbRoot, project, jobId) {
+function checkpointFileFor(cpbRoot, project, jobId, opts = {}) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
-  const checkpointsRoot = runtimeDataPath(cpbRoot, "checkpoints");
+  const checkpointsRoot = path.join(_base(cpbRoot, opts), "checkpoints");
   return path.resolve(checkpointsRoot, project, `${jobId}.json`);
 }
 
-export async function writeCheckpoint(cpbRoot, project, jobId, state) {
-  const file = checkpointFileFor(cpbRoot, project, jobId);
+export async function writeCheckpoint(cpbRoot, project, jobId, state, opts = {}) {
+  const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   await mkdir(path.dirname(file), { recursive: true });
   const checkpoint = {
     _meta: { version: 1, writtenAt: new Date().toISOString(), eventCount: null },
@@ -495,7 +508,16 @@ export async function writeCheckpoint(cpbRoot, project, jobId, state) {
   return file;
 }
 
-export async function readCheckpoint(cpbRoot, project, jobId) {
+export async function readCheckpoint(cpbRoot, project, jobId, opts = {}) {
+  // Try runtime root first
+  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
+    const rtFile = checkpointFileFor(cpbRoot, project, jobId, opts);
+    try {
+      const raw = await readFile(rtFile, "utf8");
+      const parsed = JSON.parse(raw);
+      return parsed.state ?? null;
+    } catch {}
+  }
   const file = checkpointFileFor(cpbRoot, project, jobId);
   try {
     const raw = await readFile(file, "utf8");
@@ -506,16 +528,16 @@ export async function readCheckpoint(cpbRoot, project, jobId) {
   }
 }
 
-export async function deleteCheckpoint(cpbRoot, project, jobId) {
-  const file = checkpointFileFor(cpbRoot, project, jobId);
+export async function deleteCheckpoint(cpbRoot, project, jobId, opts = {}) {
+  const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   await rm(file, { force: true });
 }
 
-export async function checkpointJob(cpbRoot, project, jobId) {
-  const events = await readEvents(cpbRoot, project, jobId);
+export async function checkpointJob(cpbRoot, project, jobId, opts = {}) {
+  const events = await readEvents(cpbRoot, project, jobId, opts);
   if (events.length === 0) return null;
   const state = materializeJob(events);
   if (!TERMINAL_STATUSES.has(state.status)) return null;
-  await writeCheckpoint(cpbRoot, project, jobId, state);
+  await writeCheckpoint(cpbRoot, project, jobId, state, opts);
   return state;
 }

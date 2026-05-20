@@ -22,7 +22,7 @@ describe('spawnBridge error handling', () => {
   it('returns accepted:false on async spawn error (non-existent cwd)', async () => {
     const ghostRoot = path.join(tmpRoot, 'no-such-dir');
     const result = await spawnBridge(
-      ghostRoot, 'test-proj', 'codex-plan.sh',
+      ghostRoot, 'test-proj', 'planner.sh',
       ['test-proj', 'task'], null,
     );
     assert.equal(result.accepted, false);
@@ -33,7 +33,7 @@ describe('spawnBridge error handling', () => {
   it('returns accepted:false on sync spawn error (null byte in path)', () => {
     // spawn() throws synchronously when args contain null bytes
     const result = spawnBridge(
-      '/tmp\x00evil', 'test-proj', 'codex-plan.sh',
+      '/tmp\x00evil', 'test-proj', 'planner.sh',
       ['test-proj', 'task'], null,
     );
     assert.equal(result.accepted, false);
@@ -58,7 +58,7 @@ describe('spawnBridge error handling', () => {
 
   it('does not register task on async spawn failure', async () => {
     const ghostRoot = path.join(tmpRoot, 'no-such-dir');
-    const result = await spawnBridge(ghostRoot, 'no-reg-proj', 'codex-plan.sh', ['no-reg-proj', 'task'], null);
+    const result = await spawnBridge(ghostRoot, 'no-reg-proj', 'planner.sh', ['no-reg-proj', 'task'], null);
     assert.equal(result.accepted, false);
     const { getRunningTasks } = await import('../server/services/executor.js');
     const running = getRunningTasks();

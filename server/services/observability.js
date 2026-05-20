@@ -66,8 +66,18 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     if (dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
   }
 
+  const projectRuntimeRoots = projects.reduce((acc, p) => {
+    if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
+    return acc;
+  }, {});
+
   return {
     generatedAt: new Date().toISOString(),
+    roots: {
+      executorRoot: cpbRoot || undefined,
+      hubRoot: hubRoot || undefined,
+      projectRuntimeRoots,
+    },
     workers: {
       online: hub.workersOnline,
       stale: hub.workersStale,

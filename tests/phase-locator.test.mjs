@@ -206,13 +206,13 @@ assert.equal(phaseLoc.phase, "execute");
 assert.equal(phaseLoc.prevPhase, "plan");
 assert.equal(phaseLoc.prevArtifact, "plan-001");
 assert.equal(phaseLoc.prevArtifactPath, path.join(inboxDir(root, project), "plan-001.md"));
-assert.equal(phaseLoc.bridgeScript, "claude-execute.sh");
+assert.equal(phaseLoc.bridgeScript, "executor.sh");
 
 const planPhaseLoc = await buildPhaseLocator(root, project, job.jobId, "plan");
 assert.equal(planPhaseLoc.prevPhase, null);
 assert.equal(planPhaseLoc.prevArtifact, null);
 assert.equal(planPhaseLoc.prevArtifactPath, null);
-assert.equal(planPhaseLoc.bridgeScript, "codex-plan.sh");
+assert.equal(planPhaseLoc.bridgeScript, "planner.sh");
 
 // --- buildPhaseLocator without job returns basic locator ---
 const noJobPhaseLoc = await buildPhaseLocator(root, project, null, "plan");

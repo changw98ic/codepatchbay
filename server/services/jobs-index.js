@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
+import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import { listEventFiles, materializeJob, readEvents } from "./event-store.js";
 
 const INDEX_VERSION = 1;
@@ -9,8 +9,8 @@ const INDEX_VERSION = 1;
 // Each cpbRoot gets its own chain; callers wait for the previous write to settle.
 const _writeQueues = new Map();
 
-function enqueueWrite(cpbRoot, fn) {
-  const key = indexFilePath(cpbRoot);
+function enqueueWrite(cpbRoot, opts, fn) {
+  const key = indexFilePath(cpbRoot, opts);
   // prev is always a settled promise (either resolved or catch'd to resolved)
   const prev = _writeQueues.get(key) || Promise.resolve();
   const next = prev.then(() => fn());
@@ -19,21 +19,25 @@ function enqueueWrite(cpbRoot, fn) {
   return next;
 }
 
-function indexFilePath(cpbRoot) {
-  return path.join(runtimeDataPath(cpbRoot), "jobs-index.json");
+function _base(cpbRoot, opts) {
+  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
 }
 
-function tempIndexFilePath(cpbRoot) {
-  return path.join(runtimeDataPath(cpbRoot), "jobs-index.tmp");
+function indexFilePath(cpbRoot, opts = {}) {
+  return path.join(_base(cpbRoot, opts), "jobs-index.json");
+}
+
+function tempIndexFilePath(cpbRoot, opts = {}) {
+  return path.join(_base(cpbRoot, opts), "jobs-index.tmp");
 }
 
 function compositeKey(project, jobId) {
   return `${project}/${jobId}`;
 }
 
-export async function readJobsIndex(cpbRoot) {
+export async function readJobsIndex(cpbRoot, opts = {}) {
   try {
-    const raw = await readFile(indexFilePath(cpbRoot), "utf8");
+    const raw = await readFile(indexFilePath(cpbRoot, opts), "utf8");
     const parsed = JSON.parse(raw);
     if (!parsed || parsed._meta?.version !== INDEX_VERSION || typeof parsed.jobs !== "object") {
       return null;
@@ -44,18 +48,18 @@ export async function readJobsIndex(cpbRoot) {
   }
 }
 
-async function writeJobsIndex(cpbRoot, index) {
-  const target = indexFilePath(cpbRoot);
-  const tmp = tempIndexFilePath(cpbRoot);
+async function writeJobsIndex(cpbRoot, index, opts = {}) {
+  const target = indexFilePath(cpbRoot, opts);
+  const tmp = tempIndexFilePath(cpbRoot, opts);
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(tmp, JSON.stringify(index) + "\n", "utf8");
   await rename(tmp, target);
 }
 
-export async function updateJobsIndexEntry(cpbRoot, project, jobId, state) {
-  return enqueueWrite(cpbRoot, async () => {
+export async function updateJobsIndexEntry(cpbRoot, project, jobId, state, opts = {}) {
+  return enqueueWrite(cpbRoot, opts, async () => {
     // Re-read latest index while holding the lock
-    const index = await readJobsIndex(cpbRoot) || {
+    const index = await readJobsIndex(cpbRoot, opts) || {
       _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
       jobs: {},
     };
@@ -64,16 +68,16 @@ export async function updateJobsIndexEntry(cpbRoot, project, jobId, state) {
     index._meta.updatedAt = new Date().toISOString();
     index._meta.jobCount = Object.keys(index.jobs).length;
 
-    await writeJobsIndex(cpbRoot, index);
+    await writeJobsIndex(cpbRoot, index, opts);
   });
 }
 
-export async function rebuildJobsIndex(cpbRoot) {
-  const files = await listEventFiles(cpbRoot);
+export async function rebuildJobsIndex(cpbRoot, opts = {}) {
+  const files = await listEventFiles(cpbRoot, opts);
   const jobs = {};
 
   for (const { project, jobId } of files) {
-    const events = await readEvents(cpbRoot, project, jobId);
+    const events = await readEvents(cpbRoot, project, jobId, opts);
     if (events.length === 0) continue;
     const state = materializeJob(events);
     if (state.createdAt && state.project && state.jobId) {
@@ -90,18 +94,18 @@ export async function rebuildJobsIndex(cpbRoot) {
     jobs,
   };
 
-  await writeJobsIndex(cpbRoot, index);
+  await writeJobsIndex(cpbRoot, index, opts);
   return index;
 }
 
-async function mergeMissingEventStreams(cpbRoot, index) {
-  const files = await listEventFiles(cpbRoot);
+async function mergeMissingEventStreams(cpbRoot, index, opts = {}) {
+  const files = await listEventFiles(cpbRoot, opts);
   let changed = false;
 
   for (const { project, jobId } of files) {
     const key = compositeKey(project, jobId);
     if (index.jobs[key]) continue;
-    const events = await readEvents(cpbRoot, project, jobId);
+    const events = await readEvents(cpbRoot, project, jobId, opts);
     if (events.length === 0) continue;
     const state = materializeJob(events);
     if (state.createdAt && state.project && state.jobId) {
@@ -113,18 +117,18 @@ async function mergeMissingEventStreams(cpbRoot, index) {
   if (changed) {
     index._meta.updatedAt = new Date().toISOString();
     index._meta.jobCount = Object.keys(index.jobs).length;
-    await writeJobsIndex(cpbRoot, index);
+    await writeJobsIndex(cpbRoot, index, opts);
   }
 
   return index;
 }
 
-export async function listJobsFromIndex(cpbRoot) {
-  let index = await readJobsIndex(cpbRoot);
+export async function listJobsFromIndex(cpbRoot, opts = {}) {
+  let index = await readJobsIndex(cpbRoot, opts);
   if (!index) {
-    index = await rebuildJobsIndex(cpbRoot);
+    index = await rebuildJobsIndex(cpbRoot, opts);
   } else {
-    index = await mergeMissingEventStreams(cpbRoot, index);
+    index = await mergeMissingEventStreams(cpbRoot, index, opts);
   }
 
   return Object.values(index.jobs)

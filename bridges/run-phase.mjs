@@ -13,11 +13,11 @@
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
-  buildCodexPlanPrompt,
-  buildClaudeExecutePrompt,
-  buildCodexVerifyPrompt,
-  buildCodexVerifyJobPrompt,
-  buildClaudeRepairPrompt,
+  buildPlannerPrompt,
+  buildExecutorPrompt,
+  buildVerifierPrompt,
+  buildVerifierJobPrompt,
+  buildRepairerPrompt,
   buildReviewerReviewPrompt,
 } from "../server/services/prompt-builder.js";
 import {
@@ -235,7 +235,7 @@ async function handlePlan(args) {
   console.log(`Planning [${project}]: ${task}`);
   console.log(`Output: ${planFile}`);
 
-  const prompt = await buildCodexPlanPrompt(executorRoot, cpbRoot, project, task, planFile);
+  const prompt = await buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile);
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -247,12 +247,12 @@ async function handlePlan(args) {
   try {
     await readFile(planFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `codex | plan | Failed to create plan for: ${task} | FAIL`);
+    await logAppend(cpbRoot, project, `planner | plan | Failed to create plan for: ${task} | FAIL`);
     console.error("Warning: Plan file not created.");
     return 1;
   }
 
-  await logAppend(cpbRoot, project, `codex | plan | Created plan-${planId} for: ${task} | SUCCESS`);
+  await logAppend(cpbRoot, project, `planner | plan | Created plan-${planId} for: ${task} | SUCCESS`);
   await dashboardUpdate(cpbRoot, project, "plan", "EXECUTING", `cpb execute ${project} ${planId}`);
   console.log("");
   console.log(`Plan: ${planFile}`);
@@ -282,7 +282,7 @@ async function handleExecute(args) {
   console.log(`Executing [${project}] plan-${planId}...`);
   console.log(`Output: ${deliverableFile}`);
 
-  const prompt = await buildClaudeExecutePrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
+  const prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
   const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -293,12 +293,12 @@ async function handleExecute(args) {
   try {
     await readFile(deliverableFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `claude | execute | deliverable not created from plan-${planId} | FAIL`);
+    await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | FAIL`);
     console.error("Warning: Deliverable not created.");
     return 1;
   }
 
-  await logAppend(cpbRoot, project, `claude | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`);
+  await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`);
   await dashboardUpdate(cpbRoot, project, "execute", "VERIFYING", `cpb verify ${project} ${deliverableId}`);
   console.log("");
   console.log(`Deliverable: ${deliverableFile}`);
@@ -334,9 +334,9 @@ async function handleVerify(args) {
 
   let prompt;
   if (jobId) {
-    prompt = await buildCodexVerifyJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile);
+    prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile);
   } else {
-    prompt = await buildCodexVerifyPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile);
+    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile);
   }
 
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
@@ -351,13 +351,13 @@ async function handleVerify(args) {
   try {
     verdictContent = await readFile(verdictFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `codex | verify | verdict not created for ${label} | FAIL`);
+    await logAppend(cpbRoot, project, `verifier | verify | verdict not created for ${label} | FAIL`);
     console.error("Warning: Verdict not created.");
     return 1;
   }
 
   const verdict = parseVerdictFromContent(verdictContent);
-  await logAppend(cpbRoot, project, `codex | verify | ${label} | ${verdict}`);
+  await logAppend(cpbRoot, project, `verifier | verify | ${label} | ${verdict}`);
 
   console.log("");
   console.log(`Verdict: ${verdict}`);
@@ -429,7 +429,7 @@ async function handleRepair(args) {
   console.log(`Repairing [${project}] job-${jobId}...`);
   console.log(`Output: ${repairFile}`);
 
-  const prompt = await buildClaudeRepairPrompt(executorRoot, cpbRoot, project, jobId, repairFile);
+  const prompt = await buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile);
   const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -439,9 +439,9 @@ async function handleRepair(args) {
 
   try {
     await readFile(repairFile, "utf8");
-    await logAppend(cpbRoot, project, `claude | repair | repair report for job-${jobId} | SUCCESS`);
+    await logAppend(cpbRoot, project, `repairer | repair | repair report for job-${jobId} | SUCCESS`);
   } catch {
-    await logAppend(cpbRoot, project, `claude | repair | repair report not created for job-${jobId} | FAIL`);
+    await logAppend(cpbRoot, project, `repairer | repair | repair report not created for job-${jobId} | FAIL`);
     console.error("Warning: Repair report not created.");
     return 1;
   }
@@ -471,7 +471,7 @@ async function main() {
   process.env.CPB_ROOT = parsed.cpbRoot;
 
   // Permission matrix context for ACP enforcement
-  const roleMap = { plan: "codex-plan", execute: "claude-execute", verify: "codex-verify", review: "reviewer-review", repair: "claude-repair" };
+  const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
   process.env.CPB_ACP_ROLE = roleMap[parsed.phase] || "";
   process.env.CPB_ACP_PROJECT = parsed.project;
   process.env.CPB_ACP_PHASE = parsed.phase;

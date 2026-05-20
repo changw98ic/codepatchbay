@@ -2,8 +2,16 @@ import fs from 'fs/promises';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { listProjects, getProject } from '../services/hub-registry.js';
 import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
 import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project-loader.js';
+import {
+  resolveInboxDir,
+  resolveOutputsDir,
+  resolveWikiDir,
+  resolveArtifactPath,
+  runtimeWikiDir,
+} from '../services/artifact-locator.js';
 
 const execFileAsync = promisify(execFile);
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -16,6 +24,30 @@ function getProjectRoots() {
   if (env) return env.split(':').filter(Boolean).map(p => path.resolve(p.trim()));
   const home = process.env.HOME;
   return home ? [path.resolve(home)] : [];
+}
+
+async function legacyProjectExists(cpbRoot, name) {
+  try {
+    const info = await fs.stat(path.join(cpbRoot, 'wiki', 'projects', name));
+    return info.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function listRouteProjects(hubRoot, cpbRoot) {
+  if (hubRoot) return listProjects(hubRoot);
+  const projectsDir = path.join(cpbRoot, 'wiki', 'projects');
+  const entries = await fs.readdir(projectsDir, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== '_template')
+    .map((entry) => ({ id: entry.name, name: entry.name }));
+}
+
+async function getRouteProject(hubRoot, cpbRoot, name) {
+  if (hubRoot) return getProject(hubRoot, name);
+  if (await legacyProjectExists(cpbRoot, name)) return { id: name, name };
+  return null;
 }
 
 async function validateProjectPath(projectPath, cpbRoot) {
@@ -64,63 +96,79 @@ async function validateProjectPath(projectPath, cpbRoot) {
 
 export async function projectRoutes(fastify, opts) {
 
-  // List all projects with status
+  // List all projects — backed by Hub registry + project runtime roots
   fastify.get('/projects', async (req) => {
-    const wikiDir = path.join(req.cpbRoot, 'wiki/projects');
-    const entries = await fs.readdir(wikiDir).catch(() => []);
+    const hubRoot = req.cpbHubRoot;
+    const cpbRoot = req.cpbRoot;
 
-    const projectionStates = await listProjectPipelineStates(req.cpbRoot);
+    const hubProjects = await listRouteProjects(hubRoot, cpbRoot);
+    const projectionStates = await listProjectPipelineStates(cpbRoot);
 
     const projectData = await Promise.all(
-      entries
-        .filter(name => name !== '_template' && !name.startsWith('.'))
-        .map(async (name) => {
-          const projDir = path.join(wikiDir, name);
-          const stat = await fs.stat(projDir).catch(() => null);
-          if (!stat?.isDirectory()) return null;
-
+      hubProjects.map(async (project) => {
+        const projectId = project.id;
+        try {
+          const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, projectId);
           const [files, inboxEntries, outputEntries] = await Promise.all([
-            loadProjectFiles(projDir, { files: ['log'] }),
-            fs.readdir(path.join(projDir, 'inbox')).catch(() => []),
-            fs.readdir(path.join(projDir, 'outputs')).catch(() => []),
+            loadProjectFiles(wikiDir, { files: ['log'] }).catch(() => ({})),
+            fs.readdir(await resolveInboxDir(hubRoot, cpbRoot, projectId)).catch(() => []),
+            fs.readdir(await resolveOutputsDir(hubRoot, cpbRoot, projectId)).catch(() => []),
           ]);
 
           return {
-            name,
+            name: project.name || project.id,
+            id: project.id,
             recentLog: extractLogTail(files.log),
-            pipelineState: projectionStates[name] ?? null,
+            pipelineState: projectionStates[projectId] ?? null,
             inbox: inboxEntries.filter(f => f.endsWith('.md')).length,
             outputs: outputEntries.filter(f => f.endsWith('.md')).length,
           };
-        })
+        } catch {
+          return {
+            name: project.name || project.id,
+            id: project.id,
+            recentLog: [],
+            pipelineState: projectionStates[projectId] ?? null,
+            inbox: 0,
+            outputs: 0,
+          };
+        }
+      })
     );
 
-    return projectData.filter(Boolean);
+    return projectData;
   });
 
   // Project detail
   fastify.get('/projects/:name', async (req) => {
     const { name } = req.params;
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
-    const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
-    await fs.access(projDir).catch(() => { throw fastify.httpErrors.notFound(`Project '${name}' not found`); });
+
+    const hubRoot = req.cpbHubRoot;
+    const cpbRoot = req.cpbRoot;
+
+    const project = await getRouteProject(hubRoot, cpbRoot, name);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+
+    const projectId = project.id;
+    const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, projectId);
 
     const fieldsParam = req.query.fields;
     const requestedFiles = fieldsParam
       ? fieldsParam.split(',').filter(f => ALL_FILES.includes(f))
       : ALL_FILES;
 
-    const files = await loadProjectFiles(projDir, { files: requestedFiles });
-    const pipelineState = await projectPipelineState(req.cpbRoot, name);
+    const files = await loadProjectFiles(wikiDir, { files: requestedFiles });
+    const pipelineState = await projectPipelineState(cpbRoot, projectId);
 
-    return { name, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState };
+    return { name: project.name || projectId, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState };
   });
 
   // List inbox files
   fastify.get('/projects/:name/inbox', async (req) => {
     const { name } = req.params;
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
-    const inboxDir = path.join(req.cpbRoot, 'wiki/projects', name, 'inbox');
+    const inboxDir = await resolveInboxDir(req.cpbHubRoot, req.cpbRoot, name);
     const files = (await fs.readdir(inboxDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
@@ -129,7 +177,7 @@ export async function projectRoutes(fastify, opts) {
   fastify.get('/projects/:name/outputs', async (req) => {
     const { name } = req.params;
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
-    const outDir = path.join(req.cpbRoot, 'wiki/projects', name, 'outputs');
+    const outDir = await resolveOutputsDir(req.cpbHubRoot, req.cpbRoot, name);
     const files = (await fs.readdir(outDir).catch(() => [])).filter(f => f.endsWith('.md'));
     return files;
   });
@@ -139,18 +187,39 @@ export async function projectRoutes(fastify, opts) {
     const { name } = req.params;
     if (!SAFE_NAME.test(name)) throw fastify.httpErrors.badRequest('name: alphanumeric + hyphens only');
     const filePath = req.params['*'];
+    if (filePath.includes('\0') || filePath.toLowerCase().includes('%00')) {
+      throw fastify.httpErrors.badRequest('Invalid file path');
+    }
     const normalized = path.normalize(filePath);
     if (normalized.startsWith('..') || path.isAbsolute(normalized)) {
       throw fastify.httpErrors.badRequest('Invalid file path');
     }
-    const projDir = path.join(req.cpbRoot, 'wiki/projects', name);
-    const fullPath = path.join(projDir, filePath);
 
-    // Resolve real paths to defeat symlink-based escapes.
-    // path.resolve only normalizes the string; fs.realpath follows symlinks.
+    try {
+      const decoded = decodeURIComponent(filePath);
+      const decodedAgain = decodeURIComponent(decoded);
+      for (const candidate of [decoded, decodedAgain]) {
+        if (candidate.includes('\0')) throw new Error('null byte');
+        const normalizedCandidate = path.normalize(candidate);
+        if (normalizedCandidate.startsWith('..') || path.isAbsolute(normalizedCandidate)) {
+          throw new Error('path traversal');
+        }
+      }
+    } catch {
+      throw fastify.httpErrors.badRequest('Invalid file path');
+    }
+
+    const hubRoot = req.cpbHubRoot;
+    const cpbRoot = req.cpbRoot;
+
+    // Resolve through runtime root first, legacy fallback
+    const fullPath = await resolveArtifactPath(hubRoot, cpbRoot, name, normalized);
+
+    // Resolve real paths to defeat symlink-based escapes
+    const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, name);
     let projectRealRoot;
     try {
-      projectRealRoot = await fs.realpath(projDir);
+      projectRealRoot = await fs.realpath(wikiDir);
     } catch {
       throw fastify.httpErrors.notFound(`Project '${name}' not found`);
     }

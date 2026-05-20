@@ -208,5 +208,134 @@ export async function queueStatus(hubRoot) {
     else if (e.status === "failed") counts.failed++;
     else if (e.status === "cancelled") counts.cancelled++;
   }
+  counts.projects = buildProjectQueueStatus(queue.entries);
+  counts.activeProjects = Object.entries(counts.projects)
+    .filter(([, ps]) => ps.activeMutating > 0)
+    .map(([projectId, ps]) => ({ projectId, ...ps }));
   return counts;
+}
+
+export function isMutatingEntry(entry) {
+  return entry.metadata?.mutating !== false;
+}
+
+export function buildProjectQueueStatus(entries) {
+  const byProject = {};
+  for (const e of entries) {
+    if (!byProject[e.projectId]) {
+      byProject[e.projectId] = {
+        pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0,
+        activeMutating: 0, busy: false, busyReason: null,
+        claimedBy: null, claimedAt: null, workerId: null,
+        activeEntryIds: [],
+      };
+    }
+    const ps = byProject[e.projectId];
+    if (e.status === "pending") ps.pending++;
+    else if (e.status === "in_progress") ps.inProgress++;
+    else if (e.status === "completed") ps.completed++;
+    else if (e.status === "failed") ps.failed++;
+    else if (e.status === "cancelled") ps.cancelled++;
+    if (e.status === "in_progress" && isMutatingEntry(e)) {
+      ps.activeMutating++;
+      ps.activeEntryIds.push(e.id);
+      ps.busy = true;
+      ps.busyReason = "active-mutating-task";
+      ps.claimedBy = e.claimedBy;
+      ps.claimedAt = e.claimedAt;
+      ps.workerId = e.workerId;
+    }
+  }
+  return byProject;
+}
+
+function recoverStaleInProgress(entries, claimTimeoutMs) {
+  if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [] };
+  const now = Date.now();
+  const recovered = [];
+  for (const e of entries) {
+    if (e.status !== "in_progress") continue;
+    const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
+    if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
+    e.status = "pending";
+    e.claimedBy = null;
+    e.claimedAt = null;
+    e.workerId = null;
+    e.updatedAt = nowIso();
+    recovered.push(e.id);
+  }
+  return { recovered };
+}
+
+export async function claimEligible(hubRoot, opts = {}) {
+  const {
+    workerId = `worker-${process.pid}`,
+    projectId = null,
+    maxActivePerProject = 1,
+    claimTimeoutMs = 120_000,
+    providerSlotsAvailable = true,
+  } = opts;
+
+  if (!providerSlotsAvailable) {
+    return { entry: null, reason: "provider-slots-exhausted", recovered: [], activeProjects: [] };
+  }
+
+  const queue = await loadQueue(hubRoot);
+  const { recovered } = recoverStaleInProgress(queue.entries, claimTimeoutMs);
+
+  const activeMutatingByProject = {};
+  for (const e of queue.entries) {
+    if (e.status === "in_progress" && isMutatingEntry(e)) {
+      activeMutatingByProject[e.projectId] = (activeMutatingByProject[e.projectId] || 0) + 1;
+    }
+  }
+
+  let pending = queue.entries.filter((e) => e.status === "pending");
+  if (projectId) pending = pending.filter((e) => e.projectId === projectId);
+
+  pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt));
+
+  let chosen = null;
+  let reason = null;
+  const skippedBusy = [];
+
+  for (const candidate of pending) {
+    if (isMutatingEntry(candidate) && (activeMutatingByProject[candidate.projectId] || 0) >= maxActivePerProject) {
+      if (!skippedBusy.includes(candidate.projectId)) skippedBusy.push(candidate.projectId);
+      continue;
+    }
+    chosen = candidate;
+    break;
+  }
+
+  if (!chosen) {
+    const projectStatus = buildProjectQueueStatus(queue.entries);
+    const activeProjects = Object.entries(projectStatus)
+      .filter(([, ps]) => ps.activeMutating > 0)
+      .map(([pid, ps]) => ({ projectId: pid, ...ps }));
+    if (pending.length === 0 && !projectId) {
+      reason = "no-pending-entries";
+    } else if (pending.length === 0 && projectId) {
+      reason = "no-pending-for-project";
+    } else {
+      reason = "all-projects-busy";
+    }
+    return { entry: null, reason, recovered, activeProjects, skippedBusy };
+  }
+
+  const now = nowIso();
+  chosen.status = "in_progress";
+  chosen.claimedBy = workerId;
+  chosen.workerId = workerId;
+  chosen.claimedAt = now;
+  chosen.updatedAt = now;
+
+  await saveQueue(hubRoot, queue);
+
+  const projectStatus = buildProjectQueueStatus(queue.entries);
+  const activeProjects = Object.entries(projectStatus)
+    .filter(([, ps]) => ps.activeMutating > 0)
+    .map(([pid, ps]) => ({ projectId: pid, ...ps }));
+
+  return { entry: chosen, reason: null, recovered, activeProjects, skippedBusy };
 }

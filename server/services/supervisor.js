@@ -154,27 +154,27 @@ export function bridgeForPhase(phase, project, job) {
   switch (phase) {
     case "plan":
       return {
-        script: path.join(bridgesDir, "codex-plan.sh"),
+        script: path.join(bridgesDir, "planner.sh"),
         args: [project, job.task ?? ""],
       };
     case "execute": {
       const planId = artifactId(job.artifacts?.plan, "plan");
       return {
-        script: path.join(bridgesDir, "claude-execute.sh"),
+        script: path.join(bridgesDir, "executor.sh"),
         args: [project, planId],
       };
     }
     case "verify": {
       const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
-        script: path.join(bridgesDir, "codex-verify.sh"),
+        script: path.join(bridgesDir, "verifier.sh"),
         args: deliverableId ? [project, deliverableId] : [project, "--job-id", job.jobId],
       };
     }
     case "review": {
       const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
-        script: path.join(bridgesDir, "reviewer-review.sh"),
+        script: path.join(bridgesDir, "reviewer.sh"),
         args: [project, deliverableId],
       };
     }

@@ -3,9 +3,32 @@ import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
 import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
+import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+
+async function projectRuntimeEnv(hubRoot, name) {
+  if (!hubRoot) return {};
+  try {
+    const project = await getProject(hubRoot, name);
+    const env = {};
+    if (project?.projectRuntimeRoot) env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
+    return env;
+  } catch {
+    return {};
+  }
+}
+
+async function projectDataRoot(hubRoot, name) {
+  if (!hubRoot) return undefined;
+  try {
+    const project = await getProject(hubRoot, name);
+    return project?.projectRuntimeRoot || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function taskRoutes(fastify, opts) {
 
@@ -28,28 +51,31 @@ export async function taskRoutes(fastify, opts) {
     return getDurableTasks(req.cpbRoot);
   });
 
-  // Trigger Codex plan
+  // Trigger planner phase
   fastify.post('/tasks/:name/plan', async (req) => {
     const { name } = req.params;
     const { task } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
-    return spawnBridge(req.cpbRoot, name, 'codex-plan.sh', [name, task], req.log);
+    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
+    return spawnBridge(req.cpbRoot, name, 'planner.sh', [name, task], req.log, '', extraEnv);
   });
 
-  // Trigger Claude execute
+  // Trigger executor phase
   fastify.post('/tasks/:name/execute', async (req) => {
     const { name } = req.params;
     const { planId } = req.body || {};
     if (!planId) throw fastify.httpErrors.badRequest('planId required');
-    return spawnBridge(req.cpbRoot, name, 'claude-execute.sh', [name, planId], req.log);
+    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
+    return spawnBridge(req.cpbRoot, name, 'executor.sh', [name, planId], req.log, '', extraEnv);
   });
 
-  // Trigger Codex verify
+  // Trigger verifier phase
   fastify.post('/tasks/:name/verify', async (req) => {
     const { name } = req.params;
     const { deliverableId } = req.body || {};
     if (!deliverableId) throw fastify.httpErrors.badRequest('deliverableId required');
-    return spawnBridge(req.cpbRoot, name, 'codex-verify.sh', [name, deliverableId], req.log);
+    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
+    return spawnBridge(req.cpbRoot, name, 'verifier.sh', [name, deliverableId], req.log, '', extraEnv);
   });
 
   // Trigger full pipeline
@@ -57,8 +83,8 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { task, maxRetries = '3', timeout = '0', workflow = 'standard' } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
-
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout, workflow], req.log);
+    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout, workflow], req.log, '', extraEnv);
   });
 
   // Cancel a running job
@@ -66,7 +92,8 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { jobId, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
-    const job = await requestCancelJob(req.cpbRoot, name, jobId, { reason });
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const job = await requestCancelJob(req.cpbRoot, name, jobId, { reason, dataRoot });
     broadcast({ type: 'job:cancel_requested', project: name, jobId, reason });
     return job;
   });
@@ -77,7 +104,8 @@ export async function taskRoutes(fastify, opts) {
     const { jobId, instructions, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
     if (!instructions) throw fastify.httpErrors.badRequest('instructions required');
-    const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason });
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason, dataRoot });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
   });

@@ -1,93 +1,45 @@
 # Dashboard
 
-> 项目状态看板。由 Codex 规划阶段更新。
+> 项目状态看板。由 CPB/OMX 运行时更新。
 
 ## 状态
 
-当前无活跃项目。
+当前记录 1 个 wiki 项目；Hub 注册表当前仅启用 `flow`。
 
 ## 格式说明
 
 每个项目在 `## 活跃项目
-### variant-env-48346
+### variant-env-75072
 - **status**: VERIFYING
 - **phase**: execute
-- **updated**: 2026-05-17T17:44:54Z
-- **next**: cpb verify variant-env-48346 003
+- **updated**: 2026-05-20T13:40:43Z
+- **next**: cpb verify variant-env-75072 004
 
-### acp-pipeline-47397
+### acp-pipeline-56526
 - **status**: DONE
 - **phase**: verify
-- **updated**: 2026-05-17T17:44:54Z
+- **updated**: 2026-05-20T13:40:41Z
 - **next**: completed
 
-### acp-test-47397
+### acp-test-56526
 - **status**: DONE
 - **phase**: verify
-- **updated**: 2026-05-17T17:44:52Z
+- **updated**: 2026-05-20T13:40:14Z
 - **next**: completed
 
-### variant-env-17229
+### flow
 - **status**: VERIFYING
 - **phase**: execute
-- **updated**: 2026-05-17T16:32:31Z
-- **next**: cpb verify variant-env-17229 003
-
-### acp-pipeline-16405
-- **status**: DONE
-- **phase**: verify
-- **updated**: 2026-05-17T16:32:30Z
-- **next**: completed
-
-### acp-test-16405
-- **status**: DONE
-- **phase**: verify
-- **updated**: 2026-05-17T16:32:29Z
-- **next**: completed
-
-### calc-test
-- **status**: DONE
-- **phase**: verify
-- **updated**: 2026-05-17T03:03:57Z
-- **next**: completed
-
-### novel-writer
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-14T02:27:31Z
-- **next**: cpb execute novel-writer 003
-
-### empty-test
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-13T17:59:08Z
-- **next**: cpb execute empty-test 002
-
-### hello-test
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-13T17:57:53Z
-- **next**: cpb execute hello-test 004
-
-### colors-test
-- **status**: EXECUTING
-- **phase**: plan
-- **updated**: 2026-05-13T17:57:48Z
-- **next**: cpb execute colors-test 003
-
-### fatecat
-- **status**: DONE
-- **phase**: verify
-- **updated**: 2026-05-13T17:36:33Z
-- **next**: completed
+- **updated**: 2026-05-20T11:33:11Z
+- **next**: cpb verify flow 009
 ` 下按以下格式记录：
 
 ```markdown
 ### {项目名}
 
-- **状态**: PLANNING | EXECUTING | VERIFYING | DONE | BLOCKED
+- **状态**: PLANNING | EXECUTING | VERIFYING | DONE | BLOCKED | UNCLEAR
 - **当前阶段**: plan | execute | verify | fix
-- **负责人**: codex | claude
+- **负责人**: codex | claude | unknown
 - **最近更新**: {ISO 8601 日期}
 - **下一步**: {简要描述}
 - **阻塞**: {无 | 阻塞原因}
@@ -95,4 +47,9 @@
 
 ## 活跃项目
 
-（初始化后自动填充）
+- **状态**: VERIFYING
+- **当前阶段**: execute
+- **负责人**: claude
+- **最近更新**: 2026-05-20T03:50:24Z
+- **下一步**: `cpb verify flow 006`
+- **阻塞**: 无

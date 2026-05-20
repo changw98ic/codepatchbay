@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub-registry.js";
-import { listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { claimEligible, listQueue, updateEntry } from "../server/services/hub-queue.js";
 import {
   dispatchEnabled,
   guardSourcePath,
@@ -132,10 +132,12 @@ function priorityScore(p) {
 export function parseArgs(argv) {
   const opts = {
     project: null,
+    pool: false,
     once: false,
     heartbeatMs: 30_000,
     pollMs: 5_000,
     claimTimeoutMs: 120_000,
+    maxActivePerProject: 1,
     agentPreflightRetries: numericOption(process.env.CPB_AGENT_PREFLIGHT_RETRIES, 3),
     agentPreflightBackoffMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_BACKOFF_MS, 30_000),
     agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
@@ -153,10 +155,12 @@ export function parseArgs(argv) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--project") opts.project = valueAfter(i++, "--project");
+    else if (arg === "--pool") opts.pool = true;
     else if (arg === "--once") opts.once = true;
     else if (arg === "--heartbeat-ms") opts.heartbeatMs = Number(valueAfter(i++, "--heartbeat-ms"));
     else if (arg === "--poll-ms") opts.pollMs = Number(valueAfter(i++, "--poll-ms"));
     else if (arg === "--claim-timeout-ms") opts.claimTimeoutMs = Number(valueAfter(i++, "--claim-timeout-ms"));
+    else if (arg === "--max-active-per-project") opts.maxActivePerProject = Number(valueAfter(i++, "--max-active-per-project"));
     else if (arg === "--agent-preflight-retries") opts.agentPreflightRetries = Number(valueAfter(i++, "--agent-preflight-retries"));
     else if (arg === "--agent-preflight-backoff-ms") opts.agentPreflightBackoffMs = Number(valueAfter(i++, "--agent-preflight-backoff-ms"));
     else if (arg === "--agent-preflight-timeout-ms") opts.agentPreflightTimeoutMs = Number(valueAfter(i++, "--agent-preflight-timeout-ms"));
@@ -175,12 +179,14 @@ export class ProjectWorker {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
     this.executorRoot = path.resolve(opts.executorRoot || CPB_EXECUTOR_ROOT);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(this.cpbRoot));
-    this.projectId = opts.projectId;
+    this.projectId = opts.projectId || null;
+    this.pool = opts.pool || false;
     this.workerId = opts.workerId || `worker-${process.pid}`;
     this.once = opts.once || false;
     this.heartbeatMs = opts.heartbeatMs || 30_000;
     this.pollMs = opts.pollMs || 5_000;
     this.claimTimeoutMs = opts.claimTimeoutMs ?? 120_000;
+    this.maxActivePerProject = opts.maxActivePerProject ?? 1;
     this.agentPreflightRetries = numericOption(opts.agentPreflightRetries, 3);
     this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
     this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
@@ -200,6 +206,10 @@ export class ProjectWorker {
   }
 
   async init() {
+    if (this.pool) {
+      this.project = null;
+      return null;
+    }
     this.project = await getProject(this.hubRoot, this.projectId);
     if (!this.project) throw new Error(`project not found: ${this.projectId}`);
     return this.project;
@@ -234,8 +244,10 @@ export class ProjectWorker {
   }
 
   async recoverStaleEntries() {
-    if (!this.project || this.claimTimeoutMs <= 0) return [];
-    const inProgress = await listQueue(this.hubRoot, { status: "in_progress", projectId: this.project.id });
+    if (this.claimTimeoutMs <= 0) return [];
+    const filter = { status: "in_progress" };
+    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const inProgress = await listQueue(this.hubRoot, filter);
     const now = Date.now();
     const recovered = [];
     for (const entry of inProgress) {
@@ -260,8 +272,9 @@ export class ProjectWorker {
   }
 
   async releaseOwnEntries() {
-    if (!this.project) return [];
-    const inProgress = await listQueue(this.hubRoot, { status: "in_progress", projectId: this.project.id });
+    const filter = { status: "in_progress" };
+    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const inProgress = await listQueue(this.hubRoot, filter);
     const released = [];
     for (const entry of inProgress) {
       if (entry.claimedBy !== this.workerId || entry.id === this._activeEntryId) continue;
@@ -277,20 +290,19 @@ export class ProjectWorker {
   }
 
   async claimNext() {
-    const entry = await this.peekNext();
-    if (!entry) return null;
-
-    const now = new Date().toISOString();
-    return updateEntry(this.hubRoot, entry.id, {
-      status: "in_progress",
-      claimedBy: this.workerId,
+    const result = await claimEligible(this.hubRoot, {
       workerId: this.workerId,
-      claimedAt: now,
+      projectId: this.pool ? null : this.project?.id || null,
+      maxActivePerProject: this.maxActivePerProject,
+      claimTimeoutMs: this.claimTimeoutMs,
     });
+    return result.entry;
   }
 
   async peekNext() {
-    const pending = await listQueue(this.hubRoot, { status: "pending", projectId: this.project.id });
+    const filter = { status: "pending" };
+    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const pending = await listQueue(this.hubRoot, filter);
     if (pending.length === 0) return null;
 
     pending.sort(
@@ -329,12 +341,13 @@ export class ProjectWorker {
   }
 
   async executeEntry(entry) {
-    const sourcePath = entry.sourcePath || this.project.sourcePath;
+    const projectId = this.pool ? entry.projectId : this.project.id;
+    const sourcePath = entry.sourcePath || this.project?.sourcePath;
 
     let dispatchId = null;
     if (dispatchEnabled() && sourcePath) {
       try {
-        await guardSourcePath(this.hubRoot, this.project.id, sourcePath);
+        await guardSourcePath(this.hubRoot, projectId, sourcePath);
       } catch (err) {
         return { ok: false, error: `sourcePath guard: ${err.message}` };
       }
@@ -353,7 +366,7 @@ export class ProjectWorker {
 
     if (dispatchEnabled() && sourcePath) {
       const dispatch = await recordDispatch(this.hubRoot, {
-        projectId: this.project.id,
+        projectId,
         sourcePath,
         sessionId: entry.sessionId || null,
         workerId: this.workerId,
@@ -363,7 +376,7 @@ export class ProjectWorker {
       if (dispatchId) await markDispatchStarted(this.hubRoot, dispatchId).catch(() => {});
     }
 
-    const result = await this.runPipeline(entry, sourcePath, dispatchId);
+    const result = await this.runPipeline(entry, sourcePath, dispatchId, projectId);
 
     if (dispatchEnabled() && dispatchId) {
       const fn = result.ok ? markDispatchCompleted : markDispatchFailed;
@@ -373,13 +386,14 @@ export class ProjectWorker {
     return result;
   }
 
-  async runPipeline(entry, sourcePath, dispatchId) {
-    if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId);
+  async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
+    if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId);
 
+    const projectId = overrideProjectId || this.project?.id;
     return new Promise((resolve) => {
       const args = [
         path.join(this.executorRoot, "bridges", "run-pipeline.mjs"),
-        "--project", this.project.id,
+        "--project", projectId,
         "--task", entry.description || entry.id,
         "--workflow", this.workflow,
       ];
@@ -484,13 +498,16 @@ export class ProjectWorker {
 
 function usage() {
   return `Usage: node bridges/project-worker.mjs --project <id> [options]
+       node bridges/project-worker.mjs --pool [options]
 
 Options:
-  --project <id>             Project ID to serve (required)
+  --project <id>             Project ID to serve (required, unless --pool)
+  --pool                     Serve all eligible projects (no --project required)
   --once                     Process one entry then exit
   --heartbeat-ms <n>         Heartbeat interval in ms (default: 30000)
   --poll-ms <n>              Queue poll interval in ms (default: 5000)
   --claim-timeout-ms <n>     Stale claim timeout in ms (default: 120000, 0 to disable)
+  --max-active-per-project <n> Max concurrent mutating tasks per project (default: 1)
   --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
@@ -506,14 +523,16 @@ async function main() {
     console.log(usage());
     return 0;
   }
-  if (!opts.project) throw new Error("--project is required (see --help)");
+  if (!opts.project && !opts.pool) throw new Error("--project is required (or use --pool, see --help)");
 
   const worker = new ProjectWorker({
     projectId: opts.project,
+    pool: opts.pool,
     once: opts.once,
     heartbeatMs: opts.heartbeatMs,
     pollMs: opts.pollMs,
     claimTimeoutMs: opts.claimTimeoutMs,
+    maxActivePerProject: opts.maxActivePerProject,
     agentPreflightRetries: opts.agentPreflightRetries,
     agentPreflightBackoffMs: opts.agentPreflightBackoffMs,
     agentPreflightTimeoutMs: opts.agentPreflightTimeoutMs,

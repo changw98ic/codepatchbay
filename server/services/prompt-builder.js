@@ -59,9 +59,9 @@ async function readRoleTitle(executorRoot, role) {
   return role;
 }
 
-export async function buildCodexPlanPrompt(executorRoot, cpbRoot, project, task, planFile) {
-  const roleTitle = await readRoleTitle(executorRoot, "codex");
-  const skillsSection = await buildSkillsSection(executorRoot, "codex");
+export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "planner");
+  const skillsSection = await buildSkillsSection(executorRoot, "planner");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const projContext = await preRead(path.join(wikiDir, "context.md"));
@@ -74,9 +74,9 @@ export async function buildCodexPlanPrompt(executorRoot, cpbRoot, project, task,
     ? ""
     : `## Constraints
 - ONLY write files under: ${path.join(cpbRoot, "wiki", "projects", project, "inbox")}/
-- Do NOT execute terminal commands (npm, node, git, etc). This is a planning-only phase.`;
+- You may run read-only local inspection commands only (for example: pwd, ls, cat, sed, rg, git status, git diff).`;
 
-  return `You are CodePatchbay Codex (Planner). Role: ${roleTitle}
+  return `You are CodePatchbay Planner. Role: ${roleTitle}
 
 ${skillsSection}
 
@@ -101,13 +101,13 @@ ${planTpl}
 ## Output
 Write the plan to: ${planFile}
 The plan title/heading MUST reference the task: "${task}"
-Follow handshake-protocol (codex->claude, Phase: plan).
+Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.`;
 }
 
-export async function buildClaudeExecutePrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
-  const roleTitle = await readRoleTitle(executorRoot, "claude");
-  const skillsSection = await buildSkillsSection(executorRoot, "claude");
+export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "executor");
+  const skillsSection = await buildSkillsSection(executorRoot, "executor");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
@@ -122,6 +122,7 @@ export async function buildClaudeExecutePrompt(executorRoot, cpbRoot, project, p
 - Write deliverable ONLY to: ${deliverableFile}
 - Write verdicts ONLY under: ${path.join(cpbRoot, "wiki", "projects", project, "outputs")}/
 - Do NOT modify files under: ${path.join(executorRoot, "wiki", "system")}/, ${path.join(executorRoot, "profiles")}/, ${path.join(executorRoot, "bridges")}/
+- Do NOT mutate git history, publish, deploy, or run destructive shell commands.
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories.`;
 
   let fixSection = "";
@@ -137,7 +138,7 @@ You MUST address the specific failures listed in the verdict. Do NOT repeat the 
     }
   }
 
-  return `You are CodePatchbay Claude (Executor). Role: ${roleTitle}
+  return `You are CodePatchbay Executor. Role: ${roleTitle}
 
 ${skillsSection}
 
@@ -146,7 +147,7 @@ ${constraints}
 ${fixSection}
 
 ## Files to read
-- Role definition: ${path.join(executorRoot, "profiles", "claude", "soul.md")}
+- Role definition: ${path.join(executorRoot, "profiles", "executor", "soul.md")}
 - Plan to execute: ${planFile}
 - Project context: ${path.join(wikiDir, "context.md")}
 - Decisions: ${path.join(wikiDir, "decisions.md")}
@@ -158,13 +159,13 @@ ${fixSection}
 2. Implement code changes described in the plan.
 3. Run tests and record results.
 4. Write the deliverable to: ${deliverableFile}
-Follow handshake-protocol (claude->codex, Phase: execute).
+Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.`;
 }
 
-export async function buildCodexVerifyPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
-  const roleTitle = await readRoleTitle(executorRoot, "codex");
-  const skillsSection = await buildSkillsSection(executorRoot, "codex");
+export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "verifier");
+  const skillsSection = await buildSkillsSection(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
@@ -174,10 +175,11 @@ export async function buildCodexVerifyPrompt(executorRoot, cpbRoot, project, del
     ? ""
     : `## Constraints
 - ONLY write the verdict to: ${verdictFile}
-- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
-- Do NOT modify any code files.`;
+- You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
+- Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
+- Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
 
-  return `You are CodePatchbay Codex (Verifier). Role: ${roleTitle}
+  return `You are CodePatchbay Verifier. Role: ${roleTitle}
 
 ${skillsSection}
 
@@ -222,9 +224,9 @@ Every key in "basis" MUST be present. Use descriptive strings, never omit keys. 
 Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.`;
 }
 
-export async function buildCodexVerifyJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile) {
-  const roleTitle = await readRoleTitle(executorRoot, "codex");
-  const skillsSection = await buildSkillsSection(executorRoot, "codex");
+export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "verifier");
+  const skillsSection = await buildSkillsSection(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -233,10 +235,11 @@ export async function buildCodexVerifyJobPrompt(executorRoot, cpbRoot, project, 
     ? ""
     : `## Constraints
 - ONLY write the verdict to: ${verdictFile}
-- Do NOT execute terminal commands (npm, node, git, etc). This is a verification-only phase.
-- Do NOT modify any code files.`;
+- You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
+- Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
+- Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
 
-  return `You are CodePatchbay Codex (Verifier). Role: ${roleTitle}
+  return `You are CodePatchbay Verifier. Role: ${roleTitle}
 
 ${skillsSection}
 
@@ -282,7 +285,9 @@ Every key in "basis" MUST be present. Use descriptive strings, never omit keys. 
 Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.`;
 }
 
-export async function buildClaudeRepairPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
+export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "repairer");
+  const skillsSection = await buildSkillsSection(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
@@ -296,7 +301,11 @@ export async function buildClaudeRepairPrompt(executorRoot, cpbRoot, project, jo
 - Write the repair report only to: ${repairFile}
 - Leave verifier, retry, recover, and pipeline execution paths outside this repair run.`;
 
-  return `You are CodePatchbay Claude (External Repair). Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
+  return `You are CodePatchbay Repairer. Role: ${roleTitle}
+
+${skillsSection}
+
+Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
 
 ${constraints}
 
@@ -329,6 +338,8 @@ After the first line, include concise findings, changed files, and verification 
 }
 
 export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId) {
+  const roleTitle = await readRoleTitle(executorRoot, "reviewer");
+  const skillsSection = await buildSkillsSection(executorRoot, "reviewer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const reviewFile = path.join(wikiDir, "outputs", `review-${deliverableId}.md`);
@@ -340,14 +351,16 @@ export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, 
     ? ""
     : `## Constraints
 - ONLY write the review to: ${reviewFile}
-- ONLY read files under: ${path.join(cpbRoot, "wiki", "projects", project)}/ or ${path.join(executorRoot, "profiles")}/
-- Do NOT execute terminal commands. This is a review-only phase.
+- You may read project wiki, outputs, system context, profiles, and target source files.
+- You may run read-only inspection commands and safe validation commands.
 - Do NOT modify any code files.`;
 
-  return `You are CodePatchbay Reviewer. Role: Code Review Expert
+  return `You are CodePatchbay Reviewer. Role: ${roleTitle}
 
 ## Task
 Review the deliverable for code quality, correctness, maintainability, and security.
+
+${skillsSection}
 
 ${constraints}
 

@@ -45,7 +45,7 @@ async function setupTempRoot() {
   await fs.mkdir(path.join(tmpRoot, 'cpb-task/state'), { recursive: true });
 
   // Create dummy bridge scripts that just exit cleanly
-  const scripts = ['codex-plan.sh', 'claude-execute.sh', 'codex-verify.sh', 'run-pipeline.sh'];
+  const scripts = ['planner.sh', 'executor.sh', 'verifier.sh', 'run-pipeline.sh'];
   for (const script of scripts) {
     await fs.writeFile(
       path.join(tmpRoot, 'bridges', script),

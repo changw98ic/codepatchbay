@@ -21,18 +21,19 @@ describe('A8: reviewer workflow', () => {
     assert.equal(nextPhase(wf, 'review'), 'verify');
   });
 
-  it('review phase uses reviewer-review.sh bridge', () => {
+  it('review phase uses reviewer.sh bridge', () => {
     const wf = getWorkflow('complex');
-    assert.equal(bridgeForPhase(wf, 'review'), 'reviewer-review.sh');
+    assert.equal(bridgeForPhase(wf, 'review'), 'reviewer.sh');
   });
 
-  it('review phase maps to codex role', () => {
+  it('review phase maps to reviewer role', () => {
     const wf = getWorkflow('complex');
-    assert.equal(roleForPhase(wf, 'review'), 'codex');
+    assert.equal(roleForPhase(wf, 'review'), 'reviewer');
   });
 
-  it('role-bridge maps codex_review to reviewer bridge', () => {
-    assert.equal(bridgeForRole('codex_review'), 'reviewer-review.sh');
+  it('role-bridge maps reviewer roles to reviewer bridge', () => {
+    assert.equal(bridgeForRole('reviewer'), 'reviewer.sh');
+    assert.equal(bridgeForRole('codex_review'), null);
   });
 
   it('supervisor returns review after execute in complex workflow', () => {
@@ -61,7 +62,7 @@ describe('A8: reviewer workflow', () => {
     assert.equal(profile.role, 'reviewer');
     assert.ok(profile.soulMd);
     assert.ok(profile.soulMd.includes('Reviewer'));
-    assert.deepEqual(profile.permissions.deny_tools, ['terminal/create', 'fs/write_text_file']);
+    assert.deepEqual(profile.permissions.deny_tools, []);
     assert.equal(profile.agent.command, 'codex-acp');
   });
 

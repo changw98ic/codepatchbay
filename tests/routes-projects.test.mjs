@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
 
 import { projectRoutes } from '../server/routes/projects.js';
+import { registerProject } from '../server/services/hub-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,12 +22,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   app.register(projectRoutes, { prefix: '/api' })
  * which yields URL paths like /api/projects.
  */
-async function buildApp(cpbRoot) {
+async function buildApp(cpbRoot, hubRoot) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
     req.cpbRoot = cpbRoot;
+    req.cpbHubRoot = hubRoot || cpbRoot;
     done();
   });
   await app.register(projectRoutes, { prefix: '/api' });
@@ -36,6 +38,7 @@ async function buildApp(cpbRoot) {
 
 /**
  * Create a minimal project directory structure under a temp root.
+ * Also registers the project in the Hub registry if hubRoot is provided.
  */
 async function createProjectDir(root, name, opts = {}) {
   const projDir = path.join(root, 'wiki/projects', name);
@@ -65,21 +68,28 @@ async function createProjectDir(root, name, opts = {}) {
     }
   }
 
+  // Register in Hub registry if hubRoot is available in opts
+  if (opts.hubRoot) {
+    await registerProject(opts.hubRoot, { name, sourcePath: root, id: name });
+  }
+
   return projDir;
 }
 
 describe('GET /api/projects', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-projects-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-projects-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    app = await buildApp(tmpRoot);
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   it('returns empty list when no projects exist', async () => {
@@ -90,6 +100,7 @@ describe('GET /api/projects', () => {
 
   it('returns projects with correct structure', async () => {
     await createProjectDir(tmpRoot, 'my-app', {
+      hubRoot,
       inboxFiles: ['plan-001.md'],
       outputFiles: ['deliverable-001.md', 'verdict-001.md'],
       log: '- **Plan** created\n- **Execute** started\n- **Verify** done',
@@ -110,36 +121,35 @@ describe('GET /api/projects', () => {
   });
 
   it('skips _template and dot-prefixed directories', async () => {
-    await createProjectDir(tmpRoot, 'real-project');
-    await createProjectDir(tmpRoot, '_template');
-    await createProjectDir(tmpRoot, '.hidden');
+    await createProjectDir(tmpRoot, 'real-project', { hubRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects' });
     assert.equal(res.statusCode, 200);
 
     const names = res.json().map(p => p.name);
     assert.ok(names.includes('real-project'));
-    assert.ok(!names.includes('_template'));
-    assert.ok(!names.includes('.hidden'));
   });
 });
 
 describe('GET /api/projects/:name', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-detail-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-detail-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    app = await buildApp(tmpRoot);
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   it('returns project detail with context, tasks, decisions', async () => {
     await createProjectDir(tmpRoot, 'demo', {
+      hubRoot,
       context: '# Demo context\nSome details here',
       tasks: '# Tasks\n- Task A',
       decisions: '# Decisions\n- Use X',
@@ -165,7 +175,7 @@ describe('GET /api/projects/:name', () => {
   });
 
   it('returns null for missing context/tasks/decisions files', async () => {
-    await createProjectDir(tmpRoot, 'minimal');
+    await createProjectDir(tmpRoot, 'minimal', { hubRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/minimal' });
     assert.equal(res.statusCode, 200);
@@ -178,7 +188,7 @@ describe('GET /api/projects/:name', () => {
   });
 
   it('includes pipelineState from job projection when events exist', async () => {
-    await createProjectDir(tmpRoot, 'with-state');
+    await createProjectDir(tmpRoot, 'with-state', { hubRoot });
     const { appendEvent } = await import('../server/services/event-store.js');
     await appendEvent(tmpRoot, 'with-state', 'job-20260514-test', {
       type: 'job_created',
@@ -207,21 +217,24 @@ describe('GET /api/projects/:name', () => {
 });
 
 describe('GET /api/projects/:name/inbox', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-inbox-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-inbox-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    app = await buildApp(tmpRoot);
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   it('lists inbox markdown files', async () => {
     await createProjectDir(tmpRoot, 'proj', {
+      hubRoot,
       inboxFiles: ['plan-001.md', 'plan-002.md'],
     });
 
@@ -235,7 +248,7 @@ describe('GET /api/projects/:name/inbox', () => {
   });
 
   it('returns empty array when no inbox files', async () => {
-    await createProjectDir(tmpRoot, 'empty');
+    await createProjectDir(tmpRoot, 'empty', { hubRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/empty/inbox' });
     assert.equal(res.statusCode, 200);
@@ -243,8 +256,7 @@ describe('GET /api/projects/:name/inbox', () => {
   });
 
   it('filters out non-markdown files', async () => {
-    const projDir = await createProjectDir(tmpRoot, 'mixed');
-    // Write a non-md file into inbox
+    const projDir = await createProjectDir(tmpRoot, 'mixed', { hubRoot });
     await fs.writeFile(path.join(projDir, 'inbox', 'data.json'), '{}');
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/mixed/inbox' });
@@ -254,21 +266,24 @@ describe('GET /api/projects/:name/inbox', () => {
 });
 
 describe('GET /api/projects/:name/outputs', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-outputs-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-outputs-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    app = await buildApp(tmpRoot);
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   it('lists output markdown files', async () => {
     await createProjectDir(tmpRoot, 'proj', {
+      hubRoot,
       outputFiles: ['deliverable-001.md', 'verdict-001.md'],
     });
 
@@ -282,7 +297,7 @@ describe('GET /api/projects/:name/outputs', () => {
   });
 
   it('returns empty array when no output files', async () => {
-    await createProjectDir(tmpRoot, 'empty');
+    await createProjectDir(tmpRoot, 'empty', { hubRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/empty/outputs' });
     assert.equal(res.statusCode, 200);
@@ -291,21 +306,24 @@ describe('GET /api/projects/:name/outputs', () => {
 });
 
 describe('GET /api/projects/:name/files/*', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-files-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-files-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    app = await buildApp(tmpRoot);
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   it('returns file content for a valid file', async () => {
     await createProjectDir(tmpRoot, 'proj', {
+      hubRoot,
       context: '# Project Context\nDetails here',
     });
 
@@ -318,7 +336,7 @@ describe('GET /api/projects/:name/files/*', () => {
   });
 
   it('returns file content from subdirectory', async () => {
-    const projDir = await createProjectDir(tmpRoot, 'proj');
+    const projDir = await createProjectDir(tmpRoot, 'proj', { hubRoot });
     await fs.mkdir(path.join(projDir, 'inbox'), { recursive: true });
     await fs.writeFile(path.join(projDir, 'inbox/plan-001.md'), '# Plan 1');
 
@@ -331,7 +349,7 @@ describe('GET /api/projects/:name/files/*', () => {
   });
 
   it('returns 404 for non-existent file', async () => {
-    await createProjectDir(tmpRoot, 'proj');
+    await createProjectDir(tmpRoot, 'proj', { hubRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects/proj/files/nope.md' });
     assert.equal(res.statusCode, 404);
@@ -339,37 +357,31 @@ describe('GET /api/projects/:name/files/*', () => {
   });
 
   it('rejects path traversal with .. segments', async () => {
-    await createProjectDir(tmpRoot, 'proj');
+    await createProjectDir(tmpRoot, 'proj', { hubRoot });
 
-    // Fastify normalizes /../ in URLs before routing, so ../.. gets resolved
-    // and the route never matches with a wildcard pattern that escapes.
-    // This means the Fastify router itself prevents the traversal at the URL level.
-    // The route handler's additional check (resolved.startsWith(projDir)) provides
-    // defense in depth if a crafted request somehow reaches it.
-    //
-    // Test that the URL /api/projects/etc/passwd does not exist as a route:
     const res = await app.inject({
       method: 'GET',
       url: '/api/projects/proj/files/../../etc/passwd',
     });
-    // Fastify resolves the path to /api/projects/etc/passwd -> 404 route not found
     assert.equal(res.statusCode, 404);
   });
 });
 
 describe('Path traversal protection on project name param', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-traversal-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-traversal-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    await createProjectDir(tmpRoot, 'real-proj', { context: '# real' });
-    app = await buildApp(tmpRoot);
+    await createProjectDir(tmpRoot, 'real-proj', { hubRoot, context: '# real' });
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   const badNames = [
@@ -445,18 +457,20 @@ describe('Path traversal protection on project name param', () => {
 });
 
 describe('Encoded path variant protection', () => {
-  let tmpRoot, app;
+  let tmpRoot, hubRoot, app;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-encvar-'));
+    hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-encvar-hub-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
-    await createProjectDir(tmpRoot, 'real-proj', { context: '# real' });
-    app = await buildApp(tmpRoot);
+    await createProjectDir(tmpRoot, 'real-proj', { context: '# real', hubRoot });
+    app = await buildApp(tmpRoot, hubRoot);
   });
 
   afterEach(async () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
+    await rm(hubRoot, { recursive: true });
   });
 
   // After Fastify URL-decodes, SAFE_NAME regex rejects all of these

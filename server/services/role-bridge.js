@@ -1,10 +1,11 @@
 import { loadProfile } from "./profile-loader.js";
 
 const ROLE_BRIDGE_MAP = {
-  codex: "codex-plan.sh",
-  claude: "claude-execute.sh",
-  codex_verify: "codex-verify.sh",
-  codex_review: "reviewer-review.sh",
+  planner: "planner.sh",
+  executor: "executor.sh",
+  verifier: "verifier.sh",
+  reviewer: "reviewer.sh",
+  repairer: "repairer.sh",
 };
 
 export function bridgeForRole(role) {

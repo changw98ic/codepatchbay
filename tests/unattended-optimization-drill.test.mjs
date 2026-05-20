@@ -211,7 +211,7 @@ for (const projectName of TEST_PROJECTS) {
 
     // Verify write to inbox is denied for verifier
     const verifyWriteInbox = canWrite(
-      "codex-verify",
+      "verifier",
       path.join(wikiProjectDir(cpbRoot, projectName), "inbox", "plan-001.md"),
       cpbRoot,
       projectName
@@ -221,7 +221,7 @@ for (const projectName of TEST_PROJECTS) {
 
     // Record structured denial
     await recordPermissionDenial(cpbRoot, projectName, job.jobId, {
-      role: "codex-verify",
+      role: "verifier",
       action: "write",
       targetPath: path.join(wikiProjectDir(cpbRoot, projectName), "inbox", "plan-001.md"),
       reason: verifyWriteInbox.reason,
@@ -231,13 +231,13 @@ for (const projectName of TEST_PROJECTS) {
     const events = await readEvents(cpbRoot, projectName, job.jobId);
     const denial = events.find((e) => e.type === "permission_denied");
     assert.ok(denial, "permission denial is recorded as structured event");
-    assert.equal(denial.role, "codex-verify");
+    assert.equal(denial.role, "verifier");
     assert.equal(denial.action, "write");
     assert.ok(denial.reason);
 
     // Reads are still allowed
     const readAllowed = canRead(
-      "codex-verify",
+      "verifier",
       path.join(wikiProjectDir(cpbRoot, projectName), "outputs", "deliverable-001.md"),
       cpbRoot,
       projectName

@@ -20,8 +20,8 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function requireNotTerminal(cpbRoot, project, jobId, { allowMissing = false } = {}) {
-  const job = await getJob(cpbRoot, project, jobId);
+async function requireNotTerminal(cpbRoot, project, jobId, { allowMissing = false, dataRoot } = {}) {
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!job?.jobId) {
     if (allowMissing) return;
     throw new Error(`job not found: ${jobId}`);
@@ -32,9 +32,9 @@ async function requireNotTerminal(cpbRoot, project, jobId, { allowMissing = fals
 }
 
 
-async function getJobAndUpdateIndex(cpbRoot, project, jobId) {
-  const state = await getJob(cpbRoot, project, jobId);
-  await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
+async function getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot } = {}) {
+  const state = await getJob(cpbRoot, project, jobId, { dataRoot });
+  await updateJobsIndexEntry(cpbRoot, project, jobId, state, { dataRoot }).catch(() => {});
   return state;
 }
 
@@ -57,7 +57,7 @@ export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")
 
 export async function createJob(
   cpbRoot,
-  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null }
+  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null, dataRoot }
 ) {
   const jobId = providedJobId || makeJobId(ts);
   await appendEvent(cpbRoot, project, jobId, {
@@ -68,17 +68,17 @@ export async function createJob(
     workflow,
     executor,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function startPhase(
   cpbRoot,
   project,
   jobId,
-  { phase, attempt = 1, leaseId, ts = nowIso() }
+  { phase, attempt = 1, leaseId, ts = nowIso(), dataRoot }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_started",
     jobId,
@@ -87,17 +87,17 @@ export async function startPhase(
     attempt,
     leaseId,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function completePhase(
   cpbRoot,
   project,
   jobId,
-  { phase, artifact = "", ts = nowIso() }
+  { phase, artifact = "", ts = nowIso(), dataRoot }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_completed",
     jobId,
@@ -105,26 +105,26 @@ export async function completePhase(
     phase,
     artifact,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function blockJob(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso() }
+  { reason, ts = nowIso(), dataRoot }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true, dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_blocked",
     jobId,
     project,
     reason,
     ts,
-  });
-  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function failJob(
@@ -139,9 +139,10 @@ export async function failJob(
     retryCount,
     cause,
     ts = nowIso(),
+    dataRoot,
   }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_failed",
     jobId,
@@ -153,9 +154,9 @@ export async function failJob(
     retryCount,
     cause,
     ts,
-  });
-  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 function inferRetryPhase(job) {
@@ -189,9 +190,10 @@ export async function retryJob(
     trigger = "manual",
     maxRetries = 3,
     ts = nowIso(),
+    dataRoot,
   } = {}
 ) {
-  const job = await getJob(cpbRoot, project, jobId);
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!job?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
@@ -227,6 +229,7 @@ export async function retryJob(
     workflow: job.workflow,
     ts,
     executor: job.executor ?? null,
+    dataRoot,
   });
 
   await appendEvent(cpbRoot, project, recovered.jobId, {
@@ -240,50 +243,50 @@ export async function retryJob(
     retryCount,
     maxRetries,
     ts,
-  });
+  }, { dataRoot });
 
-  return getJobAndUpdateIndex(cpbRoot, project, recovered.jobId);
+  return getJobAndUpdateIndex(cpbRoot, project, recovered.jobId, { dataRoot });
 }
 
 export async function budgetExceeded(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso() }
+  { reason, ts = nowIso(), dataRoot }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "budget_exceeded",
     jobId,
     project,
     reason,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function completeJob(
   cpbRoot,
   project,
   jobId,
-  { ts = nowIso() } = {}
+  { ts = nowIso(), dataRoot } = {}
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_completed",
     jobId,
     project,
     ts,
-  });
-  await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function recordActivity(
   cpbRoot,
   project,
   jobId,
-  { message, ts = nowIso() }
+  { message, ts = nowIso(), dataRoot }
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_activity",
@@ -291,51 +294,51 @@ export async function recordActivity(
     project,
     message,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function requestCancelJob(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso() } = {}
+  { reason, ts = nowIso(), dataRoot } = {}
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true, dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancel_requested",
     jobId,
     project,
     reason,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function cancelJob(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso() } = {}
+  { reason, ts = nowIso(), dataRoot } = {}
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId);
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancelled",
     jobId,
     project,
     reason,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function requestRedirectJob(
   cpbRoot,
   project,
   jobId,
-  { instructions, reason, ts = nowIso() } = {}
+  { instructions, reason, ts = nowIso(), dataRoot } = {}
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true });
+  await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true, dataRoot });
   const redirectEventId = `${jobId}-redirect-${Date.now()}`;
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_redirect_requested",
@@ -345,15 +348,15 @@ export async function requestRedirectJob(
     reason,
     redirectEventId,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function consumeRedirect(
   cpbRoot,
   project,
   jobId,
-  { redirectEventId, ts = nowIso() } = {}
+  { redirectEventId, ts = nowIso(), dataRoot } = {}
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_redirect_consumed",
@@ -361,23 +364,25 @@ export async function consumeRedirect(
     project,
     redirectEventId,
     ts,
-  });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId);
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
-export async function getJob(cpbRoot, project, jobId) {
+export async function getJob(cpbRoot, project, jobId, { dataRoot } = {}) {
   if (shouldUseRustRuntime()) {
     return await getJobRust(cpbRoot, project, jobId);
   }
-  const checkpoint = await readCheckpoint(cpbRoot, project, jobId);
+  const opts = { dataRoot };
+  const checkpoint = await readCheckpoint(cpbRoot, project, jobId, opts);
   if (checkpoint) return checkpoint;
-  return materializeJob(await readEvents(cpbRoot, project, jobId));
+  return materializeJob(await readEvents(cpbRoot, project, jobId, opts));
 }
 
 export async function listJobs(cpbRoot, options = {}) {
   if (shouldUseRustRuntime()) {
     return await listJobsRust(cpbRoot, options);
   }
-  const jobs = await listJobsFromIndex(cpbRoot);
-  return options.project ? jobs.filter((job) => job.project === options.project) : jobs;
+  const { dataRoot, ...rest } = options;
+  const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
+  return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
 }
