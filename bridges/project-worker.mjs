@@ -357,15 +357,17 @@ export class ProjectWorker {
       }
     }
 
-    const availability = await this.waitForAgentAvailability();
-    if (!availability.available) {
-      return {
-        ok: false,
-        code: AGENT_OUTAGE_EXIT_CODE,
-        agentOutage: true,
-        error: "agents_unavailable",
-        preflight: availability,
-      };
+    if (this.workflow !== "blocked") {
+      const availability = await this.waitForAgentAvailability();
+      if (!availability.available) {
+        return {
+          ok: false,
+          code: AGENT_OUTAGE_EXIT_CODE,
+          agentOutage: true,
+          error: "agents_unavailable",
+          preflight: availability,
+        };
+      }
     }
 
     if (dispatchEnabled() && sourcePath) {
