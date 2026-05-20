@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/runtime-events.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
+import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
 import {
   completeJob,
   completePhase,
@@ -427,20 +428,9 @@ function extractDeliverableId(stdout) {
 export async function parseVerdict(verdictPath) {
   try {
     const content = await readFile(verdictPath, "utf8");
-    const lines = content.split(/\r?\n/).slice(0, 5);
-    for (const line of lines) {
-      const structured = line.match(/^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i);
-      if (structured) {
-        return structured[1].toUpperCase();
-      }
-    }
-    for (const line of lines) {
-      const legacy = line.match(/^\s*(PASS|FAIL|PARTIAL)\b/i);
-      if (legacy) {
-        return legacy[1].toUpperCase();
-      }
-    }
-    return "UNKNOWN";
+    const envelope = parseVerdictEnvelope(content);
+    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_ERROR" };
+    return mapped[envelope.status] || "UNKNOWN";
   } catch {
     return null;
   }
@@ -925,19 +915,23 @@ async function main() {
         continue;
       }
 
-      if (verdict === "UNKNOWN") {
+      if (verdict === "UNKNOWN" || verdict === "INFRA_ERROR") {
         verdictRetryCount += 1;
-        warn(`Unclear verdict: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
+        const label = verdict === "INFRA_ERROR" ? "infra error" : "unclear verdict";
+        warn(`${label}: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
         if (verdictRetryCount >= maxRetries) {
-          await failJob(cpbRoot, project, jobId, failure("verification verdict unclear after retries", {
+          const reason = verdict === "INFRA_ERROR"
+            ? "verification infra errors after retries"
+            : "verification verdict unclear after retries";
+          await failJob(cpbRoot, project, jobId, failure(reason, {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "verify",
             retryable: true,
           }));
           printFailureSummary(cpbRoot, project, jobId, {
             phase: "verify",
-            reason: "verification verdict unclear after retries",
+            reason,
             deliverableId,
             verdictFile: verdictPath,
           });

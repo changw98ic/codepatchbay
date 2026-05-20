@@ -71,6 +71,10 @@ ${BOLD}Commands:${NC}
   ${CYAN}jobs reconcile${NC} [--dry-run]               检测并修复 stale jobs/orphan leases/event streams
   ${CYAN}jobs cleanup${NC} [--dry-run]                 清理已完成 job 的孤立 lease 文件
   ${CYAN}gc${NC}                                       (alias: jobs cleanup)
+  ${CYAN}ps${NC}                                        列出 CPB 管理的进程树
+  ${CYAN}inspect${NC} <jobId>                           检查进程、lease、事件、lineage
+  ${CYAN}stop${NC} <jobId>                              停止注册的进程树
+  ${CYAN}clean${NC} [--dry-run]                         清理已退出/孤立进程注册
   ${CYAN}supervisor${NC}                               启动长时运行 supervisor 原型
   ${CYAN}release${NC} install [--name ID] [--dest-root DIR] [--json]  安装不可变执行器 release
   ${CYAN}migrate-runtime-root${NC} [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/
@@ -906,6 +910,167 @@ cmd_gc() {
     console.log(cleaned + ' stale lease(s) cleaned.');
   "
 }
+cmd_ps() {
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node --input-type=module - <<'PS_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const { listProcesses, classifyLiveness } = await import(path.join(executorRoot, "server/services/process-registry.js"));
+const { readLease, isLeaseStale } = await import(path.join(executorRoot, "server/services/lease-manager.js"));
+
+const entries = await listProcesses(cpbRoot);
+if (entries.length === 0) { console.log("No CPB-owned processes."); process.exit(0); }
+
+const CYAN = "\x1b[0;36m"; const GREEN = "\x1b[0;32m"; const YELLOW = "\x1b[1;33m"; const RED = "\x1b[0;31m"; const NC = "\x1b[0m";
+const livenessColor = { alive: GREEN, stale: YELLOW, orphan: RED, exited: "", stopped: "", unknown: YELLOW };
+
+for (const e of entries) {
+  const liveness = classifyLiveness(e);
+  const c = livenessColor[liveness] || "";
+  let leaseTag = "";
+  if (e.leaseId) {
+    try {
+      const l = await readLease(cpbRoot, e.leaseId);
+      leaseTag = l === null ? " lease:missing" : isLeaseStale(l) ? " lease:stale" : " lease:active";
+    } catch { leaseTag = " lease:error"; }
+  }
+  const age = e.startedAt ? Math.round((Date.now() - new Date(e.startedAt).getTime()) / 60000) : "?";
+  console.log(`${c}${liveness.padEnd(8)}${NC} ${e.jobId}  project:${e.project || "-"} phase:${e.phase || "-"} pid:${e.runnerPid} age:${age}m${leaseTag}  ${e.command || ""}`);
+}
+PS_NODE
+}
+
+cmd_inspect() {
+  local jobId="${1:?Usage: cpb inspect <jobId>}"
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_INSPECT_JOB_ID="$jobId" node --input-type=module - <<'INSPECT_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const jobId = process.env.CPB_INSPECT_JOB_ID;
+const { inspectProcess } = await import(path.join(executorRoot, "server/services/process-registry.js"));
+const result = await inspectProcess(cpbRoot, jobId);
+if (!result) { console.error(`Not found: ${jobId}`); process.exit(1); }
+
+const CYAN = "\x1b[0;36m"; const BOLD = "\x1b[1m"; const YELLOW = "\x1b[1;33m"; const NC = "\x1b[0m";
+const project = result.job?.project || result.process?.project || null;
+
+// Job section (from durable job state)
+if (result.job) {
+  console.log(`${BOLD}Job:${NC}`);
+  console.log(`  ID:        ${result.job.jobId}`);
+  console.log(`  Project:   ${result.job.project || "-"}`);
+  console.log(`  Status:    ${result.job.status || "-"}`);
+  console.log(`  Phase:     ${result.job.phase || "-"}`);
+  console.log(`  Task:      ${(result.job.task || "").slice(0, 80)}`);
+  if (result.job.failurePhase) console.log(`  Failed at: ${result.job.failurePhase}`);
+  if (result.job.failureCode) console.log(`  Fail code: ${result.job.failureCode}`);
+  if (result.job.blockedReason) console.log(`  Reason:    ${result.job.blockedReason}`);
+}
+
+// Process section (only if registry entry exists)
+if (result.process) {
+  console.log(`\n${BOLD}Process:${NC}`);
+  console.log(`  PID:       ${result.process.runnerPid}`);
+  console.log(`  Liveness:  ${result.liveness}`);
+  console.log(`  Status:    ${result.process.status}`);
+  console.log(`  Started:   ${result.process.startedAt || "-"}`);
+  if (result.process.exitCode !== null) console.log(`  Exit code: ${result.process.exitCode}`);
+  if (result.process.command) console.log(`  Command:   ${result.process.command}`);
+} else {
+  console.log(`\n${YELLOW}Process:${NC} no active process registry entry`);
+}
+
+if (result.lease) {
+  console.log(`\n${BOLD}Lease:${NC}`);
+  console.log(`  ID:        ${result.lease.leaseId}`);
+  console.log(`  Phase:     ${result.lease.phase || "-"}`);
+  console.log(`  Stale:     ${result.lease.stale}`);
+  console.log(`  Expires:   ${result.lease.expiresAt || "-"}`);
+}
+
+if (result.recentEvents.length > 0) {
+  console.log(`\n${BOLD}Recent events (${result.recentEvents.length}):${NC}`);
+  for (const ev of result.recentEvents.slice(-5)) {
+    console.log(`  ${ev.type} ${ev.phase || ""} ${ev.ts || ""}`);
+  }
+}
+
+// Lineage: parent with failure context
+if (result.lineage) {
+  console.log(`\n${BOLD}Lineage:${NC}`);
+  console.log(`  Parent:    ${result.lineage.parentJobId || "-"}`);
+  console.log(`  Parent status: ${result.lineage.parentStatus || "-"}`);
+  if (result.lineage.parentFailurePhase) console.log(`  Parent failed at: ${result.lineage.parentFailurePhase}`);
+  if (result.lineage.parentFailureCode) console.log(`  Parent fail code: ${result.lineage.parentFailureCode}`);
+  if (result.lineage.parentBlockedReason) console.log(`  Parent blocked:   ${result.lineage.parentBlockedReason}`);
+  if (result.lineage.recoveryReason) console.log(`  Recovery reason:  ${result.lineage.recoveryReason}`);
+}
+
+// Ancestors (bounded depth 5)
+if (result.ancestors && result.ancestors.length > 0) {
+  console.log(`\n${BOLD}Ancestors:${NC}`);
+  for (const a of result.ancestors) {
+    const fail = a.failurePhase ? ` failed:${a.failurePhase}` : "";
+    const code = a.failureCode ? ` code:${a.failureCode}` : "";
+    console.log(`  ${a.jobId} (${a.status}${fail}${code})`);
+  }
+}
+
+// Children (recovery jobs spawned from this one)
+if (result.children && result.children.length > 0) {
+  console.log(`\n${BOLD}Recovery children (${result.children.length}):${NC}`);
+  for (const c of result.children) {
+    console.log(`  ${c.jobId} (${c.status})`);
+  }
+}
+INSPECT_NODE
+}
+
+cmd_stop() {
+  local jobId="${1:?Usage: cpb stop <jobId>}"
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_STOP_JOB_ID="$jobId" node --input-type=module - <<'STOP_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const jobId = process.env.CPB_STOP_JOB_ID;
+const { stopProcess } = await import(path.join(executorRoot, "server/services/process-registry.js"));
+const result = await stopProcess(cpbRoot, jobId);
+if (result.stopped) {
+  console.log(`Stopped ${jobId} (pids: ${result.signaledPids.join(", ")})`);
+} else {
+  console.log(`Could not stop ${jobId}: ${result.reason}`);
+  process.exit(1);
+}
+STOP_NODE
+}
+
+cmd_clean() {
+  local dry_run=0
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) dry_run=1 ;;
+    esac
+  done
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_CLEAN_DRY_RUN="$dry_run" node --input-type=module - <<'CLEAN_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const dryRun = process.env.CPB_CLEAN_DRY_RUN === "1";
+const { cleanProcesses } = await import(path.join(executorRoot, "server/services/process-registry.js"));
+const result = await cleanProcesses(cpbRoot, { dryRun });
+
+if (dryRun) {
+  console.log(`Dry run: ${result.eligible.length} eligible entries`);
+  for (const e of result.eligible) {
+    console.log(`  ${e.jobId} ${e.status} project:${e.project || "-"}`);
+  }
+} else {
+  console.log(`Removed ${result.removed.length} process registry entries`);
+  for (const id of result.removed) console.log(`  ${id}`);
+}
+CLEAN_NODE
+}
+
 cmd_supervisor() { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/supervisor-loop.mjs"; }
 cmd_migrate_runtime_root() { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/migrate-runtime-root.mjs" "$@"; }
 cmd_release() {
@@ -989,6 +1154,18 @@ cmd_status() {
       } catch { leaseState = 'error'; }
     }
     console.log(latest.status + ' ' + (latest.phase || '-') + ' lease:' + leaseState + ' ' + (latest.task || '').slice(0, 60));
+    if (latest.lineage?.parentJobId) {
+      const parts = ['  fresh recovery from: ' + latest.lineage.parentJobId];
+      if (latest.lineage.parentFailurePhase) parts.push('failed:' + latest.lineage.parentFailurePhase);
+      if (latest.lineage.parentFailureCode) parts.push('code:' + latest.lineage.parentFailureCode);
+      if (latest.lineage.parentStatus) parts.push('was:' + latest.lineage.parentStatus);
+      if (latest.lineage.recoveryReason) parts.push('reason:' + latest.lineage.recoveryReason);
+      console.log(parts.join(' '));
+    }
+    const childCount = projJobs.filter(j => j.lineage?.parentJobId === latest.jobId).length;
+    if (childCount > 0) {
+      console.log('  recovery children: ' + childCount + ' fresh recovery job(s) spawned');
+    }
   " 2>/dev/null)
   if [ -n "$state" ]; then
     echo -e "${CYAN}Latest job:${NC} $state"
@@ -1291,6 +1468,10 @@ case "$1" in
   status)   shift; cmd_status "$@" ;;
   jobs)     shift; cmd_jobs "$@" ;;
   gc)       cmd_gc ;;
+  ps)       cmd_ps ;;
+  inspect)  shift; cmd_inspect "$@" ;;
+  stop)     shift; cmd_stop "$@" ;;
+  clean)    shift; cmd_clean "$@" ;;
   supervisor) cmd_supervisor ;;
   release)   shift; cmd_release "$@" ;;
   migrate-runtime-root) shift; cmd_migrate_runtime_root "$@" ;;

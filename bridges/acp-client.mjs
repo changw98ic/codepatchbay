@@ -11,6 +11,97 @@ import {
   logDeleteBlock,
 } from "./delete-guard.mjs";
 
+// Permission matrix integration (Stage 3 / #13)
+let _permCheck = null;
+let _permRecord = null;
+let _permEnv = null;
+const DENIAL_HISTORY_MAX = 50;
+const denialHistory = [];
+
+async function loadPermissionModules() {
+  if (_permCheck !== null) return;
+  const executorRoot = process.env.CPB_EXECUTOR_ROOT;
+  if (!executorRoot) { _permCheck = false; return; }
+  try {
+    const pm = await import(path.join(executorRoot, "server/services/permission-matrix.js"));
+    _permCheck = pm.checkPermission;
+    _permRecord = pm.recordPermissionDenial;
+    _permEnv = {
+      role: process.env.CPB_ACP_ROLE || null,
+      project: process.env.CPB_ACP_PROJECT || null,
+      jobId: process.env.CPB_ACP_JOB_ID || null,
+      phase: process.env.CPB_ACP_PHASE || null,
+      cpbRoot: process.env.CPB_ACP_CPB_ROOT || process.env.CPB_ROOT || null,
+      sourcePath: process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || null,
+    };
+    if (!_permEnv.role || !_permEnv.project || !_permEnv.cpbRoot) {
+      _permCheck = false; // not enough context, skip enforcement
+    }
+  } catch {
+    _permCheck = false;
+  }
+}
+
+function isRepeatedDenial(targetPath, action) {
+  const recent = denialHistory.slice(-3);
+  let identicalCount = 0;
+  for (const d of recent) {
+    if (d.targetPath === targetPath && d.action === action) identicalCount++;
+  }
+  return identicalCount >= 3;
+}
+
+async function enforcePermission(action, targetPath) {
+  await loadPermissionModules();
+  if (!_permCheck || !_permEnv) return { allowed: true };
+
+  const result = _permCheck(_permEnv.role, action, targetPath, _permEnv.cpbRoot, _permEnv.project, {
+    sourcePath: _permEnv.sourcePath,
+    jobId: _permEnv.jobId,
+  });
+
+  if (result.allowed) return result;
+
+  // Record denial event
+  denialHistory.push({ targetPath, action, ts: Date.now() });
+  if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
+
+  if (_permRecord && _permEnv.jobId) {
+    await _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
+      role: _permEnv.role,
+      action,
+      targetPath,
+      reason: result.reason || "write denied by permission matrix",
+      phase: _permEnv.phase,
+      allowedBoundary: result.allowedBoundary || "",
+      recoveryGuidance: result.recoveryGuidance || "",
+    }).catch(() => {});
+  }
+
+  return result;
+}
+
+function enforcePermissionSync(action, target) {
+  if (!_permCheck || !_permEnv) return { allowed: true };
+  const result = _permCheck(_permEnv.role, action, target, _permEnv.cpbRoot, _permEnv.project, {
+    sourcePath: _permEnv.sourcePath,
+    jobId: _permEnv.jobId,
+  });
+  if (result.allowed) return result;
+  denialHistory.push({ targetPath: target, action, ts: Date.now() });
+  if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
+  if (_permRecord && _permEnv.jobId) {
+    _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
+      role: _permEnv.role,
+      action,
+      targetPath: target,
+      reason: result.reason || "action denied by permission matrix",
+      phase: _permEnv.phase,
+    }).catch(() => {});
+  }
+  return result;
+}
+
 const PROTOCOL_VERSION = 1;
 
 const usage = `Usage: acp-client.mjs --agent <codex|claude> [--cwd <path>]
@@ -471,13 +562,15 @@ export class AcpClient {
 
   async handleClientRequest(message) {
     try {
+      await loadPermissionModules();
+
       // Per-tool policy enforcement: check before dispatching
       if (this.toolPolicy && message.method) {
         const action = this.toolPolicy.get(message.method);
         if (action === "deny") {
           throw new Error(`tool denied by policy: ${message.method}`);
         }
-        // "allow" or no match → proceed
+        // "allow" or no match -> proceed
       }
 
       switch (message.method) {
@@ -515,6 +608,15 @@ export class AcpClient {
           }
       }
     } catch (error) {
+      if (error.message?.startsWith("PERMISSION_FAIL_FAST:")) {
+        this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
+        if (Object.hasOwn(message, "id")) {
+          this.respondError(message.id, -32000, error.message);
+        }
+        // Abort the session; agent is stuck on repeated denials
+        setImmediate(() => this.close());
+        return;
+      }
       if (Object.hasOwn(message, "id")) {
         this.respondError(message.id, -32000, error.message, error.guardResult);
       } else {
@@ -566,6 +668,18 @@ export class AcpClient {
   async writeTextFile(params) {
     const targetPath = params.path;
     this.validateWritePath(targetPath);
+
+    const permResult = await enforcePermission("write", targetPath);
+    if (!permResult.allowed) {
+      const msg = permResult.recoveryGuidance
+        ? `write denied: ${targetPath} (${permResult.reason}); ${permResult.recoveryGuidance}`
+        : `write denied: ${targetPath} (${permResult.reason})`;
+      if (isRepeatedDenial(targetPath, "write")) {
+        throw new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
+      }
+      throw new Error(msg);
+    }
+
     await mkdir(path.dirname(targetPath), { recursive: true });
 
     if (this.isWikiHandoffFile(targetPath)) {
@@ -617,6 +731,15 @@ export class AcpClient {
     }
 
     const terminalCwd = params.cwd || this.cwd;
+    const commandLine = [params.command, ...(params.args || [])].join(" ");
+    const permResult = enforcePermissionSync("execute", commandLine);
+    if (!permResult.allowed) {
+      const msg = permResult.recoveryGuidance
+        ? `execute denied: ${commandLine} (${permResult.reason}); ${permResult.recoveryGuidance}`
+        : `execute denied: ${commandLine} (${permResult.reason})`;
+      throw new Error(msg);
+    }
+
     const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });
     if (!guardResult.allowed) {
       logDeleteBlock(params.command, params.args || [], terminalCwd, guardResult, this.errorSink);

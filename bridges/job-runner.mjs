@@ -13,6 +13,12 @@ import {
   formatDeleteBlockedMessage,
   logDeleteBlock,
 } from "./delete-guard.mjs";
+import {
+  registerProcess,
+  updateHeartbeat as updateProcessHeartbeat,
+  markExited as markProcessExited,
+  addChildPid,
+} from "../server/services/process-registry.js";
 
 const rawArgs = process.argv.slice(2);
 
@@ -144,6 +150,7 @@ function runChild(command, args, cwd, onOutput, options = {}) {
     let settled = false;
     let child;
     const detached = Boolean(options.signal) && process.platform !== "win32";
+    let onSpawnDone = Promise.resolve();
 
     function finish(result) {
       if (settled) {
@@ -153,7 +160,10 @@ function runChild(command, args, cwd, onOutput, options = {}) {
       if (options.signal && child) {
         options.signal.removeEventListener("abort", onAbort);
       }
-      resolve(result);
+      onSpawnDone.then(
+        () => resolve(result),
+        () => resolve(result),
+      );
     }
 
     const onAbort = () => {
@@ -165,7 +175,7 @@ function runChild(command, args, cwd, onOutput, options = {}) {
     try {
       child = spawn(command, args, {
         cwd,
-        env: process.env,
+        env: options.env || process.env,
         detached,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
@@ -175,6 +185,18 @@ function runChild(command, args, cwd, onOutput, options = {}) {
       return;
     }
     child.detached = detached;
+    if (options.onSpawn) {
+      try {
+        const maybe = options.onSpawn(child);
+        if (maybe && typeof maybe.catch === "function") {
+          onSpawnDone = maybe.catch((err) => {
+            console.error(`onSpawn callback failed: ${err.message}`);
+          });
+        }
+      } catch (err) {
+        console.error(`onSpawn callback failed: ${err.message}`);
+      }
+    }
     if (options.signal) {
       if (options.signal.aborted) onAbort();
       else options.signal.addEventListener("abort", onAbort, { once: true });
@@ -216,22 +238,16 @@ async function main() {
     Math.max(5_000, Math.floor(ttlMs / 3))
   );
 
-  // Check cancel before acquiring lease
-  const jobBefore = await getJob(cpbRoot, project, jobId);
-  if (jobBefore.cancelRequested) {
-    await cancelJob(cpbRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
-    console.error(`cancelled before phase ${phase}`);
-    return 1;
-  }
-
   let lease = null;
   let heartbeat = null;
   let leaseLostError = null;
   const abortController = new AbortController();
   let childResult = { exitCode: 1 };
   let signalReceived = null;
+  let processRegistered = false;
 
-  // Trap SIGINT/SIGTERM in CPB-owned job-runner process
+  // Trap SIGINT/SIGTERM immediately - before any awaited I/O - so
+  // signals arriving during startup are caught rather than killing Node.
   async function handleShutdownSignal(sig) {
     if (signalReceived) return;
     signalReceived = sig;
@@ -240,6 +256,20 @@ async function main() {
   }
   process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
   process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
+
+  // Check cancel before acquiring lease
+  const jobBefore = await getJob(cpbRoot, project, jobId);
+  if (jobBefore.cancelRequested) {
+    await cancelJob(cpbRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
+    console.error(`cancelled before phase ${phase}`);
+    return 1;
+  }
+
+  async function ensureMarkedExited(exitCode) {
+    if (!processRegistered) return;
+    processRegistered = false;
+    await markProcessExited(cpbRoot, jobId, { exitCode }).catch(() => {});
+  }
 
   try {
     lease = await acquireLease(cpbRoot, {
@@ -257,6 +287,21 @@ async function main() {
       ts: eventTimestamp(),
     });
 
+    // Register process in the CPB process registry
+    await registerProcess(cpbRoot, {
+      jobId,
+      project,
+      phase,
+      runnerPid: process.pid,
+      treeId: null,
+      leaseId,
+      command: `${script} ${scriptArgs.join(" ")}`,
+    }).then(() => {
+      processRegistered = true;
+    }).catch((err) => {
+      console.error(`process registry register failed: ${err.message}`);
+    });
+
     heartbeat = setInterval(() => {
       renewLease(cpbRoot, leaseId, {
         ttlMs,
@@ -266,14 +311,27 @@ async function main() {
         console.error(`failed to renew lease ${leaseId}: ${err.message}`);
         abortController.abort();
       });
+      updateProcessHeartbeat(cpbRoot, jobId).catch(() => {});
     }, renewEveryMs);
     heartbeat.unref?.();
 
+    const childEnv = {
+      ...process.env,
+      CPB_JOB_ID: jobId,
+      CPB_ACP_JOB_ID: jobId,
+      CPB_ACP_PHASE: phase,
+      CPB_ACP_PROJECT: project,
+      CPB_ACP_CPB_ROOT: cpbRoot,
+    };
     const activity = createActivityTracker(cpbRoot, project, jobId);
     childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {
       const line = output.trim();
       if (line) activity.track(line);
-    }, { signal: abortController.signal });
+    }, {
+      signal: abortController.signal,
+      env: childEnv,
+      onSpawn: (child) => addChildPid(cpbRoot, jobId, child.pid),
+    });
     if (leaseLostError) {
       childResult = {
         ...childResult,
@@ -309,6 +367,7 @@ async function main() {
     const jobAfterError = await getJob(cpbRoot, project, jobId);
     if (jobAfterError.cancelRequested) {
       await cancelJob(cpbRoot, project, jobId, { reason: jobAfterError.cancelReason ?? "cancelled during execution" });
+      await ensureMarkedExited(1);
       return 1;
     }
     // Record signal interruption evidence
@@ -317,12 +376,14 @@ async function main() {
         exitCode: 130,
         error: `interrupted by ${signalReceived}`,
       });
+      await ensureMarkedExited(130);
       return 130;
     }
     await appendPhaseFailed(cpbRoot, project, jobId, phase, {
       exitCode: childResult.exitCode,
       error: childResult.error.message,
     });
+    await ensureMarkedExited(childResult.exitCode);
     return childResult.exitCode;
   }
 
@@ -334,6 +395,7 @@ async function main() {
       exitCode: 0,
       ts: eventTimestamp(),
     });
+    await ensureMarkedExited(0);
     return 0;
   }
 
@@ -341,6 +403,7 @@ async function main() {
   const jobAfter = await getJob(cpbRoot, project, jobId);
   if (jobAfter.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: jobAfter.cancelReason ?? "cancelled during execution" });
+    await ensureMarkedExited(1);
     return 1;
   }
 
@@ -350,6 +413,7 @@ async function main() {
       exitCode: 130,
       error: `interrupted by ${signalReceived}`,
     });
+    await ensureMarkedExited(130);
     return 130;
   }
 
@@ -357,6 +421,9 @@ async function main() {
     exitCode: childResult.exitCode,
     signal: childResult.signal ?? null,
   });
+
+  await ensureMarkedExited(childResult.exitCode);
+
   return childResult.exitCode;
 }
 

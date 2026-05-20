@@ -62,6 +62,14 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
   assert.ok(completed);
   assert.equal(completed.exitCode, 0);
   assert.equal(await readLease(root, "lease-job-1-plan"), null);
+
+  // Verify process registry entry
+  const { getProcess: getProc } = await import("../server/services/process-registry.js");
+  const procEntry = await getProc(root, "job-1");
+  assert.ok(procEntry, "process registry entry should exist");
+  assert.equal(procEntry.status, "exited");
+  assert.equal(procEntry.exitCode, 0);
+  assert.ok(procEntry.childPids.length >= 1, "should have at least one child pid");
 }
 
 {
@@ -189,7 +197,7 @@ async function readJobEvents(root, project = "demo", jobId = "job-1") {
     } catch {
       return false;
     }
-  });
+  }, { timeoutMs: 30_000 });
 
   const stolen = JSON.parse(await readFile(leasePath, "utf8"));
   await writeFile(

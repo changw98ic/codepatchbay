@@ -530,8 +530,20 @@ describe("job-runner - signal handling", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Send SIGINT to the job-runner process itself after it starts
-    await new Promise((r) => setTimeout(r, 300));
+    // Wait for an observable startup marker before sending SIGINT,
+    // so the signal arrives after the handler is installed.
+    const waitForPhaseStarted = async () => {
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        try {
+          const raw = await readFile(eventFile, "utf8");
+          if (raw.includes("phase_started")) return;
+        } catch { /* not created yet */ }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error("timed out waiting for phase_started event");
+    };
+    await waitForPhaseStarted();
     child.kill("SIGINT");
 
     const exitCode = await new Promise((resolve) => {
