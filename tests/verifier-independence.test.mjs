@@ -13,6 +13,8 @@ import { collectVerifierEvidence } from "../server/services/verifier-evidence.js
 import { createJob, startPhase, completePhase } from "../server/services/job-store.js";
 import { wikiProjectDir, outputsDir, contextPath } from "../server/services/phase-locator.js";
 import { parseVerdict } from "../bridges/run-pipeline.mjs";
+import { dispatchPhase, resetHooksForTest } from "../server/services/phase-runner.js";
+import { readEvents, materializeJob } from "../server/services/event-store.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(".");
@@ -311,6 +313,73 @@ esac
       assert.ok(events.some((event) => event.type === "job_completed"));
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dispatchPhase verify succeeds when execute completed with empty artifact and hooks active", async () => {
+    resetHooksForTest();
+    const hookVerifyRoot = await mkdtemp(path.join(tmpdir(), "cpb-hook-verify-"));
+    const hookVerifyProject = "hook-verify-test";
+    const hookVerifyWikiDir = wikiProjectDir(hookVerifyRoot, hookVerifyProject);
+
+    try {
+      await mkdir(path.join(hookVerifyWikiDir, "inbox"), { recursive: true });
+      await mkdir(path.join(hookVerifyWikiDir, "outputs"), { recursive: true });
+      await writeFile(
+        path.join(hookVerifyWikiDir, "project.json"),
+        JSON.stringify({ name: hookVerifyProject }, null, 2),
+        "utf8",
+      );
+
+      // Create job, complete execute with empty artifact
+      const job = await createJob(hookVerifyRoot, {
+        project: hookVerifyProject,
+        task: "Test verify with no deliverable and hooks",
+        ts: "2026-05-22T00:00:00.000Z",
+      });
+      await startPhase(hookVerifyRoot, hookVerifyProject, job.jobId, {
+        phase: "execute",
+        attempt: 1,
+        ts: "2026-05-22T00:01:00.000Z",
+      });
+      await completePhase(hookVerifyRoot, hookVerifyProject, job.jobId, {
+        phase: "execute",
+        artifact: "",
+        ts: "2026-05-22T00:02:00.000Z",
+      });
+
+      // No-op verifier bridge
+      const verifyScript = path.join(hookVerifyRoot, "noop-verify.sh");
+      await writeFile(verifyScript, "#!/bin/bash\nexit 0\n", "utf8");
+      await chmod(verifyScript, 0o755);
+
+      const result = await dispatchPhase(hookVerifyRoot, {
+        project: hookVerifyProject,
+        jobId: job.jobId,
+        phase: "verify",
+        script: verifyScript,
+        scriptArgs: [],
+        executorRoot: repoRoot,
+      });
+
+      assert.equal(result.exitCode, 0, `verify dispatch should succeed with no deliverable: ${result.error?.message || ""}`);
+
+      // Verify hook events are recorded
+      const events = await readEvents(hookVerifyRoot, hookVerifyProject, job.jobId);
+      const hookEventTypes = events.filter((e) => e.type.startsWith("phase_hook_")).map((e) => e.type);
+      assert.ok(hookEventTypes.includes("phase_hook_started"), "hook events should include phase_hook_started");
+      assert.ok(hookEventTypes.includes("phase_hook_completed"), "hook events should include phase_hook_completed");
+
+      // Verify phase_completed for verify is present
+      const verifyCompleted = events.find((e) => e.type === "phase_completed" && e.phase === "verify");
+      assert.ok(verifyCompleted, "verify phase should complete");
+
+      // Hook events must not change materialized job status incorrectly
+      const state = materializeJob(events);
+      assert.equal(state.status, "running", "hook events must not mutate job status");
+    } finally {
+      resetHooksForTest();
+      await rm(hookVerifyRoot, { recursive: true, force: true });
     }
   });
 });

@@ -308,6 +308,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "external_repair_started", "external_repair_completed", "external_repair_failed",
   "process_stop_skipped", "process_marked_orphan", "process_stop_requested", "process_stopped",
   "finalizer_result",
+  "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
 ]);
 
 export function materializeJob(events) {
