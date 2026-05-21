@@ -44,6 +44,8 @@ ${BOLD}Commands:${NC}
   ${CYAN}worker${NC} heartbeat [path] [name]        上报项目 worker 心跳
   ${CYAN}worker${NC} run [path] [name] [--once] [--workflow standard|complex|blocked|accelerated]  启动项目 worker 拉取队列执行
   ${CYAN}knowledge${NC} policy [--json]             查看知识层写入边界
+  ${CYAN}index${NC} status <project> [--json]        查看项目代码索引状态
+  ${CYAN}index${NC} refresh <project> [--json]       刷新项目代码索引
   ${CYAN}plan${NC} <project> "<task>"               Codex 规划
   ${CYAN}execute${NC} <project> <plan-id>            Claude 执行
   ${CYAN}verify${NC} <project> <deliverable-id>      Codex 验证
@@ -1361,6 +1363,60 @@ cmd_retry() {
   "
 }
 
+cmd_index() {
+  local sub="${1:?Usage: cpb index <status|refresh> <project> [--json]}"
+  local project="${2:?Usage: cpb index <status|refresh> <project> [--json]}"
+  local json=0
+  shift 2
+  for arg in "$@"; do
+    case "$arg" in
+      --json) json=1 ;;
+    esac
+  done
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" CPB_INDEX_SUB="$sub" CPB_INDEX_PROJECT="$project" CPB_INDEX_JSON="$json" node --input-type=module - <<'INDEX_NODE'
+import path from 'node:path';
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const sub = process.env.CPB_INDEX_SUB;
+const projectId = process.env.CPB_INDEX_PROJECT;
+const asJson = process.env.CPB_INDEX_JSON === '1';
+
+const { getProject, resolveHubRoot } = await import(path.join(executorRoot, 'server/services/hub-registry.js'));
+const { readProjectCodeIndexStatus, refreshProjectCodeIndex } = await import(path.join(executorRoot, 'server/services/project-code-index.js'));
+
+const hubRoot = resolveHubRoot(cpbRoot);
+const project = await getProject(hubRoot, projectId);
+if (!project) { console.error(`Project '${projectId}' not found.`); process.exit(1); }
+if (!project.sourcePath) { console.error(`Project '${projectId}' has no sourcePath.`); process.exit(1); }
+
+if (sub === 'status') {
+  const status = await readProjectCodeIndexStatus(project, { hubRoot });
+  if (asJson) { console.log(JSON.stringify(status, null, 2)); }
+  else {
+    console.log(`Index: ${status.status}`);
+    if (status.status === 'ready') {
+      console.log(`  Files: ${status.fileCount}  Symbols: ${status.symbolCount}  Commands: ${status.commandCount}`);
+      if (status.branch) console.log(`  Branch: ${status.branch} (${status.headShort || '-'})`);
+      console.log(`  Updated: ${status.updatedAt}`);
+      console.log(`  Hash: ${status.contentHash}`);
+    }
+  }
+} else if (sub === 'refresh') {
+  const result = await refreshProjectCodeIndex(project, { hubRoot });
+  if (asJson) { console.log(JSON.stringify(result, null, 2)); }
+  else {
+    console.log(`Index: ${result.status}`);
+    console.log(`  Files: ${result.fileCount}  Symbols: ${result.symbolCount}  Commands: ${result.commandCount}`);
+    if (result.branch) console.log(`  Branch: ${result.branch} (${result.headShort || '-'})`);
+    console.log(`  Hash: ${result.contentHash}`);
+  }
+} else {
+  console.error(`Unknown index subcommand: ${sub}`);
+  process.exit(1);
+}
+INDEX_NODE
+}
+
 cmd_interop() {
   if command -v omc &>/dev/null; then
     omc interop
@@ -1468,6 +1524,7 @@ case "$1" in
   report)   shift; cmd_report "$@" ;;
   remove)   shift; cmd_remove "$@" ;;
   inbox)    shift; cmd_inbox "$@" ;;
+  index)    shift; cmd_index "$@" ;;
   outputs)  shift; cmd_outputs "$@" ;;
   pipeline) shift; cmd_pipeline "$@" ;;
   evolve-multi|multi-evolve) shift; cmd_evolve_multi "$@" ;;

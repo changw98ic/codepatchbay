@@ -303,6 +303,12 @@ export default function Dashboard() {
               <div className="card-stats">
                 <span>Inbox: {p.inbox || 0}</span>
                 <span>Outputs: {p.outputs || 0}</span>
+                {p.indexStatus && p.indexStatus.status === 'ready' && (
+                  <span className="index-status">Index: {p.indexStatus.fileCount} files · {p.indexStatus.symbolCount} symbols</span>
+                )}
+                {p.indexStatus && p.indexStatus.status === 'stale' && (
+                  <span className="index-status index-stale">Index: stale</span>
+                )}
               </div>
               {p.recentLog?.length > 0 && (
                 <div className="card-log">

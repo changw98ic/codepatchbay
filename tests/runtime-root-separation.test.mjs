@@ -13,17 +13,31 @@ import { registerProject, getProject, listProjects } from '../server/services/hu
 import { resolveWikiDir, resolveInboxDir, resolveOutputsDir, resolveArtifactPath } from '../server/services/artifact-locator.js';
 import { migrateToProjectRuntimeRoots } from '../bridges/migrate-runtime-root.mjs';
 
-// ── AC1: registerProject defaults projectRuntimeRoot ──
+// ── AC1: registerProject defaults projectRuntimeRoot to hubRoot-based ──
 
 describe('AC1: registerProject defaults projectRuntimeRoot', () => {
-  it('defaults to ~/.cpb/projects/<id> when no projectRuntimeRoot supplied', async () => {
+  it('defaults to hubRoot/projects/<id> when no projectRuntimeRoot supplied', async () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-'));
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-src-'));
     try {
       await registerProject(hubRoot, { name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
       const project = await getProject(hubRoot, 'my-proj');
-      const expected = path.join(os.homedir(), '.cpb', 'projects', 'my-proj');
+      const expected = projectRuntimeRoot(hubRoot, 'my-proj');
       assert.equal(project.projectRuntimeRoot, expected);
+    } finally {
+      await rm(hubRoot, { recursive: true, force: true });
+      await rm(srcDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes legacy home default to hub-based root on re-register', async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-norm-'));
+    const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-norm-src-'));
+    try {
+      // First register — gets hub-based root
+      await registerProject(hubRoot, { name: 'norm-proj', sourcePath: srcDir, id: 'norm-proj' });
+      const project = await getProject(hubRoot, 'norm-proj');
+      assert.equal(project.projectRuntimeRoot, projectRuntimeRoot(hubRoot, 'norm-proj'));
     } finally {
       await rm(hubRoot, { recursive: true, force: true });
       await rm(srcDir, { recursive: true, force: true });

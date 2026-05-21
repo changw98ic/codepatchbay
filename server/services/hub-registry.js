@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { defaultProjectRuntimeRoot } from "./runtime-root.js";
+import { defaultProjectRuntimeRoot, projectRuntimeRoot as computeHubProjectRuntimeRoot } from "./runtime-root.js";
 import {
   shouldUseRustRuntime,
   upsertRegistryProject,
@@ -180,9 +180,12 @@ export async function registerProject(hubRoot, input = {}) {
     const timestamp = nowIso();
     const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
 
+    const hubBasedRoot = computeHubProjectRuntimeRoot(hubRoot, id);
     const projectRuntimeRoot = input.projectRuntimeRoot
       ? path.resolve(input.projectRuntimeRoot)
-      : existing.projectRuntimeRoot || defaultProjectRuntimeRoot(id);
+      : (existing.projectRuntimeRoot && existing.projectRuntimeRoot !== defaultProjectRuntimeRoot(id))
+        ? existing.projectRuntimeRoot
+        : hubBasedRoot;
 
     const project = {
       ...existing,

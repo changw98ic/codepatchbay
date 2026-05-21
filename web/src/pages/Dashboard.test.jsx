@@ -931,3 +931,60 @@ describe('Dashboard active projects in queue status', () => {
     expect(screen.queryByText('active-mutating-task')).not.toBeInTheDocument();
   });
 });
+
+describe('Dashboard project card index-status display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('renders index file and symbol count when indexStatus is ready', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        {
+          id: 'idx-ready-proj',
+          sourcePath: '/tmp/idx-ready',
+          indexStatus: { status: 'ready', fileCount: 42, symbolCount: 17, commandCount: 3, contentHash: 'abc123', updatedAt: '2026-05-22T00:00:00Z' },
+        },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('idx-ready-proj')).toBeInTheDocument());
+    expect(screen.getByText(/Index: 42 files · 17 symbols/)).toBeInTheDocument();
+  });
+
+  it('renders stale index badge when indexStatus is stale', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        {
+          id: 'idx-stale-proj',
+          sourcePath: '/tmp/idx-stale',
+          indexStatus: { status: 'stale', fileCount: 10, symbolCount: 5, commandCount: 2, contentHash: null, updatedAt: '2026-05-20T00:00:00Z' },
+        },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('idx-stale-proj')).toBeInTheDocument());
+    expect(screen.getByText('Index: stale')).toBeInTheDocument();
+  });
+
+  it('does not render index status when indexStatus is missing', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'idx-none-proj', sourcePath: '/tmp/idx-none' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('idx-none-proj')).toBeInTheDocument());
+    expect(screen.queryByText(/Index:/)).not.toBeInTheDocument();
+  });
+});
