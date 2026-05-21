@@ -20,6 +20,7 @@ import {
   FAILURE_CODES,
 } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
+import { appendEvent } from "../server/services/runtime-events.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-terminal-immutable-"));
 const P = "immu-test";
@@ -258,5 +259,60 @@ describe("pipeline retry starts fresh from current phase", () => {
     const events = await readEvents(root, P, recovered.jobId);
     const recoveryEvent = events.find((e) => e.type === "recovery_created");
     assert.equal(recoveryEvent.fromPhase, "plan", "explicit fromPhase overrides inference");
+  });
+});
+
+describe("direct appendEvent terminal seal", () => {
+  it("rejects phase_started appended directly to a failed job and leaves log unchanged", async () => {
+    const job = await createJob(root, { project: P, task: "seal-test", ts: ts(600) });
+    await failJob(root, P, job.jobId, {
+      reason: "seal fail", code: FAILURE_CODES.FATAL, phase: "execute", ts: ts(601),
+    });
+
+    const eventsBefore = await readEvents(root, P, job.jobId);
+    const countBefore = eventsBefore.length;
+
+    await assert.rejects(
+      () => appendEvent(root, P, job.jobId, {
+        type: "phase_started", jobId: job.jobId, project: P, phase: "verify", ts: ts(602),
+      }),
+      /terminal job event log is sealed: failed/,
+    );
+
+    const eventsAfter = await readEvents(root, P, job.jobId);
+    assert.equal(eventsAfter.length, countBefore, "event log must not grow after rejected append");
+  });
+
+  it("rejects job_created appended directly to a completed job", async () => {
+    const job = await createJob(root, { project: P, task: "seal-complete", ts: ts(610) });
+    await completeJob(root, P, job.jobId, { ts: ts(611) });
+
+    const countBefore = (await readEvents(root, P, job.jobId)).length;
+
+    await assert.rejects(
+      () => appendEvent(root, P, job.jobId, {
+        type: "job_created", jobId: job.jobId, project: P, task: "duplicate", ts: ts(612),
+      }),
+      /terminal job event log is sealed: completed/,
+    );
+
+    const eventsAfter = await readEvents(root, P, job.jobId);
+    assert.equal(eventsAfter.length, countBefore);
+  });
+
+  it("allows phase_activity audit event on terminal job", async () => {
+    const job = await createJob(root, { project: P, task: "audit-allowed", ts: ts(620) });
+    await failJob(root, P, job.jobId, {
+      reason: "audit test", code: FAILURE_CODES.FATAL, ts: ts(621),
+    });
+
+    const countBefore = (await readEvents(root, P, job.jobId)).length;
+
+    await appendEvent(root, P, job.jobId, {
+      type: "phase_activity", jobId: job.jobId, project: P, message: "late audit", ts: ts(622),
+    });
+
+    const eventsAfter = await readEvents(root, P, job.jobId);
+    assert.equal(eventsAfter.length, countBefore + 1, "audit event should be appended");
   });
 });

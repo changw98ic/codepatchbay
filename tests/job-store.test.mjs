@@ -112,6 +112,11 @@ assert.equal(retriedState.task, "Fail direct assertion");
 assert.equal(retriedState.lineage.parentJobId, failed.jobId);
 assert.equal(retriedState.lineage.parentStatus, "failed");
 assert.equal(retriedState.lineage.parentFailureCode, FAILURE_CODES.RECOVERABLE);
+assert.equal(retriedState.recoveryOf, failed.jobId, "recovered job should have recoveryOf pointing to original");
+
+const retriedEvents = await import("../server/services/event-store.js").then((m) => m.readEvents(root, project, retriedState.jobId));
+const recoveryEvent = retriedEvents.find((e) => e.type === "recovery_created");
+assert.equal(recoveryEvent.recoveryOf, failed.jobId, "recovery_created event should have recoveryOf");
 
 const failedAfterRetry = await getJob(root, project, failed.jobId);
 assert.equal(failedAfterRetry.status, "failed");
@@ -210,3 +215,46 @@ assert.deepEqual(
 
 const missingEventsRoot = await mkdtemp(path.join(tmpdir(), "cpb-job-store-missing-"));
 assert.deepEqual(await listEventFiles(missingEventsRoot), []);
+
+// --- createJob rejects terminal job id reuse ---
+const terminalReuseProject = "reuse-test";
+const terminalJob = await createJob(root, {
+  project: terminalReuseProject,
+  task: "terminal job for reuse test",
+  ts: "2026-05-13T02:00:00.000Z",
+});
+await failJob(root, terminalReuseProject, terminalJob.jobId, {
+  reason: "reuse test",
+  code: FAILURE_CODES.FATAL,
+  phase: "execute",
+  ts: "2026-05-13T02:01:00.000Z",
+});
+
+const eventsBeforeReuse = await import("../server/services/event-store.js").then((m) => m.readEvents(root, terminalReuseProject, terminalJob.jobId));
+await assert.rejects(
+  () => createJob(root, {
+    project: terminalReuseProject,
+    task: "reuse old id",
+    jobId: terminalJob.jobId,
+    ts: "2026-05-13T02:03:00.000Z",
+  }),
+  /job is terminal: failed/,
+);
+const eventsAfterReuse = await import("../server/services/event-store.js").then((m) => m.readEvents(root, terminalReuseProject, terminalJob.jobId));
+assert.equal(eventsAfterReuse.length, eventsBeforeReuse.length, "failed job event log must not grow after rejected id reuse");
+
+// --- createJob rejects non-terminal duplicate job id ---
+const dupJob = await createJob(root, {
+  project: terminalReuseProject,
+  task: "running duplicate",
+  ts: "2026-05-13T02:04:00.000Z",
+});
+await assert.rejects(
+  () => createJob(root, {
+    project: terminalReuseProject,
+    task: "duplicate",
+    jobId: dupJob.jobId,
+    ts: "2026-05-13T02:05:00.000Z",
+  }),
+  /job already exists/,
+);

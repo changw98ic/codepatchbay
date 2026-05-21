@@ -1,4 +1,4 @@
-import { getJob, createJob, startPhase } from "./job-store.js";
+import { getJob, createJob, startPhase, createRecoveryJob } from "./job-store.js";
 import { appendEvent } from "./runtime-events.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
@@ -27,33 +27,8 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, tri
     throw new Error(`completed job does not need recovery: ${jobId}`);
   }
 
-  const now = ts || new Date().toISOString();
   const recoveryReason = reason || `recovery from ${original.status} job ${jobId}`;
-
-  const newJob = await createJob(cpbRoot, {
-    project,
-    task: original.task,
-    workflow: original.workflow,
-    ts: now,
-  });
-
-  await appendEvent(cpbRoot, project, newJob.jobId, {
-    type: "recovery_created",
-    jobId: newJob.jobId,
-    project,
-    lineage: {
-      parentJobId: jobId,
-      parentStatus: original.status,
-      parentFailureCode: original.failureCode || null,
-      parentFailurePhase: original.failurePhase || null,
-      parentBlockedReason: original.blockedReason || null,
-    },
-    recoveryReason,
-    trigger,
-    ts: now,
-  });
-
-  return newJob;
+  return createRecoveryJob(cpbRoot, project, original, { trigger, recoveryReason, ts });
 }
 
 export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual" } = {}) {
@@ -66,33 +41,8 @@ export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, tr
     throw new Error(`job is not recoverable: ${original.status}`);
   }
 
-  const now = ts || new Date().toISOString();
   const retryReason = `retry from ${original.status} job ${jobId}`;
-
-  const newJob = await createJob(cpbRoot, {
-    project,
-    task: original.task,
-    workflow: original.workflow,
-    ts: now,
-  });
-
-  await appendEvent(cpbRoot, project, newJob.jobId, {
-    type: "recovery_created",
-    jobId: newJob.jobId,
-    project,
-    lineage: {
-      parentJobId: jobId,
-      parentStatus: original.status,
-      parentFailureCode: original.failureCode || null,
-      parentFailurePhase: original.failurePhase || null,
-      parentBlockedReason: original.blockedReason || null,
-    },
-    recoveryReason: retryReason,
-    trigger,
-    ts: now,
-  });
-
-  return newJob;
+  return createRecoveryJob(cpbRoot, project, original, { fromPhase, trigger, recoveryReason: retryReason, ts });
 }
 
 export async function verifyTerminalImmutability(cpbRoot, project, jobId) {
@@ -121,6 +71,9 @@ export function getLineage(job) {
     parentJobId: job.lineage?.parentJobId || null,
     parentStatus: job.lineage?.parentStatus || null,
     parentFailureCode: job.lineage?.parentFailureCode || null,
+    parentFailurePhase: job.lineage?.parentFailurePhase || null,
+    parentBlockedReason: job.lineage?.parentBlockedReason || null,
     recoveryReason: job.lineage?.recoveryReason || null,
+    trigger: job.lineage?.trigger || null,
   };
 }

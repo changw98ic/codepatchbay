@@ -1326,11 +1326,25 @@ cmd_recover() {
     import path from 'node:path';
     const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
     const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
-    const { getJob } = await import(path.join(executorRoot, 'server/services/job-store.js'));
+    const { getJob, createRecoveryJob } = await import(path.join(executorRoot, 'server/services/job-store.js'));
     const { recoverOneJob } = await import(path.join(executorRoot, 'server/services/supervisor.js'));
+    const terminal = new Set(['completed','failed','blocked','cancelled']);
     try {
       const job = await getJob(cpbRoot, '${project}', '${jobId}');
       if (!job) { console.error('Job not found: ${jobId}'); process.exit(1); }
+      if (job.status === 'completed') {
+        console.error('Completed jobs cannot be recovered: ${jobId}');
+        process.exit(1);
+      }
+      if (terminal.has(job.status)) {
+        const fresh = await createRecoveryJob(cpbRoot, '${project}', job, {
+          trigger: 'recovery',
+          recoveryReason: 'fresh recovery from terminal ' + job.status + ' job ${jobId}',
+        });
+        const result = await recoverOneJob(cpbRoot, fresh, { executorRoot });
+        console.log(JSON.stringify({ recoveryJobId: fresh.jobId, result }, null, 2));
+        process.exit(result.exitCode);
+      }
       const result = await recoverOneJob(cpbRoot, job, { executorRoot });
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.exitCode);

@@ -160,6 +160,19 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
   // Validate event structure first (throws on invalid input)
   serializeEvent(event);
 
+  // Terminal seal: reject business-state mutations on terminal job event logs.
+  try {
+    const existing = await readEvents(cpbRoot, project, jobId, opts);
+    if (existing.length > 0) {
+      const state = materializeJob(existing);
+      if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
+        throw new Error(`terminal job event log is sealed: ${state.status}`);
+      }
+    }
+  } catch (err) {
+    if (err.message.startsWith("terminal job event log is sealed")) throw err;
+  }
+
   const writeBlocked = async (artifactName, reason) => {
     const blocked = makeSecretBlockedEvent(artifactName, reason);
     blocked.jobId = event.jobId || jobId;
@@ -254,6 +267,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "job_redirect_consumed", "phase_activity",
   "permission_denied",
   "external_repair_started", "external_repair_completed", "external_repair_failed",
+  "process_stop_skipped", "process_marked_orphan", "process_stop_requested", "process_stopped",
   "finalizer_result",
 ]);
 
@@ -292,6 +306,7 @@ export function materializeJob(events) {
     externalRepairAt: null,
     externalRepairError: null,
     lineage: null,
+    recoveryOf: null,
     permissionDenials: [],
     infraStatus: null,
     finalizer: null,
@@ -413,6 +428,7 @@ export function materializeJob(events) {
         terminal = false;
         break;
       case "recovery_created":
+        state.recoveryOf = event.recoveryOf ?? null;
         state.lineage = {
           parentJobId: event.lineage?.parentJobId ?? null,
           parentStatus: event.lineage?.parentStatus ?? null,
