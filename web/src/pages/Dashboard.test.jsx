@@ -666,6 +666,95 @@ describe('Dashboard task ledger display', () => {
     await waitFor(() => expect(screen.getByText('Loading projects...')).toBeInTheDocument());
     expect(screen.queryByText('Task Ledger')).not.toBeInTheDocument();
   });
+
+  it('renders deterministic updated time in ledger rows', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
+      ],
+      '/api/hub/task-ledger?limit=50': {
+        generatedAt: '2026-05-21T15:00:00.000Z',
+        summary: { total: 1, visible: 1, ready: 1, open: 0, failed: 0, archived: 0 },
+        tasks: [
+          {
+            id: 'github:example/repo#99',
+            title: 'Timestamp test task',
+            status: 'ready',
+            progress: { stage: 'ready', label: 'Ready', percent: 10 },
+            projectId: 'flow',
+            updatedAt: '2026-05-21T15:00:00.000Z',
+            createdAt: '2026-05-21T14:00:00.000Z',
+            source: { kind: 'github', label: 'GitHub issue #99' },
+            human: { summary: 'Test task', progress: 'Ready', source: 'GitHub', nextAction: 'Run it' },
+            agent: { objective: 'Test', status: { stage: 'ready' }, execution: {} },
+          },
+        ],
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByLabelText('Task ledger')).toBeInTheDocument());
+    const timeEl = screen.getByText('2026-05-21 15:00 UTC');
+    expect(timeEl).toBeInTheDocument();
+    expect(timeEl.closest('time')).toHaveAttribute('dateTime', '2026-05-21T15:00:00.000Z');
+  });
+
+  it('renders Execution Detail section when agent.execution has fields', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
+      ],
+      '/api/hub/task-ledger?limit=50': {
+        generatedAt: '2026-05-21T15:00:00.000Z',
+        summary: { total: 1, visible: 1, ready: 1, open: 0, failed: 0, archived: 0 },
+        tasks: [
+          {
+            id: 'github:example/repo#88',
+            title: 'Execution detail test task',
+            status: 'running',
+            progress: { stage: 'running', label: 'Running', percent: 50 },
+            projectId: 'flow',
+            source: { kind: 'github', label: 'GitHub issue #88' },
+            human: { summary: 'Test', progress: 'Running', source: 'GitHub', nextAction: 'Wait' },
+            agent: {
+              objective: 'Test execution detail',
+              status: { stage: 'running' },
+              execution: {
+                workerId: 'worker-abc',
+                jobId: 'job-123',
+                dispatchId: 'dispatch-456',
+                executor: 'claude-code',
+                releaseSnapshot: { version: '1.0.0' },
+                indexSnapshot: { files: 42 },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Execution Detail')).toBeInTheDocument());
+    expect(screen.getByText('Worker')).toBeInTheDocument();
+    expect(screen.getByText('worker-abc')).toBeInTheDocument();
+    expect(screen.getByText('Job')).toBeInTheDocument();
+    expect(screen.getByText('job-123')).toBeInTheDocument();
+    expect(screen.getByText('Dispatch')).toBeInTheDocument();
+    expect(screen.getByText('dispatch-456')).toBeInTheDocument();
+    expect(screen.getByText('Executor')).toBeInTheDocument();
+    expect(screen.getByText('claude-code')).toBeInTheDocument();
+    // Snapshot fields rendered as visible key/value rows
+    expect(screen.getByText('Release version')).toBeInTheDocument();
+    expect(screen.getByText('1.0.0')).toBeInTheDocument();
+    expect(screen.getByText('Index files')).toBeInTheDocument();
+    expect(screen.getByText('42')).toBeInTheDocument();
+  });
 });
 
 describe('Dashboard ACP lifecycle display', () => {
