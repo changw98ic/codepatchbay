@@ -58,7 +58,7 @@ function extractJobId(output) {
 
 function finalizerMetadata(result, mode) {
   if (!result) return null;
-  return {
+  const metadata = {
     ok: Boolean(result.ok),
     status: result.status || null,
     code: result.code || null,
@@ -66,10 +66,16 @@ function finalizerMetadata(result, mode) {
     closed: result.closed ?? null,
     mode,
   };
+  if ("jobId" in result) metadata.jobId = result.jobId ?? null;
+  if ("inspectedStatus" in result) metadata.inspectedStatus = result.inspectedStatus ?? null;
+  if (result.stateSource) metadata.stateSource = result.stateSource;
+  if (result.acceptableSkip) metadata.acceptableSkip = true;
+  return metadata;
 }
 
 function finalizerShouldFailQueue(result) {
-  return result && !result.ok && result.status !== "skipped";
+  if (!result || result.ok || result.acceptableSkip) return false;
+  return !(result.status === "skipped" && result.code === "NO_CHANGES");
 }
 
 async function defaultIssueCloser({ repo, number, jobId, commit }) {
@@ -478,29 +484,40 @@ export class ProjectWorker {
   }
 
   async resolveCompletedJob(projectId, result) {
-    if (result.job) return result.job;
+    if (result.job) return { job: result.job, stateSource: "pipeline-result" };
     const jobId = result.jobId || extractJobId(result.stdout) || extractJobId(result.stderr);
     if (!jobId) return null;
-    return await getJob(this.cpbRoot, projectId, jobId);
+    const job = await getJob(this.cpbRoot, projectId, jobId);
+    return job?.jobId ? { job, stateSource: "job-store" } : null;
   }
 
   async finalizeEntry({ entry, sourcePath, projectId, result }) {
-    const job = await this.resolveCompletedJob(projectId, result);
+    const resolved = await this.resolveCompletedJob(projectId, result);
+    const job = resolved?.job || null;
     if (!job) {
       return {
         ok: false,
-        status: "rejected",
+        status: "skipped",
         code: "JOB_NOT_FOUND",
+        jobId: result.jobId || extractJobId(result.stdout) || extractJobId(result.stderr) || null,
+        inspectedStatus: null,
+        stateSource: "missing",
       };
     }
 
-    return await this._finalizerFn({
+    const finalizer = await this._finalizerFn({
       entry,
       job,
       sourcePath,
       mode: this.autoFinalizerMode,
       issueCloser: this._issueCloser,
     });
+    return {
+      ...finalizer,
+      jobId: finalizer?.jobId ?? job.jobId ?? null,
+      inspectedStatus: finalizer?.inspectedStatus ?? job.status ?? null,
+      stateSource: finalizer?.stateSource ?? resolved.stateSource,
+    };
   }
 
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
