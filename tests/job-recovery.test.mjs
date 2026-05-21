@@ -86,6 +86,7 @@ assert.equal(recoveryEvent.lineage.parentJobId, failedJob.jobId);
 assert.equal(recoveryEvent.lineage.parentStatus, "failed");
 assert.equal(recoveryEvent.lineage.parentFailureCode, FAILURE_CODES.RECOVERABLE);
 assert.equal(recoveryEvent.lineage.parentFailurePhase, "execute");
+assert.equal(recoveryEvent.recoveryOf, failedJob.jobId);
 assert.equal(recoveryEvent.recoveryReason, "automated recovery");
 
 // --- retryAsNewJob ---
@@ -175,6 +176,9 @@ const lineage = getLineage(jobWithLineage);
 assert.equal(lineage.parentJobId, failedJob.jobId);
 assert.equal(lineage.parentStatus, "failed");
 assert.equal(lineage.parentFailureCode, FAILURE_CODES.RECOVERABLE);
+assert.equal(lineage.parentFailurePhase, "execute");
+assert.equal(lineage.parentBlockedReason, "execute crashed");
+assert.equal(lineage.trigger, "recovery");
 
 const noLineage = getLineage(null);
 assert.equal(noLineage, null);

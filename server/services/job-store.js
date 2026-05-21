@@ -60,6 +60,18 @@ export async function createJob(
   { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null, dataRoot }
 ) {
   const jobId = providedJobId || makeJobId(ts);
+
+  // Guard: reject creation with an existing job id
+  if (providedJobId) {
+    const existing = await getJob(cpbRoot, project, providedJobId, { dataRoot });
+    if (existing?.jobId) {
+      if (TERMINAL_STATUSES.has(existing.status)) {
+        throw new Error(`job is terminal: ${existing.status}`);
+      }
+      throw new Error(`job already exists: ${providedJobId}`);
+    }
+  }
+
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_created",
     jobId,
@@ -180,6 +192,34 @@ function terminalJobLineage(job) {
   };
 }
 
+export async function createRecoveryJob(cpbRoot, project, originalJob, { fromPhase, trigger, recoveryReason, ts, dataRoot } = {}) {
+  const lineage = terminalJobLineage(originalJob);
+  const now = ts || nowIso();
+
+  const newJob = await createJob(cpbRoot, {
+    project,
+    task: originalJob.task,
+    workflow: originalJob.workflow,
+    ts: now,
+    executor: originalJob.executor ?? null,
+    dataRoot,
+  });
+
+  await appendEvent(cpbRoot, project, newJob.jobId, {
+    type: "recovery_created",
+    jobId: newJob.jobId,
+    project,
+    recoveryOf: originalJob.jobId,
+    lineage,
+    recoveryReason: recoveryReason || `fresh recovery from ${originalJob.status} job ${originalJob.jobId}`,
+    trigger: trigger || "manual",
+    fromPhase: fromPhase || null,
+    ts: now,
+  }, { dataRoot });
+
+  return getJobAndUpdateIndex(cpbRoot, project, newJob.jobId, { dataRoot });
+}
+
 export async function retryJob(
   cpbRoot,
   project,
@@ -223,29 +263,13 @@ export async function retryJob(
     throw new Error(`invalid retry phase: ${retryPhase ?? "unknown"}`);
   }
 
-  const recovered = await createJob(cpbRoot, {
-    project,
-    task: job.task,
-    workflow: job.workflow,
+  return createRecoveryJob(cpbRoot, project, job, {
+    fromPhase: retryPhase,
+    trigger,
+    recoveryReason: `fresh recovery from ${job.status} job ${jobId}`,
     ts,
-    executor: job.executor ?? null,
     dataRoot,
   });
-
-  await appendEvent(cpbRoot, project, recovered.jobId, {
-    type: "recovery_created",
-    jobId: recovered.jobId,
-    project,
-    lineage: terminalJobLineage(job),
-    recoveryReason: `fresh recovery from ${job.status} job ${jobId}`,
-    trigger,
-    fromPhase: retryPhase,
-    retryCount,
-    maxRetries,
-    ts,
-  }, { dataRoot });
-
-  return getJobAndUpdateIndex(cpbRoot, project, recovered.jobId, { dataRoot });
 }
 
 export async function budgetExceeded(
