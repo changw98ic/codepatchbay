@@ -3,6 +3,18 @@ import { Link } from 'react-router-dom';
 import { useWebSocket } from '../hooks/useWebSocket';
 import PipelineStatus from '../components/PipelineStatus';
 
+function formatTimestamp(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const s = d.toISOString();
+    return s.slice(0, 10) + ' ' + s.slice(11, 16) + ' UTC';
+  } catch {
+    return null;
+  }
+}
+
 export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [hubStatus, setHubStatus] = useState(null);
@@ -399,6 +411,13 @@ export default function Dashboard() {
                       </span>
                     </span>
                     <span className="ledger-source">{source.label || source.kind || 'source'}</span>
+                    <span className="ledger-updated">
+                      {formatTimestamp(task.updatedAt || task.createdAt) && (
+                        <time dateTime={task.updatedAt || task.createdAt}>
+                          {formatTimestamp(task.updatedAt || task.createdAt)}
+                        </time>
+                      )}
+                    </span>
                   </button>
                 );
               })}
@@ -438,6 +457,55 @@ export default function Dashboard() {
                     <h4>Agent View</h4>
                     <pre>{JSON.stringify(selectedTask.agent, null, 2)}</pre>
                   </section>
+                  {selectedTask.agent?.execution && (
+                    <section className="task-view execution-detail" aria-label="Execution detail">
+                      <h4>Execution Detail</h4>
+                      <dl>
+                        {selectedTask.agent.execution.workerId && (
+                          <>
+                            <dt>Worker</dt>
+                            <dd>{selectedTask.agent.execution.workerId}</dd>
+                          </>
+                        )}
+                        {selectedTask.agent.execution.jobId && (
+                          <>
+                            <dt>Job</dt>
+                            <dd>{selectedTask.agent.execution.jobId}</dd>
+                          </>
+                        )}
+                        {selectedTask.agent.execution.dispatchId && (
+                          <>
+                            <dt>Dispatch</dt>
+                            <dd>{selectedTask.agent.execution.dispatchId}</dd>
+                          </>
+                        )}
+                        {selectedTask.agent.execution.queueEntryId && (
+                          <>
+                            <dt>Queue Entry</dt>
+                            <dd>{selectedTask.agent.execution.queueEntryId}</dd>
+                          </>
+                        )}
+                        {selectedTask.agent.execution.executor && (
+                          <>
+                            <dt>Executor</dt>
+                            <dd>{typeof selectedTask.agent.execution.executor === 'string' ? selectedTask.agent.execution.executor : JSON.stringify(selectedTask.agent.execution.executor)}</dd>
+                          </>
+                        )}
+                        {selectedTask.agent.execution.releaseSnapshot && Object.entries(selectedTask.agent.execution.releaseSnapshot).map(([key, value]) => (
+                          <React.Fragment key={`release-${key}`}>
+                            <dt>{`Release ${key}`}</dt>
+                            <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
+                          </React.Fragment>
+                        ))}
+                        {selectedTask.agent.execution.indexSnapshot && Object.entries(selectedTask.agent.execution.indexSnapshot).map(([key, value]) => (
+                          <React.Fragment key={`index-${key}`}>
+                            <dt>{`Index ${key}`}</dt>
+                            <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
+                          </React.Fragment>
+                        ))}
+                      </dl>
+                    </section>
+                  )}
                 </div>
                 {selectedTask.human?.description && (
                   <details className="task-description">

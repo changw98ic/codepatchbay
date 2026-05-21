@@ -223,10 +223,14 @@ function issueTask(issue, { queueEntry, jobs, dispatches }) {
   const source = issueSource(issue);
   const title = issue.title || queueTitle(queueEntry) || `Issue #${issue.number}`;
   const body = issue.body || "";
+  const jobsForEntry = matchingJobs(queueEntry, jobs);
+  const dispatchesForEntry = matchingDispatches(queueEntry, dispatches);
+  const latestJob = jobsForEntry[0] || null;
+  const latestDispatch = dispatchesForEntry[0] || null;
   const evidence = evidenceFor({
     queueEntry,
-    jobs: matchingJobs(queueEntry, jobs),
-    dispatches: matchingDispatches(queueEntry, dispatches),
+    jobs: jobsForEntry,
+    dispatches: dispatchesForEntry,
   });
 
   return {
@@ -268,6 +272,12 @@ function issueTask(issue, { queueEntry, jobs, dispatches }) {
         executionBoundary: queueEntry?.executionBoundary || null,
         supersedesQueueEntryId: queueEntry?.metadata?.supersedesQueueEntryId || null,
         supersededByIssues: queueEntry?.metadata?.supersededByIssues || [],
+        workerId: queueEntry?.workerId || latestDispatch?.workerId || null,
+        jobId: latestJob?.jobId || null,
+        dispatchId: latestDispatch?.dispatchId || null,
+        executor: latestJob?.executor || null,
+        releaseSnapshot: queueEntry?.metadata?.releaseSnapshot || null,
+        indexSnapshot: queueEntry?.metadata?.indexSnapshot || null,
       },
       evidence,
     },
@@ -278,10 +288,14 @@ function queueTask(entry, { jobs, dispatches }) {
   const progress = progressFor({ queueEntry: entry });
   const source = queueSource(entry);
   const title = queueTitle(entry);
+  const jobsForEntry = matchingJobs(entry, jobs);
+  const dispatchesForEntry = matchingDispatches(entry, dispatches);
+  const latestJob = jobsForEntry[0] || null;
+  const latestDispatch = dispatchesForEntry[0] || null;
   const evidence = evidenceFor({
     queueEntry: entry,
-    jobs: matchingJobs(entry, jobs),
-    dispatches: matchingDispatches(entry, dispatches),
+    jobs: jobsForEntry,
+    dispatches: dispatchesForEntry,
   });
 
   return {
@@ -317,6 +331,12 @@ function queueTask(entry, { jobs, dispatches }) {
         executionBoundary: entry.executionBoundary || null,
         supersedesQueueEntryId: entry.metadata?.supersedesQueueEntryId || null,
         supersededByIssues: entry.metadata?.supersededByIssues || [],
+        workerId: entry.workerId || latestDispatch?.workerId || null,
+        jobId: latestJob?.jobId || null,
+        dispatchId: latestDispatch?.dispatchId || null,
+        executor: latestJob?.executor || null,
+        releaseSnapshot: entry.metadata?.releaseSnapshot || null,
+        indexSnapshot: entry.metadata?.indexSnapshot || null,
       },
       evidence,
     },
