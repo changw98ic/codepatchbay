@@ -80,7 +80,11 @@ assert.ok(dec.includes("Use test fixtures"));
 const noDec = await readProjectDecisions(root, "nonexistent");
 assert.equal(noDec, null);
 
-// --- buildLocator without job ---
+// --- buildLocator without job (clear any inherited CPB_PROJECT_PATH_OVERRIDE) ---
+const hadOverride = "CPB_PROJECT_PATH_OVERRIDE" in process.env;
+const origOverride = process.env.CPB_PROJECT_PATH_OVERRIDE;
+delete process.env.CPB_PROJECT_PATH_OVERRIDE;
+
 const locator = await buildLocator(root, project, null, { phase: "plan" });
 assert.equal(locator.cpbRoot, path.resolve(root));
 assert.equal(locator.project, project);
@@ -92,16 +96,10 @@ assert.equal(locator.outputsDir, outputsDir(root, project));
 assert.equal(locator.sourcePath, "/tmp/test-project");
 
 // --- buildLocator with CPB_PROJECT_PATH_OVERRIDE ---
-const hadOverride = "CPB_PROJECT_PATH_OVERRIDE" in process.env;
-const origOverride = process.env.CPB_PROJECT_PATH_OVERRIDE;
 process.env.CPB_PROJECT_PATH_OVERRIDE = "/override/path";
 const overrideLocator = await buildLocator(root, project, null);
 assert.equal(overrideLocator.sourcePath, "/override/path");
-if (hadOverride) {
-  process.env.CPB_PROJECT_PATH_OVERRIDE = origOverride;
-} else {
-  delete process.env.CPB_PROJECT_PATH_OVERRIDE;
-}
+delete process.env.CPB_PROJECT_PATH_OVERRIDE;
 
 // --- buildLocator with job ---
 const job = await createJob(root, {
@@ -218,5 +216,12 @@ assert.equal(planPhaseLoc.bridgeScript, "planner.sh");
 const noJobPhaseLoc = await buildPhaseLocator(root, project, null, "plan");
 assert.equal(noJobPhaseLoc.jobId, null);
 assert.equal(noJobPhaseLoc.prevPhase, null);
+
+// Restore CPB_PROJECT_PATH_OVERRIDE
+if (hadOverride) {
+  process.env.CPB_PROJECT_PATH_OVERRIDE = origOverride;
+} else {
+  delete process.env.CPB_PROJECT_PATH_OVERRIDE;
+}
 
 console.log("phase-locator: all tests passed");

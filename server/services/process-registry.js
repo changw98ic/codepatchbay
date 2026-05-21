@@ -2,6 +2,8 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
+export const PROCESS_REGISTRY_FORMAT_VERSION = 1;
+
 function validateId(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value)) {
     throw new Error(`invalid ${label}: ${value}`);
@@ -37,7 +39,7 @@ async function writeJson(file, data) {
   await rename(tmp, file);
 }
 
-export async function registerProcess(cpbRoot, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt } = {}) {
+export async function registerProcess(cpbRoot, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot } = {}) {
   validateId(jobId, "jobId");
   const file = processFile(cpbRoot, jobId);
   const entry = {
@@ -53,6 +55,8 @@ export async function registerProcess(cpbRoot, { jobId, project, phase, runnerPi
     status: "running",
     exitCode: null,
     command: command || null,
+    cwd: cwd || null,
+    executorRoot: executorRoot || null,
   };
   await writeJson(file, entry);
   return entry;
@@ -104,7 +108,11 @@ export async function listProcesses(cpbRoot) {
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
     const entry = await readJson(path.join(dir, name));
-    if (entry) results.push(entry);
+    if (entry) {
+      entry.liveness = classifyLiveness(entry);
+      entry.ageMs = computeAge(entry);
+      results.push(entry);
+    }
   }
   return results;
 }
@@ -116,6 +124,13 @@ function isProcessAlive(pid) {
   } catch {
     return false;
   }
+}
+
+export function computeAge(entry) {
+  if (!entry?.startedAt) return null;
+  const started = new Date(entry.startedAt).getTime();
+  if (Number.isNaN(started)) return null;
+  return Date.now() - started;
 }
 
 export function classifyLiveness(entry, { staleThresholdMs = 180_000 } = {}) {
@@ -290,6 +305,24 @@ export async function inspectProcess(cpbRoot, jobId) {
 
   if (!entry && !job) return null;
 
+  let policyState = null;
+  if (job) {
+    try {
+      const { getPhasePolicy } = await import("./permission-matrix.js");
+      const role = entry?.phase ? { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" }[entry.phase] : null;
+      if (role) {
+        const sp = job.worktree || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
+        let profileConfig = null;
+        try {
+          const { loadProfile } = await import("./profile-loader.js");
+          const profile = await loadProfile(cpbRoot, role);
+          profileConfig = profile.permissions || null;
+        } catch {}
+        policyState = getPhasePolicy(role, cpbRoot, project, { sourcePath: sp, profileConfig });
+      }
+    } catch {}
+  }
+
   return {
     process: entry,
     job,
@@ -299,5 +332,6 @@ export async function inspectProcess(cpbRoot, jobId) {
     lineage,
     ancestors,
     children,
+    policy: policyState,
   };
 }

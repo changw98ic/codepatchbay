@@ -1,7 +1,7 @@
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-const REQUIRED_EXECUTOR_FILES = [
+export const REQUIRED_EXECUTOR_FILES = [
   "bridges/common.sh",
   "bridges/run-pipeline.mjs",
   "bridges/project-worker.mjs",
@@ -55,12 +55,47 @@ export async function readExecutorPackage(executorRoot) {
   }
 }
 
-export async function executorMetadata(executorRoot) {
+export async function executorMetadata(executorRoot, { codeVersion, env = process.env } = {}) {
   const root = await assertExecutorRoot(executorRoot);
   const pkg = await readExecutorPackage(root);
+
+  let releaseId = null;
+  let stateFormatVersions = null;
+  try {
+    const manifestPath = path.join(root, "release", "manifest.json");
+    const raw = await readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(raw);
+    if (typeof manifest.releaseId === "string" && manifest.releaseId.length > 0) {
+      releaseId = manifest.releaseId;
+    }
+    if (manifest.stateFormatVersions && typeof manifest.stateFormatVersions === "object") {
+      stateFormatVersions = manifest.stateFormatVersions;
+    }
+  } catch {}
+
+  if (!stateFormatVersions) {
+    try {
+      const { QUEUE_VERSION } = await import("./hub-queue.js");
+      const { JOBS_EVENTS_FORMAT_VERSION } = await import("./event-store.js");
+      const { LEASE_FORMAT_VERSION } = await import("./lease-manager.js");
+      const { PROCESS_REGISTRY_FORMAT_VERSION } = await import("./process-registry.js");
+      const { RELEASE_METADATA_FORMAT_VERSION } = await import("./release-store.js");
+      stateFormatVersions = {
+        queue: QUEUE_VERSION,
+        jobsEvents: JOBS_EVENTS_FORMAT_VERSION,
+        leases: LEASE_FORMAT_VERSION,
+        processRegistry: PROCESS_REGISTRY_FORMAT_VERSION,
+        releaseMetadata: RELEASE_METADATA_FORMAT_VERSION,
+      };
+    } catch {}
+  }
+
   return {
     root,
     packageName: pkg.name,
     version: pkg.version,
+    releaseId,
+    codeVersion: codeVersion || env.CPB_VERSION || pkg.version || null,
+    stateFormatVersions,
   };
 }

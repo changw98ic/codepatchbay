@@ -15,6 +15,7 @@ import path from "node:path";
 import {
   buildPlannerPrompt,
   buildExecutorPrompt,
+  buildExecutorJobPrompt,
   buildVerifierPrompt,
   buildVerifierJobPrompt,
   buildRepairerPrompt,
@@ -208,7 +209,7 @@ async function runAcp(agent, prompt, cwd, executorRoot) {
 
 function parseVerdictFromContent(content) {
   const envelope = parseVerdictEnvelope(content);
-  const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_ERROR" };
+  const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
   return mapped[envelope.status] || "UNKNOWN";
 }
 
@@ -268,26 +269,33 @@ async function handlePlan(args) {
 async function handleExecute(args) {
   const { executorRoot, cpbRoot, project, options } = args;
   const planId = options.get("--plan-id") || "";
-  if (!planId) throw new Error("--plan-id is required for execute phase");
+  const jobId = options.get("--job-id") || "";
+  if (!planId && !jobId) throw new Error("--plan-id or --job-id is required for execute phase");
 
   const verdictFile = options.get("--verdict-file") || "";
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-
-  // Verify plan exists
-  const planFile = planFilePath(cpbRoot, project, planId);
-  try { await readFile(planFile, "utf8"); } catch {
-    console.error(`Plan file not found: ${planFile}`);
-    return 1;
-  }
 
   const outputsDir = path.join(wikiDir, "outputs");
   const deliverableId = await allocateArtifactId(outputsDir, "deliverable");
   const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
 
-  console.log(`Executing [${project}] plan-${planId}...`);
+  let prompt;
+  if (jobId && !planId) {
+    // Locator-first path: build prompt from job/event state, not artifact content
+    console.log(`Executing [${project}] job-${jobId} (locator-first)...`);
+    prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile);
+  } else {
+    // Backward-compatible artifact-based path
+    const planFile = planFilePath(cpbRoot, project, planId);
+    try { await readFile(planFile, "utf8"); } catch {
+      console.error(`Plan file not found: ${planFile}`);
+      return 1;
+    }
+    console.log(`Executing [${project}] plan-${planId}...`);
+    prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
+  }
   console.log(`Output: ${deliverableFile}`);
 
-  const prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
   const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {

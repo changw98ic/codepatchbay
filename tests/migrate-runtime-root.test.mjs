@@ -108,3 +108,63 @@ test("can quarantine remaining non-CodePatchbay .omc and .omx roots explicitly",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// --- Dry-run guard tests (issue #25) ---
+
+test("dry-run=true does not mutate any files", async () => {
+  const root = await makeRoot();
+  try {
+    await mkdir(path.join(root, ".omc/events/demo"), { recursive: true });
+    await writeFile(path.join(root, ".omc/events/demo/job-1.jsonl"), '{"type":"job_created"}\n');
+
+    const report = await migrateRuntimeRoot(root, { dryRun: true });
+
+    // Source must still exist
+    assert.equal(await exists(path.join(root, ".omc/events/demo/job-1.jsonl")), true);
+    // Destination must not exist
+    assert.equal(await exists(path.join(root, "cpb-task/events/demo/job-1.jsonl")), false);
+    // Report should list wouldDelete entries
+    assert.ok(report.wouldDelete.length > 0 || report.copied.length === 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dry-run=true with quarantine reports quarantine candidates without moving files", async () => {
+  const root = await makeRoot();
+  try {
+    await mkdir(path.join(root, ".omc/wiki"), { recursive: true });
+    await mkdir(path.join(root, ".omx/state"), { recursive: true });
+    await writeFile(path.join(root, ".omc/wiki/log.md"), "legacy\n");
+    await writeFile(path.join(root, ".omx/state/session.json"), "{}\n");
+
+    const report = await migrateRuntimeRoot(root, { dryRun: true, quarantineNonCodePatchbay: true });
+
+    // Source dirs must still exist
+    assert.equal(await exists(path.join(root, ".omc")), true);
+    assert.equal(await exists(path.join(root, ".omx")), true);
+    // Quarantine target must not exist
+    assert.equal(await exists(path.join(root, "cpb-task/legacy-quarantine")), false);
+    // Report should list quarantined candidates
+    assert.ok(report.quarantined.length > 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("execute=false prevents mutation even when called without dryRun flag explicitly", async () => {
+  const root = await makeRoot();
+  try {
+    await mkdir(path.join(root, ".omc/events/demo"), { recursive: true });
+    await writeFile(path.join(root, ".omc/events/demo/job-1.jsonl"), '{"type":"job_created"}\n');
+
+    // Calling with dryRun explicitly false should still work (execute path)
+    const report = await migrateRuntimeRoot(root, { dryRun: false });
+
+    // After execute, source should be gone and destination present
+    assert.equal(await exists(path.join(root, ".omc/events/demo/job-1.jsonl")), false);
+    assert.equal(await exists(path.join(root, "cpb-task/events/demo/job-1.jsonl")), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

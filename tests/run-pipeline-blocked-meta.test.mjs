@@ -27,13 +27,16 @@ test("blocked workflow writes execution_boundary with sourcePath and cwd", async
   const canonical = await realpath(sourcePath);
   const project = "blocked-meta-test";
 
+  const blockedEnv = { ...process.env, CPB_ROOT: cpbRoot };
+  delete blockedEnv.CPB_SESSION_ID;
+  delete blockedEnv.CPB_WORKER_ID;
   const { stdout, stderr } = await execFileAsync(process.execPath, [
     "bridges/run-pipeline.mjs",
     "--project", project,
     "--task", "test blocked metadata",
     "--source-path", sourcePath,
     "--workflow", "blocked",
-  ], { cwd: process.cwd(), env: { ...process.env, CPB_ROOT: cpbRoot } });
+  ], { cwd: process.cwd(), env: blockedEnv });
 
   const eventFile = await findEventFile(cpbRoot, project);
   assert.ok(eventFile, "event file should exist after blocked workflow");

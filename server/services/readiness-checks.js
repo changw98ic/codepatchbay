@@ -19,6 +19,13 @@ import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
 import { resolveRuntimeBin, shouldUseRustRuntime } from "./runtime-cli.js";
 import { sanitizeProviderReason } from "../../bridges/acp-pool.mjs";
+import {
+  resolveReleaseStoreRoot,
+  listReleases,
+  inspectCurrentRelease,
+  supportedStateFormatVersions,
+} from "./release-store.js";
+import { executorMetadata } from "./executor-root.js";
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -444,6 +451,247 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     summary,
     checks: results,
   };
+}
+
+// --- Release doctor checks ---
+
+function okR(id, message, opts) {
+  return { id, status: "ok", message, ...opts };
+}
+
+function warnR(id, message, { guidance, ...rest } = {}) {
+  return { id, status: "warn", message, guidance, ...rest };
+}
+
+function failR(id, message, { guidance, ...rest } = {}) {
+  return { id, status: "fail", message, guidance, ...rest };
+}
+
+async function checkReleaseCurrentMetadata({ env }) {
+  const selection = await inspectCurrentRelease({ env });
+  if (!selection) {
+    return warnR("release.current_metadata", "No release selected", {
+      guidance: "Run: cpb release use <release-id> to select a release.",
+    });
+  }
+  if (!selection.metadata) {
+    return warnR("release.current_metadata", `Release '${selection.selector?.releaseId || "unknown"}' selected but metadata is unreadable`, {
+      guidance: "Release directory may be corrupt. Reinstall with: cpb release install",
+    });
+  }
+  const m = selection.metadata;
+  const missing = [];
+  if (!m.releaseId) missing.push("releaseId");
+  if (!m.installedPath) missing.push("installedPath");
+  if (!m.codeVersion) missing.push("codeVersion");
+  if (!m.stateFormatVersions) missing.push("stateFormatVersions");
+  if (missing.length > 0) {
+    return warnR("release.current_metadata", `Current release metadata missing fields: ${missing.join(", ")}`, {
+      guidance: "Release manifest may be incomplete. Reinstall with: cpb release install",
+      details: { releaseId: m.releaseId, missing },
+    });
+  }
+
+  const storeRoot = resolveReleaseStoreRoot({ env });
+  const resolvedInstalled = path.resolve(m.installedPath);
+  if (!resolvedInstalled.startsWith(storeRoot + path.sep) && resolvedInstalled !== storeRoot) {
+    return failR("release.current_metadata", `Current release '${m.releaseId}' is outside the managed release root`, {
+      guidance: "Use releases installed under the managed root. Reinstall with: cpb release install",
+      details: { installedPath: m.installedPath, releaseStoreRoot: storeRoot },
+    });
+  }
+
+  return okR("release.current_metadata", `Current release: ${m.releaseId} v${m.codeVersion}`, {
+    details: { releaseId: m.releaseId, codeVersion: m.codeVersion },
+  });
+}
+
+async function checkReleaseExecutorRoot({ env }) {
+  const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
+  if (!executorRoot) {
+    return warnR("release.executor_root", "CPB_EXECUTOR_ROOT not set", {
+      guidance: "Set CPB_EXECUTOR_ROOT or run from the CPB install directory.",
+    });
+  }
+  let meta;
+  try {
+    meta = await executorMetadata(executorRoot);
+  } catch (err) {
+    return failR("release.executor_root", `Executor root invalid: ${err.message}`, {
+      guidance: "Ensure CPB_EXECUTOR_ROOT points to a valid CPB installation with required files.",
+    });
+  }
+  const selection = await inspectCurrentRelease({ env });
+  if (selection?.metadata?.releaseId && meta.releaseId) {
+    if (selection.metadata.releaseId !== meta.releaseId) {
+      return warnR("release.executor_root", `Executor root release '${meta.releaseId}' differs from selected release '${selection.metadata.releaseId}'`, {
+        guidance: "Run: cpb release use <release-id> to align, or restart with the correct CPB_EXECUTOR_ROOT.",
+        details: { executorReleaseId: meta.releaseId, selectedReleaseId: selection.metadata.releaseId },
+      });
+    }
+  }
+  return okR("release.executor_root", `Executor root: ${executorRoot} (release: ${meta.releaseId || "dev"})`);
+}
+
+async function checkReleaseRuntimeRoot({ env }) {
+  const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
+  if (!executorRoot) {
+    return warnR("release.runtime_root", "Cannot check runtime root without CPB_EXECUTOR_ROOT", {
+      guidance: "Set CPB_EXECUTOR_ROOT or run from the CPB install directory.",
+    });
+  }
+  try {
+    const { runtimeDataRoot } = await import("./runtime-root.js");
+    const rtRoot = runtimeDataRoot(executorRoot);
+    await readdir(rtRoot);
+    return okR("release.runtime_root", `Runtime root readable: ${rtRoot}`);
+  } catch {
+    return warnR("release.runtime_root", "Runtime root not yet initialized", {
+      guidance: "Runtime data will be created on first use. No action needed if this is a fresh install.",
+    });
+  }
+}
+
+async function checkReleaseStateFormat({ env }) {
+  const selection = await inspectCurrentRelease({ env });
+  if (!selection?.metadata?.stateFormatVersions) {
+    return warnR("release.state_format", "No release selected or metadata missing stateFormatVersions", {
+      guidance: "Select a release with: cpb release use <release-id>",
+    });
+  }
+  const supported = await supportedStateFormatVersions();
+  const mismatches = [];
+  for (const [key, version] of Object.entries(selection.metadata.stateFormatVersions)) {
+    if (!supported[key]?.includes(version)) {
+      mismatches.push({ key, version, supported: supported[key] || [] });
+    }
+  }
+  if (mismatches.length > 0) {
+    return failR("release.state_format", `State format mismatch: ${mismatches.map(m => `${m.key}=${m.version}`).join(", ")}`, {
+      guidance: "Upgrade the release or migrate runtime data to match the current state format.",
+      details: mismatches,
+    });
+  }
+  return okR("release.state_format", "State format versions compatible");
+}
+
+async function checkReleaseLauncherHealth({ env }) {
+  const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
+  const binLink = path.join(cpbHome, "bin", "cpb");
+  let target;
+  try {
+    const { realpath } = await import("node:fs/promises");
+    target = await realpath(binLink);
+  } catch {
+    return warnR("release.launcher_health", "No launcher binary found", {
+      guidance: "Install launcher with: cpb install-bin",
+    });
+  }
+  const selection = await inspectCurrentRelease({ env });
+  if (selection?.metadata?.installedPath && target) {
+    const releaseDir = path.resolve(selection.metadata.installedPath);
+    if (!target.startsWith(releaseDir + path.sep) && target !== path.join(releaseDir, "cpb")) {
+      return warnR("release.launcher_health", `Launcher points to '${target}', outside current release '${selection.metadata.releaseId}'`, {
+        guidance: "Reinstall launcher for current release: cpb install-bin",
+        details: { launcherTarget: target, currentReleasePath: releaseDir },
+      });
+    }
+  }
+  return okR("release.launcher_health", `Launcher resolves to: ${target}`);
+}
+
+async function checkReleaseJobPinning({ env, cpbRoot }) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
+  const selection = await inspectCurrentRelease({ env });
+  const currentReleaseId = selection?.metadata?.releaseId || null;
+  if (!currentReleaseId) {
+    return okR("release.job_pinning", "No current release selected, skipping pin check");
+  }
+  try {
+    const allJobs = await listJobs(resolvedCpbRoot);
+    const issues = [];
+    for (const job of allJobs) {
+      const jobReleaseId = job.executor?.releaseId || null;
+      if (!jobReleaseId) continue;
+      if (jobReleaseId !== currentReleaseId) {
+        const terminal = ["completed", "failed", "blocked", "cancelled"].includes(job.status);
+        issues.push({
+          jobId: job.jobId,
+          status: job.status,
+          jobReleaseId,
+          currentReleaseId,
+          severity: terminal ? "info" : "warn",
+        });
+      }
+    }
+    if (issues.length === 0) {
+      return okR("release.job_pinning", "All jobs reference the current release");
+    }
+    const active = issues.filter(i => i.severity === "warn");
+    if (active.length > 0) {
+      return warnR("release.job_pinning", `${active.length} active job(s) pinned to a different release`, {
+        guidance: "Active jobs may depend on the old release. Wait for them to complete before garbage-collecting old releases.",
+        details: active,
+      });
+    }
+    return okR("release.job_pinning", `${issues.length} completed job(s) used older releases (no action needed)`, {
+      details: issues,
+    });
+  } catch (err) {
+    return warnR("release.job_pinning", `Cannot check job pinning: ${err.message}`);
+  }
+}
+
+export async function runReleaseDoctorChecks({ cpbRoot, env = process.env } = {}) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
+  const checks = await Promise.all([
+    checkReleaseCurrentMetadata({ env }),
+    checkReleaseExecutorRoot({ env }),
+    checkReleaseRuntimeRoot({ env }),
+    checkReleaseStateFormat({ env }),
+    checkReleaseLauncherHealth({ env }),
+    checkReleaseJobPinning({ env, cpbRoot: resolvedCpbRoot }),
+  ]);
+
+  const summary = { ok: 0, warn: 0, fail: 0 };
+  for (const check of checks) summary[check.status]++;
+  summary.success = summary.fail === 0;
+
+  return {
+    command: "cpb release doctor",
+    generatedAt: new Date().toISOString(),
+    summary,
+    checks,
+  };
+}
+
+export function formatReleaseDoctorHuman(result) {
+  const { summary, checks } = result;
+  const lines = [];
+  lines.push(`${BOLD}Release Doctor${NC}`);
+  lines.push("");
+  for (const check of checks) {
+    const color = STATUS_COLOR[check.status === "fail" ? "error" : check.status === "warn" ? "warn" : "ok"];
+    const icon = check.status === "ok" ? "✓" : check.status === "warn" ? "!" : "✗";
+    let line = `  ${color}${icon}${NC} ${check.id}: ${check.message}`;
+    if (check.guidance) line += ` ${color}→ ${check.guidance}${NC}`;
+    lines.push(line);
+  }
+  lines.push("");
+  if (summary.success) {
+    if (summary.warn > 0) {
+      lines.push(`  ${STATUS_COLOR.warn}${summary.warn} warning(s)${NC}, ${summary.ok} passed.`);
+    } else {
+      lines.push(`  ${STATUS_COLOR.ok}All release checks passed.${NC}`);
+    }
+  } else {
+    lines.push(`  ${STATUS_COLOR.error}${summary.fail} failure(s)${NC}, ${summary.warn} warning(s), ${summary.ok} passed.`);
+  }
+  return lines.join("\n");
+}
+
+export function formatReleaseDoctorJson(result) {
+  return JSON.stringify(result, null, 2);
 }
 
 // --- Output formatters ---

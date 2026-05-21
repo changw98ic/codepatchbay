@@ -69,6 +69,8 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
 
   if (jobId) {
     locator.eventLogPath = eventLogPath(cpbRoot, project, jobId);
+    locator.processRegistryDir = runtimeDataPath(cpbRoot, "processes");
+    locator.stateFilePath = runtimeDataPath(cpbRoot, "state", `pipeline-${project}.json`);
     const job = await getJob(cpbRoot, project, jobId);
     if (job?.jobId) {
       locator.task = job.task;
@@ -81,6 +83,30 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
       locator.retryCount = job.retryCount ?? 0;
       locator.failurePhase = job.failurePhase ?? null;
       locator.blockedReason = job.blockedReason ?? null;
+    }
+
+    // Derive issue metadata from queue or task metadata
+    try {
+      const { listQueue } = await import("./hub-queue.js");
+      const hubRoot = process.env.CPB_HUB_ROOT || cpbRoot;
+      const queueEntries = await listQueue(hubRoot, { projectId: project });
+      const matching = queueEntries.find((e) => {
+        if (e.status !== "pending" && e.status !== "in_progress") return false;
+        return e.description === locator.task || e.metadata?.jobId === jobId;
+      });
+      if (matching?.metadata) {
+        locator.issueNumber = matching.metadata.issueNumber || null;
+        locator.issueUrl = matching.metadata.issueUrl || null;
+        locator.repo = matching.metadata.repo || matching.metadata.repository || null;
+      }
+    } catch {}
+
+    // Fallback: derive from environment or project metadata
+    if (!locator.issueNumber) {
+      const meta = await resolveProjectSourcePath(cpbRoot, project);
+      locator.issueNumber = process.env.CPB_ISSUE_NUMBER || null;
+      locator.issueUrl = process.env.CPB_ISSUE_URL || null;
+      locator.repo = process.env.CPB_REPO || null;
     }
   }
 
@@ -107,6 +133,8 @@ export function locatorEnvelope(locator) {
     inboxDir: locator.inboxDir,
     outputsDir: locator.outputsDir,
     eventLogPath: locator.eventLogPath || null,
+    processRegistryDir: locator.processRegistryDir || null,
+    stateFilePath: locator.stateFilePath || null,
     task: locator.task || null,
     workflow: locator.workflow || null,
     artifacts: locator.artifacts || {},
@@ -117,6 +145,9 @@ export function locatorEnvelope(locator) {
     retryCount: locator.retryCount ?? 0,
     failurePhase: locator.failurePhase || null,
     blockedReason: locator.blockedReason || null,
+    issueNumber: locator.issueNumber || null,
+    issueUrl: locator.issueUrl || null,
+    repo: locator.repo || null,
   };
 }
 

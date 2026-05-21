@@ -126,6 +126,9 @@ function progressFor({ queueEntry, issue } = {}) {
   if (queueEntry?.status === "pending") {
     return { stage: "ready", label: "Ready to run", detail: "Queued in Hub", percent: 10 };
   }
+  if (queueEntry?.status === "needs_issue_link") {
+    return { stage: "open", label: "Needs issue link", detail: "Awaiting GitHub issue metadata", percent: 0 };
+  }
   if (queueEntry?.status === "in_progress") {
     return { stage: "running", label: "Running", detail: "Claimed by worker", percent: 50 };
   }
@@ -144,6 +147,7 @@ function progressFor({ queueEntry, issue } = {}) {
 
 function humanNextAction(progress, queueEntry) {
   if (progress.stage === "ready") return "Start a CPB worker or let the queue dispatcher pick it up.";
+  if (progress.label === "Needs issue link") return "Link a GitHub issue to this task before it can be claimed for execution.";
   if (progress.stage === "open") return "Import or queue this issue before expecting CPB to execute it.";
   if (progress.stage === "failed") return "Inspect the latest run evidence, then create a fresh recovery task if still needed.";
   if (progress.stage === "archived") return "Do not retry this item directly; follow the replacement task links.";

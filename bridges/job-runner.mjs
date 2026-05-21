@@ -25,7 +25,7 @@ const rawArgs = process.argv.slice(2);
 function usage() {
   return [
     "Usage:",
-    "  node bridges/job-runner.mjs --cpb-root <root> --project <project> --job-id <job-id> --phase <phase> --script <command> -- [args...]",
+    "  node bridges/job-runner.mjs --cpb-root <root> --project <project> --job-id <job-id> --phase <phase> --script <command> [--non-terminal-failure] -- [args...]",
   ].join("\n");
 }
 
@@ -39,6 +39,10 @@ function parseArgs(args) {
     const name = optionArgs[index];
     if (!name.startsWith("--")) {
       throw new Error(`unexpected argument: ${name}`);
+    }
+    if (name === "--non-terminal-failure") {
+      options.set(name, "1");
+      continue;
     }
 
     const value = optionArgs[index + 1];
@@ -62,6 +66,7 @@ function parseArgs(args) {
     jobId: options.get("--job-id"),
     phase: options.get("--phase"),
     script: options.get("--script"),
+    nonTerminalFailure: options.get("--non-terminal-failure") === "1",
     scriptArgs,
   };
 }
@@ -228,7 +233,7 @@ async function main() {
     return 2;
   }
 
-  const { cpbRoot, project, jobId, phase, script, scriptArgs } = parsed;
+  const { cpbRoot, project, jobId, phase, script, nonTerminalFailure, scriptArgs } = parsed;
   const leaseId = `lease-${jobId}-${phase}`;
   // Phase lease TTL: how long a lease is valid before considered stale.
   // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
@@ -392,6 +397,7 @@ async function main() {
       type: "phase_completed",
       jobId,
       phase,
+      artifact: "",
       exitCode: 0,
       ts: eventTimestamp(),
     });
@@ -417,10 +423,22 @@ async function main() {
     return 130;
   }
 
-  await appendPhaseFailed(cpbRoot, project, jobId, phase, {
-    exitCode: childResult.exitCode,
-    signal: childResult.signal ?? null,
-  });
+  if (nonTerminalFailure) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_completed",
+      jobId,
+      phase,
+      artifact: "",
+      exitCode: childResult.exitCode,
+      signal: childResult.signal ?? null,
+      ts: eventTimestamp(),
+    });
+  } else {
+    await appendPhaseFailed(cpbRoot, project, jobId, phase, {
+      exitCode: childResult.exitCode,
+      signal: childResult.signal ?? null,
+    });
+  }
 
   await ensureMarkedExited(childResult.exitCode);
 

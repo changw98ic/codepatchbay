@@ -227,6 +227,63 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.`;
 }
 
+export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "executor");
+  const skillsSection = await buildSkillsSection(executorRoot, "executor");
+  const profile = await loadProfile(executorRoot, "executor");
+
+  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+  const stateRoot = path.join(cpbRoot, "cpb-task");
+
+  const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
+
+  const dangerous = process.env.CPB_DANGEROUS === "1";
+  const constraints = dangerous
+    ? ""
+    : `## Constraints
+- Write code ONLY in the target project directory${projectCwd ? ": " + projectCwd : ""}
+- Write deliverable ONLY to: ${deliverableFile}
+- Write verdicts ONLY under: ${path.join(cpbRoot, "wiki", "projects", project, "outputs")}/
+- Do NOT modify files under: ${path.join(executorRoot, "wiki", "system")}/, ${path.join(executorRoot, "profiles")}/, ${path.join(executorRoot, "bridges")}/
+- Do NOT mutate git history, publish, deploy, or run destructive shell commands.
+- Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories.`;
+
+  return `You are CodePatchbay Executor. Role: ${roleTitle}
+
+${skillsSection}
+
+## CRITICAL: Read from locators, not copied artifacts
+Reconstruct your task and current state from locators and job/event state below.
+Artifacts (plans, deliverables, verdicts) are audit context - verify them against live state.
+Do NOT treat copied artifact contents as authoritative.
+
+## Locators
+- Job ID: ${jobId}
+- Event log: ${eventLog}
+- State root: ${stateRoot}
+- Plans directory: ${path.join(wikiDir, "inbox")}
+- Outputs directory: ${path.join(wikiDir, "outputs")}
+- Project context: ${path.join(wikiDir, "context.md")}
+- Decisions: ${path.join(wikiDir, "decisions.md")}
+- Project metadata: ${path.join(wikiDir, "project.json")}
+- Role definition: ${path.join(executorRoot, "profiles", "executor", "soul.md")}
+- Deliverable template: ${path.join(executorRoot, "templates", "handoff", "execute-to-review.md")}
+- Handshake format: ${path.join(executorRoot, "wiki", "system", "handshake-protocol.md")}
+
+${constraints}
+${buildSubagentGuidance("execute", profile)}
+## Instructions
+1. Read the event log to reconstruct the task goal and plan phase output.
+2. Read the plan from the plans directory (audit context, not sole truth).
+3. Verify current job/task state from the locators above.
+4. Implement code changes described in the plan.
+5. Run tests and record results.
+6. Write the deliverable to: ${deliverableFile}
+Follow handshake-protocol (executor->verifier, Phase: execute).
+Include plan-ref derived from the plan artifact in the deliverable metadata.`;
+}
+
 export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier");

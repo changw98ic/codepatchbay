@@ -77,7 +77,13 @@ ${BOLD}Commands:${NC}
   ${CYAN}clean${NC} [--dry-run]                         清理已退出/孤立进程注册
   ${CYAN}supervisor${NC}                               启动长时运行 supervisor 原型
   ${CYAN}release${NC} install [--name ID] [--dest-root DIR] [--json]  安装不可变执行器 release
-  ${CYAN}migrate-runtime-root${NC} [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/
+  ${CYAN}release${NC} list [--json] [--dest-root DIR]              列出已安装的 release
+  ${CYAN}release${NC} current [--json]                             查看当前选中的 release
+  ${CYAN}release${NC} use <release-id> [--json] [--dest-root DIR]  选择并激活一个 release
+  ${CYAN}release${NC} doctor [--json]                              Release 健康检查
+  ${CYAN}release${NC} gc [--dry-run|--execute] [--json]            Release 垃圾回收 (默认 dry-run)
+  ${CYAN}install-bin${NC} [--target PATH] [--bin-dir DIR] [--executor-root DIR|current] [--json]  安装稳定 PATH launcher
+  ${CYAN}migrate-runtime-root${NC} [--dry-run|--execute] [--quarantine-non-cpb] 迁移旧运行时数据到 cpb-task/ (默认 dry-run)
   ${CYAN}wiki${NC} [lint|list]                       Wiki 操作
   ${CYAN}ui${NC} [--port PORT] [--host HOST]        启动 Web UI (默认 127.0.0.1)
 
@@ -454,6 +460,29 @@ NODE
       ;;
   esac
 }
+cmd_version() {
+  local use_json=0
+  for arg in "$@"; do
+    case "$arg" in
+      --json) use_json=1 ;;
+    esac
+  done
+
+  if [ "$use_json" -eq 1 ]; then
+    CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_VERSION="$CPB_VERSION" node --input-type=module - <<'VERSION_NODE'
+import path from "node:path";
+const cpbRoot = path.resolve(process.env.CPB_ROOT);
+const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+const codeVersion = process.env.CPB_VERSION;
+const { buildVersionIdentityReport } = await import(path.join(executorRoot, "server/services/version-identity.js"));
+const report = await buildVersionIdentityReport({ cpbRoot, executorRoot, codeVersion });
+process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+VERSION_NODE
+  else
+    echo "cpb v$CPB_VERSION"
+  fi
+}
+
 cmd_plan()     { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/planner.sh" "$@"; }
 cmd_execute()  { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/executor.sh" "$@"; }
 cmd_verify()   { CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" "$CPB_EXECUTOR_ROOT/bridges/verifier.sh" "$@"; }
@@ -1023,6 +1052,20 @@ if (result.children && result.children.length > 0) {
     console.log(`  ${c.jobId} (${c.status})`);
   }
 }
+
+// Policy (per-phase permission state)
+if (result.policy) {
+  console.log(`\n${BOLD}Policy:${NC}`);
+  console.log(`  Role:            ${result.policy.role || "-"}`);
+  console.log(`  Read scope:      ${result.policy.readScope || "-"}`);
+  const writeAllowed = (result.policy.writeAllowed || []).join(", ") || "none";
+  const writeDenied = (result.policy.writeDenied || []).join(", ") || "none";
+  console.log(`  Write allowed:   ${writeAllowed}`);
+  console.log(`  Write denied:    ${writeDenied}`);
+  if (result.policy.denyTools?.length) console.log(`  Denied tools:    ${result.policy.denyTools.join(", ")}`);
+  if (result.policy.denyCommands?.length) console.log(`  Denied commands: ${result.policy.denyCommands.join(", ")}`);
+  if (result.policy.profileConfigured) console.log(`  Profile config:  loaded`);
+}
 INSPECT_NODE
 }
 
@@ -1077,7 +1120,10 @@ cmd_release() {
   local sub="${1:-install}"
   shift || true
   case "$sub" in
-    install) CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node "$CPB_EXECUTOR_ROOT/bridges/install-release.mjs" "$@" ;;
+    install) CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HOME="${CPB_HOME:-}" node "$CPB_EXECUTOR_ROOT/bridges/install-release.mjs" "$@" ;;
+    list|current|use) CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HOME="${CPB_HOME:-}" node "$CPB_EXECUTOR_ROOT/bridges/release-select.mjs" "$sub" "$@" ;;
+    doctor) CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node "$CPB_EXECUTOR_ROOT/bridges/release-select.mjs" "doctor" "$@" ;;
+    gc) CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node "$CPB_EXECUTOR_ROOT/bridges/release-select.mjs" "gc" "$@" ;;
     *) echo -e "${RED}Unknown release subcommand: $sub${NC}" >&2; exit 1 ;;
   esac
 }
@@ -1401,15 +1447,12 @@ cmd_ui() {
   wait
 }
 
+cmd_install_bin() {
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node "$CPB_EXECUTOR_ROOT/bridges/install-bin.mjs" "$@"
+}
+
 cmd_install() {
-  local target="/usr/local/bin/cpb"
-  if [ -w "/usr/local/bin" ]; then
-    ln -sf "$CPB_ROOT/cpb" "$target"
-    echo "Linked: $target -> $CPB_ROOT/cpb"
-  else
-    echo "Requires sudo:"
-    echo "  sudo ln -sf $CPB_ROOT/cpb /usr/local/bin/cpb"
-  fi
+  cmd_install_bin "$@"
 }
 
 # Main
@@ -1479,8 +1522,9 @@ case "$1" in
   wiki)     shift; cmd_wiki "${1:-list}" ;;
   ui)       shift; cmd_ui "$@" ;;
   interop)  cmd_interop ;;
-  install)  cmd_install ;;
-  version|--version|-v) echo "cpb v$CPB_VERSION" ;;
+  install)  shift; cmd_install "$@" ;;
+  install-bin) shift; cmd_install_bin "$@" ;;
+  version|--version|-v) shift; cmd_version "$@" ;;
   help|--help|-h)
     usage
     echo ""

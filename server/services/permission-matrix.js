@@ -5,6 +5,8 @@ import { runtimeDataPath } from "./runtime-root.js";
 const ROLES = new Set(["planner", "executor", "verifier", "repairer", "reviewer"]);
 const READ_ALLOWED_PATHS = Object.freeze(["*"]);
 
+export const INFRA_FAILURE = "INFRA_FAILURE";
+
 const WRITE_SCOPES = {
   planner: {
     allowed: [
@@ -457,11 +459,12 @@ export function isInfraDenial(event) {
   return event?.type === "permission_denied" && event?.category === "infra";
 }
 
-export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null } = {}) {
+export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, profileConfig = null } = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath });
-  return {
+
+  const basePolicy = {
     role: canonicalRole,
     readScope: "unrestricted",
     readAllowed: getReadAllowedPaths(canonicalRole),
@@ -469,4 +472,36 @@ export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null } = {
     writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
     observablePaths: observable,
   };
+
+  if (profileConfig) {
+    return mergeProfilePolicy(basePolicy, profileConfig);
+  }
+  return basePolicy;
+}
+
+export function mergeProfilePolicy(basePolicy, profileConfig) {
+  if (!profileConfig || typeof profileConfig !== "object") return basePolicy;
+
+  const merged = { ...basePolicy };
+
+  if (Array.isArray(profileConfig.deny_tools)) {
+    merged.denyTools = [...profileConfig.deny_tools];
+  }
+  if (Array.isArray(profileConfig.deny_commands)) {
+    merged.denyCommands = [...profileConfig.deny_commands];
+  }
+  if (Array.isArray(profileConfig.write_paths)) {
+    merged.writeAllowed = [...merged.writeAllowed, ...profileConfig.write_paths];
+  }
+  if (profileConfig.execution_boundary) {
+    merged.executionBoundary = profileConfig.execution_boundary;
+  }
+
+  merged.profileConfigured = true;
+  return merged;
+}
+
+export function classifyVerdictOutcome(verdictStatus) {
+  if (verdictStatus === "infra_error") return INFRA_FAILURE;
+  return verdictStatus;
 }

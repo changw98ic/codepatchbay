@@ -20,14 +20,9 @@ import {
   FAILURE_CODES,
   failJob,
   getJob,
-  startPhase,
 } from "../server/services/job-store.js";
-import {
-  acquireLease,
-  releaseLease,
-  renewLease,
-} from "../server/services/lease-manager.js";
 import { bridgeForPhase, getWorkflow, isWorkflowName } from "../server/services/workflow-definition.js";
+import { dispatchPhase } from "../server/services/phase-runner.js";
 import {
   dispatchEnabled,
   guardSourcePath as guardDispatchSourcePath,
@@ -228,10 +223,11 @@ function runCommand(command, commandArgs, cwd, options = {}) {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      finish({ exitCode: 1, stdout: "", error: err });
+      finish({ exitCode: 1, stdout: "", childPid: null, error: err });
       return;
     }
     proc.detached = detached;
+    const childPid = proc.pid || null;
     if (options.signal) {
       if (options.signal.aborted) onAbort();
       else options.signal.addEventListener("abort", onAbort, { once: true });
@@ -245,23 +241,17 @@ function runCommand(command, commandArgs, cwd, options = {}) {
       process.stderr.write(chunk);
     });
     proc.on("error", (err) => {
-      finish({ exitCode: 1, stdout: combineChunks(stdoutChunks), error: err });
+      finish({ exitCode: 1, stdout: combineChunks(stdoutChunks), childPid, error: err });
     });
     proc.on("close", (code, signal) => {
       finish({
         exitCode: code ?? 1,
         stdout: combineChunks(stdoutChunks),
+        childPid,
         signal,
       });
     });
   });
-}
-
-function runBridge(script, scriptArgs, cwd, options = {}) {
-  const bridgeScript = path.isAbsolute(script)
-    ? script
-    : path.join(options.executorRoot || cwd, script);
-  return runCommand("bash", [bridgeScript, ...scriptArgs], cwd, options);
 }
 
 function combineChunks(chunks) {
@@ -352,68 +342,6 @@ export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
   await writeIfMissing(path.join(wikiDir, "log.md"), `# ${project} Log\n`);
 }
 
-// ─── Lease + heartbeat wrapper for a phase ───
-
-async function runPhaseWithLease(cpbRoot, executorRoot, project, jobId, phase, script, scriptArgs) {
-  const leaseId = `lease-${jobId}-${phase}`;
-  // Phase lease TTL: how long a lease is valid before considered stale.
-  // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.
-  const ttlMs = parseInt(process.env.CPB_LEASE_TTL_MS || "120000", 10) || 120_000;
-  const renewEveryMs = parseInt(
-    process.env.CPB_LEASE_RENEW_INTERVAL_MS || String(Math.max(5_000, Math.floor(ttlMs / 3))),
-    10
-  ) || Math.max(5_000, Math.floor(ttlMs / 3));
-
-  let lease = null;
-  let heartbeat = null;
-  let leaseLostError = null;
-  const abortController = new AbortController();
-  let result = { exitCode: 1, stdout: "" };
-
-  try {
-    lease = await acquireLease(cpbRoot, { leaseId, jobId, phase, ttlMs });
-
-    await startPhase(cpbRoot, project, jobId, { phase, leaseId });
-
-    heartbeat = setInterval(() => {
-      renewLease(cpbRoot, leaseId, { ttlMs, ownerToken: lease.ownerToken }).catch((err) => {
-        leaseLostError = err;
-        console.error(`failed to renew lease ${leaseId}: ${err.message}`);
-        abortController.abort();
-      });
-    }, renewEveryMs);
-    heartbeat.unref?.();
-
-    result = await runBridge(script, scriptArgs, cpbRoot, {
-      signal: abortController.signal,
-      executorRoot,
-      env: executorEnv(process.env, { cpbRoot, executorRoot }),
-    });
-    if (leaseLostError) {
-      result = {
-        ...result,
-        exitCode: 1,
-        error: new Error(`lease ownership lost for ${leaseId}: ${leaseLostError.message}`),
-      };
-    }
-  } catch (err) {
-    result = { exitCode: 1, stdout: "", error: err };
-  } finally {
-    if (heartbeat !== null) {
-      clearInterval(heartbeat);
-    }
-    if (lease !== null) {
-      try {
-        await releaseLease(cpbRoot, leaseId, { ownerToken: lease.ownerToken });
-      } catch (err) {
-        console.error(`failed to release lease ${leaseId}: ${err.message}`);
-      }
-    }
-  }
-
-  return result;
-}
-
 // ─── ID extraction from bridge stdout ───
 
 function extractPlanId(stdout) {
@@ -432,7 +360,7 @@ export async function parseVerdict(verdictPath) {
   try {
     const content = await readFile(verdictPath, "utf8");
     const envelope = parseVerdictEnvelope(content);
-    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_ERROR" };
+    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
     return mapped[envelope.status] || "UNKNOWN";
   } catch {
     return null;
@@ -611,7 +539,7 @@ async function main() {
     task,
     workflow,
     jobId: jobIdOverride,
-    executor: await executorMetadata(executorRoot),
+    executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
   });
   const jobId = job.jobId;
 
@@ -670,11 +598,14 @@ async function main() {
       }
     }
     log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
-    const planResult = await runPhaseWithLease(
-      cpbRoot, executorRoot, project, jobId, "plan",
-      `bridges/${bridgeForPhase(workflowDef, "plan")}`,
-      [project, task]
-    );
+    const planResult = await dispatchPhase(cpbRoot, {
+      project, jobId, phase: "plan",
+      script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
+      scriptArgs: [project, task],
+      executorRoot,
+      env: executorEnv(process.env, { cpbRoot, executorRoot }),
+      terminalOnFailure: false,
+    });
 
     if (planResult.error) {
       fail(`Plan spawn failed: ${planResult.error.message}`);
@@ -731,12 +662,15 @@ async function main() {
       }
 
       log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude) attempt ${attempt}/${maxRetries}`);
-      const execResult = await runPhaseWithLease(
-        cpbRoot, executorRoot, project, jobId,
-        `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
-        `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-        [project, planId]
-      );
+      const execResult = await dispatchPhase(cpbRoot, {
+        project, jobId,
+        phase: `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
+        script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
+        scriptArgs: [project, planId],
+        executorRoot,
+        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        terminalOnFailure: false,
+      });
 
       deliverableId = extractDeliverableId(execResult.stdout);
 
@@ -779,11 +713,14 @@ async function main() {
 
         const reviewPhaseName = reviewCycle === 1 ? "review" : `review-retry-${reviewCycle}`;
         log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewCycle}/${maxRetries}`);
-        const reviewResult = await runPhaseWithLease(
-          cpbRoot, executorRoot, project, jobId, reviewPhaseName,
-          `bridges/${bridgeForPhase(workflowDef, "review")}`,
-          [project, deliverableId]
-        );
+        const reviewResult = await dispatchPhase(cpbRoot, {
+          project, jobId, phase: reviewPhaseName,
+          script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
+          scriptArgs: [project, deliverableId],
+          executorRoot,
+          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          terminalOnFailure: false,
+        });
 
         if (reviewResult.error) {
           fail(`Review spawn failed: ${reviewResult.error.message}`);
@@ -821,11 +758,14 @@ async function main() {
 
         log(project, "Re-executing (Claude review fix)...");
         const fixPhaseName = `review-fix-${reviewCycle}`;
-        const fixResult = await runPhaseWithLease(
-          cpbRoot, executorRoot, project, jobId, fixPhaseName,
-          `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          [project, planId, reviewPath]
-        );
+        const fixResult = await dispatchPhase(cpbRoot, {
+          project, jobId, phase: fixPhaseName,
+          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
+          scriptArgs: [project, planId, reviewPath],
+          executorRoot,
+          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          terminalOnFailure: false,
+        });
 
         const newDeliverableId = extractDeliverableId(fixResult.stdout);
         if (newDeliverableId) {
@@ -888,11 +828,14 @@ async function main() {
 
       const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
       const verifyArgs = deliverableId ? [project, deliverableId] : [project, "--job-id", jobId];
-      await runPhaseWithLease(
-        cpbRoot, executorRoot, project, jobId, verifyPhaseName,
-        `bridges/${bridgeForPhase(workflowDef, "verify")}`,
-        verifyArgs
-      );
+      await dispatchPhase(cpbRoot, {
+        project, jobId, phase: verifyPhaseName,
+        script: `bridges/${bridgeForPhase(workflowDef, "verify")}`,
+        scriptArgs: verifyArgs,
+        executorRoot,
+        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        terminalOnFailure: false,
+      });
 
       const verdictId = deliverableId || jobId;
       const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
@@ -919,13 +862,13 @@ async function main() {
         continue;
       }
 
-      if (verdict === "UNKNOWN" || verdict === "INFRA_ERROR") {
+      if (verdict === "UNKNOWN" || verdict === "INFRA_FAILURE") {
         verdictRetryCount += 1;
-        const label = verdict === "INFRA_ERROR" ? "infra error" : "unclear verdict";
+        const label = verdict === "INFRA_FAILURE" ? "infra error" : "unclear verdict";
         warn(`${label}: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
         await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
         if (verdictRetryCount >= maxRetries) {
-          const reason = verdict === "INFRA_ERROR"
+          const reason = verdict === "INFRA_FAILURE"
             ? "verification infra errors after retries"
             : "verification verdict unclear after retries";
           await failJob(cpbRoot, project, jobId, failure(reason, {
@@ -967,11 +910,14 @@ async function main() {
       if (qualityFailureCount < maxRetries) {
         log(project, "Re-executing (Claude fix)...");
         const fixPhaseName = `fix-${qualityFailureCount}`;
-        const fixResult = await runPhaseWithLease(
-          cpbRoot, executorRoot, project, jobId, fixPhaseName,
-          `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          [project, planId, verdictPath]
-        );
+        const fixResult = await dispatchPhase(cpbRoot, {
+          project, jobId, phase: fixPhaseName,
+          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
+          scriptArgs: [project, planId, verdictPath],
+          executorRoot,
+          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          terminalOnFailure: false,
+        });
 
         const newDeliverableId = extractDeliverableId(fixResult.stdout);
         if (newDeliverableId) {
@@ -997,11 +943,14 @@ async function main() {
 
               const reviewPhaseName = `post-verify-review-${qualityFailureCount}-${reviewCycle}`;
               log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review after verify fix attempt ${reviewCycle}/${maxRetries}`);
-              const reviewResult = await runPhaseWithLease(
-                cpbRoot, executorRoot, project, jobId, reviewPhaseName,
-                `bridges/${bridgeForPhase(workflowDef, "review")}`,
-                [project, deliverableId]
-              );
+              const reviewResult = await dispatchPhase(cpbRoot, {
+                project, jobId, phase: reviewPhaseName,
+                script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
+                scriptArgs: [project, deliverableId],
+                executorRoot,
+                env: executorEnv(process.env, { cpbRoot, executorRoot }),
+                terminalOnFailure: false,
+              });
 
               if (reviewResult.error) {
                 fail(`Review spawn failed: ${reviewResult.error.message}`);
@@ -1039,11 +988,14 @@ async function main() {
 
               log(project, "Re-executing (Claude post-verify review fix)...");
               const reviewFixPhaseName = `post-verify-review-fix-${qualityFailureCount}-${reviewCycle}`;
-              const reviewFixResult = await runPhaseWithLease(
-                cpbRoot, executorRoot, project, jobId, reviewFixPhaseName,
-                `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-                [project, planId, reviewPath]
-              );
+              const reviewFixResult = await dispatchPhase(cpbRoot, {
+                project, jobId, phase: reviewFixPhaseName,
+                script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
+                scriptArgs: [project, planId, reviewPath],
+                executorRoot,
+                env: executorEnv(process.env, { cpbRoot, executorRoot }),
+                terminalOnFailure: false,
+              });
 
               const reviewedDeliverableId = extractDeliverableId(reviewFixResult.stdout);
               if (reviewedDeliverableId) {

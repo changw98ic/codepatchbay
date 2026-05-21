@@ -11,6 +11,8 @@ import {
   shouldUseRustRuntime,
 } from "./runtime-cli.js";
 
+export const LEASE_FORMAT_VERSION = 1;
+
 function _base(cpbRoot, opts) {
   return opts?.dataRoot || runtimeDataRoot(cpbRoot);
 }

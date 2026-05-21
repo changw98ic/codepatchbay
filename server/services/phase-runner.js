@@ -113,7 +113,7 @@ function runChild(command, args, cwd, options = {}) {
   });
 }
 
-export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, scriptArgs, executorRoot, env } = {}) {
+export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, scriptArgs, executorRoot, env, terminalOnFailure = true } = {}) {
   const validation = await validatePhaseInputs(cpbRoot, project, jobId, phase);
   if (!validation.valid) {
     return { exitCode: 1, error: new Error(validation.errors.join("; ")), envelope: null };
@@ -143,6 +143,7 @@ export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, sc
     "--job-id", jobId,
     "--phase", phase,
     "--script", bridgeScript,
+    ...(terminalOnFailure ? [] : ["--non-terminal-failure"]),
     "--",
     ...(scriptArgs || []),
   ];
