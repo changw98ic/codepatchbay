@@ -5,6 +5,35 @@ import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js
 import { getJob } from "./job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
+import {
+  HOOK_POINTS,
+  registerBuiltinHooks,
+  clearPhaseHooks,
+  buildHookContext,
+  runPhaseHooks,
+  basePhase,
+  hookPointFor,
+  _resetHookRegistration,
+} from "./phase-hooks.js";
+import { appendEvent } from "./event-store.js";
+
+let hooksInitialized = false;
+
+function ensureHooksRegistered() {
+  if (!hooksInitialized) {
+    registerBuiltinHooks();
+    hooksInitialized = true;
+  }
+}
+
+export { _resetHookRegistration };
+
+// Expose a combined reset that also clears the phase-runner init flag
+const _originalReset = _resetHookRegistration;
+export function resetHooksForTest() {
+  _originalReset();
+  hooksInitialized = false;
+}
 
 export function roleForBridge(scriptPath) {
   const base = path.basename(scriptPath);
@@ -113,6 +142,14 @@ function runChild(command, args, cwd, options = {}) {
   });
 }
 
+async function persistHookEvents(cpbRoot, project, jobId, hookEvents) {
+  for (const event of hookEvents) {
+    try {
+      await appendEvent(cpbRoot, project, jobId, event);
+    } catch { /* best-effort persistence */ }
+  }
+}
+
 export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, scriptArgs, executorRoot, env, terminalOnFailure = true } = {}) {
   const validation = await validatePhaseInputs(cpbRoot, project, jobId, phase);
   if (!validation.valid) {
@@ -121,6 +158,30 @@ export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, sc
 
   const locator = await buildLocator(cpbRoot, project, jobId, { phase, executorRoot });
   const envelope = locatorEnvelope(locator);
+
+  ensureHooksRegistered();
+  const bp = basePhase(phase);
+  const role = phaseRole(phase);
+
+  // --- Pre-hook ---
+  const prePoint = hookPointFor(bp, "pre");
+  if (prePoint) {
+    const preCtx = buildHookContext({ hookPoint: prePoint, envelope, role, phase });
+    const preResult = await runPhaseHooks(preCtx);
+    await persistHookEvents(cpbRoot, project, jobId, preResult.hookEvents);
+
+    if (preResult.blockPhase) {
+      const diagMessages = preResult.diagnostics.map((d) => d.message).join("; ");
+      return {
+        exitCode: 1,
+        error: new Error(`pre-hook blocked: ${diagMessages}`),
+        envelope,
+        hookDiagnostics: preResult.diagnostics,
+        hookClassification: preResult.classification,
+        hookEvents: preResult.hookEvents,
+      };
+    }
+  }
 
   const resolvedExecutorRoot = executorRoot ? path.resolve(executorRoot) : path.resolve(cpbRoot);
   const bridgeScript = path.isAbsolute(script)
@@ -149,6 +210,20 @@ export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, sc
   ];
 
   const result = await runChild("node", runnerArgs, cpbRoot, { env: env || process.env });
+
+  // --- Post-hook or on-failure ---
+  const bridgeOk = result.exitCode === 0;
+  const postPoint = bridgeOk ? hookPointFor(bp, "post") : HOOK_POINTS.ON_FAILURE;
+  const postCtx = buildHookContext({
+    hookPoint: postPoint,
+    envelope,
+    role,
+    phase,
+    result: bridgeOk ? result : null,
+    error: bridgeOk ? null : (result.error || new Error(`bridge exited ${result.exitCode}`)),
+  });
+  const postResult = await runPhaseHooks(postCtx);
+  await persistHookEvents(cpbRoot, project, jobId, postResult.hookEvents);
 
   return {
     exitCode: result.exitCode,

@@ -12,10 +12,11 @@ import {
   extractDeliverableId,
   extractArtifactId,
   dispatchPhase,
+  resetHooksForTest,
 } from "../server/services/phase-runner.js";
 import { createJob, getJob } from "../server/services/job-store.js";
 import { wikiProjectDir } from "../server/services/phase-locator.js";
-import { readEvents } from "../server/services/event-store.js";
+import { readEvents, materializeJob } from "../server/services/event-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-runner-"));
 const project = "runner-test";
@@ -214,5 +215,104 @@ const failEvents = await readEvents(dispatchRoot, dispatchProject, failJob.jobId
 const failTypes = failEvents.map((e) => e.type);
 assert.ok(failTypes.includes("phase_started"), "phase_started recorded even for failing bridge");
 assert.ok(failTypes.includes("phase_failed"), "phase_failed recorded via Node API for failed bridge");
+
+// --- Hook event persistence: successful dispatch records hook lifecycle events ---
+resetHooksForTest();
+const hookDispatchRoot = await mkdtemp(path.join(tmpdir(), "cpb-hook-dispatch-"));
+const hookProject = "hook-dispatch-test";
+const hookWikiDir = wikiProjectDir(hookDispatchRoot, hookProject);
+await mkdir(path.join(hookWikiDir, "inbox"), { recursive: true });
+await mkdir(path.join(hookWikiDir, "outputs"), { recursive: true });
+await writeFile(
+  path.join(hookWikiDir, "project.json"),
+  JSON.stringify({ name: hookProject }, null, 2),
+  "utf8"
+);
+
+const hookDummyScript = path.join(hookDispatchRoot, "dummy-hook.sh");
+await writeFile(hookDummyScript, "#!/bin/bash\nexit 0\n", "utf8");
+await chmod(hookDummyScript, 0o755);
+
+const hookJob = await createJob(hookDispatchRoot, {
+  project: hookProject,
+  task: "Test hook event persistence",
+  ts: "2026-05-22T00:00:00.000Z",
+});
+
+const hookDispatchResult = await dispatchPhase(hookDispatchRoot, {
+  project: hookProject,
+  jobId: hookJob.jobId,
+  phase: "plan",
+  script: hookDummyScript,
+  scriptArgs: [],
+  executorRoot: realProjectRoot,
+});
+
+assert.equal(hookDispatchResult.exitCode, 0, `hook dispatch should succeed: ${hookDispatchResult.error?.message || ""}`);
+
+const hookEvents = await readEvents(hookDispatchRoot, hookProject, hookJob.jobId);
+const hookTypes = hookEvents.map((e) => e.type);
+assert.ok(hookTypes.includes("phase_hook_started"), "phase_hook_started should be recorded");
+assert.ok(hookTypes.includes("phase_hook_completed"), "phase_hook_completed should be recorded");
+assert.ok(hookTypes.includes("phase_started"), "phase_started should still be recorded");
+assert.ok(hookTypes.includes("phase_completed"), "phase_completed should still be recorded");
+
+// Verify hook events don't change materialized job status
+const hookState = materializeJob(hookEvents);
+assert.equal(hookState.status, "running", "hook events must not change materialized job status");
+assert.equal(hookState.phase, "plan", "hook events must not change materialized phase");
+
+// --- Hook event persistence: failed dispatch records phase_hook_diagnostic ---
+resetHooksForTest();
+const hookFailRoot = await mkdtemp(path.join(tmpdir(), "cpb-hook-fail-"));
+const hookFailProject = "hook-fail-test";
+const hookFailWikiDir = wikiProjectDir(hookFailRoot, hookFailProject);
+await mkdir(path.join(hookFailWikiDir, "inbox"), { recursive: true });
+await mkdir(path.join(hookFailWikiDir, "outputs"), { recursive: true });
+await writeFile(
+  path.join(hookFailWikiDir, "project.json"),
+  JSON.stringify({ name: hookFailProject }, null, 2),
+  "utf8"
+);
+
+const hookFailScript = path.join(hookFailRoot, "fail-hook.sh");
+await writeFile(hookFailScript, "#!/bin/bash\nexit 1\n", "utf8");
+await chmod(hookFailScript, 0o755);
+
+const hookFailJob = await createJob(hookFailRoot, {
+  project: hookFailProject,
+  task: "Test hook diagnostic on failure",
+  ts: "2026-05-22T01:00:00.000Z",
+});
+
+const hookFailResult = await dispatchPhase(hookFailRoot, {
+  project: hookFailProject,
+  jobId: hookFailJob.jobId,
+  phase: "plan",
+  script: hookFailScript,
+  scriptArgs: [],
+  executorRoot: realProjectRoot,
+});
+
+assert.equal(hookFailResult.exitCode, 1, "hook fail dispatch should fail");
+
+const hookFailEvents = await readEvents(hookFailRoot, hookFailProject, hookFailJob.jobId);
+const hookFailTypes = hookFailEvents.map((e) => e.type);
+assert.ok(hookFailTypes.includes("phase_hook_started"), "phase_hook_started for on-failure");
+assert.ok(hookFailTypes.includes("phase_hook_completed"), "on-failure hook completed");
+
+// Check for phase_hook_diagnostic from on-failure hook
+const diagEvents = hookFailEvents.filter((e) => e.type === "phase_hook_diagnostic");
+assert.ok(diagEvents.length >= 1, "should have phase_hook_diagnostic events from on-failure hook");
+const onFailDiag = diagEvents.find((e) => e.hookPoint === "on-failure");
+assert.ok(onFailDiag, "should have diagnostic with hookPoint on-failure");
+assert.equal(onFailDiag.classification, "infra");
+assert.ok(onFailDiag.message.length > 0, "diagnostic must have non-empty message");
+
+// Verify hook diagnostics don't incorrectly change job status
+const hookFailState = materializeJob(hookFailEvents);
+assert.equal(hookFailState.status, "failed", "job should be failed from phase_failed, not from hook events");
+
+resetHooksForTest();
 
 console.log("phase-runner: all tests passed");
