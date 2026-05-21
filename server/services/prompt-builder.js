@@ -6,7 +6,7 @@ import {
   getVerificationLayers,
   getSubagentConfig,
 } from "./workflow-definition.js";
-import { loadProfile } from "./profile-loader.js";
+import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
 
 async function preRead(filePath) {
   try {
@@ -16,41 +16,34 @@ async function preRead(filePath) {
   }
 }
 
-export async function buildSkillsSection(executorRoot, role) {
-  const skillsDir = path.join(executorRoot, "profiles", role, "skills");
-  let files;
-  try {
-    const { readdir } = await import("node:fs/promises");
-    files = (await readdir(skillsDir)).filter((f) => f.endsWith(".md")).sort();
-  } catch {
-    return "";
-  }
-  if (files.length === 0) return "";
+export async function buildSkillsSection(executorRoot, role, context = {}, options = {}) {
+  const selected = await selectProfileSkills(executorRoot, role, context, options);
+  const { diagnostics } = await loadProfileSkills(executorRoot, role, options);
 
-  const lines = ["## Available Skills"];
-  let count = 0;
-  for (const f of files) {
-    if (count >= 10) {
-      lines.push("- ... (truncated, max 10)");
-      break;
-    }
-    const content = await readFile(path.join(skillsDir, f), "utf8");
-    const fmBlock = content.split("---");
-    let name = "";
-    let desc = "";
-    if (fmBlock.length >= 3) {
-      for (const line of fmBlock[1].split("\n")) {
-        const nm = line.match(/^name:\s*(.+)/);
-        if (nm) name = nm[1].trim();
-        const dm = line.match(/^description:\s*(.+)/);
-        if (dm) desc = dm[1].trim();
-      }
-    }
-    if (name) {
-      lines.push(`- /${name}: ${desc} -> ${path.join(skillsDir, f)}`);
-      count++;
+  if (selected.length === 0 && diagnostics.length === 0) return "";
+
+  const lines = [];
+
+  if (selected.length > 0) {
+    lines.push("## Loaded Role Skills");
+    for (const skill of selected) {
+      lines.push(`### /${skill.name}`);
+      lines.push(`- Source: ${skill.source}`);
+      lines.push(`- Reason: ${skill.reason}`);
+      lines.push("");
+      lines.push(skill.content);
+      lines.push("");
     }
   }
+
+  lines.push("## Role Skill Diagnostics");
+  for (const skill of selected) {
+    lines.push(`- loaded /${skill.name} from ${skill.source} because ${skill.reason}`);
+  }
+  for (const d of diagnostics) {
+    lines.push(`- skipped ${d.source} because ${d.code}`);
+  }
+
   return lines.join("\n");
 }
 
@@ -123,7 +116,7 @@ For each layer, report: what was run, pass/fail status, any issues found, and th
 
 export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
-  const skillsSection = await buildSkillsSection(executorRoot, "planner");
+  const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
   const profile = await loadProfile(executorRoot, "planner");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
@@ -170,11 +163,12 @@ Use scope-matched step count with concrete acceptance criteria.`;
 
 export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
-  const skillsSection = await buildSkillsSection(executorRoot, "executor");
   const profile = await loadProfile(executorRoot, "executor");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
+  const planContent = await preRead(planFile);
+  const skillsSection = await buildSkillsSection(executorRoot, "executor", { phase: "execute", artifactText: planContent });
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -286,11 +280,12 @@ Include plan-ref derived from the plan artifact in the deliverable metadata.`;
 
 export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
-  const skillsSection = await buildSkillsSection(executorRoot, "verifier");
   const profile = await loadProfile(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
+  const deliverableContent = await preRead(deliverableFile);
+  const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify", artifactText: deliverableContent });
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
@@ -349,7 +344,7 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 
 export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
-  const skillsSection = await buildSkillsSection(executorRoot, "verifier");
+  const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
   const profile = await loadProfile(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
@@ -412,7 +407,7 @@ Follow with concise findings and reasoning. State what passed, what failed, and 
 
 export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
-  const skillsSection = await buildSkillsSection(executorRoot, "repairer");
+  const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
   const profile = await loadProfile(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
@@ -466,12 +461,14 @@ After the first line, include concise findings, changed files, and verification 
 
 export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId) {
   const roleTitle = await readRoleTitle(executorRoot, "reviewer");
-  const skillsSection = await buildSkillsSection(executorRoot, "reviewer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const reviewFile = path.join(wikiDir, "outputs", `review-${deliverableId}.md`);
 
   const planFile = path.join(wikiDir, "inbox", `plan-${deliverableId}.md`);
+  const deliverableContent = await preRead(deliverableFile);
+  const planContent = await preRead(planFile);
+  const skillsSection = await buildSkillsSection(executorRoot, "reviewer", { phase: "review", artifactText: deliverableContent + "\n" + planContent });
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
