@@ -11,7 +11,7 @@ export function renderLauncher({ executorRoot, runtimeRootDefault }) {
   const escapedDefault = runtimeRootDefault;
 
   return `#!/bin/sh
-set -euo pipefail
+set -eu
 
 : "\${CPB_HOME:=\$HOME/.cpb}"
 : "\${CPB_ROOT:=${escapedDefault}}"

@@ -55,7 +55,8 @@ describe("renderLauncher", () => {
       runtimeRootDefault: "${CPB_HOME:-$HOME/.cpb}",
     });
     assert.ok(script.startsWith("#!/bin/sh"));
-    assert.ok(script.includes("set -euo pipefail"));
+    assert.ok(script.includes("set -eu"));
+    assert.ok(!script.includes("pipefail"));
     assert.ok(script.includes(`CPB_EXECUTOR_ROOT=${shellQuoteSingle("/opt/cpb/releases/v1")}`));
     assert.ok(script.includes("CPB_ROOT"));
     assert.ok(script.includes("${CPB_HOME:-$HOME/.cpb}"));
