@@ -19,6 +19,7 @@ const EVENT_REGISTRY = {
   job_blocked:            { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'event-compaction.test.mjs', testMatch: ['job_blocked', 'blockJob'] },
   job_failed:             { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_failed', 'failJob'] },
   job_completed:          { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_completed', 'completeJob'] },
+  finalizer_result:       { class: 'audit',    consumer: 'job-store, project-worker', testFile: 'job-store.test.mjs', testMatch: ['finalizer', 'recordFinalizerResult'] },
   job_cancel_requested:   { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_cancel_requested', 'requestCancelJob'] },
   job_cancelled:          { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-redirect.test.mjs', testMatch: ['job_cancelled', 'cancelJob'] },
   job_redirect_requested: { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'cancel-enforcement.test.mjs', testMatch: ['job_redirect_requested', 'requestRedirectJob'] },

@@ -2,12 +2,15 @@
 // project-worker.mjs — Per-project worker that polls Hub queue and runs pipeline
 // Usage: node bridges/project-worker.mjs --project <id> [--once] [--workflow standard|complex|blocked|accelerated]
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { getJob, recordFinalizerResult } from "../server/services/job-store.js";
+import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
 import {
   dispatchEnabled,
   guardSourcePath,
@@ -24,11 +27,65 @@ const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, "..")
 const CPB_EXECUTOR_ROOT = resolveExecutorRoot({
   fallbackRoot: path.join(__dirname, ".."),
 });
+const execFileAsync = promisify(execFile);
 export const AGENT_OUTAGE_EXIT_CODE = 2;
 
 function numericOption(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeWorktreeMode(value) {
+  const mode = value || "required";
+  if (mode !== "required" && mode !== "off") {
+    throw new Error(`invalid worktree mode: ${mode} (valid: required, off)`);
+  }
+  return mode;
+}
+
+function normalizeAutoFinalizerMode(value) {
+  const mode = value || "off";
+  if (!["off", "dry-run", "local", "remote"].includes(mode)) {
+    throw new Error(`invalid auto-finalizer mode: ${mode} (valid: off, dry-run, local, remote)`);
+  }
+  return mode;
+}
+
+function extractJobId(output) {
+  const match = String(output || "").match(/\bjob-[A-Za-z0-9-]+\b/);
+  return match ? match[0] : null;
+}
+
+function finalizerMetadata(result, mode) {
+  if (!result) return null;
+  return {
+    ok: Boolean(result.ok),
+    status: result.status || null,
+    code: result.code || null,
+    commit: result.commit || null,
+    closed: result.closed ?? null,
+    mode,
+  };
+}
+
+function finalizerShouldFailQueue(result) {
+  return result && !result.ok && result.status !== "skipped";
+}
+
+async function defaultIssueCloser({ repo, number, jobId, commit }) {
+  const comment = [
+    `Closed by CodePatchbay job ${jobId}.`,
+    commit ? `Commit: ${commit}` : null,
+  ].filter(Boolean).join("\n");
+  await execFileAsync("gh", [
+    "issue",
+    "close",
+    String(number),
+    "--repo",
+    repo,
+    "--comment",
+    comment,
+  ]);
 }
 
 function sleep(ms) {
@@ -143,6 +200,8 @@ export function parseArgs(argv) {
     agentPreflightBackoffMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_BACKOFF_MS, 30_000),
     agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
     workflow: process.env.CPB_WORKER_WORKFLOW || "standard",
+    worktreeMode: normalizeWorktreeMode(process.env.CPB_WORKER_WORKTREE_MODE || "required"),
+    autoFinalizerMode: process.env.CPB_AUTOFINALIZER_MODE || null,
     cpbRoot: CPB_ROOT,
     executorRoot: CPB_EXECUTOR_ROOT,
     hubRoot: null,
@@ -166,6 +225,8 @@ export function parseArgs(argv) {
     else if (arg === "--agent-preflight-backoff-ms") opts.agentPreflightBackoffMs = Number(valueAfter(i++, "--agent-preflight-backoff-ms"));
     else if (arg === "--agent-preflight-timeout-ms") opts.agentPreflightTimeoutMs = Number(valueAfter(i++, "--agent-preflight-timeout-ms"));
     else if (arg === "--workflow") opts.workflow = valueAfter(i++, "--workflow");
+    else if (arg === "--worktree-mode") opts.worktreeMode = normalizeWorktreeMode(valueAfter(i++, "--worktree-mode"));
+    else if (arg === "--auto-finalizer-mode") opts.autoFinalizerMode = normalizeAutoFinalizerMode(valueAfter(i++, "--auto-finalizer-mode"));
     else if (arg === "--cpb-root") opts.cpbRoot = valueAfter(i++, "--cpb-root");
     else if (arg === "--executor-root") opts.executorRoot = valueAfter(i++, "--executor-root");
     else if (arg === "--hub-root") opts.hubRoot = valueAfter(i++, "--hub-root");
@@ -174,6 +235,10 @@ export function parseArgs(argv) {
   }
   if (!isWorkflowName(opts.workflow)) {
     throw new Error(`invalid workflow: ${opts.workflow} (valid: ${listWorkflows().join(", ")})`);
+  }
+  opts.worktreeMode = normalizeWorktreeMode(opts.worktreeMode);
+  if (opts.autoFinalizerMode !== null) {
+    opts.autoFinalizerMode = normalizeAutoFinalizerMode(opts.autoFinalizerMode);
   }
   return opts;
 }
@@ -195,8 +260,16 @@ export class ProjectWorker {
     this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
     this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
     this.workflow = opts.workflow || "standard";
+    this.worktreeMode = normalizeWorktreeMode(opts.worktreeMode || process.env.CPB_WORKER_WORKTREE_MODE || "required");
     this.requireIssueLink = opts.requireIssueLink === true;
+    this.autoFinalizerMode = normalizeAutoFinalizerMode(
+      opts.autoFinalizerMode
+        || process.env.CPB_AUTOFINALIZER_MODE
+        || (this.requireIssueLink ? "remote" : "off"),
+    );
     this._runPipelineFn = opts.runPipelineFn || null;
+    this._finalizerFn = opts.finalizerFn || finalizeSuccessfulQueueEntry;
+    this._issueCloser = opts.issueCloser || defaultIssueCloser;
     this._agentHealthFn = opts.agentHealthFn || (opts.runPipelineFn
       ? async () => ({ codex: true, claude: true, checks: {} })
       : defaultAgentHealth);
@@ -386,6 +459,16 @@ export class ProjectWorker {
 
     const result = await this.runPipeline(entry, sourcePath, dispatchId, projectId);
 
+    if (result.ok && this.autoFinalizerMode !== "off" && entry.metadata?.autoFinalize !== false) {
+      const finalizer = await this.finalizeEntry({ entry, sourcePath, projectId, result });
+      result.finalizer = finalizer;
+      if (finalizerShouldFailQueue(finalizer)) {
+        result.ok = false;
+        result.code = result.code || 1;
+        result.error = `finalizer rejected: ${finalizer.code || finalizer.status || "unknown"}`;
+      }
+    }
+
     if (dispatchEnabled() && dispatchId) {
       const fn = result.ok ? markDispatchCompleted : markDispatchFailed;
       await fn(this.hubRoot, dispatchId).catch(() => {});
@@ -394,8 +477,36 @@ export class ProjectWorker {
     return result;
   }
 
+  async resolveCompletedJob(projectId, result) {
+    if (result.job) return result.job;
+    const jobId = result.jobId || extractJobId(result.stdout) || extractJobId(result.stderr);
+    if (!jobId) return null;
+    return await getJob(this.cpbRoot, projectId, jobId);
+  }
+
+  async finalizeEntry({ entry, sourcePath, projectId, result }) {
+    const job = await this.resolveCompletedJob(projectId, result);
+    if (!job) {
+      return {
+        ok: false,
+        status: "rejected",
+        code: "JOB_NOT_FOUND",
+      };
+    }
+
+    return await this._finalizerFn({
+      entry,
+      job,
+      sourcePath,
+      mode: this.autoFinalizerMode,
+      issueCloser: this._issueCloser,
+    });
+  }
+
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
-    if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId);
+    const useWorktree = Boolean(sourcePath && this.worktreeMode !== "off");
+    const worktree = { worktreeMode: this.worktreeMode, useWorktree };
+    if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId, worktree);
 
     const projectId = overrideProjectId || this.project?.id;
     return new Promise((resolve) => {
@@ -408,18 +519,22 @@ export class ProjectWorker {
       if (sourcePath) args.push("--source-path", sourcePath);
       if (dispatchId) args.push("--dispatch-id", dispatchId);
 
+      const env = {
+        ...executorEnv(process.env, {
+          cpbRoot: this.cpbRoot,
+          executorRoot: this.executorRoot,
+        }),
+        CPB_PROJECT_PATH_OVERRIDE: sourcePath || "",
+        CPB_ACP_CWD: sourcePath || "",
+        CPB_SESSION_ID: entry.sessionId || "",
+        CPB_WORKER_ID: this.workerId,
+      };
+      if (useWorktree) env.CPB_USE_WORKTREE = "1";
+      else delete env.CPB_USE_WORKTREE;
+
       const child = spawn(process.execPath, args, {
         cwd: this.cpbRoot,
-        env: {
-          ...executorEnv(process.env, {
-            cpbRoot: this.cpbRoot,
-            executorRoot: this.executorRoot,
-          }),
-          CPB_PROJECT_PATH_OVERRIDE: sourcePath || "",
-          CPB_ACP_CWD: sourcePath || "",
-          CPB_SESSION_ID: entry.sessionId || "",
-          CPB_WORKER_ID: this.workerId,
-        },
+        env,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -468,7 +583,19 @@ export class ProjectWorker {
     }
 
     const finalStatus = result.ok ? "completed" : "failed";
-    await updateEntry(this.hubRoot, entry.id, { status: finalStatus }).catch(() => {});
+    const patch = { status: finalStatus };
+    if (result.finalizer) {
+      patch.metadata = {
+        finalizer: finalizerMetadata(result.finalizer, this.autoFinalizerMode),
+      };
+      const jobId = result.finalizer.jobId || result.job?.jobId || result.jobId || extractJobId(result.stdout) || extractJobId(result.stderr);
+      if (jobId) {
+        await recordFinalizerResult(this.cpbRoot, entry.projectId, jobId, {
+          result: patch.metadata.finalizer,
+        }).catch(() => {});
+      }
+    }
+    await updateEntry(this.hubRoot, entry.id, patch).catch(() => {});
 
     return { entry, result };
   }
@@ -520,6 +647,8 @@ Options:
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
   --workflow <type>          Pipeline workflow: standard|complex|blocked|accelerated (default: standard)
+  --worktree-mode <mode>     Worker source isolation mode: required|off (default: required)
+  --auto-finalizer-mode <mode> Successful queue finalization: off|dry-run|local|remote (default: remote for issue-linked CLI workers)
   --cpb-root <path>          CPB root directory
   --executor-root <path>     CPB executor/release root directory
   --hub-root <path>          Hub root directory`;
@@ -545,6 +674,8 @@ async function main() {
     agentPreflightBackoffMs: opts.agentPreflightBackoffMs,
     agentPreflightTimeoutMs: opts.agentPreflightTimeoutMs,
     workflow: opts.workflow,
+    worktreeMode: opts.worktreeMode,
+    autoFinalizerMode: opts.autoFinalizerMode,
     requireIssueLink: true,
     cpbRoot: opts.cpbRoot,
     executorRoot: opts.executorRoot,

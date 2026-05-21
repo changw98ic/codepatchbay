@@ -254,6 +254,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "job_redirect_consumed", "phase_activity",
   "permission_denied",
   "external_repair_started", "external_repair_completed", "external_repair_failed",
+  "finalizer_result",
 ]);
 
 export function materializeJob(events) {
@@ -293,6 +294,7 @@ export function materializeJob(events) {
     lineage: null,
     permissionDenials: [],
     infraStatus: null,
+    finalizer: null,
   };
 
   let terminal = false;
@@ -483,6 +485,17 @@ export function materializeJob(events) {
         state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
         state.externalRepairAt = event.ts ?? state.externalRepairAt;
         state.externalRepairError = event.error ?? event.reason ?? null;
+        break;
+      case "finalizer_result":
+        state.finalizer = {
+          ok: Boolean(event.result?.ok),
+          status: event.result?.status ?? null,
+          code: event.result?.code ?? null,
+          commit: event.result?.commit ?? null,
+          closed: event.result?.closed ?? null,
+          mode: event.result?.mode ?? null,
+          ts: event.ts ?? null,
+        };
         break;
     }
   }
