@@ -309,10 +309,11 @@ describe('Hub routes', () => {
   });
 
   it('POST /hub/queue/claim skips busy project and claims from another', async () => {
-    const a1 = await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-1' });
+    const linked = (issueNumber) => ({ issueNumber });
+    const a1 = await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-1', metadata: linked(1001) });
     await updateEntry(hubRoot, a1.id, { status: 'in_progress', claimedBy: 'w1', workerId: 'w1', claimedAt: new Date().toISOString() });
-    await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-2' });
-    await enqueue(hubRoot, { projectId: 'proj-b', sourcePath: projectRoot, description: 'b-task-1' });
+    await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-2', metadata: linked(1002) });
+    await enqueue(hubRoot, { projectId: 'proj-b', sourcePath: projectRoot, description: 'b-task-1', metadata: linked(1003) });
 
     const res = await app.inject({
       method: 'POST',
@@ -328,9 +329,9 @@ describe('Hub routes', () => {
   });
 
   it('POST /hub/queue/claim returns no-claim when all projects busy', async () => {
-    const a1 = await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-1' });
+    const a1 = await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-1', metadata: { issueNumber: 1011 } });
     await updateEntry(hubRoot, a1.id, { status: 'in_progress', claimedBy: 'w1', workerId: 'w1', claimedAt: new Date().toISOString() });
-    await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-2' });
+    await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-2', metadata: { issueNumber: 1012 } });
 
     const res = await app.inject({
       method: 'POST',

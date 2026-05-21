@@ -11,7 +11,7 @@ import {
   hubQueueStatus as _rustStatus,
 } from "./runtime-cli.js";
 
-const QUEUE_VERSION = 1;
+export const QUEUE_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 function nowIso() {
@@ -66,6 +66,18 @@ function priorityScore(priority) {
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
   return 3;
+}
+
+function hasIssueLink(metadata) {
+  if (!metadata || typeof metadata !== "object") return false;
+  return Boolean(metadata.issueNumber || metadata.issueUrl);
+}
+
+export function validateIssueLink(entry) {
+  if (!entry) return { linked: false, reason: "no entry" };
+  if (entry.status === "needs_issue_link") return { linked: false, reason: "awaiting issue link" };
+  if (entry.status === "archived") return { linked: false, reason: "archived" };
+  return { linked: hasIssueLink(entry.metadata), reason: null };
 }
 
 function entryKey(entry) {
@@ -200,13 +212,14 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 export async function queueStatus(hubRoot) {
   if (shouldUseRustRuntime()) return _rustStatus(hubRoot);
   const queue = await loadQueue(hubRoot);
-  const counts = { total: queue.entries.length, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 };
+  const counts = { total: queue.entries.length, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, needsIssueLink: 0 };
   for (const e of queue.entries) {
     if (e.status === "pending") counts.pending++;
     else if (e.status === "in_progress") counts.inProgress++;
     else if (e.status === "completed") counts.completed++;
     else if (e.status === "failed") counts.failed++;
     else if (e.status === "cancelled") counts.cancelled++;
+    else if (e.status === "needs_issue_link") counts.needsIssueLink++;
   }
   counts.projects = buildProjectQueueStatus(queue.entries);
   counts.activeProjects = Object.entries(counts.projects)
@@ -274,6 +287,7 @@ export async function claimEligible(hubRoot, opts = {}) {
     maxActivePerProject = 1,
     claimTimeoutMs = 120_000,
     providerSlotsAvailable = true,
+    requireIssueLink = false,
   } = opts;
 
   if (!providerSlotsAvailable) {
@@ -291,9 +305,18 @@ export async function claimEligible(hubRoot, opts = {}) {
   }
 
   let pending = queue.entries.filter((e) => e.status === "pending");
+  if (requireIssueLink) {
+    pending = pending.filter((e) => hasIssueLink(e.metadata));
+  }
   if (projectId) pending = pending.filter((e) => e.projectId === projectId);
 
-  pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt));
+  pending.sort((a, b) => {
+    // Platform/architecture-fix entries get priority boost
+    const aIsPlatformFix = /platform|architecture.fix/i.test(a.type || "") ? -1 : 0;
+    const bIsPlatformFix = /platform|architecture.fix/i.test(b.type || "") ? -1 : 0;
+    if (aIsPlatformFix !== bIsPlatformFix) return aIsPlatformFix - bIsPlatformFix;
+    return priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt);
+  });
 
   let chosen = null;
   let reason = null;

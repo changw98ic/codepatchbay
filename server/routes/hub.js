@@ -136,6 +136,7 @@ export async function hubRoutes(fastify) {
       maxActivePerProject: body.maxActivePerProject ?? 1,
       claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
+      requireIssueLink: body.requireIssueLink !== false,
     });
     if (!result.entry) {
       return { claimed: false, reason: result.reason, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy };

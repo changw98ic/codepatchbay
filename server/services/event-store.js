@@ -9,6 +9,8 @@ import {
   redactSecrets,
 } from "./secret-policy.js";
 
+export const JOBS_EVENTS_FORMAT_VERSION = 1;
+
 function _base(cpbRoot, opts) {
   return opts?.dataRoot || runtimeDataRoot(cpbRoot);
 }
@@ -501,7 +503,7 @@ export async function writeCheckpoint(cpbRoot, project, jobId, state, opts = {})
   const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   await mkdir(path.dirname(file), { recursive: true });
   const checkpoint = {
-    _meta: { version: 1, writtenAt: new Date().toISOString(), eventCount: null },
+    _meta: { version: JOBS_EVENTS_FORMAT_VERSION, writtenAt: new Date().toISOString(), eventCount: null },
     state,
   };
   await writeFile(file, JSON.stringify(checkpoint) + "\n", "utf8");

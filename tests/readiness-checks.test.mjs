@@ -8,6 +8,9 @@ import {
   formatReadinessHuman,
   formatReadinessJson,
   runReadinessChecks,
+  runReleaseDoctorChecks,
+  formatReleaseDoctorHuman,
+  formatReleaseDoctorJson,
 } from "../server/services/readiness-checks.js";
 
 let tmpDir;
@@ -457,4 +460,97 @@ test("server-deps check reports ok when node_modules exists", async () => {
   const result = await runReadinessChecks({ cpbRoot, hubRoot });
   const deps = result.checks.find((c) => c.id === "server-deps");
   assert.equal(deps.status, "ok");
+});
+
+// --- Release doctor checks ---
+
+test("runReleaseDoctorChecks returns structured result with all required fields", async () => {
+  const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+  assert.equal(result.command, "cpb release doctor");
+  assert.ok(result.generatedAt);
+  assert.ok(result.summary);
+  assert.ok(Array.isArray(result.checks));
+  assert.equal(result.checks.length, 6);
+
+  const ids = result.checks.map(c => c.id);
+  const requiredIds = [
+    "release.current_metadata",
+    "release.executor_root",
+    "release.runtime_root",
+    "release.state_format",
+    "release.launcher_health",
+    "release.job_pinning",
+  ];
+  for (const rid of requiredIds) {
+    assert.ok(ids.includes(rid), `missing release check: ${rid}`);
+  }
+});
+
+test("release doctor checks use ok/warn/fail statuses", async () => {
+  const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+  for (const check of result.checks) {
+    assert.ok(
+      ["ok", "warn", "fail"].includes(check.status),
+      `invalid status for ${check.id}: ${check.status}`,
+    );
+  }
+});
+
+test("release doctor warns when no release selected", async () => {
+  const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+  const current = result.checks.find(c => c.id === "release.current_metadata");
+  assert.equal(current.status, "warn");
+  assert.ok(current.guidance);
+});
+
+test("release doctor ok when valid release selected", async () => {
+  const sourceRoot = path.join(tmpDir, "source");
+  await fs.mkdir(path.join(sourceRoot, "bridges"), { recursive: true });
+  await fs.writeFile(path.join(sourceRoot, "bridges", "common.sh"), "# sh\n");
+  await fs.writeFile(path.join(sourceRoot, "bridges", "run-pipeline.mjs"), "// p\n");
+  await fs.writeFile(path.join(sourceRoot, "bridges", "project-worker.mjs"), "// w\n");
+  await fs.writeFile(path.join(sourceRoot, "bridges", "job-runner.mjs"), "// r\n");
+  await fs.mkdir(path.join(sourceRoot, "server", "services"), { recursive: true });
+  await fs.writeFile(path.join(sourceRoot, "server", "services", "job-store.js"), "// js\n");
+  await fs.writeFile(path.join(sourceRoot, "cpb"), "#!/bin/bash\n");
+  await fs.writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({ name: "cpb", version: "0.1.0" }));
+  await fs.mkdir(path.join(sourceRoot, "profiles"), { recursive: true });
+  await fs.mkdir(path.join(sourceRoot, "templates"), { recursive: true });
+  await fs.mkdir(path.join(sourceRoot, "wiki", "system"), { recursive: true });
+  await fs.mkdir(path.join(sourceRoot, "wiki", "projects"), { recursive: true });
+
+  // Set CPB_HOME so all operations agree on the release store root
+  const prevHome = process.env.CPB_HOME;
+  process.env.CPB_HOME = tmpDir;
+
+  try {
+    const { installRelease, selectRelease } = await import("../server/services/release-store.js");
+    const storeRoot = path.join(tmpDir, "releases");
+    await installRelease({ sourceRoot, destRoot: storeRoot, name: "test-rel-1", env: process.env, now: new Date() });
+    await selectRelease({ releaseId: "test-rel-1", destRoot: storeRoot, env: process.env });
+
+    const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+    const current = result.checks.find(c => c.id === "release.current_metadata");
+    assert.equal(current.status, "ok");
+    assert.ok(current.message.includes("test-rel-1"));
+  } finally {
+    if (prevHome !== undefined) process.env.CPB_HOME = prevHome;
+    else delete process.env.CPB_HOME;
+  }
+});
+
+test("formatReleaseDoctorHuman produces readable output", async () => {
+  const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+  const human = formatReleaseDoctorHuman(result);
+  assert.ok(human.includes("Release Doctor"));
+  assert.ok(human.includes("release.current_metadata"));
+});
+
+test("formatReleaseDoctorJson produces valid JSON", async () => {
+  const result = await runReleaseDoctorChecks({ cpbRoot, env: process.env });
+  const jsonStr = formatReleaseDoctorJson(result);
+  const parsed = JSON.parse(jsonStr);
+  assert.equal(parsed.command, "cpb release doctor");
+  assert.ok(parsed.summary);
+  assert.ok(Array.isArray(parsed.checks));
 });

@@ -195,6 +195,7 @@ export class ProjectWorker {
     this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
     this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
     this.workflow = opts.workflow || "standard";
+    this.requireIssueLink = opts.requireIssueLink === true;
     this._runPipelineFn = opts.runPipelineFn || null;
     this._agentHealthFn = opts.agentHealthFn || (opts.runPipelineFn
       ? async () => ({ codex: true, claude: true, checks: {} })
@@ -299,6 +300,7 @@ export class ProjectWorker {
       projectId: this.pool ? null : this.project?.id || null,
       maxActivePerProject: this.maxActivePerProject,
       claimTimeoutMs: this.claimTimeoutMs,
+      requireIssueLink: this.requireIssueLink,
     });
     return result.entry;
   }
@@ -543,6 +545,7 @@ async function main() {
     agentPreflightBackoffMs: opts.agentPreflightBackoffMs,
     agentPreflightTimeoutMs: opts.agentPreflightTimeoutMs,
     workflow: opts.workflow,
+    requireIssueLink: true,
     cpbRoot: opts.cpbRoot,
     executorRoot: opts.executorRoot,
     hubRoot: opts.hubRoot,

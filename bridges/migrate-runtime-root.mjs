@@ -371,14 +371,18 @@ export function printReport(report) {
 async function main() {
   const cpbRoot = process.env.CPB_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const hubRoot = resolveHubRoot(cpbRoot);
-  const dryRun = process.argv.includes("--dry-run");
+  const hasExecute = process.argv.includes("--execute");
+  const hasDryRun = process.argv.includes("--dry-run");
+  // Default to dry-run; destructive operations require explicit --execute
+  const dryRun = !hasExecute || hasDryRun;
   const quarantineNonCodePatchbay = process.argv.includes("--quarantine-non-cpb");
   const projectRuntime = process.argv.includes("--project-runtime");
 
+  if (dryRun) {
+    console.log("=== DRY RUN: No files will be moved or deleted ===\n");
+  }
+
   if (projectRuntime) {
-    if (dryRun) {
-      console.log("=== DRY RUN: No files will be moved or deleted ===\n");
-    }
     const report = await migrateToProjectRuntimeRoots(cpbRoot, hubRoot, { dryRun, quarantineNonCodePatchbay });
     printReport(report);
     return report.conflicts.length > 0 ? 2 : 0;

@@ -6,6 +6,7 @@ import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
 import { executorEnv, resolveExecutorRoot } from "./executor-root.js";
 import { buildChildEnv } from "./secret-policy.js";
+import { recoverAsNewJob } from "./job-recovery.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 const STALE_GRACE_COUNT = parseInt(process.env.CPB_STALE_GRACE_COUNT, 10) || 3;
@@ -244,16 +245,31 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
     return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
   }
 
-  const bridge = bridgeForPhase(phase, job.project, job);
+  // Create a fresh recovery job with lineage; original terminal record stays auditable
+  let recoveryJob = job;
+  const TERMINAL_SET = new Set(["failed", "blocked", "cancelled"]);
+  if (TERMINAL_SET.has(job.status)) {
+    try {
+      recoveryJob = await recoverAsNewJob(cpbRoot, job.project, job.jobId, {
+        reason: `supervisor recovery: ${job.status} job needs phase ${phase}`,
+        trigger: "supervisor",
+      });
+    } catch (err) {
+      // If recovery job creation fails, proceed with original job (best-effort)
+      recoveryJob = job;
+    }
+  }
+
+  const bridge = bridgeForPhase(phase, recoveryJob.project, recoveryJob);
   if (!bridge) {
-    return { jobId: job.jobId, project: job.project, phase, exitCode: 1, error: "no bridge for phase" };
+    return { jobId: recoveryJob.jobId, project: recoveryJob.project, phase, exitCode: 1, error: "no bridge for phase" };
   }
 
   const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
   if (!await fileExists(jobRunner)) {
     return {
-      jobId: job.jobId,
-      project: job.project,
+      jobId: recoveryJob.jobId,
+      project: recoveryJob.project,
       phase,
       exitCode: 1,
       error: `job runner not found: ${jobRunner}`,
@@ -263,8 +279,8 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
   const runnerArgs = [
     jobRunner,
     "--cpb-root", cpbRoot,
-    "--project", job.project,
-    "--job-id", job.jobId,
+    "--project", recoveryJob.project,
+    "--job-id", recoveryJob.jobId,
     "--phase", phase,
     "--script", path.resolve(resolvedExecutorRoot, bridge.script),
     "--",
@@ -279,11 +295,12 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
   });
 
   return {
-    jobId: job.jobId,
-    project: job.project,
+    jobId: recoveryJob.jobId,
+    project: recoveryJob.project,
     phase,
     exitCode: result.exitCode,
     error: result.error?.message ?? null,
+    recoveredFrom: recoveryJob.jobId !== job.jobId ? job.jobId : null,
   };
 }
 
