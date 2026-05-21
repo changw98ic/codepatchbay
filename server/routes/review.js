@@ -11,6 +11,8 @@ import {
   updateSession,
 } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
+import { writeProjectIndex } from "../services/project-index.js";
+import { resolveHubRoot } from "../services/hub-registry.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -244,6 +246,9 @@ export async function reviewRoutes(fastify, opts) {
     }
 
     let merged = false;
+    let mergeError = null;
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+
     if (session.worktreePath && session.jobId) {
       try {
         const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
@@ -251,20 +256,45 @@ export async function reviewRoutes(fastify, opts) {
         const sourcePath = meta.sourcePath;
         if (sourcePath) {
           const branch = `cpb/${session.jobId}-pipeline`;
-          // Check if branch exists
           try {
             await gitExec(sourcePath, "rev-parse", "--verify", branch);
-            // Merge the branch
             await gitExec(sourcePath, "merge", "--no-ff", "-m", `cpb: accept review ${session.sessionId}`, branch);
             merged = true;
-            // Clean up branch
             await gitExec(sourcePath, "branch", "-D", branch).catch(() => {});
+
+            // Persist project-index after successful merge
+            try {
+              const gitHead = await gitExec(sourcePath, "rev-parse", "HEAD");
+              const currentBranch = await gitExec(sourcePath, "rev-parse", "--abbrev-ref", "HEAD");
+              await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
+                state: "merged_indexed",
+                branch: currentBranch,
+                gitHead,
+                indexedFrom: `merge:${session.jobId}`,
+                timestamp: new Date().toISOString(),
+              });
+            } catch { /* best effort index write */ }
           } catch (err) {
-            // Branch might not exist if pipeline didn't use worktree
+            mergeError = err.message;
           }
-          // Clean up worktree directory
           await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
           await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
+
+          // Persist merge failure status
+          if (!merged && mergeError) {
+            try {
+              const gitHead = await gitExec(sourcePath, "rev-parse", "HEAD").catch(() => null);
+              const currentBranch = await gitExec(sourcePath, "rev-parse", "--abbrev-ref", "HEAD").catch(() => null);
+              await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
+                state: "merge_failed",
+                branch: currentBranch,
+                gitHead,
+                indexedFrom: `merge:${session.jobId}`,
+                timestamp: new Date().toISOString(),
+                error: mergeError,
+              });
+            } catch { /* best effort */ }
+          }
         }
       } catch (err) {
         // Best effort merge

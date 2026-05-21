@@ -71,6 +71,12 @@ export default function Project() {
         <Link to="/">← Back</Link>
         <h2>{name}</h2>
         {project.pipelineState && <PipelineStatus state={project.pipelineState} />}
+        {project.projectIndex && (
+          <span className={`badge badge-idx-${project.projectIndex.state}`}>
+            idx:{project.projectIndex.state}
+            {project.projectIndex.branch ? ` (${project.projectIndex.branch})` : ''}
+          </span>
+        )}
       </div>
 
       <div className="tabs">

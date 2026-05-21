@@ -309,6 +309,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "process_stop_skipped", "process_marked_orphan", "process_stop_requested", "process_stopped",
   "finalizer_result",
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
+  "merge_index_status",
 ]);
 
 export function materializeJob(events) {
@@ -350,6 +351,10 @@ export function materializeJob(events) {
     permissionDenials: [],
     infraStatus: null,
     finalizer: null,
+    mergeIndexStatus: null,
+    mergeIndexBranch: null,
+    mergeIndexGitHead: null,
+    mergeIndexedFrom: null,
   };
 
   let terminal = false;
@@ -553,6 +558,12 @@ export function materializeJob(events) {
           mode: event.result?.mode ?? null,
           ts: event.ts ?? null,
         };
+        break;
+      case "merge_index_status":
+        state.mergeIndexStatus = event.indexState ?? event.mergeIndexStatus ?? state.mergeIndexStatus;
+        state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch;
+        state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead;
+        state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom;
         break;
     }
   }

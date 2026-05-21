@@ -32,6 +32,7 @@ const EVENT_REGISTRY = {
   external_repair_started:   { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_started'] },
   external_repair_completed: { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_completed'] },
   external_repair_failed:    { class: 'audit', consumer: 'repairer, job-projection', testFile: 'event-store.test.mjs', testMatch: ['external_repair_failed'] },
+  merge_index_status:     { class: 'state',    consumer: 'job-projection, project-index', testFile: 'review-accept-index.test.mjs', testMatch: ['merge_index_status'] },
 };
 
 const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);
