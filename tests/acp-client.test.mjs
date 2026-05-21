@@ -15,12 +15,15 @@ const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-t
 const fakePermissionTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-permission-terminal.mjs");
 
 async function runClient({ env, prompt, cwd }) {
+  const cleanEnv = { ...process.env, ...env };
+  if (!env.CPB_EXECUTOR_ROOT) delete cleanEnv.CPB_EXECUTOR_ROOT;
+  if (!env.CPB_ROOT) delete cleanEnv.CPB_ROOT;
+  if (!env.CPB_PROJECT_PATH_OVERRIDE) delete cleanEnv.CPB_PROJECT_PATH_OVERRIDE;
+  if (!env.CPB_WORKER_ID) delete cleanEnv.CPB_WORKER_ID;
+  if (!env.CPB_SESSION_ID) delete cleanEnv.CPB_SESSION_ID;
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
     cwd: root,
-    env: {
-      ...process.env,
-      ...env,
-    },
+    env: cleanEnv,
     stdio: ["pipe", "pipe", "pipe"],
   });
 

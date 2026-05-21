@@ -17,6 +17,8 @@ function collectReleasePins(jobs) {
   for (const job of jobs) {
     const ids = new Set();
     if (job.executor?.releaseId) ids.add(job.executor.releaseId);
+    if (job.lineage?.executorSelection?.selectedReleaseId) ids.add(job.lineage.executorSelection.selectedReleaseId);
+    if (job.lineage?.executorSelection?.parentReleaseId) ids.add(job.lineage.executorSelection.parentReleaseId);
     for (const id of ids) {
       if (!pins.has(id)) pins.set(id, []);
       pins.get(id).push({ jobId: job.jobId, status: job.status, project: job.project });

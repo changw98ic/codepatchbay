@@ -316,3 +316,94 @@ describe("direct appendEvent terminal seal", () => {
     assert.equal(eventsAfter.length, countBefore + 1, "audit event should be appended");
   });
 });
+
+describe("executor pinning across retry", () => {
+  const oldExecutor = {
+    root: "/tmp/cpb-old",
+    packageName: "codepatchbay",
+    version: "0.1.0",
+    releaseId: "old-rel",
+    codeVersion: "0.1.0",
+    stateFormatVersions: { queue: 1 },
+  };
+  const currentExecutor = {
+    root: "/tmp/cpb-new",
+    packageName: "codepatchbay",
+    version: "0.2.0",
+    releaseId: "new-rel",
+    codeVersion: "0.2.0",
+    stateFormatVersions: { queue: 2 },
+  };
+
+  it("retryJob preserves parent executor by default", async () => {
+    const job = await createJob(root, {
+      project: P, task: "executor-pin-default", executor: oldExecutor, ts: ts(700),
+    });
+    await failJob(root, P, job.jobId, {
+      reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute", ts: ts(701),
+    });
+    const parentEvents = await readEvents(root, P, job.jobId);
+
+    const child = await retryJob(root, P, job.jobId, { ts: ts(710) });
+
+    assert.deepEqual(child.executor, oldExecutor);
+    assert.equal((await readEvents(root, P, job.jobId)).length, parentEvents.length);
+  });
+
+  it("retryJob uses current executor when override is explicit", async () => {
+    const job = await createJob(root, {
+      project: P, task: "executor-pin-override", executor: oldExecutor, ts: ts(720),
+    });
+    await failJob(root, P, job.jobId, {
+      reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute", ts: ts(721),
+    });
+
+    const child = await retryJob(root, P, job.jobId, {
+      ts: ts(730), useCurrentExecutor: true, currentExecutor,
+    });
+
+    assert.deepEqual(child.executor, currentExecutor);
+  });
+
+  it("records executorSelection audit for preserved executor", async () => {
+    const job = await createJob(root, {
+      project: P, task: "audit-preserve", executor: oldExecutor, ts: ts(740),
+    });
+    await failJob(root, P, job.jobId, {
+      reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute", ts: ts(741),
+    });
+
+    const child = await retryJob(root, P, job.jobId, { ts: ts(750) });
+    const recovery = (await readEvents(root, P, child.jobId)).find((e) => e.type === "recovery_created");
+
+    assert.equal(recovery.executorSelection.mode, "preserve-parent");
+    assert.equal(recovery.executorSelection.override, false);
+    assert.equal(recovery.executorSelection.parentRoot, "/tmp/cpb-old");
+    assert.equal(recovery.executorSelection.selectedRoot, "/tmp/cpb-old");
+    assert.equal(recovery.executorSelection.parentReleaseId, "old-rel");
+    assert.equal(recovery.executorSelection.selectedReleaseId, "old-rel");
+    assert.equal(child.lineage.executorSelection.mode, "preserve-parent");
+  });
+
+  it("records executorSelection audit for current executor override", async () => {
+    const job = await createJob(root, {
+      project: P, task: "audit-override", executor: oldExecutor, ts: ts(760),
+    });
+    await failJob(root, P, job.jobId, {
+      reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute", ts: ts(761),
+    });
+
+    const child = await retryJob(root, P, job.jobId, {
+      ts: ts(770), useCurrentExecutor: true, currentExecutor,
+    });
+    const recovery = (await readEvents(root, P, child.jobId)).find((e) => e.type === "recovery_created");
+
+    assert.equal(recovery.executorSelection.mode, "use-current");
+    assert.equal(recovery.executorSelection.override, true);
+    assert.equal(recovery.executorSelection.parentRoot, "/tmp/cpb-old");
+    assert.equal(recovery.executorSelection.selectedRoot, "/tmp/cpb-new");
+    assert.equal(recovery.executorSelection.parentReleaseId, "old-rel");
+    assert.equal(recovery.executorSelection.selectedReleaseId, "new-rel");
+    assert.equal(child.lineage.executorSelection.mode, "use-current");
+  });
+});

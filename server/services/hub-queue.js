@@ -2,14 +2,6 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildMeta } from "./execution-meta.js";
 
-import {
-  shouldUseRustRuntime,
-  hubQueueEnqueue as _rustEnqueue,
-  hubQueueDequeue as _rustDequeue,
-  hubQueueList as _rustList,
-  hubQueueUpdate as _rustUpdate,
-  hubQueueStatus as _rustStatus,
-} from "./runtime-cli.js";
 
 export const QUEUE_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -97,8 +89,6 @@ export async function enqueue(hubRoot, input = {}) {
     cwd: meta.cwd,
     executionBoundary: meta.executionBoundary,
   };
-  if (shouldUseRustRuntime()) return _rustEnqueue(hubRoot, normalizedInput);
-
   const queue = await loadQueue(hubRoot);
   const key = entryKey(normalizedInput);
   const existing = queue.entries.find((e) => entryKey(e) === key && e.status === "pending");
@@ -129,7 +119,6 @@ export async function enqueue(hubRoot, input = {}) {
 }
 
 export async function dequeue(hubRoot) {
-  if (shouldUseRustRuntime()) return _rustDequeue(hubRoot);
   const queue = await loadQueue(hubRoot);
   const pending = queue.entries.filter((e) => e.status === "pending");
   if (pending.length === 0) return null;
@@ -153,7 +142,6 @@ export async function peekQueue(hubRoot) {
 }
 
 export async function updateEntry(hubRoot, entryId, patch = {}) {
-  if (shouldUseRustRuntime()) return _rustUpdate(hubRoot, entryId, patch);
   const queue = await loadQueue(hubRoot);
   const entry = queue.entries.find((e) => e.id === entryId);
   if (!entry) return null;
@@ -170,7 +158,6 @@ export async function updateEntry(hubRoot, entryId, patch = {}) {
 }
 
 export async function listQueue(hubRoot, { status, projectId } = {}) {
-  if (shouldUseRustRuntime()) return _rustList(hubRoot, { status, projectId });
   const queue = await loadQueue(hubRoot);
   return queue.entries.filter((e) => {
     if (status && e.status !== status) return false;
@@ -210,7 +197,6 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 }
 
 export async function queueStatus(hubRoot) {
-  if (shouldUseRustRuntime()) return _rustStatus(hubRoot);
   const queue = await loadQueue(hubRoot);
   const counts = { total: queue.entries.length, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, needsIssueLink: 0 };
   for (const e of queue.entries) {

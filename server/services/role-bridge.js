@@ -8,8 +8,20 @@ const ROLE_BRIDGE_MAP = {
   repairer: "repairer.sh",
 };
 
+const ROLE_DISPATCH_MAP = {
+  planner: "planner",
+  executor: "executor",
+  verifier: "verifier",
+  reviewer: "reviewer",
+  repairer: "repairer",
+};
+
 export function bridgeForRole(role) {
   return ROLE_BRIDGE_MAP[role] ?? null;
+}
+
+export function dispatchForRole(role) {
+  return ROLE_DISPATCH_MAP[role] ?? null;
 }
 
 export async function bridgeEnvFromProfile(cpbRoot, role) {

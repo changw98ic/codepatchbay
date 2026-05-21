@@ -477,6 +477,7 @@ export function materializeJob(events) {
           parentBlockedReason: event.lineage?.parentBlockedReason ?? null,
           recoveryReason: event.recoveryReason ?? null,
           trigger: event.trigger ?? null,
+          executorSelection: event.executorSelection ?? null,
         };
         break;
       case "permission_denied":

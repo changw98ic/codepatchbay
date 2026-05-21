@@ -3,6 +3,7 @@ const WORKCPBS = {
     name: "standard",
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     bridgeForPhase: {
       plan: "planner.sh",
       execute: "executor.sh",
@@ -13,6 +14,7 @@ const WORKCPBS = {
     name: "complex",
     phases: ["plan", "execute", "review", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
+    dispatchForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     bridgeForPhase: {
       plan: "planner.sh",
       execute: "executor.sh",
@@ -24,6 +26,7 @@ const WORKCPBS = {
     name: "blocked",
     phases: [],
     roleForPhase: {},
+    dispatchForPhase: {},
     bridgeForPhase: {},
   },
   accelerated: {
@@ -56,6 +59,10 @@ export function nextPhase(workflow, currentPhase) {
 
 export function bridgeForPhase(workflow, phase) {
   return workflow.bridgeForPhase[phase] ?? null;
+}
+
+export function dispatchForPhase(workflow, phase) {
+  return workflow.dispatchForPhase[phase] ?? null;
 }
 
 export function roleForPhase(workflow, phase) {

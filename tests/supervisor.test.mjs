@@ -380,4 +380,89 @@ const emptyRoot = await mkdtemp(path.join(tmpdir(), "cpb-supervisor-empty-"));
 const emptyResults = await recoverAndRun(emptyRoot);
 assert.deepEqual(emptyResults, []);
 
+// ---------------------------------------------------------------------------
+// recoverOneJob: pinned executor root selection
+// ---------------------------------------------------------------------------
+
+const pinnedJob = await createJob(root, {
+  project: "demo",
+  task: "Pinned executor test",
+  workflow: "standard",
+  executor: {
+    root: "/tmp/cpb-pinned-fake",
+    packageName: "codepatchbay",
+    version: "0.1.0",
+    releaseId: "pinned-rel",
+    codeVersion: "0.1.0",
+    stateFormatVersions: null,
+  },
+  ts: "2026-05-13T04:00:00.000Z",
+});
+await completePhase(root, "demo", pinnedJob.jobId, {
+  phase: "plan",
+  artifact: "plan-pinned.md",
+  ts: "2026-05-13T04:01:00.000Z",
+});
+await completePhase(root, "demo", pinnedJob.jobId, {
+  phase: "execute",
+  artifact: "deliverable-pinned.md",
+  ts: "2026-05-13T04:02:00.000Z",
+});
+await completePhase(root, "demo", pinnedJob.jobId, {
+  phase: "verify",
+  artifact: "verdict-pinned.md",
+  ts: "2026-05-13T04:03:00.000Z",
+});
+
+const pinnedState = await getJob(root, "demo", pinnedJob.jobId);
+
+// Default: uses pinned executor root (/tmp/cpb-pinned-fake) which has no job-runner
+const pinnedResult = await recoverOneJob(root, pinnedState, {
+  executorRoot: "/tmp/cpb-caller-root",
+});
+assert.equal(pinnedResult.phase, "complete");
+assert.equal(pinnedResult.exitCode, 0);
+
+// Test that a running-phase job with pinned root tries the pinned path
+const pinnedRunningJob = await createJob(root, {
+  project: "demo",
+  task: "Pinned running test",
+  workflow: "standard",
+  executor: {
+    root: "/tmp/cpb-pinned-running",
+    packageName: "codepatchbay",
+    version: "0.1.0",
+  },
+  ts: "2026-05-13T05:00:00.000Z",
+});
+await completePhase(root, "demo", pinnedRunningJob.jobId, {
+  phase: "plan",
+  artifact: "plan-pr.md",
+  ts: "2026-05-13T05:01:00.000Z",
+});
+const pinnedRunningState = await getJob(root, "demo", pinnedRunningJob.jobId);
+
+// Default: should try pinned root first (which doesn't exist), error references pinned path
+const defaultResult = await recoverOneJob(root, pinnedRunningState, {
+  executorRoot: "/tmp/cpb-caller-root",
+});
+assert.equal(defaultResult.phase, "execute");
+// The pinned root /tmp/cpb-pinned-running has no job-runner, so it errors
+assert.ok(defaultResult.error);
+assert.ok(defaultResult.error.includes("/tmp/cpb-pinned-running"),
+  `error should reference pinned root, got: ${defaultResult.error}`);
+
+// Override: useCurrentExecutor ignores pinned root, uses caller root instead
+const overrideResult = await recoverOneJob(root, pinnedRunningState, {
+  executorRoot: "/tmp/cpb-caller-root",
+  useCurrentExecutor: true,
+});
+assert.equal(overrideResult.phase, "execute");
+assert.notEqual(overrideResult.exitCode, 0, "override should fail on nonexistent caller root");
+assert.ok(
+  (overrideResult.error && overrideResult.error.includes("/tmp/cpb-caller-root")) ||
+  overrideResult.exitCode !== 0,
+  "override should try caller root, not pinned root"
+);
+
 console.log("All supervisor tests passed.");

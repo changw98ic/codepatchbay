@@ -138,9 +138,7 @@ async function setupRepairFixture() {
 test("cpb repair records audit events and creates a new lineage queue task", async () => {
   const fixture = await setupRepairFixture();
   try {
-    const { stdout } = await execFileAsync("./cpb", ["repair", fixture.project, fixture.jobId], {
-      cwd: repoRoot,
-      env: {
+    const repairEnv = {
         ...process.env,
         CPB_ROOT: fixture.cpbRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -149,7 +147,12 @@ test("cpb repair records audit events and creates a new lineage queue task", asy
         CPB_TEST_PROMPT: fixture.promptPath,
         CPB_TEST_AGENT: fixture.agentPath,
         CPB_TEST_CWD: fixture.cwdPath,
-      },
+      };
+    // Don't leak CPB executor state — repairer.sh reads get_project_path which checks CPB_PROJECT_PATH_OVERRIDE
+    delete repairEnv.CPB_PROJECT_PATH_OVERRIDE;
+    const { stdout } = await execFileAsync("./cpb", ["repair", fixture.project, fixture.jobId], {
+      cwd: repoRoot,
+      env: repairEnv,
     });
 
     assert.match(stdout, /Repair: .*repair-001\.md/);

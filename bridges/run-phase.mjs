@@ -27,13 +27,13 @@ import {
   deliverableFilePath,
   verdictFilePath,
   reviewFilePath,
-  repairFilePath,
   wikiLogPath,
   dashboardPath,
 } from "../server/services/artifact-locator.js";
 import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
 import { isWorkflowName, listWorkflows } from "../server/services/workflow-definition.js";
 import { applyVariant } from "./apply-variant.mjs";
+import { runRepair, completeRepair } from "../server/services/repair-handler.js";
 
 // --- CLI arg parsing ---
 
@@ -438,24 +438,81 @@ async function handleRepair(args) {
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
 
-  const repairFile = options.get("--repair-file") || repairFilePath(cpbRoot, project, jobId);
+  const repairDetails = options.has("--repair-file")
+    ? (() => {
+        const repairFile = options.get("--repair-file");
+        const base = path.basename(repairFile, ".md");
+        const repairId = base.startsWith("repair-") ? base.slice("repair-".length) : jobId;
+        return { repairId, repairFile, repairArtifact: `repair-${repairId}` };
+      })()
+    : await runRepair(cpbRoot, {
+        project,
+        jobId,
+        executorRoot,
+      });
+  const { repairId, repairFile, repairArtifact } = repairDetails;
+  if (repairDetails.workflow && !process.env.CPB_WORKFLOW) {
+    process.env.CPB_WORKFLOW = repairDetails.workflow;
+  }
+  if (repairDetails.sourcePath && !process.env.CPB_PROJECT_PATH_OVERRIDE) {
+    process.env.CPB_PROJECT_PATH_OVERRIDE = repairDetails.sourcePath;
+  }
+  if (!process.env.CPB_ACP_CWD || process.env.CPB_ACP_CWD === repairDetails.sourcePath) {
+    process.env.CPB_ACP_CWD = executorRoot;
+  }
   console.log(`Repairing [${project}] job-${jobId}...`);
-  console.log(`Output: ${repairFile}`);
+  console.log(`Repair: ${repairFile}`);
+
+  const { appendEvent: appendEv, checkpointJob, readEvents: readEv, materializeJob } = await import("../server/services/event-store.js");
+  const { updateJobsIndexEntry } = await import("../server/services/jobs-index.js");
+
+  async function recordEvent(event) {
+    await appendEv(cpbRoot, project, jobId, event);
+    await checkpointJob(cpbRoot, project, jobId).catch(() => {});
+    const state = materializeJob(await readEv(cpbRoot, project, jobId));
+    await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
+  }
+
+  await recordEvent({
+    type: "external_repair_started",
+    jobId,
+    project,
+    artifact: repairArtifact,
+    file: repairFile,
+    ts: new Date().toISOString(),
+  });
 
   const prompt = await buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile);
   const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Repair spawn failed: ${result.error.message}`);
+    await completeRepair(cpbRoot, {
+      project, jobId, repairId, repairFile, repairArtifact,
+      status: "failed", error: `repairer spawn failed: ${result.error.message}`,
+      executorRoot,
+    }).catch(() => {});
     return 1;
   }
 
+  if (result.exitCode !== 0) {
+    await completeRepair(cpbRoot, {
+      project, jobId, repairId, repairFile, repairArtifact,
+      status: "failed", error: `repairer exited ${result.exitCode}`,
+      executorRoot,
+    }).catch(() => {});
+    return result.exitCode;
+  }
+
   try {
-    await readFile(repairFile, "utf8");
-    await logAppend(cpbRoot, project, `repairer | repair | repair report for job-${jobId} | SUCCESS`);
-  } catch {
-    await logAppend(cpbRoot, project, `repairer | repair | repair report not created for job-${jobId} | FAIL`);
-    console.error("Warning: Repair report not created.");
+    const repairStatus = await completeRepair(cpbRoot, {
+      project, jobId, repairId, repairFile, repairArtifact,
+      status: "completed", executorRoot,
+    });
+    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | ${repairStatus}`);
+  } catch (err) {
+    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | FAIL: ${err.message}`);
+    console.error(`Repair failed: ${err.message}`);
     return 1;
   }
   return 0;

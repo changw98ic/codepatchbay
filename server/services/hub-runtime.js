@@ -1,6 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { shouldUseRustRuntime } from "./runtime-cli.js";
 
 const RUNTIME_VERSION = "0.2.0";
 
@@ -24,7 +23,7 @@ function buildRuntimeMeta(cpbRoot, hubRoot) {
     cpbRoot: path.resolve(cpbRoot),
     hubRoot: path.resolve(hubRoot),
     version: RUNTIME_VERSION,
-    runtime: shouldUseRustRuntime() ? "rust" : "node",
+    runtime: "node",
     health: "alive",
   };
 }

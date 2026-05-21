@@ -200,6 +200,10 @@ You MUST address the specific failures listed in the verdict. Do NOT repeat the 
 
 ${skillsSection}
 
+## CRITICAL: Read from locators, verify current state
+When a plan references locators or job state, read from those locators directly.
+Treat artifact contents as audit context — verify them against live job/event state.
+
 ${constraints}
 
 ${fixSection}

@@ -4,7 +4,7 @@ import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
-import { executorEnv, resolveExecutorRoot } from "./executor-root.js";
+import { executorEnv, executorMetadata, resolveExecutorRoot } from "./executor-root.js";
 import { buildChildEnv } from "./secret-policy.js";
 import { recoverAsNewJob } from "./job-recovery.js";
 
@@ -232,8 +232,11 @@ function runChild(command, args, cwd, { env = process.env } = {}) {
  *
  * Returns { jobId, project, phase, exitCode } on success or error.
  */
-export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
-  const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
+export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExecutor = false } = {}) {
+  const callerRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
+  const resolvedExecutorRoot = useCurrentExecutor
+    ? callerRoot
+    : (job.executor?.root && job.executor.root !== callerRoot ? job.executor.root : callerRoot);
   const phase = nextPhaseFor(job);
   if (phase === "") {
     return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
@@ -250,9 +253,12 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
   const TERMINAL_SET = new Set(["failed", "blocked", "cancelled"]);
   if (TERMINAL_SET.has(job.status)) {
     try {
+      const currentExecutor = useCurrentExecutor ? await executorMetadata(callerRoot) : null;
       recoveryJob = await recoverAsNewJob(cpbRoot, job.project, job.jobId, {
         reason: `supervisor recovery: ${job.status} job needs phase ${phase}`,
         trigger: "supervisor",
+        useCurrentExecutor,
+        currentExecutor,
       });
     } catch (err) {
       // If recovery job creation fails, proceed with original job (best-effort)
@@ -310,7 +316,7 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot } = {}) {
  *
  * Returns an array of recovery results.
  */
-export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorRoot } = {}) {
+export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorRoot, useCurrentExecutor = false } = {}) {
   const jobs = await recoverJobs(cpbRoot, { now });
   const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const results = [];
@@ -320,7 +326,7 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorR
     const batch = jobs.slice(i, i + maxConcurrent);
     const batchResults = await Promise.all(
       batch.map((job) =>
-        recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot }).catch((err) => ({
+        recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot, useCurrentExecutor }).catch((err) => ({
           jobId: job.jobId,
           project: job.project,
           phase: nextPhaseFor(job),

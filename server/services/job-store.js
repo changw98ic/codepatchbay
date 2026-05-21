@@ -7,11 +7,6 @@ import {
 } from "./event-store.js";
 import { getWorkflow } from "./workflow-definition.js";
 import { appendEvent } from "./runtime-events.js";
-import {
-  getJob as getJobRust,
-  listJobs as listJobsRust,
-  shouldUseRustRuntime,
-} from "./runtime-cli.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
@@ -192,20 +187,26 @@ function terminalJobLineage(job) {
   };
 }
 
-export async function createRecoveryJob(cpbRoot, project, originalJob, { fromPhase, trigger, recoveryReason, ts, dataRoot } = {}) {
+export async function createRecoveryJob(
+  cpbRoot,
+  project,
+  originalJob,
+  { fromPhase, trigger, recoveryReason, ts, dataRoot, executor, executorSelection, retryCount, maxRetries } = {}
+) {
   const lineage = terminalJobLineage(originalJob);
   const now = ts || nowIso();
+  const selectedExecutor = executor === undefined ? originalJob.executor ?? null : executor;
 
   const newJob = await createJob(cpbRoot, {
     project,
     task: originalJob.task,
     workflow: originalJob.workflow,
     ts: now,
-    executor: originalJob.executor ?? null,
+    executor: selectedExecutor,
     dataRoot,
   });
 
-  await appendEvent(cpbRoot, project, newJob.jobId, {
+  const event = {
     type: "recovery_created",
     jobId: newJob.jobId,
     project,
@@ -215,7 +216,11 @@ export async function createRecoveryJob(cpbRoot, project, originalJob, { fromPha
     trigger: trigger || "manual",
     fromPhase: fromPhase || null,
     ts: now,
-  }, { dataRoot });
+  };
+  if (executorSelection) event.executorSelection = executorSelection;
+  if (retryCount !== undefined) event.retryCount = retryCount;
+  if (maxRetries !== undefined) event.maxRetries = maxRetries;
+  await appendEvent(cpbRoot, project, newJob.jobId, event, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, newJob.jobId, { dataRoot });
 }
@@ -231,6 +236,8 @@ export async function retryJob(
     maxRetries = 3,
     ts = nowIso(),
     dataRoot,
+    useCurrentExecutor = false,
+    currentExecutor = null,
   } = {}
 ) {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
@@ -263,12 +270,27 @@ export async function retryJob(
     throw new Error(`invalid retry phase: ${retryPhase ?? "unknown"}`);
   }
 
+  const parentExecutor = job.executor ?? null;
+  const selectedExecutor = useCurrentExecutor && currentExecutor ? currentExecutor : parentExecutor;
+  const executorSelection = {
+    mode: useCurrentExecutor ? "use-current" : "preserve-parent",
+    override: !!useCurrentExecutor,
+    parentRoot: parentExecutor?.root ?? null,
+    selectedRoot: selectedExecutor?.root ?? null,
+    parentReleaseId: parentExecutor?.releaseId ?? null,
+    selectedReleaseId: selectedExecutor?.releaseId ?? null,
+  };
+
   return createRecoveryJob(cpbRoot, project, job, {
     fromPhase: retryPhase,
     trigger,
     recoveryReason: `fresh recovery from ${job.status} job ${jobId}`,
     ts,
     dataRoot,
+    executor: selectedExecutor,
+    executorSelection,
+    retryCount,
+    maxRetries,
   });
 }
 
@@ -410,9 +432,6 @@ export async function consumeRedirect(
 }
 
 export async function getJob(cpbRoot, project, jobId, { dataRoot } = {}) {
-  if (shouldUseRustRuntime()) {
-    return await getJobRust(cpbRoot, project, jobId);
-  }
   const opts = { dataRoot };
   const checkpoint = await readCheckpoint(cpbRoot, project, jobId, opts);
   if (checkpoint) return checkpoint;
@@ -420,9 +439,6 @@ export async function getJob(cpbRoot, project, jobId, { dataRoot } = {}) {
 }
 
 export async function listJobs(cpbRoot, options = {}) {
-  if (shouldUseRustRuntime()) {
-    return await listJobsRust(cpbRoot, options);
-  }
   const { dataRoot, ...rest } = options;
   const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;

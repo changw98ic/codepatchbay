@@ -3,7 +3,6 @@ import { getManagedAcpPool } from "./acp-pool-runtime.js";
 import { hubStatus, listProjects, workerStatus } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
-import { shouldUseRustRuntime } from "./runtime-cli.js";
 import { listDispatches } from "./dispatch-state.js";
 import { redactSecrets } from "./secret-policy.js";
 
@@ -104,7 +103,7 @@ export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) 
   return redactDiagnostics({
     generatedAt: new Date().toISOString(),
     runtime: {
-      backend: shouldUseRustRuntime() ? "rust" : "js",
+      backend: "js",
       cpbRoot,
       hubRoot,
     },

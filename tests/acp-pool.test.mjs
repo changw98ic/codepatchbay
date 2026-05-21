@@ -396,8 +396,16 @@ test("ACP pool reuses a persistent ACP provider process across prompts", async (
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-acp-persistent-cpb-"));
   const previousCommand = process.env.CPB_ACP_CODEX_COMMAND;
   const previousArgs = process.env.CPB_ACP_CODEX_ARGS;
+  const prevExecutorRoot = process.env.CPB_EXECUTOR_ROOT;
+  const prevRoot = process.env.CPB_ROOT;
+  const prevPathOverride = process.env.CPB_PROJECT_PATH_OVERRIDE;
+  const prevWorkerId = process.env.CPB_WORKER_ID;
   process.env.CPB_ACP_CODEX_COMMAND = process.execPath;
   process.env.CPB_ACP_CODEX_ARGS = JSON.stringify([fakeAcpAgent]);
+  delete process.env.CPB_EXECUTOR_ROOT;
+  delete process.env.CPB_ROOT;
+  delete process.env.CPB_PROJECT_PATH_OVERRIDE;
+  delete process.env.CPB_WORKER_ID;
   const pool = new AcpPool({
     hubRoot,
     cpbRoot,
@@ -430,6 +438,14 @@ test("ACP pool reuses a persistent ACP provider process across prompts", async (
     else process.env.CPB_ACP_CODEX_COMMAND = previousCommand;
     if (previousArgs === undefined) delete process.env.CPB_ACP_CODEX_ARGS;
     else process.env.CPB_ACP_CODEX_ARGS = previousArgs;
+    if (prevExecutorRoot === undefined) delete process.env.CPB_EXECUTOR_ROOT;
+    else process.env.CPB_EXECUTOR_ROOT = prevExecutorRoot;
+    if (prevRoot === undefined) delete process.env.CPB_ROOT;
+    else process.env.CPB_ROOT = prevRoot;
+    if (prevPathOverride === undefined) delete process.env.CPB_PROJECT_PATH_OVERRIDE;
+    else process.env.CPB_PROJECT_PATH_OVERRIDE = prevPathOverride;
+    if (prevWorkerId === undefined) delete process.env.CPB_WORKER_ID;
+    else process.env.CPB_WORKER_ID = prevWorkerId;
   }
 });
 

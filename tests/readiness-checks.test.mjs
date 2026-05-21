@@ -112,13 +112,14 @@ test("Rust runtime is skipped when CPB_RUNTIME is not set", async () => {
   assert.ok(!result.summary.success || result.summary.success);
 });
 
-test("Rust runtime reports error when enabled but binary missing", async () => {
+// Rust runtime is always skipped — Node is the only workflow backend.
+// The legacy Rust adapter (runtime-cli.js) remains for diagnostics only.
+test("Rust runtime is always skipped regardless of CPB_RUNTIME", async () => {
   process.env.CPB_RUNTIME = "rust";
   process.env.CPB_RUNTIME_BIN = path.join(tmpDir, "nonexistent-binary");
   const result = await runReadinessChecks({ cpbRoot, hubRoot });
   const rust = result.checks.find((c) => c.id === "rust-runtime");
-  assert.equal(rust.status, "error");
-  assert.ok(rust.remediation);
+  assert.equal(rust.status, "skipped");
   delete process.env.CPB_RUNTIME;
   delete process.env.CPB_RUNTIME_BIN;
 });

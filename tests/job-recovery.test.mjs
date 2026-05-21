@@ -183,4 +183,98 @@ assert.equal(lineage.trigger, "recovery");
 const noLineage = getLineage(null);
 assert.equal(noLineage, null);
 
+// --- executor pinning: recoverAsNewJob preserves parent executor ---
+const oldExecutor = {
+  root: "/tmp/cpb-old",
+  packageName: "codepatchbay",
+  version: "0.1.0",
+  releaseId: "old-rel",
+  codeVersion: "0.1.0",
+  stateFormatVersions: { queue: 1 },
+};
+const currentExecutor = {
+  root: "/tmp/cpb-new",
+  packageName: "codepatchbay",
+  version: "0.2.0",
+  releaseId: "new-rel",
+  codeVersion: "0.2.0",
+  stateFormatVersions: { queue: 2 },
+};
+
+const parentWithExecutor = await createJob(root, {
+  project,
+  task: "Executor pinning parent",
+  workflow: "standard",
+  executor: oldExecutor,
+  ts: "2026-05-20T10:00:00.000Z",
+});
+await failJob(root, project, parentWithExecutor.jobId, {
+  reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute",
+  ts: "2026-05-20T10:01:00.000Z",
+});
+
+const preservedRecovery = await recoverAsNewJob(root, project, parentWithExecutor.jobId, {
+  ts: "2026-05-20T10:05:00.000Z",
+});
+assert.deepEqual(preservedRecovery.executor, oldExecutor,
+  "recoverAsNewJob preserves parent executor by default");
+
+const overrideRecovery = await recoverAsNewJob(root, project, parentWithExecutor.jobId, {
+  ts: "2026-05-20T10:10:00.000Z",
+  useCurrentExecutor: true,
+  currentExecutor,
+});
+assert.deepEqual(overrideRecovery.executor, currentExecutor,
+  "recoverAsNewJob uses current executor when override is explicit");
+
+// Audit metadata on recoverAsNewJob
+const preservedEvents = await readEvents(root, project, preservedRecovery.jobId);
+const preservedAudit = preservedEvents.find((e) => e.type === "recovery_created");
+assert.ok(preservedAudit.executorSelection);
+assert.equal(preservedAudit.executorSelection.mode, "preserve-parent");
+assert.equal(preservedAudit.executorSelection.override, false);
+assert.equal(preservedAudit.executorSelection.parentRoot, "/tmp/cpb-old");
+assert.equal(preservedAudit.executorSelection.selectedRoot, "/tmp/cpb-old");
+
+const overrideEvents = await readEvents(root, project, overrideRecovery.jobId);
+const overrideAudit = overrideEvents.find((e) => e.type === "recovery_created");
+assert.ok(overrideAudit.executorSelection);
+assert.equal(overrideAudit.executorSelection.mode, "use-current");
+assert.equal(overrideAudit.executorSelection.override, true);
+assert.equal(overrideAudit.executorSelection.parentRoot, "/tmp/cpb-old");
+assert.equal(overrideAudit.executorSelection.selectedRoot, "/tmp/cpb-new");
+assert.equal(overrideAudit.executorSelection.parentReleaseId, "old-rel");
+assert.equal(overrideAudit.executorSelection.selectedReleaseId, "new-rel");
+
+// executor pinning: retryAsNewJob preserves parent executor
+const blockedWithExecutor = await createJob(root, {
+  project,
+  task: "Retry executor pinning",
+  workflow: "standard",
+  executor: oldExecutor,
+  ts: "2026-05-20T11:00:00.000Z",
+});
+await blockJob(root, project, blockedWithExecutor.jobId, {
+  reason: "stuck", ts: "2026-05-20T11:01:00.000Z",
+});
+
+const preservedRetry = await retryAsNewJob(root, project, blockedWithExecutor.jobId, {
+  ts: "2026-05-20T11:05:00.000Z",
+});
+assert.deepEqual(preservedRetry.executor, oldExecutor,
+  "retryAsNewJob preserves parent executor by default");
+
+const overrideRetry = await retryAsNewJob(root, project, blockedWithExecutor.jobId, {
+  ts: "2026-05-20T11:10:00.000Z",
+  useCurrentExecutor: true,
+  currentExecutor,
+});
+assert.deepEqual(overrideRetry.executor, currentExecutor,
+  "retryAsNewJob uses current executor when override is explicit");
+
+// Materialized lineage includes executorSelection
+const lineageJob = await getJob(root, project, preservedRecovery.jobId);
+assert.ok(lineageJob.lineage.executorSelection);
+assert.equal(lineageJob.lineage.executorSelection.mode, "preserve-parent");
+
 console.log("job-recovery: all tests passed");

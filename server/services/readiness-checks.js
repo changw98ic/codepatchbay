@@ -2,10 +2,12 @@ import { execFile } from "node:child_process";
 import {
   access,
   constants as fsConstants,
+  lstat,
   readdir,
   readFile,
   mkdir,
   rm,
+  stat as statFs,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -17,7 +19,7 @@ import { hubStatus, loadRegistry, resolveHubRoot, workerStatus } from "./hub-reg
 import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
-import { resolveRuntimeBin, shouldUseRustRuntime } from "./runtime-cli.js";
+
 import { sanitizeProviderReason } from "../../bridges/acp-pool.mjs";
 import {
   resolveReleaseStoreRoot,
@@ -159,19 +161,7 @@ async function checkAcpAdapter(adapterName, command, args) {
 }
 
 async function checkRustRuntime(cpbRoot) {
-  if (!shouldUseRustRuntime()) {
-    return skipped("rust-runtime", "runtime", "Rust runtime disabled (CPB_RUNTIME != rust)");
-  }
-  const bin = resolveRuntimeBin(cpbRoot);
-  try {
-    await access(bin, fsConstants.X_OK);
-    return ok("rust-runtime", "runtime", `Rust runtime binary available`);
-  } catch {
-    return error("rust-runtime", "runtime", "Rust runtime enabled but binary not found", {
-      details: { expectedPath: bin },
-      remediation: "Build the runtime: cd runtime && cargo build, or set CPB_RUNTIME_BIN.",
-    });
-  }
+  return skipped("rust-runtime", "runtime", "Rust runtime is a legacy diagnostic adapter, not part of the main workflow path");
 }
 
 async function checkHubLiveness(hubRoot) {
@@ -611,7 +601,10 @@ async function checkReleaseJobPinning({ env, cpbRoot }) {
     const allJobs = await listJobs(resolvedCpbRoot);
     const issues = [];
     for (const job of allJobs) {
-      const jobReleaseId = job.executor?.releaseId || null;
+      const jobReleaseId = job.executor?.releaseId
+        || job.lineage?.executorSelection?.selectedReleaseId
+        || job.lineage?.executorSelection?.parentReleaseId
+        || null;
       if (!jobReleaseId) continue;
       if (jobReleaseId !== currentReleaseId) {
         const terminal = ["completed", "failed", "blocked", "cancelled"].includes(job.status);
@@ -630,7 +623,7 @@ async function checkReleaseJobPinning({ env, cpbRoot }) {
     const active = issues.filter(i => i.severity === "warn");
     if (active.length > 0) {
       return warnR("release.job_pinning", `${active.length} active job(s) pinned to a different release`, {
-        guidance: "Active jobs may depend on the old release. Wait for them to complete before garbage-collecting old releases.",
+        guidance: "Active jobs may depend on the old release. Wait for them to complete or recover with: cpb retry --use-current-executor",
         details: active,
       });
     }

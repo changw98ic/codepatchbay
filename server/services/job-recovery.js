@@ -1,5 +1,4 @@
-import { getJob, createJob, startPhase, createRecoveryJob } from "./job-store.js";
-import { appendEvent } from "./runtime-events.js";
+import { getJob, createRecoveryJob } from "./job-store.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -13,7 +12,7 @@ export function isRecoverable(job) {
   return ["failed", "blocked", "cancelled"].includes(job.status);
 }
 
-export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery" } = {}) {
+export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null } = {}) {
   const original = await getJob(cpbRoot, project, jobId);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
@@ -28,10 +27,27 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, tri
   }
 
   const recoveryReason = reason || `recovery from ${original.status} job ${jobId}`;
-  return createRecoveryJob(cpbRoot, project, original, { trigger, recoveryReason, ts });
+  const parentExecutor = original.executor ?? null;
+  const selectedExecutor = useCurrentExecutor && currentExecutor ? currentExecutor : parentExecutor;
+  const executorSelection = {
+    mode: useCurrentExecutor ? "use-current" : "preserve-parent",
+    override: !!useCurrentExecutor,
+    parentRoot: parentExecutor?.root ?? null,
+    selectedRoot: selectedExecutor?.root ?? null,
+    parentReleaseId: parentExecutor?.releaseId ?? null,
+    selectedReleaseId: selectedExecutor?.releaseId ?? null,
+  };
+
+  return createRecoveryJob(cpbRoot, project, original, {
+    trigger,
+    recoveryReason,
+    ts,
+    executor: selectedExecutor,
+    executorSelection,
+  });
 }
 
-export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual" } = {}) {
+export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null } = {}) {
   const original = await getJob(cpbRoot, project, jobId);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
@@ -42,7 +58,25 @@ export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, tr
   }
 
   const retryReason = `retry from ${original.status} job ${jobId}`;
-  return createRecoveryJob(cpbRoot, project, original, { fromPhase, trigger, recoveryReason: retryReason, ts });
+  const parentExecutor = original.executor ?? null;
+  const selectedExecutor = useCurrentExecutor && currentExecutor ? currentExecutor : parentExecutor;
+  const executorSelection = {
+    mode: useCurrentExecutor ? "use-current" : "preserve-parent",
+    override: !!useCurrentExecutor,
+    parentRoot: parentExecutor?.root ?? null,
+    selectedRoot: selectedExecutor?.root ?? null,
+    parentReleaseId: parentExecutor?.releaseId ?? null,
+    selectedReleaseId: selectedExecutor?.releaseId ?? null,
+  };
+
+  return createRecoveryJob(cpbRoot, project, original, {
+    fromPhase,
+    trigger,
+    recoveryReason: retryReason,
+    ts,
+    executor: selectedExecutor,
+    executorSelection,
+  });
 }
 
 export async function verifyTerminalImmutability(cpbRoot, project, jobId) {
@@ -75,5 +109,6 @@ export function getLineage(job) {
     parentBlockedReason: job.lineage?.parentBlockedReason || null,
     recoveryReason: job.lineage?.recoveryReason || null,
     trigger: job.lineage?.trigger || null,
+    executorSelection: job.lineage?.executorSelection || null,
   };
 }
