@@ -249,6 +249,34 @@ async function _parseEventFile(file) {
   }
 }
 
+async function _parseEventFileReadOnly(file) {
+  try {
+    const raw = await readFile(file, "utf8");
+    const lines = raw
+      .split("\n")
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => line.trim().length > 0);
+
+    const events = [];
+    for (const { line, lineNumber } of lines) {
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch (err) {
+        throw new Error(`malformed event JSON in ${file} at line ${lineNumber}: ${err.message}`);
+      }
+      if (event === null || typeof event !== "object" || Array.isArray(event)) {
+        throw malformedEventError(file, lineNumber, "expected a non-null object");
+      }
+      events.push(event);
+    }
+    return events;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 export async function readEvents(cpbRoot, project, jobId, opts = {}) {
   // Try runtime root first when dataRoot is provided and differs from legacy
   if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
@@ -260,6 +288,17 @@ export async function readEvents(cpbRoot, project, jobId, opts = {}) {
   // Legacy path
   const file = eventFileFor(cpbRoot, project, jobId);
   const result = await _parseEventFile(file);
+  return result ?? [];
+}
+
+export async function readEventsReadOnly(cpbRoot, project, jobId, opts = {}) {
+  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
+    const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
+    const rtEvents = await _parseEventFileReadOnly(rtFile);
+    if (rtEvents !== null) return rtEvents;
+  }
+  const file = eventFileFor(cpbRoot, project, jobId);
+  const result = await _parseEventFileReadOnly(file);
   return result ?? [];
 }
 
