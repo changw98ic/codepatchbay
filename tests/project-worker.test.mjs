@@ -7,6 +7,7 @@ import test, { describe, beforeEach, afterEach } from "node:test";
 import { ProjectWorker, parseArgs } from "../bridges/project-worker.mjs";
 import { registerProject, heartbeatWorker, getProject } from "../server/services/hub-registry.js";
 import { enqueue, listQueue, queueStatus } from "../server/services/hub-queue.js";
+import { appendEvent } from "../server/services/event-store.js";
 import { listDispatches } from "../server/services/dispatch-state.js";
 
 describe("ProjectWorker", () => {
@@ -395,10 +396,13 @@ describe("ProjectWorker", () => {
       commit: "abc123",
       closed: true,
       mode: "remote",
+      jobId: "job-finalizer-ok",
+      inspectedStatus: "completed",
+      stateSource: "pipeline-result",
     });
   });
 
-  test("poll records skipped finalizer without failing queue entry", async () => {
+  test("poll fails queue entry when finalizer reports job not completed", async () => {
     await enqueue(hubRoot, {
       projectId,
       description: "poll finalizer skipped",
@@ -421,10 +425,11 @@ describe("ProjectWorker", () => {
     await worker.init();
     const result = await worker.poll();
 
-    assert.equal(result.result.ok, true);
+    assert.equal(result.result.ok, false);
+    assert.equal(result.result.error, "finalizer rejected: JOB_NOT_COMPLETED");
 
     const entries = await listQueue(hubRoot);
-    assert.equal(entries[0].status, "completed");
+    assert.equal(entries[0].status, "failed");
     assert.deepEqual(entries[0].metadata.finalizer, {
       ok: false,
       status: "skipped",
@@ -432,6 +437,9 @@ describe("ProjectWorker", () => {
       commit: null,
       closed: null,
       mode: "remote",
+      jobId: "job-finalizer-skipped",
+      inspectedStatus: "blocked",
+      stateSource: "pipeline-result",
     });
   });
 
@@ -470,6 +478,9 @@ describe("ProjectWorker", () => {
       commit: null,
       closed: null,
       mode: "remote",
+      jobId: "job-finalizer-nope",
+      inspectedStatus: "completed",
+      stateSource: "pipeline-result",
     });
   });
 
@@ -1143,5 +1154,182 @@ describe("ProjectWorker crash and reconnect resilience", () => {
 
     const final = await listQueue(hubRoot, { projectId });
     assert.equal(final[0].status, "completed");
+  });
+});
+
+describe("ProjectWorker issue #61 finalizer metadata", () => {
+  let hubRoot;
+  let sourceDir;
+  let cpbRoot;
+  let projectId;
+
+  beforeEach(async () => {
+    hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
+    sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
+    cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-cpb-"));
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    projectId = project.id;
+  });
+
+  function makeWorker(opts = {}) {
+    return new ProjectWorker({
+      projectId,
+      hubRoot,
+      cpbRoot,
+      once: true,
+      autoFinalizerMode: "remote",
+      runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
+      ...opts,
+    });
+  }
+
+  test("successful pipeline with running job marks queue failed with JOB_NOT_COMPLETED", async () => {
+    const jobId = "job-20260522-010000-abc123";
+    const now = new Date().toISOString();
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_created", jobId, project: projectId, task: "test", ts: now,
+    });
+
+    await enqueue(hubRoot, { projectId, description: "running-job", sourcePath: sourceDir });
+
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "", jobId }),
+    });
+    await worker.init();
+    await worker.poll();
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "failed", "queue entry should be failed, not completed");
+    assert.ok(entries[0].metadata.finalizer, "finalizer metadata should exist");
+    assert.equal(entries[0].metadata.finalizer.code, "JOB_NOT_COMPLETED");
+    assert.equal(entries[0].metadata.finalizer.status, "skipped");
+    assert.equal(entries[0].metadata.finalizer.jobId, jobId);
+    assert.equal(entries[0].metadata.finalizer.inspectedStatus, "running");
+    assert.equal(entries[0].metadata.finalizer.stateSource, "job-store");
+  });
+
+  test("successful pipeline with missing job state marks queue failed", async () => {
+    const jobId = "job-20260522-020000-nomatch";
+    await enqueue(hubRoot, { projectId, description: "missing-job", sourcePath: sourceDir });
+
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: `Job ${jobId} started\n`, stderr: "" }),
+    });
+    await worker.init();
+    await worker.poll();
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "failed");
+    assert.ok(entries[0].metadata.finalizer);
+    assert.equal(entries[0].metadata.finalizer.code, "JOB_NOT_FOUND");
+    assert.equal(entries[0].metadata.finalizer.status, "skipped");
+    assert.equal(entries[0].metadata.finalizer.stateSource, "missing");
+    assert.equal(entries[0].metadata.finalizer.jobId, jobId);
+  });
+
+  test("completed job with successful remote finalizer marks queue completed with metadata", async () => {
+    const jobId = "job-20260522-030000-def456";
+    const commit = "abc123def456";
+    const now = new Date().toISOString();
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_created", jobId, project: projectId, task: "test", ts: now,
+    });
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_completed", jobId, project: projectId, ts: now,
+    });
+
+    await enqueue(hubRoot, { projectId, description: "completed-finalize", sourcePath: sourceDir });
+
+    let finalizerCalled = false;
+    let finalizerEntry = null;
+    let finalizerJobState = null;
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "", jobId }),
+      finalizerFn: async ({ entry, job }) => {
+        finalizerCalled = true;
+        finalizerEntry = entry;
+        finalizerJobState = job;
+        return { ok: true, status: "completed", mode: "remote", commit, closed: true };
+      },
+    });
+    await worker.init();
+    await worker.poll();
+
+    assert.equal(finalizerCalled, true, "finalizer should have been called");
+    assert.ok(finalizerEntry, "finalizer should receive the queue entry");
+    assert.equal(finalizerJobState?.status, "completed", "finalizer should receive completed job state");
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+    assert.equal(entries[0].metadata.finalizer.ok, true);
+    assert.equal(entries[0].metadata.finalizer.code, null, "successful finalizer must not have a failure code");
+    assert.equal(entries[0].metadata.finalizer.commit, commit);
+    assert.equal(entries[0].metadata.finalizer.closed, true);
+    assert.equal(entries[0].metadata.finalizer.mode, "remote");
+    assert.equal(entries[0].metadata.finalizer.jobId, jobId);
+    assert.equal(entries[0].metadata.finalizer.inspectedStatus, "completed");
+    assert.equal(entries[0].metadata.finalizer.stateSource, "job-store");
+  });
+
+  test("completed job with required finalizer JOB_NOT_COMPLETED marks queue failed", async () => {
+    const jobId = "job-20260522-040000-ghi789";
+    const now = new Date().toISOString();
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_created", jobId, project: projectId, task: "test", ts: now,
+    });
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_completed", jobId, project: projectId, ts: now,
+    });
+
+    await enqueue(hubRoot, { projectId, description: "finalizer-fail", sourcePath: sourceDir });
+
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "", jobId }),
+      finalizerFn: async () => ({
+        ok: false, status: "skipped", code: "JOB_NOT_COMPLETED", mode: "remote",
+      }),
+    });
+    await worker.init();
+    await worker.poll();
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "failed", "queue should be failed when required finalizer fails");
+    assert.equal(entries[0].metadata.finalizer.ok, false);
+    assert.equal(entries[0].metadata.finalizer.code, "JOB_NOT_COMPLETED");
+    assert.equal(entries[0].metadata.finalizer.mode, "remote");
+    assert.equal(entries[0].metadata.finalizer.jobId, jobId);
+    assert.equal(entries[0].metadata.finalizer.inspectedStatus, "completed");
+    assert.equal(entries[0].metadata.finalizer.stateSource, "job-store");
+  });
+
+  test("acceptable skip leaves queue completed with actionable metadata", async () => {
+    const jobId = "job-20260522-050000-jkl012";
+    const now = new Date().toISOString();
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_created", jobId, project: projectId, task: "test", ts: now,
+    });
+    await appendEvent(cpbRoot, projectId, jobId, {
+      type: "job_completed", jobId, project: projectId, ts: now,
+    });
+
+    await enqueue(hubRoot, { projectId, description: "acceptable-skip", sourcePath: sourceDir });
+
+    const worker = makeWorker({
+      runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "", jobId }),
+      finalizerFn: async () => ({
+        ok: false, status: "skipped", code: "NO_REMOTE", mode: "remote", acceptableSkip: true,
+      }),
+    });
+    await worker.init();
+    await worker.poll();
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed", "acceptable skip should leave queue completed");
+    assert.ok(entries[0].metadata.finalizer);
+    assert.equal(entries[0].metadata.finalizer.ok, false);
+    assert.equal(entries[0].metadata.finalizer.acceptableSkip, true);
+    assert.equal(entries[0].metadata.finalizer.jobId, jobId);
+    assert.equal(entries[0].metadata.finalizer.inspectedStatus, "completed");
+    assert.equal(entries[0].metadata.finalizer.stateSource, "job-store");
   });
 });
