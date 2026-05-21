@@ -7,12 +7,29 @@ import {
   getSubagentConfig,
 } from "./workflow-definition.js";
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
+import { resolveHubRoot, getProject } from "./hub-registry.js";
+import { readCompactProjectCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
 
 async function preRead(filePath) {
   try {
     return await readFile(filePath, "utf8");
   } catch {
     return `[file not found: ${filePath}]`;
+  }
+}
+
+export async function buildProjectCodeIndexSection(cpbRoot, project) {
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const registered = await getProject(hubRoot, project);
+    if (!registered || !registered.sourcePath) return "";
+    const idxStatus = await readProjectCodeIndexStatus(registered, { hubRoot });
+    if (idxStatus.status !== "ready") return "";
+    const summary = await readCompactProjectCodeIndexSummary(registered, { hubRoot });
+    if (!summary) return "";
+    return `## Project Code Index\n${summary}`;
+  } catch {
+    return "";
   }
 }
 
@@ -124,6 +141,7 @@ export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, p
   const decisions = await preRead(path.join(wikiDir, "decisions.md"));
   const handshake = await preRead(path.join(executorRoot, "wiki", "system", "handshake-protocol.md"));
   const planTpl = await preRead(path.join(executorRoot, "templates", "handoff", "plan-to-execute.md"));
+  const indexSection = await buildProjectCodeIndexSection(cpbRoot, project);
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
@@ -147,6 +165,8 @@ ${projContext}
 
 ## Existing Decisions
 ${decisions}
+
+${indexSection}
 
 ## Handshake Protocol
 ${handshake}

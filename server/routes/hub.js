@@ -31,6 +31,7 @@ import {
   markDispatchFailed,
   recordDispatch,
 } from "../services/worker-dispatch.js";
+import { readProjectCodeIndexStatus, refreshProjectCodeIndex } from "../services/project-code-index.js";
 
 function hubRoot(req) {
   return req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
@@ -51,8 +52,27 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/projects", async (req) => {
-    const projects = await listProjects(hubRoot(req), { enabledOnly: req.query.enabledOnly === "true" });
-    return projects.map((project) => ({ ...project, workerDerivedStatus: workerStatus(project) }));
+    const hr = hubRoot(req);
+    const projects = await listProjects(hr, { enabledOnly: req.query.enabledOnly === "true" });
+    const results = [];
+    for (const project of projects) {
+      const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr });
+      results.push({
+        ...project,
+        workerDerivedStatus: workerStatus(project),
+        indexStatus: {
+          status: idx.status,
+          updatedAt: idx.updatedAt,
+          fileCount: idx.fileCount,
+          symbolCount: idx.symbolCount,
+          commandCount: idx.commandCount,
+          branch: idx.branch,
+          headShort: idx.headShort,
+          contentHash: idx.contentHash,
+        },
+      });
+    }
+    return results;
   });
 
   fastify.post("/hub/projects/attach", async (req) => {
@@ -260,5 +280,22 @@ export async function hubRoutes(fastify) {
     const dispatch = await markDispatchFailed(hubRoot(req), req.params.dispatchId);
     if (!dispatch) throw fastify.httpErrors.notFound(`Dispatch '${req.params.dispatchId}' not found or dispatch not enabled`);
     return { failed: true, dispatch };
+  });
+
+  // Project code index endpoints
+  fastify.get("/hub/projects/:id/index", async (req) => {
+    const hr = hubRoot(req);
+    const project = await getProject(hr, req.params.id);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${req.params.id}' not found`);
+    if (!project.sourcePath) throw fastify.httpErrors.badRequest(`Project '${req.params.id}' has no sourcePath`);
+    return await readProjectCodeIndexStatus(project, { hubRoot: hr });
+  });
+
+  fastify.post("/hub/projects/:id/index/refresh", async (req) => {
+    const hr = hubRoot(req);
+    const project = await getProject(hr, req.params.id);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${req.params.id}' not found`);
+    if (!project.sourcePath) throw fastify.httpErrors.badRequest(`Project '${req.params.id}' has no sourcePath`);
+    return await refreshProjectCodeIndex(project, { hubRoot: hr });
   });
 }
