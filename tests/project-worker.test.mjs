@@ -14,6 +14,8 @@ describe("ProjectWorker", () => {
   let sourceDir;
   let projectId;
   const originalDispatch = process.env.CPB_WORKER_DISPATCH_ENABLED;
+  const originalWorkerWorktreeMode = process.env.CPB_WORKER_WORKTREE_MODE;
+  const originalUseWorktree = process.env.CPB_USE_WORKTREE;
 
   beforeEach(async () => {
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
@@ -25,6 +27,10 @@ describe("ProjectWorker", () => {
   afterEach(() => {
     if (originalDispatch === undefined) delete process.env.CPB_WORKER_DISPATCH_ENABLED;
     else process.env.CPB_WORKER_DISPATCH_ENABLED = originalDispatch;
+    if (originalWorkerWorktreeMode === undefined) delete process.env.CPB_WORKER_WORKTREE_MODE;
+    else process.env.CPB_WORKER_WORKTREE_MODE = originalWorkerWorktreeMode;
+    if (originalUseWorktree === undefined) delete process.env.CPB_USE_WORKTREE;
+    else process.env.CPB_USE_WORKTREE = originalUseWorktree;
   });
 
   function makeWorker(opts = {}) {
@@ -142,6 +148,7 @@ describe("ProjectWorker", () => {
         "  cpbRoot: process.env.CPB_ROOT,",
         "  executorRoot: process.env.CPB_EXECUTOR_ROOT,",
         "  acpCwd: process.env.CPB_ACP_CWD,",
+        "  useWorktree: process.env.CPB_USE_WORKTREE,",
         "  args: process.argv.slice(2),",
         "}, null, 2));",
       ].join("\n"),
@@ -177,7 +184,101 @@ describe("ProjectWorker", () => {
     assert.equal(capture.cpbRoot, path.resolve(cpbRoot));
     assert.equal(capture.executorRoot, path.resolve(executorRoot));
     assert.equal(capture.acpCwd, path.resolve(sourceDir));
+    assert.equal(capture.useWorktree, "1");
     assert.ok(capture.args.includes("--source-path"));
+  });
+
+  test("runPipeline omits worktree env when worktreeMode is off", async () => {
+    const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-state-root-"));
+    const executorRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-executor-root-"));
+    const capturePath = path.join(executorRoot, "capture.json");
+    await mkdir(path.join(executorRoot, "bridges"), { recursive: true });
+    await writeFile(
+      path.join(executorRoot, "bridges", "run-pipeline.mjs"),
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        "await writeFile(process.env.CAPTURE_PATH, JSON.stringify({",
+        "  useWorktree: process.env.CPB_USE_WORKTREE || null,",
+        "  projectOverride: process.env.CPB_PROJECT_PATH_OVERRIDE,",
+        "  acpCwd: process.env.CPB_ACP_CWD,",
+        "}, null, 2));",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "worktree off run",
+    });
+    const previousCapturePath = process.env.CAPTURE_PATH;
+    process.env.CAPTURE_PATH = capturePath;
+    process.env.CPB_USE_WORKTREE = "1";
+    try {
+      const worker = new ProjectWorker({
+        projectId,
+        hubRoot,
+        cpbRoot,
+        executorRoot,
+        once: true,
+        worktreeMode: "off",
+        agentHealthFn: async () => ({ codex: true, claude: true }),
+      });
+      await worker.init();
+      const result = await worker.executeEntry(queued);
+      assert.equal(result.ok, true);
+    } finally {
+      if (previousCapturePath === undefined) delete process.env.CAPTURE_PATH;
+      else process.env.CAPTURE_PATH = previousCapturePath;
+    }
+
+    const capture = JSON.parse(await readFile(capturePath, "utf8"));
+    assert.equal(capture.useWorktree, null);
+    assert.equal(capture.projectOverride, path.resolve(sourceDir));
+    assert.equal(capture.acpCwd, path.resolve(sourceDir));
+  });
+
+  test("runPipeline omits worktree env when CPB_WORKER_WORKTREE_MODE is off", async () => {
+    process.env.CPB_WORKER_WORKTREE_MODE = "off";
+    let capturedWorktree = null;
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "env worktree off",
+    });
+
+    const worker = makeWorker({
+      runPipelineFn: (_entry, _sourcePath, _dispatchId, _overrideProjectId, worktree) => {
+        capturedWorktree = worktree;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+    await worker.init();
+    const result = await worker.executeEntry(queued);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(capturedWorktree, { worktreeMode: "off", useWorktree: false });
+  });
+
+  test("runPipelineFn receives default worktree mode metadata", async () => {
+    let capturedWorktree = null;
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "worktree metadata",
+    });
+
+    const worker = makeWorker({
+      runPipelineFn: (_entry, _sourcePath, _dispatchId, _overrideProjectId, worktree) => {
+        capturedWorktree = worktree;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+    await worker.init();
+    const result = await worker.executeEntry(queued);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(capturedWorktree, { worktreeMode: "required", useWorktree: true });
   });
 
   test("executeEntry fails on sourcePath guard mismatch when dispatch enabled", async () => {
@@ -251,6 +352,125 @@ describe("ProjectWorker", () => {
 
     const entries = await listQueue(hubRoot);
     assert.equal(entries[0].status, "completed");
+  });
+
+  test("poll runs finalizer before marking linked queue entry completed", async () => {
+    await enqueue(hubRoot, {
+      projectId,
+      description: "poll finalizer ok",
+      sourcePath: sourceDir,
+      metadata: { issueNumber: 58, repositoryFullName: "owner/repo" },
+    });
+
+    let finalizerInput = null;
+    const worker = makeWorker({
+      requireIssueLink: true,
+      autoFinalizerMode: "remote",
+      runPipelineFn: () => Promise.resolve({
+        ok: true,
+        code: 0,
+        stdout: "done",
+        stderr: "",
+        job: { jobId: "job-finalizer-ok", status: "completed", worktree: sourceDir },
+      }),
+      finalizerFn: async (input) => {
+        finalizerInput = input;
+        return { ok: true, status: "finalized", commit: "abc123", closed: true };
+      },
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(result.result.ok, true);
+    assert.equal(finalizerInput.mode, "remote");
+    assert.equal(finalizerInput.entry.metadata.issueNumber, 58);
+    assert.equal(finalizerInput.job.jobId, "job-finalizer-ok");
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+    assert.deepEqual(entries[0].metadata.finalizer, {
+      ok: true,
+      status: "finalized",
+      code: null,
+      commit: "abc123",
+      closed: true,
+      mode: "remote",
+    });
+  });
+
+  test("poll records skipped finalizer without failing queue entry", async () => {
+    await enqueue(hubRoot, {
+      projectId,
+      description: "poll finalizer skipped",
+      sourcePath: sourceDir,
+      metadata: { issueNumber: 60, repositoryFullName: "owner/repo" },
+    });
+
+    const worker = makeWorker({
+      requireIssueLink: true,
+      autoFinalizerMode: "remote",
+      workflow: "blocked",
+      runPipelineFn: () => Promise.resolve({
+        ok: true,
+        code: 0,
+        stdout: "blocked",
+        stderr: "",
+        job: { jobId: "job-finalizer-skipped", status: "blocked", worktree: sourceDir },
+      }),
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(result.result.ok, true);
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "completed");
+    assert.deepEqual(entries[0].metadata.finalizer, {
+      ok: false,
+      status: "skipped",
+      code: "JOB_NOT_COMPLETED",
+      commit: null,
+      closed: null,
+      mode: "remote",
+    });
+  });
+
+  test("poll marks queue entry failed when finalizer refuses", async () => {
+    await enqueue(hubRoot, {
+      projectId,
+      description: "poll finalizer rejected",
+      sourcePath: sourceDir,
+      metadata: { issueNumber: 59, repositoryFullName: "owner/repo" },
+    });
+
+    const worker = makeWorker({
+      requireIssueLink: true,
+      autoFinalizerMode: "remote",
+      runPipelineFn: () => Promise.resolve({
+        ok: true,
+        code: 0,
+        stdout: "done",
+        stderr: "",
+        job: { jobId: "job-finalizer-nope", status: "completed", worktree: sourceDir },
+      }),
+      finalizerFn: async () => ({ ok: false, status: "rejected", code: "UNSAFE_WORKTREE_CHANGES" }),
+    });
+    await worker.init();
+    const result = await worker.poll();
+
+    assert.equal(result.result.ok, false);
+    assert.equal(result.result.error, "finalizer rejected: UNSAFE_WORKTREE_CHANGES");
+
+    const entries = await listQueue(hubRoot);
+    assert.equal(entries[0].status, "failed");
+    assert.deepEqual(entries[0].metadata.finalizer, {
+      ok: false,
+      status: "rejected",
+      code: "UNSAFE_WORKTREE_CHANGES",
+      commit: null,
+      closed: null,
+      mode: "remote",
+    });
   });
 
   test("poll marks queue entry failed on pipeline failure", async () => {
@@ -425,6 +645,30 @@ describe("parseArgs", () => {
   test("parses --workflow", () => {
     const opts = parseArgs(["node", "script", "--project", "p", "--workflow", "blocked"]);
     assert.equal(opts.workflow, "blocked");
+  });
+
+  test("parses --worktree-mode", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--worktree-mode", "off"]);
+    assert.equal(opts.worktreeMode, "off");
+  });
+
+  test("rejects invalid --worktree-mode", () => {
+    assert.throws(
+      () => parseArgs(["node", "script", "--project", "p", "--worktree-mode", "maybe"]),
+      /invalid worktree mode: maybe/,
+    );
+  });
+
+  test("parses --auto-finalizer-mode", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--auto-finalizer-mode", "local"]);
+    assert.equal(opts.autoFinalizerMode, "local");
+  });
+
+  test("rejects invalid --auto-finalizer-mode", () => {
+    assert.throws(
+      () => parseArgs(["node", "script", "--project", "p", "--auto-finalizer-mode", "maybe"]),
+      /invalid auto-finalizer mode: maybe/,
+    );
   });
 
   test("parses accelerated --workflow", () => {

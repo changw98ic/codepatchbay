@@ -298,6 +298,23 @@ export async function recordActivity(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
+export async function recordFinalizerResult(
+  cpbRoot,
+  project,
+  jobId,
+  { result, ts = nowIso(), dataRoot }
+) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "finalizer_result",
+    jobId,
+    project,
+    result,
+    ts,
+  }, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
+}
+
 export async function requestCancelJob(
   cpbRoot,
   project,

@@ -14,6 +14,7 @@ import {
   FAILURE_CODES,
   getJob,
   listJobs,
+  recordFinalizerResult,
   retryJob,
   startPhase,
 } from "../server/services/job-store.js";
@@ -59,6 +60,29 @@ const completed = await getJob(root, project, created.jobId);
 assert.equal(completed.status, "completed");
 assert.equal(completed.phase, "completed");
 assert.equal(completed.blockedReason, null);
+
+await recordFinalizerResult(root, project, created.jobId, {
+  result: {
+    ok: true,
+    status: "finalized",
+    code: null,
+    commit: "abc123",
+    closed: true,
+    mode: "remote",
+  },
+  ts: "2026-05-13T00:04:00.000Z",
+});
+const finalized = await getJob(root, project, created.jobId);
+assert.equal(finalized.status, "completed");
+assert.deepEqual(finalized.finalizer, {
+  ok: true,
+  status: "finalized",
+  code: null,
+  commit: "abc123",
+  closed: true,
+  mode: "remote",
+  ts: "2026-05-13T00:04:00.000Z",
+});
 
 const failed = await createJob(root, {
   project,
