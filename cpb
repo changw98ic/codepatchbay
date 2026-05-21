@@ -1160,6 +1160,23 @@ cmd_status() {
   if [ -n "$state" ]; then
     echo -e "${CYAN}Latest job:${NC} $state"
   fi
+
+  # Project index status
+  local idx_line
+  idx_line=$(CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_ROOT="${CPB_HUB_ROOT:-}" node --input-type=module -e "
+    import path from 'node:path';
+    const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
+    const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+    const hubRoot = process.env.CPB_HUB_ROOT || null;
+    const project = '${project}';
+    const { readProjectIndex, formatProjectIndexLine } = await import(path.join(executorRoot, 'server/services/project-index.js'));
+    const idx = await readProjectIndex(hubRoot, cpbRoot, project);
+    if (idx) console.log(formatProjectIndexLine(idx));
+  " 2>/dev/null) || true
+  if [ -n "$idx_line" ]; then
+    echo -e "${CYAN}${idx_line}${NC}"
+  fi
+
   return 0
 }
 
@@ -1176,7 +1193,7 @@ cmd_list() {
     local verdict=""
     local latest_verdict=$(find "$dir/outputs" -maxdepth 1 -name 'verdict-*.md' 2>/dev/null | sort | tail -1)
     if [ -n "$latest_verdict" ]; then
-      verdict=$(grep -m1 '^VERDICT:' "$latest_verdict" | sed 's/^VERDICT: *//')
+      verdict=$(grep -m1 '^VERDICT:' "$latest_verdict" | sed 's/^VERDICT: *//') || true
     fi
     printf "  ${CYAN}%-20s${NC} inbox:%-3s out:%-3s %s\n" "$name" "$inbox" "$outputs" "${verdict:-}"
   done

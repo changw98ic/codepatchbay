@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { listProjects, getProject } from '../services/hub-registry.js';
 import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
 import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project-loader.js';
+import { readProjectIndex } from '../services/project-index.js';
 import {
   resolveInboxDir,
   resolveOutputsDir,
@@ -120,6 +121,7 @@ export async function projectRoutes(fastify, opts) {
             id: project.id,
             recentLog: extractLogTail(files.log),
             pipelineState: projectionStates[projectId] ?? null,
+            projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: inboxEntries.filter(f => f.endsWith('.md')).length,
             outputs: outputEntries.filter(f => f.endsWith('.md')).length,
           };
@@ -129,6 +131,7 @@ export async function projectRoutes(fastify, opts) {
             id: project.id,
             recentLog: [],
             pipelineState: projectionStates[projectId] ?? null,
+            projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: 0,
             outputs: 0,
           };
@@ -160,8 +163,9 @@ export async function projectRoutes(fastify, opts) {
 
     const files = await loadProjectFiles(wikiDir, { files: requestedFiles });
     const pipelineState = await projectPipelineState(cpbRoot, projectId);
+    const projectIndex = await readProjectIndex(hubRoot, cpbRoot, projectId);
 
-    return { name: project.name || projectId, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState };
+    return { name: project.name || projectId, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState, projectIndex };
   });
 
   // List inbox files

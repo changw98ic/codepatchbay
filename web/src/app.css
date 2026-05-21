@@ -338,6 +338,12 @@ body {
 .badge-unknown { background: rgba(136,136,136,0.1); color: var(--text-dim); }
 .badge-idle { background: rgba(136,136,136,0.15); color: var(--text-dim); }
 
+.badge-idx-indexed { background: rgba(76,175,80,0.15); color: var(--success); }
+.badge-idx-stale { background: rgba(255,152,0,0.15); color: var(--warning); }
+.badge-idx-failed { background: rgba(244,67,54,0.15); color: var(--error); }
+.badge-idx-indexing { background: rgba(108,140,255,0.15); color: var(--accent); }
+.badge-idx-unmerged { background: rgba(136,136,136,0.15); color: var(--text-dim); }
+
 .card-stats {
   display: flex;
   gap: 16px;
