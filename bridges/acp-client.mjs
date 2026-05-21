@@ -10,6 +10,11 @@ import {
   formatDeleteBlockedMessage,
   logDeleteBlock,
 } from "./delete-guard.mjs";
+import {
+  headlessCodexConfigArgs,
+  classifyUiToolRequest,
+  mergeHeadlessDenyTools,
+} from "../server/services/acp-lane-policy.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;
@@ -289,13 +294,21 @@ function defaultAgentCommand(agent) {
   return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
 }
 
-export function resolveAgentCommand(agent) {
+export function resolveAgentCommand(agent, env = process.env) {
   const upper = agent.toUpperCase();
   const defaults = defaultAgentCommand(agent);
-  return {
-    command: process.env[`CPB_ACP_${upper}_COMMAND`] || defaults.command,
-    args: parseEnvArgs(process.env[`CPB_ACP_${upper}_ARGS`]) ?? defaults.args,
-  };
+  const command = env[`CPB_ACP_${upper}_COMMAND`] || defaults.command;
+  const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...defaults.args];
+
+  // Append headless config overrides for codex-acp when headless profile is active
+  if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
+    const headlessArgs = headlessCodexConfigArgs(command, args);
+    if (headlessArgs.length > 0) {
+      args.push(...headlessArgs);
+    }
+  }
+
+  return { command, args };
 }
 
 async function readStdin() {
@@ -563,6 +576,34 @@ export class AcpClient {
   async handleClientRequest(message) {
     try {
       await loadPermissionModules();
+
+      // Headless UI tool denial (issue #62)
+      const launchProfile = this.env.CPB_ACP_LAUNCH_PROFILE;
+      if (launchProfile !== "ui" && classifyUiToolRequest(message)) {
+        const toolDesc = message.method || message.params?.serverName || message.params?.name || "unknown-ui-tool";
+        const denialInfo = {
+          role: this.env.CPB_ACP_ROLE || null,
+          project: this.env.CPB_ACP_PROJECT || null,
+          jobId: this.env.CPB_ACP_JOB_ID || null,
+          phase: this.env.CPB_ACP_PHASE || null,
+          tool: toolDesc,
+          reason: "UI tool denied in headless ACP session",
+        };
+
+        // Audit the denial event
+        if (_permRecord && denialInfo.jobId && denialInfo.project && this.env.CPB_ACP_CPB_ROOT) {
+          await _permRecord(this.env.CPB_ACP_CPB_ROOT, denialInfo.project, denialInfo.jobId, {
+            role: denialInfo.role,
+            action: "ui-tool-denied",
+            targetPath: toolDesc,
+            tool: toolDesc,
+            reason: denialInfo.reason,
+            phase: denialInfo.phase,
+          }).catch(() => {});
+        }
+
+        throw new Error(`UI tool denied in headless mode: ${toolDesc}`);
+      }
 
       // Per-tool policy enforcement: check before dispatching
       if (this.toolPolicy && message.method) {

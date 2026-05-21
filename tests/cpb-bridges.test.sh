@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Isolate from inherited CPB_ROOT/CPB_EXECUTOR_ROOT (parent ACP session leaks these)
+export CPB_ROOT="$ROOT"
+export CPB_EXECUTOR_ROOT="$ROOT"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cpb-bridges.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 

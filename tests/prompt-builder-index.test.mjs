@@ -27,7 +27,7 @@ import { refreshProjectCodeIndex } from "../server/services/project-code-index.j
   }, null, 2));
   await writeFile(path.join(repoRoot, "src", "app.js"), "export function run() {}\n");
 
-  await registerProject(cpbRoot, { id: "pbi-test", sourcePath: repoRoot });
+  await registerProject(hubRoot, { id: "pbi-test", sourcePath: repoRoot });
   const project = await (await import("../server/services/hub-registry.js")).getProject(hubRoot, "pbi-test");
   await refreshProjectCodeIndex(project, { hubRoot });
 

@@ -535,6 +535,9 @@ export class ProjectWorker {
       ];
       if (sourcePath) args.push("--source-path", sourcePath);
       if (dispatchId) args.push("--dispatch-id", dispatchId);
+      const metadata = entry.metadata || {};
+      if (metadata.acpProfile) args.push("--acp-profile", metadata.acpProfile);
+      if (metadata.uiLaneReason) args.push("--ui-lane-reason", metadata.uiLaneReason);
 
       const env = {
         ...executorEnv(process.env, {

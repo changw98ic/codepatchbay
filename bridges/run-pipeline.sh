@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # run-pipeline.sh — compatibility wrapper for the durable Node pipeline
-# Usage: run-pipeline.sh <project> "<task>" [max-retries] [timeout-minutes] [workflow]
+# Usage: run-pipeline.sh <project> "<task>" [max-retries] [timeout-minutes] [workflow] [job-id] [--acp-profile <profile>] [--ui-lane-reason <reason>]
 
 CPB_EXECUTOR_ROOT="${CPB_EXECUTOR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 CPB_ROOT="${CPB_ROOT:-$CPB_EXECUTOR_ROOT}"
@@ -23,4 +23,5 @@ exec node "$CPB_EXECUTOR_ROOT/bridges/run-pipeline.mjs" \
   --max-retries "$MAX_RETRIES" \
   --timeout-min "$TIMEOUT_MIN" \
   --workflow "$WORKFLOW" \
-  $JOB_ID_ARG
+  $JOB_ID_ARG \
+  "${@:7}"

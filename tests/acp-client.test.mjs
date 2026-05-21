@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -14,16 +14,27 @@ const fakeBadHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-terminal.mjs");
 const fakePermissionTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-permission-terminal.mjs");
 
+// Strip permission-matrix env vars so writes to temp dirs aren't blocked
+// by inherited CPB runtime context (issue #62 ENOENT fix)
+const permissionEnvKeys = [
+  "CPB_EXECUTOR_ROOT", "CPB_ROOT", "CPB_ACP_CPB_ROOT",
+  "CPB_ACP_ROLE", "CPB_ACP_PROJECT", "CPB_ACP_JOB_ID", "CPB_ACP_PHASE",
+];
+
 async function runClient({ env, prompt, cwd }) {
-  const cleanEnv = { ...process.env, ...env };
-  if (!env.CPB_EXECUTOR_ROOT) delete cleanEnv.CPB_EXECUTOR_ROOT;
-  if (!env.CPB_ROOT) delete cleanEnv.CPB_ROOT;
-  if (!env.CPB_PROJECT_PATH_OVERRIDE) delete cleanEnv.CPB_PROJECT_PATH_OVERRIDE;
-  if (!env.CPB_WORKER_ID) delete cleanEnv.CPB_WORKER_ID;
-  if (!env.CPB_SESSION_ID) delete cleanEnv.CPB_SESSION_ID;
+  const cleanEnv = { ...process.env };
+  const inheritedRuntimeKeys = [
+    ...permissionEnvKeys,
+    "CPB_PROJECT_PATH_OVERRIDE",
+    "CPB_WORKER_ID",
+    "CPB_SESSION_ID",
+  ];
+  for (const key of inheritedRuntimeKeys) {
+    if (!Object.hasOwn(env, key)) delete cleanEnv[key];
+  }
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
     cwd: root,
-    env: cleanEnv,
+    env: { ...cleanEnv, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -742,3 +753,5 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
 }
+
+// Issue #62 acceptance tests moved to tests/acp-client-headless-acceptance.test.mjs

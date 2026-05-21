@@ -7,5 +7,8 @@
   "agent": {
     "command": "codex-acp",
     "args": []
+  },
+  "acp": {
+    "profile": "headless"
   }
 }

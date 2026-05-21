@@ -310,6 +310,132 @@ describe('POST /api/tasks/:name/pipeline', () => {
     assert.equal(res.statusCode, 400);
     assert.ok(res.json().message.includes('task'));
   });
+
+  // --- Issue #62: UI lane argument propagation via pipeline route ---
+
+  it('forwards --acp-profile and --ui-lane-reason to run-pipeline.sh', async () => {
+    // Replace the dummy run-pipeline.sh with one that records args
+    const recordingScript = path.join(tmpRoot, 'bridges', 'run-pipeline.sh');
+    const argsFile = path.join(tmpRoot, 'pipeline-args.txt');
+    await fs.writeFile(
+      recordingScript,
+      `#!/bin/bash\necho "$@" > "${argsFile}"\nexit 0\n`,
+    );
+    await fs.chmod(recordingScript, 0o755);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks/my-proj/pipeline',
+      payload: {
+        task: 'browser testing',
+        acpProfile: 'ui',
+        uiLaneReason: 'browser testing',
+      },
+    });
+    assert.equal(res.statusCode, 200);
+
+    // Wait for the bridge script to finish writing args
+    for (let i = 0; i < 20; i++) {
+      try { await fs.access(argsFile); break; } catch { await new Promise(r => setTimeout(r, 100)); }
+    }
+
+    const recorded = await fs.readFile(argsFile, 'utf8');
+    assert.ok(recorded.includes('--acp-profile'), 'must include --acp-profile flag');
+    assert.ok(recorded.includes('ui'), 'must include ui profile value');
+    assert.ok(recorded.includes('--ui-lane-reason'), 'must include --ui-lane-reason flag');
+    assert.ok(recorded.includes('browser testing'), 'must include uiLaneReason value');
+
+    // Verify the empty job-id slot is preserved before the flags
+    assert.ok(recorded.includes(' --acp-profile'), 'flags must come after positional args');
+  });
+
+  it('forwards only --acp-profile when no uiLaneReason provided', async () => {
+    const recordingScript = path.join(tmpRoot, 'bridges', 'run-pipeline.sh');
+    const argsFile = path.join(tmpRoot, 'pipeline-args-headless.txt');
+    await fs.writeFile(
+      recordingScript,
+      `#!/bin/bash\necho "$@" > "${argsFile}"\nexit 0\n`,
+    );
+    await fs.chmod(recordingScript, 0o755);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks/my-proj/pipeline',
+      payload: {
+        task: 'Add tests',
+        acpProfile: 'headless',
+      },
+    });
+    assert.equal(res.statusCode, 200);
+
+    // Wait for the bridge script to finish writing args
+    for (let i = 0; i < 20; i++) {
+      try { await fs.access(argsFile); break; } catch { await new Promise(r => setTimeout(r, 100)); }
+    }
+
+    const recorded = await fs.readFile(argsFile, 'utf8');
+    assert.ok(recorded.includes('--acp-profile'), 'must include --acp-profile flag');
+    assert.ok(recorded.includes('headless'), 'must include headless profile value');
+    assert.ok(!recorded.includes('--ui-lane-reason'), 'must not include --ui-lane-reason when not provided');
+  });
+
+  it('rejects ui ACP profile without uiLaneReason before spawning', async () => {
+    const recordingScript = path.join(tmpRoot, 'bridges', 'run-pipeline.sh');
+    const argsFile = path.join(tmpRoot, 'pipeline-args-ui-missing-reason.txt');
+    await fs.writeFile(
+      recordingScript,
+      `#!/bin/bash\necho "$@" > "${argsFile}"\nexit 0\n`,
+    );
+    await fs.chmod(recordingScript, 0o755);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks/my-proj/pipeline',
+      payload: {
+        task: 'browser testing',
+        acpProfile: 'ui',
+      },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /ui profile requires a non-empty uiLaneReason/);
+
+    await assert.rejects(
+      fs.access(argsFile),
+      { code: 'ENOENT' },
+      'run-pipeline.sh must not be spawned for invalid UI lane requests',
+    );
+  });
+
+  it('does not add empty job-id slot when no ACP lane args present', async () => {
+    const recordingScript = path.join(tmpRoot, 'bridges', 'run-pipeline.sh');
+    const argsFile = path.join(tmpRoot, 'pipeline-args-no-lane.txt');
+    await fs.writeFile(
+      recordingScript,
+      `#!/bin/bash\necho "$@" > "${argsFile}"\nexit 0\n`,
+    );
+    await fs.chmod(recordingScript, 0o755);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/tasks/my-proj/pipeline',
+      payload: { task: 'Add tests' },
+    });
+    assert.equal(res.statusCode, 200);
+
+    // Wait for the bridge script to finish writing args
+    for (let i = 0; i < 20; i++) {
+      try { await fs.access(argsFile); break; } catch { await new Promise(r => setTimeout(r, 100)); }
+    }
+
+    const recorded = await fs.readFile(argsFile, 'utf8');
+    // Task descriptions can contain spaces, so don't count split tokens.
+    // Just verify no ACP lane flags are present.
+    assert.ok(!recorded.includes('--acp-profile'), 'must not include --acp-profile when not provided');
+    assert.ok(!recorded.includes('--ui-lane-reason'), 'must not include --ui-lane-reason when not provided');
+    // Verify the basic positional args are present
+    assert.ok(recorded.includes('my-proj'), 'must include project name');
+    assert.ok(recorded.includes('standard'), 'must include workflow name');
+  });
 });
 
 describe('Project name validation', () => {

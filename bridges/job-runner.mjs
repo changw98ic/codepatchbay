@@ -290,6 +290,9 @@ async function main() {
       phase,
       leaseId,
       ts: eventTimestamp(),
+      acpProfile: process.env.CPB_ACP_LAUNCH_PROFILE || "headless",
+      uiLane: process.env.CPB_ACP_UI_LANE === "1",
+      uiLaneReason: process.env.CPB_ACP_UI_LANE_REASON || "",
     });
 
     // Register process in the CPB process registry
@@ -327,6 +330,9 @@ async function main() {
       CPB_ACP_PHASE: phase,
       CPB_ACP_PROJECT: project,
       CPB_ACP_CPB_ROOT: cpbRoot,
+      CPB_ACP_LAUNCH_PROFILE: process.env.CPB_ACP_LAUNCH_PROFILE || "headless",
+      CPB_ACP_UI_LANE: process.env.CPB_ACP_UI_LANE || "0",
+      CPB_ACP_UI_LANE_REASON: process.env.CPB_ACP_UI_LANE_REASON || "",
     };
     const activity = createActivityTracker(cpbRoot, project, jobId);
     childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {

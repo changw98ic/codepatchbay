@@ -35,3 +35,30 @@ During the run, inspect `./cpb hub acp --json` and confirm:
 
 The live soak is the acceptance gate for provider-specific behavior. Fake-agent
 tests prove deterministic pool policy, not unattended real-provider reliability.
+
+## Headless vs UI ACP Lanes
+
+All normal code phases (plan, execute, verify, review, repair, retries, fixes)
+resolve to `acpProfile: "headless"` unless explicitly configured as `ui`.
+
+Headless `codex-acp` launches receive process-local config overrides that
+disable Computer Use, Browser, Chrome plugins, and clear notify hooks. Global
+Codex config is never modified. ACP `session/new` always sends `mcpServers: []`
+to prevent inherited MCP side effects.
+
+At runtime, headless sessions deny Computer Use, Browser, Chrome, desktop
+automation, and MCP-shaped UI tool calls before side effects occur. Every
+denial is recorded as an audit event.
+
+**Explicit UI lane**: set `acpProfile: "ui"` with a non-empty `uiLaneReason`
+via CLI (`--acp-profile ui --ui-lane-reason "..."`), API request body, or
+queue entry metadata.
+
+**Why prompt-only gating is insufficient**: mounted UI tools can still be
+selected by the model regardless of prompt instructions. CPB enforces at three
+layers: launch (config overrides strip plugins), request (tool call denial),
+and audit (structured denial events).
+
+**Escalation markers**: agents may emit `needs_ui_observation`,
+`needs_browser_check`, or `blocked_requires_ui_lane` when UI access is
+necessary. CPB records these as structured events for manual review.

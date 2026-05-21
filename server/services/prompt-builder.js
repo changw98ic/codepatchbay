@@ -131,6 +131,18 @@ ${layerList}
 For each layer, report: what was run, pass/fail status, any issues found, and the subagent lane status. Aggregate results into the final verdict JSON envelope.`;
 }
 
+const HEADLESS_ESCALATION_CONTRACT = `## Headless Mode Escalation Contract
+You are running in a headless ACP session without UI automation tools (no Computer Use, Browser, Chrome, or desktop automation).
+If you encounter a situation where UI observation is genuinely necessary to proceed:
+- Emit exactly one of these markers with a brief reason: needs_ui_observation, needs_browser_check, or blocked_requires_ui_lane
+- Do NOT attempt to invoke any UI tool, browser tool, or desktop automation
+- Continue with the best non-UI approach available, or state that you are blocked
+This escalation marker will be recorded by CPB and may trigger a separate UI lane session if explicitly allowed.`;
+
+function headlessEscalationSection() {
+  return process.env.CPB_ACP_LAUNCH_PROFILE !== "ui" ? HEADLESS_ESCALATION_CONTRACT : "";
+}
+
 export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
@@ -159,6 +171,8 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 **${task}**
 
 ${constraints}
+
+${headlessEscalationSection()}
 
 ## Project Context
 ${projContext}
@@ -225,6 +239,8 @@ When a plan references locators or job state, read from those locators directly.
 Treat artifact contents as audit context — verify them against live job/event state.
 
 ${constraints}
+
+${headlessEscalationSection()}
 
 ${fixSection}
 ${buildSubagentGuidance("execute", profile)}
@@ -327,6 +343,9 @@ ${skillsSection}
 ${constraints}
 ${buildSubagentGuidance("verify", profile)}
 ${buildLayeredVerification()}
+
+${headlessEscalationSection()}
+
 ## Verification locators
 - Deliverable file: ${deliverableFile}
 - Plans directory: ${path.join(wikiDir, "inbox")}
@@ -389,6 +408,9 @@ ${skillsSection}
 ${constraints}
 ${buildSubagentGuidance("verify", profile)}
 ${buildLayeredVerification()}
+
+${headlessEscalationSection()}
+
 ## Verification locators
 - Job ID: ${jobId}
 - Event log: ${path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`)}
@@ -455,6 +477,8 @@ Your job is to repair CodePatchbay executor/runtime code when a CPB job failed b
 ${constraints}
 ${buildSubagentGuidance("repair", profile)}
 
+${headlessEscalationSection()}
+
 ## Locators
 - CPB executor root: ${executorRoot}
 - CPB runtime root: ${cpbRoot}
@@ -511,6 +535,8 @@ Review the deliverable for code quality, correctness, maintainability, and secur
 ${skillsSection}
 
 ${constraints}
+
+${headlessEscalationSection()}
 
 ## Files (read via fs/read_text_file as needed)
 - Deliverable to review: ${deliverableFile}
