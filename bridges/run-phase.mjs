@@ -34,6 +34,8 @@ import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
 import { isWorkflowName, listWorkflows } from "../server/services/workflow-definition.js";
 import { applyVariant } from "./apply-variant.mjs";
 import { runRepair, completeRepair } from "../server/services/repair-handler.js";
+import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
+import { recordUiEscalations } from "./record-ui-escalation.mjs";
 
 // --- CLI arg parsing ---
 
@@ -207,6 +209,12 @@ async function runAcp(agent, prompt, cwd, executorRoot) {
 
 // --- Verdict parsing ---
 
+async function recordUiEscalationsWrapper(stdout, cpbRoot, project, phase, agent) {
+  const jobId = process.env.CPB_ACP_JOB_ID || "";
+  const acpProfile = process.env.CPB_ACP_LAUNCH_PROFILE || "headless";
+  await recordUiEscalations(stdout, cpbRoot, project, jobId, phase, agent, acpProfile);
+}
+
 function parseVerdictFromContent(content) {
   const envelope = parseVerdictEnvelope(content);
   const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
@@ -248,6 +256,8 @@ async function handlePlan(args) {
     console.error(`Plan spawn failed: ${result.error.message}`);
     return 1;
   }
+
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "plan", "codex");
 
   // Check if plan file was created
   try {
@@ -302,6 +312,8 @@ async function handleExecute(args) {
     console.error(`Execute spawn failed: ${result.error.message}`);
     return 1;
   }
+
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "execute", "claude");
 
   try {
     await readFile(deliverableFile, "utf8");
@@ -359,6 +371,8 @@ async function handleVerify(args) {
     return 1;
   }
 
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "verify", "codex");
+
   // Parse verdict
   let verdictContent;
   try {
@@ -410,6 +424,8 @@ async function handleReview(args) {
     console.error(`Review spawn failed: ${result.error.message}`);
     return 1;
   }
+
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "review", "codex");
 
   let reviewContent;
   try {
@@ -504,6 +520,8 @@ async function handleRepair(args) {
     return result.exitCode;
   }
 
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "repair", "claude");
+
   try {
     const repairStatus = await completeRepair(cpbRoot, {
       project, jobId, repairId, repairFile, repairArtifact,
@@ -553,6 +571,18 @@ async function main() {
     || "";
   if (jobId) process.env.CPB_ACP_JOB_ID = jobId;
   process.env.CPB_ACP_CPB_ROOT = parsed.cpbRoot;
+
+  // ACP lane resolution (issue #62)
+  const acpProfileOverride = parsed.options.get("--acp-profile") || process.env.CPB_ACP_LAUNCH_PROFILE;
+  const uiLaneReason = parsed.options.get("--ui-lane-reason") || process.env.CPB_ACP_UI_LANE_REASON || "";
+  const lane = resolveAcpLane({ profile: acpProfileOverride, uiLane: acpProfileOverride === "ui", uiLaneReason });
+  if (lane.error) {
+    console.error(`ACP lane error: ${lane.error}`);
+    return 1;
+  }
+  process.env.CPB_ACP_LAUNCH_PROFILE = lane.profile;
+  process.env.CPB_ACP_UI_LANE = lane.uiLane ? "1" : "0";
+  if (lane.uiLaneReason) process.env.CPB_ACP_UI_LANE_REASON = lane.uiLaneReason;
 
   // Set ACP cwd
   if (!process.env.CPB_ACP_CWD && !process.env.CPB_PROJECT_PATH_OVERRIDE) {

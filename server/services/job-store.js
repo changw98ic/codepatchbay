@@ -83,10 +83,9 @@ export async function startPhase(
   cpbRoot,
   project,
   jobId,
-  { phase, attempt = 1, leaseId, ts = nowIso(), dataRoot }
+  { phase, attempt = 1, leaseId, ts = nowIso(), dataRoot, acpProfile, uiLane, uiLaneReason }
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
-  await appendEvent(cpbRoot, project, jobId, {
+  const event = {
     type: "phase_started",
     jobId,
     project,
@@ -94,7 +93,12 @@ export async function startPhase(
     attempt,
     leaseId,
     ts,
-  }, { dataRoot });
+  };
+  if (acpProfile !== undefined) event.acpProfile = acpProfile;
+  if (uiLane !== undefined) event.uiLane = uiLane;
+  if (uiLaneReason !== undefined) event.uiLaneReason = uiLaneReason;
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
+  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 

@@ -426,10 +426,11 @@ export async function recordPermissionDenial(
     phase,
     allowedBoundary,
     recoveryGuidance,
+    tool,
   }
 ) {
   const eventRole = role ? validateRole(role) : null;
-  await appendEvent(cpbRoot, project, jobId, {
+  const event = {
     type: "permission_denied",
     category: "infra",
     jobId,
@@ -443,7 +444,9 @@ export async function recordPermissionDenial(
     allowedBoundary: allowedBoundary || "",
     recoveryGuidance: recoveryGuidance || "Retry with a path permitted by the phase policy.",
     ts: new Date().toISOString(),
-  });
+  };
+  if (tool) event.tool = tool;
+  await appendEvent(cpbRoot, project, jobId, event);
 }
 
 export function getObservablePaths(role, cpbRoot, project, { sourcePath = null } = {}) {

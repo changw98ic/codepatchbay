@@ -34,6 +34,7 @@ import {
 } from "../server/services/worker-dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
+import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
 
 // ─── CLI arg parsing ───
 
@@ -75,8 +76,10 @@ function parseArgs(argv) {
   const jobIdOverride = options.get("--job-id") || null;
   const dispatchId = options.get("--dispatch-id") || null;
   const sourcePath = options.get("--source-path") ? path.resolve(options.get("--source-path")) : null;
+  const acpProfile = options.get("--acp-profile") || null;
+  const uiLaneReason = options.get("--ui-lane-reason") || "";
 
-  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath };
+  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -465,7 +468,7 @@ async function main() {
     return 1;
   }
 
-  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId: providedDispatchId } = parsed;
+  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId: providedDispatchId, acpProfile, uiLaneReason } = parsed;
   let { sourcePath } = parsed;
   const defaultExecutorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const executorRoot = resolveExecutorRoot({ fallbackRoot: defaultExecutorRoot });
@@ -473,6 +476,16 @@ async function main() {
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
   process.env.CPB_WORKFLOW = workflow;
+
+  // ACP lane resolution (issue #62)
+  const lane = resolveAcpLane({ profile: acpProfile || process.env.CPB_ACP_LAUNCH_PROFILE, uiLane: acpProfile === "ui", uiLaneReason });
+  if (lane.error) {
+    console.error(`ACP lane error: ${lane.error}`);
+    return 1;
+  }
+  process.env.CPB_ACP_LAUNCH_PROFILE = lane.profile;
+  process.env.CPB_ACP_UI_LANE = lane.uiLane ? "1" : "0";
+  if (lane.uiLaneReason) process.env.CPB_ACP_UI_LANE_REASON = lane.uiLaneReason;
   if (sourcePath) {
     try {
       sourcePath = await canonicalSourcePath(sourcePath);

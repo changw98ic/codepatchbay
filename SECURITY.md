@@ -36,3 +36,22 @@ Include:
 - CodePatchbay is designed for local/private experimentation, not public internet exposure.
 - Agent permission behavior depends on ACP adapter behavior and CodePatchbay environment variables.
 - Clean-machine setup and long-running recovery have not been proven yet.
+
+## ACP Headless Policy
+
+CPB disables UI automation (Computer Use, Browser, Chrome, desktop automation)
+for all headless ACP launches via per-process config overrides. Enforcement
+operates at three layers:
+
+1. **Launch-time**: process-local config strips UI plugins; global config is
+   untouched.
+2. **Runtime**: tool calls to UI automation capabilities are denied before
+   side effects occur.
+3. **Audit**: every denial is logged as a structured event.
+
+Prompt-only ReAct discipline is NOT the enforcement boundary. The model could
+still select mounted UI tools without the code-level denial layer.
+
+Explicit UI lane usage requires `acpProfile: "ui"` with a documented
+`uiLaneReason`, available through CLI flags, API request body, or queue
+metadata.

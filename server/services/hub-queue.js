@@ -89,6 +89,14 @@ export async function enqueue(hubRoot, input = {}) {
     cwd: meta.cwd,
     executionBoundary: meta.executionBoundary,
   };
+  if (!normalizedInput.metadata) normalizedInput.metadata = {};
+  normalizedInput.metadata.acpProfile = normalizedInput.metadata.acpProfile || "headless";
+  normalizedInput.metadata.uiLane = Boolean(normalizedInput.metadata.uiLane);
+  normalizedInput.metadata.uiLaneReason = normalizedInput.metadata.uiLaneReason || "";
+  if (normalizedInput.metadata.acpProfile === "ui" && !normalizedInput.metadata.uiLaneReason) {
+    throw new Error("ui profile requires a non-empty uiLaneReason in queue metadata");
+  }
+
   const queue = await loadQueue(hubRoot);
   const key = entryKey(normalizedInput);
   const existing = queue.entries.find((e) => entryKey(e) === key && e.status === "pending");

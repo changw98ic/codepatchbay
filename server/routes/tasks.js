@@ -5,6 +5,7 @@ import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '
 import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
 import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
+import { resolveAcpLane } from '../services/acp-lane-policy.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -81,10 +82,20 @@ export async function taskRoutes(fastify, opts) {
   // Trigger full pipeline
   fastify.post('/tasks/:name/pipeline', async (req) => {
     const { name } = req.params;
-    const { task, maxRetries = '3', timeout = '0', workflow = 'standard' } = req.body || {};
+    const { task, maxRetries = '3', timeout = '0', workflow = 'standard', acpProfile, uiLaneReason } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
+    if (acpProfile !== undefined) {
+      const lane = resolveAcpLane({ profile: acpProfile, uiLaneReason });
+      if (lane.error) throw fastify.httpErrors.badRequest(lane.error);
+    }
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', [name, task, maxRetries, timeout, workflow], req.log, '', extraEnv);
+    // Preserve ACP lane fields from API request (issue #62)
+    // Slot 6 is JOB_ID in run-pipeline.sh — pass empty for no override
+    const pipelineArgs = [name, task, maxRetries, timeout, workflow];
+    if (acpProfile || uiLaneReason) pipelineArgs.push('');
+    if (acpProfile) pipelineArgs.push('--acp-profile', acpProfile);
+    if (uiLaneReason) pipelineArgs.push('--ui-lane-reason', uiLaneReason);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', pipelineArgs, req.log, '', extraEnv);
   });
 
   // Cancel a running job

@@ -140,6 +140,7 @@ function defaultProfile(role) {
     permissions: { write_paths: [], deny_tools: [], deny_commands: false },
     agent: { command: null, args: [] },
     subagentGuidance: null,
+    acp: { profile: "headless", uiLane: false, uiLaneReason: "" },
   };
 }
 
@@ -173,6 +174,13 @@ export async function loadProfile(cpbRoot, role) {
     }
     if (config.subagentGuidance) {
       profile.subagentGuidance = config.subagentGuidance;
+    }
+    if (config.acp) {
+      profile.acp = {
+        profile: config.acp.profile || "headless",
+        uiLane: Boolean(config.acp.uiLane),
+        uiLaneReason: config.acp.uiLaneReason || "",
+      };
     }
   } catch {
     // config.json is optional
