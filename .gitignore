@@ -19,7 +19,7 @@ cpb-task/
 .omx/
 web/.omc/
 providers/
-wiki/projects/calc-test/inbox/plan-007.md
+wiki/
 
 # Local configuration and secrets
 .env
