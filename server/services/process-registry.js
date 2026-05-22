@@ -231,6 +231,17 @@ export async function cleanProcesses(cpbRoot, { dryRun = false } = {}) {
   return { dryRun: false, removed, eligible };
 }
 
+export async function removeProcess(cpbRoot, jobId, { dryRun = false } = {}) {
+  validateId(jobId, "jobId");
+  const file = processFile(cpbRoot, jobId);
+  if (dryRun) {
+    const entry = await readJson(file);
+    return { removed: false, wouldRemove: !!entry, jobId };
+  }
+  await rm(file, { force: true });
+  return { removed: true, jobId };
+}
+
 export async function inspectProcess(cpbRoot, jobId) {
   const entry = await getProcess(cpbRoot, jobId);
   const liveness = entry ? classifyLiveness(entry) : null;

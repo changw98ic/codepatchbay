@@ -11,10 +11,12 @@ import {
   cleanupJobs,
 } from "../server/services/reconcile.js";
 import { appendEvent } from "../server/services/runtime-events.js";
-import { createJob, failJob, completeJob } from "../server/services/job-store.js";
-import { acquireLease } from "../server/services/lease-manager.js";
+import { createJob, failJob, completeJob, startPhase } from "../server/services/job-store.js";
+import { acquireLease, readLease } from "../server/services/lease-manager.js";
 import { rebuildJobsIndex, readJobsIndex } from "../server/services/jobs-index.js";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
+import { registerProcess, getProcess, listProcesses } from "../server/services/process-registry.js";
+import { enqueue, updateEntry, listQueue, loadQueue } from "../server/services/hub-queue.js";
 
 function mkdtemp(prefix) {
   const dir = path.join(os.tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -559,5 +561,508 @@ describe("job-runner - signal handling", () => {
     // Check event stream for interrupted evidence
     const events = await readFile(eventFile, "utf8");
     assert.match(events, /interrupted by SIGINT/, `event stream should contain SIGINT evidence. Got: ${events}`);
+  });
+});
+
+// --- Issue #71: Vanished process reconciliation ---
+
+describe("reconcileJobs - vanished planner process", () => {
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("emits durable job_failed when planner process PID is dead", async () => {
+    const project = "vanish-plan";
+    const task = "vanished planner test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    const hubDir = process.env.CPB_HUB_ROOT;
+    const qEntry = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: { jobId: job.jobId },
+    });
+    await updateEntry(hubDir, qEntry.id, { status: "in_progress" });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+
+    const found = report.staleJobs.find((j) => j.jobId === job.jobId);
+    assert.ok(found, "should detect vanished planner process");
+    assert.equal(found.failureReason, "stale_pid_disappeared");
+    assert.match(found.failureArtifact, /^process:.*:phase:plan$/);
+
+    const { listJobs } = await import("../server/services/job-store.js");
+    const jobs = await listJobs(cpbRoot);
+    const reconciled = jobs.find((j) => j.jobId === job.jobId);
+    assert.equal(reconciled.status, "failed");
+    assert.ok(reconciled.failureCause);
+    assert.equal(reconciled.failureCause.kind, "stale_runtime_reconciled");
+    assert.equal(reconciled.failureCause.failureReason, "stale_pid_disappeared");
+    assert.equal(reconciled.failureCause.phase, "plan");
+    assert.equal(reconciled.leaseId, null);
+
+    // Queue entry marked failed with metadata
+    assert.ok(report.reconciledQueueEntries.length >= 1, "should have reconciled queue entry");
+    const qRec = report.reconciledQueueEntries.find((r) => r.jobId === job.jobId);
+    assert.ok(qRec, "should have queue reconciliation record");
+
+    const hubRoot = process.env.CPB_HUB_ROOT;
+    const qAfter = await listQueue(hubRoot);
+    const failedEntry = qAfter.find((e) => e.id === qEntry.id);
+    assert.equal(failedEntry.status, "failed");
+    assert.equal(failedEntry.metadata.failureCode, "FATAL");
+    assert.equal(failedEntry.metadata.failureReason, "stale_pid_disappeared");
+    assert.equal(failedEntry.metadata.reconciledJobId, job.jobId);
+    assert.ok(failedEntry.metadata.failureCause);
+    assert.equal(failedEntry.metadata.failureCause.kind, "stale_runtime_reconciled");
+
+    // Process record removed
+    assert.ok(report.reconciledProcesses.length >= 1, "should have reconciled process");
+    const procAfter = await getProcess(cpbRoot, job.jobId);
+    assert.equal(procAfter, null, "process record should be removed");
+
+    // Lease cleaned
+    const leaseAfter = await readLease(cpbRoot, leaseId);
+    assert.equal(leaseAfter, null, "lease should be cleaned");
+  });
+});
+
+describe("reconcileJobs - vanished executor and verifier processes", () => {
+  const phases = ["plan", "execute", "verify"];
+
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  for (const phase of phases) {
+    it(`detects vanished ${phase} process and emits job_failed with phase=${phase}`, async () => {
+      const project = `vanish-${phase}`;
+      const task = `vanished ${phase} test`;
+      const job = await createJob(cpbRoot, { project, task });
+      const leaseId = `lease-${job.jobId}-${phase}`;
+
+      await startPhase(cpbRoot, project, job.jobId, { phase, leaseId });
+      await acquireLease(cpbRoot, {
+        leaseId,
+        jobId: job.jobId,
+        phase,
+        ttlMs: 600_000,
+        ownerPid: 999999999,
+      });
+      await registerProcess(cpbRoot, {
+        jobId: job.jobId,
+        project,
+        phase,
+        runnerPid: 999999999,
+        leaseId,
+      });
+
+      const report = await reconcileJobs(cpbRoot, { dryRun: false });
+
+      const found = report.staleJobs.find((j) => j.jobId === job.jobId);
+      assert.ok(found, `should detect vanished ${phase} process`);
+      assert.equal(found.failureReason, "stale_pid_disappeared");
+      assert.match(found.failureArtifact, new RegExp(`^process:.*:phase:${phase}$`));
+
+      const { listJobs } = await import("../server/services/job-store.js");
+      const jobs = await listJobs(cpbRoot);
+      const reconciled = jobs.find((j) => j.jobId === job.jobId);
+      assert.equal(reconciled.status, "failed");
+      assert.equal(reconciled.failureCause.phase, phase);
+    });
+  }
+});
+
+describe("reconcileJobs - live process not reconciled", () => {
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("does NOT fail a job whose process runner PID is still alive", async () => {
+    const project = "alive-proc";
+    const task = "live process test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: process.pid,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: process.pid,
+      leaseId,
+    });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+
+    const found = report.staleJobs.find((j) => j.jobId === job.jobId);
+    assert.equal(found, undefined, "live process job should NOT be stale");
+
+    const { listJobs } = await import("../server/services/job-store.js");
+    const jobs = await listJobs(cpbRoot);
+    const after = jobs.find((j) => j.jobId === job.jobId);
+    assert.equal(after.status, "running");
+    assert.equal(after.failureCause, null);
+
+    const procAfter = await getProcess(cpbRoot, job.jobId);
+    assert.ok(procAfter, "process record should still exist");
+  });
+});
+
+describe("reconcileJobs - vanished process dry-run safety", () => {
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("dry-run reports stale job but does not mutate events, queue, process, or lease", async () => {
+    const project = "dryrun-vanish";
+    const task = "dry-run vanish test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    const hubDir = process.env.CPB_HUB_ROOT;
+    const qEntry = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: { jobId: job.jobId },
+    });
+    await updateEntry(hubDir, qEntry.id, { status: "in_progress" });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: true });
+
+    const found = report.staleJobs.find((j) => j.jobId === job.jobId);
+    assert.ok(found, "dry-run should report stale job");
+    assert.equal(found.failureReason, "stale_pid_disappeared");
+
+    // Job should still be running
+    const { listJobs } = await import("../server/services/job-store.js");
+    const jobs = await listJobs(cpbRoot);
+    const after = jobs.find((j) => j.jobId === job.jobId);
+    assert.equal(after.status, "running", "dry-run should not change job status");
+
+    // Process record should still exist
+    const procAfter = await getProcess(cpbRoot, job.jobId);
+    assert.ok(procAfter, "dry-run should not remove process record");
+
+    // Lease should still exist
+    const leaseAfter = await readLease(cpbRoot, leaseId);
+    assert.ok(leaseAfter, "dry-run should not remove lease");
+
+    // Queue entry should still be in_progress
+    const hubRoot = process.env.CPB_HUB_ROOT;
+    const qAfter = await listQueue(hubRoot);
+    const qCheck = qAfter.find((e) => e.id === qEntry.id);
+    assert.equal(qCheck.status, "in_progress", "dry-run should not change queue status");
+    assert.equal(qCheck.metadata.failureCode, undefined, "dry-run should not add failure metadata");
+
+    // Dry-run should report intended actions
+    assert.ok(report.reconciledQueueEntries.length >= 1, "dry-run should report would-be queue reconciliation");
+    const qWouldRec = report.reconciledQueueEntries.find((r) => r.jobId === job.jobId);
+    assert.ok(qWouldRec, "dry-run should report would-be queue entry for this job");
+    assert.equal(qWouldRec.wouldReconcile, true);
+    assert.equal(qWouldRec.queueEntryId, qEntry.id);
+
+    assert.ok(report.reconciledProcesses.length >= 1, "dry-run should report would-be process cleanup");
+    const procWouldRec = report.reconciledProcesses.find((r) => r.jobId === job.jobId);
+    assert.ok(procWouldRec, "dry-run should report would-be process removal");
+    assert.equal(procWouldRec.wouldRemove, true);
+
+    const leaseWouldClean = report.orphanLeases.find((l) => l.leaseId === leaseId);
+    assert.ok(leaseWouldClean, "dry-run should report would-be lease cleanup for process-orphan case");
+  });
+});
+
+describe("reconcileJobs - vanished process idempotency", () => {
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("reconciling twice does not emit duplicate job_failed events", async () => {
+    const project = "idem-vanish";
+    const task = "idempotent vanish test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    await reconcileJobs(cpbRoot, { dryRun: false });
+
+    // Second run: job is now terminal, should not be detected again
+    const report2 = await reconcileJobs(cpbRoot, { dryRun: false });
+    const foundAgain = report2.staleJobs.find((j) => j.jobId === job.jobId);
+    assert.equal(foundAgain, undefined, "terminal job should not appear in second reconcile");
+
+    const { listJobs } = await import("../server/services/job-store.js");
+    const jobs = await listJobs(cpbRoot);
+    const after = jobs.find((j) => j.jobId === job.jobId);
+    assert.equal(after.status, "failed");
+    assert.equal(after.failureCause.kind, "stale_runtime_reconciled");
+  });
+});
+
+describe("reconcileJobs - queue entry matching strategies", () => {
+  let cpbRoot;
+  let origHubRoot;
+
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    const hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("matches queue entry by metadata.originJobId when metadata.jobId is absent", async () => {
+    const project = "q-origin-match";
+    const task = "origin job match test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    const hubDir = process.env.CPB_HUB_ROOT;
+    const qEntry = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: { originJobId: job.jobId },
+    });
+    await updateEntry(hubDir, qEntry.id, { status: "in_progress" });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+    assert.ok(report.reconciledQueueEntries.length >= 1);
+
+    const hubRoot = process.env.CPB_HUB_ROOT;
+    const qAfter = await listQueue(hubRoot);
+    const failedEntry = qAfter.find((e) => e.id === qEntry.id);
+    assert.equal(failedEntry.status, "failed");
+    assert.equal(failedEntry.metadata.reconciledJobId, job.jobId);
+  });
+
+  it("matches queue entry by projectId + description when unique", async () => {
+    const project = "q-task-match";
+    const task = "task desc match test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    const hubDir = process.env.CPB_HUB_ROOT;
+    // No jobId or originJobId in metadata — falls back to projectId + description match
+    const qEntry = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: {},
+    });
+    await updateEntry(hubDir, qEntry.id, { status: "in_progress" });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+    assert.ok(report.reconciledQueueEntries.length >= 1);
+
+    const hubRoot = process.env.CPB_HUB_ROOT;
+    const qAfter = await listQueue(hubRoot);
+    const failedEntry = qAfter.find((e) => e.id === qEntry.id);
+    assert.equal(failedEntry.status, "failed");
+  });
+
+  it("does NOT match queue entry when multiple in-progress entries share same description", async () => {
+    const project = "q-ambiguous";
+    const task = "ambiguous task test";
+    const job = await createJob(cpbRoot, { project, task });
+    const leaseId = `lease-${job.jobId}-plan`;
+
+    await startPhase(cpbRoot, project, job.jobId, { phase: "plan", leaseId });
+    await acquireLease(cpbRoot, {
+      leaseId,
+      jobId: job.jobId,
+      phase: "plan",
+      ttlMs: 600_000,
+      ownerPid: 999999999,
+    });
+    await registerProcess(cpbRoot, {
+      jobId: job.jobId,
+      project,
+      phase: "plan",
+      runnerPid: 999999999,
+      leaseId,
+    });
+
+    const hubDir = process.env.CPB_HUB_ROOT;
+    const q1 = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: {},
+    });
+    await updateEntry(hubDir, q1.id, { status: "in_progress" });
+    const q2 = await enqueue(hubDir, {
+      projectId: project,
+      description: task,
+      metadata: {},
+    });
+    await updateEntry(hubDir, q2.id, { status: "in_progress" });
+
+    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+
+    // Job should still be failed
+    const found = report.staleJobs.find((j) => j.jobId === job.jobId);
+    assert.ok(found, "should still detect vanished process");
+
+    // But no queue entry should be reconciled (ambiguous match)
+    const qRec = report.reconciledQueueEntries.find((r) => r.jobId === job.jobId);
+    assert.equal(qRec, undefined, "should not match ambiguous queue entries");
+
+    // Queue entries should remain in_progress
+    const hubRoot = process.env.CPB_HUB_ROOT;
+    const qAfter = await listQueue(hubRoot);
+    const q1After = qAfter.find((e) => e.id === q1.id);
+    const q2After = qAfter.find((e) => e.id === q2.id);
+    assert.equal(q1After.status, "in_progress");
+    assert.equal(q2After.status, "in_progress");
   });
 });
