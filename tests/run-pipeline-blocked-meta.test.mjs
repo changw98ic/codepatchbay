@@ -8,6 +8,15 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 
+// Strip ALL CPB_* env vars so tests run in isolation from the worktree environment.
+function cleanEnv(overrides = {}) {
+  const clean = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("CPB_")) clean[k] = v;
+  }
+  return { ...clean, ...overrides };
+}
+
 async function findEventFile(cpbRoot, project) {
   const eventsDir = path.join(cpbRoot, "cpb-task", "events", project);
   const entries = await readdir(eventsDir);
@@ -27,16 +36,13 @@ test("blocked workflow writes execution_boundary with sourcePath and cwd", async
   const canonical = await realpath(sourcePath);
   const project = "blocked-meta-test";
 
-  const blockedEnv = { ...process.env, CPB_ROOT: cpbRoot };
-  delete blockedEnv.CPB_SESSION_ID;
-  delete blockedEnv.CPB_WORKER_ID;
   const { stdout, stderr } = await execFileAsync(process.execPath, [
     "bridges/run-pipeline.mjs",
     "--project", project,
     "--task", "test blocked metadata",
     "--source-path", sourcePath,
     "--workflow", "blocked",
-  ], { cwd: process.cwd(), env: blockedEnv });
+  ], { cwd: process.cwd(), env: cleanEnv({ CPB_ROOT: cpbRoot }) });
 
   const eventFile = await findEventFile(cpbRoot, project);
   assert.ok(eventFile, "event file should exist after blocked workflow");
@@ -72,12 +78,11 @@ test("blocked workflow carries CPB_SESSION_ID and CPB_WORKER_ID in execution_bou
     "--workflow", "blocked",
   ], {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
+    env: cleanEnv({
       CPB_ROOT: cpbRoot,
       CPB_SESSION_ID: "sess-from-env",
       CPB_WORKER_ID: "worker-from-env",
-    },
+    }),
   });
 
   const eventFile = await findEventFile(cpbRoot, project);
@@ -102,7 +107,7 @@ test("blocked workflow without sourcePath omits execution_boundary event", async
     "--project", project,
     "--task", "test no source",
     "--workflow", "blocked",
-  ], { cwd: process.cwd(), env: { ...process.env, CPB_ROOT: cpbRoot } });
+  ], { cwd: process.cwd(), env: cleanEnv({ CPB_ROOT: cpbRoot }) });
 
   const eventFile = await findEventFile(cpbRoot, project);
   if (!eventFile) return; // no events at all is acceptable

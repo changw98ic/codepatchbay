@@ -6,6 +6,15 @@ import test from "node:test";
 
 import { AcpPool, RateLimitError, sanitizeProviderReason } from "../bridges/acp-pool.mjs";
 
+// Strip CPB_* env vars so tests run in isolation from the worktree environment.
+const _savedCpbEnv = {};
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("CPB_")) {
+    _savedCpbEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+}
+
 const fakeAcpAgent = path.join(process.cwd(), "tests", "fixtures", "fake-acp-agent.mjs");
 
 async function waitFor(predicate, { timeoutMs = 1_000, intervalMs = 5 } = {}) {
@@ -724,4 +733,10 @@ test("ACP pool lastRecycleReason persists across successful requests", async () 
   assert.equal(s.recycleCount, 2);
   assert.equal(s.lastRecycleReason, "max_requests", "reason should persist after subsequent success");
   assert.equal(s.recycleReason, null, "session-level reason is ephemeral");
+});
+
+test("restore CPB env after tests", () => {
+  for (const [k, v] of Object.entries(_savedCpbEnv)) {
+    process.env[k] = v;
+  }
 });

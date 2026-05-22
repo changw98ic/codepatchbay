@@ -140,8 +140,12 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.post("/hub/queue/dequeue", async (req) => {
-    const entry = await dequeueEntry(hubRoot(req));
-    if (!entry) throw fastify.httpErrors.notFound("No pending entries in queue");
+    const result = await claimEligible(hubRoot(req), {
+      workerId: `dequeue-${process.pid}`,
+      getProjectFn: getProject,
+    });
+    if (!result.entry) throw fastify.httpErrors.notFound(result.reason || "No pending entries in queue");
+    const entry = result.entry;
     const dispatch = await recordDispatch(hubRoot(req), {
       projectId: entry.projectId,
       sourcePath: entry.sourcePath,
@@ -160,6 +164,7 @@ export async function hubRoutes(fastify) {
       claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
       requireIssueLink: body.requireIssueLink !== false,
+      getProjectFn: getProject,
     });
     if (!result.entry) {
       return { claimed: false, reason: result.reason, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy };
