@@ -1078,6 +1078,91 @@ describe('Dashboard project card index-status display', () => {
   });
 });
 
+describe('Dashboard eligible queued work display', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows eligible queued work count and project names', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+        { id: 'proj-b', sourcePath: '/b', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': {
+        total: 3,
+        pending: 2,
+        inProgress: 1,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+        eligibleQueued: 1,
+        eligibleProjects: ['proj-b'],
+        projects: {
+          'proj-a': { pending: 1, inProgress: 1, completed: 0, failed: 0, cancelled: 0, activeMutating: 1, busy: true, busyReason: 'active-mutating-task', claimedBy: 'w1', workerId: 'w1', eligiblePending: 0, eligibleEntryIds: [] },
+          'proj-b': { pending: 1, inProgress: 0, completed: 0, failed: 0, cancelled: 0, activeMutating: 0, busy: false, eligiblePending: 1, eligibleEntryIds: ['q2'] },
+        },
+        activeProjects: [
+          { projectId: 'proj-a', activeMutating: 1, busy: true, busyReason: 'active-mutating-task', workerId: 'w1' },
+        ],
+      },
+      '/api/hub/queue': [
+        { id: 'q1', projectId: 'proj-a', status: 'in_progress', priority: 'P1', createdAt: '2026-05-20T08:00:00Z' },
+        { id: 'q2', projectId: 'proj-b', status: 'pending', priority: 'P2', createdAt: '2026-05-20T08:01:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    // Active project A shows busy reason and worker
+    expect(screen.getByText('active-mutating-task')).toBeInTheDocument();
+    expect(screen.getByText('w1')).toBeInTheDocument();
+    // Eligible queued work visible
+    expect(screen.getByText('1 eligible')).toBeInTheDocument();
+    // proj-b appears in eligible-project span, queue pill, and project card
+    expect(screen.getAllByText('proj-b').length).toBeGreaterThanOrEqual(1);
+    // The eligible section has aria label
+    expect(screen.getByLabelText('Eligible queued work')).toBeInTheDocument();
+  });
+
+  it('hides eligible section when no eligible queued work', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
+      ],
+      '/api/hub/queue/status': {
+        total: 2,
+        pending: 1,
+        inProgress: 1,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+        eligibleQueued: 0,
+        eligibleProjects: [],
+        projects: {
+          'proj-a': { pending: 1, inProgress: 1, completed: 0, failed: 0, cancelled: 0, activeMutating: 1, busy: true, busyReason: 'active-mutating-task', eligiblePending: 0, eligibleEntryIds: [] },
+        },
+        activeProjects: [
+          { projectId: 'proj-a', activeMutating: 1, busy: true, busyReason: 'active-mutating-task', workerId: 'w1' },
+        ],
+      },
+      '/api/hub/queue': [
+        { id: 'q1', projectId: 'proj-a', status: 'in_progress', priority: 'P1', createdAt: '2026-05-20T08:00:00Z' },
+        { id: 'q2', projectId: 'proj-a', status: 'pending', priority: 'P2', createdAt: '2026-05-20T08:01:00Z' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('Queue')).toBeInTheDocument());
+    expect(screen.queryByText('eligible')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Eligible queued work')).not.toBeInTheDocument();
+  });
+});
+
 describe('Dashboard default mode hides test projects', () => {
   afterEach(() => vi.restoreAllMocks());
 

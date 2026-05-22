@@ -280,6 +280,14 @@ export default function Dashboard() {
                   ))}
                 </span>
               )}
+              {queueStatus.eligibleQueued > 0 && (
+                <span className="hub-eligible-queued" aria-label="Eligible queued work">
+                  <em>{queueStatus.eligibleQueued} eligible</em>
+                  {queueStatus.eligibleProjects.map((pid) => (
+                    <span className="hub-eligible-project" key={pid}>{pid}</span>
+                  ))}
+                </span>
+              )}
               {queueEntries.filter((e) => e.status === 'pending' || e.status === 'in_progress').slice(0, 3).map((entry) => (
                 <span className="hub-queue-pill" key={entry.id}>
                   {entry.projectId}
