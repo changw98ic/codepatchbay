@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/runtime-events.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
+import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
 import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
 import {
   completeJob,
@@ -601,6 +602,46 @@ async function main() {
     return false;
   }
 
+  // Resolve index snapshot from worker env or direct project lookup
+  let jobIndexSnapshot = null;
+  let jobIndexFreshness = null;
+  let snapshotFromEnv = false;
+
+  const cpbIndexSnapshotRaw = process.env.CPB_INDEX_SNAPSHOT_JSON;
+  if (cpbIndexSnapshotRaw) {
+    const envSnapshot = parseEnvSnapshot(cpbIndexSnapshotRaw);
+    if (envSnapshot) {
+      jobIndexSnapshot = envSnapshot.indexSnapshot;
+      jobIndexFreshness = envSnapshot.indexFreshness;
+      snapshotFromEnv = true;
+    }
+  }
+
+  if (!jobIndexSnapshot && hubRoot) {
+    const registered = await getProject(hubRoot, project);
+    if (registered?.sourcePath && registered.projectRuntimeRoot) {
+      const fresh = await ensureIndexFresh(registered);
+      const snap = snapshotForJob(fresh);
+      if (snap.indexSnapshotId) {
+        jobIndexSnapshot = { indexSnapshotId: snap.indexSnapshotId, sourceFingerprint: snap.sourceFingerprint };
+        jobIndexFreshness = snap.indexFreshness;
+      } else {
+        jobIndexSnapshot = null;
+        jobIndexFreshness = snap.indexFreshness;
+      }
+    } else if (registered) {
+      // Project registered but missing runtime root — index unavailable
+      jobIndexFreshness = {
+        available: false,
+        indexDirty: true,
+        indexStale: false,
+        worktreeDirty: false,
+        dirtyReasons: ["missing_source_or_runtime_root"],
+      };
+    }
+    // If project not registered in hub, skip freshness check (unmanaged project)
+  }
+
   // Create job
   const sourceContext = buildSourceContext();
   const job = await createJob(cpbRoot, {
@@ -610,8 +651,20 @@ async function main() {
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
     sourceContext,
+    indexSnapshot: jobIndexSnapshot,
+    indexFreshness: jobIndexFreshness,
   });
   const jobId = job.jobId;
+
+  // Block job when index is unavailable for a direct start (no worker snapshot).
+  // Blocked workflow skips this gate — it doesn't execute code.
+  if (workflow !== "blocked" && !jobIndexSnapshot && !snapshotFromEnv && hubRoot && jobIndexFreshness && !jobIndexFreshness.available) {
+    const { blockJob } = await import("../server/services/job-store.js");
+    await blockJob(cpbRoot, project, jobId, { reason: `index_unavailable: direct start blocked — index refresh failed` });
+    fail(`Index unavailable for direct start, job ${jobId} blocked`);
+    await markDispatchDone(false);
+    return 1;
+  }
 
   const meta = buildMeta({
     sourcePath,

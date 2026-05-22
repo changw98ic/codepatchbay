@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,15 @@ import { listJobs } from "../server/services/job-store.js";
 import { installRelease, readReleaseMetadata, resolveReleaseStoreRoot, validateReleaseId, releasePath, manifestPathForRelease, RELEASE_METADATA_FORMAT_VERSION } from "../server/services/release-store.js";
 
 const execFileAsync = promisify(execFile);
+
+// Strip ALL CPB_* env vars so tests run in isolation from the worktree environment.
+function cleanEnv(overrides = {}) {
+  const clean = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("CPB_")) clean[k] = v;
+  }
+  return { ...clean, ...overrides };
+}
 
 async function pathExists(targetPath) {
   try {
@@ -68,6 +77,26 @@ async function buildFixtureSource(root) {
     "utf8",
   );
   await writeFile(path.join(root, "cpb"), "#!/bin/bash\necho cpb\n", "utf8");
+}
+
+async function buildCliExecutorRoot(root) {
+  for (const item of ["bridges", "server", "profiles", "templates", "package.json", "cpb"]) {
+    await cp(path.join(process.cwd(), item), path.join(root, item), { recursive: true });
+  }
+  await chmod(path.join(root, "cpb"), 0o755);
+
+  await mkdir(path.join(root, "wiki", "system"), { recursive: true });
+  await mkdir(path.join(root, "wiki", "projects", "_template"), { recursive: true });
+  await writeFile(
+    path.join(root, "wiki", "system", "handshake-protocol.md"),
+    "# Handshake\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(root, "wiki", "projects", "_template", "context.md"),
+    "# Project Context\n",
+    "utf8",
+  );
 }
 
 describe("release-store service", () => {
@@ -245,9 +274,9 @@ describe("cpb release install CLI", () => {
   let cliDestRoot;
 
   beforeEach(async () => {
-    sourceRoot = await mkdtemp(path.join(tmpdir(), "cpb-cli-src-"));
+    sourceRoot = await realpath(await mkdtemp(path.join(tmpdir(), "cpb-cli-src-")));
     cliDestRoot = await mkdtemp(path.join(tmpdir(), "cpb-cli-dest-"));
-    await buildFixtureSource(sourceRoot);
+    await buildCliExecutorRoot(sourceRoot);
   });
 
   afterEach(async () => {
@@ -256,8 +285,8 @@ describe("cpb release install CLI", () => {
   });
 
   test("cpb release install respects CPB_HOME when --dest-root is omitted", async () => {
-    const cpbBin = path.join(process.cwd(), "cpb");
-    const realRoot = process.cwd();
+    const cpbBin = path.join(sourceRoot, "cpb");
+    const realRoot = sourceRoot;
     const cpbHome = await mkdtemp(path.join(tmpdir(), "cpb-home-"));
     const homeDir = await mkdtemp(path.join(tmpdir(), "cpb-fake-home-"));
 
@@ -267,13 +296,12 @@ describe("cpb release install CLI", () => {
         "--name", "cpb-home-test",
         "--json",
       ], {
-        env: {
-          ...process.env,
+        env: cleanEnv({
           CPB_ROOT: realRoot,
           CPB_EXECUTOR_ROOT: realRoot,
           CPB_HOME: cpbHome,
           HOME: homeDir,
-        },
+        }),
       });
 
       const parsed = JSON.parse(stdout);
@@ -295,19 +323,18 @@ describe("cpb release install CLI", () => {
   });
 
   test("cpb release install --name cli-release --dest-root <tmp> --json", async () => {
-    const cpbBin = path.join(process.cwd(), "cpb");
-    const realRoot = process.cwd();
+    const cpbBin = path.join(sourceRoot, "cpb");
+    const realRoot = sourceRoot;
     const { stdout } = await execFileAsync(cpbBin, [
       "release", "install",
       "--name", "cli-release",
       "--dest-root", cliDestRoot,
       "--json",
     ], {
-      env: {
-        ...process.env,
+      env: cleanEnv({
         CPB_ROOT: realRoot,
         CPB_EXECUTOR_ROOT: realRoot,
-      },
+      }),
     });
 
     const parsed = JSON.parse(stdout);
@@ -337,11 +364,10 @@ describe("existing run-pipeline executor root test", () => {
       "--workflow", "blocked",
     ], {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
+      env: cleanEnv({
         CPB_ROOT: cpbRoot,
         CPB_EXECUTOR_ROOT: executorRoot,
-      },
+      }),
     });
 
     const jobs = await listJobs(cpbRoot);

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildMeta } from "./execution-meta.js";
+import { ensureIndexFresh } from "./index-freshness.js";
 
 
 export const QUEUE_VERSION = 1;
@@ -126,6 +127,9 @@ export async function enqueue(hubRoot, input = {}) {
   return entry;
 }
 
+// Legacy low-level helper: claims the highest-priority pending entry without
+// index freshness gating. Public surfaces (routes, worker dispatch) should
+// use claimEligible() with getProjectFn to gate on ensureIndexFresh().
 export async function dequeue(hubRoot) {
   const queue = await loadQueue(hubRoot);
   const pending = queue.entries.filter((e) => e.status === "pending");
@@ -206,7 +210,16 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 
 export async function queueStatus(hubRoot) {
   const queue = await loadQueue(hubRoot);
-  const counts = { total: queue.entries.length, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, needsIssueLink: 0 };
+  const counts = {
+    total: queue.entries.length,
+    pending: 0,
+    inProgress: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    needsIssueLink: 0,
+    indexUnavailable: 0,
+  };
   for (const e of queue.entries) {
     if (e.status === "pending") counts.pending++;
     else if (e.status === "in_progress") counts.inProgress++;
@@ -214,6 +227,7 @@ export async function queueStatus(hubRoot) {
     else if (e.status === "failed") counts.failed++;
     else if (e.status === "cancelled") counts.cancelled++;
     else if (e.status === "needs_issue_link") counts.needsIssueLink++;
+    else if (e.status === "index_unavailable") counts.indexUnavailable++;
   }
   counts.projects = buildProjectQueueStatus(queue.entries);
   counts.activeProjects = Object.entries(counts.projects)
@@ -231,7 +245,7 @@ export function buildProjectQueueStatus(entries) {
   for (const e of entries) {
     if (!byProject[e.projectId]) {
       byProject[e.projectId] = {
-        pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0,
+        pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, indexUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         claimedBy: null, claimedAt: null, workerId: null,
         activeEntryIds: [],
@@ -243,6 +257,7 @@ export function buildProjectQueueStatus(entries) {
     else if (e.status === "completed") ps.completed++;
     else if (e.status === "failed") ps.failed++;
     else if (e.status === "cancelled") ps.cancelled++;
+    else if (e.status === "index_unavailable") ps.indexUnavailable++;
     if (e.status === "in_progress" && isMutatingEntry(e)) {
       ps.activeMutating++;
       ps.activeEntryIds.push(e.id);
@@ -274,6 +289,22 @@ function recoverStaleInProgress(entries, claimTimeoutMs) {
   return { recovered };
 }
 
+function recoverIndexUnavailable(entries, retryMs) {
+  if (!retryMs || retryMs <= 0) return { recovered: [] };
+  const now = Date.now();
+  const recovered = [];
+  for (const e of entries) {
+    if (e.status !== "index_unavailable") continue;
+    const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
+    if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
+    e.status = "pending";
+    e.updatedAt = nowIso();
+    if (e.metadata) delete e.metadata.indexFreshness;
+    recovered.push(e.id);
+  }
+  return { recovered };
+}
+
 export async function claimEligible(hubRoot, opts = {}) {
   const {
     workerId = `worker-${process.pid}`,
@@ -282,6 +313,8 @@ export async function claimEligible(hubRoot, opts = {}) {
     claimTimeoutMs = 120_000,
     providerSlotsAvailable = true,
     requireIssueLink = false,
+    getProjectFn = null,
+    indexUnavailableRetryMs = 300_000,
   } = opts;
 
   if (!providerSlotsAvailable) {
@@ -290,6 +323,11 @@ export async function claimEligible(hubRoot, opts = {}) {
 
   const queue = await loadQueue(hubRoot);
   const { recovered } = recoverStaleInProgress(queue.entries, claimTimeoutMs);
+  const { recovered: recoveredIdx } = recoverIndexUnavailable(queue.entries, indexUnavailableRetryMs);
+  if (recoveredIdx.length > 0) {
+    recovered.push(...recoveredIdx);
+    await saveQueue(hubRoot, queue);
+  }
 
   const activeMutatingByProject = {};
   for (const e of queue.entries) {
@@ -315,14 +353,79 @@ export async function claimEligible(hubRoot, opts = {}) {
   let chosen = null;
   let reason = null;
   const skippedBusy = [];
+  const indexUnavailableIds = [];
 
   for (const candidate of pending) {
     if (isMutatingEntry(candidate) && (activeMutatingByProject[candidate.projectId] || 0) >= maxActivePerProject) {
       if (!skippedBusy.includes(candidate.projectId)) skippedBusy.push(candidate.projectId);
       continue;
     }
+
+    // Index freshness gate: when getProjectFn is provided, check freshness
+    // for registered projects. Unregistered projects skip the gate.
+    if (getProjectFn) {
+      const project = await getProjectFn(hubRoot, candidate.projectId);
+      if (project && (!project.sourcePath || !project.projectRuntimeRoot)) {
+        // Registered but misconfigured — missing required fields
+        candidate.status = "index_unavailable";
+        candidate.updatedAt = nowIso();
+        candidate.metadata = {
+          ...candidate.metadata,
+          indexFreshness: {
+            available: false,
+            indexDirty: true,
+            indexStale: false,
+            worktreeDirty: false,
+            dirtyReasons: ["missing_source_or_runtime_root"],
+          },
+        };
+        indexUnavailableIds.push(candidate.id);
+        continue;
+      }
+      if (project?.sourcePath && project.projectRuntimeRoot) {
+        const fresh = await ensureIndexFresh(project);
+        if (!fresh.available) {
+          candidate.status = "index_unavailable";
+          candidate.updatedAt = nowIso();
+          candidate.metadata = {
+            ...candidate.metadata,
+            indexFreshness: {
+              available: false,
+              indexDirty: fresh.indexDirty ?? true,
+              indexStale: fresh.indexStale ?? false,
+              worktreeDirty: fresh.worktreeDirty ?? false,
+              dirtyReasons: fresh.dirtyReasons ?? ["index_unavailable"],
+            },
+          };
+          indexUnavailableIds.push(candidate.id);
+          continue;
+        }
+        // Store pinned snapshot metadata on the candidate
+        candidate.indexSnapshotId = fresh.indexSnapshotId;
+        candidate.metadata = {
+          ...candidate.metadata,
+          indexSnapshot: {
+            indexSnapshotId: fresh.indexSnapshotId,
+            sourceFingerprint: fresh.sourceFingerprint,
+            indexFreshness: {
+              available: true,
+              indexDirty: false,
+              indexStale: false,
+              worktreeDirty: fresh.worktreeDirty ?? false,
+              dirtyReasons: [],
+            },
+          },
+        };
+      }
+    }
+
     chosen = candidate;
     break;
+  }
+
+  // Persist any index_unavailable status changes
+  if (indexUnavailableIds.length > 0) {
+    await saveQueue(hubRoot, queue);
   }
 
   if (!chosen) {

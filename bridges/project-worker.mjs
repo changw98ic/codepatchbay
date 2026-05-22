@@ -273,6 +273,7 @@ export class ProjectWorker {
         || process.env.CPB_AUTOFINALIZER_MODE
         || (this.requireIssueLink ? "remote" : "off"),
     );
+    this._getProjectFn = opts.getProjectFn || null;
     this._runPipelineFn = opts.runPipelineFn || null;
     this._finalizerFn = opts.finalizerFn || finalizeSuccessfulQueueEntry;
     this._issueCloser = opts.issueCloser || defaultIssueCloser;
@@ -380,6 +381,7 @@ export class ProjectWorker {
       maxActivePerProject: this.maxActivePerProject,
       claimTimeoutMs: this.claimTimeoutMs,
       requireIssueLink: this.requireIssueLink,
+      getProjectFn: this._getProjectFn || getProject,
     });
     return result.entry;
   }
@@ -438,17 +440,18 @@ export class ProjectWorker {
       }
     }
 
-    if (this.workflow !== "blocked") {
-      const availability = await this.waitForAgentAvailability();
-      if (!availability.available) {
-        return {
-          ok: false,
-          code: AGENT_OUTAGE_EXIT_CODE,
-          agentOutage: true,
-          error: "agents_unavailable",
-          preflight: availability,
-        };
-      }
+    // Blocked workflow does not launch agents — skip preflight check
+    const availability = this.workflow === "blocked"
+      ? { available: true, attempt: 0, attempts: 0, health: { codex: true, claude: true, checks: {} } }
+      : await this.waitForAgentAvailability();
+    if (!availability.available) {
+      return {
+        ok: false,
+        code: AGENT_OUTAGE_EXIT_CODE,
+        agentOutage: true,
+        error: "agents_unavailable",
+        preflight: availability,
+      };
     }
 
     if (dispatchEnabled() && sourcePath) {
@@ -556,6 +559,9 @@ export class ProjectWorker {
         CPB_FAILED_QUEUE_ID: entry.metadata?.originQueueId ?? "",
         CPB_FAILED_JOB_ID: entry.metadata?.originJobId ?? "",
         CPB_FAILURE_ARTIFACT: entry.metadata?.failureArtifact ?? "",
+        CPB_INDEX_SNAPSHOT_JSON: entry.metadata?.indexSnapshot
+          ? JSON.stringify(entry.metadata.indexSnapshot)
+          : "",
       };
       if (useWorktree) env.CPB_USE_WORKTREE = "1";
       else delete env.CPB_USE_WORKTREE;

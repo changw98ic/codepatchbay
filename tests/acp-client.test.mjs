@@ -14,27 +14,15 @@ const fakeBadHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-terminal.mjs");
 const fakePermissionTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-permission-terminal.mjs");
 
-// Strip permission-matrix env vars so writes to temp dirs aren't blocked
-// by inherited CPB runtime context (issue #62 ENOENT fix)
-const permissionEnvKeys = [
-  "CPB_EXECUTOR_ROOT", "CPB_ROOT", "CPB_ACP_CPB_ROOT",
-  "CPB_ACP_ROLE", "CPB_ACP_PROJECT", "CPB_ACP_JOB_ID", "CPB_ACP_PHASE",
-];
-
 async function runClient({ env, prompt, cwd }) {
-  const cleanEnv = { ...process.env };
-  const inheritedRuntimeKeys = [
-    ...permissionEnvKeys,
-    "CPB_PROJECT_PATH_OVERRIDE",
-    "CPB_WORKER_ID",
-    "CPB_SESSION_ID",
-  ];
-  for (const key of inheritedRuntimeKeys) {
-    if (!Object.hasOwn(env, key)) delete cleanEnv[key];
+  // Strip ALL CPB_* env vars so tests run in isolation from the worktree environment.
+  const cleanBase = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("CPB_")) cleanBase[k] = v;
   }
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
     cwd: root,
-    env: { ...cleanEnv, ...env },
+    env: { ...cleanBase, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

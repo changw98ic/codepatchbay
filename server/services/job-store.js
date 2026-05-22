@@ -54,7 +54,18 @@ export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")
 
 export async function createJob(
   cpbRoot,
-  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null, dataRoot, sourceContext }
+  {
+    project,
+    task,
+    workflow = "standard",
+    ts = nowIso(),
+    jobId: providedJobId,
+    executor = null,
+    dataRoot,
+    sourceContext,
+    indexSnapshot = null,
+    indexFreshness = null,
+  }
 ) {
   const jobId = providedJobId || makeJobId(ts);
 
@@ -80,6 +91,13 @@ export async function createJob(
   };
   if (sourceContext && typeof sourceContext === "object") {
     event.sourceContext = sourceContext;
+  }
+  if (indexSnapshot) {
+    event.indexSnapshotId = indexSnapshot.indexSnapshotId ?? null;
+    event.sourceFingerprint = indexSnapshot.sourceFingerprint ?? null;
+  }
+  if (indexFreshness) {
+    event.indexFreshness = indexFreshness;
   }
   await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });

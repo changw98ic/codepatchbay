@@ -583,15 +583,14 @@ const fakeWorktree = await mkdtemp(path.join(tmpdir(), "cpb-delete-guard-"));
 // ============================================================
 
 async function runClient({ env, prompt, cwd }) {
-  const cleanEnv = { ...process.env, ...env };
-  if (!env.CPB_EXECUTOR_ROOT) delete cleanEnv.CPB_EXECUTOR_ROOT;
-  if (!env.CPB_ROOT) delete cleanEnv.CPB_ROOT;
-  if (!env.CPB_PROJECT_PATH_OVERRIDE) delete cleanEnv.CPB_PROJECT_PATH_OVERRIDE;
-  if (!env.CPB_WORKER_ID) delete cleanEnv.CPB_WORKER_ID;
-  if (!env.CPB_SESSION_ID) delete cleanEnv.CPB_SESSION_ID;
+  // Strip ALL CPB_* env vars so tests run in isolation from the worktree environment.
+  const cleanBase = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("CPB_")) cleanBase[k] = v;
+  }
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
     cwd: root,
-    env: cleanEnv,
+    env: { ...cleanBase, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

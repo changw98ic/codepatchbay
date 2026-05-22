@@ -356,6 +356,9 @@ export function materializeJob(events) {
     mergeIndexBranch: null,
     mergeIndexGitHead: null,
     mergeIndexedFrom: null,
+    indexSnapshotId: null,
+    sourceFingerprint: null,
+    indexFreshness: null,
   };
 
   let terminal = false;
@@ -380,6 +383,9 @@ export function materializeJob(events) {
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;
         if (event.sourceContext) state.sourceContext = event.sourceContext;
+        if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
+        if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
+        if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
         terminal = false;
         break;
       case "worktree_created":

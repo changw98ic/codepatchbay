@@ -25,6 +25,12 @@ import { createJob, startPhase, completePhase, failJob, retryJob } from "../serv
 const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-locator-"));
 const project = "locator-test";
 
+// Isolate from worktree env: save and clear CPB_PROJECT_PATH_OVERRIDE so
+// buildLocator resolves sourcePath from project meta, not env override.
+const hadOverride = Object.hasOwn(process.env, "CPB_PROJECT_PATH_OVERRIDE");
+const origOverride = process.env.CPB_PROJECT_PATH_OVERRIDE;
+delete process.env.CPB_PROJECT_PATH_OVERRIDE;
+
 async function setupWikiProject(cpbRoot, proj, { sourcePath } = {}) {
   const wikiDir = wikiProjectDir(cpbRoot, proj);
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
@@ -80,11 +86,7 @@ assert.ok(dec.includes("Use test fixtures"));
 const noDec = await readProjectDecisions(root, "nonexistent");
 assert.equal(noDec, null);
 
-// --- buildLocator without job (clear any inherited CPB_PROJECT_PATH_OVERRIDE) ---
-const hadOverride = "CPB_PROJECT_PATH_OVERRIDE" in process.env;
-const origOverride = process.env.CPB_PROJECT_PATH_OVERRIDE;
-delete process.env.CPB_PROJECT_PATH_OVERRIDE;
-
+// --- buildLocator without job ---
 const locator = await buildLocator(root, project, null, { phase: "plan" });
 assert.equal(locator.cpbRoot, path.resolve(root));
 assert.equal(locator.project, project);
