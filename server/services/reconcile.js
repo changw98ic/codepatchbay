@@ -7,8 +7,23 @@ import { readLease, releaseLease, isLeaseStale } from "./lease-manager.js";
 import { listJobs, failJob, blockJob } from "./job-store.js";
 import { rebuildJobsIndex, readJobsIndex } from "./jobs-index.js";
 import { resolveHubRoot, loadRegistry } from "./hub-registry.js";
+import { listProcesses, classifyLiveness, removeProcess } from "./process-registry.js";
+import { listQueue as listHubQueue, updateEntry as updateQueueEntry } from "./hub-queue.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+
+function findMatchingQueueEntry(queueEntries, job) {
+  const inProgress = queueEntries.filter((e) => e.status === "in_progress");
+  let match = inProgress.find((e) => e.metadata?.jobId === job.jobId);
+  if (match) return match;
+  match = inProgress.find((e) => e.metadata?.originJobId === job.jobId);
+  if (match) return match;
+  const byTask = inProgress.filter(
+    (e) => e.projectId === job.project && e.description === job.task
+  );
+  if (byTask.length === 1) return byTask[0];
+  return null;
+}
 
 function isProcessAlive(pid) {
   if (typeof pid !== "number" || pid <= 0) return false;
@@ -103,10 +118,22 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     streamErrors: [],
     indexRebuilt: false,
     workers: { stale: [] },
+    reconciledProcesses: [],
+    reconciledQueueEntries: [],
   };
 
   const jobs = await listJobs(cpbRoot);
   const now = new Date();
+
+  const processEntries = await listProcesses(cpbRoot);
+  const processByJobId = new Map();
+  for (const pe of processEntries) {
+    if (pe.jobId) processByJobId.set(pe.jobId, pe);
+  }
+
+  const hubRoot = resolveHubRoot(cpbRoot);
+  let queueEntries = [];
+  try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
   // 1. Detect stale running jobs
   const runningJobs = jobs.filter(
@@ -115,24 +142,85 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
   for (const job of runningJobs) {
     let isStale = false;
+    let staleViaProcessOrphan = false;
     let staleReason = "";
+    let cause = null;
+    let failureArtifact = null;
+    const processEntry = processByJobId.get(job.jobId) || null;
 
-    if (job.leaseId) {
+    // Check process registry first (concrete evidence of vanished phase runner)
+    if (processEntry && processEntry.status === "running") {
+      const liveness = classifyLiveness(processEntry);
+      if (liveness === "orphan") {
+        const phase = processEntry.phase || job.phase || "unknown";
+        isStale = true;
+        staleViaProcessOrphan = true;
+        staleReason = `${phase} process disappeared before terminal phase event`;
+        cause = {
+          kind: "stale_runtime_reconciled",
+          failureReason: "stale_pid_disappeared",
+          phase,
+          jobId: job.jobId,
+          leaseId: processEntry.leaseId || job.leaseId || null,
+          runnerPid: processEntry.runnerPid,
+          processStatus: processEntry.status,
+          lastHeartbeat: processEntry.lastHeartbeat,
+          observedAt: nowIso(),
+        };
+        failureArtifact = `process:${job.jobId}:phase:${phase}`;
+      }
+    }
+
+    // Fall back to lease-based detection
+    if (!isStale && job.leaseId) {
       const lease = await readLease(cpbRoot, job.leaseId);
       if (lease === null) {
         isStale = true;
         staleReason = "lease file missing";
+        cause = {
+          kind: "stale_runtime_reconciled",
+          failureReason: "lease_missing",
+          phase: job.phase,
+          jobId: job.jobId,
+          leaseId: job.leaseId,
+          observedAt: nowIso(),
+        };
+        failureArtifact = `lease:${job.leaseId}:phase:${job.phase || "unknown"}`;
       } else if (isLeaseStale(lease, now)) {
         if (lease.ownerPid && !isProcessAlive(lease.ownerPid)) {
           isStale = true;
           staleReason = `owner process dead (pid ${lease.ownerPid})`;
+          cause = {
+            kind: "stale_runtime_reconciled",
+            failureReason: "lease_stale_owner_dead",
+            phase: job.phase,
+            jobId: job.jobId,
+            leaseId: job.leaseId,
+            runnerPid: lease.ownerPid,
+            leaseExpiresAt: lease.expiresAt,
+            observedAt: nowIso(),
+          };
+          failureArtifact = `lease:${job.leaseId}:phase:${job.phase || "unknown"}`;
+          if (processEntry) {
+            cause.processStatus = processEntry.status;
+            cause.lastHeartbeat = processEntry.lastHeartbeat;
+          }
         } else if (!lease.ownerPid) {
           isStale = true;
           staleReason = "lease expired with no owner pid";
+          cause = {
+            kind: "stale_runtime_reconciled",
+            failureReason: "lease_expired_owner_pid_missing",
+            phase: job.phase,
+            jobId: job.jobId,
+            leaseId: job.leaseId,
+            leaseExpiresAt: lease.expiresAt,
+            observedAt: nowIso(),
+          };
+          failureArtifact = `lease:${job.leaseId}:phase:${job.phase || "unknown"}`;
         }
       }
-    } else if (job.status === "running") {
-      // Running with no lease — check lastActivityAt
+    } else if (!isStale && job.status === "running") {
       if (job.lastActivityAt) {
         const age = now.getTime() - new Date(job.lastActivityAt).getTime();
         if (age > 300_000) {
@@ -146,16 +234,95 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     }
 
     if (isStale) {
-      report.staleJobs.push({ jobId: job.jobId, project: job.project, reason: staleReason, worktree: job.worktree || null });
+      const jobReport = {
+        jobId: job.jobId,
+        project: job.project,
+        reason: staleReason,
+        worktree: job.worktree || null,
+      };
+      if (cause) {
+        jobReport.failureReason = cause.failureReason;
+        jobReport.failureArtifact = failureArtifact;
+      }
+      report.staleJobs.push(jobReport);
 
-      if (!dryRun) {
+      if (dryRun) {
+        // Report intended actions without mutating files
+        if (cause) {
+          const matched = findMatchingQueueEntry(queueEntries, job);
+          if (matched) {
+            report.reconciledQueueEntries.push({
+              queueEntryId: matched.id,
+              jobId: job.jobId,
+              wouldReconcile: true,
+            });
+          }
+        }
+        if (processEntry) {
+          report.reconciledProcesses.push({
+            jobId: job.jobId,
+            wouldRemove: true,
+          });
+        }
+        if (staleViaProcessOrphan && job.leaseId) {
+          report.orphanLeases.push({
+            leaseId: job.leaseId,
+            jobId: job.jobId,
+            reason: "would clean with reconciled stale job",
+          });
+        }
+      } else {
         await failJob(cpbRoot, job.project, job.jobId, {
           reason: `stale_runtime_reconciled: ${staleReason}`,
           code: "FATAL",
-          phase: job.phase,
+          phase: cause?.phase || job.phase,
+          cause,
         });
+
+        // Mark matching queue entry failed with failure metadata
+        if (cause) {
+          const matched = findMatchingQueueEntry(queueEntries, job);
+          if (matched) {
+            try {
+              await updateQueueEntry(hubRoot, matched.id, {
+                status: "failed",
+                claimedBy: null,
+                claimedAt: null,
+                workerId: null,
+                metadata: {
+                  failureCode: "FATAL",
+                  failureReason: cause.failureReason,
+                  failureCause: cause,
+                  failureArtifact,
+                  reconciledJobId: job.jobId,
+                  reconciledAt: cause.observedAt,
+                },
+              });
+              report.reconciledQueueEntries.push({
+                queueEntryId: matched.id,
+                jobId: job.jobId,
+              });
+            } catch {}
+          }
+        }
+
+        // Clean stale process registry record
+        if (processEntry) {
+          try {
+            await removeProcess(cpbRoot, job.jobId);
+            report.reconciledProcesses.push({ jobId: job.jobId, removed: true });
+          } catch {
+            report.reconciledProcesses.push({ jobId: job.jobId, removed: false, error: "cleanup failed" });
+          }
+        }
+
+        // Clean stale lease (direct removal to bypass owner-token checks)
         if (job.leaseId) {
-          try { await releaseLease(cpbRoot, job.leaseId); } catch {}
+          try {
+            const leasesDir = runtimeDataPath(cpbRoot, "leases");
+            await rm(path.join(leasesDir, `${job.leaseId}.json`), { force: true });
+            try { await rm(path.join(leasesDir, `${job.leaseId}.json.lock`), { recursive: true, force: true }); } catch {}
+          } catch {}
         }
       }
     }
@@ -208,7 +375,6 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   }
 
   // 3. Detect stale workers from Hub registry
-  const hubRoot = resolveHubRoot(cpbRoot);
   let registry;
   try {
     registry = await loadRegistry(hubRoot);
