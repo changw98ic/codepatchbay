@@ -21,6 +21,7 @@ import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
 import { sanitizeProviderReason } from "../../bridges/acp-pool.mjs";
+import { scanHubPollution } from "./project-pollution.js";
 import {
   resolveReleaseStoreRoot,
   listReleases,
@@ -364,6 +365,29 @@ async function checkProviderBackoff(hubRoot) {
   }
 }
 
+async function checkHubProjectPollution(hubRoot) {
+  try {
+    const { candidates, orphanRuntimeDirs } = await scanHubPollution(hubRoot);
+    const all = [...candidates, ...orphanRuntimeDirs];
+    if (all.length === 0) {
+      return ok("hub-project-pollution", "registry", "No test/fixture pollution detected");
+    }
+    const details = all.map((entry) => ({
+      projectId: entry.projectId,
+      sourcePath: entry.sourcePath,
+      projectRuntimeRoot: entry.projectRuntimeRoot,
+      runtimeDir: entry.runtimeDir,
+      reasons: entry.reasons,
+    }));
+    return warn("hub-project-pollution", "registry", `${all.length} test/fixture/orphan pollution candidate(s) detected`, {
+      details,
+      remediation: "Run: cpb jobs cleanup --dry-run to review, then cpb jobs cleanup to remove.",
+    });
+  } catch (e) {
+    return warn("hub-project-pollution", "registry", `Cannot check project pollution: ${e.message}`);
+  }
+}
+
 // --- Orchestrator ---
 
 async function checkCommonSh(cpbRoot) {
@@ -415,6 +439,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkStaleWorkers(resolvedHubRoot),
     checkOrphanLeases(resolvedCpbRoot),
     checkProviderBackoff(resolvedHubRoot),
+    checkHubProjectPollution(resolvedHubRoot),
   ]);
 
   const summary = deriveSummary(results);

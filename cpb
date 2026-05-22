@@ -835,16 +835,32 @@ cmd_jobs() {
           for (const id of report.leasesToRemove) console.log('  ' + id);
           console.log('Worktrees preserved (' + report.worktreesPreserved.length + '):');
           for (const w of report.worktreesPreserved) console.log('  ' + w.jobId + ' (' + w.status + '): ' + w.worktree);
+          if (report.testProjectsToRemove.length > 0) {
+            console.log('Test/polluted projects to remove (' + report.testProjectsToRemove.length + '):');
+            for (const c of report.testProjectsToRemove) console.log('  ' + c.projectId + ': ' + c.reasons.join(', '));
+          }
+          if (report.orphanRuntimeDirsToRemove.length > 0) {
+            console.log('Orphan runtime dirs to remove (' + report.orphanRuntimeDirsToRemove.length + '):');
+            for (const d of report.orphanRuntimeDirsToRemove) console.log('  ' + d.runtimeDir + ': ' + d.reasons.join(', '));
+          }
         "
       else
-        echo -e "${BOLD}Cleaning up stale leases...${NC}"
+        echo -e "${BOLD}Cleaning up stale leases and pollution...${NC}"
         CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" node --input-type=module -e "
           import path from 'node:path';
           const cpbRoot = path.resolve(process.env.CPB_ROOT || '.');
           const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
-          const { cleanupJobs } = await import(path.join(executorRoot, 'server/services/reconcile.js'));
+          const { cleanupJobs, cleanupPollution } = await import(path.join(executorRoot, 'server/services/reconcile.js'));
           const result = await cleanupJobs(cpbRoot);
           console.log(result.cleaned + ' stale lease(s) cleaned.');
+          const pollution = await cleanupPollution(cpbRoot);
+          if (pollution.projectsRemoved > 0 || pollution.orphanDirsRemoved > 0) {
+            console.log(pollution.projectsRemoved + ' polluted project(s) removed.');
+            console.log(pollution.orphanDirsRemoved + ' orphan runtime dir(s) removed.');
+            if (pollution.sourcePathsPreserved.length > 0) {
+              console.log(pollution.sourcePathsPreserved.length + ' source path(s) preserved (not deleted).');
+            }
+          }
         "
       fi
       ;;

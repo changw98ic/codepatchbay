@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import cors from '@fastify/cors';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 
 import { hubRoutes } from '../server/routes/hub.js';
@@ -35,12 +35,14 @@ describe('Hub routes', () => {
   let cpbRoot;
   let hubRoot;
   let projectRoot;
+  let prodSourceDir;
   let app;
 
   beforeEach(async () => {
     cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-cpb-'));
     hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-hub-'));
     projectRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-project-'));
+    prodSourceDir = await mkdtemp(path.join(homedir(), '.cpb-test-prod-'));
     app = await buildApp(cpbRoot, hubRoot);
   });
 
@@ -50,6 +52,7 @@ describe('Hub routes', () => {
     await rm(cpbRoot, { recursive: true, force: true });
     await rm(hubRoot, { recursive: true, force: true });
     await rm(projectRoot, { recursive: true, force: true });
+    await rm(prodSourceDir, { recursive: true, force: true });
   });
 
   it('attaches projects and returns Hub status through HTTP routes', async () => {
@@ -371,5 +374,54 @@ describe('Hub routes', () => {
     assert.equal(body.projects['proj-a'].activeMutating, 1);
     assert.ok(Array.isArray(body.activeProjects));
     assert.equal(body.activeProjects[0].projectId, 'proj-a');
+  });
+
+  it('GET /hub/projects hides test/pollution projects by default', async () => {
+    const fakeRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-fake-'));
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: prodSourceDir, name: 'prod-project' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: fakeRoot, name: 'fake-repo', metadata: { visibility: 'test' } },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/projects' });
+    assert.equal(res.statusCode, 200);
+    const ids = res.json().map((p) => p.id);
+    assert.ok(ids.includes('prod-project'), 'production project should be visible');
+    assert.ok(!ids.includes('fake-repo'), 'fake-repo should be hidden by default');
+
+    await rm(fakeRoot, { recursive: true, force: true });
+  });
+
+  it('GET /hub/projects?includeTest=true shows hidden projects with _pollution classification', async () => {
+    const fakeRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-fake2-'));
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: prodSourceDir, name: 'prod-project2' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: fakeRoot, name: 'app-test', metadata: { visibility: 'test' } },
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/projects?includeTest=true' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    const ids = body.map((p) => p.id);
+    assert.ok(ids.includes('prod-project2'));
+    assert.ok(ids.includes('app-test'));
+
+    const testProject = body.find((p) => p.id === 'app-test');
+    assert.ok(testProject._pollution, 'should include _pollution classification');
+    assert.equal(testProject._pollution.visibility, 'test');
+
+    await rm(fakeRoot, { recursive: true, force: true });
   });
 });

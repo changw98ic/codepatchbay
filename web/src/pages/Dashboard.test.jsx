@@ -1077,3 +1077,131 @@ describe('Dashboard project card index-status display', () => {
     expect(screen.queryByText(/Index:/)).not.toBeInTheDocument();
   });
 });
+
+describe('Dashboard default mode hides test projects', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('fetches /api/projects without includeTest by default', async () => {
+    global.fetch = mockFetch(baseMap);
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => {
+      const projectsCall = global.fetch.mock.calls.find((c) => c[0] === '/api/projects');
+      expect(projectsCall).toBeTruthy();
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/projects');
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/projects?includeTest=true');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects');
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/hub/projects?includeTest=true');
+  });
+
+  it('does not render test badge in default mode', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'prod-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+      ],
+    });
+
+    render(<Dashboard />, { wrapper: MemoryRouter });
+
+    await waitFor(() => expect(screen.getByText('prod-a')).toBeInTheDocument());
+    expect(screen.queryByText('test')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard diagnostics mode', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('fetches includeTest endpoints in diagnostics mode', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/projects?includeTest=true': [],
+      '/api/hub/projects?includeTest=true': [],
+    });
+
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?diagnostics=1']}>{children}</MemoryRouter>,
+    });
+
+    await waitFor(() => {
+      const projectsCall = global.fetch.mock.calls.find((c) => c[0] === '/api/projects?includeTest=true');
+      expect(projectsCall).toBeTruthy();
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/projects?includeTest=true');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects?includeTest=true');
+  });
+
+  it('renders test badge on hidden projects in diagnostics mode', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects?includeTest=true') {
+        return jsonResponse([
+          { name: 'prod-a', id: 'prod-a', inbox: 0, outputs: 0, _pollution: { visibility: 'production', reasons: [] } },
+          { name: 'test-fixture', id: 'test-fixture', inbox: 0, outputs: 0, _pollution: { visibility: 'test', reasons: ['metadata.visibility=test'] } },
+        ]);
+      }
+      if (url === '/api/tasks/durable') return jsonResponse([]);
+      if (url === '/api/hub/status') {
+        return jsonResponse({ projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' });
+      }
+      if (url === '/api/hub/projects?includeTest=true') {
+        return jsonResponse([
+          { id: 'prod-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+          { id: 'test-fixture', sourcePath: '/t', _pollution: { visibility: 'test', reasons: ['metadata.visibility=test'] } },
+        ]);
+      }
+      if (url === '/api/hub/acp') return jsonResponse(null);
+      if (url === '/api/hub/knowledge-policy') return jsonResponse(null);
+      if (url === '/api/hub/queue/status') return jsonResponse(null);
+      if (url === '/api/hub/queue') return jsonResponse([]);
+      if (url === '/api/hub/dispatches') return jsonResponse([]);
+      if (url === '/api/hub/observability') return jsonResponse(null);
+      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
+      return jsonResponse(null);
+    });
+
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?diagnostics=1']}>{children}</MemoryRouter>,
+    });
+
+    await waitFor(() => expect(screen.getByText('test-fixture')).toBeInTheDocument());
+    expect(screen.getByText('test')).toBeInTheDocument();
+  });
+
+  it('does not render test badge on production projects', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects?includeTest=true') {
+        return jsonResponse([
+          { name: 'prod-clean', id: 'prod-clean', inbox: 0, outputs: 0, _pollution: { visibility: 'production', reasons: [] } },
+        ]);
+      }
+      if (url === '/api/tasks/durable') return jsonResponse([]);
+      if (url === '/api/hub/status') {
+        return jsonResponse({ projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' });
+      }
+      if (url === '/api/hub/projects?includeTest=true') {
+        return jsonResponse([
+          { id: 'prod-clean', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+        ]);
+      }
+      if (url === '/api/hub/acp') return jsonResponse(null);
+      if (url === '/api/hub/knowledge-policy') return jsonResponse(null);
+      if (url === '/api/hub/queue/status') return jsonResponse(null);
+      if (url === '/api/hub/queue') return jsonResponse([]);
+      if (url === '/api/hub/dispatches') return jsonResponse([]);
+      if (url === '/api/hub/observability') return jsonResponse(null);
+      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
+      return jsonResponse(null);
+    });
+
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?diagnostics=1']}>{children}</MemoryRouter>,
+    });
+
+    await waitFor(() => expect(screen.getByText('prod-clean')).toBeInTheDocument());
+    const testBadges = screen.queryAllByText('test');
+    expect(testBadges.length).toBe(0);
+  });
+});

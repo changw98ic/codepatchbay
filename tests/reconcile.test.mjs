@@ -9,6 +9,7 @@ import {
   reconcileJobs,
   cleanupDryRun,
   cleanupJobs,
+  cleanupPollution,
 } from "../server/services/reconcile.js";
 import { appendEvent } from "../server/services/runtime-events.js";
 import { createJob, failJob, completeJob, startPhase } from "../server/services/job-store.js";
@@ -1064,5 +1065,256 @@ describe("reconcileJobs - queue entry matching strategies", () => {
     const q2After = qAfter.find((e) => e.id === q2.id);
     assert.equal(q1After.status, "in_progress");
     assert.equal(q2After.status, "in_progress");
+  });
+});
+
+describe("cleanupDryRun - pollution scanning", () => {
+  let cpbRoot;
+  let origHubRoot;
+  let hubDir;
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+
+    const registry = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      projects: {
+        "fake-repo": {
+          id: "fake-repo",
+          sourcePath: "/tmp/fake-source",
+          projectRuntimeRoot: path.join(hubDir, "projects", "fake-repo"),
+        },
+        "app-test": {
+          id: "app-test",
+          sourcePath: "/tmp/test-source",
+          metadata: { visibility: "test" },
+        },
+        "real-app": {
+          id: "real-app",
+          sourcePath: "/tmp/real-source",
+        },
+      },
+    };
+    await writeFile(path.join(hubDir, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+    await mkdir(path.join(hubDir, "projects", "fake-repo"), { recursive: true });
+    await mkdir(path.join(hubDir, "projects", "orphan-dir"), { recursive: true });
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+  });
+
+  it("reports test projects and orphan runtime dirs in dry-run", async () => {
+    const report = await cleanupDryRun(cpbRoot);
+    assert.ok(report.testProjectsToRemove.length >= 2, "should detect fake-repo and app-test");
+    assert.ok(report.orphanRuntimeDirsToRemove.length >= 1, "should detect orphan-dir");
+    const ids = report.testProjectsToRemove.map((c) => c.projectId);
+    assert.ok(ids.includes("fake-repo"));
+    assert.ok(ids.includes("app-test"));
+  });
+
+  it("dry-run does not mutate registry or runtime dirs", async () => {
+    const regBefore = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    await cleanupDryRun(cpbRoot);
+    const regAfter = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    assert.equal(regBefore, regAfter, "registry should not change in dry-run");
+    await stat(path.join(hubDir, "projects", "orphan-dir"));
+  });
+});
+
+describe("cleanupPollution", () => {
+  let cpbRoot;
+  let origHubRoot;
+  let hubDir;
+  let fakeSourceDir;
+  before(async () => {
+    cpbRoot = await makeCpbRoot();
+    origHubRoot = process.env.CPB_HUB_ROOT;
+    hubDir = path.join(cpbRoot, ".cpb", "hub");
+    await mkdir(hubDir, { recursive: true });
+    process.env.CPB_HUB_ROOT = hubDir;
+
+    fakeSourceDir = await mkdtemp(path.join(os.tmpdir(), "cpb-fake-source-"));
+    const registry = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      projects: {
+        "fake-repo": {
+          id: "fake-repo",
+          sourcePath: fakeSourceDir,
+          projectRuntimeRoot: path.join(hubDir, "projects", "fake-repo"),
+        },
+        "real-app": {
+          id: "real-app",
+          sourcePath: "/home/user/real-project",
+        },
+      },
+    };
+    await writeFile(path.join(hubDir, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+    await mkdir(path.join(hubDir, "projects", "fake-repo"), { recursive: true });
+    await mkdir(path.join(hubDir, "projects", "orphan-rt"), { recursive: true });
+  });
+  after(async () => {
+    if (origHubRoot !== undefined) process.env.CPB_HUB_ROOT = origHubRoot;
+    else delete process.env.CPB_HUB_ROOT;
+    if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true });
+    if (fakeSourceDir) await rm(fakeSourceDir, { recursive: true, force: true });
+  });
+
+  it("never removes sourcePath when it equals projectRuntimeRoot", async () => {
+    const equalPath = path.join(hubDir, "projects", "equal-edge");
+    await mkdir(equalPath, { recursive: true });
+    const regBefore = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    const registry = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      projects: {
+        "equal-edge": {
+          id: "equal-edge",
+          sourcePath: equalPath,
+          projectRuntimeRoot: equalPath,
+          metadata: { visibility: "test" },
+        },
+        "real-app": {
+          id: "real-app",
+          sourcePath: "/home/user/real-project",
+        },
+      },
+    };
+    await writeFile(path.join(hubDir, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+
+    const result = await cleanupPollution(cpbRoot);
+
+    // The sourcePath directory must still exist even though projectRuntimeRoot === sourcePath
+    await stat(equalPath);
+
+    // Registry entry must remain — unsafe candidate is report-only
+    const regRaw = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    const reg = JSON.parse(regRaw);
+    assert.ok(reg.projects["equal-edge"], "equal-edge should remain in registry (unsafe)");
+    assert.ok(reg.projects["real-app"], "real-app should remain in registry");
+
+    // Should be reported as skipped
+    const skipped = result.unsafeProjectsSkipped.find((s) => s.projectId === "equal-edge");
+    assert.ok(skipped, "equal-edge should be in unsafeProjectsSkipped");
+    assert.equal(skipped.reason, "source-path-preserved");
+
+    // Restore original registry and recreate dirs
+    await writeFile(path.join(hubDir, "projects.json"), regBefore, "utf8");
+    await mkdir(path.join(hubDir, "projects", "fake-repo"), { recursive: true });
+    await mkdir(path.join(hubDir, "projects", "orphan-rt"), { recursive: true });
+    await rm(equalPath, { recursive: true, force: true });
+  });
+
+  it("removes polluted registry entries and orphan dirs, preserves sourcePath", async () => {
+    const result = await cleanupPollution(cpbRoot);
+    assert.ok(result.projectsRemoved >= 1, "should remove at least fake-repo");
+    assert.ok(result.orphanDirsRemoved >= 1, "should remove orphan-rt dir");
+    assert.ok(result.sourcePathsPreserved.includes(fakeSourceDir), "sourcePath should be preserved");
+
+    // Source path directory should still exist
+    await stat(fakeSourceDir);
+
+    // fake-repo should be gone from registry
+    const regRaw = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    const reg = JSON.parse(regRaw);
+    assert.ok(!reg.projects["fake-repo"], "fake-repo should be removed from registry");
+    assert.ok(reg.projects["real-app"], "real-app should remain in registry");
+  });
+
+  it("never recursively deletes <hubRoot>/projects when projectRuntimeRoot points at it", async () => {
+    // Reset registry with a polluted project whose runtimeRoot is <hubRoot>/projects
+    const realAppRt = path.join(hubDir, "projects", "real-app");
+    await mkdir(realAppRt, { recursive: true });
+    const markerFile = path.join(realAppRt, "important-data.txt");
+    await writeFile(markerFile, "do not delete", "utf8");
+
+    const registry = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      projects: {
+        "fake-repo": {
+          id: "fake-repo",
+          sourcePath: "/tmp/fake-source",
+          projectRuntimeRoot: path.join(hubDir, "projects"),
+        },
+        "real-app": {
+          id: "real-app",
+          sourcePath: "/home/user/real-project",
+        },
+      },
+    };
+    await writeFile(path.join(hubDir, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+
+    const result = await cleanupPollution(cpbRoot);
+
+    // <hubRoot>/projects directory must still exist
+    await stat(path.join(hubDir, "projects"));
+
+    // The sibling real-app runtime dir and its marker must survive
+    await stat(realAppRt);
+    const markerContent = await readFile(markerFile, "utf8");
+    assert.equal(markerContent, "do not delete");
+
+    // The unsafe candidate should be reported as skipped
+    assert.ok(result.unsafeProjectsSkipped.length >= 1, "should report skipped unsafe project");
+    const skipped = result.unsafeProjectsSkipped.find((s) => s.projectId === "fake-repo");
+    assert.ok(skipped, "fake-repo should be in unsafeProjectsSkipped");
+    assert.equal(skipped.reason, "hub-projects-root");
+
+    // Both fake-repo and real-app should remain in registry (unsafe candidate is report-only)
+    const regRaw = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    const reg = JSON.parse(regRaw);
+    assert.ok(reg.projects["fake-repo"], "fake-repo should remain in registry (unsafe, report-only)");
+    assert.ok(reg.projects["real-app"], "real-app should remain in registry");
+  });
+
+  it("never deletes another registered project runtime root", async () => {
+    // Reset registry with a polluted project whose runtimeRoot equals real-app's expected root
+    const realAppRt = path.join(hubDir, "projects", "real-app");
+    await mkdir(realAppRt, { recursive: true });
+    const markerFile = path.join(realAppRt, "real-data.txt");
+    await writeFile(markerFile, "real project data", "utf8");
+
+    const registry = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      projects: {
+        "fake-repo": {
+          id: "fake-repo",
+          sourcePath: "/tmp/fake-source",
+          projectRuntimeRoot: path.join(hubDir, "projects", "real-app"),
+        },
+        "real-app": {
+          id: "real-app",
+          sourcePath: "/home/user/real-project",
+        },
+      },
+    };
+    await writeFile(path.join(hubDir, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+
+    const result = await cleanupPollution(cpbRoot);
+
+    // real-app runtime dir and marker must survive
+    await stat(realAppRt);
+    const markerContent = await readFile(markerFile, "utf8");
+    assert.equal(markerContent, "real project data");
+
+    // The unsafe candidate should be reported as skipped
+    assert.ok(result.unsafeProjectsSkipped.length >= 1, "should report skipped unsafe project");
+    const skipped = result.unsafeProjectsSkipped.find((s) => s.projectId === "fake-repo");
+    assert.ok(skipped, "fake-repo should be in unsafeProjectsSkipped");
+    assert.equal(skipped.reason, "other-project-runtime-root");
+
+    // Both fake-repo and real-app should remain in registry (unsafe candidate is report-only)
+    const regRaw = await readFile(path.join(hubDir, "projects.json"), "utf8");
+    const reg = JSON.parse(regRaw);
+    assert.ok(reg.projects["fake-repo"], "fake-repo should remain in registry (unsafe, report-only)");
+    assert.ok(reg.projects["real-app"], "real-app should remain in registry");
   });
 });

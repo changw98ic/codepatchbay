@@ -555,3 +555,61 @@ test("formatReleaseDoctorJson produces valid JSON", async () => {
   assert.ok(parsed.summary);
   assert.ok(Array.isArray(parsed.checks));
 });
+
+// --- Hub project pollution ---
+
+test("hub-project-pollution reports ok for clean registry", async () => {
+  const result = await runReadinessChecks({ cpbRoot, hubRoot });
+  const pollution = result.checks.find((c) => c.id === "hub-project-pollution");
+  assert.equal(pollution.status, "ok");
+});
+
+test("hub-project-pollution warns when test/fake/orphan projects exist", async () => {
+  const registry = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    projects: {
+      "fake-repo": {
+        id: "fake-repo",
+        sourcePath: tmpDir,
+        projectRuntimeRoot: path.join(hubRoot, "projects", "fake-repo"),
+      },
+      "app-test": {
+        id: "app-test",
+        sourcePath: tmpDir,
+        metadata: { visibility: "test" },
+      },
+      "exec-123": {
+        id: "exec-123",
+        sourcePath: tmpDir,
+        metadata: { generated: true },
+      },
+    },
+  };
+  await fs.writeFile(path.join(hubRoot, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+  // Create an orphan runtime directory
+  await fs.mkdir(path.join(hubRoot, "projects", "orphan-test"), { recursive: true });
+
+  const result = await runReadinessChecks({ cpbRoot, hubRoot });
+  const pollution = result.checks.find((c) => c.id === "hub-project-pollution");
+  assert.equal(pollution.status, "warn");
+  assert.ok(pollution.details.length >= 3, "should detect fake-repo, app-test, exec-123, and orphan");
+  assert.ok(pollution.remediation.includes("cleanup"), "should mention cleanup in remediation");
+});
+
+test("hub-project-pollution does not mutate registry or files", async () => {
+  const registry = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    projects: {
+      "fake-repo": { id: "fake-repo", sourcePath: tmpDir },
+    },
+  };
+  await fs.writeFile(path.join(hubRoot, "projects.json"), JSON.stringify(registry) + "\n", "utf8");
+  const regBefore = await fs.readFile(path.join(hubRoot, "projects.json"), "utf8");
+
+  await runReadinessChecks({ cpbRoot, hubRoot });
+
+  const regAfter = await fs.readFile(path.join(hubRoot, "projects.json"), "utf8");
+  assert.equal(regBefore, regAfter, "registry should not be modified");
+});

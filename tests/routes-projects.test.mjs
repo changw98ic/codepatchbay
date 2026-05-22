@@ -8,7 +8,7 @@ import cors from '@fastify/cors';
 import fs from 'fs/promises';
 import path from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'url';
 
 import { projectRoutes } from '../server/routes/projects.js';
@@ -68,20 +68,27 @@ async function createProjectDir(root, name, opts = {}) {
     }
   }
 
-  // Register in Hub registry if hubRoot is available in opts
+  // Register in Hub registry if hubRoot is available in opts.
   if (opts.hubRoot) {
-    await registerProject(opts.hubRoot, { name, sourcePath: root, id: name });
+    await registerProject(opts.hubRoot, {
+      name,
+      sourcePath: opts.sourcePath || root,
+      id: name,
+    });
   }
 
   return projDir;
 }
 
 describe('GET /api/projects', () => {
-  let tmpRoot, hubRoot, app;
+  let tmpRoot, hubRoot, app, prodSourceRoot;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(path.join(tmpdir(), 'cpb-test-projects-'));
     hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-hub-projects-'));
+    // Non-tmpdir source root so path-based pollution classification
+    // treats production fixtures as real projects, not tmpdir pollution.
+    prodSourceRoot = await mkdtemp(path.join(homedir(), '.cpb-test-prod-'));
     await fs.mkdir(path.join(tmpRoot, 'wiki/projects'), { recursive: true });
     app = await buildApp(tmpRoot, hubRoot);
   });
@@ -90,6 +97,7 @@ describe('GET /api/projects', () => {
     await app.close();
     await rm(tmpRoot, { recursive: true });
     await rm(hubRoot, { recursive: true });
+    await rm(prodSourceRoot, { recursive: true, force: true });
   });
 
   it('returns empty list when no projects exist', async () => {
@@ -101,6 +109,7 @@ describe('GET /api/projects', () => {
   it('returns projects with correct structure', async () => {
     await createProjectDir(tmpRoot, 'my-app', {
       hubRoot,
+      sourcePath: prodSourceRoot,
       inboxFiles: ['plan-001.md'],
       outputFiles: ['deliverable-001.md', 'verdict-001.md'],
       log: '- **Plan** created\n- **Execute** started\n- **Verify** done',
@@ -121,13 +130,78 @@ describe('GET /api/projects', () => {
   });
 
   it('skips _template and dot-prefixed directories', async () => {
-    await createProjectDir(tmpRoot, 'real-project', { hubRoot });
+    await createProjectDir(tmpRoot, 'real-project', { hubRoot, sourcePath: prodSourceRoot });
 
     const res = await app.inject({ method: 'GET', url: '/api/projects' });
     assert.equal(res.statusCode, 200);
 
     const names = res.json().map(p => p.name);
     assert.ok(names.includes('real-project'));
+  });
+
+  it('hides test/pollution projects by default', async () => {
+    await createProjectDir(tmpRoot, 'prod-project', { hubRoot, sourcePath: prodSourceRoot, context: '# prod' });
+    const fakeSource = await mkdtemp(path.join(tmpdir(), 'cpb-fake-src-'));
+    await registerProject(hubRoot, { name: 'fake-repo', sourcePath: fakeSource, metadata: { visibility: 'test' } });
+    await registerProject(hubRoot, { name: 'exec-scratch', sourcePath: fakeSource, metadata: { generated: true } });
+
+    const res = await app.inject({ method: 'GET', url: '/api/projects' });
+    assert.equal(res.statusCode, 200);
+    const names = res.json().map(p => p.name);
+    assert.ok(names.includes('prod-project'), 'production project should be visible');
+    assert.ok(!names.includes('fake-repo'), 'fake-repo should be hidden');
+    assert.ok(!names.includes('exec-scratch'), 'exec-prefix should be hidden');
+
+    await rm(fakeSource, { recursive: true, force: true });
+  });
+
+  it('shows hidden projects when includeTest=true', async () => {
+    await createProjectDir(tmpRoot, 'prod-visible', { hubRoot, sourcePath: prodSourceRoot, context: '# prod' });
+    const fakeSource = await mkdtemp(path.join(tmpdir(), 'cpb-fake-src2-'));
+    await registerProject(hubRoot, { name: 'app-test', sourcePath: fakeSource, metadata: { visibility: 'test' } });
+
+    const res = await app.inject({ method: 'GET', url: '/api/projects?includeTest=true' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    const names = body.map(p => p.name);
+    assert.ok(names.includes('prod-visible'));
+    assert.ok(names.includes('app-test'), 'hidden project should appear with includeTest=true');
+
+    await rm(fakeSource, { recursive: true, force: true });
+  });
+
+  it('includes _pollution classification when includeTest=true', async () => {
+    await createProjectDir(tmpRoot, 'prod-class', { hubRoot, sourcePath: prodSourceRoot, context: '# prod' });
+    const fakeSource = await mkdtemp(path.join(tmpdir(), 'cpb-fake-src3-'));
+    await registerProject(hubRoot, { name: 'test-proj', sourcePath: fakeSource, metadata: { visibility: 'test' } });
+
+    const res = await app.inject({ method: 'GET', url: '/api/projects?includeTest=true' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    const testProject = body.find(p => p.name === 'test-proj');
+    assert.ok(testProject, 'test project should appear with includeTest=true');
+    assert.ok(testProject._pollution, 'should include _pollution classification');
+    assert.equal(testProject._pollution.visibility, 'test');
+    assert.ok(Array.isArray(testProject._pollution.reasons));
+    assert.ok(testProject._pollution.reasons.length > 0);
+
+    const prodProject = body.find(p => p.name === 'prod-class');
+    assert.ok(prodProject._pollution, 'production project should also have _pollution');
+    // Note: prod-class has a tmpdir sourcePath, so it may be flagged as test in test env
+
+    await rm(fakeSource, { recursive: true, force: true });
+  });
+
+  it('does not include _pollution when includeTest is absent', async () => {
+    await createProjectDir(tmpRoot, 'no-poll-prod', { hubRoot, sourcePath: prodSourceRoot, context: '# prod' });
+
+    const res = await app.inject({ method: 'GET', url: '/api/projects' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.ok(body.length >= 1);
+    for (const project of body) {
+      assert.equal(project._pollution, undefined, '_pollution should not be present without includeTest');
+    }
   });
 });
 
