@@ -1,7 +1,10 @@
 {
   "permissions": {
     "write_paths": ["wiki/projects/*/outputs/verdict-*"],
-    "deny_tools": [],
+    "deny_tools": [
+      "text_edit",
+      "text-edit"
+    ],
     "deny_commands": false
   },
   "agent": {

@@ -390,6 +390,11 @@ async function handleVerify(args) {
     prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, promptOpts);
   }
 
+  // Block desktop text editor — verifier must read files via text tools, not open editors
+  process.env.CPB_ACP_DENY_TOOLS = process.env.CPB_ACP_DENY_TOOLS
+    ? `${process.env.CPB_ACP_DENY_TOOLS},text_edit,text-edit`
+    : "text_edit,text-edit";
+
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {

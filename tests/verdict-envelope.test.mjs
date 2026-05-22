@@ -34,15 +34,15 @@ console.log("validate: missing status -> invalid: OK");
 
 assert.deepEqual(
   validateVerdictEnvelope({ status: "pass" }),
-  { valid: false, error: "basis must be an object" },
+  { valid: false, error: "reason must be a string" },
 );
-console.log("validate: missing basis -> invalid: OK");
+console.log("validate: v2 missing reason -> invalid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "pass", basis: { taskGoal: "t", worktreeDiff: "n", tests: "n", buildLogs: "n", events: "n", runtimeState: "n", executorSummary: "n" } }),
-  { valid: false, error: "blockingMissingInputs must be an array" },
+  validateVerdictEnvelope({ status: "pass", reason: "ok", basis: { taskGoal: "t", worktreeDiff: "n", tests: "n", buildLogs: "n", events: "n", runtimeState: "n", executorSummary: "n" } }),
+  { valid: true },
 );
-console.log("validate: missing blockingMissingInputs -> invalid: OK");
+console.log("validate: v1 full basis still valid -> OK");
 
 assert.deepEqual(
   validateVerdictEnvelope({ status: "pass", basis: { taskGoal: "t", worktreeDiff: "n", tests: "n", buildLogs: "n", events: "n", runtimeState: "n", executorSummary: "n" }, blockingMissingInputs: [] }),
@@ -52,45 +52,55 @@ console.log("validate: missing reason -> invalid: OK");
 
 const minimalValid = {
   status: "pass",
+  reason: "ok",
+  layers: { fast: { status: "pass", detail: "ok" } },
+  blocking: [],
+  fix_scope: [],
+};
+assert.deepEqual(validateVerdictEnvelope(minimalValid), { valid: true });
+console.log("validate: v2 minimal valid -> OK");
+
+const v1Minimal = {
+  status: "pass",
   basis: { taskGoal: "t", worktreeDiff: "n", tests: "n", buildLogs: "n", events: "n", runtimeState: "n", executorSummary: "n" },
   blockingMissingInputs: [],
   reason: "ok",
 };
-assert.deepEqual(validateVerdictEnvelope(minimalValid), { valid: true });
-console.log("validate: minimal valid (all required) -> OK");
+assert.deepEqual(validateVerdictEnvelope(v1Minimal), { valid: true });
+console.log("validate: v1 minimal valid (legacy) -> OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: "not-object" }),
+  validateVerdictEnvelope({ status: "fail", reason: "ok", basis: "not-object" }),
   { valid: false, error: "basis must be an object" },
 );
 console.log("validate: basis not object -> invalid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: FULL_BASIS, blockingMissingInputs: [], reason: "ok" }),
+  validateVerdictEnvelope({ status: "fail", reason: "ok", basis: FULL_BASIS, blockingMissingInputs: [] }),
   { valid: true },
 );
 console.log("validate: full basis -> valid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: { taskGoal: "x" } }),
+  validateVerdictEnvelope({ status: "fail", reason: "ok", basis: { taskGoal: "x" } }),
   { valid: false, error: "basis missing required keys: worktreeDiff, tests, buildLogs, events, runtimeState, executorSummary" },
 );
 console.log("validate: partial basis -> invalid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: FULL_BASIS, blockingMissingInputs: "not-array" }),
+  validateVerdictEnvelope({ status: "fail", reason: "ok", basis: FULL_BASIS, blockingMissingInputs: "not-array" }),
   { valid: false, error: "blockingMissingInputs must be an array" },
 );
 console.log("validate: blockingMissingInputs not array -> invalid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: FULL_BASIS, blockingMissingInputs: [], reason: 42 }),
+  validateVerdictEnvelope({ status: "fail", reason: 42, basis: FULL_BASIS, blockingMissingInputs: [] }),
   { valid: false, error: "reason must be a string" },
 );
 console.log("validate: reason not string -> invalid: OK");
 
 assert.deepEqual(
-  validateVerdictEnvelope({ status: "fail", basis: FULL_BASIS, blockingMissingInputs: [], reason: "ok", summary: 42 }),
+  validateVerdictEnvelope({ status: "fail", reason: "ok", basis: FULL_BASIS, blockingMissingInputs: [], summary: 42 }),
   { valid: false, error: "summary must be a string" },
 );
 console.log("validate: summary not string -> invalid: OK");
@@ -233,3 +243,61 @@ assert.throws(() => formatVerdictEnvelope({ status: "bad" }), /invalid verdict e
 console.log("formatVerdictEnvelope (invalid): OK");
 
 console.log("All verdict-envelope tests passed.");
+
+// --- v2 structured verdict tests ---
+
+// v2 standalone JSON without basis - layers + blocking
+const v2Standalone = parseVerdictEnvelope(`{"status":"fail","confidence":0.9,"layers":{"fast":{"status":"pass","detail":"19/19 passed"},"changed":{"status":"fail","detail":"permission check failed"},"regression":{"status":"skipped","detail":"changed layer failed"},"acceptance":{"status":"fail","detail":"3 of 7 criteria unmet"}},"blocking":[{"criterion":"Hub-mode denies legacy writes","evidence":"canWrite returned true","file":"server/services/permission-matrix.js","fix_hint":"Add hubRoot guard"}],"diff_summary":"9 files, 393 insertions","task_goal":"Fix verdict artifact writer","executor_summary":"Updated write helpers","reason":"Permission boundary not closed","fix_scope":["server/services/permission-matrix.js","server/services/runtime-root.js"]}`);
+assert.equal(v2Standalone.status, "fail");
+assert.equal(v2Standalone.reason, "Permission boundary not closed");
+assert.deepEqual(v2Standalone.fix_scope, ["server/services/permission-matrix.js", "server/services/runtime-root.js"]);
+assert.equal(v2Standalone.layers.changed.status, "fail");
+assert.equal(v2Standalone.blocking[0].criterion, "Hub-mode denies legacy writes");
+assert.equal(v2Standalone.source, "envelope");
+// backfill: basis should be generated from v2 fields
+assert.ok(v2Standalone.basis, "backfilled basis from v2 fields");
+assert.equal(v2Standalone.basis.taskGoal, "Fix verdict artifact writer");
+console.log("parseVerdictEnvelope (v2 standalone): OK");
+
+// v2 backfill: blockingMissingInputs from blocking array
+assert.ok(Array.isArray(v2Standalone.blockingMissingInputs), "blockingMissingInputs backfilled");
+assert.equal(v2Standalone.blockingMissingInputs[0], "Hub-mode denies legacy writes");
+console.log("backfill blockingMissingInputs from blocking: OK");
+
+// v2 pass with short-circuit
+const v2Pass = parseVerdictEnvelope(`{"status":"pass","confidence":0.95,"layers":{"fast":{"status":"pass","detail":"all tests passed"},"changed":{"status":"not_run","detail":"short-circuited"},"regression":{"status":"skipped","detail":"fast pass + small diff"},"acceptance":{"status":"pass","detail":"all criteria met"}},"blocking":[],"diff_summary":"2 files, 15 insertions","task_goal":"Add hello()","executor_summary":"Added function","reason":"All criteria met","fix_scope":[]}`);
+assert.equal(v2Pass.status, "pass");
+assert.equal(v2Pass.layers.regression.status, "skipped");
+assert.equal(v2Pass.source, "envelope");
+console.log("parseVerdictEnvelope (v2 pass short-circuit): OK");
+
+// v2 fenced JSON block
+const v2Fenced = parseVerdictEnvelope(`\`\`\`json
+{"status":"pass","confidence":1.0,"layers":{"fast":{"status":"pass","detail":"ok"},"changed":{"status":"pass","detail":"ok"},"regression":{"status":"skipped","detail":"small diff"},"acceptance":{"status":"pass","detail":"all met"}},"blocking":[],"diff_summary":"1 file","task_goal":"test","executor_summary":"done","reason":"pass","fix_scope":[]}
+\`\`\``);
+assert.equal(v2Fenced.status, "pass");
+assert.equal(v2Fenced.source, "envelope");
+console.log("parseVerdictEnvelope (v2 fenced): OK");
+
+// v2 validation: invalid layers type
+assert.deepEqual(
+  validateVerdictEnvelope({ status: "fail", reason: "ok", layers: "bad" }),
+  { valid: false, error: "layers must be an object" },
+);
+console.log("validate: v2 layers not object -> invalid: OK");
+
+// v2 validation: invalid blocking type
+assert.deepEqual(
+  validateVerdictEnvelope({ status: "fail", reason: "ok", blocking: "bad" }),
+  { valid: false, error: "blocking must be an array" },
+);
+console.log("validate: v2 blocking not array -> invalid: OK");
+
+// v2 validation: invalid fix_scope type
+assert.deepEqual(
+  validateVerdictEnvelope({ status: "fail", reason: "ok", fix_scope: "bad" }),
+  { valid: false, error: "fix_scope must be an array" },
+);
+console.log("validate: v2 fix_scope not array -> invalid: OK");
+
+console.log("All v2 tests passed.");

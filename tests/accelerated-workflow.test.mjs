@@ -334,7 +334,7 @@ describe("prompt rendering with workflow context", () => {
 
   // --- Verifier prompt tests ---
 
-  it("verifier prompt includes both subagent guidance and layered verification when CPB_WORKFLOW=accelerated", async () => {
+  it("verifier prompt includes structured JSON schema with verification layers when CPB_WORKFLOW=accelerated", async () => {
     process.env.CPB_WORKFLOW = "accelerated";
     const { executorRoot, cpbRoot, wikiDir } = await makePromptEnv();
     try {
@@ -342,22 +342,26 @@ describe("prompt rendering with workflow context", () => {
         executorRoot, cpbRoot, "testproj", "001",
         path.join(wikiDir, "outputs", "verdict-001.md"),
       );
-      assert.match(prompt, /Subagent Requirements/i);
-      assert.match(prompt, /MANDATORY/);
-      assert.match(prompt, /Codex/);
-      assert.match(prompt, /Layered Verification/);
-      assert.match(prompt, /independent subagent lanes/);
-      assert.match(prompt, /fast/i);
-      assert.match(prompt, /changed/i);
-      assert.match(prompt, /regression/i);
-      assert.match(prompt, /acceptance/i);
+      // No subagent or layered verification sections (removed for token savings)
+      assert.doesNotMatch(prompt, /Subagent Requirements/i);
+      assert.doesNotMatch(prompt, /Layered Verification/i);
+      assert.doesNotMatch(prompt, /independent subagent lanes/);
+      // Structured JSON output with layer fields
+      assert.match(prompt, /"layers"/);
+      assert.match(prompt, /"fast"/);
+      assert.match(prompt, /"changed"/);
+      assert.match(prompt, /"regression"/);
+      assert.match(prompt, /"acceptance"/);
+      assert.match(prompt, /"blocking"/);
+      assert.match(prompt, /"fix_scope"/);
+      assert.match(prompt, /short-circuit/);
     } finally {
       await rm(executorRoot, { recursive: true, force: true });
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
 
-  it("verifier job prompt includes both subagent guidance and layered verification when CPB_WORKFLOW=accelerated", async () => {
+  it("verifier job prompt includes structured JSON schema with verification layers when CPB_WORKFLOW=accelerated", async () => {
     process.env.CPB_WORKFLOW = "accelerated";
     const { executorRoot, cpbRoot, wikiDir } = await makePromptEnv();
     try {
@@ -365,22 +369,23 @@ describe("prompt rendering with workflow context", () => {
         executorRoot, cpbRoot, "testproj", "job-001",
         path.join(wikiDir, "outputs", "verdict-job-001.md"),
       );
-      assert.match(prompt, /Subagent Requirements/i);
-      assert.match(prompt, /MANDATORY/);
-      assert.match(prompt, /Codex/);
-      assert.match(prompt, /Layered Verification/);
-      assert.match(prompt, /independent subagent lanes/);
-      assert.match(prompt, /fast/i);
-      assert.match(prompt, /changed/i);
-      assert.match(prompt, /regression/i);
-      assert.match(prompt, /acceptance/i);
+      assert.doesNotMatch(prompt, /Subagent Requirements/i);
+      assert.doesNotMatch(prompt, /Layered Verification/i);
+      assert.doesNotMatch(prompt, /independent subagent lanes/);
+      assert.match(prompt, /"layers"/);
+      assert.match(prompt, /"fast"/);
+      assert.match(prompt, /"changed"/);
+      assert.match(prompt, /"regression"/);
+      assert.match(prompt, /"acceptance"/);
+      assert.match(prompt, /"blocking"/);
+      assert.match(prompt, /"fix_scope"/);
     } finally {
       await rm(executorRoot, { recursive: true, force: true });
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
 
-  it("verifier prompt omits subagent and layered sections without CPB_WORKFLOW", async () => {
+  it("verifier prompt never includes subagent or layered sections", async () => {
     delete process.env.CPB_WORKFLOW;
     const { executorRoot, cpbRoot, wikiDir } = await makePromptEnv();
     try {
@@ -390,6 +395,10 @@ describe("prompt rendering with workflow context", () => {
       );
       assert.doesNotMatch(prompt, /Subagent Requirements/i);
       assert.doesNotMatch(prompt, /Layered Verification/);
+      assert.doesNotMatch(prompt, /independent subagent lanes/);
+      // Structured JSON output is always present
+      assert.match(prompt, /"layers"/);
+      assert.match(prompt, /"blocking"/);
     } finally {
       await rm(executorRoot, { recursive: true, force: true });
       await rm(cpbRoot, { recursive: true, force: true });
