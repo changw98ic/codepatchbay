@@ -411,3 +411,63 @@ describe("queueStatus per-project breakdown", () => {
     assert.equal(status.activeProjects[0].projectId, "a");
   });
 });
+
+describe("eligible queued-work projection", () => {
+  test("eligibleQueued counts pending entries from non-busy projects", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-elig-1-"));
+    // Project A: active mutating + pending (pending should NOT be eligible)
+    const a1 = await enqueue(hubRoot, { projectId: "a", sourcePath: "/a", description: "a-active" });
+    await updateEntry(hubRoot, a1.id, { status: "in_progress", claimedBy: "w1", workerId: "w1", claimedAt: new Date().toISOString() });
+    await enqueue(hubRoot, { projectId: "a", sourcePath: "/a", description: "a-pending" });
+    // Project B: pending only (should be eligible)
+    await enqueue(hubRoot, { projectId: "b", sourcePath: "/b", description: "b-pending" });
+
+    const status = await queueStatus(hubRoot);
+    assert.equal(status.eligibleQueued, 1);
+    assert.ok(status.eligibleProjects.includes("b"));
+    assert.ok(!status.eligibleProjects.includes("a"));
+    assert.equal(status.projects.a.eligiblePending, 0);
+    assert.equal(status.projects.b.eligiblePending, 1);
+  });
+
+  test("non-mutating pending entry remains eligible when project is busy", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-elig-2-"));
+    // Project A: active mutating entry
+    const a1 = await enqueue(hubRoot, { projectId: "a", sourcePath: "/a", description: "a-active" });
+    await updateEntry(hubRoot, a1.id, { status: "in_progress", claimedBy: "w1", workerId: "w1", claimedAt: new Date().toISOString() });
+    // Project A: pending non-mutating entry (should be eligible despite busy project)
+    const a2 = await enqueue(hubRoot, { projectId: "a", sourcePath: "/a", description: "a-readonly", metadata: { mutating: false } });
+
+    const status = await queueStatus(hubRoot);
+    assert.equal(status.eligibleQueued, 1);
+    assert.equal(status.projects.a.eligiblePending, 1);
+    assert.ok(status.projects.a.eligibleEntryIds.includes(a2.id));
+  });
+
+  test("all pending entries eligible when no projects are busy", async () => {
+    const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-elig-3-"));
+    await enqueue(hubRoot, { projectId: "a", sourcePath: "/a", description: "a-pending" });
+    await enqueue(hubRoot, { projectId: "b", sourcePath: "/b", description: "b-pending" });
+
+    const status = await queueStatus(hubRoot);
+    assert.equal(status.eligibleQueued, 2);
+    assert.ok(status.eligibleProjects.includes("a"));
+    assert.ok(status.eligibleProjects.includes("b"));
+  });
+
+  test("buildProjectQueueStatus accepts maxActivePerProject option", () => {
+    const entries = [
+      { projectId: "a", status: "in_progress", id: "e1", metadata: {} },
+      { projectId: "a", status: "in_progress", id: "e2", metadata: {} },
+      { projectId: "a", status: "pending", id: "e3", metadata: {} },
+    ];
+    // 2 active mutating >= maxActive 2 => pending NOT eligible
+    const statusCap = buildProjectQueueStatus(entries, { maxActivePerProject: 2 });
+    assert.equal(statusCap.a.eligiblePending, 0);
+
+    // 2 active mutating < maxActive 3 => pending IS eligible
+    const statusBelow = buildProjectQueueStatus(entries, { maxActivePerProject: 3 });
+    assert.equal(statusBelow.a.eligiblePending, 1);
+    assert.ok(statusBelow.a.eligibleEntryIds.includes("e3"));
+  });
+});

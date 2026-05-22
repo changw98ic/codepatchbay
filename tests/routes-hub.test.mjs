@@ -424,4 +424,22 @@ describe('Hub routes', () => {
 
     await rm(fakeRoot, { recursive: true, force: true });
   });
+
+  it('GET /hub/queue/status includes eligibleQueued and eligibleProjects', async () => {
+    const linked = (n) => ({ issueNumber: n });
+    const a1 = await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-1', metadata: linked(2001) });
+    await updateEntry(hubRoot, a1.id, { status: 'in_progress', claimedBy: 'w1', workerId: 'w1', claimedAt: new Date().toISOString() });
+    await enqueue(hubRoot, { projectId: 'proj-a', sourcePath: projectRoot, description: 'a-task-2', metadata: linked(2002) });
+    await enqueue(hubRoot, { projectId: 'proj-b', sourcePath: projectRoot, description: 'b-task-1', metadata: linked(2003) });
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/queue/status' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.eligibleQueued, 1, 'proj-b has 1 eligible pending entry');
+    assert.ok(body.eligibleProjects.includes('proj-b'), 'proj-b should be in eligibleProjects');
+    assert.ok(!body.eligibleProjects.includes('proj-a'), 'proj-a should not be eligible (busy)');
+    assert.ok(body.projects['proj-a']);
+    assert.equal(body.projects['proj-a'].eligiblePending, 0);
+    assert.equal(body.projects['proj-b'].eligiblePending, 1);
+  });
 });

@@ -241,6 +241,22 @@ if (sub === 'status') {
     else {
       console.log(`Queue: ${qs.total} entries`);
       console.log(`  pending:${qs.pending} in_progress:${qs.inProgress} completed:${qs.completed} failed:${qs.failed} cancelled:${qs.cancelled}`);
+      if (qs.eligibleQueued > 0) {
+        console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects.join(',')}`);
+      }
+      if (qs.projects && Object.keys(qs.projects).length > 0) {
+        for (const [pid, ps] of Object.entries(qs.projects)) {
+          let line = `  ${pid}\tpending:${ps.pending} active:${ps.inProgress}`;
+          if (ps.eligiblePending > 0) line += ` eligible:${ps.eligiblePending}`;
+          if (ps.failed > 0) line += ` failed:${ps.failed}`;
+          if (ps.busy) {
+            line += ` BUSY`;
+            if (ps.busyReason) line += `(${ps.busyReason})`;
+            if (ps.workerId) line += ` worker:${ps.workerId}`;
+          }
+          console.log(line);
+        }
+      }
     }
   } else {
     const entries = await listQueue(hubRoot);

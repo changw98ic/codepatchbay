@@ -6,7 +6,7 @@ import test, { describe, beforeEach, afterEach } from "node:test";
 
 import { ProjectWorker, parseArgs } from "../bridges/project-worker.mjs";
 import { registerProject, heartbeatWorker, getProject } from "../server/services/hub-registry.js";
-import { enqueue, listQueue, queueStatus } from "../server/services/hub-queue.js";
+import { enqueue, updateEntry, listQueue, queueStatus } from "../server/services/hub-queue.js";
 import { appendEvent } from "../server/services/event-store.js";
 import { listDispatches } from "../server/services/dispatch-state.js";
 
@@ -17,8 +17,10 @@ describe("ProjectWorker", () => {
   const originalDispatch = process.env.CPB_WORKER_DISPATCH_ENABLED;
   const originalWorkerWorktreeMode = process.env.CPB_WORKER_WORKTREE_MODE;
   const originalUseWorktree = process.env.CPB_USE_WORKTREE;
+  const originalAutoFinalizerMode = process.env.CPB_AUTOFINALIZER_MODE;
 
   beforeEach(async () => {
+    delete process.env.CPB_AUTOFINALIZER_MODE;
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
     sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
     const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
@@ -32,6 +34,8 @@ describe("ProjectWorker", () => {
     else process.env.CPB_WORKER_WORKTREE_MODE = originalWorkerWorktreeMode;
     if (originalUseWorktree === undefined) delete process.env.CPB_USE_WORKTREE;
     else process.env.CPB_USE_WORKTREE = originalUseWorktree;
+    if (originalAutoFinalizerMode === undefined) delete process.env.CPB_AUTOFINALIZER_MODE;
+    else process.env.CPB_AUTOFINALIZER_MODE = originalAutoFinalizerMode;
   });
 
   function makeWorker(opts = {}) {
@@ -949,11 +953,17 @@ describe("ProjectWorker crash and reconnect resilience", () => {
   let sourceDir;
   let projectId;
 
+  let savedAutoFinalizerMode;
   beforeEach(async () => {
+    savedAutoFinalizerMode = process.env.CPB_AUTOFINALIZER_MODE;
+    delete process.env.CPB_AUTOFINALIZER_MODE;
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
     sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
     const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
     projectId = project.id;
+  });
+  afterEach(() => {
+    if (savedAutoFinalizerMode !== undefined) process.env.CPB_AUTOFINALIZER_MODE = savedAutoFinalizerMode;
   });
 
   function makeWorker(opts = {}) {
@@ -1331,5 +1341,99 @@ describe("ProjectWorker issue #61 finalizer metadata", () => {
     assert.equal(entries[0].metadata.finalizer.jobId, jobId);
     assert.equal(entries[0].metadata.finalizer.inspectedStatus, "completed");
     assert.equal(entries[0].metadata.finalizer.stateSource, "job-store");
+  });
+});
+
+describe("ProjectWorker pool mode and headless ACP", () => {
+  let hubRoot;
+  let sourceDir;
+  let projectId;
+
+  beforeEach(async () => {
+    hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-pool-"));
+    sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-pool-src-"));
+    const project = await registerProject(hubRoot, { name: "pool-proj", sourcePath: sourceDir });
+    projectId = project.id;
+  });
+
+  function makePoolWorker(opts = {}) {
+    return new ProjectWorker({
+      pool: true,
+      hubRoot,
+      once: true,
+      runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
+      ...opts,
+    });
+  }
+
+  test("parseArgs parses --pool flag", () => {
+    const opts = parseArgs(["node", "script", "--pool"]);
+    assert.equal(opts.pool, true);
+    assert.equal(opts.project, null);
+  });
+
+  test("parseArgs parses --max-active-per-project", () => {
+    const opts = parseArgs(["node", "script", "--project", "p", "--max-active-per-project", "3"]);
+    assert.equal(opts.maxActivePerProject, 3);
+  });
+
+  test("pool worker claims eligible entry from project B while project A is busy", async () => {
+    // Register project B
+    const sourceDirB = await mkdtemp(path.join(tmpdir(), "cpb-pw-pool-srcB-"));
+    const projectB = await registerProject(hubRoot, { name: "pool-proj-b", sourcePath: sourceDirB });
+
+    // Project A has an active mutating task and a pending task
+    const a1 = await enqueue(hubRoot, { projectId, sourcePath: sourceDir, description: "a-active" });
+    await updateEntry(hubRoot, a1.id, { status: "in_progress", claimedBy: "w1", workerId: "w1", claimedAt: new Date().toISOString() });
+    await enqueue(hubRoot, { projectId, sourcePath: sourceDir, description: "a-pending" });
+
+    // Project B has a pending task
+    await enqueue(hubRoot, { projectId: projectB.id, sourcePath: sourceDirB, description: "b-pending" });
+
+    let capturedProjectId = null;
+    const worker = makePoolWorker({
+      runPipelineFn: (entry, sourcePath, dispatchId, overrideProjectId) => {
+        capturedProjectId = overrideProjectId || entry.projectId;
+        return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
+      },
+    });
+
+    const result = await worker.run();
+    assert.ok(result.entry);
+    assert.equal(result.entry.projectId, projectB.id, "should claim from project B, not busy project A");
+    assert.equal(capturedProjectId, projectB.id);
+  });
+
+  test("headless ACP and retry lineage metadata are preserved on queue entry", async () => {
+    const entry = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "headless-retry-test",
+      metadata: {
+        acpProfile: "headless",
+        uiLane: false,
+        originQueueId: "q-original-123",
+        issueNumber: 27,
+        issueUrl: "https://github.com/changw98ic/codepatchbay/issues/27",
+        repo: "changw98ic/codepatchbay",
+        issueTitle: "P0.9b: Add project-aware parallel scheduling",
+        originQueueId: "q-mpdu6kq1-jf6m",
+      },
+    });
+
+    const worker = makePoolWorker();
+    const result = await worker.run();
+    assert.ok(result.entry);
+    assert.equal(result.entry.metadata.acpProfile, "headless");
+    assert.equal(result.entry.metadata.uiLane, false);
+    assert.equal(result.entry.metadata.originQueueId, "q-mpdu6kq1-jf6m");
+    assert.equal(result.entry.metadata.issueNumber, 27);
+  });
+
+  test("pool init does not require a specific project", async () => {
+    const worker = makePoolWorker();
+    const project = await worker.init();
+    assert.equal(project, null);
+    assert.equal(worker.project, null);
   });
 });

@@ -233,6 +233,12 @@ export async function queueStatus(hubRoot) {
   counts.activeProjects = Object.entries(counts.projects)
     .filter(([, ps]) => ps.activeMutating > 0)
     .map(([projectId, ps]) => ({ projectId, ...ps }));
+  counts.eligibleQueued = 0;
+  counts.eligibleProjects = [];
+  for (const [pid, ps] of Object.entries(counts.projects)) {
+    counts.eligibleQueued += ps.eligiblePending;
+    if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
+  }
   return counts;
 }
 
@@ -240,7 +246,7 @@ export function isMutatingEntry(entry) {
   return entry.metadata?.mutating !== false;
 }
 
-export function buildProjectQueueStatus(entries) {
+export function buildProjectQueueStatus(entries, { maxActivePerProject = 1 } = {}) {
   const byProject = {};
   for (const e of entries) {
     if (!byProject[e.projectId]) {
@@ -249,6 +255,7 @@ export function buildProjectQueueStatus(entries) {
         activeMutating: 0, busy: false, busyReason: null,
         claimedBy: null, claimedAt: null, workerId: null,
         activeEntryIds: [],
+        eligiblePending: 0, eligibleEntryIds: [],
       };
     }
     const ps = byProject[e.projectId];
@@ -266,6 +273,20 @@ export function buildProjectQueueStatus(entries) {
       ps.claimedBy = e.claimedBy;
       ps.claimedAt = e.claimedAt;
       ps.workerId = e.workerId;
+    }
+  }
+  // Second pass: compute eligible pending entries
+  for (const e of entries) {
+    if (e.status !== "pending") continue;
+    const ps = byProject[e.projectId];
+    if (!isMutatingEntry(e)) {
+      // Non-mutating pending entries are always eligible
+      ps.eligiblePending++;
+      ps.eligibleEntryIds.push(e.id);
+    } else if (ps.activeMutating < maxActivePerProject) {
+      // Mutating pending entries eligible when project not at capacity
+      ps.eligiblePending++;
+      ps.eligibleEntryIds.push(e.id);
     }
   }
   return byProject;
