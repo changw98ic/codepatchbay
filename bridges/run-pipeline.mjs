@@ -35,6 +35,11 @@ import {
 import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
 import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
+import {
+  validateNonEmptyMarkdownArtifact,
+  resolveDeliverableIssue,
+  validateIssueMatch,
+} from "../server/services/artifact-integrity.js";
 
 // ─── CLI arg parsing ───
 
@@ -117,6 +122,56 @@ function failure(reason, { code = FAILURE_CODES.FATAL, phase, cause, retryable }
     phase,
     retryable: retryable ?? code === FAILURE_CODES.RECOVERABLE,
     cause,
+  };
+}
+
+function buildSourceContext() {
+  const issueNumber = process.env.CPB_ISSUE_NUMBER;
+  if (!issueNumber) return null;
+  return {
+    queueEntryId: process.env.CPB_QUEUE_ENTRY_ID || null,
+    issueNumber: parseInt(issueNumber, 10) || null,
+    issueUrl: process.env.CPB_ISSUE_URL || null,
+    repo: process.env.CPB_ISSUE_REPO || null,
+    issueTitle: process.env.CPB_ISSUE_TITLE || null,
+    failedQueueId: process.env.CPB_FAILED_QUEUE_ID || null,
+    failedJobId: process.env.CPB_FAILED_JOB_ID || null,
+    failureArtifact: process.env.CPB_FAILURE_ARTIFACT || null,
+  };
+}
+
+async function validateDeliverableIssue(cpbRoot, project, jobId, deliverableId, expectedIssueNumber, srcCtx) {
+  if (!expectedIssueNumber || !deliverableId) return null;
+  const deliverablePath = path.resolve(
+    path.join(cpbRoot, "wiki", "projects", project, "outputs", `deliverable-${deliverableId}.md`)
+  );
+  let content;
+  try {
+    content = await readFile(deliverablePath, "utf8");
+  } catch {
+    return null;
+  }
+  const artifactIssue = resolveDeliverableIssue(content);
+  const result = validateIssueMatch({
+    expectedIssueNumber,
+    artifactIssueNumber: artifactIssue,
+    artifactPath: deliverablePath,
+  });
+  if (result.match) return null;
+  return {
+    reason: result.reason,
+    expectedIssueNumber,
+    actualIssueNumber: artifactIssue,
+    deliverable: `deliverable-${deliverableId}`,
+    deliverablePath,
+    queueEntryId: srcCtx?.queueEntryId ?? null,
+    issueUrl: srcCtx?.issueUrl ?? null,
+    issueTitle: srcCtx?.issueTitle ?? null,
+    repo: srcCtx?.repo ?? null,
+    failedQueueId: srcCtx?.failedQueueId ?? null,
+    failedJobId: srcCtx?.failedJobId ?? null,
+    failureArtifact: srcCtx?.failureArtifact ?? null,
+    taskRef: content.split("\n").find((l) => /Task-Ref/i.test(l))?.trim() || null,
   };
 }
 
@@ -547,12 +602,14 @@ async function main() {
   }
 
   // Create job
+  const sourceContext = buildSourceContext();
   const job = await createJob(cpbRoot, {
     project,
     task,
     workflow,
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
+    sourceContext,
   });
   const jobId = job.jobId;
 
@@ -650,6 +707,40 @@ async function main() {
       return 1;
     }
 
+    // Validate plan artifact is non-empty before proceeding to execute
+    const planArtifactPath = path.resolve(wikiDir, "inbox", `plan-${planId}.md`);
+    const planValidation = await validateNonEmptyMarkdownArtifact({
+      path: planArtifactPath,
+      kind: "plan",
+      id: planId,
+    });
+
+    if (!planValidation.valid) {
+      fail(`Plan artifact invalid: ${planValidation.reason}`);
+      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+      const planFailCause = {
+        artifact: `plan-${planId}`,
+        artifactPath: planArtifactPath,
+        artifactReason: planValidation.reason,
+      };
+      if (sourceContext) {
+        planFailCause.queueEntryId = sourceContext.queueEntryId;
+        planFailCause.issueNumber = sourceContext.issueNumber;
+        planFailCause.issueUrl = sourceContext.issueUrl;
+        planFailCause.failedQueueId = sourceContext.failedQueueId;
+        planFailCause.failedJobId = sourceContext.failedJobId;
+      }
+      await failJob(cpbRoot, project, jobId, failure(
+        `plan artifact ${planValidation.reason}: plan-${planId}`,
+        {
+          code: FAILURE_CODES.PLAN_ARTIFACT_INVALID,
+          phase: "plan",
+          cause: planFailCause,
+        },
+      ));
+      return 1;
+    }
+
     ok(`plan-${planId}`);
     await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
 
@@ -689,6 +780,18 @@ async function main() {
 
       if (deliverableId) {
         ok(`deliverable-${deliverableId}`);
+        const issueMismatch = await validateDeliverableIssue(
+          cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
+        );
+        if (issueMismatch) {
+          fail(`Issue mismatch: expected #${issueMismatch.expectedIssueNumber}, got #${issueMismatch.actualIssueNumber}`);
+          await completePhase(cpbRoot, project, jobId, { phase: "execute", artifact: `deliverable-${deliverableId}` });
+          await failJob(cpbRoot, project, jobId, failure(
+            `issue_mismatch: expected #${issueMismatch.expectedIssueNumber}, got #${issueMismatch.actualIssueNumber}`,
+            { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: issueMismatch },
+          ));
+          return 1;
+        }
         await completePhase(cpbRoot, project, jobId, {
           phase: "execute",
           artifact: `deliverable-${deliverableId}`,
@@ -784,6 +887,18 @@ async function main() {
         if (newDeliverableId) {
           deliverableId = newDeliverableId;
           ok(`deliverable-${deliverableId} (review fix)`);
+          const reviewMismatch = await validateDeliverableIssue(
+            cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
+          );
+          if (reviewMismatch) {
+            fail(`Issue mismatch in review fix: expected #${reviewMismatch.expectedIssueNumber}, got #${reviewMismatch.actualIssueNumber}`);
+            await completePhase(cpbRoot, project, jobId, { phase: fixPhaseName, artifact: `deliverable-${deliverableId}` });
+            await failJob(cpbRoot, project, jobId, failure(
+              `issue_mismatch: expected #${reviewMismatch.expectedIssueNumber}, got #${reviewMismatch.actualIssueNumber}`,
+              { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: reviewMismatch },
+            ));
+            return 1;
+          }
           await completePhase(cpbRoot, project, jobId, {
             phase: fixPhaseName,
             artifact: `deliverable-${deliverableId}`,
@@ -841,6 +956,7 @@ async function main() {
 
       const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
       const verifyArgs = deliverableId ? [project, deliverableId] : [project, "--job-id", jobId];
+      if (planId) verifyArgs.push("--plan-id", planId);
       await dispatchPhase(cpbRoot, {
         project, jobId, phase: verifyPhaseName,
         script: `bridges/${bridgeForPhase(workflowDef, "verify")}`,
@@ -936,6 +1052,18 @@ async function main() {
         if (newDeliverableId) {
           deliverableId = newDeliverableId;
           ok(`deliverable-${deliverableId} (fix)`);
+          const fixMismatch = await validateDeliverableIssue(
+            cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
+          );
+          if (fixMismatch) {
+            fail(`Issue mismatch in fix: expected #${fixMismatch.expectedIssueNumber}, got #${fixMismatch.actualIssueNumber}`);
+            await completePhase(cpbRoot, project, jobId, { phase: fixPhaseName, artifact: `deliverable-${deliverableId}` });
+            await failJob(cpbRoot, project, jobId, failure(
+              `issue_mismatch: expected #${fixMismatch.expectedIssueNumber}, got #${fixMismatch.actualIssueNumber}`,
+              { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: fixMismatch },
+            ));
+            return 1;
+          }
           await completePhase(cpbRoot, project, jobId, {
             phase: fixPhaseName,
             artifact: `deliverable-${deliverableId}`,
@@ -1014,6 +1142,18 @@ async function main() {
               if (reviewedDeliverableId) {
                 deliverableId = reviewedDeliverableId;
                 ok(`deliverable-${deliverableId} (post-verify review fix)`);
+                const postVerifyMismatch = await validateDeliverableIssue(
+                  cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
+                );
+                if (postVerifyMismatch) {
+                  fail(`Issue mismatch in post-verify fix: expected #${postVerifyMismatch.expectedIssueNumber}, got #${postVerifyMismatch.actualIssueNumber}`);
+                  await completePhase(cpbRoot, project, jobId, { phase: reviewFixPhaseName, artifact: `deliverable-${deliverableId}` });
+                  await failJob(cpbRoot, project, jobId, failure(
+                    `issue_mismatch: expected #${postVerifyMismatch.expectedIssueNumber}, got #${postVerifyMismatch.actualIssueNumber}`,
+                    { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: postVerifyMismatch },
+                  ));
+                  return 1;
+                }
                 await completePhase(cpbRoot, project, jobId, {
                   phase: reviewFixPhaseName,
                   artifact: `deliverable-${deliverableId}`,

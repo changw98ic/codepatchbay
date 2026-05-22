@@ -38,6 +38,8 @@ export const FAILURE_CODES = Object.freeze({
   QUALITY_FAIL: "QUALITY_FAIL",
   BLOCKED: "BLOCKED",
   FATAL: "FATAL",
+  PLAN_ARTIFACT_INVALID: "PLAN_ARTIFACT_INVALID",
+  ISSUE_MISMATCH: "ISSUE_MISMATCH",
 });
 
 export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")) {
@@ -52,7 +54,7 @@ export function makeJobId(ts = nowIso(), suffix = randomBytes(3).toString("hex")
 
 export async function createJob(
   cpbRoot,
-  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null, dataRoot }
+  { project, task, workflow = "standard", ts = nowIso(), jobId: providedJobId, executor = null, dataRoot, sourceContext }
 ) {
   const jobId = providedJobId || makeJobId(ts);
 
@@ -67,7 +69,7 @@ export async function createJob(
     }
   }
 
-  await appendEvent(cpbRoot, project, jobId, {
+  const event = {
     type: "job_created",
     jobId,
     project,
@@ -75,7 +77,11 @@ export async function createJob(
     workflow,
     executor,
     ts,
-  }, { dataRoot });
+  };
+  if (sourceContext && typeof sourceContext === "object") {
+    event.sourceContext = sourceContext;
+  }
+  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -208,6 +214,7 @@ export async function createRecoveryJob(
     ts: now,
     executor: selectedExecutor,
     dataRoot,
+    sourceContext: originalJob.sourceContext ?? null,
   });
 
   const event = {
@@ -221,6 +228,7 @@ export async function createRecoveryJob(
     fromPhase: fromPhase || null,
     ts: now,
   };
+  if (originalJob.sourceContext) event.sourceContext = originalJob.sourceContext;
   if (executorSelection) event.executorSelection = executorSelection;
   if (retryCount !== undefined) event.retryCount = retryCount;
   if (maxRetries !== undefined) event.maxRetries = maxRetries;

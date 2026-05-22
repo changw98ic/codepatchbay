@@ -36,6 +36,7 @@ import { applyVariant } from "./apply-variant.mjs";
 import { runRepair, completeRepair } from "../server/services/repair-handler.js";
 import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
 import { recordUiEscalations } from "./record-ui-escalation.mjs";
+import { validateNonEmptyMarkdownArtifact, resolveDeliverableIssue, validateIssueMatch } from "../server/services/artifact-integrity.js";
 
 // --- CLI arg parsing ---
 
@@ -259,12 +260,11 @@ async function handlePlan(args) {
 
   await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "plan", "codex");
 
-  // Check if plan file was created
-  try {
-    await readFile(planFile, "utf8");
-  } catch {
-    await logAppend(cpbRoot, project, `planner | plan | Failed to create plan for: ${task} | FAIL`);
-    console.error("Warning: Plan file not created.");
+  // Check if plan file was created and is non-empty
+  const planValidation = await validateNonEmptyMarkdownArtifact({ path: planFile, kind: "plan", id: planId });
+  if (!planValidation.valid) {
+    await logAppend(cpbRoot, project, `planner | plan | Plan artifact invalid (${planValidation.reason}) for: ${task} | FAIL`);
+    console.error(`Plan artifact invalid: ${planValidation.reason}`);
     return 1;
   }
 
@@ -284,6 +284,15 @@ async function handleExecute(args) {
 
   const verdictFile = options.get("--verdict-file") || "";
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+
+  if (planId) {
+    const planFile = planFilePath(cpbRoot, project, planId);
+    const planValidation = await validateNonEmptyMarkdownArtifact({ path: planFile, kind: "plan", id: planId });
+    if (!planValidation.valid) {
+      console.error(`Plan artifact invalid: ${planValidation.reason} (${planFile})`);
+      return 1;
+    }
+  }
 
   const outputsDir = path.join(wikiDir, "outputs");
   const deliverableId = await allocateArtifactId(outputsDir, "deliverable");
@@ -316,7 +325,22 @@ async function handleExecute(args) {
   await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "execute", "claude");
 
   try {
-    await readFile(deliverableFile, "utf8");
+    const deliverableContent = await readFile(deliverableFile, "utf8");
+    // Check issue match when expected issue is set
+    const expectedIssue = process.env.CPB_ISSUE_NUMBER;
+    if (expectedIssue && deliverableContent.trim()) {
+      const artifactIssue = resolveDeliverableIssue(deliverableContent);
+      const issueResult = validateIssueMatch({
+        expectedIssueNumber: parseInt(expectedIssue, 10),
+        artifactIssueNumber: artifactIssue,
+        artifactPath: deliverableFile,
+      });
+      if (!issueResult.match) {
+        await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} issue mismatch: expected #${issueResult.expected}, got #${issueResult.actual} | FAIL`);
+        console.error(`Deliverable issue mismatch: expected #${issueResult.expected}, resolves to #${issueResult.actual}`);
+        return 1;
+      }
+    }
   } catch {
     await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | FAIL`);
     console.error("Warning: Deliverable not created.");
@@ -335,6 +359,7 @@ async function handleVerify(args) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   const jobId = options.get("--job-id") || "";
+  const planId = options.get("--plan-id") || "";
 
   if (!deliverableId && !jobId) {
     throw new Error("--deliverable-id or --job-id is required for verify phase");
@@ -357,11 +382,12 @@ async function handleVerify(args) {
   console.log(`Verifying [${project}] ${label}...`);
   console.log(`Output: ${verdictFile}`);
 
+  const promptOpts = planId ? { planId } : {};
   let prompt;
   if (jobId) {
-    prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile);
+    prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, promptOpts);
   } else {
-    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile);
+    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, promptOpts);
   }
 
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);

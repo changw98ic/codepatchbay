@@ -80,6 +80,7 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
       locator.jobStatus = job.status;
       locator.worktree = job.worktree || null;
       locator.lineage = job.lineage || null;
+      locator.sourceContext = job.sourceContext || null;
       locator.retryCount = job.retryCount ?? 0;
       locator.failurePhase = job.failurePhase ?? null;
       locator.blockedReason = job.blockedReason ?? null;
@@ -142,6 +143,7 @@ export function locatorEnvelope(locator) {
     jobStatus: locator.jobStatus || null,
     worktree: locator.worktree || null,
     lineage: locator.lineage || null,
+    sourceContext: locator.sourceContext || null,
     retryCount: locator.retryCount ?? 0,
     failurePhase: locator.failurePhase || null,
     blockedReason: locator.blockedReason || null,
