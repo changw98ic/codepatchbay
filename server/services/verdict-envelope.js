@@ -124,9 +124,9 @@ export function parseVerdictEnvelope(content) {
     } catch {}
   }
 
-  // Try standalone JSON with `status` field in first 20 lines.
+  // Try standalone JSON with `status` field near the top.
   // Use balanced-brace extraction to handle nested objects correctly.
-  const topLines = content.split(/\r?\n/).slice(0, 20).join("\n");
+  const topLines = content.split(/\r?\n/).slice(0, 200).join("\n");
   const jsonStart = topLines.indexOf("{");
   if (jsonStart >= 0) {
     let depth = 0;
