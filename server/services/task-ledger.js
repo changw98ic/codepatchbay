@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { listDispatches } from "./dispatch-state.js";
+import { readGithubIssues } from "./github-issues.js";
 import { listQueue } from "./hub-queue.js";
 import { listJobs } from "./job-store.js";
 
@@ -66,6 +65,33 @@ function queueIssueKey(entry) {
   if (!metadata.issueNumber) return null;
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName || "github";
   return `github:${repo}#${metadata.issueNumber}`;
+}
+
+function isClosedIssue(issue) {
+  return String(issue?.state || "").toUpperCase() === "CLOSED";
+}
+
+function isTerminalQueueEntry(entry) {
+  return ["completed", "failed", "cancelled"].includes(entry?.status);
+}
+
+function isArchivedQueueEntry(entry) {
+  return Boolean(entry?.metadata?.finalDisposition?.startsWith("superseded"));
+}
+
+function queueActivityRank(entry) {
+  if (entry?.status === "in_progress") return 0;
+  if (entry?.status === "pending") return 1;
+  if (entry?.status === "needs_issue_link") return 2;
+  return 3;
+}
+
+function selectQueueEntry(entries = []) {
+  return [...entries].sort(
+    (a, b) =>
+      queueActivityRank(a) - queueActivityRank(b)
+      || timestampOf(b).localeCompare(timestampOf(a)),
+  )[0] || null;
 }
 
 function queueTitle(entry) {
@@ -159,12 +185,13 @@ function humanNextAction(progress, queueEntry) {
 
 function evidenceFor({ queueEntry, jobs = [], dispatches = [] }) {
   const evidence = [];
-  if (queueEntry) {
+  const queueEntries = Array.isArray(queueEntry) ? queueEntry : [queueEntry].filter(Boolean);
+  for (const entry of queueEntries.slice(0, 10)) {
     evidence.push({
       kind: "queue",
-      id: queueEntry.id,
-      status: queueEntry.status,
-      updatedAt: queueEntry.updatedAt || queueEntry.createdAt || null,
+      id: entry.id,
+      status: entry.status,
+      updatedAt: entry.updatedAt || entry.createdAt || null,
     });
   }
   for (const dispatch of dispatches.slice(0, 5)) {
@@ -189,46 +216,38 @@ function evidenceFor({ queueEntry, jobs = [], dispatches = [] }) {
   return evidence;
 }
 
-function matchingJobs(queueEntry, jobs) {
-  if (!queueEntry) return [];
-  const description = queueEntry.description || "";
+function matchingJobs(queueEntries, jobs) {
+  const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
+  if (entries.length === 0) return [];
+  const descriptions = new Set(entries.map((entry) => entry.description || ""));
+  const projects = new Set(entries.map((entry) => entry.projectId));
   return jobs
-    .filter((job) => job.project === queueEntry.projectId && job.task === description)
+    .filter((job) => projects.has(job.project) && descriptions.has(job.task))
     .sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function matchingDispatches(queueEntry, dispatches) {
-  if (!queueEntry) return [];
+function matchingDispatches(queueEntries, dispatches) {
+  const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
+  if (entries.length === 0) return [];
+  const entryIds = new Set(entries.map((entry) => entry.id));
   return dispatches
-    .filter((dispatch) => dispatch.queueEntryId === queueEntry.id)
+    .filter((dispatch) => entryIds.has(dispatch.queueEntryId))
     .sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-async function readGithubIssues(hubRoot) {
-  const file = path.join(path.resolve(hubRoot), "github", "issues.json");
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8"));
-    if (Array.isArray(parsed)) return parsed;
-    if (Array.isArray(parsed.issues)) return parsed.issues;
-    return [];
-  } catch (err) {
-    if (err && err.code === "ENOENT") return [];
-    throw err;
-  }
-}
-
-function issueTask(issue, { queueEntry, jobs, dispatches }) {
+function issueTask(issue, { queueEntry, queueEntries = [], jobs, dispatches }) {
   const labels = normalizeLabels(issue.labels);
   const progress = progressFor({ queueEntry, issue });
   const source = issueSource(issue);
   const title = issue.title || queueTitle(queueEntry) || `Issue #${issue.number}`;
   const body = issue.body || "";
-  const jobsForEntry = matchingJobs(queueEntry, jobs);
-  const dispatchesForEntry = matchingDispatches(queueEntry, dispatches);
+  const linkedEntries = queueEntries.length > 0 ? queueEntries : [queueEntry].filter(Boolean);
+  const jobsForEntry = matchingJobs(linkedEntries, jobs);
+  const dispatchesForEntry = matchingDispatches(linkedEntries, dispatches);
   const latestJob = jobsForEntry[0] || null;
   const latestDispatch = dispatchesForEntry[0] || null;
   const evidence = evidenceFor({
-    queueEntry,
+    queueEntry: linkedEntries,
     jobs: jobsForEntry,
     dispatches: dispatchesForEntry,
   });
@@ -370,7 +389,14 @@ function summarize(tasks) {
   return summary;
 }
 
-export async function buildTaskLedger({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT, projectId } = {}) {
+export async function buildTaskLedger({
+  cpbRoot,
+  hubRoot,
+  limit = DEFAULT_LIMIT,
+  projectId,
+  includeQueueOnly = false,
+  includeArchived = false,
+} = {}) {
   const [queueEntries, githubIssues, jobs, dispatches] = await Promise.all([
     listQueue(hubRoot),
     readGithubIssues(hubRoot),
@@ -378,24 +404,35 @@ export async function buildTaskLedger({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT,
     listDispatches(hubRoot),
   ]);
 
-  const queueByIssue = new Map();
+  const visibleGithubIssues = githubIssues.filter((issue) => !isClosedIssue(issue));
+  const issueKeys = new Set(visibleGithubIssues.map(issueKey));
+  const queuesByIssue = new Map();
   for (const entry of queueEntries) {
     const key = queueIssueKey(entry);
-    if (key && !queueByIssue.has(key)) queueByIssue.set(key, entry);
+    if (!key) continue;
+    const entries = queuesByIssue.get(key) || [];
+    entries.push(entry);
+    queuesByIssue.set(key, entries);
   }
 
   const consumedQueueIds = new Set();
   const tasks = [];
-  for (const issue of githubIssues) {
+  for (const issue of visibleGithubIssues) {
     if (!issue?.number) continue;
     const key = issueKey(issue);
-    const queueEntry = queueByIssue.get(key) || null;
-    if (queueEntry) consumedQueueIds.add(queueEntry.id);
-    tasks.push(issueTask(issue, { queueEntry, jobs, dispatches }));
+    const linkedEntries = queuesByIssue.get(key) || [];
+    const queueEntry = selectQueueEntry(linkedEntries);
+    for (const entry of linkedEntries) consumedQueueIds.add(entry.id);
+    tasks.push(issueTask(issue, { queueEntry, queueEntries: linkedEntries, jobs, dispatches }));
   }
 
   for (const entry of queueEntries) {
     if (consumedQueueIds.has(entry.id)) continue;
+    if (!includeQueueOnly) continue;
+    if (isArchivedQueueEntry(entry) && !includeArchived) continue;
+    if (isTerminalQueueEntry(entry) && !isArchivedQueueEntry(entry)) continue;
+    const key = queueIssueKey(entry);
+    if (key && issueKeys.has(key)) continue;
     tasks.push(queueTask(entry, { jobs, dispatches }));
   }
 

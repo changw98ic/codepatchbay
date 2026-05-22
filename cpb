@@ -40,7 +40,7 @@ ${BOLD}Usage:${NC}
 ${BOLD}Commands:${NC}
   ${CYAN}init${NC} <path> <name>                    初始化项目集成
   ${CYAN}attach${NC} [path] [name]                  将当前/指定项目接入全局 Hub
-  ${CYAN}hub${NC} [status|start|stop|projects|acp|queue|queue-status] [--json]    查看/管理全局 Hub
+  ${CYAN}hub${NC} [status|start|stop|projects|acp|queue|queue-status|github-sync] [--json]    查看/管理全局 Hub
   ${CYAN}worker${NC} heartbeat [path] [name]        上报项目 worker 心跳
   ${CYAN}worker${NC} run [path] [name] [--once] [--workflow standard|complex|blocked|accelerated]  启动项目 worker 拉取队列执行
   ${CYAN}knowledge${NC} policy [--json]             查看知识层写入边界
@@ -166,10 +166,18 @@ cmd_hub_stop() {
 cmd_hub() {
   local sub="${1:-status}"
   local json=0
+  local github_repo=""
+  local github_project="flow"
+  local github_state="open"
+  local github_limit="1000"
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
+      --repo) github_repo="${2:-}"; shift ;;
+      --project) github_project="${2:-}"; shift ;;
+      --state) github_state="${2:-}"; shift ;;
+      --limit) github_limit="${2:-}"; shift ;;
       *) echo -e "${RED}Unknown hub flag: $1${NC}" >&2; exit 1 ;;
     esac
     shift
@@ -178,7 +186,7 @@ cmd_hub() {
     start) cmd_hub_start; return $? ;;
     stop)  cmd_hub_stop;  return $? ;;
   esac
-  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_JSON="$json" CPB_HUB_SUB="$sub" node --input-type=module - <<'NODE'
+  CPB_ROOT="$CPB_ROOT" CPB_EXECUTOR_ROOT="$CPB_EXECUTOR_ROOT" CPB_HUB_JSON="$json" CPB_HUB_SUB="$sub" CPB_HUB_GITHUB_REPO="$github_repo" CPB_HUB_GITHUB_PROJECT="$github_project" CPB_HUB_GITHUB_STATE="$github_state" CPB_HUB_GITHUB_LIMIT="$github_limit" node --input-type=module - <<'NODE'
 import path from 'node:path';
 const cpbRoot = path.resolve(process.env.CPB_ROOT);
 const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
@@ -243,6 +251,22 @@ if (sub === 'status') {
         console.log(`${e.status}\t${e.priority}\t${e.projectId}\t${e.description || e.id}`);
       }
     }
+  }
+} else if (sub === 'github-sync') {
+  const { syncGithubIssuesFromGh } = await import(path.join(executorRoot, 'server/services/github-issues.js'));
+  const result = await syncGithubIssuesFromGh(hubRoot, {
+    repo: process.env.CPB_HUB_GITHUB_REPO || null,
+    projectId: process.env.CPB_HUB_GITHUB_PROJECT || 'flow',
+    state: process.env.CPB_HUB_GITHUB_STATE || 'open',
+    limit: process.env.CPB_HUB_GITHUB_LIMIT || 1000,
+    cwd: cpbRoot,
+  });
+  if (asJson) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`GitHub issues synced: ${result.count}`);
+    console.log(`Repo: ${result.repo}`);
+    console.log(`State: ${process.env.CPB_HUB_GITHUB_STATE || 'open'}`);
+    console.log(`Cache: ${path.join(hubRoot, 'github', 'issues.json')}`);
   }
 } else if (sub === 'diagnostics') {
   const { gatherDiagnostics } = await import(path.join(executorRoot, 'server/services/diagnostics-bundle.js'));

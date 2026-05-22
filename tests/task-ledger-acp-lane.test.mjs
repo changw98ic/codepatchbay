@@ -28,7 +28,7 @@ describe("task-ledger ACP lane metadata", () => {
 
     await enqueue(hubRoot, { projectId: "ledger-test", description: "ACP default check" });
 
-    const ledger = await buildTaskLedger({ cpbRoot, hubRoot });
+    const ledger = await buildTaskLedger({ cpbRoot, hubRoot, includeQueueOnly: true });
     assert.equal(ledger.tasks.length, 1);
 
     const exec = ledger.tasks[0].agent.execution;
@@ -51,7 +51,7 @@ describe("task-ledger ACP lane metadata", () => {
       },
     });
 
-    const ledger = await buildTaskLedger({ cpbRoot, hubRoot });
+    const ledger = await buildTaskLedger({ cpbRoot, hubRoot, includeQueueOnly: true });
     assert.equal(ledger.tasks.length, 1);
 
     const exec = ledger.tasks[0].agent.execution;
@@ -69,7 +69,7 @@ describe("task-ledger ACP lane metadata", () => {
       description: "Field presence check",
     });
 
-    const ledger = await buildTaskLedger({ cpbRoot, hubRoot });
+    const ledger = await buildTaskLedger({ cpbRoot, hubRoot, includeQueueOnly: true });
     const exec = ledger.tasks[0].agent.execution;
 
     assert.ok("acpProfile" in exec, "acpProfile field must exist");

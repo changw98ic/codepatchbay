@@ -16,6 +16,7 @@ import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
 import { buildObservabilitySummary } from "../services/observability.js";
 import { buildTaskHistory } from "../services/task-history.js";
 import { buildTaskLedger } from "../services/task-ledger.js";
+import { readGithubIssues, syncGithubIssuesFromGh } from "../services/github-issues.js";
 import {
   claimEligible,
   dequeue as dequeueEntry,
@@ -261,7 +262,30 @@ export async function hubRoutes(fastify) {
       hubRoot: hubRoot(req),
       limit: req.query.limit,
       projectId: req.query.projectId,
+      includeQueueOnly: req.query.includeQueueOnly === "true",
+      includeArchived: req.query.includeArchived === "true",
     });
+  });
+
+  fastify.get("/hub/github/issues", async (req) => {
+    const issues = await readGithubIssues(hubRoot(req));
+    return {
+      count: issues.length,
+      open: issues.filter((issue) => String(issue.state || "").toUpperCase() !== "CLOSED").length,
+      issues,
+    };
+  });
+
+  fastify.post("/hub/github/issues/sync", async (req) => {
+    const body = req.body || {};
+    const result = await syncGithubIssuesFromGh(hubRoot(req), {
+      repo: body.repo,
+      projectId: body.projectId,
+      state: body.state,
+      limit: body.limit,
+      cwd: req.cpbRoot,
+    });
+    return { synced: true, ...result };
   });
 
   fastify.get("/hub/knowledge/promotion-candidates", async (req) => {
