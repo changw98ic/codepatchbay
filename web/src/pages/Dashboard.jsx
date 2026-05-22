@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useWebSocket } from '../hooks/useWebSocket';
 import PipelineStatus from '../components/PipelineStatus';
 
@@ -30,13 +30,16 @@ export default function Dashboard() {
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
+  const [searchParams] = useSearchParams();
+  const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
 
   const fetchProjects = useCallback(() => {
-    fetch('/api/projects')
+    const url = diagnostics ? '/api/projects?includeTest=true' : '/api/projects';
+    fetch(url)
       .then((r) => r.json())
       .then((data) => { setProjects(data); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [diagnostics]);
 
   const refreshDurableTasks = useCallback(() => {
     fetch('/api/tasks/durable')
@@ -46,9 +49,10 @@ export default function Dashboard() {
   }, []);
 
   const refreshHub = useCallback(() => {
+    const hubProjectsUrl = diagnostics ? '/api/hub/projects?includeTest=true' : '/api/hub/projects';
     Promise.all([
       fetch('/api/hub/status').then((r) => r.ok ? r.json() : null),
-      fetch('/api/hub/projects').then((r) => r.ok ? r.json() : []),
+      fetch(hubProjectsUrl).then((r) => r.ok ? r.json() : []),
       fetch('/api/hub/acp').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/knowledge-policy').then((r) => r.ok ? r.json() : null),
       fetch('/api/hub/queue/status').then((r) => r.ok ? r.json() : null),
@@ -301,6 +305,9 @@ export default function Dashboard() {
                   <span className={`badge badge-worker badge-${p.workerDerivedStatus || p.worker.status}`}>
                     {p.workerDerivedStatus || p.worker.status}
                   </span>
+                )}
+                {diagnostics && p._pollution && p._pollution.visibility === 'test' && (
+                  <span className="badge badge-diagnostic">test</span>
                 )}
                 {workerAgeById.get(p.id)?.ageMs != null && (
                   <span className="badge badge-age">{formatAge(workerAgeById.get(p.id).ageMs)}</span>

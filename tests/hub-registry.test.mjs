@@ -55,3 +55,47 @@ test("hub registry preserves concurrent project registrations", async () => {
   const projects = await listProjects(hubRoot);
   assert.deepEqual(projects.map((project) => project.id), ["concurrent-a", "concurrent-b"]);
 });
+
+test("registerProject defaults projectRuntimeRoot under the given hubRoot", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hub-rt-"));
+  const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-project-rt-"));
+
+  const project = await registerProject(hubRoot, { name: "rt-test", sourcePath });
+
+  assert.ok(
+    project.projectRuntimeRoot.startsWith(path.resolve(hubRoot) + path.sep),
+    `projectRuntimeRoot ${project.projectRuntimeRoot} should be under hubRoot ${hubRoot}`
+  );
+  assert.ok(
+    project.projectRuntimeRoot.includes("projects"),
+    `projectRuntimeRoot should contain "projects" segment`
+  );
+});
+
+test("registerProject preserves explicit projectRuntimeRoot", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hub-explicit-"));
+  const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-project-explicit-"));
+  const explicitRoot = path.join(hubRoot, "custom-runtime");
+
+  const project = await registerProject(hubRoot, {
+    name: "explicit-rt",
+    sourcePath,
+    projectRuntimeRoot: explicitRoot,
+  });
+
+  assert.equal(project.projectRuntimeRoot, path.resolve(explicitRoot));
+});
+
+test("registerProject preserves metadata for test/generated tagging", async () => {
+  const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-hub-meta-"));
+  const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-project-meta-"));
+
+  const project = await registerProject(hubRoot, {
+    name: "meta-test",
+    sourcePath,
+    metadata: { visibility: "test", generatedBy: "node:test" },
+  });
+
+  assert.equal(project.metadata.visibility, "test");
+  assert.equal(project.metadata.generatedBy, "node:test");
+});

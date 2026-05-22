@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:shell",
-    "test:node": "node --test tests/*.mjs",
+    "test:node": "env CPB_WORKER_DISPATCH_ENABLED=0 node --test tests/*.mjs",
     "test:shell": "bash tests/cpb-jobs.test.sh && bash tests/cpb-bridges.test.sh && bash tests/cpb-variant-env.test.sh",
     "build:web": "npm run build --workspace codepatchbay-web"
   },

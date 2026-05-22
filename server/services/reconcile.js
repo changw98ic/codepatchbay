@@ -6,9 +6,11 @@ import { appendEvent } from "./runtime-events.js";
 import { readLease, releaseLease, isLeaseStale } from "./lease-manager.js";
 import { listJobs, failJob, blockJob } from "./job-store.js";
 import { rebuildJobsIndex, readJobsIndex } from "./jobs-index.js";
-import { resolveHubRoot, loadRegistry } from "./hub-registry.js";
+import { resolveHubRoot, loadRegistry, saveRegistry } from "./hub-registry.js";
+import { projectRuntimeRoot } from "./runtime-root.js";
 import { listProcesses, classifyLiveness, removeProcess } from "./process-registry.js";
 import { listQueue as listHubQueue, updateEntry as updateQueueEntry } from "./hub-queue.js";
+import { scanHubPollution } from "./project-pollution.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -442,6 +444,9 @@ export async function cleanupDryRun(cpbRoot) {
     worktreesPreserved: [],
     totalLeaseFiles: 0,
     totalJobCount: 0,
+    testProjectsToRemove: [],
+    pollutedProjectsToRemove: [],
+    orphanRuntimeDirsToRemove: [],
   };
 
   const jobs = await listJobs(cpbRoot);
@@ -492,6 +497,14 @@ export async function cleanupDryRun(cpbRoot) {
     }
   }
 
+  // Scan for test/polluted projects and orphan runtime dirs
+  const hubRoot = resolveHubRoot(cpbRoot);
+  try {
+    const pollution = await scanHubPollution(hubRoot);
+    report.testProjectsToRemove = pollution.candidates;
+    report.orphanRuntimeDirsToRemove = pollution.orphanRuntimeDirs;
+  } catch {}
+
   return report;
 }
 
@@ -534,4 +547,132 @@ export async function cleanupJobs(cpbRoot) {
   } catch {}
 
   return { cleaned };
+}
+
+/**
+ * Determine whether a polluted project's runtime directory can be safely deleted.
+ * Only allows deletion when the target is exactly the expected runtime root for that
+ * project, or a child path under that expected root. Rejects hubRoot, <hubRoot>/projects,
+ * another registered project's expected root, sourcePath, and ancestors of sourcePath.
+ */
+function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }) {
+  const hubResolved = path.resolve(hubRoot);
+  const hubProjectsResolved = path.join(hubResolved, "projects");
+  const targetRaw = project.projectRuntimeRoot;
+  if (!targetRaw) return { canDelete: false, reason: "no-runtime-root" };
+
+  const targetResolved = path.resolve(targetRaw);
+  const sourceResolved = project.sourcePath ? path.resolve(project.sourcePath) : null;
+
+  // Never delete hubRoot itself
+  if (targetResolved === hubResolved) {
+    return { canDelete: false, reason: "hub-root" };
+  }
+  // Never delete <hubRoot>/projects (shared directory)
+  if (targetResolved === hubProjectsResolved) {
+    return { canDelete: false, reason: "hub-projects-root" };
+  }
+  // Never delete sourcePath
+  if (sourceResolved && targetResolved === sourceResolved) {
+    return { canDelete: false, reason: "source-path-preserved" };
+  }
+  // Never delete an ancestor of sourcePath
+  if (sourceResolved && targetResolved !== sourceResolved &&
+      sourceResolved.startsWith(targetResolved + path.sep)) {
+    return { canDelete: false, reason: "source-path-ancestor" };
+  }
+
+  // Compute the expected runtime root for this specific project
+  const pid = projectId || project.id;
+  if (!pid) return { canDelete: false, reason: "no-project-id" };
+  const expectedRoot = projectRuntimeRoot(hubRoot, pid);
+
+  // Never delete another registered project's expected runtime root
+  if (registry && typeof registry.projects === "object" && registry.projects !== null) {
+    const entries = Array.isArray(registry.projects)
+      ? registry.projects
+      : Object.values(registry.projects);
+    for (const other of entries) {
+      const otherId = other.id;
+      if (!otherId || otherId === pid) continue;
+      const otherExpected = projectRuntimeRoot(hubRoot, otherId);
+      if (targetResolved === otherExpected) {
+        return { canDelete: false, reason: "other-project-runtime-root" };
+      }
+    }
+  }
+
+  // Only allow deletion when target is exactly the expected root or a child of it
+  if (targetResolved === expectedRoot) {
+    return { canDelete: true, reason: "exact-expected-root" };
+  }
+  if (targetResolved.startsWith(expectedRoot + path.sep)) {
+    return { canDelete: true, reason: "child-of-expected-root" };
+  }
+
+  // Target is outside the expected root — unsafe
+  return { canDelete: false, reason: "unsafe-runtime-root" };
+}
+
+export async function cleanupPollution(cpbRoot) {
+  const hubRoot = resolveHubRoot(cpbRoot);
+  let projectsRemoved = 0;
+  let orphanDirsRemoved = 0;
+  const sourcePathsPreserved = [];
+  const unsafeProjectsSkipped = [];
+  const errors = [];
+
+  const pollution = await scanHubPollution(hubRoot);
+  const registry = await loadRegistry(hubRoot);
+
+  // Remove registry entries classified as pollution — only when deletion boundary is proven safe
+  for (const candidate of pollution.candidates) {
+    const project = registry.projects[candidate.projectId];
+    if (!project) continue;
+
+    const safety = safePollutionRuntimeTarget({
+      hubRoot,
+      project,
+      projectId: candidate.projectId,
+      registry,
+    });
+
+    if (!safety.canDelete) {
+      unsafeProjectsSkipped.push({
+        projectId: candidate.projectId,
+        attemptedRoot: project.projectRuntimeRoot || null,
+        reason: safety.reason,
+      });
+      continue;
+    }
+
+    sourcePathsPreserved.push(project.sourcePath);
+    delete registry.projects[candidate.projectId];
+    projectsRemoved++;
+
+    if (project.projectRuntimeRoot) {
+      try {
+        const resolved = path.resolve(project.projectRuntimeRoot);
+        await rm(resolved, { recursive: true, force: true });
+      } catch (err) {
+        errors.push({ projectId: candidate.projectId, phase: "runtime-rm", message: err.message });
+      }
+    }
+  }
+
+  // Remove orphan runtime directories
+  for (const orphan of pollution.orphanRuntimeDirs) {
+    try {
+      await rm(orphan.runtimeDir, { recursive: true, force: true });
+      orphanDirsRemoved++;
+    } catch (err) {
+      errors.push({ kind: "orphan-runtime-dir", dir: orphan.runtimeDir, message: err.message });
+    }
+  }
+
+  if (projectsRemoved > 0) {
+    await saveRegistry(hubRoot, registry);
+  }
+
+  return { projectsRemoved, orphanDirsRemoved, sourcePathsPreserved, unsafeProjectsSkipped, errors };
 }

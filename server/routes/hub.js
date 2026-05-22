@@ -34,6 +34,7 @@ import {
   recordDispatch,
 } from "../services/worker-dispatch.js";
 import { readProjectCodeIndexStatus, refreshProjectCodeIndex } from "../services/project-code-index.js";
+import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
 
 function hubRoot(req) {
   return req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
@@ -55,11 +56,14 @@ export async function hubRoutes(fastify) {
 
   fastify.get("/hub/projects", async (req) => {
     const hr = hubRoot(req);
-    const projects = await listProjects(hr, { enabledOnly: req.query.enabledOnly === "true" });
+    const allProjects = await listProjects(hr, { enabledOnly: req.query.enabledOnly === "true" });
+    const includeTest = ["true", "1"].includes(req.query.includeTest) ||
+      ["true", "1"].includes(req.query.diagnostics);
+    const visible = filterVisibleProjects(allProjects, { includeTest, hubRoot: hr });
     const results = [];
-    for (const project of projects) {
+    for (const project of visible) {
       const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr });
-      results.push({
+      const entry = {
         ...project,
         workerDerivedStatus: workerStatus(project),
         indexStatus: {
@@ -72,7 +76,11 @@ export async function hubRoutes(fastify) {
           headShort: idx.headShort,
           contentHash: idx.contentHash,
         },
-      });
+      };
+      if (includeTest) {
+        entry._pollution = classifyProject(project, { hubRoot: hr });
+      }
+      results.push(entry);
     }
     return results;
   });

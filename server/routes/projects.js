@@ -3,6 +3,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { listProjects, getProject } from '../services/hub-registry.js';
+import { classifyProject, filterVisibleProjects } from '../services/project-pollution.js';
 import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
 import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project-loader.js';
 import { readProjectIndex } from '../services/project-index.js';
@@ -102,7 +103,10 @@ export async function projectRoutes(fastify, opts) {
     const hubRoot = req.cpbHubRoot;
     const cpbRoot = req.cpbRoot;
 
-    const hubProjects = await listRouteProjects(hubRoot, cpbRoot);
+    let hubProjects = await listRouteProjects(hubRoot, cpbRoot);
+    const includeTest = ['true', '1'].includes(req.query.includeTest) ||
+      ['true', '1'].includes(req.query.diagnostics);
+    hubProjects = filterVisibleProjects(hubProjects, { includeTest, hubRoot });
     const projectionStates = await listProjectPipelineStates(cpbRoot);
 
     const projectData = await Promise.all(
@@ -124,6 +128,7 @@ export async function projectRoutes(fastify, opts) {
             projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: inboxEntries.filter(f => f.endsWith('.md')).length,
             outputs: outputEntries.filter(f => f.endsWith('.md')).length,
+            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot }) } : {}),
           };
         } catch {
           return {
@@ -134,6 +139,7 @@ export async function projectRoutes(fastify, opts) {
             projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: 0,
             outputs: 0,
+            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot }) } : {}),
           };
         }
       })
