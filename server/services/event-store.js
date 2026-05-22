@@ -348,6 +348,7 @@ export function materializeJob(events) {
     externalRepairError: null,
     lineage: null,
     recoveryOf: null,
+    sourceContext: null,
     permissionDenials: [],
     infraStatus: null,
     finalizer: null,
@@ -378,6 +379,7 @@ export function materializeJob(events) {
         state.status = "running";
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;
+        if (event.sourceContext) state.sourceContext = event.sourceContext;
         terminal = false;
         break;
       case "worktree_created":
@@ -484,6 +486,7 @@ export function materializeJob(events) {
           trigger: event.trigger ?? null,
           executorSelection: event.executorSelection ?? null,
         };
+        if (event.sourceContext) state.sourceContext = event.sourceContext;
         break;
       case "permission_denied":
         state.permissionDenials = [

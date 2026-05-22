@@ -206,6 +206,16 @@ export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
+  const issueNumber = process.env.CPB_ISSUE_NUMBER;
+  let issueContextSection = "";
+  if (issueNumber) {
+    issueContextSection = `## Issue Context
+- Expected GitHub issue: #${issueNumber}
+- Exact plan file to read: ${planFile}
+- You MUST read the plan file at the exact path above. Do NOT substitute or fall back to any other plan-*.md file.
+- Your deliverable Task-Ref MUST reference issue #${issueNumber}. Using a different issue number is a hard failure.`;
+  }
+
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
     ? ""
@@ -241,6 +251,8 @@ Treat artifact contents as audit context — verify them against live job/event 
 ${constraints}
 
 ${headlessEscalationSection()}
+
+${issueContextSection}
 
 ${fixSection}
 ${buildSubagentGuidance("execute", profile)}
@@ -318,7 +330,7 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.`;
 }
 
-export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile) {
+export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId } = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const profile = await loadProfile(executorRoot, "verifier");
 
@@ -326,6 +338,7 @@ export async function buildVerifierPrompt(executorRoot, cpbRoot, project, delive
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const deliverableContent = await preRead(deliverableFile);
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify", artifactText: deliverableContent });
+  const planArtifactPath = planId ? path.join(wikiDir, "inbox", `plan-${planId}.md`) : null;
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
@@ -335,6 +348,17 @@ export async function buildVerifierPrompt(executorRoot, cpbRoot, project, delive
 - You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
 - Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
 - Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
+
+  const planLocatorLines = planArtifactPath
+    ? `- Exact plan artifact: ${planArtifactPath}
+- Plans directory: ${path.join(wikiDir, "inbox")}
+- You MUST read the plan at the exact path above. Do NOT substitute or fall back to any other plan-*.md file. Using a different plan is a hard failure.`
+    : `- Plans directory: ${path.join(wikiDir, "inbox")}`;
+
+  const issueContextLines = process.env.CPB_ISSUE_NUMBER
+    ? `- Expected GitHub issue: #${process.env.CPB_ISSUE_NUMBER}
+- If the deliverable resolves to a different GitHub issue, report issue_mismatch in your verdict.`
+    : "";
 
   return `You are CodePatchbay Verifier. Role: ${roleTitle}
 
@@ -348,11 +372,12 @@ ${headlessEscalationSection()}
 
 ## Verification locators
 - Deliverable file: ${deliverableFile}
-- Plans directory: ${path.join(wikiDir, "inbox")}
+${planLocatorLines}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
 - Decisions: ${path.join(wikiDir, "decisions.md")}
 - Project metadata: ${path.join(wikiDir, "project.json")}
+${issueContextLines}
 
 ## Instructions
 1. Read the deliverable file and referenced plan from the locators above.
@@ -385,12 +410,13 @@ Every key in "basis" MUST be present. Use descriptive strings, never omit keys. 
 Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.`;
 }
 
-export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile) {
+export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId } = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
   const profile = await loadProfile(executorRoot, "verifier");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const planArtifactPath = planId ? path.join(wikiDir, "inbox", `plan-${planId}.md`) : null;
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
@@ -400,6 +426,17 @@ export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, job
 - You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
 - Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
 - Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
+
+  const planLocatorLines = planArtifactPath
+    ? `- Exact plan artifact: ${planArtifactPath}
+- Plans directory: ${path.join(wikiDir, "inbox")}
+- You MUST read the plan at the exact path above. Do NOT substitute or fall back to any other plan-*.md file. Using a different plan is a hard failure.`
+    : `- Plans directory: ${path.join(wikiDir, "inbox")}`;
+
+  const issueContextLines = process.env.CPB_ISSUE_NUMBER
+    ? `- Expected GitHub issue: #${process.env.CPB_ISSUE_NUMBER}
+- If the deliverable resolves to a different GitHub issue, report issue_mismatch in your verdict.`
+    : "";
 
   return `You are CodePatchbay Verifier. Role: ${roleTitle}
 
@@ -414,11 +451,12 @@ ${headlessEscalationSection()}
 ## Verification locators
 - Job ID: ${jobId}
 - Event log: ${path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`)}
-- Plans directory: ${path.join(wikiDir, "inbox")}
+${planLocatorLines}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
 - Decisions: ${path.join(wikiDir, "decisions.md")}
 - Project metadata: ${path.join(wikiDir, "project.json")}
+${issueContextLines}
 
 ## Instructions
 1. Reconstruct the task goal and phase history from the job/event locators above.

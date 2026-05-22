@@ -548,6 +548,14 @@ export class ProjectWorker {
         CPB_ACP_CWD: sourcePath || "",
         CPB_SESSION_ID: entry.sessionId || "",
         CPB_WORKER_ID: this.workerId,
+        CPB_QUEUE_ENTRY_ID: entry.id || "",
+        CPB_ISSUE_NUMBER: String(entry.metadata?.issueNumber ?? ""),
+        CPB_ISSUE_URL: entry.metadata?.issueUrl ?? "",
+        CPB_ISSUE_REPO: entry.metadata?.repo ?? "",
+        CPB_ISSUE_TITLE: (entry.metadata?.issueTitle ?? "").slice(0, 200),
+        CPB_FAILED_QUEUE_ID: entry.metadata?.originQueueId ?? "",
+        CPB_FAILED_JOB_ID: entry.metadata?.originJobId ?? "",
+        CPB_FAILURE_ARTIFACT: entry.metadata?.failureArtifact ?? "",
       };
       if (useWorktree) env.CPB_USE_WORKTREE = "1";
       else delete env.CPB_USE_WORKTREE;
