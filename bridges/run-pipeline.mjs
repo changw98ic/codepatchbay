@@ -199,10 +199,16 @@ function printFailureSummary(cpbRoot, project, jobId, { phase, reason, deliverab
   if (verdictFile) {
     try {
       const content = readFileSync(verdictFile, "utf8");
-      const verdict = content.match(/^VERDICT:\s*(\S+)/m)?.[1] || "unknown";
-      const firstEvidence = content.split("\n").filter(l => l.trim() && !l.startsWith("VERDICT:")).slice(0, 3).join(" | ");
-      console.log(`  ${CYAN}Verdict:${NC}    ${verdict}`);
-      if (firstEvidence) console.log(`  ${CYAN}Evidence:${NC}   ${firstEvidence.slice(0, 120)}`);
+      const envelope = parseVerdictEnvelope(content);
+      const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA" };
+      console.log(`  ${CYAN}Verdict:${NC}    ${mapped[envelope.status] || "UNKNOWN"}`);
+      if (envelope.reason) console.log(`  ${CYAN}Reason:${NC}     ${envelope.reason.slice(0, 120)}`);
+      if (envelope.fix_scope?.length) console.log(`  ${CYAN}Fix scope:${NC}  ${envelope.fix_scope.join(", ")}`);
+      if (envelope.blocking?.length) {
+        const first = envelope.blocking[0];
+        const hint = typeof first === "object" ? `${first.criterion}: ${first.evidence}` : first;
+        console.log(`  ${CYAN}Blocking:${NC}   ${hint.slice(0, 120)}`);
+      }
     } catch {}
   }
   console.log("");

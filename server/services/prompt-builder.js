@@ -365,8 +365,6 @@ export async function buildVerifierPrompt(executorRoot, cpbRoot, project, delive
 ${skillsSection}
 
 ${constraints}
-${buildSubagentGuidance("verify", profile)}
-${buildLayeredVerification()}
 
 ${headlessEscalationSection()}
 
@@ -381,33 +379,39 @@ ${issueContextLines}
 
 ## Instructions
 1. Read the deliverable file and referenced plan from the locators above.
-2. Verify the deliverable against the task goal and plan Acceptance-Criteria.
-3. Give a verdict based on your own inspection of the current files and task intent.
+2. Run fast focused tests first. If fast tests pass AND diff is under 50 lines, you may short-circuit to PASS without running broad regression.
+3. Verify the deliverable against the task goal and plan Acceptance-Criteria.
 4. Write the verdict to: ${verdictFile}
 
-Give a verdict by writing a JSON envelope as the VERY FIRST LINE of the verdict file (no markdown, no headers before it):
+## Output Format (MANDATORY)
+Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.
 
 \`\`\`json
 {
   "status": "<pass|fail|inconclusive|infra_error>",
-  "basis": {
-    "taskGoal": "<what the task was trying to achieve>",
-    "worktreeDiff": "<summary of code changes or 'none'>",
-    "tests": "<test results summary or 'not run'>",
-    "buildLogs": "<build status or 'not run'>",
-    "events": "<relevant event log observations or 'none'>",
-    "runtimeState": "<runtime/process state observations or 'none'>",
-    "executorSummary": "<what the executor claimed to do>"
+  "confidence": <0.0-1.0>,
+  "layers": {
+    "fast": { "status": "<pass|fail|not_run>", "detail": "<result in one sentence>" },
+    "changed": { "status": "<pass|fail|not_run>", "detail": "<result in one sentence>" },
+    "regression": { "status": "<pass|fail|skipped>", "detail": "<result or skip reason>" },
+    "acceptance": { "status": "<pass|fail|not_run>", "detail": "<criteria check result>" }
   },
-  "blockingMissingInputs": [],
+  "blocking": [
+    { "criterion": "<what failed>", "evidence": "<observation>", "file": "<path>", "fix_hint": "<suggestion>" }
+  ],
+  "diff_summary": "<file count and line count>",
+  "task_goal": "<what the task was trying to achieve>",
+  "executor_summary": "<what the executor claimed>",
   "reason": "<one-line explanation of the verdict>",
-  "summary": "<optional broader narrative>"
+  "fix_scope": ["<file paths that need changes>"]
 }
 \`\`\`
 
-Use "pass" when all acceptance criteria are met. Use "fail" for quality or correctness issues. Use "inconclusive" when you cannot determine the outcome (missing data, ambiguous results). Use "infra_error" when infrastructure problems prevent verification (missing files, corrupt data, permission errors, agent crash).
-Every key in "basis" MUST be present. Use descriptive strings, never omit keys. "blockingMissingInputs" lists any inputs that were missing and prevented a confident verdict.
-Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.`;
+Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "inconclusive" (cannot determine), "infra_error" (infrastructure prevents verification).
+Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
+"blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
+"fix_scope" lists files that need changes for the next repair attempt.
+Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.`;
 }
 
 export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId } = {}) {
@@ -443,8 +447,6 @@ export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, job
 ${skillsSection}
 
 ${constraints}
-${buildSubagentGuidance("verify", profile)}
-${buildLayeredVerification()}
 
 ${headlessEscalationSection()}
 
@@ -460,33 +462,40 @@ ${issueContextLines}
 
 ## Instructions
 1. Reconstruct the task goal and phase history from the job/event locators above.
-2. Inspect current project state from the locators; executor deliverables are optional audit context, not required truth.
-3. If data is missing, return a diagnostic verdict instead of crashing.
-4. Write the verdict to: ${verdictFile}
+2. Run fast focused tests first. If fast tests pass AND diff is under 50 lines, you may short-circuit to PASS without running broad regression.
+3. Inspect current project state; executor deliverables are optional audit context, not required truth.
+4. If data is missing, return a diagnostic verdict instead of crashing.
+5. Write the verdict to: ${verdictFile}
 
-Give a verdict by writing a JSON envelope as the VERY FIRST LINE of the verdict file (no markdown, no headers before it):
+## Output Format (MANDATORY)
+Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.
 
 \`\`\`json
 {
   "status": "<pass|fail|inconclusive|infra_error>",
-  "basis": {
-    "taskGoal": "<what the task was trying to achieve>",
-    "worktreeDiff": "<summary of code changes or 'none'>",
-    "tests": "<test results summary or 'not run'>",
-    "buildLogs": "<build status or 'not run'>",
-    "events": "<relevant event log observations or 'none'>",
-    "runtimeState": "<runtime/process state observations or 'none'>",
-    "executorSummary": "<what the executor claimed to do>"
+  "confidence": <0.0-1.0>,
+  "layers": {
+    "fast": { "status": "<pass|fail|not_run>", "detail": "<result in one sentence>" },
+    "changed": { "status": "<pass|fail|not_run>", "detail": "<result in one sentence>" },
+    "regression": { "status": "<pass|fail|skipped>", "detail": "<result or skip reason>" },
+    "acceptance": { "status": "<pass|fail|not_run>", "detail": "<criteria check result>" }
   },
-  "blockingMissingInputs": [],
+  "blocking": [
+    { "criterion": "<what failed>", "evidence": "<observation>", "file": "<path>", "fix_hint": "<suggestion>" }
+  ],
+  "diff_summary": "<file count and line count>",
+  "task_goal": "<what the task was trying to achieve>",
+  "executor_summary": "<what the executor claimed>",
   "reason": "<one-line explanation of the verdict>",
-  "summary": "<optional broader narrative>"
+  "fix_scope": ["<file paths that need changes>"]
 }
 \`\`\`
 
-Use "pass" when all acceptance criteria are met. Use "fail" for quality or correctness issues. Use "inconclusive" when you cannot determine the outcome (missing data, ambiguous results). Use "infra_error" when infrastructure problems prevent verification (missing files, corrupt data, permission errors, agent crash).
-Every key in "basis" MUST be present. Use descriptive strings, never omit keys. "blockingMissingInputs" lists any inputs that were missing and prevented a confident verdict.
-Follow with concise findings and reasoning. State what passed, what failed, and what should happen next.`;
+Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "inconclusive" (cannot determine), "infra_error" (infrastructure prevents verification).
+Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
+"blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
+"fix_scope" lists files that need changes for the next repair attempt.
+Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.`;
 }
 
 export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {

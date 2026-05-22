@@ -22,15 +22,35 @@ export function validateVerdictEnvelope(envelope) {
     return { valid: false, error: `status must be one of: ${[...VALID_STATUSES].join(", ")}, got: ${envelope.status}` };
   }
 
-  if (typeof envelope.basis !== "object" || envelope.basis === null || Array.isArray(envelope.basis)) {
-    return { valid: false, error: "basis must be an object" };
+  // Structured v2: layers + blocking fields are accepted
+  if (envelope.layers !== undefined) {
+    if (typeof envelope.layers !== "object" || envelope.layers === null || Array.isArray(envelope.layers)) {
+      return { valid: false, error: "layers must be an object" };
+    }
   }
-  const missing = REQUIRED_BASIS_KEYS.filter((k) => !(k in envelope.basis));
-  if (missing.length > 0) {
-    return { valid: false, error: `basis missing required keys: ${missing.join(", ")}` };
+  if (envelope.blocking !== undefined) {
+    if (!Array.isArray(envelope.blocking)) {
+      return { valid: false, error: "blocking must be an array" };
+    }
+  }
+  if (envelope.fix_scope !== undefined) {
+    if (!Array.isArray(envelope.fix_scope)) {
+      return { valid: false, error: "fix_scope must be an array" };
+    }
   }
 
-  if (!Array.isArray(envelope.blockingMissingInputs)) {
+  // Legacy v1: basis + blockingMissingInputs still accepted
+  if (envelope.basis !== undefined) {
+    if (typeof envelope.basis !== "object" || envelope.basis === null || Array.isArray(envelope.basis)) {
+      return { valid: false, error: "basis must be an object" };
+    }
+    const missing = REQUIRED_BASIS_KEYS.filter((k) => !(k in envelope.basis));
+    if (missing.length > 0) {
+      return { valid: false, error: `basis missing required keys: ${missing.join(", ")}` };
+    }
+  }
+
+  if (envelope.blockingMissingInputs !== undefined && !Array.isArray(envelope.blockingMissingInputs)) {
     return { valid: false, error: "blockingMissingInputs must be an array" };
   }
 
@@ -54,6 +74,30 @@ export function classifyVerdict(verdict) {
   return "inconclusive";
 }
 
+// Back-fill v1 basis fields from v2 structured fields for backward compatibility
+function backfillLegacy(envelope) {
+  if (!envelope.basis) {
+    const layers = envelope.layers || {};
+    const tests = layers.fast?.detail || layers.changed?.detail || "not run";
+    const build = layers.acceptance?.detail || "not run";
+    envelope.basis = fullBasis({
+      taskGoal: envelope.task_goal || envelope.reason || "",
+      worktreeDiff: envelope.diff_summary || "none",
+      tests,
+      buildLogs: build,
+      events: "none",
+      runtimeState: "none",
+      executorSummary: envelope.executor_summary || "",
+    });
+  }
+  if (!envelope.blockingMissingInputs) {
+    envelope.blockingMissingInputs = (envelope.blocking || []).map(b =>
+      typeof b === "string" ? b : b.criterion || b.input || String(b)
+    );
+  }
+  return envelope;
+}
+
 export function parseVerdictEnvelope(content) {
   if (!content || typeof content !== "string") {
     return {
@@ -71,7 +115,7 @@ export function parseVerdictEnvelope(content) {
     try {
       const parsed = JSON.parse(jsonBlockMatch[1]);
       if (parsed && typeof parsed.status === "string") {
-        const normalized = { ...parsed, status: parsed.status.toLowerCase() };
+        const normalized = backfillLegacy({ ...parsed, status: parsed.status.toLowerCase() });
         const validation = validateVerdictEnvelope(normalized);
         if (validation.valid) {
           return { ...normalized, source: "envelope" };
@@ -97,7 +141,7 @@ export function parseVerdictEnvelope(content) {
       try {
         const parsed = JSON.parse(candidate);
         if (parsed && typeof parsed.status === "string") {
-          const normalized = { ...parsed, status: parsed.status.toLowerCase() };
+          const normalized = backfillLegacy({ ...parsed, status: parsed.status.toLowerCase() });
           const validation = validateVerdictEnvelope(normalized);
           if (validation.valid) {
             return { ...normalized, source: "envelope" };
