@@ -376,9 +376,12 @@ export class AcpPool {
   }
 
   #runOneShot(agent, prompt, cwd, timeoutMs) {
+    const customClient = process.env.CPB_ACP_CLIENT;
+    const clientPath = customClient || path.join(__dirname, "..", "bridges", "acp-client.mjs");
+    const command = customClient ? clientPath : process.execPath;
+    const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
-      const clientPath = path.join(__dirname, "..", "bridges", "acp-client.mjs");
-      const child = spawn(process.execPath, [clientPath, "--agent", agent, "--cwd", cwd], {
+      const child = spawn(command, args, {
         cwd: this.cpbRoot,
         env: { ...process.env, CPB_ROOT: this.cpbRoot },
         stdio: ["pipe", "pipe", "pipe"],

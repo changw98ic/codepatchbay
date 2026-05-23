@@ -135,7 +135,12 @@ async function runAcpManaged(agent, prompt, cwd, timeoutMs, executorRoot, option
   const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
   const cpbRoot = process.env.CPB_ROOT || executorRoot;
   const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
-  return pool.execute(agent, prompt, cwd, timeoutMs, { ...options, _executorRoot: executorRoot });
+  try {
+    const stdout = await pool.execute(agent, prompt, cwd, timeoutMs, { ...options, _executorRoot: executorRoot });
+    return { exitCode: 0, stdout: typeof stdout === "string" ? stdout : "", stderr: "", error: null };
+  } catch (err) {
+    return { exitCode: 1, stdout: "", stderr: err.message, error: err };
+  }
 }
 
 async function runAcp(agent, prompt, cwd, executorRoot) {

@@ -17,8 +17,20 @@ function inboxDir(cpbRoot, project) {
   return path.join(cpbRoot, "wiki", "projects", project, "inbox");
 }
 
-function messagePath(cpbRoot, project, id) {
-  return path.join(inboxDir(cpbRoot, project), `${id}.md`);
+function safeId(id) {
+  if (!id || typeof id !== "string") return false;
+  if (id.includes("..") || id.includes("/") || id.includes(path.sep) || id.includes("\\")) return false;
+  if (!/^msg-\d{8}-[0-9a-f]+$/.test(id)) return false;
+  return true;
+}
+
+function safeMessagePath(cpbRoot, project, id) {
+  const dir = inboxDir(cpbRoot, project);
+  const resolved = path.resolve(dir, `${id}.md`);
+  if (resolved !== dir && !resolved.startsWith(dir + path.sep)) {
+    throw new Error("invalid message id: path escape");
+  }
+  return resolved;
 }
 
 function generateId() {
@@ -36,14 +48,7 @@ function serializeFrontmatter(meta) {
     if (value === undefined || value === null) {
       lines.push(`${key}: ""`);
     } else if (typeof value === "object") {
-      lines.push(`${key}:`);
-      for (const [k, v] of Object.entries(value)) {
-        if (v === undefined || v === null) {
-          lines.push(`  ${k}: ""`);
-        } else {
-          lines.push(`  ${k}: ${JSON.stringify(v)}`);
-        }
-      }
+      lines.push(`${key}: ${JSON.stringify(value)}`);
     } else {
       lines.push(`${key}: ${JSON.stringify(value)}`);
     }
@@ -68,19 +73,6 @@ function parseFrontmatter(raw) {
     if (colonIdx === -1) continue;
     const key = trimmed.slice(0, colonIdx).trim();
     let value = trimmed.slice(colonIdx + 1).trim();
-
-    // Handle nested keys (indented under a parent)
-    if (line !== trimmed && key && !trimmed.startsWith(key)) {
-      const parentKey = Object.keys(meta).find((k) => typeof meta[k] === "object" && meta[k] !== null);
-      if (parentKey) {
-        try {
-          meta[parentKey][key] = JSON.parse(value);
-        } catch {
-          meta[parentKey][key] = value.replace(/^"|"$/g, "");
-        }
-      }
-      continue;
-    }
 
     try {
       meta[key] = JSON.parse(value);
@@ -167,7 +159,7 @@ export async function writeInboxMessage(cpbRoot, project, input) {
 
   const content = input.content || "";
   const fileContent = `${serializeFrontmatter(meta)}\n${content}\n`;
-  const filePath = messagePath(cpbRoot, project, id);
+  const filePath = safeMessagePath(cpbRoot, project, id);
 
   await withLock(cpbRoot, project, async () => {
     await writeAtomic(filePath, fileContent);
@@ -214,7 +206,8 @@ export async function listInboxMessages(cpbRoot, project, filters = {}) {
 }
 
 export async function readInboxMessage(cpbRoot, project, id) {
-  const filePath = messagePath(cpbRoot, project, id);
+  if (!safeId(id)) return null;
+  const filePath = safeMessagePath(cpbRoot, project, id);
   try {
     const raw = await readFile(filePath, "utf8");
     const parsed = parseFrontmatter(raw);
@@ -226,8 +219,9 @@ export async function readInboxMessage(cpbRoot, project, id) {
 }
 
 export async function ackInboxMessage(cpbRoot, project, id, { owner } = {}) {
+  if (!safeId(id)) return null;
   return withLock(cpbRoot, project, async () => {
-    const filePath = messagePath(cpbRoot, project, id);
+    const filePath = safeMessagePath(cpbRoot, project, id);
     let raw;
     try {
       raw = await readFile(filePath, "utf8");
@@ -256,8 +250,9 @@ export async function ackInboxMessage(cpbRoot, project, id, { owner } = {}) {
 }
 
 export async function completeInboxMessage(cpbRoot, project, id) {
+  if (!safeId(id)) return null;
   return withLock(cpbRoot, project, async () => {
-    const filePath = messagePath(cpbRoot, project, id);
+    const filePath = safeMessagePath(cpbRoot, project, id);
     let raw;
     try {
       raw = await readFile(filePath, "utf8");

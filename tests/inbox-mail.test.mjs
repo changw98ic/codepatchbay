@@ -232,4 +232,27 @@ describe("inbox-mail", () => {
     const results = await listInboxMessages(tmpDir, "no-such-proj");
     assert.equal(results.length, 0);
   });
+
+  it("rejects path traversal in message id", async () => {
+    const result = await readInboxMessage(tmpDir, "test-proj", "../secret");
+    assert.equal(result, null);
+    const ackResult = await ackInboxMessage(tmpDir, "test-proj", "../secret", { owner: "x" });
+    assert.equal(ackResult, null);
+    const completeResult = await completeInboxMessage(tmpDir, "test-proj", "../../../etc/passwd");
+    assert.equal(completeResult, null);
+  });
+
+  it("locator frontmatter round-trips correctly", async () => {
+    const msg = await writeInboxMessage(tmpDir, "test-proj", {
+      type: "plan",
+      from: "planner",
+      to: "executor",
+      jobId: "job-123",
+      locator: { eventLogPath: "/abs/path/events/job-123.jsonl", wikiPath: "/abs/wiki" },
+      content: "# Plan",
+    });
+
+    const read = await readInboxMessage(tmpDir, "test-proj", msg.id);
+    assert.deepEqual(read.locator, { eventLogPath: "/abs/path/events/job-123.jsonl", wikiPath: "/abs/wiki" });
+  });
 });
