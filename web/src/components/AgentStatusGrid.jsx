@@ -97,7 +97,7 @@ export default function AgentStatusGrid({ agents, onSelect, selectedAgent }) {
               </div>
 
               <div style={{ marginTop: 8, fontSize: 11, color: '#666' }}>
-                {agent.command} {agent.phases?.length > 0 && `| phases: ${agent.phases.join(', ')}`}
+                {agent.command} {agent.defaultRoles?.length > 0 && `| roles: ${agent.defaultRoles.join(', ')}`}
               </div>
             </div>
           </div>
