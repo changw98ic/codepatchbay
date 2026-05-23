@@ -1,6 +1,8 @@
 import { collectAgentMetrics, getAgentDetail, getAgentJobs } from "../services/agent-metrics.js";
 
 export function agentRoutes(fastify, opts, done) {
+  const notifBroadcast = fastify.notifBroadcast;
+
   // GET /api/agents — list all registered agents with status
   fastify.get("/agents", async (req, reply) => {
     const metrics = await collectAgentMetrics(req.cpbRoot);
@@ -20,11 +22,18 @@ export function agentRoutes(fastify, opts, done) {
     return { jobs };
   });
 
-  // GET /api/agents/:name/metrics — aggregated metrics
+  // GET /api/agents/:name/metrics — aggregated metrics (triggers WS broadcast)
   fastify.get("/agents/:name/metrics", async (req, reply) => {
     const agent = await getAgentDetail(req.cpbRoot, req.params.name);
     if (!agent) return reply.code(404).send({ error: `Agent '${req.params.name}' not found` });
-    return { name: agent.name, jobs: agent.jobs, pool: agent.pool, timestamp: new Date().toISOString() };
+
+    const payload = { name: agent.name, jobs: agent.jobs, pool: agent.pool, timestamp: new Date().toISOString() };
+
+    if (notifBroadcast) {
+      notifBroadcast({ type: "agent:metrics", agent: payload });
+    }
+
+    return payload;
   });
 
   done();

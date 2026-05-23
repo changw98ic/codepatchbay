@@ -96,6 +96,16 @@ app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
 app.register(agentRoutes, { prefix: '/api' });
 
+// Low-frequency agent status broadcast (every 30s)
+const { collectAgentMetrics } = await import('./services/agent-metrics.js');
+const agentStatusInterval = setInterval(async () => {
+  try {
+    const metrics = await collectAgentMetrics(CPB_ROOT);
+    broadcast({ type: 'agent:status', agents: metrics, ts: new Date().toISOString() });
+  } catch {}
+}, 30_000);
+agentStatusInterval.unref();
+
 // Serve pre-built web UI from web/dist/ when available (npx/production mode)
 const webDist = path.join(CPB_EXECUTOR_ROOT, 'web', 'dist');
 if (existsSync(webDist)) {
