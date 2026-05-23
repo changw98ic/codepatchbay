@@ -5,8 +5,8 @@ import {
   readCheckpoint,
   readEvents,
 } from "./event-store.js";
-import { getWorkflow } from "./workflow-definition.js";
-import { appendEvent } from "./runtime-events.js";
+import { getWorkflow } from "../../core/workflow/definition.js";
+import { appendEvent } from "./event-store.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);

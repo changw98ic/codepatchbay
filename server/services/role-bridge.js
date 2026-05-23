@@ -1,11 +1,11 @@
 import { loadProfile } from "./profile-loader.js";
 
 const ROLE_BRIDGE_MAP = {
-  planner: "planner.sh",
-  executor: "executor.sh",
-  verifier: "verifier.sh",
-  reviewer: "reviewer.sh",
-  repairer: "repairer.sh",
+  planner: "run-phase.mjs",
+  executor: "run-phase.mjs",
+  verifier: "run-phase.mjs",
+  reviewer: "run-phase.mjs",
+  repairer: "run-phase.mjs",
 };
 
 const ROLE_DISPATCH_MAP = {

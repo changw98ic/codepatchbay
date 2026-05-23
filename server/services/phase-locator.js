@@ -2,7 +2,7 @@ import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import { getJob } from "./job-store.js";
-import { getWorkflow } from "./workflow-definition.js";
+import { getWorkflow } from "../../core/workflow/definition.js";
 
 function validateName(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {

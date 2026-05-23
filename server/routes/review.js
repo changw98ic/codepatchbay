@@ -103,8 +103,8 @@ export async function reviewRoutes(fastify, opts) {
     const result = await spawnBridge(
       req.cpbRoot,
       session.project,
-      "run-pipeline.sh",
-      [session.project, session.intent, "3", "0", "standard", jobId],
+      "run-pipeline.mjs",
+      ["--project", session.project, "--task", session.intent, "--max-retries", "3", "--timeout-min", "0", "--workflow", "standard", "--job-id", jobId],
       req.log,
       jobId,
       { CPB_USE_WORKTREE: "1" },
@@ -171,8 +171,8 @@ export async function reviewRoutes(fastify, opts) {
     const spawnResult = await spawnBridge(
       req.cpbRoot,
       session.project,
-      "run-pipeline.sh",
-      [session.project, session.intent, "3", "0", "standard", jobId],
+      "run-pipeline.mjs",
+      ["--project", session.project, "--task", session.intent, "--max-retries", "3", "--timeout-min", "0", "--workflow", "standard", "--job-id", jobId],
       req.log,
       jobId,
       { CPB_USE_WORKTREE: "1" },

@@ -11,7 +11,7 @@ import {
 } from "../services/hub-registry.js";
 import { readProjectIndex, writeProjectIndex } from "../services/project-index.js";
 import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge-policy.js";
-import { getManagedAcpPool } from "../services/acp-pool-runtime.js";
+import { getManagedAcpPool } from "../../runtime/acp-pool.js";
 import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
 import { buildObservabilitySummary } from "../services/observability.js";
 import { buildTaskHistory } from "../services/task-history.js";

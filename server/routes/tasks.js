@@ -5,7 +5,7 @@ import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '
 import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
 import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
-import { resolveAcpLane } from '../services/acp-lane-policy.js';
+import { resolveAcpLane } from '../../core/acp/policy.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -58,7 +58,7 @@ export async function taskRoutes(fastify, opts) {
     const { task } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'planner.sh', [name, task], req.log, '', extraEnv);
+    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['plan', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--task', task], req.log, '', extraEnv);
   });
 
   // Trigger executor phase
@@ -67,7 +67,7 @@ export async function taskRoutes(fastify, opts) {
     const { planId } = req.body || {};
     if (!planId) throw fastify.httpErrors.badRequest('planId required');
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'executor.sh', [name, planId], req.log, '', extraEnv);
+    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['execute', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--plan-id', planId], req.log, '', extraEnv);
   });
 
   // Trigger verifier phase
@@ -76,7 +76,7 @@ export async function taskRoutes(fastify, opts) {
     const { deliverableId } = req.body || {};
     if (!deliverableId) throw fastify.httpErrors.badRequest('deliverableId required');
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'verifier.sh', [name, deliverableId], req.log, '', extraEnv);
+    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['verify', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--deliverable-id', deliverableId], req.log, '', extraEnv);
   });
 
   // Trigger full pipeline
@@ -90,12 +90,10 @@ export async function taskRoutes(fastify, opts) {
     }
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
     // Preserve ACP lane fields from API request (issue #62)
-    // Slot 6 is JOB_ID in run-pipeline.sh — pass empty for no override
-    const pipelineArgs = [name, task, maxRetries, timeout, workflow];
-    if (acpProfile || uiLaneReason) pipelineArgs.push('');
+    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow];
     if (acpProfile) pipelineArgs.push('--acp-profile', acpProfile);
     if (uiLaneReason) pipelineArgs.push('--ui-lane-reason', uiLaneReason);
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.sh', pipelineArgs, req.log, '', extraEnv);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.mjs', pipelineArgs, req.log, '', extraEnv);
   });
 
   // Cancel a running job
@@ -127,10 +125,12 @@ const MAX_TAIL_BYTES = 65536; // 64KB tail buffer
 export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = '', extraEnv = {}) {
   const scriptPath = path.join(cpbRoot, 'bridges', script);
   const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
+  const isMjs = script.endsWith('.mjs');
+  const command = isMjs ? 'node' : 'bash';
 
   let child;
   try {
-    child = spawn('bash', [scriptPath, ...args], {
+    child = spawn(command, [scriptPath, ...args], {
       cwd: cpbRoot,
       env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv }),
       stdio: ['ignore', 'pipe', 'pipe'],

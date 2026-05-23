@@ -30,12 +30,12 @@ import {
   wikiLogPath,
   dashboardPath,
 } from "../server/services/artifact-locator.js";
-import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
-import { isWorkflowName, listWorkflows } from "../server/services/workflow-definition.js";
-import { applyVariant } from "./apply-variant.mjs";
+import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
+import { isWorkflowName, listWorkflows } from "../core/workflow/definition.js";
+import { applyVariant } from "../runtime/apply-variant.js";
 import { runRepair, completeRepair } from "../server/services/repair-handler.js";
-import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
-import { recordUiEscalations } from "./record-ui-escalation.mjs";
+import { resolveAcpLane } from "../core/acp/policy.js";
+import { recordUiEscalations } from "../runtime/record-ui-escalation.js";
 import { validateNonEmptyMarkdownArtifact, resolveDeliverableIssue, validateIssueMatch } from "../server/services/artifact-integrity.js";
 
 // --- CLI arg parsing ---
@@ -567,7 +567,89 @@ async function handleRepair(args) {
   return 0;
 }
 
-// --- Main ---
+// --- Exported API (for Node.js CLI consumption) ---
+
+export async function runPhase(phase, {
+  executorRoot,
+  cpbRoot,
+  project,
+  task,
+  planId,
+  deliverableId,
+  jobId,
+  verdictFile,
+  workflow = "",
+  acpProfile = null,
+  uiLaneReason = "",
+} = {}) {
+  const resolvedExecutorRoot = path.resolve(executorRoot || process.env.CPB_EXECUTOR_ROOT || path.resolve(path.dirname(import.meta.url.replace("file://", "")), ".."));
+  const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || resolvedExecutorRoot);
+
+  if (!project || !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
+    throw new Error(`invalid project name: ${project}`);
+  }
+  if (workflow && !isWorkflowName(workflow)) {
+    throw new Error(`invalid workflow: ${workflow} (valid: ${listWorkflows().join(", ")})`);
+  }
+
+  // Propagate env
+  process.env.CPB_EXECUTOR_ROOT = resolvedExecutorRoot;
+  process.env.CPB_ROOT = resolvedCpbRoot;
+  if (workflow) process.env.CPB_WORKFLOW = workflow;
+
+  // Permission matrix context for ACP enforcement
+  const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+  process.env.CPB_ACP_ROLE = roleMap[phase] || "";
+  process.env.CPB_ACP_PROJECT = project;
+  process.env.CPB_ACP_PHASE = phase;
+  const resolvedJobId = process.env.CPB_ACP_JOB_ID || process.env.CPB_JOB_ID || jobId || deliverableId || planId || "";
+  if (resolvedJobId) process.env.CPB_ACP_JOB_ID = resolvedJobId;
+  process.env.CPB_ACP_CPB_ROOT = resolvedCpbRoot;
+
+  // ACP lane resolution (issue #62)
+  const acpProfileOverride = acpProfile || process.env.CPB_ACP_LAUNCH_PROFILE;
+  const resolvedUiLaneReason = uiLaneReason || process.env.CPB_ACP_UI_LANE_REASON || "";
+  const lane = resolveAcpLane({ profile: acpProfileOverride, uiLane: acpProfileOverride === "ui", uiLaneReason: resolvedUiLaneReason });
+  if (lane.error) {
+    throw new Error(`ACP lane error: ${lane.error}`);
+  }
+  process.env.CPB_ACP_LAUNCH_PROFILE = lane.profile;
+  process.env.CPB_ACP_UI_LANE = lane.uiLane ? "1" : "0";
+  if (lane.uiLaneReason) process.env.CPB_ACP_UI_LANE_REASON = lane.uiLaneReason;
+
+  // Set ACP cwd
+  if (!process.env.CPB_ACP_CWD && !process.env.CPB_PROJECT_PATH_OVERRIDE) {
+    try {
+      const metaFile = path.join(resolvedCpbRoot, "wiki", "projects", project, "project.json");
+      const meta = JSON.parse(await readFile(metaFile, "utf8"));
+      if (meta.sourcePath) process.env.CPB_ACP_CWD = meta.sourcePath;
+    } catch {}
+  }
+
+  const options = new Map();
+  if (task) options.set("--task", task);
+  if (planId) options.set("--plan-id", planId);
+  if (deliverableId) options.set("--deliverable-id", deliverableId);
+  if (jobId) options.set("--job-id", jobId);
+  if (verdictFile) options.set("--verdict-file", verdictFile);
+  if (workflow) options.set("--workflow", workflow);
+  if (acpProfile) options.set("--acp-profile", acpProfile);
+  if (uiLaneReason) options.set("--ui-lane-reason", uiLaneReason);
+
+  const parsed = { phase, executorRoot: resolvedExecutorRoot, cpbRoot: resolvedCpbRoot, project, workflow, options };
+
+  switch (phase) {
+    case "plan": return await handlePlan(parsed);
+    case "execute": return await handleExecute(parsed);
+    case "verify": return await handleVerify(parsed);
+    case "review": return await handleReview(parsed);
+    case "repair": return await handleRepair(parsed);
+    default:
+      throw new Error(`Unknown phase: ${phase}`);
+  }
+}
+
+// --- Main (CLI entry) ---
 
 async function main() {
   const rawArgs = process.argv.slice(2);
@@ -636,4 +718,9 @@ async function main() {
   }
 }
 
-process.exitCode = await main();
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+
+if (realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
+  process.exitCode = await main();
+}

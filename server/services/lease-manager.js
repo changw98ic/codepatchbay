@@ -138,7 +138,7 @@ async function writeLockMetadata(lockDir) {
   );
 }
 
-async function withLeaseLock(file, callback, { lockTtlMs } = {}) {
+async function acquireLeaseFileLock(file, { lockTtlMs } = {}) {
   const lockDir = `${file}.lock`;
   let acquired = false;
   const effectiveLockTtlMs = lockTtlMsFor(lockTtlMs);
@@ -169,10 +169,17 @@ async function withLeaseLock(file, callback, { lockTtlMs } = {}) {
     throw new Error(`lease lock busy: ${path.basename(file)}`);
   }
 
+  return async () => {
+    await rm(lockDir, { recursive: true, force: true });
+  };
+}
+
+async function withLeaseLock(file, callback, { lockTtlMs } = {}) {
+  const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
   try {
     return await callback();
   } finally {
-    await rm(lockDir, { recursive: true, force: true });
+    await releaseLock();
   }
 }
 
@@ -236,22 +243,21 @@ export async function acquireLease(
     }
   }
 
-  return await withLeaseLock(
-    file,
-    async () => {
-      const existing = await readLeaseFile(file);
-      if (existing !== null && !isLeaseStale(existing, now)) {
-        const err = new Error(`lease already exists: ${leaseId}`);
-        err.code = "EEXIST";
-        throw err;
-      }
+  const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
+  try {
+    const existing = await readLeaseFile(file);
+    if (existing !== null && !isLeaseStale(existing, now)) {
+      const err = new Error(`lease already exists: ${leaseId}`);
+      err.code = "EEXIST";
+      throw err;
+    }
 
-      await atomicWriteJson(file, lease);
-      rememberOwnerToken(cpbRoot, leaseId, lease.ownerToken);
-      return lease;
-    },
-    { lockTtlMs }
-  );
+    await atomicWriteJson(file, lease);
+    rememberOwnerToken(cpbRoot, leaseId, lease.ownerToken);
+    return lease;
+  } finally {
+    await releaseLock();
+  }
 }
 
 export async function readLease(cpbRoot, leaseId, { dataRoot } = {}) {
@@ -319,20 +325,19 @@ export async function releaseLease(
 ) {
   const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
 
-  await withLeaseLock(
-    file,
-    async () => {
-      const existing = await readLeaseFile(file);
-      if (existing === null) {
-        return;
-      }
+  const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
+  try {
+    const existing = await readLeaseFile(file);
+    if (existing === null) {
+      return;
+    }
 
-      const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
-      assertLeaseOwner(existing, effectiveOwnerToken);
+    const effectiveOwnerToken = ownerTokenFor(cpbRoot, leaseId, ownerToken);
+    assertLeaseOwner(existing, effectiveOwnerToken);
 
-      await rm(file);
-      forgetOwnerToken(cpbRoot, leaseId, existing.ownerToken);
-    },
-    { lockTtlMs }
-  );
+    await rm(file);
+    forgetOwnerToken(cpbRoot, leaseId, existing.ownerToken);
+  } finally {
+    await releaseLock();
+  }
 }

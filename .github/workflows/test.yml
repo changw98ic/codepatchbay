@@ -33,23 +33,11 @@ jobs:
       - name: Run Rust tests
         run: cd runtime && cargo test
 
-      - name: Runtime adapter contract
-        run: |
-          cd runtime
-          cargo build
-          cd ..
-          CPB_RUNTIME=rust CPB_RUNTIME_BIN="$PWD/runtime/target/debug/cpb-runtime" node --test tests/runtime-adapter-contract.test.mjs
-
       - name: Run web tests
         run: cd web && npm test -- --run
 
-      - name: Run unit tests
+      - name: Run Node tests
         run: npm run test:node
-
-      - name: Run bash integration tests
-        run: |
-          chmod +x bridges/*.sh tests/*.sh
-          npm run test:shell
 
       - name: Build web UI
         run: npm run build:web
@@ -71,17 +59,8 @@ jobs:
       - name: Check Rust
         run: cd runtime && cargo check
 
-      - name: Check bash scripts syntax
-        run: |
-          for f in bridges/*.sh tests/*.sh; do
-            bash -n "$f" || exit 1
-          done
-
       - name: Check node scripts syntax
         run: |
-          for f in bridges/*.mjs tests/*.mjs; do
-            node --check "$f" || exit 1
-          done
-          for f in server/index.js server/routes/*.js server/services/*.js; do
+          find bridges cli core runtime server -name '*.js' -o -name '*.mjs' | while read -r f; do
             node --check "$f" || exit 1
           done

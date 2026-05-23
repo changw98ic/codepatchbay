@@ -2,7 +2,7 @@ import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { listEventFiles, readEvents, materializeJob, repairEventFile } from "./event-store.js";
-import { appendEvent } from "./runtime-events.js";
+import { appendEvent } from "./event-store.js";
 import { readLease, releaseLease, isLeaseStale } from "./lease-manager.js";
 import { listJobs, failJob, blockJob } from "./job-store.js";
 import { rebuildJobsIndex, readJobsIndex } from "./jobs-index.js";

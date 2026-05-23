@@ -5,7 +5,7 @@ import {
   phaseRequiresSubagents,
   getVerificationLayers,
   getSubagentConfig,
-} from "./workflow-definition.js";
+} from "../../core/workflow/definition.js";
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
 import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { readCompactProjectCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";

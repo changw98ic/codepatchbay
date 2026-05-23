@@ -9,12 +9,12 @@ import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "./delete-guard.mjs";
+} from "../runtime/delete-guard.js";
 import {
   headlessCodexConfigArgs,
   classifyUiToolRequest,
   mergeHeadlessDenyTools,
-} from "../server/services/acp-lane-policy.js";
+} from "../core/acp/policy.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;

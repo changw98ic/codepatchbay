@@ -1,5 +1,5 @@
 import path from "node:path";
-import { appendEvent } from "./runtime-events.js";
+import { appendEvent } from "./event-store.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
 const ROLES = new Set(["planner", "executor", "verifier", "repairer", "reviewer"]);

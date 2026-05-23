@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
-import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
+import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "../../core/workflow/definition.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "./executor-root.js";
 import { buildChildEnv } from "./secret-policy.js";
 import { recoverAsNewJob } from "./job-recovery.js";
@@ -155,28 +155,28 @@ export function bridgeForPhase(phase, project, job) {
   switch (phase) {
     case "plan":
       return {
-        script: path.join(bridgesDir, "planner.sh"),
-        args: [project, job.task ?? ""],
+        script: path.join(bridgesDir, "run-phase.mjs"),
+        args: ["plan", "--project", project, "--task", job.task ?? ""],
       };
     case "execute": {
       const planId = artifactId(job.artifacts?.plan, "plan");
       return {
-        script: path.join(bridgesDir, "executor.sh"),
-        args: [project, planId],
+        script: path.join(bridgesDir, "run-phase.mjs"),
+        args: ["execute", "--project", project, "--plan-id", planId],
       };
     }
     case "verify": {
       const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
-        script: path.join(bridgesDir, "verifier.sh"),
-        args: deliverableId ? [project, deliverableId] : [project, "--job-id", job.jobId],
+        script: path.join(bridgesDir, "run-phase.mjs"),
+        args: deliverableId ? ["verify", "--project", project, "--deliverable-id", deliverableId] : ["verify", "--project", project, "--job-id", job.jobId],
       };
     }
     case "review": {
       const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
       return {
-        script: path.join(bridgesDir, "reviewer.sh"),
-        args: [project, deliverableId],
+        script: path.join(bridgesDir, "run-phase.mjs"),
+        args: ["review", "--project", project, "--deliverable-id", deliverableId],
       };
     }
     case "complete":

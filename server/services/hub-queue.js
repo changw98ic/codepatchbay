@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { buildMeta } from "./execution-meta.js";
+import { buildMeta } from "../../core/job/meta.js";
 import { ensureIndexFresh } from "./index-freshness.js";
 
 

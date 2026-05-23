@@ -9,12 +9,12 @@ import { buildChildEnv } from "../services/secret-policy.js";
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 function spawnPipeline(cpbRoot, project, task, log) {
-  const scriptPath = path.join(cpbRoot, "bridges", "run-pipeline.sh");
+  const scriptPath = path.join(cpbRoot, "bridges", "run-pipeline.mjs");
   const taskId = `channel:${project}:pipeline:${Date.now()}`;
 
   let child;
   try {
-    child = spawn("bash", [scriptPath, project, task, "3", "0"], {
+    child = spawn("node", [scriptPath, "--project", project, "--task", task, "--max-retries", "3", "--timeout-min", "0"], {
       cwd: cpbRoot,
       env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" }),
       stdio: ["ignore", "pipe", "pipe"],
@@ -47,7 +47,7 @@ function spawnPipeline(cpbRoot, project, task, log) {
       if (settled) return;
       settled = true;
       registered = true;
-      registerTask(taskId, project, "run-pipeline.sh", child.pid);
+      registerTask(taskId, project, "run-pipeline.mjs", child.pid);
       resolve({ accepted: true, taskId, pid: child.pid });
     });
 
@@ -64,7 +64,7 @@ function spawnPipeline(cpbRoot, project, task, log) {
 
     child.on("exit", (code) => {
       if (registered) unregisterTask(taskId);
-      broadcast({ type: "task:complete", taskId, project, script: "run-pipeline.sh", exitCode: code, output });
+      broadcast({ type: "task:complete", taskId, project, script: "run-pipeline.mjs", exitCode: code, output });
       log?.info(`Channel pipeline ${taskId} exited with code ${code}`);
     });
   });

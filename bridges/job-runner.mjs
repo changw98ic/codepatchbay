@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { appendEvent } from "../server/services/runtime-events.js";
+import { appendEvent } from "../server/services/event-store.js";
 import {
   acquireLease,
   releaseLease,
@@ -12,7 +12,7 @@ import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "./delete-guard.mjs";
+} from "../runtime/delete-guard.js";
 import {
   registerProcess,
   updateHeartbeat as updateProcessHeartbeat,
@@ -335,7 +335,7 @@ async function main() {
       CPB_ACP_UI_LANE_REASON: process.env.CPB_ACP_UI_LANE_REASON || "",
     };
     const activity = createActivityTracker(cpbRoot, project, jobId);
-    childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {
+    childResult = await runChild(script.endsWith('.mjs') ? 'node' : script, script.endsWith('.mjs') ? [script, ...scriptArgs] : scriptArgs, cpbRoot, (output) => {
       const line = output.trim();
       if (line) activity.track(line);
     }, {
@@ -451,4 +451,9 @@ async function main() {
   return childResult.exitCode;
 }
 
-process.exitCode = await main();
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+
+if (realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
+  process.exitCode = await main();
+}

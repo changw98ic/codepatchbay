@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { buildMeta } from "./execution-meta.js";
+import { buildMeta } from "../../core/job/meta.js";
 
 function nowIso() {
   return new Date().toISOString();

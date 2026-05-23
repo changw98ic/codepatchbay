@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
 import { getJob } from "./job-store.js";
-import { getWorkflow, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
+import { getWorkflow, bridgeForPhase as workflowBridgeForPhase } from "../../core/workflow/definition.js";
 import { checkPermission } from "./permission-matrix.js";
 import {
   HOOK_POINTS,
@@ -37,11 +37,7 @@ export function resetHooksForTest() {
 
 export function roleForBridge(scriptPath) {
   const base = path.basename(scriptPath);
-  if (base === "planner.sh") return "planner";
-  if (base === "executor.sh") return "executor";
-  if (base === "repairer.sh") return "repairer";
-  if (base === "verifier.sh") return "verifier";
-  if (base === "reviewer.sh") return "reviewer";
+  if (base === "run-phase.mjs") return "run-phase";
   return null;
 }
 
@@ -187,7 +183,6 @@ export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, sc
   const bridgeScript = path.isAbsolute(script)
     ? script
     : path.join(resolvedExecutorRoot, script);
-
   const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
   if (!await fileExists(jobRunner)) {
     return {

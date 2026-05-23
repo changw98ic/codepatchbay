@@ -273,8 +273,8 @@ export async function projectRoutes(fastify, opts) {
 
     try {
       const { stdout } = await execFileAsync(
-        req.cpbRoot + '/bridges/init-project.sh',
-        [validation.resolved, name],
+        'node',
+        [req.cpbRoot + '/bridges/init-project.mjs', validation.resolved, name],
         { timeout: 10000, cwd: req.cpbRoot }
       );
       return { success: true, output: stdout };

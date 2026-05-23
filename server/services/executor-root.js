@@ -2,10 +2,14 @@ import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 export const REQUIRED_EXECUTOR_FILES = [
-  "bridges/common.sh",
+  "cpb",
+  "cli/cpb.mjs",
+  "bridges/run-phase.mjs",
   "bridges/run-pipeline.mjs",
   "bridges/project-worker.mjs",
   "bridges/job-runner.mjs",
+  "core/workflow/definition.js",
+  "runtime/evolve/multi-evolve.js",
   "server/services/job-store.js",
 ];
 

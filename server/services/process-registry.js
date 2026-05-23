@@ -158,7 +158,7 @@ export async function stopProcess(cpbRoot, jobId) {
   async function audit(type, extra = {}) {
     if (!project) return;
     try {
-      const { appendEvent } = await import("./runtime-events.js");
+      const { appendEvent } = await import("./event-store.js");
       await appendEvent(cpbRoot, project, jobId, { type, jobId, project, runnerPid: entry.runnerPid, ts, ...extra });
     } catch {}
   }

@@ -20,7 +20,7 @@ import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
-import { sanitizeProviderReason } from "../../bridges/acp-pool.mjs";
+import { sanitizeProviderReason } from "../../runtime/acp-pool.js";
 import { scanHubPollution } from "./project-pollution.js";
 import {
   resolveReleaseStoreRoot,
@@ -390,18 +390,6 @@ async function checkHubProjectPollution(hubRoot) {
 
 // --- Orchestrator ---
 
-async function checkCommonSh(cpbRoot) {
-  const shPath = path.join(path.resolve(cpbRoot), "bridges", "common.sh");
-  try {
-    await access(shPath, fsConstants.R_OK);
-    return ok("common-sh", "toolchain", "bridges/common.sh present");
-  } catch {
-    return warn("common-sh", "toolchain", "bridges/common.sh not found", {
-      remediation: "Ensure the cpb installation includes bridges/common.sh.",
-    });
-  }
-}
-
 async function checkServerDeps(cpbRoot) {
   const nmPath = path.join(path.resolve(cpbRoot), "server", "node_modules");
   try {
@@ -425,7 +413,6 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkNode(),
     checkNpm(),
     checkGit(),
-    checkCommonSh(resolvedCpbRoot),
     checkServerDeps(resolvedCpbRoot),
     checkDiskSpace(resolvedCpbRoot, "project"),
     checkDiskSpace(resolvedHubRoot, "hub"),

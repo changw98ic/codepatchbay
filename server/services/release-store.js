@@ -15,10 +15,14 @@ const STATE_FORMAT_KEYS = [
 
 const ALLOWED_ASSETS = [
   "bridges",
+  "cli",
+  "core",
+  "runtime",
   "server",
   "profiles",
   "templates",
   "package.json",
+  "package-lock.json",
   "cpb",
 ];
 
@@ -27,7 +31,9 @@ const EXCLUDED_COPY_NAMES = new Set([
   ".git",
   "cpb-task",
   ".omx",
+  ".omc",
   "omx_wiki",
+  "providers",
 ]);
 
 const EXCLUDED_WIKI_PROJECTS = new Set([
@@ -93,6 +99,7 @@ function generateDefaultReleaseId(codeVersion, now) {
 function copyFilter(source) {
   const base = path.basename(source);
   if (EXCLUDED_COPY_NAMES.has(base)) return false;
+  if (base === "target" && source.includes(`${path.sep}runtime${path.sep}`)) return false;
   return true;
 }
 

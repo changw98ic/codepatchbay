@@ -8,10 +8,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
-import { appendEvent } from "../server/services/runtime-events.js";
+import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
-import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
+import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
   completeJob,
   completePhase,
@@ -22,7 +22,7 @@ import {
   failJob,
   getJob,
 } from "../server/services/job-store.js";
-import { bridgeForPhase, getWorkflow, isWorkflowName } from "../server/services/workflow-definition.js";
+import { bridgeForPhase, getWorkflow, isWorkflowName } from "../core/workflow/definition.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
 import {
   dispatchEnabled,
@@ -33,9 +33,9 @@ import {
   markDispatchStarted,
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
-import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
+import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
-import { resolveAcpLane } from "../server/services/acp-lane-policy.js";
+import { resolveAcpLane } from "../core/acp/policy.js";
 import {
   validateNonEmptyMarkdownArtifact,
   resolveDeliverableIssue,
@@ -473,7 +473,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   const result = await runCommand(
     process.execPath,
     [
-      path.join(executorRoot, "bridges", "worktree-manager.mjs"),
+      path.join(executorRoot, "runtime", "git", "worktree.js"),
       "create",
       "--project",
       sourcePath,
@@ -519,22 +519,25 @@ async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
   return { cancelled: false, redirect };
 }
 
-// ─── Main pipeline ───
+// ─── Exported API (for Node.js CLI consumption) ───
 
-async function main() {
-  let parsed;
-  try {
-    parsed = parseArgs(process.argv);
-  } catch (err) {
-    console.error(`${err.message}`);
-    return 1;
-  }
-
-  const { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId: providedDispatchId, acpProfile, uiLaneReason } = parsed;
-  let { sourcePath } = parsed;
+export async function runPipeline({
+  project,
+  task,
+  maxRetries = 3,
+  timeoutMin = 0,
+  workflow = "standard",
+  jobIdOverride = null,
+  dispatchId: providedDispatchId = null,
+  acpProfile = null,
+  uiLaneReason = "",
+  sourcePath: rawSourcePath = null,
+  executorRoot: providedExecutorRoot = null,
+  cpbRoot: providedCpbRoot = null,
+} = {}) {
   const defaultExecutorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const executorRoot = resolveExecutorRoot({ fallbackRoot: defaultExecutorRoot });
-  const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultExecutorRoot);
+  const executorRoot = resolveExecutorRoot({ fallbackRoot: providedExecutorRoot || defaultExecutorRoot });
+  const cpbRoot = path.resolve(providedCpbRoot || process.env.CPB_ROOT || defaultExecutorRoot);
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
   process.env.CPB_WORKFLOW = workflow;
@@ -542,19 +545,15 @@ async function main() {
   // ACP lane resolution (issue #62)
   const lane = resolveAcpLane({ profile: acpProfile || process.env.CPB_ACP_LAUNCH_PROFILE, uiLane: acpProfile === "ui", uiLaneReason });
   if (lane.error) {
-    console.error(`ACP lane error: ${lane.error}`);
-    return 1;
+    throw new Error(`ACP lane error: ${lane.error}`);
   }
   process.env.CPB_ACP_LAUNCH_PROFILE = lane.profile;
   process.env.CPB_ACP_UI_LANE = lane.uiLane ? "1" : "0";
   if (lane.uiLaneReason) process.env.CPB_ACP_UI_LANE_REASON = lane.uiLaneReason;
+
+  let sourcePath = rawSourcePath;
   if (sourcePath) {
-    try {
-      sourcePath = await canonicalSourcePath(sourcePath);
-    } catch (err) {
-      console.error(err.message);
-      return 1;
-    }
+    sourcePath = await canonicalSourcePath(sourcePath);
     process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
     process.env.CPB_ACP_CWD = sourcePath;
     await ensureWikiProjectBoundary(cpbRoot, project, sourcePath);
@@ -730,7 +729,7 @@ async function main() {
     const planResult = await dispatchPhase(cpbRoot, {
       project, jobId, phase: "plan",
       script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
-      scriptArgs: [project, task],
+      scriptArgs: ["plan", "--project", project, "--task", task],
       executorRoot,
       env: executorEnv(process.env, { cpbRoot, executorRoot }),
       terminalOnFailure: false,
@@ -829,7 +828,7 @@ async function main() {
         project, jobId,
         phase: `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
         script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-        scriptArgs: [project, planId],
+        scriptArgs: ["execute", "--project", project, "--plan-id", planId],
         executorRoot,
         env: executorEnv(process.env, { cpbRoot, executorRoot }),
         terminalOnFailure: false,
@@ -891,7 +890,7 @@ async function main() {
         const reviewResult = await dispatchPhase(cpbRoot, {
           project, jobId, phase: reviewPhaseName,
           script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-          scriptArgs: [project, deliverableId],
+          scriptArgs: ["review", "--project", project, "--deliverable-id", deliverableId],
           executorRoot,
           env: executorEnv(process.env, { cpbRoot, executorRoot }),
           terminalOnFailure: false,
@@ -936,7 +935,7 @@ async function main() {
         const fixResult = await dispatchPhase(cpbRoot, {
           project, jobId, phase: fixPhaseName,
           script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: [project, planId, reviewPath],
+          scriptArgs: ["execute", "--project", project, "--plan-id", planId],
           executorRoot,
           env: executorEnv(process.env, { cpbRoot, executorRoot }),
           terminalOnFailure: false,
@@ -1014,7 +1013,7 @@ async function main() {
       log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
 
       const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
-      const verifyArgs = deliverableId ? [project, deliverableId] : [project, "--job-id", jobId];
+      const verifyArgs = deliverableId ? ["verify", "--project", project, "--deliverable-id", deliverableId] : ["verify", "--project", project, "--job-id", jobId];
       if (planId) verifyArgs.push("--plan-id", planId);
       await dispatchPhase(cpbRoot, {
         project, jobId, phase: verifyPhaseName,
@@ -1101,7 +1100,7 @@ async function main() {
         const fixResult = await dispatchPhase(cpbRoot, {
           project, jobId, phase: fixPhaseName,
           script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: [project, planId, verdictPath],
+          scriptArgs: ["execute", "--project", project, "--plan-id", planId],
           executorRoot,
           env: executorEnv(process.env, { cpbRoot, executorRoot }),
           terminalOnFailure: false,
@@ -1146,7 +1145,7 @@ async function main() {
               const reviewResult = await dispatchPhase(cpbRoot, {
                 project, jobId, phase: reviewPhaseName,
                 script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-                scriptArgs: [project, deliverableId],
+                scriptArgs: ["review", "--project", project, "--deliverable-id", deliverableId],
                 executorRoot,
                 env: executorEnv(process.env, { cpbRoot, executorRoot }),
                 terminalOnFailure: false,
@@ -1191,7 +1190,7 @@ async function main() {
               const reviewFixResult = await dispatchPhase(cpbRoot, {
                 project, jobId, phase: reviewFixPhaseName,
                 script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-                scriptArgs: [project, planId, reviewPath],
+                scriptArgs: ["execute", "--project", project, "--plan-id", planId],
                 executorRoot,
                 env: executorEnv(process.env, { cpbRoot, executorRoot }),
                 terminalOnFailure: false,
@@ -1273,6 +1272,25 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// ─── Main (CLI entry) ───
+
+async function main() {
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv);
+  } catch (err) {
+    console.error(`${err.message}`);
+    return 1;
+  }
+  try {
+    return await runPipeline(parsed);
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
+}
+import { realpathSync } from "node:fs";
+
+if (realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
   process.exitCode = await main();
 }

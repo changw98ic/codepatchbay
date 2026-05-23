@@ -1,12 +1,5 @@
-import { readFile, rm } from "node:fs/promises";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
-import {
-  loadState,
-  appendHistory,
-  loadBacklog,
-  saveState,
-} from "../services/evolve-state.js";
 import { listProjects, resolveHubRoot } from "../services/hub-registry.js";
 import {
   loadProjectState as loadMultiProjectState,
@@ -15,12 +8,7 @@ import {
 import { buildChildEnv } from "../services/secret-policy.js";
 
 let activeProcess = null;
-let activeMultiProcess = null;
 
-// Promise-based mutex to prevent concurrent /evolve/start spawns.
-// Without this, two simultaneous requests can both pass resolveRunningState()
-// before either sets activeProcess, resulting in duplicate child processes
-// and a stale activeProcess reference.
 class Mutex {
   #queue = Promise.resolve();
   acquire() {
@@ -33,7 +21,21 @@ class Mutex {
 }
 const startMutex = new Mutex();
 
-const leaseMetaPath = (cpbRoot) => path.join(cpbRoot, "cpb-task", "self-evolve", ".controller-lock", "meta.json");
+function evolveScriptPath(cpbRoot) {
+  return path.join(cpbRoot, "bridges", "multi-evolve.mjs");
+}
+
+function isEvolutionProcess(pid) {
+  try {
+    const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 2000,
+    }).trim();
+    return cmd.includes("multi-evolve.mjs");
+  } catch {
+    return false;
+  }
+}
 
 function isPidAlive(pid) {
   try {
@@ -45,258 +47,10 @@ function isPidAlive(pid) {
   }
 }
 
-function isSelfEvolveProcess(pid) {
-  try {
-    const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-      encoding: "utf8",
-      timeout: 2000,
-    }).trim();
-    return cmd.includes("self-evolve.mjs");
-  } catch {
-    return false;
-  }
-}
-
-async function getControllerLease(cpbRoot) {
-  try {
-    const raw = await readFile(leaseMetaPath(cpbRoot), "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function getRunningController(cpbRoot) {
-  const lease = await getControllerLease(cpbRoot);
-  const leasedPid = lease?.pid ? Number(lease.pid) : null;
-  if (leasedPid && isPidAlive(leasedPid)) {
-    return { pid: leasedPid, source: "lease", startedAt: lease.startedAt || null };
-  }
-
-  return null;
-}
-
-async function resolveRunningState(cpbRoot) {
-  if (activeProcess) {
-    return { running: true, pid: activeProcess.pid, source: "ui-process", startedAt: null };
-  }
-
-  const lease = await getRunningController(cpbRoot);
-  if (!lease) return { running: false, pid: null, source: null, startedAt: null };
-  return { ...lease, running: true };
-}
-
-function evolveScriptPath(cpbRoot) {
-  return path.join(cpbRoot, "bridges", "self-evolve.mjs");
-}
-
-function multiEvolveScriptPath(cpbRoot) {
-  return path.join(cpbRoot, "bridges", "multi-evolve.mjs");
-}
-
-async function readHistory(cpbRoot) {
-  const filePath = path.join(cpbRoot, "cpb-task", "self-evolve", "history.jsonl");
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-  } catch (err) {
-    if (err && err.code === "ENOENT") return [];
-    throw err;
-  }
-}
-
-function toResponseState(state, runningState) {
-  return {
-    status: state.status,
-    round: state.round,
-    maxRounds: state.maxRounds,
-    knownGoodCommit: state.knownGoodCommit,
-    running: runningState.running,
-    pid: runningState.pid,
-    source: runningState.source,
-    leaseStartedAt: runningState.startedAt,
-    updatedAt: state.updatedAt,
-  };
-}
-
 export async function evolveRoutes(fastify, opts) {
-  const getState = async (req) => {
-    const state = await loadState(req.cpbRoot);
-    const runningState = await resolveRunningState(req.cpbRoot);
-    return toResponseState(state, runningState);
-  };
+  // ── Generic evolution endpoints ──
 
   fastify.get("/evolve/status", async (req) => {
-    return getState(req);
-  });
-
-  fastify.get("/evolve/history", async (req) => {
-    return readHistory(req.cpbRoot);
-  });
-
-  fastify.post("/evolve/start", async (req, res) => {
-    // Fast-path check outside lock to avoid contention on the common case
-    const quickCheck = await resolveRunningState(req.cpbRoot);
-    if (quickCheck.running) {
-      throw fastify.httpErrors.conflict("self-evolve already running");
-    }
-
-    const release = await startMutex.acquire();
-    try {
-      // Authoritative double-check inside the critical section
-      const runningState = await resolveRunningState(req.cpbRoot);
-      if (runningState.running) {
-        throw fastify.httpErrors.conflict("self-evolve already running");
-      }
-
-      const state = await loadState(req.cpbRoot);
-      const backlog = await loadBacklog(req.cpbRoot);
-      const isIdle = !state.status || state.status === "idle" || state.status === "stopped" || state.status === "completed" || state.status === "error" || state.status === "failed";
-      if (!isIdle && state.status !== "running" && state.round > 0) {
-        throw fastify.httpErrors.conflict(`cannot start while status is ${state.status}`);
-      }
-
-      const script = evolveScriptPath(req.cpbRoot);
-      let child;
-      try {
-        child = spawn("node", [script], {
-          cwd: req.cpbRoot,
-          env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot }),
-          stdio: ["ignore", "pipe", "pipe"],
-          detached: false,
-        });
-        activeProcess = child;
-      } catch (err) {
-        state.status = "failed";
-        await saveState(req.cpbRoot, state);
-        throw fastify.httpErrors.internalServerError(`spawn failed: ${err.message}`);
-      }
-
-      state.status = "starting";
-      await saveState(req.cpbRoot, state);
-
-      child.on("error", (err) => {
-        (async () => {
-          const s = await loadState(req.cpbRoot);
-          if (s.status === "starting") {
-            s.status = "failed";
-            await saveState(req.cpbRoot, s);
-          }
-          if (activeProcess === child) activeProcess = null;
-          process.stderr.write(`[self-evolve] spawn error: ${err.message}\n`);
-        })().catch((writeErr) => {
-          if (activeProcess === child) activeProcess = null;
-          process.stderr.write(`[self-evolve] failed to record spawn error: ${writeErr.message}\n`);
-        });
-      });
-
-      child.stdout.on("data", (chunk) => {
-        process.stdout.write(`[self-evolve] ${chunk}`);
-      });
-      child.stderr.on("data", (chunk) => {
-        process.stderr.write(`[self-evolve] ${chunk}`);
-      });
-      child.on("exit", (code) => {
-        if (code !== 0) {
-          (async () => {
-            const s = await loadState(req.cpbRoot);
-            if (s.status === "starting") {
-              s.status = "failed";
-              await saveState(req.cpbRoot, s);
-            }
-            if (activeProcess === child) activeProcess = null;
-          })().catch((err) => {
-            if (activeProcess === child) activeProcess = null;
-            process.stderr.write(`[self-evolve] failed to record exit state: ${err.message}\n`);
-          });
-        } else if (activeProcess === child) {
-          activeProcess = null;
-        }
-      });
-
-      await appendHistory(req.cpbRoot, {
-        action: "start",
-        source: "ui",
-        backlog: backlog.length,
-      });
-
-      res.code(202);
-      return { accepted: true, pid: child.pid, status: toResponseState(await loadState(req.cpbRoot), await resolveRunningState(req.cpbRoot)) };
-    } finally {
-      release();
-    }
-  });
-
-  fastify.post("/evolve/stop", async (req) => {
-    const runningState = await resolveRunningState(req.cpbRoot);
-    if (!runningState.running) {
-      return { stopped: false, reason: "not_running" };
-    }
-
-    const logCtx = {
-      pid: runningState.pid,
-      source: runningState.source,
-      leaseStartedAt: runningState.startedAt,
-    };
-    let sigtermSent = false;
-
-    if (activeProcess && runningState.pid === activeProcess.pid) {
-      activeProcess.kill("SIGTERM");
-      activeProcess = null;
-      sigtermSent = true;
-    } else if (runningState.pid) {
-      const pidAlive = isPidAlive(runningState.pid);
-
-      if (!pidAlive) {
-        req.log.warn(
-          { ...logCtx, validation: "stale_pid_dead" },
-          "evolve stop: stale lease — pid no longer exists, cleaning up lease only",
-        );
-      } else if (!isSelfEvolveProcess(runningState.pid)) {
-        req.log.warn(
-          { ...logCtx, validation: "pid_recycled" },
-          "evolve stop: pid recycled to non-self-evolve process, refusing SIGTERM",
-        );
-      } else {
-        try {
-          process.kill(runningState.pid, "SIGTERM");
-          sigtermSent = true;
-        } catch (err) {
-          req.log.warn(
-            { ...logCtx, validation: "sigterm_failed", error: err.message },
-            "evolve stop: SIGTERM failed on verified process",
-          );
-        }
-      }
-
-      await rm(path.join(req.cpbRoot, "cpb-task", "self-evolve", ".controller-lock"), { recursive: true, force: true });
-    }
-
-    const state = await loadState(req.cpbRoot);
-    state.status = "stopped";
-    await saveState(req.cpbRoot, state);
-    await appendHistory(req.cpbRoot, {
-      action: "stop",
-      source: "ui",
-      targetPid: runningState.pid,
-      sigtermSent,
-    });
-
-    return { stopped: true, pid: runningState.pid, source: runningState.source, sigtermSent };
-  });
-
-  fastify.get("/evolve/multi/status", async (req) => {
     const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
     const projects = await listProjects(hubRoot, { enabledOnly: false });
     const rows = await Promise.all(projects.map(async (project) => {
@@ -319,16 +73,96 @@ export async function evolveRoutes(fastify, opts) {
       };
     }));
     return {
-      running: Boolean(activeMultiProcess),
-      pid: activeMultiProcess?.pid || null,
+      running: Boolean(activeProcess),
+      pid: activeProcess?.pid || null,
       projects: rows,
     };
   });
 
-  fastify.post("/evolve/multi/start", async (req, res) => {
-    if (activeMultiProcess) {
-      throw fastify.httpErrors.conflict("multi-evolve already running");
+  fastify.get("/evolve/history", async (req) => {
+    return [];
+  });
+
+  fastify.post("/evolve/start", async (req, res) => {
+    const quickCheck = Boolean(activeProcess);
+    if (quickCheck) {
+      throw fastify.httpErrors.conflict("evolution already running");
     }
+
+    const release = await startMutex.acquire();
+    try {
+      if (activeProcess) {
+        throw fastify.httpErrors.conflict("evolution already running");
+      }
+
+      const body = req.body || {};
+      const args = [];
+      if (body.dryRun !== false) args.push("--dry-run");
+      if (body.scan === true) args.push("--scan");
+      if (body.once === true) args.push("--once");
+      if (body.project) args.push("--project", String(body.project));
+      if (body.agent) args.push("--agent", String(body.agent));
+
+      const script = evolveScriptPath(req.cpbRoot);
+      const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+      const child = spawn("node", [script, ...args], {
+        cwd: req.cpbRoot,
+        env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: hubRoot }),
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+      });
+      activeProcess = child;
+
+      child.stdout.on("data", (chunk) => process.stdout.write(`[evolve] ${chunk}`));
+      child.stderr.on("data", (chunk) => process.stderr.write(`[evolve] ${chunk}`));
+      child.on("exit", () => {
+        if (activeProcess === child) activeProcess = null;
+      });
+      child.on("error", () => {
+        if (activeProcess === child) activeProcess = null;
+      });
+
+      res.code(202);
+      return { accepted: true, pid: child.pid };
+    } finally {
+      release();
+    }
+  });
+
+  fastify.post("/evolve/stop", async () => {
+    if (!activeProcess) {
+      return { stopped: false, reason: "not_running" };
+    }
+    const pid = activeProcess.pid;
+    activeProcess.kill("SIGTERM");
+    activeProcess = null;
+    return { stopped: true, pid };
+  });
+
+  // ── Deprecated multi-evolve aliases (same handlers) ──
+
+  fastify.get("/evolve/multi/status", async (req) => {
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+    const projects = await listProjects(hubRoot, { enabledOnly: false });
+    const rows = await Promise.all(projects.map(async (project) => {
+      const [state, backlog] = await Promise.all([
+        loadMultiProjectState(project.sourcePath, project.id),
+        loadMultiBacklog(project.sourcePath, project.id),
+      ]);
+      return {
+        id: project.id, name: project.name, sourcePath: project.sourcePath,
+        enabled: project.enabled !== false, worker: project.worker || null,
+        state, backlog: {
+          total: backlog.length,
+          pending: backlog.filter((issue) => issue.status === "pending").length,
+          inProgress: backlog.filter((issue) => issue.status === "in_progress").length,
+        },
+      };
+    }));
+    return { running: Boolean(activeProcess), pid: activeProcess?.pid || null, projects: rows };
+  });
+
+  fastify.post("/evolve/multi/start", async (req, res) => {
     const body = req.body || {};
     const args = [];
     if (body.dryRun !== false) args.push("--dry-run");
@@ -336,33 +170,27 @@ export async function evolveRoutes(fastify, opts) {
     if (body.once === true) args.push("--once");
     if (body.project) args.push("--project", String(body.project));
     if (body.agent) args.push("--agent", String(body.agent));
-
-    const child = spawn("node", [multiEvolveScriptPath(req.cpbRoot), ...args], {
+    const script = evolveScriptPath(req.cpbRoot);
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+    const child = spawn("node", [script, ...args], {
       cwd: req.cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: req.cpbHubRoot || resolveHubRoot(req.cpbRoot) }),
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_HUB_ROOT: hubRoot }),
+      stdio: ["ignore", "pipe", "pipe"], detached: false,
     });
-    activeMultiProcess = child;
-    child.stdout.on("data", (chunk) => process.stdout.write(`[multi-evolve] ${chunk}`));
-    child.stderr.on("data", (chunk) => process.stderr.write(`[multi-evolve] ${chunk}`));
-    child.on("exit", () => {
-      if (activeMultiProcess === child) activeMultiProcess = null;
-    });
-    child.on("error", () => {
-      if (activeMultiProcess === child) activeMultiProcess = null;
-    });
+    activeProcess = child;
+    child.stdout.on("data", (chunk) => process.stdout.write(`[evolve] ${chunk}`));
+    child.stderr.on("data", (chunk) => process.stderr.write(`[evolve] ${chunk}`));
+    child.on("exit", () => { if (activeProcess === child) activeProcess = null; });
+    child.on("error", () => { if (activeProcess === child) activeProcess = null; });
     res.code(202);
     return { accepted: true, pid: child.pid };
   });
 
   fastify.post("/evolve/multi/stop", async () => {
-    if (!activeMultiProcess) {
-      return { stopped: false, reason: "not_running" };
-    }
-    const pid = activeMultiProcess.pid;
-    activeMultiProcess.kill("SIGTERM");
-    activeMultiProcess = null;
+    if (!activeProcess) return { stopped: false, reason: "not_running" };
+    const pid = activeProcess.pid;
+    activeProcess.kill("SIGTERM");
+    activeProcess = null;
     return { stopped: true, pid };
   });
 }
