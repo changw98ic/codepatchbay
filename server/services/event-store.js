@@ -346,6 +346,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "finalizer_result",
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
   "merge_index_status",
+  "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
 ]);
 
 export function materializeJob(events) {
@@ -360,6 +361,9 @@ export function materializeJob(events) {
     executor: null,
     artifacts: {},
     completedPhases: [],
+    completedNodes: [],
+    runningNodes: [],
+    blockedNodes: [],
     leaseId: null,
     worktree: null,
     createdAt: null,
@@ -442,6 +446,35 @@ export function materializeJob(events) {
         }
         if (event.phase !== undefined && event.artifact !== undefined) {
           state.artifacts[event.phase] = event.artifact;
+        }
+        break;
+      case "dag_node_started":
+        if (event.nodeId && !state.runningNodes.includes(event.nodeId)) {
+          state.runningNodes = [...state.runningNodes, event.nodeId];
+        }
+        state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
+        break;
+      case "dag_node_completed":
+        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+        if (event.nodeId && !state.completedNodes.includes(event.nodeId)) {
+          state.completedNodes = [...state.completedNodes, event.nodeId];
+        }
+        if (event.phase !== undefined && event.artifact !== undefined) {
+          state.artifacts[event.phase] = event.artifact;
+        }
+        if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) {
+          state.completedPhases = [...state.completedPhases, event.phase];
+        }
+        break;
+      case "dag_node_failed":
+        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+        state.failureCode = event.code ?? state.failureCode;
+        state.failurePhase = event.phase ?? state.failurePhase;
+        break;
+      case "dag_node_blocked":
+        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+        if (event.nodeId && !state.blockedNodes.includes(event.nodeId)) {
+          state.blockedNodes = [...state.blockedNodes, event.nodeId];
         }
         break;
       case "phase_failed":

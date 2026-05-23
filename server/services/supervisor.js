@@ -3,7 +3,8 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
-import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "../../core/workflow/definition.js";
+import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase, normalizeWorkflow } from "../../core/workflow/definition.js";
+import { readyNodes as dagReadyNodes, scheduleReadyNodes, isDagComplete } from "../../core/workflow/dag-executor.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "./executor-root.js";
 import { buildChildEnv } from "./secret-policy.js";
 import { recoverAsNewJob } from "./job-recovery.js";
@@ -58,6 +59,42 @@ export function nextPhaseFor(state) {
     }
   }
   return "complete";
+}
+
+/**
+ * DAG-aware: get ready node IDs for a job.
+ * Returns { ready: string[], isDag: boolean }.
+ * Falls back to nextPhaseFor for legacy workflows.
+ */
+export function readyNodesFor(state) {
+  if (!state || TERMINAL_STATUSES.has(state.status) || state.cancelRequested) {
+    return { ready: [], isDag: false };
+  }
+
+  try {
+    const dag = normalizeWorkflow(state.workflow);
+    if (!dag.isDag || dag.nodes.length === 0) {
+      const phase = nextPhaseFor(state);
+      return { ready: phase ? [phase] : [], isDag: false };
+    }
+
+    const completedSet = new Set(state.completedNodes || []);
+    const runningSet = new Set(state.runningNodes || []);
+
+    // Legacy compat: if no DAG node events yet, derive from completedPhases
+    if (completedSet.size === 0 && (state.completedPhases || []).length > 0) {
+      for (const p of state.completedPhases) {
+        completedSet.add(p);
+      }
+    }
+
+    const scheduled = scheduleReadyNodes(dag.nodes, completedSet, runningSet, dag.maxConcurrentNodes);
+    return { ready: scheduled, isDag: true };
+  } catch {
+    // Fallback to legacy
+    const phase = nextPhaseFor(state);
+    return { ready: phase ? [phase] : [], isDag: false };
+  }
 }
 
 export async function recoverJobs(cpbRoot, { now } = {}) {

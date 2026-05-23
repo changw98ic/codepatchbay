@@ -13,6 +13,7 @@ import { channelRoutes } from './routes/channels.js';
 import { reviewRoutes } from './routes/review.js';
 import { evolveRoutes } from './routes/evolve.js';
 import { hubRoutes } from './routes/hub.js';
+import { agentRoutes } from './routes/agents.js';
 import { resolveHubRoot } from './services/hub-registry.js';
 import { getHubRuntime } from './services/hub-runtime.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
@@ -93,6 +94,7 @@ app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
+app.register(agentRoutes, { prefix: '/api' });
 
 // Serve pre-built web UI from web/dist/ when available (npx/production mode)
 const webDist = path.join(CPB_EXECUTOR_ROOT, 'web', 'dist');

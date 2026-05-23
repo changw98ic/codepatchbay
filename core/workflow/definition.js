@@ -1,3 +1,5 @@
+import { phasesToDag, validateDag } from "./dag-executor.js";
+
 const WORKCPBS = {
   standard: {
     name: "standard",
@@ -44,6 +46,9 @@ const WORKCPBS = {
   },
 };
 
+// Cache for normalized DAGs
+const _dagCache = new Map();
+
 export function getWorkflow(name) {
   return WORKCPBS[name] ?? WORKCPBS.standard;
 }
@@ -87,4 +92,81 @@ export function listWorkflows() {
 
 export function isWorkflowName(name) {
   return Object.hasOwn(WORKCPBS, name);
+}
+
+// --- DAG support ---
+
+/**
+ * Normalize a workflow into a DAG representation.
+ * If workflow has explicit `nodes`, validate and use them.
+ * Otherwise, convert legacy `phases` to a single-chain DAG.
+ */
+export function normalizeWorkflow(name) {
+  const wf = getWorkflow(name);
+
+  // Explicit DAG nodes defined on workflow
+  if (wf.nodes && wf.nodes.length > 0) {
+    const validation = validateDag(wf.nodes);
+    if (!validation.valid) {
+      throw new Error(`workflow ${name} has invalid DAG: ${validation.errors.join(", ")}`);
+    }
+    return {
+      name: wf.name,
+      nodes: wf.nodes,
+      edges: wf.edges || buildEdges(wf.nodes),
+      maxConcurrentNodes: wf.maxConcurrentNodes || 2,
+      isDag: true,
+    };
+  }
+
+  // Legacy: convert phases to single-chain DAG
+  const cacheKey = wf.name;
+  if (_dagCache.has(cacheKey)) return _dagCache.get(cacheKey);
+
+  const nodes = phasesToDag(wf.phases, wf.roleForPhase);
+  const result = {
+    name: wf.name,
+    nodes,
+    edges: buildEdges(nodes),
+    maxConcurrentNodes: 1, // Legacy workflows are sequential
+    isDag: wf.phases.length > 0,
+  };
+  _dagCache.set(cacheKey, result);
+  return result;
+}
+
+function buildEdges(nodes) {
+  const edges = [];
+  for (const n of nodes) {
+    for (const dep of n.dependsOn || []) {
+      edges.push({ from: dep, to: n.id });
+    }
+  }
+  return edges;
+}
+
+/**
+ * Get DAG nodes for a workflow. Returns empty array for blocked/empty workflows.
+ */
+export function getDagNodes(name) {
+  return normalizeWorkflow(name).nodes;
+}
+
+/**
+ * Register a custom DAG workflow at runtime.
+ */
+export function registerDagWorkflow(name, { nodes, maxConcurrentNodes = 2 }) {
+  const validation = validateDag(nodes);
+  if (!validation.valid) {
+    throw new Error(`invalid DAG: ${validation.errors.join(", ")}`);
+  }
+  WORKCPBS[name] = {
+    name,
+    phases: nodes.map((n) => n.phase),
+    roleForPhase: Object.fromEntries(nodes.map((n) => [n.phase, n.role || "executor"])),
+    bridgeForPhase: Object.fromEntries(nodes.map((n) => [n.phase, "run-phase.mjs"])),
+    nodes,
+    maxConcurrentNodes,
+  };
+  _dagCache.delete(name);
 }
