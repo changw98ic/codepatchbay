@@ -169,12 +169,20 @@ export class AcpPool {
         recycleReason: session?.recycleReason || null,
         lastRecycleReason: this.lastRecycleReason.get(agent) || null,
         rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
-        mode: this.runner ? "managed-reusable" : providerProcessReuse ? "persistent-provider-process" : "bounded-one-shot",
+        mode: this.runner
+          ? "managed-reusable"
+          : process.env.CPB_ACP_CLIENT
+            ? "custom-client-one-shot"
+            : providerProcessReuse
+              ? "persistent-provider-process"
+              : "bounded-one-shot",
         transport: this.runner
           ? "injected-runner-function"
-          : providerProcessReuse
-            ? "persistent-acp-agent-process"
-            : "request-scoped-child-process",
+          : process.env.CPB_ACP_CLIENT
+            ? "custom-client-child-process"
+            : providerProcessReuse
+              ? "persistent-acp-agent-process"
+              : "request-scoped-child-process",
         providerProcessReuse,
         providerProcessPid: persistent?.client?.child?.pid || null,
         providerProcessStartedAt: persistent?.startedAt || null,

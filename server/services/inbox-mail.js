@@ -1,6 +1,5 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 
 const SCHEMA = "cpb.inbox-mail.v1";
 const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);
@@ -33,13 +32,14 @@ function safeMessagePath(cpbRoot, project, id) {
   return resolved;
 }
 
+let _seq = 0;
 function generateId() {
   const date = new Date();
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
-  const hex = crypto.randomBytes(3).toString("hex");
-  return `msg-${y}${m}${d}-${hex}`;
+  const seq = String(++_seq).padStart(6, "0");
+  return `msg-${y}${m}${d}-${seq}`;
 }
 
 function serializeFrontmatter(meta) {
@@ -201,7 +201,7 @@ export async function listInboxMessages(cpbRoot, project, filters = {}) {
   }
 
   // Sort by createdAt to guarantee creation order (filename hex suffix is random)
-  messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  messages.sort((a, b) => a.id.localeCompare(b.id));
   return messages;
 }
 
