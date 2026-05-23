@@ -183,6 +183,10 @@ class PersistentAcp {
     } catch {}
   }
 
+  async resetSession() {
+    await this.#closeSession();
+  }
+
   request(method, params) {
     if (this.closed) return Promise.reject(new Error(`${this.agent} connection closed`));
     const id = this.nextId++;
@@ -411,6 +415,10 @@ async function runReview(cpbRoot, sessionId) {
     for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
+
+      // Reset sessions between rounds for independent reviews
+      await codex.resetSession().catch(() => null);
+      await claude.resetSession().catch(() => null);
 
       const codexPrompt = round === 1
         ? reviewPrompt(currentPlan, "codex")

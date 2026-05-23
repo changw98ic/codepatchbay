@@ -73,7 +73,7 @@ export async function reviewRoutes(fastify, opts) {
     try {
       session = await updateSession(req.cpbRoot, req.params.id, { status: "researching" });
     } catch (err) {
-      if (err.message?.includes("invalid transition")) {
+      if (err.message?.includes("invalid transition") || err.message?.includes("already in status")) {
         throw fastify.httpErrors.conflict(`session not in idle state`);
       }
       if (err.message?.includes("not found")) {

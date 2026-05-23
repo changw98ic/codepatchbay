@@ -138,7 +138,10 @@ export async function updateSession(cpbRoot, sessionId, patch, options = {}) {
     const session = await getSession(cpbRoot, sessionId);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
-    if (!skipTransitionCheck && patch.status && patch.status !== session.status) {
+    if (!skipTransitionCheck && patch.status) {
+      if (patch.status === session.status) {
+        throw new Error(`already in status: ${session.status}`);
+      }
       const allowed = VALID_TRANSITIONS[session.status];
       if (!allowed || !allowed.includes(patch.status)) {
         throw new Error(`invalid transition: ${session.status} → ${patch.status}`);
