@@ -46,10 +46,24 @@ export function sanitizeProviderReason(message) {
 }
 
 function normalizeLimits(limits = {}) {
-  return {
+  // Base limits: always include codex and claude for compat
+  const result = {
     codex: Number(limits.codex || process.env.CPB_ACP_POOL_CODEX || 2),
     claude: Number(limits.claude || process.env.CPB_ACP_POOL_CLAUDE || 1),
   };
+
+  // Add limits for any other agents from env (CPB_ACP_POOL_<NAME>)
+  for (const [key, value] of Object.entries(process.env)) {
+    const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
+    if (match) {
+      const agentName = match[1].toLowerCase();
+      if (!(agentName in result)) {
+        result[agentName] = Number(value) || 2;
+      }
+    }
+  }
+
+  return result;
 }
 
 function numericOption(value, fallback) {

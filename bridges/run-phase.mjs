@@ -37,6 +37,7 @@ import { runRepair, completeRepair } from "../server/services/repair-handler.js"
 import { resolveAcpLane } from "../core/acp/policy.js";
 import { recordUiEscalations } from "../runtime/record-ui-escalation.js";
 import { validateNonEmptyMarkdownArtifact, resolveDeliverableIssue, validateIssueMatch } from "../server/services/artifact-integrity.js";
+import { loadRegistry, legacyAgentForPhase, defaultAgentForRole } from "../core/agents/registry.js";
 
 // --- CLI arg parsing ---
 
@@ -72,7 +73,9 @@ function parseArgs(argv) {
     throw new Error(`invalid project name: ${project}`);
   }
 
-  return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, workflow, options };
+  const agent = options.get("--agent") || "";
+
+  return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, workflow, agent, options };
 }
 
 // --- Logging helpers ---
@@ -252,7 +255,7 @@ function parseReviewVerdict(content) {
 
 // --- Phase handlers ---
 
-async function handlePlan(args) {
+async function handlePlan(args, agent) {
   const { executorRoot, cpbRoot, project, options } = args;
   const task = options.get("--task") || "";
   if (!task) throw new Error("--task is required for plan phase");
@@ -266,14 +269,14 @@ async function handlePlan(args) {
   console.log(`Output: ${planFile}`);
 
   const prompt = await buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile);
-  const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Plan spawn failed: ${result.error.message}`);
     return 1;
   }
 
-  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "plan", "codex");
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "plan", agent);
 
   // Check if plan file was created and is non-empty
   const planValidation = await validateNonEmptyMarkdownArtifact({ path: planFile, kind: "plan", id: planId });
@@ -291,7 +294,7 @@ async function handlePlan(args) {
   return 0;
 }
 
-async function handleExecute(args) {
+async function handleExecute(args, agent) {
   const { executorRoot, cpbRoot, project, options } = args;
   const planId = options.get("--plan-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -335,14 +338,14 @@ async function handleExecute(args) {
   }
   console.log(`Output: ${deliverableFile}`);
 
-  const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Execute spawn failed: ${result.error.message}`);
     return 1;
   }
 
-  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "execute", "claude");
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "execute", agent);
 
   try {
     const deliverableContent = await readFile(deliverableFile, "utf8");
@@ -375,7 +378,7 @@ async function handleExecute(args) {
   return 0;
 }
 
-async function handleVerify(args) {
+async function handleVerify(args, agent) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -427,14 +430,14 @@ async function handleVerify(args) {
     ? `${process.env.CPB_ACP_DENY_TOOLS},text_edit,text-edit`
     : "text_edit,text-edit";
 
-  const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Verify spawn failed: ${result.error.message}`);
     return 1;
   }
 
-  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "verify", "codex");
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "verify", agent);
 
   // Parse verdict
   let verdictContent;
@@ -464,7 +467,7 @@ async function handleVerify(args) {
   return 0;
 }
 
-async function handleReview(args) {
+async function handleReview(args, agent) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   if (!deliverableId) throw new Error("--deliverable-id is required for review phase");
@@ -481,14 +484,14 @@ async function handleReview(args) {
   console.log(`Output: ${reviewFile}`);
 
   const prompt = await buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId);
-  const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Review spawn failed: ${result.error.message}`);
     return 1;
   }
 
-  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "review", "codex");
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "review", agent);
 
   let reviewContent;
   try {
@@ -512,7 +515,7 @@ async function handleReview(args) {
   return 0;
 }
 
-async function handleRepair(args) {
+async function handleRepair(args, agent) {
   const { executorRoot, cpbRoot, project, options } = args;
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
@@ -562,7 +565,7 @@ async function handleRepair(args) {
   });
 
   const prompt = await buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile);
-  const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
     console.error(`Repair spawn failed: ${result.error.message}`);
@@ -583,7 +586,7 @@ async function handleRepair(args) {
     return result.exitCode;
   }
 
-  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "repair", "claude");
+  await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "repair", agent);
 
   try {
     const repairStatus = await completeRepair(cpbRoot, {
@@ -613,6 +616,7 @@ export async function runPhase(phase, {
   workflow = "",
   acpProfile = null,
   uiLaneReason = "",
+  agent: explicitAgent,
 } = {}) {
   const resolvedExecutorRoot = path.resolve(executorRoot || process.env.CPB_EXECUTOR_ROOT || path.resolve(path.dirname(import.meta.url.replace("file://", "")), ".."));
   const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || resolvedExecutorRoot);
@@ -624,14 +628,26 @@ export async function runPhase(phase, {
     throw new Error(`invalid workflow: ${workflow} (valid: ${listWorkflows().join(", ")})`);
   }
 
+  // Resolve agent from registry
+  const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+  const role = roleMap[phase] || "";
+  let agent = explicitAgent || "";
+  if (!agent) {
+    try {
+      await loadRegistry();
+      agent = defaultAgentForRole(role);
+    } catch {
+      agent = legacyAgentForPhase(phase);
+    }
+  }
+
   // Propagate env
   process.env.CPB_EXECUTOR_ROOT = resolvedExecutorRoot;
   process.env.CPB_ROOT = resolvedCpbRoot;
   if (workflow) process.env.CPB_WORKFLOW = workflow;
 
   // Permission matrix context for ACP enforcement
-  const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
-  process.env.CPB_ACP_ROLE = roleMap[phase] || "";
+  process.env.CPB_ACP_ROLE = role;
   process.env.CPB_ACP_PROJECT = project;
   process.env.CPB_ACP_PHASE = phase;
   const resolvedJobId = process.env.CPB_ACP_JOB_ID || process.env.CPB_JOB_ID || jobId || deliverableId || planId || "";
@@ -672,11 +688,11 @@ export async function runPhase(phase, {
   const parsed = { phase, executorRoot: resolvedExecutorRoot, cpbRoot: resolvedCpbRoot, project, workflow, options };
 
   switch (phase) {
-    case "plan": return await handlePlan(parsed);
-    case "execute": return await handleExecute(parsed);
-    case "verify": return await handleVerify(parsed);
-    case "review": return await handleReview(parsed);
-    case "repair": return await handleRepair(parsed);
+    case "plan": return await handlePlan(parsed, agent);
+    case "execute": return await handleExecute(parsed, agent);
+    case "verify": return await handleVerify(parsed, agent);
+    case "review": return await handleReview(parsed, agent);
+    case "repair": return await handleRepair(parsed, agent);
     default:
       throw new Error(`Unknown phase: ${phase}`);
   }
@@ -718,6 +734,18 @@ async function main() {
   if (jobId) process.env.CPB_ACP_JOB_ID = jobId;
   process.env.CPB_ACP_CPB_ROOT = parsed.cpbRoot;
 
+  // Resolve agent from registry
+  const role = roleMap[parsed.phase] || "";
+  let agent = parsed.agent || "";
+  if (!agent) {
+    try {
+      await loadRegistry();
+      agent = defaultAgentForRole(role);
+    } catch {
+      agent = legacyAgentForPhase(parsed.phase);
+    }
+  }
+
   // ACP lane resolution (issue #62)
   const acpProfileOverride = parsed.options.get("--acp-profile") || process.env.CPB_ACP_LAUNCH_PROFILE;
   const uiLaneReason = parsed.options.get("--ui-lane-reason") || process.env.CPB_ACP_UI_LANE_REASON || "";
@@ -740,11 +768,11 @@ async function main() {
   }
 
   switch (parsed.phase) {
-    case "plan": return await handlePlan(parsed);
-    case "execute": return await handleExecute(parsed);
-    case "verify": return await handleVerify(parsed);
-    case "review": return await handleReview(parsed);
-    case "repair": return await handleRepair(parsed);
+    case "plan": return await handlePlan(parsed, agent);
+    case "execute": return await handleExecute(parsed, agent);
+    case "verify": return await handleVerify(parsed, agent);
+    case "review": return await handleReview(parsed, agent);
+    case "repair": return await handleRepair(parsed, agent);
     default:
       console.error(`Unknown phase: ${parsed.phase}`);
       return 1;

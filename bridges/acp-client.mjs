@@ -166,15 +166,15 @@ function enforcePermissionSync(action, target) {
 
 const PROTOCOL_VERSION = 1;
 
-const usage = `Usage: acp-client.mjs --agent <codex|claude> [--cwd <path>]
+const usage = `Usage: acp-client.mjs --agent <name> [--cwd <path>]
 
 Reads a prompt from stdin and sends it to an ACP agent over stdio.
 
+Supported agents: codex, claude, gemini (and any registered via CPB_AGENTS_CONFIG_DIR)
+
 Environment:
-  CPB_ACP_CODEX_COMMAND      Command for the Codex ACP agent
-  CPB_ACP_CODEX_ARGS         Args for the Codex ACP agent (JSON array or shell-like words)
-  CPB_ACP_CLAUDE_COMMAND     Command for the Claude ACP agent
-  CPB_ACP_CLAUDE_ARGS        Args for the Claude ACP agent (JSON array or shell-like words)
+  CPB_ACP_{PREFIX}_COMMAND   Override command for agent (e.g. CPB_ACP_CODEX_COMMAND)
+  CPB_ACP_{PREFIX}_ARGS      Override args for agent
   CPB_ACP_TIMEOUT_MS         Idle timeout in milliseconds; activity resets it (default: 1800000)
   CPB_ACP_PERMISSION         allow or reject permission requests (default: allow)
   CPB_ACP_WRITE_ALLOW        Comma-separated glob patterns for allowed write paths (default: none = allow all)
@@ -259,7 +259,7 @@ export async function parseToolPolicy() {
   return null;
 }
 
-function parseCli(argv) {
+async function parseCli(argv) {
   const result = { agent: "", cwd: process.cwd() };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -274,8 +274,18 @@ function parseCli(argv) {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
-  if (!["codex", "claude"].includes(result.agent)) {
-    throw new Error("--agent must be codex or claude");
+  // Validate agent name: allow legacy names + any registered agent
+  if (result.agent !== "codex" && result.agent !== "claude") {
+    try {
+      const { loadRegistry, hasAgent } = await import("../core/agents/registry.js");
+      await loadRegistry();
+      if (!hasAgent(result.agent)) {
+        throw new Error(`unknown agent: ${result.agent}`);
+      }
+    } catch (err) {
+      if (err.message.startsWith("unknown agent:")) throw err;
+      throw new Error("--agent must be a registered agent name (registry unavailable, fallback: codex or claude)");
+    }
   }
   result.cwd = path.resolve(result.cwd || process.cwd());
   return result;
@@ -342,27 +352,63 @@ function parseEnvArgs(value) {
 }
 
 function defaultAgentCommand(agent) {
+  // Legacy hardcoded fallback for codex/claude when registry is unavailable
   if (agent === "codex") {
     if (commandExists("codex-acp")) return { command: "codex-acp", args: [] };
     return { command: "npx", args: ["-y", "@zed-industries/codex-acp"] };
   }
 
-  if (commandExists("claude-agent-acp")) return { command: "claude-agent-acp", args: [] };
-  return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
+  if (agent === "claude") {
+    if (commandExists("claude-agent-acp")) return { command: "claude-agent-acp", args: [] };
+    return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
+  }
+
+  // For other agents, try to use descriptor command directly
+  return null;
 }
 
-export function resolveAgentCommand(agent, env = process.env) {
-  const upper = agent.toUpperCase();
+export async function resolveAgentCommand(agent, env = process.env) {
+  // Try registry-based resolution first
+  try {
+    const { loadRegistry, resolveAgentCommand: registryResolve, hasAgent } = await import("../core/agents/registry.js");
+    await loadRegistry();
+    if (hasAgent(agent)) {
+      const resolved = registryResolve(agent);
+      if (resolved) {
+        const upper = agent.toUpperCase();
+        const command = env[`CPB_ACP_${upper}_COMMAND`] || resolved.command;
+        const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...(resolved.args || [])];
+
+        // Fallback: if primary command not found and descriptor has fallback
+        if (resolved.source === "descriptor" && resolved.fallbackCommand && !commandExists(command)) {
+          return { command: resolved.fallbackCommand, args: [...(resolved.fallbackArgs || [])] };
+        }
+
+        // Codex headless config
+        if (agent === "codex" && env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
+          const headlessArgs = headlessCodexConfigArgs(command, args);
+          if (headlessArgs.length > 0) args.push(...headlessArgs);
+        }
+
+        return { command, args };
+      }
+    }
+  } catch {
+    // Registry unavailable, fall through to legacy
+  }
+
+  // Legacy hardcoded resolution
   const defaults = defaultAgentCommand(agent);
+  if (!defaults) {
+    throw new Error(`Unknown agent: '${agent}'. Register a descriptor or set CPB_ACP_${agent.toUpperCase()}_COMMAND.`);
+  }
+  const upper = agent.toUpperCase();
   const command = env[`CPB_ACP_${upper}_COMMAND`] || defaults.command;
   const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...defaults.args];
 
-  // Append headless config overrides for codex-acp when headless profile is active
-  if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
+  if (agent === "codex" && env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
     const headlessArgs = headlessCodexConfigArgs(command, args);
-    if (headlessArgs.length > 0) {
-      args.push(...headlessArgs);
-    }
+    if (headlessArgs.length > 0) args.push(...headlessArgs);
   }
 
   return { command, args };
@@ -928,7 +974,7 @@ export class AcpClient {
 }
 
 async function main() {
-  const options = parseCli(process.argv.slice(2));
+  const options = await parseCli(process.argv.slice(2));
   const prompt = await readStdin();
 
   const writeAllowPaths = resolveWriteAllowPaths(options.cwd);

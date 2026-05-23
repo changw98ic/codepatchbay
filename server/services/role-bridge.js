@@ -16,9 +16,6 @@ const ROLE_DISPATCH_MAP = {
   repairer: "repairer",
 };
 
-const CODEX_ROLES = new Set(["planner", "verifier", "reviewer"]);
-const CLAUDE_ROLES = new Set(["executor", "repairer"]);
-
 export function bridgeForRole(role) {
   return ROLE_BRIDGE_MAP[role] ?? null;
 }
@@ -33,12 +30,27 @@ export async function bridgeEnvFromProfile(cpbRoot, role) {
   if (profile.permissions.deny_tools.length > 0) {
     env.CPB_ACP_DENY_TOOLS = profile.permissions.deny_tools.join(",");
   }
-  // Map role-specific agent commands to correct env vars
+  // Map role to agent via registry, then set agent-specific env
   if (profile.agent.command) {
-    if (CODEX_ROLES.has(role)) {
-      env.CPB_ACP_CODEX_COMMAND = profile.agent.command;
-    } else if (CLAUDE_ROLES.has(role)) {
-      env.CPB_ACP_CLAUDE_COMMAND = profile.agent.command;
+    try {
+      const { loadRegistry, defaultAgentForRole, getDescriptor } = await import("../../core/agents/registry.js");
+      await loadRegistry();
+      const agentName = defaultAgentForRole(role);
+      const descriptor = getDescriptor(agentName);
+      if (descriptor) {
+        env[`${descriptor.envPrefix}_COMMAND`] = profile.agent.command;
+      } else {
+        // Fallback to legacy env vars
+        env.CPB_ACP_CODEX_COMMAND = profile.agent.command;
+      }
+    } catch {
+      // Registry unavailable, use legacy mapping
+      const CODEX_ROLES = new Set(["planner", "verifier", "reviewer"]);
+      if (CODEX_ROLES.has(role)) {
+        env.CPB_ACP_CODEX_COMMAND = profile.agent.command;
+      } else {
+        env.CPB_ACP_CLAUDE_COMMAND = profile.agent.command;
+      }
     }
   }
   // ACP lane metadata

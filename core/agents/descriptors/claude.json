@@ -1,0 +1,13 @@
+{
+  "name": "claude",
+  "displayName": "Claude Code",
+  "command": "claude-agent-acp",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "repair"],
+  "defaultRoles": ["executor", "repairer"],
+  "stability": "stable",
+  "envPrefix": "CPB_ACP_CLAUDE",
+  "description": "Anthropic Claude Code in ACP mode"
+}

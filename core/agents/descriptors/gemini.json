@@ -1,0 +1,11 @@
+{
+  "name": "gemini",
+  "displayName": "Gemini CLI",
+  "command": "gemini",
+  "args": ["--acp"],
+  "capabilities": ["plan", "execute", "verify"],
+  "defaultRoles": ["executor", "verifier"],
+  "stability": "experimental",
+  "envPrefix": "CPB_ACP_GEMINI",
+  "description": "Google Gemini CLI in ACP mode"
+}
