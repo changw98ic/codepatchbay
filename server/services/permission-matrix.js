@@ -185,6 +185,26 @@ const VERIFIER_READ_ONLY_COMMANDS = new Set([
   "grep",
 ]);
 
+// Commands that read file contents — their path arguments must be checked against secret patterns
+const FILE_READING_COMMANDS = new Set(["cat", "head", "tail", "less", "more", "bat", "sed", "awk", "grep", "rg", "sort", "uniq", "wc", "tee", "diff", "comm", "cut", "tr", "nl", "od", "xxd"]);
+
+function hasSensitiveTargetInCommand(commandLine) {
+  const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
+  const words = splitCommandWords(unwrapped);
+  const command = path.basename(words[0] || "");
+  if (!FILE_READING_COMMANDS.has(command)) return false;
+
+  // Extract non-flag arguments as potential file paths
+  for (const word of words.slice(1)) {
+    if (word.startsWith("-")) continue;
+    // Skip common non-path arguments (numbers for sed -n, regex patterns)
+    if (/^\d+$/.test(word)) continue;
+    if (/^['"]/.test(word) || /^s\/|^\/.*\/$/.test(word)) continue;
+    if (isSecretPath(word)) return true;
+  }
+  return false;
+}
+
 const VERIFIER_READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "status",
   "diff",
@@ -344,6 +364,15 @@ function isKnownUnsafeCommand(commandLine) {
 
 export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = null) {
   const canonicalRole = validateRole(role);
+
+  // All roles: block commands that read sensitive file paths
+  if (hasSensitiveTargetInCommand(commandLine)) {
+    return {
+      allowed: false,
+      reason: `terminal command targets sensitive/credential path`,
+      recoveryGuidance: "Reading credential or secret files via terminal is not allowed. Use environment variables or a secrets manager instead.",
+    };
+  }
 
   if (canonicalRole === "planner") {
     if (isVerifierReadOnlyCommand(commandLine)) {
@@ -510,6 +539,14 @@ const SECRET_PATH_PATTERNS = [
   /(?:^|[\\/])[\w-]*secret[\w-]*(?:[._-]|$)/i,  // *secret*, *secrets*, access-secret
   /(?:^|[\\/])[\w-]*token[\w-]*(?:[._-]|$)/i,   // *token*, *tokens*, access-token.json
   /\.(?:pem|key)$/i,                         // *.pem, *.key
+  /(?:^|[\\/])\.gitconfig$/i,               // .gitconfig
+  /(?:^|[\\/])\.git-credentials$/i,         // .git-credentials
+  /(?:^|[\\/])\.zsh_history$/i,             // .zsh_history
+  /(?:^|[\\/])\.bash_history$/i,            // .bash_history
+  /(?:^|[\\/])keys\.json$/i,                // keys.json
+  /(?:^|[\\/])google-creds\.json$/i,        // google-creds.json
+  /(?:^|[\\/])credentials\.json$/i,         // credentials.json
+  /(?:^|[\\/])service-account[^\\/]*\.json$/i, // service-account*.json
 ];
 
 function isSecretPath(targetPath) {

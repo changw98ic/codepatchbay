@@ -1,6 +1,40 @@
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataRoot, runtimeDataPath } from "./runtime-root.js";
+
+const EVENT_LOCK_TTL_MS = 30_000;
+
+async function withEventLock(eventFile, callback) {
+  const lockDir = `${eventFile}.lock`;
+  await mkdir(path.dirname(lockDir), { recursive: true });
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await mkdir(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        const info = await stat(lockDir);
+        if (Date.now() - info.mtimeMs >= EVENT_LOCK_TTL_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // Race: someone else removed it, retry
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+  if (!acquired) throw new Error(`event log lock busy: ${path.basename(eventFile)}`);
+  try {
+    return await callback();
+  } finally {
+    try { await rm(lockDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 import {
   isSecretArtifact,
   isSecretContent,
@@ -160,60 +194,62 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
   // Validate event structure first (throws on invalid input)
   serializeEvent(event);
 
-  // Terminal seal: reject business-state mutations on terminal job event logs.
-  try {
-    const existing = await readEvents(cpbRoot, project, jobId, opts);
-    if (existing.length > 0) {
-      const state = materializeJob(existing);
-      if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
-        throw new Error(`terminal job event log is sealed: ${state.status}`);
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
+
+  return withEventLock(file, async () => {
+    // Terminal seal: reject business-state mutations on terminal job event logs.
+    try {
+      const existing = await readEvents(cpbRoot, project, jobId, opts);
+      if (existing.length > 0) {
+        const state = materializeJob(existing);
+        if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
+          throw new Error(`terminal job event log is sealed: ${state.status}`);
+        }
       }
+    } catch (err) {
+      if (err.message.startsWith("terminal job event log is sealed")) throw err;
     }
-  } catch (err) {
-    if (err.message.startsWith("terminal job event log is sealed")) throw err;
-  }
 
-  const writeBlocked = async (artifactName, reason) => {
-    const blocked = makeSecretBlockedEvent(artifactName, reason);
-    blocked.jobId = event.jobId || jobId;
-    blocked.project = event.project || project;
-    const serialized = serializeEvent(blocked);
-    const file = eventFileFor(cpbRoot, project, jobId, opts);
-    await mkdir(path.dirname(file), { recursive: true });
-    await appendFile(file, `${serialized}\n`, "utf8");
-    return blocked;
-  };
+    const writeBlocked = async (artifactName, reason) => {
+      const blocked = makeSecretBlockedEvent(artifactName, reason);
+      blocked.jobId = event.jobId || jobId;
+      blocked.project = event.project || project;
+      const serialized = serializeEvent(blocked);
+      await mkdir(path.dirname(file), { recursive: true });
+      await appendFile(file, `${serialized}\n`, "utf8");
+      return blocked;
+    };
 
-  // Block secret-like artifacts before persisting
-  if (event.artifact && isSecretPath(event.artifact)) {
-    return writeBlocked(event.artifact, "secret-like artifact path blocked");
-  }
+    // Block secret-like artifacts before persisting
+    if (event.artifact && isSecretPath(event.artifact)) {
+      return writeBlocked(event.artifact, "secret-like artifact path blocked");
+    }
 
-  // Block events with secret-like content in artifact fields
-  if (event.artifact && typeof event.artifact === "string" && isSecretArtifact(event.artifact, event.artifact)) {
-    return writeBlocked(event.artifact, "secret-like artifact content blocked");
-  }
-
-  if (event.artifact && typeof event.artifact === "string") {
-    const artifactPayload = [
-      event.content,
-      event.output,
-      event.stdout,
-      event.stderr,
-      event.body,
-    ].filter((value) => value !== undefined && value !== null);
-    if (artifactPayload.some((value) => isSecretContent(typeof value === "string" ? value : JSON.stringify(value)))) {
+    // Block events with secret-like content in artifact fields
+    if (event.artifact && typeof event.artifact === "string" && isSecretArtifact(event.artifact, event.artifact)) {
       return writeBlocked(event.artifact, "secret-like artifact content blocked");
     }
-  }
 
-  // Redact secrets from event payload before persisting
-  const redacted = redactSecrets(event);
-  const serialized = JSON.stringify(redacted);
-  const file = eventFileFor(cpbRoot, project, jobId, opts);
-  await mkdir(path.dirname(file), { recursive: true });
-  await appendFile(file, `${serialized}\n`, "utf8");
-  return redacted;
+    if (event.artifact && typeof event.artifact === "string") {
+      const artifactPayload = [
+        event.content,
+        event.output,
+        event.stdout,
+        event.stderr,
+        event.body,
+      ].filter((value) => value !== undefined && value !== null);
+      if (artifactPayload.some((value) => isSecretContent(typeof value === "string" ? value : JSON.stringify(value)))) {
+        return writeBlocked(event.artifact, "secret-like artifact content blocked");
+      }
+    }
+
+    // Redact secrets from event payload before persisting
+    const redacted = redactSecrets(event);
+    const serialized = JSON.stringify(redacted);
+    await mkdir(path.dirname(file), { recursive: true });
+    await appendFile(file, `${serialized}\n`, "utf8");
+    return redacted;
+  });
 }
 
 async function _parseEventFile(file) {

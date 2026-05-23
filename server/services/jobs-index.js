@@ -1,9 +1,42 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import { listEventFiles, materializeJob, readEvents } from "./event-store.js";
 
 const INDEX_VERSION = 1;
+
+const LOCK_TTL_MS = 30_000;
+
+// Cross-process file lock using mkdir (same pattern as hub-queue.js, inbox-mail.js)
+async function withIndexLock(lockDir, callback) {
+  await mkdir(path.dirname(lockDir), { recursive: true });
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await mkdir(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        const info = await stat(lockDir);
+        if (Date.now() - info.mtimeMs >= LOCK_TTL_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // Race: someone else removed it, retry
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+  if (!acquired) throw new Error(`jobs-index lock busy: ${path.basename(lockDir)}`);
+  try {
+    return await callback();
+  } finally {
+    try { await rm(lockDir, { recursive: true, force: true }); } catch {}
+  }
+}
 
 // In-memory promise-chain lock: serializes concurrent index writes per cpbRoot.
 // Each cpbRoot gets its own chain; callers wait for the previous write to settle.
@@ -11,9 +44,10 @@ const _writeQueues = new Map();
 
 function enqueueWrite(cpbRoot, opts, fn) {
   const key = indexFilePath(cpbRoot, opts);
+  const lockDir = `${key}.lock`;
   // prev is always a settled promise (either resolved or catch'd to resolved)
   const prev = _writeQueues.get(key) || Promise.resolve();
-  const next = prev.then(() => fn());
+  const next = prev.then(() => withIndexLock(lockDir, fn));
   // Store a never-rejecting tail so the next writer always proceeds
   _writeQueues.set(key, next.catch(() => {}));
   return next;

@@ -733,6 +733,12 @@ export class AcpClient {
   }
 
   async readTextFile(params) {
+    const permResult = await enforcePermission("read", params.path);
+    if (!permResult.allowed) {
+      const err = new Error(`read denied: ${params.path} (${permResult.reason})`);
+      err.classification = permResult.classification || "deny";
+      throw err;
+    }
     const content = await readFile(params.path, "utf8");
     if (!params.line && !params.limit) return { content };
 

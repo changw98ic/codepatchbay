@@ -65,7 +65,9 @@ function isPidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err) {
+    // EPERM: process exists but no permission → still alive
+    if (err.code === "EPERM") return true;
     return false;
   }
 }

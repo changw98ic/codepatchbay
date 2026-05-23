@@ -94,11 +94,13 @@ async function withQueueLock(hubRoot, callback) {
     throw new Error(`queue lock busy: ${path.basename(file)}`);
   }
 
+  const acquiredAt = nowIso();
   try {
     return await callback();
   } finally {
+    // Check both PID and timestamp window to guard against PID reuse
     const currentOwner = await queueLockOwnerPid(lockDir);
-    if (currentOwner === ownerPid) {
+    if (currentOwner === ownerPid && !(await queueLockIsStale(lockDir))) {
       await rm(lockDir, { recursive: true, force: true });
     }
   }

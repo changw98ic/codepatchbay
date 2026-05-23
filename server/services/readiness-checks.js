@@ -218,8 +218,11 @@ async function checkRegistryConsistency(hubRoot) {
         issues.push({ project: project.id, issue: "missing sourcePath" });
       }
       if (project.worker && project.worker.pid) {
-        try { process.kill(project.worker.pid, 0); } catch {
-          issues.push({ project: project.id, issue: `worker pid ${project.worker.pid} not alive` });
+        try { process.kill(project.worker.pid, 0); } catch (err) {
+          // EPERM means process exists but no permission — not dead
+          if (err.code !== "EPERM") {
+            issues.push({ project: project.id, issue: `worker pid ${project.worker.pid} not alive` });
+          }
         }
       }
     }

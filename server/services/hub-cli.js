@@ -76,7 +76,9 @@ export async function cmdStop() {
     await new Promise((r) => setTimeout(r, 100));
     try {
       process.kill(liveness.pid, 0);
-    } catch {
+    } catch (err) {
+      // EPERM: process still alive (just no permission to signal) — keep waiting
+      if (err.code === "EPERM") continue;
       console.log(`Hub stopped (was pid: ${liveness.pid}).`);
       return;
     }

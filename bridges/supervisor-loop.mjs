@@ -46,10 +46,29 @@ async function tick() {
   }
 }
 
-// Run first tick immediately, then poll on interval.
-await tick();
-setInterval(() => {
-  tick().catch((err) => {
+// Recursive setTimeout to prevent overlapping ticks.
+let tickInFlight = false;
+
+async function guardedTick() {
+  if (tickInFlight) {
+    log("warn", "previous tick still in progress, skipping");
+    return;
+  }
+  tickInFlight = true;
+  try {
+    await tick();
+  } catch (err) {
     log("error", `tick crashed: ${err.message}`);
-  });
-}, intervalMs);
+  } finally {
+    tickInFlight = false;
+  }
+}
+
+// Run first tick immediately, then schedule next after current completes.
+await guardedTick();
+(function scheduleNext() {
+  setTimeout(async () => {
+    await guardedTick();
+    scheduleNext();
+  }, intervalMs);
+})();

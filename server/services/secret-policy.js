@@ -13,6 +13,15 @@ const RUNTIME_BASICS = new Set([
   "CPB_ACP_PERSISTENT_PROCESS", "CPB_DANGEROUS",
   "CPB_STALE_GRACE_COUNT", "CPB_ACTIVITY_STALE_MS",
   "CPB_PROJECT_CACHE",
+  // Variant selection — needed by apply-variant.js in child processes
+  "CPB_CLAUDE_VARIANT", "CPB_BUILDER_VARIANT", "CPB_ACP_CLAUDE_VARIANT",
+  "CPB_ACTIVE_CLAUDE_VARIANT",
+  // ACP pool / supervisor tuning
+  "CPB_SUPERVISOR_INTERVAL_MS", "CPB_SUPERVISOR_MAX_CONCURRENT",
+  "CPB_ACP_CLIENT", "CPB_ACP_CWD", "CPB_ACP_TIMEOUT_MS",
+  "CPB_ACP_CODEX_COMMAND", "CPB_ACP_CODEX_ARGS",
+  "CPB_ACP_CLAUDE_COMMAND", "CPB_ACP_CLAUDE_ARGS",
+  "CPB_ACP_USE_MANAGED_POOL",
 ]);
 
 const PROVIDER_CREDENTIALS = new Set([
@@ -27,6 +36,20 @@ const PROVIDER_CREDENTIALS = new Set([
   "AWS_SESSION_TOKEN",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
+  // Kimi / Ollama Cloud variant
+  "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL",
+  "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL",
+  "KIMI_BASE_URL", "MOONSHOT_BASE_URL",
+  "OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY",
+  "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY",
+  "KIMI_API_KEY", "MOONSHOT_API_KEY",
+  "OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL",
+  "KIMI_MODEL", "MOONSHOT_MODEL",
+  // Xiaomi / MiMo variant
+  "XIAOMI_BASE_URL", "MIMO_BASE_URL",
+  "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
+  "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
+  "XIAOMI_MODEL", "MIMO_MODEL",
 ]);
 
 const ALLOWED_ENV = new Set([...RUNTIME_BASICS, ...PROVIDER_CREDENTIALS]);
@@ -109,6 +132,10 @@ const SECRET_PATH_PATTERNS = [
   /^\.npmrc$/,
   /^\.pypirc$/,
   /^\.netrc$/,
+  /^\.gitconfig$/,
+  /^\.git-credentials$/,
+  /^\.zsh_history$/,
+  /^\.bash_history$/,
   /^\.ssh[/\\]/,
   /(^|[/\\])\.ssh[/\\]/,
   /id_rsa$/,
@@ -125,7 +152,15 @@ const SECRET_PATH_PATTERNS = [
   /(^|[/\\])\.npmrc$/,
   /(^|[/\\])\.netrc$/,
   /(^|[/\\])\.pypirc$/,
+  /(^|[/\\])\.gitconfig$/,
+  /(^|[/\\])\.git-credentials$/,
+  /(^|[/\\])\.zsh_history$/,
+  /(^|[/\\])\.bash_history$/,
   /known_hosts$/,
+  /(^|[/\\])keys\.json$/i,
+  /(^|[/\\])google-creds\.json$/i,
+  /(^|[/\\])credentials\.json$/i,
+  /(^|[/\\])service-account[^/\\]*\.json$/i,
 ];
 
 export function isSecretPath(filePath) {

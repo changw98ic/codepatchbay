@@ -19,7 +19,7 @@ function inboxDir(cpbRoot, project) {
 function safeId(id) {
   if (!id || typeof id !== "string") return false;
   if (id.includes("..") || id.includes("/") || id.includes(path.sep) || id.includes("\\")) return false;
-  if (!/^msg-\d{8}-[0-9a-f]+$/.test(id)) return false;
+  if (!/^msg-\d{8}-\d{6}-[0-9a-f]{4,}$/.test(id)) return false;
   return true;
 }
 
@@ -33,13 +33,14 @@ function safeMessagePath(cpbRoot, project, id) {
 }
 
 let _seq = 0;
+const _pidHex = process.pid.toString(16).padStart(4, "0");
 function generateId() {
   const date = new Date();
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   const seq = String(++_seq).padStart(6, "0");
-  return `msg-${y}${m}${d}-${seq}`;
+  return `msg-${y}${m}${d}-${seq}-${_pidHex}`;
 }
 
 function serializeFrontmatter(meta) {

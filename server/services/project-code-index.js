@@ -84,26 +84,85 @@ function classifyFile(relPath) {
 
 // --- File inventory ---
 
-async function walkDir(dir, sourceRoot, runtimeRoot, results) {
+const MAX_SYMLINK_DEPTH = 8;
+
+async function realpathSafe(p) {
+  try {
+    const { realpath } = await import("node:fs/promises");
+    return await realpath(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+// walkDir uses dual paths: physicalDir for readdir/stat, logicalDir for output.
+// - physicalDir: actual filesystem location (may be outside sourceRoot via symlink)
+// - logicalDir: project-relative mount point (always within sourceRoot)
+async function walkDir(physicalDir, logicalDir, sourceRoot, runtimeRoot, results, visited = new Set(), canonicalSourceRoot = null, canonicalRuntimeRoot = null, symlinkDepth = 0) {
+  // Canonicalize roots on first call to handle macOS /var → /private/var etc.
+  const csr = canonicalSourceRoot || await realpathSafe(sourceRoot);
+  const crr = canonicalRuntimeRoot ? canonicalRuntimeRoot : (runtimeRoot ? await realpathSafe(runtimeRoot) : null);
+
+  // Mark current physical dir as visited to prevent symlinks pointing back here
+  const canonicalDir = await realpathSafe(physicalDir);
+  visited.add(canonicalDir);
+
   let entries;
   try {
-    entries = await readdir(dir, { withFileTypes: true });
+    entries = await readdir(physicalDir, { withFileTypes: true });
   } catch { return; }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
     if (entry.name.startsWith(".git") && entry.name !== ".github") {
       if (entry.isDirectory() && entry.name === ".git") continue;
     }
-    const fullPath = path.join(dir, entry.name);
-    const relPath = path.relative(sourceRoot, fullPath);
+    const physicalPath = path.join(physicalDir, entry.name);
+    const logicalPath = path.join(logicalDir, entry.name);
+
+    // Handle symlinks: resolve with cycle + depth + system guards
+    if (entry.isSymbolicLink()) {
+      if (symlinkDepth >= MAX_SYMLINK_DEPTH) continue;
+      let resolvedTarget;
+      try {
+        const { realpath } = await import("node:fs/promises");
+        resolvedTarget = await realpath(physicalPath);
+      } catch { continue; }
+      // Cycle detection
+      if (visited.has(resolvedTarget)) continue;
+      // Safety: skip system directories
+      if (resolvedTarget.startsWith("/usr/") || resolvedTarget.startsWith("/System/") || resolvedTarget.startsWith("/Library/")) continue;
+
+      visited.add(resolvedTarget);
+      const realStat = await stat(resolvedTarget);
+      if (realStat.isDirectory()) {
+        if (isIgnoredDir(entry.name)) continue;
+        // Recurse into resolved physical dir, but keep logical mount point
+        await walkDir(resolvedTarget, logicalPath, sourceRoot, runtimeRoot, results, visited, csr, crr, symlinkDepth + 1);
+      } else if (realStat.isFile()) {
+        if (isIgnoredFile(entry.name)) continue;
+        const relPath = path.relative(sourceRoot, logicalPath);
+        const ext = path.extname(entry.name).toLowerCase();
+        const lang = langFromExt(ext);
+        const classification = classifyFile(relPath);
+        results.push({
+          path: toPosix(relPath),
+          size: realStat.size,
+          language: lang,
+          type: classification,
+        });
+      }
+      continue;
+    }
+
+    const relPath = path.relative(sourceRoot, logicalPath);
     if (entry.isDirectory()) {
       if (isIgnoredDir(entry.name)) continue;
-      if (runtimeRoot && fullPath.startsWith(runtimeRoot + path.sep)) continue;
-      await walkDir(fullPath, sourceRoot, runtimeRoot, results);
+      if (crr && physicalPath.startsWith(crr + path.sep)) continue;
+      await walkDir(physicalPath, logicalPath, sourceRoot, runtimeRoot, results, visited, csr, crr, symlinkDepth);
     } else if (entry.isFile()) {
       if (isIgnoredFile(entry.name)) continue;
       let fileInfo;
-      try { fileInfo = await stat(fullPath); } catch { continue; }
+      try { fileInfo = await stat(physicalPath); } catch { continue; }
       const ext = path.extname(entry.name).toLowerCase();
       const lang = langFromExt(ext);
       const classification = classifyFile(relPath);
@@ -399,7 +458,7 @@ export async function refreshProjectCodeIndex(project, { hubRoot } = {}) {
 
   // 1. Walk files
   const files = [];
-  await walkDir(sourcePath, sourcePath, runtimeRoot, files);
+  await walkDir(sourcePath, sourcePath, sourcePath, runtimeRoot, files);
 
   // 2. Extract symbols
   const symbols = await extractSymbols(files, sourcePath);

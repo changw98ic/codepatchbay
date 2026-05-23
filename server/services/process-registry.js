@@ -121,7 +121,10 @@ function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err) {
+    // ESRCH: process does not exist → dead
+    // EPERM: process exists but no permission → alive
+    if (err.code === "EPERM") return true;
     return false;
   }
 }
