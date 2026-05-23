@@ -19,6 +19,7 @@
     "templates/",
     "wiki/schema.md",
     "wiki/system/",
+    "web/dist/",
     "scripts/"
   ],
   "engines": {

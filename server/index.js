@@ -4,7 +4,8 @@ import websocket from '@fastify/websocket';
 import sensible from '@fastify/sensible';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { accessSync, constants, statSync } from 'fs';
+import { accessSync, constants, existsSync, statSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { registerWatcher } from './services/watcher.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -91,6 +92,30 @@ app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
+
+// Serve pre-built web UI from web/dist/ when available (npx/production mode)
+const webDist = path.join(CPB_ROOT, 'web', 'dist');
+if (existsSync(webDist)) {
+  const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+  app.setNotFoundHandler(async (req, reply) => {
+    const reqPath = req.url.split('?')[0];
+    const filePath = path.join(webDist, reqPath === '/' ? 'index.html' : reqPath);
+    const safe = path.resolve(filePath).startsWith(webDist);
+    if (!safe) return reply.code(404).send('not found');
+    try {
+      const content = await readFile(filePath);
+      const ext = path.extname(filePath);
+      reply.header('content-type', MIME[ext] || 'application/octet-stream');
+      return reply.send(content);
+    } catch {
+      try {
+        return reply.header('content-type', 'text/html').send(await readFile(path.join(webDist, 'index.html')));
+      } catch {
+        return reply.code(404).send('not found');
+      }
+    }
+  });
+}
 
 const watchers = registerWatcher(CPB_ROOT, notifBroadcast);
 
