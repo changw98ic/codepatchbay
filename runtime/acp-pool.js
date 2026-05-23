@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../bridges/acp-client.mjs";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
-import { getRateLimit, setRateLimit, shouldUseRustRuntime } from "../server/services/runtime-cli.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -227,14 +226,6 @@ export class AcpPool {
   }
 
   async readDurableRateLimits() {
-    if (shouldUseRustRuntime()) {
-      try {
-        return await getRateLimit(this.hubRoot);
-      } catch {
-        // Fall through to JSON storage. A missing local Rust binary should not
-        // make ACP pool status unusable.
-      }
-    }
     try {
       return JSON.parse(await readFile(this.rateLimitFile(), "utf8"));
     } catch {
@@ -243,18 +234,6 @@ export class AcpPool {
   }
 
   async writeDurableRateLimit(agent, state) {
-    if (shouldUseRustRuntime()) {
-      try {
-        await setRateLimit(this.hubRoot, {
-          agent,
-          untilTs: new Date(state.untilTs).toISOString(),
-          reason: sanitizeProviderReason(state.message),
-        });
-        return;
-      } catch {
-        // Fall through to JSON storage.
-      }
-    }
     const filePath = this.rateLimitFile();
     const current = await this.readDurableRateLimits();
     current[agent] = {

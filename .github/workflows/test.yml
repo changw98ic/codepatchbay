@@ -27,17 +27,11 @@ jobs:
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
         if: runner.os == 'Linux'
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run Rust tests
-        run: cd runtime && cargo test
+      - name: Run Node tests
+        run: npm run test:node
 
       - name: Run web tests
         run: cd web && npm test -- --run
-
-      - name: Run Node tests
-        run: npm run test:node
 
       - name: Build web UI
         run: npm run build:web
@@ -52,12 +46,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Check Rust
-        run: cd runtime && cargo check
 
       - name: Check node scripts syntax
         run: |

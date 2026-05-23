@@ -3,10 +3,6 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { defaultProjectRuntimeRoot, projectRuntimeRoot as resolveProjectRuntimeRoot } from "./runtime-root.js";
-import {
-  shouldUseRustRuntime,
-  upsertRegistryProject,
-} from "./runtime-cli.js";
 
 const REGISTRY_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -146,17 +142,6 @@ export async function saveRegistry(hubRoot, registry) {
   const normalized = normalizeRegistry(registry);
   normalized.version = REGISTRY_VERSION;
   normalized.updatedAt = nowIso();
-  if (shouldUseRustRuntime()) {
-    try {
-      for (const project of Object.values(normalized.projects)) {
-        await upsertRegistryProject(hubRoot, project);
-      }
-      return await loadRegistry(hubRoot);
-    } catch {
-      // Fall back to the JS writer. Rust runtime is opt-in during migration and
-      // must not strand users if the local binary is missing or stale.
-    }
-  }
   await writeAtomic(registryPath(hubRoot), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }

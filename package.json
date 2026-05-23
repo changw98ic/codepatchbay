@@ -8,9 +8,8 @@
     "web"
   ],
   "scripts": {
-    "test": "npm run test:node && npm run test:runtime",
+    "test": "npm run test:node",
     "test:node": "node scripts/run-node-tests.mjs",
-    "test:runtime": "cd runtime && cargo test",
     "build:web": "npm run build --workspace codepatchbay-web"
   },
   "devDependencies": {
