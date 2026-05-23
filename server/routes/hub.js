@@ -381,4 +381,77 @@ export async function hubRoutes(fastify) {
     if (!project.sourcePath) throw fastify.httpErrors.badRequest(`Project '${req.params.id}' has no sourcePath`);
     return await refreshProjectCodeIndex(project, { hubRoot: hr });
   });
+
+  fastify.get("/hub/dashboard-summary", async (req) => {
+    const hr = hubRoot(req);
+    const cr = req.cpbRoot;
+    const includeTest = ["true", "1"].includes(req.query.includeTest) ||
+      ["true", "1"].includes(req.query.diagnostics);
+      
+    const [
+      status,
+      allProjects,
+      acpPool,
+      policy,
+      qStatus,
+      queue,
+      dispatches,
+      obs,
+      ledger,
+    ] = await Promise.all([
+      hubStatus(hr).catch(() => null),
+      listProjects(hr, { enabledOnly: req.query.enabledOnly === "true" }).catch(() => []),
+      (async () => {
+        const pool = getManagedAcpPool({ hubRoot: hr, cpbRoot: cr });
+        const durLimits = await pool.readDurableRateLimits().catch(() => ({}));
+        return {
+          ...pool.status(),
+          rateLimits: durLimits,
+        };
+      })().catch(() => null),
+      knowledgePolicySummary().catch(() => null),
+      queueStatus(hr).catch(() => null),
+      listQueue(hr, {}).catch(() => []),
+      listDispatches(hr, {}).catch(() => []),
+      buildObservabilitySummary({ cpbRoot: cr, hubRoot: hr, acpPool: getManagedAcpPool({ hubRoot: hr, cpbRoot: cr }) }).catch(() => null),
+      buildTaskLedger({ cpbRoot: cr, hubRoot: hr, limit: req.query.limit || 50 }).catch(() => null),
+    ]);
+
+    const visible = filterVisibleProjects(allProjects || [], { includeTest, hubRoot: hr });
+    const registryProjects = [];
+    for (const project of visible) {
+      const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr }).catch(() => ({ status: "unknown" }));
+      const entry = {
+        ...project,
+        workerDerivedStatus: workerStatus(project),
+        indexStatus: {
+          status: idx.status,
+          updatedAt: idx.updatedAt,
+          fileCount: idx.fileCount,
+          symbolCount: idx.symbolCount,
+          commandCount: idx.commandCount,
+          branch: idx.branch,
+          headShort: idx.headShort,
+          contentHash: idx.contentHash,
+        },
+      };
+      if (includeTest) {
+        entry._pollution = classifyProject(project, { hubRoot: hr });
+      }
+      registryProjects.push(entry);
+    }
+
+    return {
+      status,
+      registryProjects,
+      acp: acpPool,
+      knowledgePolicy: policy,
+      queueStatus: qStatus,
+      queueEntries: queue,
+      dispatches,
+      observability: obs,
+      taskLedger: ledger,
+    };
+  });
 }
+

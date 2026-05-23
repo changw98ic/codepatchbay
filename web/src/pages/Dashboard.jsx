@@ -26,11 +26,26 @@ export default function Dashboard() {
   const [hubDispatches, setHubDispatches] = useState([]);
   const [observability, setObservability] = useState(null);
   const [taskLedger, setTaskLedger] = useState(null);
-  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedTaskId = searchParams.get('taskId') || null;
+
+  const setSelectedTaskId = useCallback((idOrFn) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = next.get('taskId');
+      const nextId = typeof idOrFn === 'function' ? idOrFn(current) : idOrFn;
+      if (nextId) {
+        next.set('taskId', nextId);
+      } else {
+        next.delete('taskId');
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const [durableTasks, setDurableTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const { connected, subscribe } = useWebSocket();
-  const [searchParams] = useSearchParams();
   const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
 
   const fetchProjects = useCallback(() => {
@@ -49,34 +64,26 @@ export default function Dashboard() {
   }, []);
 
   const refreshHub = useCallback(() => {
-    const hubProjectsUrl = diagnostics ? '/api/hub/projects?includeTest=true' : '/api/hub/projects';
-    Promise.all([
-      fetch('/api/hub/status').then((r) => r.ok ? r.json() : null),
-      fetch(hubProjectsUrl).then((r) => r.ok ? r.json() : []),
-      fetch('/api/hub/acp').then((r) => r.ok ? r.json() : null),
-      fetch('/api/hub/knowledge-policy').then((r) => r.ok ? r.json() : null),
-      fetch('/api/hub/queue/status').then((r) => r.ok ? r.json() : null),
-      fetch('/api/hub/queue').then((r) => r.ok ? r.json() : []),
-      fetch('/api/hub/dispatches').then((r) => r.ok ? r.json() : []),
-      fetch('/api/hub/observability').then((r) => r.ok ? r.json() : null),
-      fetch('/api/hub/task-ledger?limit=50').then((r) => r.ok ? r.json() : null),
-    ])
-      .then(([status, registryProjects, acp, policy, qStatus, qEntries, dispatches, obs, ledger]) => {
-        setHubStatus(status);
-        setHubProjects(Array.isArray(registryProjects) ? registryProjects : []);
-        setHubAcp(acp);
-        setKnowledgePolicy(policy);
-        setQueueStatus(qStatus);
-        setQueueEntries(Array.isArray(qEntries) ? qEntries : []);
-        setHubDispatches(Array.isArray(dispatches) ? dispatches : []);
-        setObservability(obs);
-        setTaskLedger(ledger && Array.isArray(ledger.tasks) ? ledger : null);
-        if (ledger && Array.isArray(ledger.tasks) && ledger.tasks.length > 0) {
-          setSelectedTaskId((current) => current || ledger.tasks[0].id);
+    const url = diagnostics ? '/api/hub/dashboard-summary?includeTest=true' : '/api/hub/dashboard-summary';
+    fetch(url)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data) return;
+        setHubStatus(data.status);
+        setHubProjects(Array.isArray(data.registryProjects) ? data.registryProjects : []);
+        setHubAcp(data.acp);
+        setKnowledgePolicy(data.knowledgePolicy);
+        setQueueStatus(data.queueStatus);
+        setQueueEntries(Array.isArray(data.queueEntries) ? data.queueEntries : []);
+        setHubDispatches(Array.isArray(data.dispatches) ? data.dispatches : []);
+        setObservability(data.observability);
+        setTaskLedger(data.taskLedger && Array.isArray(data.taskLedger.tasks) ? data.taskLedger : null);
+        if (data.taskLedger && Array.isArray(data.taskLedger.tasks) && data.taskLedger.tasks.length > 0) {
+          setSelectedTaskId((current) => current || data.taskLedger.tasks[0].id);
         }
       })
       .catch(() => {});
-  }, []);
+  }, [diagnostics, setSelectedTaskId]);
 
   useEffect(() => { fetchProjects(); refreshDurableTasks(); refreshHub(); }, [fetchProjects, refreshDurableTasks, refreshHub]);
 
@@ -89,6 +96,7 @@ export default function Dashboard() {
     }, 15000);
     return () => clearInterval(id);
   }, [connected, fetchProjects, refreshHub]);
+
 
   // Targeted WS updates (no full refetch)
   useEffect(() => {

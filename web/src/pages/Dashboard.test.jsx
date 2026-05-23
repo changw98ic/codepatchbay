@@ -13,6 +13,21 @@ function jsonResponse(data) {
 
 function mockFetch(map) {
   return vi.fn((url) => {
+    if (url.startsWith('/api/hub/dashboard-summary')) {
+      const includeTest = url.includes('includeTest=true');
+      const hubProjectsKey = includeTest ? '/api/hub/projects?includeTest=true' : '/api/hub/projects';
+      return jsonResponse({
+        status: map['/api/hub/status'] ?? null,
+        registryProjects: map[hubProjectsKey] ?? map['/api/hub/projects'] ?? [],
+        acp: map['/api/hub/acp'] ?? null,
+        knowledgePolicy: map['/api/hub/knowledge-policy'] ?? null,
+        queueStatus: map['/api/hub/queue/status'] ?? null,
+        queueEntries: map['/api/hub/queue'] ?? [],
+        dispatches: map['/api/hub/dispatches'] ?? [],
+        observability: map['/api/hub/observability'] ?? null,
+        taskLedger: map['/api/hub/task-ledger?limit=50'] ?? null,
+      });
+    }
     if (map[url]) return jsonResponse(map[url]);
     return jsonResponse(null);
   });
@@ -32,47 +47,48 @@ const baseMap = {
   '/api/hub/task-ledger?limit=50': null,
 };
 
+function compileDashboardSummary(includeTest) {
+  return {
+    status: {
+      projectCount: 1,
+      enabledProjectCount: 1,
+      workerCount: 1,
+      hubRoot: '/tmp/hub',
+    },
+    registryProjects: [
+      { id: 'calc-test', sourcePath: '/tmp/calc-test', worker: { status: 'online' } },
+    ],
+    acp: {
+      pools: {
+        codex: { mode: 'bounded-one-shot', limit: 2, active: 0, queued: 0 },
+      },
+      rateLimits: {
+        codex: { untilTs: '2026-05-17T10:00:00.000Z', reason: '429' },
+      },
+    },
+    knowledgePolicy: {
+      automaticWrites: ['session'],
+      semiAutomaticWrites: ['project-memory'],
+      explicitConfirmationWrites: ['global-memory'],
+      forbiddenMarkdownState: ['queue', 'lease'],
+    },
+    queueStatus: null,
+    queueEntries: [],
+    dispatches: [],
+    observability: null,
+    taskLedger: null,
+  };
+}
+
 describe('Dashboard Hub panel', () => {
   beforeEach(() => {
     global.fetch = vi.fn((url) => {
       if (url === '/api/projects') return jsonResponse([]);
       if (url === '/api/tasks/durable') return jsonResponse([]);
-      if (url === '/api/hub/status') {
-        return jsonResponse({
-          projectCount: 1,
-          enabledProjectCount: 1,
-          workerCount: 1,
-          hubRoot: '/tmp/hub',
-        });
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        const includeTest = url.includes('includeTest=true');
+        return jsonResponse(compileDashboardSummary(includeTest));
       }
-      if (url === '/api/hub/projects') {
-        return jsonResponse([
-          { id: 'calc-test', sourcePath: '/tmp/calc-test', worker: { status: 'online' } },
-        ]);
-      }
-      if (url === '/api/hub/acp') {
-        return jsonResponse({
-          pools: {
-            codex: { mode: 'bounded-one-shot', limit: 2, active: 0, queued: 0 },
-          },
-          rateLimits: {
-            codex: { untilTs: '2026-05-17T10:00:00.000Z', reason: '429' },
-          },
-        });
-      }
-      if (url === '/api/hub/knowledge-policy') {
-        return jsonResponse({
-          automaticWrites: ['session'],
-          semiAutomaticWrites: ['project-memory'],
-          explicitConfirmationWrites: ['global-memory'],
-          forbiddenMarkdownState: ['queue', 'lease'],
-        });
-      }
-      if (url === '/api/hub/queue/status') return jsonResponse(null);
-      if (url === '/api/hub/queue') return jsonResponse([]);
-      if (url === '/api/hub/dispatches') return jsonResponse([]);
-      if (url === '/api/hub/observability') return jsonResponse(null);
-      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
       return jsonResponse(null);
     });
   });
@@ -94,14 +110,7 @@ describe('Dashboard Hub panel', () => {
     expect(screen.getByText('Knowledge')).toBeInTheDocument();
     expect(screen.getByText('1 auto')).toBeInTheDocument();
     expect(screen.getByText('2 state guards')).toBeInTheDocument();
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/status');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/acp');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/knowledge-policy');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue/status');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/queue');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/dispatches');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/task-ledger?limit=50');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/dashboard-summary');
   });
 });
 
@@ -1177,8 +1186,8 @@ describe('Dashboard default mode hides test projects', () => {
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects');
     expect(global.fetch).not.toHaveBeenCalledWith('/api/projects?includeTest=true');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects');
-    expect(global.fetch).not.toHaveBeenCalledWith('/api/hub/projects?includeTest=true');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/dashboard-summary');
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/hub/dashboard-summary?includeTest=true');
   });
 
   it('does not render test badge in default mode', async () => {
@@ -1216,7 +1225,7 @@ describe('Dashboard diagnostics mode', () => {
       expect(projectsCall).toBeTruthy();
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects?includeTest=true');
-    expect(global.fetch).toHaveBeenCalledWith('/api/hub/projects?includeTest=true');
+    expect(global.fetch).toHaveBeenCalledWith('/api/hub/dashboard-summary?includeTest=true');
   });
 
   it('renders test badge on hidden projects in diagnostics mode', async () => {
@@ -1228,22 +1237,22 @@ describe('Dashboard diagnostics mode', () => {
         ]);
       }
       if (url === '/api/tasks/durable') return jsonResponse([]);
-      if (url === '/api/hub/status') {
-        return jsonResponse({ projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' });
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 2, enabledProjectCount: 2, workerCount: 2, hubRoot: '/tmp/hub' },
+          registryProjects: [
+            { id: 'prod-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+            { id: 'test-fixture', sourcePath: '/t', _pollution: { visibility: 'test', reasons: ['metadata.visibility=test'] } },
+          ],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [],
+          observability: null,
+          taskLedger: null,
+        });
       }
-      if (url === '/api/hub/projects?includeTest=true') {
-        return jsonResponse([
-          { id: 'prod-a', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
-          { id: 'test-fixture', sourcePath: '/t', _pollution: { visibility: 'test', reasons: ['metadata.visibility=test'] } },
-        ]);
-      }
-      if (url === '/api/hub/acp') return jsonResponse(null);
-      if (url === '/api/hub/knowledge-policy') return jsonResponse(null);
-      if (url === '/api/hub/queue/status') return jsonResponse(null);
-      if (url === '/api/hub/queue') return jsonResponse([]);
-      if (url === '/api/hub/dispatches') return jsonResponse([]);
-      if (url === '/api/hub/observability') return jsonResponse(null);
-      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
       return jsonResponse(null);
     });
 
@@ -1263,21 +1272,21 @@ describe('Dashboard diagnostics mode', () => {
         ]);
       }
       if (url === '/api/tasks/durable') return jsonResponse([]);
-      if (url === '/api/hub/status') {
-        return jsonResponse({ projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' });
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+          registryProjects: [
+            { id: 'prod-clean', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
+          ],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [],
+          observability: null,
+          taskLedger: null,
+        });
       }
-      if (url === '/api/hub/projects?includeTest=true') {
-        return jsonResponse([
-          { id: 'prod-clean', sourcePath: '/a', worker: { status: 'online' }, workerDerivedStatus: 'online' },
-        ]);
-      }
-      if (url === '/api/hub/acp') return jsonResponse(null);
-      if (url === '/api/hub/knowledge-policy') return jsonResponse(null);
-      if (url === '/api/hub/queue/status') return jsonResponse(null);
-      if (url === '/api/hub/queue') return jsonResponse([]);
-      if (url === '/api/hub/dispatches') return jsonResponse([]);
-      if (url === '/api/hub/observability') return jsonResponse(null);
-      if (url === '/api/hub/task-ledger?limit=50') return jsonResponse(null);
       return jsonResponse(null);
     });
 

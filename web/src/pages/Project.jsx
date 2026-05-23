@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useWebSocket } from '../hooks/useWebSocket';
 import PipelineStatus from '../components/PipelineStatus';
 import FileViewer from '../components/FileViewer';
@@ -10,9 +10,32 @@ const TABS = ['context', 'tasks', 'inbox', 'outputs', 'log', 'decisions'];
 export default function Project() {
   const { name } = useParams();
   const [project, setProject] = useState(null);
-  const [tab, setTab] = useState('context');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') || 'context';
+  const selectedFile = searchParams.get('file') || null;
+
+  const setTab = (newTab) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', newTab);
+      next.delete('file');
+      return next;
+    }, { replace: true });
+  };
+
+  const setSelectedFile = (newFile) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (newFile) {
+        next.set('file', newFile);
+      } else {
+        next.delete('file');
+      }
+      return next;
+    }, { replace: true });
+  };
+
   const [files, setFiles] = useState([]);
-  const [selectedFile, setSelectedFile] = useState(null);
   const [fileContent, setFileContent] = useState(null);
   const [loading, setLoading] = useState(true);
   const { subscribe } = useWebSocket();
@@ -33,34 +56,44 @@ export default function Project() {
       .catch(() => setFiles([]));
   };
 
-  const fetchFile = (filePath) => {
-    fetch(`/api/projects/${name}/files/${filePath}`)
-      .then((r) => r.json())
-      .then((data) => { setFileContent(data.content); setSelectedFile(filePath); })
-      .catch(() => { setFileContent(null); setSelectedFile(null); });
-  };
-
   useEffect(() => {
     if (tab === 'inbox' || tab === 'outputs') {
       fetchFileList(tab);
-      setSelectedFile(null);
-      setFileContent(null);
     }
   }, [tab, name]);
+
+  useEffect(() => {
+    if (selectedFile) {
+      fetch(`/api/projects/${name}/files/${selectedFile}`)
+        .then((r) => r.json())
+        .then((data) => setFileContent(data.content))
+        .catch(() => setFileContent(null));
+    } else {
+      setFileContent(null);
+    }
+  }, [selectedFile, name]);
 
   // Real-time updates
   useEffect(() => {
     const unsub1 = subscribe('pipeline:update', (msg) => {
-      if (msg.project === name) fetchProject();
+      if (msg.project === name) {
+        setProject((prev) => prev ? { ...prev, pipelineState: msg.state } : null);
+      }
     });
     const unsub2 = subscribe('file:modified', (msg) => {
-      if (msg.project === name && selectedFile === msg.path) fetchFile(msg.path);
+      if (msg.project === name && selectedFile === msg.path) {
+        fetch(`/api/projects/${name}/files/${msg.path}`)
+          .then((r) => r.json())
+          .then((data) => setFileContent(data.content))
+          .catch(() => {});
+      }
     });
     const unsub3 = subscribe('file:created', (msg) => {
       if (msg.project === name && (tab === 'inbox' || tab === 'outputs')) fetchFileList(tab);
     });
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [subscribe, name, tab, selectedFile]);
+
 
   if (loading) return <div className="loading">Loading...</div>;
   if (!project) return <div className="error">Project not found</div>;
@@ -106,7 +139,7 @@ export default function Project() {
                   <button
                     key={f}
                     className={`file-item ${selectedFile === `${tab}/${f}` ? 'active' : ''}`}
-                    onClick={() => fetchFile(`${tab}/${f}`)}
+                    onClick={() => setSelectedFile(`${tab}/${f}`)}
                   >
                     {f}
                   </button>
