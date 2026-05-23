@@ -1,11 +1,20 @@
 export async function run(args, { cpbRoot, executorRoot }) {
-  const project = args[0];
-  const task = args[1];
+  const filtered = [];
+  let agent = "";
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--agent" && args[i + 1]) {
+      agent = args[++i];
+    } else {
+      filtered.push(args[i]);
+    }
+  }
+  const project = filtered[0];
+  const task = filtered[1];
   if (!project || !task) {
-    console.error("Usage: cpb plan <project> '<task>'");
+    console.error("Usage: cpb plan <project> '<task>' [--agent <name>]");
     process.exit(1);
   }
   const { runPhase } = await import("../../bridges/run-phase.mjs");
-  const code = await runPhase("plan", { executorRoot, cpbRoot, project, task });
+  const code = await runPhase("plan", { executorRoot, cpbRoot, project, task, agent: agent || undefined });
   return Number.isInteger(code) ? code : 0;
 }

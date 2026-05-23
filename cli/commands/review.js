@@ -10,18 +10,32 @@ const NC = "\x1b[0m";
 export async function run(args, { cpbRoot, executorRoot }) {
   const project = args[0];
   if (!project) {
-    console.error("Usage: cpb review <project> [deliverable-id] [--agent]");
+    console.error("Usage: cpb review <project> [deliverable-id] [--agent <name>|--ai]");
     process.exit(1);
   }
   const { readdir, readFile, access, constants } = await import("node:fs/promises");
   const wdir = path.join(cpbRoot, "wiki/projects", project);
 
-  let did = args[1] || "";
-  let mode = args[2] || "";
-  if (did === "--agent" || did === "--ai") {
-    mode = did;
-    did = "";
+  // Extract --agent <name> (with value) vs --agent / --ai (AI mode, no value)
+  let agentName = "";
+  let mode = "";
+  const filtered = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--agent") {
+      // Peek ahead: if next arg exists and doesn't start with --, it's an agent name
+      if (args[i + 1] && !args[i + 1].startsWith("--")) {
+        agentName = args[++i];
+      } else {
+        mode = "--agent";
+      }
+    } else if (args[i] === "--ai") {
+      mode = "--ai";
+    } else {
+      filtered.push(args[i]);
+    }
   }
+
+  let did = filtered[0] || "";
 
   if (!did) {
     const outputsDir = path.join(wdir, "outputs");
@@ -44,7 +58,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   if (mode === "--agent" || mode === "--ai") {
     const { runPhase } = await import("../../bridges/run-phase.mjs");
-    await runPhase("review", { executorRoot, cpbRoot, project, deliverableId: did });
+    await runPhase("review", { executorRoot, cpbRoot, project, deliverableId: did, agent: agentName || undefined });
     return;
   }
 

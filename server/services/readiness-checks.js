@@ -29,6 +29,7 @@ import {
   supportedStateFormatVersions,
 } from "./release-store.js";
 import { executorMetadata } from "./executor-root.js";
+import * as agentRegistry from "../../core/agents/registry.js";
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -127,20 +128,24 @@ async function checkDiskSpace(dirPath, label) {
   }
 }
 
-async function checkAcpAdapter(adapterName, command, args) {
+async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability } = {}) {
   const id = `acp-adapter-${adapterName}`;
-  const npxPkg = adapterName === "codex"
-    ? "@zed-industries/codex-acp"
-    : "@agentclientprotocol/claude-agent-acp";
 
   let stdout;
   try {
     const result = await execFileAsync(command, [...args], { timeout: SUBPROCESS_TIMEOUT_MS });
     stdout = result.stdout || "";
   } catch (e) {
+    // Experimental agents degrade to warning, stable agents are errors
+    if (stability === "experimental") {
+      return warn(id, "acp", `${adapterName} adapter not found (experimental)`, {
+        details: { command, fallback: npxPkg ? `npx -y ${npxPkg}` : undefined, error: e.message },
+        remediation: npxPkg ? `Install adapter: npx -y ${npxPkg}` : undefined,
+      });
+    }
     return error(id, "acp", `${adapterName} adapter not found`, {
-      details: { command, fallback: `npx -y ${npxPkg}`, error: e.message },
-      remediation: `Install adapter: npx -y ${npxPkg}`,
+      details: { command, fallback: npxPkg ? `npx -y ${npxPkg}` : undefined, error: e.message },
+      remediation: npxPkg ? `Install adapter: npx -y ${npxPkg}` : undefined,
     });
   }
 
@@ -409,8 +414,34 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
   const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
 
-  const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: ["--help"] };
-  const claudeAdapter = adapterOverrides?.claude || { command: "claude-agent-acp", args: ["--help"] };
+  // Resolve adapter checks from registry
+  let adapterChecks = [];
+  try {
+    await agentRegistry.loadRegistry();
+    const agents = agentRegistry.listAgents();
+    for (const d of agents) {
+      const override = adapterOverrides?.[d.name];
+      const command = override?.command || d.command;
+      const args = override?.args || d.args || ["--help"];
+      const npxPkg = d.fallbackCommand === "npx" && d.fallbackArgs?.length
+        ? d.fallbackArgs.join("").replace(/^-y\s+/, "")
+        : undefined;
+      adapterChecks.push(
+        checkAcpAdapter(d.name, command, args, {
+          npxPkg,
+          stability: d.stability,
+        }),
+      );
+    }
+  } catch {
+    // Registry unavailable, fall back to hardcoded codex/claude
+    const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: ["--help"] };
+    const claudeAdapter = adapterOverrides?.claude || { command: "claude-agent-acp", args: ["--help"] };
+    adapterChecks = [
+      checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args, { npxPkg: "@zed-industries/codex-acp" }),
+      checkAcpAdapter("claude", claudeAdapter.command, claudeAdapter.args, { npxPkg: "@agentclientprotocol/claude-agent-acp" }),
+    ];
+  }
 
   const results = await Promise.all([
     checkNode(),
@@ -419,8 +450,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkServerDeps(resolvedCpbRoot),
     checkDiskSpace(resolvedCpbRoot, "project"),
     checkDiskSpace(resolvedHubRoot, "hub"),
-    checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args),
-    checkAcpAdapter("claude", claudeAdapter.command, claudeAdapter.args),
+    ...adapterChecks,
     checkRustRuntime(resolvedCpbRoot),
     checkHubLiveness(resolvedHubRoot),
     checkHubWritability(resolvedHubRoot),
