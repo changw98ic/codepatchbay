@@ -389,7 +389,10 @@ async function runReview(cpbRoot, sessionId) {
     ]);
 
     // Phase 1: Research
-    await updateSession(cpbRoot, sessionId, { status: "researching" });
+    const currentSession = await getSession(cpbRoot, sessionId);
+    if (currentSession.status === "idle") {
+      await updateSession(cpbRoot, sessionId, { status: "researching" });
+    }
     console.log(`[review] ${sessionId} phase 1: researching`);
     const [codexRes, claudeRes] = await Promise.allSettled([
       sendWithRetry(codex, researchPrompt(session.intent, session.project), "codex"),
