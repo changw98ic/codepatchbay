@@ -28,7 +28,7 @@ export async function buildPhaseContextPacket(
   const maxBytes =
     options.maxBytes ??
     (process.env.CPB_PHASE_CONTEXT_MAX_BYTES
-      ? Number(process.env.CPB_PHASE_CONTEXT_MAX_BYTES)
+      ? (Number(process.env.CPB_PHASE_CONTEXT_MAX_BYTES) || null)
       : null) ??
     DEFAULT_MAX_BYTES;
 
