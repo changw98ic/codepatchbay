@@ -536,3 +536,61 @@ export async function readCompactProjectCodeIndexSummary(project, { hubRoot, max
     return "";
   }
 }
+
+function extractKeywords(taskDescription) {
+  if (!taskDescription || typeof taskDescription !== "string") return [];
+  const tokens = taskDescription
+    .replace(/[^a-zA-Z0-9_.\/\-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+  return [...new Set(tokens.map((t) => t.toLowerCase()))];
+}
+
+export async function readFilteredCodeIndexSummary(project, { hubRoot, taskDescription, maxBytes = 4096 } = {}) {
+  const idxDir = indexDirForProject(project, hubRoot);
+  try {
+    const summary = await readFile(path.join(idxDir, "summary.md"), "utf8");
+    if (!summary) return "";
+
+    const keywords = extractKeywords(taskDescription);
+    if (keywords.length === 0) {
+      return summary.slice(0, maxBytes);
+    }
+
+    const lines = summary.split("\n");
+    const matched = [];
+    const unmatched = [];
+
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      const hits = keywords.filter((kw) => lower.includes(kw)).length;
+      if (hits > 0) {
+        matched.push({ line, score: hits });
+      } else {
+        unmatched.push(line);
+      }
+    }
+
+    matched.sort((a, b) => b.score - a.score);
+
+    const result = [];
+    let bytes = 0;
+    for (const { line } of matched) {
+      if (bytes + line.length + 1 > maxBytes) break;
+      result.push(line);
+      bytes += line.length + 1;
+    }
+
+    if (bytes < maxBytes * 0.3) {
+      for (const line of unmatched) {
+        if (bytes + line.length + 1 > maxBytes) break;
+        result.push(line);
+        bytes += line.length + 1;
+      }
+    }
+
+    return result.join("\n");
+  } catch {
+    return "";
+  }
+}

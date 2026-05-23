@@ -45,6 +45,7 @@ class PersistentAcp {
     this.closed = false;
     this.lastActivity = Date.now();
     this.watchdog = null;
+    this.sessionId = null;
   }
 
   async start() {
@@ -108,7 +109,7 @@ class PersistentAcp {
     if (this.closed) throw new Error(`${this.agent} connection closed`);
     this.lastActivity = Date.now();
 
-    const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
+    await this.#ensureSession();
 
     let response = "";
     const startedAt = Date.now();
@@ -150,18 +151,14 @@ class PersistentAcp {
     try {
       await Promise.race([
         this.request("session/prompt", {
-          sessionId: session.sessionId,
+          sessionId: this.sessionId,
           prompt: [{ type: "text", text: prompt }],
         }),
         stuckGuard,
       ]);
-
-      await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
     } catch (err) {
       console.error(`[${this.agent}] sendPrompt error: ${err.message}`);
-      try {
-        this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: session.sessionId } });
-      } catch {}
+      await this.#closeSession();
       throw err;
     } finally {
       clearInterval(stuckTimer);
@@ -169,6 +166,21 @@ class PersistentAcp {
     }
 
     return response.trim();
+  }
+
+  async #ensureSession() {
+    if (this.sessionId) return;
+    const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
+    this.sessionId = session.sessionId;
+  }
+
+  async #closeSession() {
+    if (!this.sessionId) return;
+    const sid = this.sessionId;
+    this.sessionId = null;
+    try {
+      this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: sid } });
+    } catch {}
   }
 
   request(method, params) {
@@ -232,11 +244,15 @@ class PersistentAcp {
     this.closed = false;
     this.pending.clear();
     this.nextId = 1;
+    this.sessionId = null;
     return this.start();
   }
 
   close() {
     this.clearWatchdog();
+    if (this.sessionId) {
+      try { this.#closeSession(); } catch {}
+    }
     if (this.child && !this.closed) {
       try {
         this.child.stdin.end();
@@ -300,6 +316,24 @@ If the plan has no P2+ issues, respond with: "REVIEW: PASS"
 ${plan}`;
 }
 
+function followUpReviewPrompt(reviewer, previousIssues, revisedPlan) {
+  const issueSummary = previousIssues
+    .filter(i => i.severity >= 2)
+    .map(i => `[P${i.severity}] ${i.description}`)
+    .join("\n") || "None";
+
+  return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer (follow-up).
+This is a revised plan addressing previous review issues.
+
+**Previous issues**:
+${issueSummary}
+
+**Revised plan**:
+${revisedPlan}
+
+Review ONLY whether the previous issues were adequately addressed. For new issues use [P0]-[P3] tags. If all previous P2+ issues are resolved and no new P2+ issues exist, respond with: "REVIEW: PASS"`;
+}
+
 function revisePrompt(plan, codexIssues, claudeIssues) {
   const allIssues = [...codexIssues, ...claudeIssues]
     .filter(i => i.severity >= 2)
@@ -320,6 +354,7 @@ Provide the revised plan as markdown, addressing each issue.`;
 // --- Main review cpb ---
 
 const MAX_RETRIES = parseInt(process.env.ACP_MAX_RETRIES || "2", 10);
+const MAX_REVIEW_ROUNDS = parseInt(process.env.CPB_REVIEW_MAX_ROUNDS || "5", 10);
 
 async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
@@ -369,15 +404,24 @@ async function runReview(cpbRoot, sessionId) {
     const plan = await sendWithRetry(codex, planPrompt(session.intent, codexResearch, claudeResearch), "codex");
     await updateSession(cpbRoot, sessionId, { plan });
 
-    // Phase 3: Review Loop (max 5 rounds)
+    // Phase 3: Review Loop
     let currentPlan = plan;
-    for (let round = 1; round <= 5; round++) {
+    let prevCodexIssues = [];
+    let prevClaudeIssues = [];
+    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
 
+      const codexPrompt = round === 1
+        ? reviewPrompt(currentPlan, "codex")
+        : followUpReviewPrompt("codex", prevCodexIssues, currentPlan);
+      const claudePrompt = round === 1
+        ? reviewPrompt(currentPlan, "claude")
+        : followUpReviewPrompt("claude", prevClaudeIssues, currentPlan);
+
       const results = await Promise.allSettled([
-        sendWithRetry(codex, reviewPrompt(currentPlan, "codex"), "codex"),
-        sendWithRetry(claude, reviewPrompt(currentPlan, "claude"), "claude"),
+        sendWithRetry(codex, codexPrompt, "codex"),
+        sendWithRetry(claude, claudePrompt, "claude"),
       ]);
 
       const codexReview = results[0].status === "fulfilled" ? results[0].value : "";
@@ -388,6 +432,8 @@ async function runReview(cpbRoot, sessionId) {
 
       const codexIssues = parseIssues(codexReview);
       const claudeIssues = parseIssues(claudeReview);
+      prevCodexIssues = codexIssues;
+      prevClaudeIssues = claudeIssues;
 
       const reviews = (await getSession(cpbRoot, sessionId)).reviews;
       await updateSession(cpbRoot, sessionId, {
@@ -402,7 +448,7 @@ async function runReview(cpbRoot, sessionId) {
         return;
       }
 
-      if (round < 5) {
+      if (round < MAX_REVIEW_ROUNDS) {
         await updateSession(cpbRoot, sessionId, { status: "revising" });
         console.log(`[review] ${sessionId} revising for round ${round + 1}`);
         const revised = await sendWithRetry(codex, revisePrompt(currentPlan, codexIssues, claudeIssues), "codex");
@@ -412,7 +458,7 @@ async function runReview(cpbRoot, sessionId) {
     }
 
     await updateSession(cpbRoot, sessionId, { status: "expired" });
-    console.log(`[review] ${sessionId} expired after 5 rounds`);
+    console.log(`[review] ${sessionId} expired after ${MAX_REVIEW_ROUNDS} rounds`);
   } catch (err) {
     console.error(`[review] ${sessionId} error: ${err.message}`);
     try { await updateSession(cpbRoot, sessionId, { status: "expired" }); } catch {}

@@ -1,8 +1,25 @@
 {
   "name": "codepatchbay",
   "version": "0.2.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "cpb": "./cpb"
+  },
+  "files": [
+    "cpb",
+    "cli/",
+    "bridges/",
+    "core/",
+    "runtime/",
+    "server/",
+    "profiles/",
+    "templates/",
+    "wiki/",
+    "scripts/"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "workspaces": [
     "server",
     "web"

@@ -69,10 +69,17 @@ export async function reviewRoutes(fastify, opts) {
 
   // Start review cpb (spawns review-dispatch.mjs in background)
   fastify.post("/review/:id/start", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
-    if (!session) throw fastify.httpErrors.notFound("session not found");
-    if (session.status !== "idle") {
-      throw fastify.httpErrors.conflict(`session already in status: ${session.status}`);
+    let session;
+    try {
+      session = await updateSession(req.cpbRoot, req.params.id, { status: "researching" });
+    } catch (err) {
+      if (err.message?.includes("invalid transition")) {
+        throw fastify.httpErrors.conflict(`session not in idle state`);
+      }
+      if (err.message?.includes("not found")) {
+        throw fastify.httpErrors.notFound("session not found");
+      }
+      throw err;
     }
 
     const scriptPath = path.join(req.cpbRoot, "bridges/review-dispatch.mjs");
@@ -301,14 +308,16 @@ export async function reviewRoutes(fastify, opts) {
       }
     }
 
+    const finalStatus = (!merged && mergeError) ? "merge_failed" : "completed";
     const updated = await updateSession(req.cpbRoot, session.sessionId, {
-      status: "completed",
+      status: finalStatus,
       userVerdict: "accepted",
       merged,
+      ...(mergeError && { mergeError }),
     });
 
-    notify({ type: "review:update", sessionId: session.sessionId, status: "completed", project: session.project, session: updated });
-    return { accepted: true, merged, sessionId: session.sessionId };
+    notify({ type: "review:update", sessionId: session.sessionId, status: finalStatus, project: session.project, session: updated });
+    return { accepted: true, merged, mergeFailed: !merged && Boolean(mergeError), sessionId: session.sessionId };
   });
 }
 
