@@ -371,6 +371,7 @@ export class AcpPool {
 
   #run(agent, prompt, cwd, timeoutMs) {
     if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
+    if (process.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs);
     if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs);
   }
