@@ -30,6 +30,7 @@ Subcommands:
   list [--json] [--dest-root DIR]    List installed releases
   current [--json]                   Show current release
   use <release-id> [--json] [--dest-root DIR]  Select a release
+  install [--name ID] [--dest-root DIR] [--json]  Install a release
   doctor [--json]                    Release health checks
   gc [--dry-run|--execute] [--json]  Release garbage collection
 
@@ -159,7 +160,6 @@ async function cmdDoctor({ json }) {
 async function cmdGc({ json, rest }) {
   const hasExecute = rest.includes("--execute");
   const hasDryRun = rest.includes("--dry-run");
-  // Default to dry-run when no flag is supplied
   const dryRun = !hasExecute || hasDryRun;
 
   const {
@@ -167,7 +167,7 @@ async function cmdGc({ json, rest }) {
     executeReleaseGc,
     formatGcPlanHuman,
     formatGcResultHuman,
-  } = await import("../server/services/release-gc.js");
+  } = await import("../../server/services/release-gc.js");
 
   const plan = await buildReleaseGcPlan({ cpbRoot: process.env.CPB_ROOT });
 
@@ -189,6 +189,17 @@ async function cmdGc({ json, rest }) {
   }
 }
 
+async function cmdInstall(args, context) {
+  const mod = await import("./install-release.js");
+  if (typeof mod.run !== "function") {
+    console.error("install-release module missing run()");
+    process.exitCode = 1;
+    return;
+  }
+  const code = await mod.run(args, context);
+  if (Number.isInteger(code)) process.exitCode = code;
+}
+
 export async function run(args, context) {
   const sub = args[0] || "";
   const flags = parseFlags(args.slice(1));
@@ -196,6 +207,7 @@ export async function run(args, context) {
     case "list": await cmdList(flags); break;
     case "current": await cmdCurrent(flags); break;
     case "use": await cmdUse(flags); break;
+    case "install": await cmdInstall(args.slice(1), context); break;
     case "doctor": await cmdDoctor(flags); break;
     case "gc": await cmdGc(flags); break;
     default:

@@ -154,5 +154,6 @@ async function main() {
 export { main };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  const code = await main();
+  if (Number.isInteger(code)) process.exitCode = code;
 }

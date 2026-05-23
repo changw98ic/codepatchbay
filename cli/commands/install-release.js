@@ -40,16 +40,17 @@ function parseArgs(argv) {
   return options;
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+async function main(args, context) {
+  const options = parseArgs(args);
   if (options.help) {
     console.log(usage());
-    return;
+    return 0;
   }
 
-  const sourceRoot = path.resolve(
-    process.env.CPB_EXECUTOR_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."),
-  );
+  const sourceRoot = context?.executorRoot
+    || process.env.CPB_EXECUTOR_ROOT
+    || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
   const manifest = await installRelease({
     sourceRoot,
     destRoot: options.destRoot,
@@ -62,10 +63,15 @@ async function main() {
     console.log(`Release installed: ${manifest.installedPath}`);
     console.log(`Use: CPB_EXECUTOR_ROOT=${manifest.installedPath} CPB_ROOT=<project-cpb-root> cpb supervisor`);
   }
+  return 0;
+}
+
+export async function run(args, context) {
+  return main(args, context);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
+  main(process.argv.slice(2)).catch((err) => {
     console.error(err.message);
     process.exitCode = 1;
   });
