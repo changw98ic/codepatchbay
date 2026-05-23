@@ -20,6 +20,7 @@ import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.resolve(__dirname, '..'));
+const CPB_EXECUTOR_ROOT = path.resolve(process.env.CPB_EXECUTOR_ROOT || CPB_ROOT);
 const PORT = parseInt(process.env.CPB_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
 const HOST = process.env.CPB_HOST || '127.0.0.1';
 
@@ -94,13 +95,17 @@ app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
 
 // Serve pre-built web UI from web/dist/ when available (npx/production mode)
-const webDist = path.join(CPB_ROOT, 'web', 'dist');
+const webDist = path.join(CPB_EXECUTOR_ROOT, 'web', 'dist');
 if (existsSync(webDist)) {
   const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
   app.setNotFoundHandler(async (req, reply) => {
+    if (req.url.startsWith('/api') || req.url.startsWith('/ws')) {
+      return reply.code(404).send({ message: `Route GET:${req.url.split('?')[0]} not found` });
+    }
     const reqPath = req.url.split('?')[0];
     const filePath = path.join(webDist, reqPath === '/' ? 'index.html' : reqPath);
-    const safe = path.resolve(filePath).startsWith(webDist);
+    const resolved = path.resolve(filePath);
+    const safe = resolved === webDist || resolved.startsWith(webDist + path.sep);
     if (!safe) return reply.code(404).send('not found');
     try {
       const content = await readFile(filePath);
