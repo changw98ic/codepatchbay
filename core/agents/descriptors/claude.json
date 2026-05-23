@@ -9,5 +9,8 @@
   "defaultRoles": ["executor", "repairer"],
   "stability": "stable",
   "envPrefix": "CPB_ACP_CLAUDE",
-  "description": "Anthropic Claude Code in ACP mode"
+  "description": "Anthropic Claude Code in ACP mode",
+  "lifecycle": "one-shot",
+  "resumeCommand": "claude",
+  "resumeArgs": ["--resume"]
 }

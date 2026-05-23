@@ -2,6 +2,9 @@ import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import path from 'path';
 import { projectPipelineState } from './job-projection.js';
+import { readEventsReadOnly, materializeJob } from './event-store.js';
+
+const TERMINAL_STATES = new Set(['completed', 'failed', 'blocked', 'cancelled']);
 
 export function registerWatcher(cpbRoot, broadcast) {
   const projectsDir = path.join(cpbRoot, 'wiki/projects');
@@ -58,6 +61,17 @@ export function registerWatcher(cpbRoot, broadcast) {
       broadcast({ type: 'job:update', project: projectName, jobId });
       const state = await projectPipelineState(cpbRoot, projectName);
       broadcast({ type: 'pipeline:update', project: projectName, state });
+
+      // Broadcast agent:metrics on terminal job state
+      try {
+        const events = await readEventsReadOnly(cpbRoot, projectName, jobId);
+        const jobState = materializeJob(events);
+        if (TERMINAL_STATES.has(jobState.status)) {
+          const { collectAgentMetrics } = await import('./agent-metrics.js');
+          const metrics = await collectAgentMetrics(cpbRoot);
+          broadcast({ type: 'agent:metrics', agent: jobState.executor || 'unknown', jobId, status: jobState.status, metrics, ts: new Date().toISOString() });
+        }
+      } catch {}
     } catch (err) {
       console.error(`[watcher] job event error (${filePath}): ${err.message}`);
     }

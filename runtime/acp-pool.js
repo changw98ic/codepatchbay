@@ -4,6 +4,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../bridges/acp-client.mjs";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
+import { saveSessionId, loadSessionId, clearSessionId } from "../core/agents/session-cache.js";
+
+let _registryCache = null;
+async function getRegistry() {
+  if (_registryCache) return _registryCache;
+  try {
+    const mod = await import("../core/agents/registry.js");
+    await mod.loadRegistry();
+    _registryCache = mod;
+  } catch {
+    _registryCache = null;
+  }
+  return _registryCache;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -45,14 +59,43 @@ export function sanitizeProviderReason(message) {
     .slice(0, 500);
 }
 
+async function normalizeLimitsAsync(limits = {}) {
+  const registry = await getRegistry();
+
+  // Start with explicit limits from opts
+  const result = { ...limits };
+
+  // Fill defaults from registry descriptors
+  if (registry) {
+    for (const agent of registry.listAgentNames()) {
+      if (!(agent in result)) {
+        result[agent] = registry.poolLimitForAgent(agent);
+      }
+    }
+  }
+
+  // Legacy fallback: always ensure codex and claude
+  if (!result.codex) result.codex = Number(process.env.CPB_ACP_POOL_CODEX || 2);
+  if (!result.claude) result.claude = Number(process.env.CPB_ACP_POOL_CLAUDE || 1);
+
+  // Env overrides for any agent (CPB_ACP_POOL_<NAME>)
+  for (const [key, value] of Object.entries(process.env)) {
+    const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
+    if (match) {
+      const agentName = match[1].toLowerCase();
+      result[agentName] = Number(value) || 2;
+    }
+  }
+
+  return result;
+}
+
+// Sync fallback for constructor (registry not loaded yet)
 function normalizeLimits(limits = {}) {
-  // Base limits: always include codex and claude for compat
   const result = {
     codex: Number(limits.codex || process.env.CPB_ACP_POOL_CODEX || 2),
     claude: Number(limits.claude || process.env.CPB_ACP_POOL_CLAUDE || 1),
   };
-
-  // Add limits for any other agents from env (CPB_ACP_POOL_<NAME>)
   for (const [key, value] of Object.entries(process.env)) {
     const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
     if (match) {
@@ -62,7 +105,6 @@ function normalizeLimits(limits = {}) {
       }
     }
   }
-
   return result;
 }
 
@@ -118,7 +160,16 @@ export class AcpPool {
     this.createdAt = Date.now();
   }
 
+  async init() {
+    const registry = await getRegistry();
+    if (registry) {
+      this.limits = await normalizeLimitsAsync(this.limits);
+    }
+    return this;
+  }
+
   async start() {
+    await this.init();
     return this.status();
   }
 
@@ -134,6 +185,25 @@ export class AcpPool {
     this.liveRequests.clear();
     this.sessions.clear();
     this.persistentChains.clear();
+  }
+
+  async statusAsync() {
+    const registry = await getRegistry();
+    const base = this.status();
+    for (const [agent, pool] of Object.entries(base.pools)) {
+      const desc = registry?.getDescriptor(agent);
+      if (desc) {
+        pool.descriptor = {
+          displayName: desc.displayName || agent,
+          stability: desc.stability || "unknown",
+          agentCapabilities: desc.capabilities || [],
+          defaultRoles: desc.defaultRoles || [],
+          command: desc.command,
+          envPrefix: desc.envPrefix,
+        };
+      }
+    }
+    return base;
   }
 
   status() {
@@ -182,6 +252,7 @@ export class AcpPool {
         lastRecycleAt: session?.recycledAt || null,
         recycleReason: session?.recycleReason || null,
         lastRecycleReason: this.lastRecycleReason.get(agent) || null,
+        sessionId: session?.sessionId || null,
         rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
         mode: this.runner
           ? "managed-reusable"
@@ -312,6 +383,7 @@ export class AcpPool {
       requestCount: 0,
       recycleReason,
       recycledAt,
+      sessionId: null,
     };
     this.sessions.set(agent, session);
     this.lastSpawnAt.set(agent, now);
@@ -335,6 +407,15 @@ export class AcpPool {
   async #recycleSession(agent, reason) {
     this.recycleCount.set(agent, (this.recycleCount.get(agent) || 0) + 1);
     this.lastRecycleReason.set(agent, reason);
+    // Save sessionId before closing if agent uses cached lifecycle
+    const session = this.sessions.get(agent);
+    if (session?.sessionId) {
+      const reg = await getRegistry();
+      const desc = reg?.getDescriptor(agent);
+      if (desc?.lifecycle === "cached") {
+        await saveSessionId(this.cpbRoot, agent, session.sessionId).catch(() => null);
+      }
+    }
     await this.#closePersistentClient(agent);
     return this.#newSession(agent, reason, Date.now());
   }
@@ -468,9 +549,14 @@ export class AcpPool {
     client.errorSink = (chunk) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };
 
     try {
-      await Promise.race([client.promptOnce(prompt, cwd), timeout]);
+      const sessionId = await Promise.race([client.promptOnce(prompt, cwd), timeout]);
       persistent.requestCount += 1;
       persistent.lastUsedAt = Date.now();
+      // Capture sessionId for cached lifecycle
+      if (sessionId) {
+        const session = this.sessions.get(agent);
+        if (session) session.sessionId = sessionId;
+      }
       return stdout.trim();
     } catch (error) {
       await this.#closePersistentClient(agent);
@@ -490,6 +576,15 @@ export class AcpPool {
     if (existing && !existing.client.closed) return existing;
     if (existing) this.persistentClients.delete(agent);
 
+    // Load cached sessionId for cached lifecycle agents
+    let resumeSessionId = null;
+    const reg = await getRegistry();
+    const desc = reg?.getDescriptor(agent);
+    if (desc?.lifecycle === "cached") {
+      const cached = await loadSessionId(this.cpbRoot, agent).catch(() => null);
+      if (cached?.sessionId) resumeSessionId = cached.sessionId;
+    }
+
     const client = new AcpClient({
       agent,
       cwd,
@@ -499,6 +594,7 @@ export class AcpPool {
       outputSink: () => {},
       errorSink: () => {},
       env: { ...process.env, CPB_ROOT: this.cpbRoot },
+      resumeSessionId,
     });
     const meta = {
       client,
@@ -527,6 +623,15 @@ export class AcpPool {
   async #closePersistentClient(agent) {
     const persistent = this.persistentClients.get(agent);
     if (!persistent) return;
+    // Save sessionId for cached lifecycle before closing
+    const session = this.sessions.get(agent);
+    if (session?.sessionId) {
+      const reg = await getRegistry();
+      const desc = reg?.getDescriptor(agent);
+      if (desc?.lifecycle === "cached") {
+        await saveSessionId(this.cpbRoot, agent, session.sessionId).catch(() => null);
+      }
+    }
     this.persistentClients.delete(agent);
     await persistent.client.close().catch(() => null);
   }

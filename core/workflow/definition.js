@@ -1,4 +1,5 @@
 import { phasesToDag, validateDag } from "./dag-executor.js";
+import { resolveSquadAgent } from "../agents/registry.js";
 
 const WORKCPBS = {
   standard: {
@@ -112,7 +113,7 @@ export function normalizeWorkflow(name) {
     }
     return {
       name: wf.name,
-      nodes: wf.nodes,
+      nodes: resolveSquadsInNodes(wf.nodes),
       edges: wf.edges || buildEdges(wf.nodes),
       maxConcurrentNodes: wf.maxConcurrentNodes || 2,
       isDag: true,
@@ -126,13 +127,26 @@ export function normalizeWorkflow(name) {
   const nodes = phasesToDag(wf.phases, wf.roleForPhase);
   const result = {
     name: wf.name,
-    nodes,
+    nodes: resolveSquadsInNodes(nodes),
     edges: buildEdges(nodes),
     maxConcurrentNodes: 1, // Legacy workflows are sequential
     isDag: wf.phases.length > 0,
   };
   _dagCache.set(cacheKey, result);
   return result;
+}
+
+/**
+ * Resolve `squad` fields in DAG nodes to concrete `agent` names.
+ * If a node has both `squad` and `agent`, `squad` takes precedence.
+ */
+function resolveSquadsInNodes(nodes) {
+  return nodes.map((node) => {
+    if (!node.squad) return node;
+    const agent = resolveSquadAgent(node.squad);
+    if (!agent) return node;
+    return { ...node, agent, _squad: node.squad };
+  });
 }
 
 function buildEdges(nodes) {

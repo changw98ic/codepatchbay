@@ -1,9 +1,14 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { autoDiscoverAgents } from "./auto-discover.js";
 
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
+const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
 
 const _registry = new Map();
+const _discovered = new Map();
+const _squads = new Map();
+const _rrCounters = new Map(); // round-robin counters per squad
 let _loaded = false;
 
 function validateDescriptor(d) {
@@ -60,8 +65,39 @@ async function loadUserDescriptors(configDir) {
 export async function loadRegistry(configDir) {
   if (_loaded && !configDir) return;
   _registry.clear();
+  _discovered.clear();
+  _squads.clear();
+  _rrCounters.clear();
   await loadBuiltinDescriptors();
   await loadUserDescriptors(configDir);
+
+  // Auto-discover installed agents (supplement, don't override)
+  try {
+    const found = await autoDiscoverAgents();
+    for (const d of found) {
+      if (!_registry.has(d.name)) {
+        _discovered.set(d.name, d);
+      }
+    }
+  } catch {
+    // Auto-discovery failure is non-fatal
+  }
+
+  // Load squad definitions
+  try {
+    const raw = await readFile(SQUADS_FILE, "utf8");
+    const data = JSON.parse(raw);
+    if (data.squads && typeof data.squads === "object") {
+      for (const [name, squad] of Object.entries(data.squads)) {
+        if (squad.leader && Array.isArray(squad.members)) {
+          _squads.set(name, { ...squad, name });
+        }
+      }
+    }
+  } catch {
+    // No squads file is fine
+  }
+
   _loaded = true;
 }
 
@@ -73,22 +109,27 @@ function ensureLoaded() {
 
 export function listAgents() {
   ensureLoaded();
-  return [..._registry.values()];
+  return [..._registry.values(), ..._discovered.values()];
 }
 
 export function listAgentNames() {
   ensureLoaded();
-  return [..._registry.keys()];
+  return [..._registry.keys(), ..._discovered.keys()];
 }
 
 export function hasAgent(name) {
   ensureLoaded();
-  return _registry.has(name);
+  return _registry.has(name) || _discovered.has(name);
 }
 
 export function getDescriptor(name) {
   ensureLoaded();
-  return _registry.get(name) || null;
+  return _registry.get(name) || _discovered.get(name) || null;
+}
+
+export function listDiscoveredAgents() {
+  ensureLoaded();
+  return [..._discovered.values()];
 }
 
 /**
@@ -182,5 +223,78 @@ export function legacyAgentForPhase(phase) {
       return "claude";
     default:
       return "codex";
+  }
+}
+
+// --- Squad support ---
+
+/**
+ * List all defined squads.
+ */
+export function listSquads() {
+  ensureLoaded();
+  return [..._squads.values()];
+}
+
+/**
+ * Get a squad definition by name.
+ */
+export function getSquad(name) {
+  ensureLoaded();
+  return _squads.get(name) || null;
+}
+
+/**
+ * Resolve a squad to a specific agent name based on strategy.
+ *
+ * Strategies:
+ * - "leader-first" (default): return leader if available in registry, else first available member
+ * - "round-robin": rotate through members on each call
+ * - "least-busy": pick member with lowest active count (requires poolStatus)
+ *
+ * poolStatus: optional object from AcpPool.status().pools — keyed by agent name,
+ * each with { active } field.
+ */
+export function resolveSquadAgent(squadName, { strategy, poolStatus } = {}) {
+  ensureLoaded();
+  const squad = _squads.get(squadName);
+  if (!squad) return null;
+
+  const strat = strategy || squad.strategy || "leader-first";
+  const available = squad.members.filter((m) => hasAgent(m));
+  if (available.length === 0) return null;
+
+  switch (strat) {
+    case "leader-first":
+      if (available.includes(squad.leader)) return squad.leader;
+      return available[0];
+
+    case "round-robin": {
+      const counter = _rrCounters.get(squadName) || 0;
+      const agent = available[counter % available.length];
+      _rrCounters.set(squadName, counter + 1);
+      return agent;
+    }
+
+    case "least-busy": {
+      if (!poolStatus) {
+        // Fallback to leader-first if no pool status
+        if (available.includes(squad.leader)) return squad.leader;
+        return available[0];
+      }
+      let best = available[0];
+      let bestActive = Infinity;
+      for (const name of available) {
+        const active = poolStatus[name]?.active || 0;
+        if (active < bestActive) {
+          bestActive = active;
+          best = name;
+        }
+      }
+      return best;
+    }
+
+    default:
+      return available[0];
   }
 }

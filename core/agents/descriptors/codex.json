@@ -9,5 +9,8 @@
   "defaultRoles": ["planner", "verifier", "reviewer"],
   "stability": "stable",
   "envPrefix": "CPB_ACP_CODEX",
-  "description": "OpenAI Codex CLI in ACP mode"
+  "description": "OpenAI Codex CLI in ACP mode",
+  "lifecycle": "one-shot",
+  "resumeCommand": "codex",
+  "resumeArgs": ["--resume"]
 }

@@ -446,6 +446,7 @@ export class AcpClient {
     outputSink = (chunk) => process.stdout.write(chunk),
     errorSink = (chunk) => process.stderr.write(chunk),
     env = process.env,
+    resumeSessionId = null,
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -456,6 +457,7 @@ export class AcpClient {
     this.outputSink = outputSink;
     this.errorSink = errorSink;
     this.env = env;
+    this.resumeSessionId = resumeSessionId;
     this.nextId = 1;
     this.pending = new Map();
     this.terminals = new Map();
@@ -476,6 +478,16 @@ export class AcpClient {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(instanceCache, { recursive: true });
       env.npm_config_cache = instanceCache;
+    }
+
+    // Per-agent HOME isolation (opt-in via CPB_AGENT_ISOLATE_HOME=1)
+    if (env.CPB_AGENT_ISOLATE_HOME === "1") {
+      const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
+      if (cpbRoot) {
+        const { createAgentHome } = await import("../core/agents/isolation.js");
+        const homeEnv = await createAgentHome(cpbRoot, this.agent, env.CPB_JOB_ID);
+        Object.assign(env, homeEnv);
+      }
     }
     this.child = spawn(command, args, {
       cwd: this.cwd,
@@ -538,7 +550,18 @@ export class AcpClient {
 
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
-    const session = await this.request("session/new", { cwd, mcpServers: [] });
+
+    // Try to resume a cached session, fall back to new
+    let session;
+    if (this.resumeSessionId) {
+      try {
+        session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
+      } catch {
+        session = await this.request("session/new", { cwd, mcpServers: [] });
+      }
+    } else {
+      session = await this.request("session/new", { cwd, mcpServers: [] });
+    }
 
     await this.request("session/prompt", {
       sessionId: session.sessionId,
@@ -549,6 +572,8 @@ export class AcpClient {
     if (initialized.agentCapabilities?.sessionCapabilities?.close) {
       await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
     }
+
+    return session.sessionId;
   }
 
   async run() {

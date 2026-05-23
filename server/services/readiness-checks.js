@@ -136,6 +136,12 @@ async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability }
     const result = await execFileAsync(command, [...args], { timeout: SUBPROCESS_TIMEOUT_MS });
     stdout = result.stdout || "";
   } catch (e) {
+    // Discovered agents: info only (non-blocking)
+    if (stability === "discovered") {
+      return skipped(id, "acp", `${adapterName} not available (auto-discovered)`, {
+        details: { command, error: e.message },
+      });
+    }
     // Experimental agents degrade to warning, stable agents are errors
     if (stability === "experimental") {
       return warn(id, "acp", `${adapterName} adapter not found (experimental)`, {
