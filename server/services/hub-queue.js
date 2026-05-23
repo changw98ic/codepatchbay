@@ -34,7 +34,7 @@ async function writeAtomic(filePath, content) {
   await rename(tmp, filePath);
 }
 
-const QUEUE_LOCK_TTL_MS = 30_000;
+const QUEUE_LOCK_TTL_MS = 120_000;
 
 async function queueLockIsStale(lockDir) {
   const now = Date.now();
@@ -53,9 +53,20 @@ async function queueLockIsStale(lockDir) {
   }
 }
 
+async function queueLockOwnerPid(lockDir) {
+  try {
+    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+    const lock = JSON.parse(raw);
+    return lock.ownerPid || null;
+  } catch {
+    return null;
+  }
+}
+
 async function withQueueLock(hubRoot, callback) {
   const file = queuePath(hubRoot);
   const lockDir = `${file}.lock`;
+  const ownerPid = process.pid;
   await mkdir(path.dirname(file), { recursive: true });
 
   let acquired = false;
@@ -64,7 +75,7 @@ async function withQueueLock(hubRoot, callback) {
       await mkdir(lockDir);
       await writeFile(
         path.join(lockDir, "lock.json"),
-        `${JSON.stringify({ acquiredAt: nowIso(), ownerPid: process.pid }, null, 2)}\n`,
+        `${JSON.stringify({ acquiredAt: nowIso(), ownerPid }, null, 2)}\n`,
         "utf8",
       );
       acquired = true;
@@ -86,7 +97,10 @@ async function withQueueLock(hubRoot, callback) {
   try {
     return await callback();
   } finally {
-    await rm(lockDir, { recursive: true, force: true });
+    const currentOwner = await queueLockOwnerPid(lockDir);
+    if (currentOwner === ownerPid) {
+      await rm(lockDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -412,6 +426,8 @@ export async function claimEligible(hubRoot, opts = {}) {
     const { recovered: recoveredIdx } = recoverIndexUnavailable(queue.entries, indexUnavailableRetryMs);
     if (recoveredIdx.length > 0) {
       recovered.push(...recoveredIdx);
+    }
+    if (recovered.length > 0) {
       await saveQueue(hubRoot, queue);
     }
 

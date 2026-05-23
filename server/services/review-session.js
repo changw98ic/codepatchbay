@@ -37,8 +37,8 @@ const VALID_TRANSITIONS = {
   planning: ["reviewing", "expired"],
   reviewing: ["revising", "user_review", "expired"],
   revising: ["reviewing", "expired"],
-  user_review: ["dispatched", "expired", "merge_failed"],
-  dispatched: ["merge_failed"],
+  user_review: ["dispatched", "expired", "merge_failed", "completed"],
+  dispatched: ["merge_failed", "completed"],
   merge_failed: ["dispatched"],
   expired: [],
 };

@@ -11,10 +11,14 @@
     "bridges/",
     "core/",
     "runtime/",
-    "server/",
+    "server/index.js",
+    "server/routes/",
+    "server/services/",
+    "server/notification/",
     "profiles/",
     "templates/",
-    "wiki/",
+    "wiki/schema.md",
+    "wiki/system/",
     "scripts/"
   ],
   "engines": {
@@ -29,9 +33,14 @@
     "test:node": "node scripts/run-node-tests.mjs",
     "build:web": "npm run build --workspace codepatchbay-web"
   },
-  "devDependencies": {
+  "dependencies": {
     "@fastify/cors": "^10.0.0",
-    "@fastify/sensible": "^6.0.4",
-    "fastify": "^5.0.0"
+    "@fastify/websocket": "^11.0.0",
+    "chokidar": "^4.0.0",
+    "fastify": "^5.0.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@fastify/sensible": "^6.0.4"
   }
 }

@@ -359,7 +359,6 @@ export class AcpClient {
     this.nextTerminalId = 1;
     this.closed = false;
     this.initialized = null;
-    this.sessionId = null;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
     this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
@@ -436,25 +435,16 @@ export class AcpClient {
 
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
-    if (!this.sessionId) {
-      const session = await this.request("session/new", { cwd, mcpServers: [] });
-      this.sessionId = session.sessionId;
-    }
+    const session = await this.request("session/new", { cwd, mcpServers: [] });
 
     await this.request("session/prompt", {
-      sessionId: this.sessionId,
+      sessionId: session.sessionId,
       prompt: [{ type: "text", text: prompt }],
     });
     await this.lineQueue;
-  }
 
-  async closeSession() {
-    if (!this.sessionId) return;
-    const sid = this.sessionId;
-    this.sessionId = null;
-    const initialized = this.initialized;
-    if (initialized?.agentCapabilities?.sessionCapabilities?.close) {
-      await this.request("session/close", { sessionId: sid }).catch(() => null);
+    if (initialized.agentCapabilities?.sessionCapabilities?.close) {
+      await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
     }
   }
 
@@ -468,7 +458,6 @@ export class AcpClient {
 
   async close() {
     this.clearIdleTimer();
-    await this.closeSession().catch(() => null);
     if (!this.child || this.closed) return;
     const child = this.child;
     const closed = new Promise((resolve) => {
