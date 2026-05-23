@@ -504,6 +504,127 @@ export function mergeProfilePolicy(basePolicy, profileConfig) {
   return merged;
 }
 
+const SECRET_PATH_PATTERNS = [
+  /(?:^|[\\/])\.env(?:[._-]|$)/i,           // .env, .env.local, .env.production
+  /(?:^|[\\/])\.credentials(?:[._-]|$)/i,   // .credentials, .credentials.json
+  /(?:^|[\\/])[\w-]*secret[\w-]*(?:[._-]|$)/i,  // *secret*, *secrets*, access-secret
+  /(?:^|[\\/])[\w-]*token[\w-]*(?:[._-]|$)/i,   // *token*, *tokens*, access-token.json
+  /\.(?:pem|key)$/i,                         // *.pem, *.key
+];
+
+function isSecretPath(targetPath) {
+  const resolved = path.resolve(targetPath);
+  return SECRET_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
+}
+
+export function evaluatePermissionDecision(role, phase, action, targetPath, cpbRoot, project, { sourcePath = null } = {}) {
+  // Action validation
+  if (!["read", "write", "execute"].includes(action)) {
+    return {
+      allowed: false,
+      classification: "deny",
+      action,
+      role,
+      phase,
+      reason: `unknown action: ${action}`,
+      recoveryGuidance: "Action must be one of: read, write, execute.",
+      observable: true,
+    };
+  }
+
+  // Read: broadly allowed, except secret paths
+  if (action === "read") {
+    if (isSecretPath(targetPath)) {
+      return {
+        allowed: false,
+        classification: "deny",
+        action: "read",
+        role,
+        phase,
+        reason: `read denied: ${path.resolve(targetPath)} matches secret/credential path pattern`,
+        recoveryGuidance: "This path contains secrets and should not be read directly. Use environment variables or a secrets manager instead.",
+        observable: true,
+      };
+    }
+    return {
+      allowed: true,
+      classification: "allow",
+      action: "read",
+      role,
+      phase,
+      reason: "",
+      recoveryGuidance: null,
+      observable: true,
+    };
+  }
+
+  // Write: delegate to existing canWrite logic
+  if (action === "write") {
+    const result = canWrite(role, targetPath, cpbRoot, project, sourcePath);
+    if (result.allowed) {
+      return {
+        allowed: true,
+        classification: "allow",
+        action: "write",
+        role,
+        phase,
+        reason: "",
+        recoveryGuidance: null,
+        observable: true,
+      };
+    }
+    return {
+      allowed: false,
+      classification: "infra_block",
+      action: "write",
+      role,
+      phase,
+      reason: result.reason || `${role} write denied for ${targetPath}`,
+      recoveryGuidance: result.recoveryGuidance || "Use the project wiki outputs directory instead.",
+      observable: true,
+    };
+  }
+
+  // Execute: delegate to existing canExecute logic
+  if (action === "execute") {
+    const result = canExecute(role, targetPath, cpbRoot, project, sourcePath);
+    if (result.allowed) {
+      return {
+        allowed: true,
+        classification: "allow",
+        action: "execute",
+        role,
+        phase,
+        reason: "",
+        recoveryGuidance: null,
+        observable: true,
+      };
+    }
+    return {
+      allowed: false,
+      classification: "infra_block",
+      action: "execute",
+      role,
+      phase,
+      reason: result.reason || `${role} execute denied for ${targetPath}`,
+      recoveryGuidance: result.recoveryGuidance || null,
+      observable: true,
+    };
+  }
+
+  // Should not reach here, but for completeness
+  return {
+    allowed: false,
+    classification: "deny",
+    action,
+    role,
+    phase,
+    reason: "unhandled permission evaluation",
+    recoveryGuidance: null,
+    observable: true,
+  };
+}
+
 export function classifyVerdictOutcome(verdictStatus) {
   if (verdictStatus === "infra_error") return INFRA_FAILURE;
   return verdictStatus;

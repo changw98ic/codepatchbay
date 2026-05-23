@@ -18,6 +18,7 @@ import {
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;
+let _permEvaluate = null;
 let _permRecord = null;
 let _permEnv = null;
 const DENIAL_HISTORY_MAX = 50;
@@ -30,6 +31,7 @@ async function loadPermissionModules() {
   try {
     const pm = await import(path.join(executorRoot, "server/services/permission-matrix.js"));
     _permCheck = pm.checkPermission;
+    _permEvaluate = pm.evaluatePermissionDecision;
     _permRecord = pm.recordPermissionDenial;
     _permEnv = {
       role: process.env.CPB_ACP_ROLE || null,
@@ -60,6 +62,36 @@ async function enforcePermission(action, targetPath) {
   await loadPermissionModules();
   if (!_permCheck || !_permEnv) return { allowed: true };
 
+  // Use ReAct-style decision envelope when available
+  if (_permEvaluate) {
+    const decision = _permEvaluate(
+      _permEnv.role, _permEnv.phase, action, targetPath,
+      _permEnv.cpbRoot, _permEnv.project,
+      { sourcePath: _permEnv.sourcePath }
+    );
+
+    if (decision.allowed) return decision;
+
+    // Record denial event with classification context
+    denialHistory.push({ targetPath, action, ts: Date.now(), classification: decision.classification });
+    if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
+
+    if (_permRecord && _permEnv.jobId) {
+      await _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
+        role: _permEnv.role,
+        action,
+        targetPath,
+        reason: decision.reason || "action denied by permission matrix",
+        phase: _permEnv.phase,
+        allowedBoundary: "",
+        recoveryGuidance: decision.recoveryGuidance || "",
+      }).catch(() => {});
+    }
+
+    return decision;
+  }
+
+  // Fallback to legacy checkPermission
   const result = _permCheck(_permEnv.role, action, targetPath, _permEnv.cpbRoot, _permEnv.project, {
     sourcePath: _permEnv.sourcePath,
     jobId: _permEnv.jobId,
@@ -67,7 +99,6 @@ async function enforcePermission(action, targetPath) {
 
   if (result.allowed) return result;
 
-  // Record denial event
   denialHistory.push({ targetPath, action, ts: Date.now() });
   if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
 
@@ -88,6 +119,32 @@ async function enforcePermission(action, targetPath) {
 
 function enforcePermissionSync(action, target) {
   if (!_permCheck || !_permEnv) return { allowed: true };
+
+  // Use ReAct-style decision envelope when available
+  if (_permEvaluate) {
+    const decision = _permEvaluate(
+      _permEnv.role, _permEnv.phase, action, target,
+      _permEnv.cpbRoot, _permEnv.project,
+      { sourcePath: _permEnv.sourcePath }
+    );
+    if (decision.allowed) return decision;
+
+    denialHistory.push({ targetPath: target, action, ts: Date.now(), classification: decision.classification });
+    if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
+    if (_permRecord && _permEnv.jobId) {
+      _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
+        role: _permEnv.role,
+        action,
+        targetPath: target,
+        reason: decision.reason || "action denied by permission matrix",
+        phase: _permEnv.phase,
+        recoveryGuidance: decision.recoveryGuidance || "",
+      }).catch(() => {});
+    }
+    return decision;
+  }
+
+  // Legacy path
   const result = _permCheck(_permEnv.role, action, target, _permEnv.cpbRoot, _permEnv.project, {
     sourcePath: _permEnv.sourcePath,
     jobId: _permEnv.jobId,
@@ -704,13 +761,18 @@ export class AcpClient {
 
     const permResult = await enforcePermission("write", targetPath);
     if (!permResult.allowed) {
+      const classification = permResult.classification || "deny";
       const msg = permResult.recoveryGuidance
         ? `write denied: ${targetPath} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `write denied: ${targetPath} (${permResult.reason})`;
       if (isRepeatedDenial(targetPath, "write")) {
-        throw new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
+        const err = new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
+        err.classification = classification;
+        throw err;
       }
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.classification = classification;
+      throw err;
     }
 
     await mkdir(path.dirname(targetPath), { recursive: true });
@@ -767,10 +829,13 @@ export class AcpClient {
     const commandLine = [params.command, ...(params.args || [])].join(" ");
     const permResult = enforcePermissionSync("execute", commandLine);
     if (!permResult.allowed) {
+      const classification = permResult.classification || "deny";
       const msg = permResult.recoveryGuidance
         ? `execute denied: ${commandLine} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `execute denied: ${commandLine} (${permResult.reason})`;
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.classification = classification;
+      throw err;
     }
 
     const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });

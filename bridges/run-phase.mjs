@@ -131,7 +131,17 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 
 // --- ACP runner ---
 
+async function runAcpManaged(agent, prompt, cwd, timeoutMs, executorRoot, options = {}) {
+  const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+  const cpbRoot = process.env.CPB_ROOT || executorRoot;
+  const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
+  return pool.execute(agent, prompt, cwd, timeoutMs, { ...options, _executorRoot: executorRoot });
+}
+
 async function runAcp(agent, prompt, cwd, executorRoot) {
+  if (process.env.CPB_ACP_USE_MANAGED_POOL !== "0") {
+    return runAcpManaged(agent, prompt, cwd, 300_000, executorRoot);
+  }
   const { spawn } = await import("node:child_process");
   const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.mjs");
   const useDirect = !!process.env.CPB_ACP_CLIENT;
@@ -280,6 +290,7 @@ async function handleExecute(args) {
   const { executorRoot, cpbRoot, project, options } = args;
   const planId = options.get("--plan-id") || "";
   const jobId = options.get("--job-id") || "";
+  const legacyContent = options.has("--legacy-content");
   if (!planId && !jobId) throw new Error("--plan-id or --job-id is required for execute phase");
 
   const verdictFile = options.get("--verdict-file") || "";
@@ -303,14 +314,18 @@ async function handleExecute(args) {
     // Locator-first path: build prompt from job/event state, not artifact content
     console.log(`Executing [${project}] job-${jobId} (locator-first)...`);
     prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile);
+  } else if (planId && !legacyContent && jobId) {
+    // Legacy artifact ID provided but jobId is available: use locator-first context packet
+    console.log(`Executing [${project}] plan-${planId} via job-${jobId} (locator-first)...`);
+    prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile);
   } else {
-    // Backward-compatible artifact-based path
+    // Backward-compatible artifact-based path (only with --legacy-content or no jobId)
     const planFile = planFilePath(cpbRoot, project, planId);
     try { await readFile(planFile, "utf8"); } catch {
       console.error(`Plan file not found: ${planFile}`);
       return 1;
     }
-    console.log(`Executing [${project}] plan-${planId}...`);
+    console.log(`Executing [${project}] plan-${planId}${legacyContent ? " (legacy-content)" : ""}...`);
     prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
   }
   console.log(`Output: ${deliverableFile}`);
@@ -360,6 +375,7 @@ async function handleVerify(args) {
   const deliverableId = options.get("--deliverable-id") || "";
   const jobId = options.get("--job-id") || "";
   const planId = options.get("--plan-id") || "";
+  const legacyContent = options.has("--legacy-content");
 
   if (!deliverableId && !jobId) {
     throw new Error("--deliverable-id or --job-id is required for verify phase");
@@ -367,7 +383,14 @@ async function handleVerify(args) {
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
-  if (deliverableId) {
+  if (deliverableId && !legacyContent) {
+    // Lightweight existence check only (no content read)
+    const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
+    try { await readFile(deliverableFile, "utf8"); } catch {
+      console.error(`Deliverable file not found: ${deliverableFile}`);
+      return 1;
+    }
+  } else if (deliverableId && legacyContent) {
     const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
     try { await readFile(deliverableFile, "utf8"); } catch {
       console.error(`Deliverable file not found: ${deliverableFile}`);
@@ -379,13 +402,17 @@ async function handleVerify(args) {
   const verdictFile = verdictFilePath(cpbRoot, project, artifactId);
 
   const label = jobId ? `job-${jobId}` : `deliverable-${deliverableId}`;
-  console.log(`Verifying [${project}] ${label}...`);
+  console.log(`Verifying [${project}] ${label}${legacyContent ? " (legacy-content)" : ""}...`);
   console.log(`Output: ${verdictFile}`);
 
   const promptOpts = planId ? { planId } : {};
   let prompt;
   if (jobId) {
+    // Locator-first: prompt uses context packet with locators, not embedded content
     prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, promptOpts);
+  } else if (deliverableId && !legacyContent) {
+    // Deliverable-ID path but locator-first: resolve via job prompt builder if possible
+    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, promptOpts);
   } else {
     prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, promptOpts);
   }
@@ -635,6 +662,7 @@ export async function runPhase(phase, {
   if (workflow) options.set("--workflow", workflow);
   if (acpProfile) options.set("--acp-profile", acpProfile);
   if (uiLaneReason) options.set("--ui-lane-reason", uiLaneReason);
+  if (process.env.CPB_LEGACY_CONTENT === "1") options.set("--legacy-content", "1");
 
   const parsed = { phase, executorRoot: resolvedExecutorRoot, cpbRoot: resolvedCpbRoot, project, workflow, options };
 

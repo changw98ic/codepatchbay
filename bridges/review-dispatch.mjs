@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
-import { createSession, getSession, updateSession, parseIssues } from "../server/services/review-session.js";
+import { createSession, getSession, updateSession, parseIssues, startSessionResearch, noteReviewAcpCall, assertReviewBudget } from "../server/services/review-session.js";
 
 const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
@@ -389,15 +389,21 @@ async function runReview(cpbRoot, sessionId) {
     ]);
 
     // Phase 1: Research
-    const currentSession = await getSession(cpbRoot, sessionId);
-    if (currentSession.status === "idle") {
-      await updateSession(cpbRoot, sessionId, { status: "researching" });
-    }
+    await startSessionResearch(cpbRoot, sessionId, `dispatch-${sessionId}`);
     console.log(`[review] ${sessionId} phase 1: researching`);
+
+    let currentBudget = await getSession(cpbRoot, sessionId);
+    assertReviewBudget(currentBudget);
+
+    const codexResearchPrompt = researchPrompt(session.intent, session.project);
+    const claudeResearchPrompt = researchPrompt(session.intent, session.project);
     const [codexRes, claudeRes] = await Promise.allSettled([
-      sendWithRetry(codex, researchPrompt(session.intent, session.project), "codex"),
-      sendWithRetry(claude, researchPrompt(session.intent, session.project), "claude"),
+      sendWithRetry(codex, codexResearchPrompt, "codex"),
+      sendWithRetry(claude, claudeResearchPrompt, "claude"),
     ]);
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: codexResearchPrompt.length });
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "claude", promptBytes: claudeResearchPrompt.length });
+
     const codexResearch = codexRes.status === "fulfilled" ? codexRes.value : "";
     const claudeResearch = claudeRes.status === "fulfilled" ? claudeRes.value : "";
     if (!codexResearch && !claudeResearch) throw new Error("both research agents failed");
@@ -408,7 +414,11 @@ async function runReview(cpbRoot, sessionId) {
     // Phase 2: Plan
     await updateSession(cpbRoot, sessionId, { status: "planning" });
     console.log(`[review] ${sessionId} phase 2: planning`);
-    const plan = await sendWithRetry(codex, planPrompt(session.intent, codexResearch, claudeResearch), "codex");
+    currentBudget = await getSession(cpbRoot, sessionId);
+    assertReviewBudget(currentBudget);
+    const planPromptText = planPrompt(session.intent, codexResearch, claudeResearch);
+    const plan = await sendWithRetry(codex, planPromptText, "codex");
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: planPromptText.length });
     await updateSession(cpbRoot, sessionId, { plan });
 
     // Phase 3: Review Loop
@@ -418,6 +428,16 @@ async function runReview(cpbRoot, sessionId) {
     for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
+
+      // Budget check before review round
+      currentBudget = await getSession(cpbRoot, sessionId);
+      try {
+        assertReviewBudget(currentBudget);
+      } catch (budgetErr) {
+        await updateSession(cpbRoot, sessionId, { status: "expired", detail: budgetErr.message });
+        console.log(`[review] ${sessionId} expired: ${budgetErr.message}`);
+        return;
+      }
 
       // Reset sessions between rounds for independent reviews
       await codex.resetSession().catch(() => null);
@@ -434,6 +454,8 @@ async function runReview(cpbRoot, sessionId) {
         sendWithRetry(codex, codexPrompt, "codex"),
         sendWithRetry(claude, claudePrompt, "claude"),
       ]);
+      await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: codexPrompt.length });
+      await noteReviewAcpCall(cpbRoot, sessionId, { agent: "claude", promptBytes: claudePrompt.length });
 
       const codexReview = results[0].status === "fulfilled" ? results[0].value : "";
       const claudeReview = results[1].status === "fulfilled" ? results[1].value : "";
@@ -462,7 +484,20 @@ async function runReview(cpbRoot, sessionId) {
       if (round < MAX_REVIEW_ROUNDS) {
         await updateSession(cpbRoot, sessionId, { status: "revising" });
         console.log(`[review] ${sessionId} revising for round ${round + 1}`);
-        const revised = await sendWithRetry(codex, revisePrompt(currentPlan, codexIssues, claudeIssues), "codex");
+
+        // Budget check before revise
+        currentBudget = await getSession(cpbRoot, sessionId);
+        try {
+          assertReviewBudget(currentBudget);
+        } catch (budgetErr) {
+          await updateSession(cpbRoot, sessionId, { status: "expired", detail: budgetErr.message });
+          console.log(`[review] ${sessionId} expired: ${budgetErr.message}`);
+          return;
+        }
+
+        const revisePromptText = revisePrompt(currentPlan, codexIssues, claudeIssues);
+        const revised = await sendWithRetry(codex, revisePromptText, "codex");
+        await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: revisePromptText.length });
         currentPlan = revised;
         await updateSession(cpbRoot, sessionId, { plan: revised });
       }

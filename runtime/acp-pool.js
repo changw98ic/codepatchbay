@@ -132,7 +132,13 @@ export class AcpPool {
       ...this.persistentClients.keys(),
     ])];
     const allLive = [...this.liveRequests.entries()]
-      .map(([id, v]) => ({ requestId: id, startedAt: v.startedAt, promptSnippet: v.promptSnippet || null }));
+      .map(([id, v]) => ({
+        requestId: id,
+        startedAt: v.startedAt,
+        promptSnippet: v.promptSnippet || null,
+        promptBytes: v.promptBytes || 0,
+        phase: v.phase || null,
+      }));
     const now = Date.now();
     const pools = {};
     for (const agent of agents) {
@@ -334,7 +340,12 @@ export class AcpPool {
     const lifecycle = await this.#prepareSession(agent);
     if (session.requestId) {
       const entry = this.liveRequests.get(session.requestId);
-      if (entry) entry.promptSnippet = String(prompt).slice(0, 120);
+      if (entry) {
+        const promptText = String(prompt);
+        entry.promptSnippet = promptText.slice(0, 80);
+        entry.promptBytes = Buffer.byteLength(promptText, "utf8");
+        if (options.phase) entry.phase = options.phase;
+      }
     }
     try {
       if (this.runner || !this.persistentProcesses) this.#noteSpawn(agent);

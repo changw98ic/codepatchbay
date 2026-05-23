@@ -87,6 +87,17 @@ export async function createSession(cpbRoot, { project, intent }) {
     reviews: [],
     userVerdict: null,
     jobId: null,
+    budget: {
+      maxRounds: parseInt(process.env.CPB_REVIEW_MAX_ROUNDS || "5", 10),
+      maxPromptBytes: parseInt(process.env.CPB_REVIEW_MAX_PROMPT_BYTES || "120000", 10),
+      maxAcpCalls: parseInt(process.env.CPB_REVIEW_MAX_ACP_CALLS || "30", 10),
+      usedAcpCalls: 0,
+      usedPromptBytes: 0,
+    },
+    idempotency: {
+      startKey: null,
+      dispatchKey: null,
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -179,4 +190,73 @@ export function parseIssues(text) {
     });
   }
   return issues;
+}
+
+export async function startSessionResearch(cpbRoot, sessionId, key) {
+  const safeId = validateSessionId(sessionId);
+  const dir = reviewsDir(cpbRoot);
+  await mkdir(dir, { recursive: true });
+  const lockDir = path.join(dir, `.lock-start-${safeId}`);
+  return withFileLock(lockDir, async () => {
+    const session = await getSession(cpbRoot, sessionId);
+    if (!session) throw new Error(`review session not found: ${sessionId}`);
+
+    const existingKey = session.idempotency?.startKey;
+    if (existingKey === key) return session; // idempotent
+
+    if (existingKey !== null && existingKey !== undefined) {
+      throw new Error(`idempotency conflict: session already started with key ${existingKey}`);
+    }
+
+    // Perform the idle → researching transition
+    if (session.status !== "idle") {
+      throw new Error(`invalid transition: ${session.status} → researching`);
+    }
+
+    const updated = {
+      ...session,
+      status: "researching",
+      idempotency: { ...session.idempotency, startKey: key },
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    return updated;
+  });
+}
+
+export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes }) {
+  const safeId = validateSessionId(sessionId);
+  const dir = reviewsDir(cpbRoot);
+  await mkdir(dir, { recursive: true });
+  const lockDir = path.join(dir, `.lock-${safeId}`);
+  return withFileLock(lockDir, async () => {
+    const session = await getSession(cpbRoot, sessionId);
+    if (!session) throw new Error(`review session not found: ${sessionId}`);
+
+    const budget = {
+      ...session.budget,
+      usedAcpCalls: (session.budget?.usedAcpCalls || 0) + 1,
+      usedPromptBytes: (session.budget?.usedPromptBytes || 0) + (promptBytes || 0),
+    };
+
+    const updated = {
+      ...session,
+      budget,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    return updated;
+  });
+}
+
+export function assertReviewBudget(session) {
+  const budget = session.budget;
+  if (!budget) return session;
+  if (budget.usedAcpCalls >= budget.maxAcpCalls) {
+    throw new Error(`budget exhausted: usedAcpCalls(${budget.usedAcpCalls}) >= maxAcpCalls(${budget.maxAcpCalls})`);
+  }
+  if (budget.usedPromptBytes >= budget.maxPromptBytes) {
+    throw new Error(`budget exhausted: usedPromptBytes(${budget.usedPromptBytes}) >= maxPromptBytes(${budget.usedPromptBytes})`);
+  }
+  return session;
 }

@@ -9,6 +9,7 @@ import {
   getSession,
   listSessions,
   updateSession,
+  startSessionResearch,
 } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import { writeProjectIndex } from "../services/project-index.js";
@@ -70,11 +71,15 @@ export async function reviewRoutes(fastify, opts) {
   // Start review cpb (spawns review-dispatch.mjs in background)
   fastify.post("/review/:id/start", async (req) => {
     let session;
+    const key = req.headers['idempotency-key'] || `start-${Date.now()}`;
     try {
-      session = await updateSession(req.cpbRoot, req.params.id, { status: "researching" });
+      session = await startSessionResearch(req.cpbRoot, req.params.id, key);
     } catch (err) {
       if (err.message?.includes("invalid transition") || err.message?.includes("already in status")) {
         throw fastify.httpErrors.conflict(`session not in idle state`);
+      }
+      if (err.message?.includes("idempotency conflict")) {
+        throw fastify.httpErrors.conflict(`session already started with different key`);
       }
       if (err.message?.includes("not found")) {
         throw fastify.httpErrors.notFound("session not found");

@@ -100,6 +100,35 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log(`Projects: ${diag.hub.enabledProjectCount}/${diag.hub.projectCount} enabled`);
       console.log(`Queue: ${diag.queue.total} (${diag.queue.pending} pending, ${diag.queue.inProgress} active)`);
     }
+  } else if (sub === "observe") {
+    const { buildChainSnapshot, analyzeChainSnapshot } = await import("../../server/services/observer.js");
+    const observeProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
+    const observeJobId = args[2] && !args[2].startsWith("--") ? args[2] : null;
+
+    if (!observeProject || !observeJobId) {
+      console.error("Usage: cpb hub observe <project> <job-id> [--json]");
+      process.exit(1);
+    }
+
+    const snapshot = await buildChainSnapshot({ cpbRoot, hubRoot, project: observeProject, jobId: observeJobId });
+    const analysis = analyzeChainSnapshot(snapshot);
+
+    if (json) {
+      console.log(JSON.stringify({ snapshot, analysis }, null, 2));
+    } else {
+      console.log(`Recommendation: ${analysis.recommendation}`);
+      console.log(`Reasons:`);
+      for (const r of analysis.reasons) console.log(`  - ${r}`);
+      if (snapshot.job) {
+        console.log(`Job: ${snapshot.job.jobId} status=${snapshot.job.status} phase=${snapshot.job.phase || "-"}`);
+      }
+      if (snapshot.lease) {
+        console.log(`Lease: ${snapshot.lease.leaseId} expires=${snapshot.lease.expiresAt}`);
+      }
+      console.log(`Events: ${snapshot.eventTail.length} (tail)`);
+      console.log(`Inbox pending: ${snapshot.inboxPending}`);
+      console.log(`Snapshot at: ${snapshot.timestamp}`);
+    }
   } else {
     console.error(`Unknown hub subcommand: ${sub}`);
     process.exit(1);

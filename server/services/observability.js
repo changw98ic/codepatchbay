@@ -4,6 +4,7 @@ import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listDispatches } from "./dispatch-state.js";
 import { redactSecrets } from "./secret-policy.js";
+import { buildChainSnapshot, analyzeChainSnapshot } from "./observer.js";
 
 export function redactDiagnostics(value, key = "") {
   return redactSecrets(value, key);
@@ -38,6 +39,13 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
   });
 
   const pools = {};
+  const acpPoolSummary = {
+    sessionAges: [],
+    requestCounts: {},
+    recycleCounts: {},
+    promptByteTotals: {},
+  };
+
   for (const [agent, state] of Object.entries(acpStatus.pools || {})) {
     const spawnAge = state.lastSpawnAt ? now - new Date(state.lastSpawnAt).getTime() : null;
     pools[agent] = {
@@ -56,6 +64,18 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
       providerProcessReuse: state.providerProcessReuse ?? false,
       activeRequests: Array.isArray(state.activeRequests) ? state.activeRequests.length : 0,
     };
+
+    // Extended pool metadata
+    if (state.sessionAgeMs != null) {
+      acpPoolSummary.sessionAges.push({ agent, ageMs: state.sessionAgeMs });
+    }
+    acpPoolSummary.requestCounts[agent] = state.requestCount ?? 0;
+    acpPoolSummary.recycleCounts[agent] = state.recycleCount ?? 0;
+
+    const activeRequests = Array.isArray(state.activeRequests) ? state.activeRequests : [];
+    acpPoolSummary.promptByteTotals[agent] = activeRequests.reduce(
+      (sum, r) => sum + (r.promptBytes || 0), 0,
+    );
   }
 
   const dispatchSummary = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
@@ -63,6 +83,29 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     dispatchSummary.total++;
     if (dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
   }
+
+  // Observer aggregate: scan in-progress queue entries for chain health
+  let observerBlockedChains = 0;
+  let observerStaleProcesses = 0;
+  let observerDuplicateReviews = 0;
+  try {
+    const queueEntries = await listQueue(hubRoot, { status: "in_progress" });
+    for (const entry of queueEntries) {
+      if (!entry.projectId) continue;
+      try {
+        const snapshot = await buildChainSnapshot({
+          cpbRoot,
+          hubRoot,
+          project: entry.projectId,
+          jobId: entry.metadata?.originJobId || entry.id,
+        });
+        const analysis = analyzeChainSnapshot(snapshot);
+        if (analysis.recommendation === "blocked") observerBlockedChains++;
+        if (analysis.recommendation === "stale_process") observerStaleProcesses++;
+        if (analysis.recommendation === "dedupe") observerDuplicateReviews++;
+      } catch {}
+    }
+  } catch {}
 
   const projectRuntimeRoots = projects.reduce((acc, p) => {
     if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
@@ -84,8 +127,12 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     },
     queue,
     pools,
+    acpPool: acpPoolSummary,
     rateLimits,
     dispatchSummary,
+    observerBlockedChains,
+    observerStaleProcesses,
+    observerDuplicateReviews,
   };
 }
 

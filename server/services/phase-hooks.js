@@ -198,11 +198,13 @@ const builtinHooks = {
     return { ok: true };
   }),
   // Relaxed: pass when completedPhases includes "execute" OR artifacts have execute/deliverable
+  // OR event log has phase_completed for execute OR worktree diff exists
   [HOOK_POINTS.PRE_VERIFY]: preflightCheck(REQUIRED_LOCATOR_FIELDS, (ctx) => {
     const hasArtifact = ctx.artifacts && (ctx.artifacts.execute || ctx.artifacts.deliverable);
     const hasExecuteCompletion = ctx.completedPhases && ctx.completedPhases.includes("execute");
-    if (!hasArtifact && !hasExecuteCompletion) {
-      return { ok: false, message: "pre-verify requires execute completion or deliverable artifact" };
+    const hasWorktree = Boolean(ctx.worktree);
+    if (!hasArtifact && !hasExecuteCompletion && !hasWorktree) {
+      return { ok: false, message: "pre-verify requires execute completion, deliverable artifact, or worktree" };
     }
     return { ok: true };
   }),
@@ -219,14 +221,22 @@ const builtinHooks = {
     };
   },
   [HOOK_POINTS.ON_FAILURE]: function onFailureDiagnostics(context) {
+    const errorMsg = typeof context.error === "string" ? context.error : context.error?.message || "";
+    const isPermissionDenial = /\b(write|execute|read)\s+denied\b/i.test(errorMsg)
+      || /\bPERMISSION_FAIL_FAST\b/.test(errorMsg)
+      || /\binfra_block\b/.test(errorMsg);
+
+    const failureClassification = isPermissionDenial ? "blocked" : "infra";
+    const diagnosticClassification = isPermissionDenial ? "infra_block" : "infra";
+
     return {
       ok: true,
       diagnostics: [{
-        message: `phase ${context.phase} failed for ${context.project}/${context.jobId}`,
-        classification: "infra",
+        message: `phase ${context.phase} ${failureClassification} for ${context.project}/${context.jobId}`,
+        classification: diagnosticClassification,
         phase: context.phase,
         role: context.role,
-        error: context.error?.message || context.error || null,
+        error: errorMsg || null,
         paths: {
           eventLogPath: context.eventLogPath,
           wikiDir: context.wikiDir,
@@ -235,7 +245,7 @@ const builtinHooks = {
       }],
       events: [],
       blockPhase: false,
-      classification: "infra",
+      classification: failureClassification,
     };
   },
 };

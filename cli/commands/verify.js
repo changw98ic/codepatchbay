@@ -2,10 +2,20 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const project = args[0];
   const deliverableId = args[1];
   if (!project || !deliverableId) {
-    console.error("Usage: cpb verify <project> <deliverable-id>");
+    console.error("Usage: cpb verify <project> <deliverable-id-or-job-id>");
     process.exit(1);
   }
   const { runPhase } = await import("../../bridges/run-phase.mjs");
-  const code = await runPhase("verify", { executorRoot, cpbRoot, project, deliverableId });
+
+  // When --job-id is set in pipeline context, pass it through for locator-first dispatch
+  const jobId = process.env.CPB_JOB_ID || process.env.CPB_ACP_JOB_ID || null;
+
+  const code = await runPhase("verify", {
+    executorRoot,
+    cpbRoot,
+    project,
+    deliverableId,
+    jobId,
+  });
   return Number.isInteger(code) ? code : 0;
 }
