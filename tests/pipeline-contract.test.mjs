@@ -17,6 +17,7 @@ import { writeInboxMessage, listInboxMessages, ackInboxMessage, completeInboxMes
 import { buildChainSnapshot, analyzeChainSnapshot } from "../server/services/observer.js";
 import { acquireLease } from "../server/services/lease-manager.js";
 import { buildExecutorPrompt } from "../server/services/prompt-builder.js";
+import { buildGithubIssueBranchParts } from "../server/services/branch-names.js";
 import { buildRetryInputFromVerdict } from "../core/workflow/verdict.js";
 
 const execFileAsync = promisify(execFile);
@@ -762,6 +763,88 @@ describe("pipeline-contract", () => {
       assert.match(job.worktree, /job-default-worktree-pipeline$/);
       assert.equal(job.worktreeBaseBranch, "main");
       assert.equal(job.worktreeBranch, "cpb/job-default-worktree-pipeline");
+    });
+
+    it("builds deterministic path-safe GitHub issue branch names", () => {
+      const simple = buildGithubIssueBranchParts({
+        issueNumber: 123,
+        title: "Fix login redirect!!",
+        jobId: "job-20260524-153011-a13f9c",
+      });
+
+      assert.equal(simple.branch, "cpb/issue-123-fix-login-redirect");
+      assert.equal(simple.worktreeName, "issue-123-fix-login-redirect");
+      assert.equal(simple.jobComponent, "issue-123");
+      assert.equal(simple.slug, "fix-login-redirect");
+      assert.match(simple.slug, /^[a-z0-9-]+$/);
+
+      const longA = buildGithubIssueBranchParts({
+        issueNumber: 124,
+        title: "Refactor authentication redirect handling for expired enterprise sessions with browser callbacks A",
+        jobId: "job-a",
+      });
+      const longB = buildGithubIssueBranchParts({
+        issueNumber: 124,
+        title: "Refactor authentication redirect handling for expired enterprise sessions with browser callbacks B",
+        jobId: "job-b",
+      });
+
+      assert.ok(longA.slug.length <= 48);
+      assert.ok(longB.slug.length <= 48);
+      assert.notEqual(longA.slug, longB.slug);
+      assert.equal(
+        buildGithubIssueBranchParts({
+          issueNumber: 124,
+          title: "Refactor authentication redirect handling for expired enterprise sessions with browser callbacks A",
+          jobId: "job-a",
+        }).branch,
+        longA.branch,
+      );
+    });
+
+    it("uses GitHub issue branch naming for issue worktrees", async () => {
+      const sourceRepo = await createRepo("source-issue-worktree");
+      const projectDir = path.join(tmpDir, "wiki", "projects", "test-proj");
+      await writeFile(
+        path.join(projectDir, "project.json"),
+        JSON.stringify({ sourcePath: sourceRepo }),
+        "utf8",
+      );
+      const { runPipeline } = await import("../bridges/run-pipeline.mjs");
+      const saved = {
+        CPB_ISSUE_NUMBER: process.env.CPB_ISSUE_NUMBER,
+        CPB_ISSUE_TITLE: process.env.CPB_ISSUE_TITLE,
+        CPB_ISSUE_REPO: process.env.CPB_ISSUE_REPO,
+        CPB_ISSUE_URL: process.env.CPB_ISSUE_URL,
+      };
+
+      try {
+        process.env.CPB_ISSUE_NUMBER = "123";
+        process.env.CPB_ISSUE_TITLE = "Fix login redirect!!";
+        process.env.CPB_ISSUE_REPO = "my-org/frontend";
+        process.env.CPB_ISSUE_URL = "https://github.com/my-org/frontend/issues/123";
+        await withWorktreeEnv(async () => {
+          const code = await runPipeline({
+            project: "test-proj",
+            task: "Fix login redirect",
+            workflow: "blocked",
+            jobIdOverride: "job-issue-worktree",
+            sourcePath: sourceRepo,
+            executorRoot: repoRoot,
+            cpbRoot: tmpDir,
+          });
+          assert.equal(code, 0);
+        });
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+
+      const job = await getJob(tmpDir, "test-proj", "job-issue-worktree", { dataRoot: tmpDir });
+      assert.equal(job.worktreeBranch, "cpb/issue-123-fix-login-redirect");
+      assert.match(job.worktree, /issue-123-fix-login-redirect$/);
     });
 
     it("honors project policy opt-out and keeps legacy jobs readable without worktree metadata", async () => {

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { runtimeDataPath, runtimeDataRoot } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
+import { buildGithubIssueBranchParts } from "../server/services/branch-names.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
@@ -542,7 +543,7 @@ async function currentBaseBranch(sourcePath) {
   return null;
 }
 
-async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
+async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null, sourceContext = null) {
   const projectJsonPath = path.join(wikiDir, "project.json");
   const projectConfig = await readJsonObject(projectJsonPath);
   if (envDisablesWorktree() || projectDisablesWorktree(projectConfig)) {
@@ -557,6 +558,13 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
 
   const baseBranch = await currentBaseBranch(sourcePath);
   const worktreesRoot = path.join(process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot), "worktrees");
+  const issueBranch = sourceContext?.issueNumber
+    ? buildGithubIssueBranchParts({
+      issueNumber: sourceContext.issueNumber,
+      title: sourceContext.issueTitle || sourceContext.title || jobId,
+      jobId,
+    })
+    : null;
   const result = await runCommand(
     process.execPath,
     [
@@ -565,9 +573,9 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
       "--project",
       sourcePath,
       "--job-id",
-      jobId,
+      issueBranch?.jobComponent || jobId,
       "--slug",
-      "pipeline",
+      issueBranch?.slug || "pipeline",
       "--worktrees-root",
       worktreesRoot,
     ],
@@ -766,7 +774,7 @@ export async function runPipeline({
   }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
-  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath);
+  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath, sourceContext);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents
