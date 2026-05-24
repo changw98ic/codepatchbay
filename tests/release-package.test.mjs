@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { readFile, readdir, rm, stat, mkdir, mkdtemp } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -25,6 +26,87 @@ function cpbRelease(args) {
     timeout: 15000,
   });
 }
+
+// --- D43: npm pack smoke tests ---
+
+const npmCli = path.resolve(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+
+function runNpm(args, opts) {
+  return execFileSync(nodeBin, [npmCli, ...args], {
+    encoding: "utf8",
+    timeout: 30000,
+    ...opts,
+  });
+}
+
+async function npmPackAndExtract() {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pack-"));
+  const output = runNpm(["pack", "--json", "--pack-destination", tmpDir], { cwd: repoRoot });
+  const [packed] = JSON.parse(output);
+  const tarballPath = path.join(tmpDir, path.basename(packed.filename));
+  assert.ok(await exists(tarballPath), `tarball not found: ${tarballPath}`);
+
+  const extractDir = path.join(tmpDir, "extracted");
+  await mkdir(extractDir, { recursive: true });
+  execFileSync("tar", ["-xzf", tarballPath, "-C", extractDir], { timeout: 15000 });
+
+  const packageDir = path.join(extractDir, "package");
+  assert.ok(await exists(packageDir), "tarball must contain package/ root");
+  return { tmpDir, extractDir, packageDir, packed };
+}
+
+const PACK_REQUIRED_FILES = [
+  "core/setup/agent-catalog.js",
+  "core/setup/detect.js",
+  "core/setup/install-plan.js",
+  "core/setup/manifest-schema.js",
+  "core/setup/health-check.js",
+  "core/setup/manifests/codex.json",
+  "cli/commands/setup.js",
+  "cli/commands/agents.js",
+  "cli/commands/demo.js",
+  "web/dist/index.html",
+  "README.md",
+  "docs/demo.md",
+];
+
+test("npm pack install smoke can run cpb setup --json from extracted package", async () => {
+  const packed = await npmPackAndExtract();
+  try {
+    const output = execFileSync(nodeBin, [path.join(packed.packageDir, "cpb"), "setup", "--json"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CPB_ROOT: packed.packageDir,
+        CPB_EXECUTOR_ROOT: packed.packageDir,
+      },
+      timeout: 15000,
+    });
+    const json = JSON.parse(output);
+    assert.ok(json.system, "setup --json must return system info");
+    assert.ok(json.agents?.codex, "setup --json must include known agent readiness");
+  } finally {
+    await rm(packed.tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("npm pack includes quickstart runtime and docs", async () => {
+  const packed = await npmPackAndExtract();
+  try {
+    for (const rel of PACK_REQUIRED_FILES) {
+      const full = path.join(packed.packageDir, rel);
+      assert.ok(await exists(full), `missing in packed tarball: ${rel}`);
+    }
+    assert.ok(
+      packed.packed.files.some((file) => file.path.startsWith("core/setup/")),
+      "npm pack file list must include core/setup/",
+    );
+  } finally {
+    await rm(packed.tmpDir, { recursive: true, force: true });
+  }
+});
+
+// --- Existing tests below (unchanged) ---
 
 test("release install creates a valid release package", async () => {
   const releaseName = `test-pkg-${Date.now()}`;

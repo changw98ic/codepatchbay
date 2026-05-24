@@ -20,7 +20,9 @@
     "wiki/schema.md",
     "wiki/system/",
     "web/dist/",
-    "scripts/"
+    "scripts/",
+    "README.md",
+    "docs/demo.md"
   ],
   "engines": {
     "node": ">=20.0.0"
