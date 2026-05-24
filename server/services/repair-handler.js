@@ -5,6 +5,11 @@ import { updateJobsIndexEntry } from "./jobs-index.js";
 import { resolveHubRoot } from "./hub-registry.js";
 import { enqueue, listQueue } from "./hub-queue.js";
 import { allocateArtifactId } from "./artifact-locator.js";
+import { runtimeDataRoot } from "./runtime-root.js";
+
+function dataRoot(cpbRoot) {
+  return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+}
 
 function validateId(name, value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
@@ -13,7 +18,7 @@ function validateId(name, value) {
 }
 
 async function acquireRepairLock(cpbRoot, project, jobId) {
-  const lockDir = path.join(cpbRoot, "cpb-task", "repair-locks", project, `${jobId}.lock`);
+  const lockDir = path.join(dataRoot(cpbRoot), "repair-locks", project, `${jobId}.lock`);
   await mkdir(path.dirname(lockDir), { recursive: true });
   try {
     await mkdir(lockDir);
@@ -46,7 +51,6 @@ export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const outputsDir = path.join(wikiDir, "outputs");
 
-  const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
   let events;
   try {
     events = await readEvents(cpbRoot, project, jobId);
@@ -54,7 +58,7 @@ export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
     events = [];
   }
   if (events.length === 0) {
-    throw new Error(`event file not found or empty: ${eventFile}`);
+    throw new Error(`event file not found or empty for job ${jobId}`);
   }
   const job = materializeJob(events);
 

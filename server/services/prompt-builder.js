@@ -9,6 +9,11 @@ import {
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
 import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { readCompactProjectCodeIndexSummary, readFilteredCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
+import { runtimeDataRoot } from "./runtime-root.js";
+
+function dataRoot(cpbRoot) {
+  return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+}
 
 async function preRead(filePath) {
   try {
@@ -281,8 +286,8 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
   const profile = await loadProfile(executorRoot, "executor");
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
-  const stateRoot = path.join(cpbRoot, "cpb-task");
+  const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
+  const stateRoot = dataRoot(cpbRoot);
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -454,7 +459,7 @@ ${headlessEscalationSection()}
 
 ## Verification locators
 - Job ID: ${jobId}
-- Event log: ${path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`)}
+- Event log: ${path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`)}
 ${planLocatorLines}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
@@ -505,7 +510,7 @@ export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId,
   const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
   const profile = await loadProfile(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const eventLog = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+  const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
