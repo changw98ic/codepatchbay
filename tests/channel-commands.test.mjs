@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -16,6 +16,23 @@ import {
   parseSlackSlashCommand,
   verifySlackSignature,
 } from "../server/services/channel-slack.js";
+import {
+  parseDiscordInteraction,
+  verifyDiscordSignature,
+} from "../server/services/channel-discord.js";
+
+const DISCORD_VECTOR = {
+  publicKey: "3e9ec34321874728d02aa46b151aa62c6f4aa179202b1b2e4e09830b1acdca70",
+  timestamp: "1779638400",
+  body: "{\"type\":2,\"data\":{\"name\":\"cpb\",\"options\":[{\"name\":\"command\",\"value\":\"run frontend \\\"fix login redirect\\\"\"}]},\"member\":{\"user\":{\"id\":\"U123\",\"username\":\"alice\"}},\"channel_id\":\"C123\",\"guild_id\":\"G123\"}",
+  signature: "82d7c04d95ec4ae968772dc3e76bf526e4f35134ff88b39694f1ea22ac49b635166a6be71c02ea0e1edf360a880ba6d965423cfcf5b91aab6939dc7e5d29d005",
+};
+const DISCORD_TOKEN_VECTOR = {
+  publicKey: "dfbcf64bb7b725208a4452f8e5ea980716a3c630fef1ce40372b812ca9fd30ef",
+  timestamp: "1779638401",
+  body: "{\"type\":2,\"token\":\"discord-token-secret\",\"data\":{\"name\":\"cpb\",\"options\":[{\"name\":\"command\",\"value\":\"run frontend \\\"fix login redirect\\\"\"}]},\"member\":{\"user\":{\"id\":\"U123\",\"username\":\"alice\"}},\"channel_id\":\"C123\",\"guild_id\":\"G123\"}",
+  signature: "53114e5fac056b39983e2d5f22c607f152b6ebaee807c32fc5f74773407c0ca4ede78d47bfb17ecfc2e0efa410ad494c8e3c3311c588f2e5d9bf66831eb50d08",
+};
 
 function slackSignature(secret, timestamp, rawBody) {
   return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
@@ -453,6 +470,81 @@ describe("Slack channel command skeleton", () => {
       const recovery = await getJob(cpbRoot, "frontend", body.job.jobId);
       assert.equal(recovery.recoveryOf, failed.jobId);
       assert.equal(recovery.sourceContext, null);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Discord channel command skeleton", () => {
+  it("verifies Discord Ed25519 signatures against a fixed request vector", () => {
+    const valid = verifyDiscordSignature({
+      publicKey: DISCORD_VECTOR.publicKey,
+      timestamp: DISCORD_VECTOR.timestamp,
+      signature: DISCORD_VECTOR.signature,
+      rawBody: DISCORD_VECTOR.body,
+    });
+    const invalid = verifyDiscordSignature({
+      publicKey: DISCORD_VECTOR.publicKey,
+      timestamp: DISCORD_VECTOR.timestamp,
+      signature: "00".repeat(64),
+      rawBody: DISCORD_VECTOR.body,
+    });
+
+    assert.equal(valid.ok, true);
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.reason, /signature/i);
+  });
+
+  it("maps Discord run and status interactions through the shared parser", () => {
+    const run = parseDiscordInteraction(JSON.parse(DISCORD_VECTOR.body));
+    const status = parseDiscordInteraction({
+      type: 2,
+      data: {
+        name: "cpb",
+        options: [{ name: "command", value: "status job-20260524-153011-a13f9c" }],
+      },
+      user: { id: "U456", username: "bob" },
+      channel_id: "C456",
+      guild_id: "G456",
+    });
+
+    assert.equal(run.ok, true);
+    assert.equal(run.channel, "discord");
+    assert.equal(run.actor.userId, "U123");
+    assert.equal(run.command.type, "run");
+    assert.equal(run.command.project, "frontend");
+    assert.equal(run.command.task, "fix login redirect");
+    assert.equal(status.command.type, "status");
+    assert.equal(status.command.job, "job-20260524-153011-a13f9c");
+  });
+
+  it("exposes a signed dry-run interaction endpoint without storing Discord tokens", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-discord-route-"));
+    const app = await buildChannelApp(cpbRoot, {
+      discordPublicKey: DISCORD_TOKEN_VECTOR.publicKey,
+      discordDryRun: true,
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/discord/interactions",
+        headers: {
+          "content-type": "application/json",
+          "x-signature-ed25519": DISCORD_TOKEN_VECTOR.signature,
+          "x-signature-timestamp": DISCORD_TOKEN_VECTOR.timestamp,
+        },
+        payload: DISCORD_TOKEN_VECTOR.body,
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.dryRun, true);
+      assert.equal(body.parsed.command.type, "run");
+      assert.doesNotMatch(response.body, /discord-token-secret/);
+      assert.deepEqual(await readdir(cpbRoot), []);
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

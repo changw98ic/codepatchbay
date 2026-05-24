@@ -6,6 +6,10 @@ import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import {
+  parseDiscordInteraction,
+  verifyDiscordSignature,
+} from "../services/channel-discord.js";
+import {
   handleSlackInteractiveAction,
   handleSlackSlashCommand,
   parseSlackInteractiveAction,
@@ -174,6 +178,15 @@ async function loadChannelConfig(cpbRoot) {
 }
 
 export async function channelRoutes(fastify, opts) {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+    req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
+    try {
+      done(null, JSON.parse(req.rawBody.toString("utf8") || "{}"));
+    } catch (error) {
+      done(error);
+    }
+  });
+
   fastify.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "buffer" }, (req, body, done) => {
     req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
     done(null, parseSlackFormBody(req.rawBody));
@@ -228,6 +241,40 @@ export async function channelRoutes(fastify, opts) {
     const parsed = parseSlackInteractiveAction(payload);
     const result = await handleSlackInteractiveAction(req.cpbRoot, parsed);
     return reply.code(result.ok ? 200 : 400).send(result);
+  });
+
+  fastify.post("/channels/discord/interactions", async (req, reply) => {
+    const publicKey = opts.discordPublicKey || process.env.CPB_DISCORD_PUBLIC_KEY;
+    const verification = verifyDiscordSignature({
+      publicKey,
+      timestamp: req.headers["x-signature-timestamp"],
+      signature: req.headers["x-signature-ed25519"],
+      rawBody: req.rawBody,
+    });
+    if (!verification.ok) {
+      return reply.code(401).send({ ok: false, error: verification.reason });
+    }
+
+    if (req.body?.type === 1) return { type: 1 };
+
+    const parsed = parseDiscordInteraction(req.body || {});
+    const dryRun = opts.discordDryRun === true || req.query?.dryRun === "1" || req.query?.dry_run === "1";
+    if (dryRun) {
+      return {
+        ok: true,
+        channel: "discord",
+        dryRun: true,
+        parsed,
+      };
+    }
+
+    return reply.code(202).send({
+      ok: true,
+      channel: "discord",
+      dryRun: false,
+      parsed,
+      dispatch: "pending",
+    });
   });
 
   // Feishu event callback
