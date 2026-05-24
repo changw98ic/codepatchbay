@@ -372,7 +372,7 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
   // Resolve node agent using poolStatus
   let poolStatus = null;
   try {
-    const { getManagedAcpPool } = await import("../../runtime/acp-pool.js");
+    const { getManagedAcpPool } = await import("./acp-pool.js");
     const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
     const status = await pool.statusAsync();
     poolStatus = status?.pools || null;

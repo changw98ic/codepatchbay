@@ -83,7 +83,7 @@ export async function collectAgentMetrics(cpbRoot) {
     // Pool status
     let poolInfo = null;
     try {
-      const { getManagedAcpPool } = await import("../../runtime/acp-pool.js");
+      const { getManagedAcpPool } = await import("./acp-pool.js");
       const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
       const status = await pool.statusAsync();
       const entry = status.pools?.[name];

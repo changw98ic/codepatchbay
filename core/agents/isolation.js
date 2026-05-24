@@ -1,5 +1,6 @@
 import { mkdir, rm, readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { runtimeDataPath } from "../paths.js";
 
 const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -12,7 +13,7 @@ const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
  * Only effective when CPB_AGENT_ISOLATE_HOME=1.
  */
 export async function createAgentHome(cpbRoot, agentName, jobId) {
-  const baseDir = path.join(cpbRoot, "cpb-task", "agent-homes", agentName, jobId || "default");
+  const baseDir = runtimeDataPath(cpbRoot, "agent-homes", agentName, jobId || "default");
   await mkdir(baseDir, { recursive: true });
 
   const configDir = path.join(baseDir, ".config");
@@ -41,7 +42,7 @@ export async function createAgentHome(cpbRoot, agentName, jobId) {
  *   directories with active leases are never deleted regardless of age.
  */
 export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive } = {}) {
-  const homesRoot = path.join(cpbRoot, "cpb-task", "agent-homes");
+  const homesRoot = runtimeDataPath(cpbRoot, "agent-homes");
   let agents;
   try {
     agents = await readdir(homesRoot);
@@ -52,11 +53,10 @@ export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, no
   let activeCheck = isLeaseActive;
   if (!activeCheck) {
     try {
-      const { runtimeDataPath } = await import("../../server/services/runtime-root.js");
       const { readLease, isLeaseStale } = await import("../../server/services/lease-manager.js");
+      const leasesDir = runtimeDataPath(cpbRoot, "leases");
       activeCheck = async (jobId) => {
         try {
-          const leasesDir = runtimeDataPath(cpbRoot, "leases");
           const files = await readdir(leasesDir);
           const prefix = `lease-${jobId}-`;
           for (const f of files) {

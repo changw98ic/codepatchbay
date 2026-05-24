@@ -144,3 +144,74 @@ export function scheduleReadyNodes(nodes, completedNodeIds, runningNodeIds, maxC
   const available = maxConcurrent - runningNodeIds.size;
   return ready.slice(0, Math.max(0, available));
 }
+
+/**
+ * Execute a DAG with retry and upstream reactivation.
+ *
+ * For each ready node, calls executor(node, ctx). On failure:
+ * - result.reactivate: un-complete that node + transitive downstream, retry chain
+ * - result.retryable && attempts < maxRetries: retry same node
+ * - Otherwise: terminate
+ *
+ * @param {Object} dag - DAG from normalizeWorkflow()
+ * @param {Object} callbacks
+ * @param {Function} callbacks.executor - async (node, ctx) => { ok, reason?, retryable?, reactivate? }
+ * @param {Function} [callbacks.shouldStop] - () => boolean
+ * @param {Function} [callbacks.onBeforeNode] - async (nodeId) => boolean|void
+ * @param {Function} [callbacks.onNodeResult] - async (nodeId, result) => void
+ * @param {string[]} [callbacks.seedCompleted] - Node IDs to pre-mark as completed
+ * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string}>}
+ */
+export async function executeDag(dag, callbacks) {
+  const { executor, shouldStop = () => false, onBeforeNode, onNodeResult, seedCompleted } = callbacks;
+  const nodes = dag.nodes;
+  const completed = new Set(seedCompleted || []);
+  const results = new Map();
+  const attempts = new Map();
+
+  while (!isDagComplete(nodes, completed)) {
+    if (shouldStop()) return { ok: false, results, reason: "stopped" };
+
+    const ready = readyNodes(nodes, completed);
+    if (ready.length === 0) break;
+
+    const nodeId = ready[0];
+    const node = getNode(nodes, nodeId);
+    const maxAttempts = node.maxRetries ?? 3;
+    const attempt = (attempts.get(nodeId) || 0) + 1;
+    attempts.set(nodeId, attempt);
+
+    if (onBeforeNode) {
+      const proceed = await onBeforeNode(nodeId);
+      if (proceed === false) return { ok: false, results, failedNode: nodeId, reason: "cancelled" };
+    }
+
+    const result = await executor(node, { attempt, maxAttempts });
+    results.set(nodeId, result);
+    if (onNodeResult) await onNodeResult(nodeId, result);
+
+    if (result.ok) {
+      completed.add(nodeId);
+    } else if (result.reactivate) {
+      const toClear = [result.reactivate];
+      const visited = new Set(toClear);
+      while (toClear.length > 0) {
+        const current = toClear.shift();
+        completed.delete(current);
+        results.delete(current);
+        for (const n of nodes) {
+          if ((n.dependsOn || []).includes(current) && !visited.has(n.id)) {
+            visited.add(n.id);
+            toClear.push(n.id);
+          }
+        }
+      }
+    } else if (result.retryable && attempt < maxAttempts) {
+      // Not completed — will be picked up again next iteration
+    } else {
+      return { ok: false, results, failedNode: nodeId, reason: result.reason };
+    }
+  }
+
+  return { ok: isDagComplete(nodes, completed), results };
+}

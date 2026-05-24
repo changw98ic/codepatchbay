@@ -46,11 +46,12 @@ test("runtime bridge dependency is limited to acp client exception", async () =>
   assert.deepEqual(offenders, []);
 });
 
-test("server does not import from bridges", async () => {
+test("server does not import from bridges (except acp-pool)", async () => {
   const offenders = [];
   for (const file of await listFiles("server")) {
     const source = await readFile(file, "utf8");
-    if (source.includes("../bridges/")) {
+    if (source.includes("../bridges/") || source.includes("../../bridges/")) {
+      if (file.endsWith(path.join("server", "services", "acp-pool.js"))) continue;
       offenders.push(path.relative(repoRoot, file));
     }
   }

@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { AcpPool, RateLimitError } from "../runtime/acp-pool.js";
+import { AcpPool, RateLimitError } from "../server/services/acp-pool.js";
 import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub-queue.js";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
 

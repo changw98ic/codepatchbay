@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AcpPool, RateLimitError } from "../acp-pool.js";
+import { AcpPool, RateLimitError } from "../../server/services/acp-pool.js";
 import { AGENT_OUTAGE_EXIT_CODE, ProjectWorker } from "../worker/project-worker.js";
-import { getManagedAcpPool } from "../acp-pool.js";
+import { getManagedAcpPool } from "../../server/services/acp-pool.js";
 import { listProjects, resolveHubRoot } from "../../server/services/hub-registry.js";
 import {
   appendHistory,

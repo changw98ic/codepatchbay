@@ -1,4 +1,4 @@
-import { sanitizeProviderReason, getManagedAcpPool } from "../../runtime/acp-pool.js";
+import { sanitizeProviderReason, getManagedAcpPool } from "./acp-pool.js";
 import { hubStatus, listProjects, workerStatus } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { AcpPool, resetManagedAcpPoolsForTests } from "../runtime/acp-pool.js";
+import { AcpPool, resetManagedAcpPoolsForTests } from "../server/services/acp-pool.js";
 
 function fakeRunner(responses = []) {
   const calls = [];

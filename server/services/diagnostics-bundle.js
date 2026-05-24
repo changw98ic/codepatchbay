@@ -59,7 +59,7 @@ export async function gatherDiagnostics({
     if (acpPool) {
       acp = { ...acpPool.status(), rateLimits: await acpPool.readDurableRateLimits() };
     } else {
-      const { AcpPool } = await import("../../runtime/acp-pool.js");
+      const { AcpPool } = await import("./acp-pool.js");
       const pool = new AcpPool({ cpbRoot, hubRoot });
       acp = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
     }

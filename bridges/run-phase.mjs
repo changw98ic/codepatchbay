@@ -135,7 +135,7 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 // --- ACP runner ---
 
 async function runAcpManaged(agent, prompt, cwd, timeoutMs, executorRoot, options = {}) {
-  const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+  const { getManagedAcpPool } = await import("../server/services/acp-pool.js");
   const cpbRoot = process.env.CPB_ROOT || executorRoot;
   const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
   try {
@@ -657,7 +657,7 @@ export async function runPhase(phase, {
           if (node) {
             let poolStatus = null;
             try {
-              const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+              const { getManagedAcpPool } = await import("../server/services/acp-pool.js");
               const pool = getManagedAcpPool({ cpbRoot: resolvedCpbRoot, hubRoot: undefined });
               const status = await pool.statusAsync();
               poolStatus = status?.pools || null;
@@ -781,7 +781,7 @@ async function main() {
           if (node) {
             let poolStatus = null;
             try {
-              const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+              const { getManagedAcpPool } = await import("../server/services/acp-pool.js");
               const pool = getManagedAcpPool({ cpbRoot: parsed.cpbRoot, hubRoot: undefined });
               const status = await pool.statusAsync();
               poolStatus = status?.pools || null;

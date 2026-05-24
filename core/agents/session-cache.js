@@ -1,12 +1,13 @@
 import { mkdir, readFile, rename, writeFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { runtimeDataPath } from "../paths.js";
 
 const CACHE_DIR_NAME = "session-cache";
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const LOCK_TTL_MS = 10_000;
 
 function cacheDir(cpbRoot) {
-  return path.join(cpbRoot, "cpb-task", CACHE_DIR_NAME);
+  return runtimeDataPath(cpbRoot, CACHE_DIR_NAME);
 }
 
 function sessionFile(cpbRoot, agent) {

@@ -20,7 +20,7 @@ import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
-import { sanitizeProviderReason } from "../../runtime/acp-pool.js";
+import { sanitizeProviderReason } from "./acp-pool.js";
 import { scanHubPollution } from "./project-pollution.js";
 import {
   resolveReleaseStoreRoot,

@@ -1,6 +1,7 @@
 import { spawn, execFile } from "child_process";
 import path from "path";
 import { readFile, rm } from "fs/promises";
+import { runtimeDataPath } from "../services/runtime-root.js";
 import { broadcast } from "../services/ws-broadcast.js";
 import { spawnBridge } from "./tasks.js";
 import { makeJobId } from "../services/job-store.js";
@@ -27,7 +28,7 @@ function gitExec(cwd, ...args) {
 }
 
 function worktreePathFor(cpbRoot, jobId) {
-  return path.join(cpbRoot, "cpb-task", "worktrees", `${jobId}-pipeline`);
+  return runtimeDataPath(cpbRoot, "worktrees", `${jobId}-pipeline`);
 }
 
 const REVIEW_NOTIFY_STATUSES = new Set(["user_review", "dispatched", "expired", "cancelled"]);

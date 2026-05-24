@@ -22,7 +22,8 @@ import {
   failJob,
   getJob,
 } from "../server/services/job-store.js";
-import { bridgeForPhase, getWorkflow, isWorkflowName } from "../core/workflow/definition.js";
+import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "../core/workflow/definition.js";
+import { executeDag } from "../core/workflow/dag-executor.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
 import {
   dispatchEnabled,
@@ -811,447 +812,223 @@ export async function runPipeline({
       }
     }
 
-    // ─── Phase 2: Execute (+ retry) ───
-    let deliverableId = null;
+    // ─── DAG-driven phase execution: execute → review? → verify ───
+    const dag = normalizeWorkflow(workflow);
+    for (const n of dag.nodes) {
+      if (n.phase === "plan") n.maxRetries = 1;
+      else n.maxRetries = maxRetries;
+    }
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during execute phase", {
-          code: FAILURE_CODES.RECOVERABLE,
-          phase: "execute",
-        }));
-        return 1;
-      }
+    const pState = { deliverableId: null, fixCount: 0, reviewAttempt: 0, verifyAttempt: 0 };
 
-      log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude) attempt ${attempt}/${maxRetries}`);
-      const execResult = await dispatchPhase(cpbRoot, {
-        project, jobId,
-        phase: `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
-        script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-        scriptArgs: ["execute", "--project", project, "--plan-id", planId],
+    async function checkIssue(did, phaseName) {
+      const mismatch = await validateDeliverableIssue(cpbRoot, project, jobId, did, sourceContext?.issueNumber, sourceContext);
+      if (!mismatch) return null;
+      fail(`Issue mismatch: expected #${mismatch.expectedIssueNumber}, got #${mismatch.actualIssueNumber}`);
+      await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: `deliverable-${did}` });
+      return mismatch;
+    }
+
+    function dispatchRun(scriptPhase, bridgePhase, scriptArgs) {
+      return dispatchPhase(cpbRoot, {
+        project, jobId, phase: scriptPhase,
+        script: `bridges/${bridgeForPhase(workflowDef, bridgePhase)}`,
+        scriptArgs,
         executorRoot,
         env: executorEnv(process.env, { cpbRoot, executorRoot }),
         terminalOnFailure: false,
       });
-
-      deliverableId = extractDeliverableId(execResult.stdout);
-
-      if (deliverableId) {
-        ok(`deliverable-${deliverableId}`);
-        const issueMismatch = await validateDeliverableIssue(
-          cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
-        );
-        if (issueMismatch) {
-          fail(`Issue mismatch: expected #${issueMismatch.expectedIssueNumber}, got #${issueMismatch.actualIssueNumber}`);
-          await completePhase(cpbRoot, project, jobId, { phase: "execute", artifact: `deliverable-${deliverableId}` });
-          await failJob(cpbRoot, project, jobId, failure(
-            `issue_mismatch: expected #${issueMismatch.expectedIssueNumber}, got #${issueMismatch.actualIssueNumber}`,
-            { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: issueMismatch },
-          ));
-          return 1;
-        }
-        await completePhase(cpbRoot, project, jobId, {
-          phase: "execute",
-          artifact: `deliverable-${deliverableId}`,
-        });
-        break;
-      }
-
-      warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
-      await completePhase(cpbRoot, project, jobId, {
-        phase: `execute-retry-${attempt}`,
-        artifact: "",
-      });
     }
 
-    if (!deliverableId) {
-      warn(`Execute completed without deliverable after ${maxRetries} attempts. Proceeding to verify by job state.`);
-      await completePhase(cpbRoot, project, jobId, {
-        phase: "execute",
-        artifact: "",
-      });
-    }
-
-    if (deliverableId && workflowDef.phases.includes("review")) {
-      let reviewPassed = false;
-      let lastReviewVerdict = null;
-
-      for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
-        if (checkTimeout()) {
-          await failJob(cpbRoot, project, jobId, failure("timed out during review phase", {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "review",
-          }));
-          return 1;
+    const dagResult = await executeDag(dag, {
+      seedCompleted: ["plan"],
+      shouldStop: () => timedOut,
+      onBeforeNode: async (nodeId) => {
+        if (nodeId === "plan" || nodeId === "execute") return true;
+        const check = await checkCancelAndRedirect(cpbRoot, project, jobId, nodeId);
+        if (check.cancelled) {
+          await failJob(cpbRoot, project, jobId, failure(`cancelled before ${nodeId}`, { code: FAILURE_CODES.BLOCKED, phase: nodeId }));
+          return false;
         }
-
-        const reviewPhaseName = reviewCycle === 1 ? "review" : `review-retry-${reviewCycle}`;
-        log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewCycle}/${maxRetries}`);
-        const reviewResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: reviewPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-          scriptArgs: ["review", "--project", project, "--deliverable-id", deliverableId],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-          terminalOnFailure: false,
-        });
-
-        if (reviewResult.error) {
-          fail(`Review spawn failed: ${reviewResult.error.message}`);
-          await failJob(cpbRoot, project, jobId, failure(`review spawn error: ${reviewResult.error.message}`, {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "review",
-            cause: { message: reviewResult.error.message },
-          }));
-          return 1;
-        }
-
-        const reviewPath = path.resolve(wikiDir, "outputs", `review-${deliverableId}.md`);
-        const reviewVerdict = await parseReviewVerdict(reviewPath);
-        lastReviewVerdict = reviewVerdict;
-
-        if (reviewVerdict === "PASS") {
-          ok(`review-${deliverableId}`);
-          await completePhase(cpbRoot, project, jobId, {
-            phase: "review",
-            artifact: `review-${deliverableId}`,
-          });
-          reviewPassed = true;
-          break;
-        }
-
-        warn(`Review did not pass: ${reviewVerdict ?? "missing"}`);
-        await completePhase(cpbRoot, project, jobId, {
-          phase: reviewPhaseName,
-          artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
-        });
-
-        if (reviewVerdict === null || reviewCycle >= maxRetries) {
-          break;
-        }
-
-        log(project, "Re-executing (Claude review fix)...");
-        const fixPhaseName = `review-fix-${reviewCycle}`;
-        const fixResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: fixPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: ["execute", "--project", project, "--plan-id", planId],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-          terminalOnFailure: false,
-        });
-
-        const newDeliverableId = extractDeliverableId(fixResult.stdout);
-        if (newDeliverableId) {
-          deliverableId = newDeliverableId;
-          ok(`deliverable-${deliverableId} (review fix)`);
-          const reviewMismatch = await validateDeliverableIssue(
-            cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
-          );
-          if (reviewMismatch) {
-            fail(`Issue mismatch in review fix: expected #${reviewMismatch.expectedIssueNumber}, got #${reviewMismatch.actualIssueNumber}`);
-            await completePhase(cpbRoot, project, jobId, { phase: fixPhaseName, artifact: `deliverable-${deliverableId}` });
-            await failJob(cpbRoot, project, jobId, failure(
-              `issue_mismatch: expected #${reviewMismatch.expectedIssueNumber}, got #${reviewMismatch.actualIssueNumber}`,
-              { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: reviewMismatch },
-            ));
-            return 1;
+        return true;
+      },
+      onNodeResult: async (nodeId, result) => {
+        if (!result.ok && !result.retryable && !result.reactivate) {
+          const job = await getJob(cpbRoot, project, jobId);
+          if (job && !["completed", "failed", "cancelled"].includes(job.status)) {
+            await failJob(cpbRoot, project, jobId, failure(result.reason, {
+              code: result.failCode || FAILURE_CODES.FATAL,
+              phase: result.failPhase || nodeId,
+              cause: result.failCause,
+              retryable: result.retryable,
+            }));
           }
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: `deliverable-${deliverableId}`,
-          });
-        } else {
-          warn("Review fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: "",
-          });
         }
-      }
+      },
+      executor: async (node, ctx) => {
+        const { attempt, maxAttempts } = ctx;
 
-      if (!reviewPassed) {
-        await failJob(cpbRoot, project, jobId, failure(`review did not pass: ${lastReviewVerdict ?? "missing"}`, {
-          code: FAILURE_CODES.QUALITY_FAIL,
-          phase: "review",
-          retryable: false,
-        }));
-        return 1;
-      }
+        // ─── Execute ───
+        if (node.phase === "execute") {
+          const isFix = pState.fixCount > 0;
+          const phaseName = isFix ? `fix-${pState.fixCount}` : (attempt > 1 ? `execute-retry-${attempt}` : "execute");
+          log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude)${isFix ? " fix" : ""} attempt ${isFix ? pState.fixCount : attempt}/${maxAttempts}`);
 
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after review", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
-        return 1;
-      }
+          const execResult = await dispatchRun(phaseName, "execute", ["execute", "--project", project, "--plan-id", planId]);
+          const did = extractDeliverableId(execResult.stdout);
+
+          if (did) {
+            ok(`deliverable-${did}${isFix ? " (fix)" : ""}`);
+            const mismatch = await checkIssue(did, phaseName);
+            if (mismatch) {
+              return { ok: false, reason: `issue_mismatch: expected #${mismatch.expectedIssueNumber}, got #${mismatch.actualIssueNumber}`, retryable: false, failPhase: phaseName, failCode: FAILURE_CODES.ISSUE_MISMATCH, failCause: mismatch };
+            }
+            pState.deliverableId = did;
+            await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: `deliverable-${did}` });
+            return { ok: true };
+          }
+
+          warn(`No deliverable${isFix ? " from fix" : ""}.`);
+          await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: "" });
+
+          if (isFix) return { ok: true };
+          if (attempt >= maxAttempts) {
+            warn(`Execute completed without deliverable after ${maxAttempts} attempts. Proceeding to verify by job state.`);
+            return { ok: true };
+          }
+          return { ok: false, reason: "no deliverable", retryable: true };
+        }
+
+        // ─── Review (complex workflow) ───
+        if (node.phase === "review") {
+          if (!pState.deliverableId) return { ok: true };
+          pState.reviewAttempt++;
+          const reviewNum = pState.reviewAttempt;
+          const phaseName = reviewNum === 1 ? "review" : `review-retry-${reviewNum}`;
+
+          log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewNum}/${maxRetries}`);
+          const reviewResult = await dispatchRun(phaseName, "review", ["review", "--project", project, "--deliverable-id", pState.deliverableId]);
+
+          if (reviewResult.error) {
+            return { ok: false, reason: `review spawn error: ${reviewResult.error.message}`, retryable: true, failPhase: "review" };
+          }
+
+          const reviewPath = path.resolve(wikiDir, "outputs", `review-${pState.deliverableId}.md`);
+          const reviewVerdict = await parseReviewVerdict(reviewPath);
+
+          if (reviewVerdict === "PASS") {
+            ok(`review-${pState.deliverableId}`);
+            await completePhase(cpbRoot, project, jobId, { phase: "review", artifact: `review-${pState.deliverableId}` });
+            return { ok: true };
+          }
+
+          warn(`Review did not pass: ${reviewVerdict ?? "missing"}`);
+          await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: reviewVerdict === null ? "" : `review-${pState.deliverableId}` });
+
+          if (reviewVerdict === null || reviewNum >= maxRetries) {
+            return { ok: false, reason: `review did not pass: ${reviewVerdict ?? "missing"}`, retryable: false, failPhase: "review", failCode: FAILURE_CODES.QUALITY_FAIL };
+          }
+
+          pState.fixCount++;
+          log(project, "Re-executing (Claude review fix)...");
+          return { ok: false, reason: "review failed", retryable: false, reactivate: "execute" };
+        }
+
+        // ─── Verify ───
+        if (node.phase === "verify") {
+          pState.verifyAttempt++;
+          const verifyNum = pState.verifyAttempt;
+          const phaseName = verifyNum === 1 ? "verify" : `verify-retry-${verifyNum}`;
+
+          log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyNum}/${maxRetries}`);
+          const verifyArgs = pState.deliverableId
+            ? ["verify", "--project", project, "--deliverable-id", pState.deliverableId]
+            : ["verify", "--project", project, "--job-id", jobId];
+          if (planId) verifyArgs.push("--plan-id", planId);
+
+          await dispatchRun(phaseName, "verify", verifyArgs);
+
+          const verdictId = pState.deliverableId || jobId;
+          const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
+          const verdict = await parseVerdict(verdictPath);
+
+          if (verdict === null) {
+            await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: "" });
+            if (verifyNum >= maxRetries) {
+              return { ok: false, reason: "verification verdict missing after retries", retryable: true, failPhase: "verify" };
+            }
+            return { ok: false, reason: "no verdict", retryable: true };
+          }
+
+          if (verdict === "UNKNOWN" || verdict === "INFRA_FAILURE") {
+            await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: "" });
+            if (verifyNum >= maxRetries) {
+              const reason = verdict === "INFRA_FAILURE" ? "verification infra errors after retries" : "verification verdict unclear after retries";
+              return { ok: false, reason, retryable: true, failPhase: "verify" };
+            }
+            return { ok: false, reason: `${verdict}: retry`, retryable: true };
+          }
+
+          if (verdict === "PASS") {
+            ok("Pipeline complete!");
+            await completePhase(cpbRoot, project, jobId, { phase: "verify", artifact: `verdict-${verdictId}` });
+            await completeJob(cpbRoot, project, jobId);
+            pipelineOk = true;
+            return { ok: true };
+          }
+
+          // FAIL or PARTIAL
+          warn(`Verdict: ${verdict}. Quality failure ${verifyNum}/${maxRetries}`);
+          await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: `verdict-${verdictId}` });
+
+          if (verifyNum >= maxRetries) {
+            return { ok: false, reason: `pipeline failed after ${maxRetries} quality verification failures`, retryable: false, failPhase: "verify", failCode: FAILURE_CODES.FATAL };
+          }
+
+          pState.fixCount++;
+          log(project, "Re-executing (Claude fix)...");
+          return { ok: false, reason: "verify failed", retryable: false, reactivate: "execute" };
+        }
+
+        return { ok: false, reason: `unknown phase: ${node.phase}` };
+      },
+    });
+
+    // Handle DAG result
+    if (dagResult.ok && pipelineOk) return 0;
+
+    if (dagResult.reason === "stopped") {
+      const phase = dagResult.failedNode || "verify";
+      await failJob(cpbRoot, project, jobId, failure(`timed out during ${phase} phase`, {
+        code: FAILURE_CODES.RECOVERABLE, phase,
+      }));
+      return 1;
     }
 
-    // Cancel check after execute
+    if (dagResult.reason === "cancelled") {
+      // failJob already called in onBeforeNode
+      return 1;
+    }
+
     {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after execute", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
-        return 1;
-      }
-    }
-
-    // ─── Phase 3: Verify (+ fix loop) ───
-    let verifyAttempt = 0;
-    let verdictRetryCount = 0;
-    let qualityFailureCount = 0;
-
-    while (qualityFailureCount < maxRetries) {
-      if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during verify phase", {
-          code: FAILURE_CODES.RECOVERABLE,
-          phase: "verify",
+      const failedNode = dagResult.failedNode;
+      const failInfo = failedNode ? dagResult.results.get(failedNode) : null;
+      const reason = dagResult.reason || failInfo?.reason || "unknown";
+      const job = await getJob(cpbRoot, project, jobId);
+      if (job && !["completed", "failed", "cancelled"].includes(job.status)) {
+        await failJob(cpbRoot, project, jobId, failure(reason, {
+          code: failInfo?.failCode || FAILURE_CODES.FATAL,
+          phase: failInfo?.failPhase || failedNode,
+          cause: failInfo?.failCause,
+          retryable: failInfo?.retryable,
         }));
-        return 1;
       }
-
-      verifyAttempt += 1;
-      log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
-
-      const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
-      const verifyArgs = deliverableId ? ["verify", "--project", project, "--deliverable-id", deliverableId] : ["verify", "--project", project, "--job-id", jobId];
-      if (planId) verifyArgs.push("--plan-id", planId);
-      await dispatchPhase(cpbRoot, {
-        project, jobId, phase: verifyPhaseName,
-        script: `bridges/${bridgeForPhase(workflowDef, "verify")}`,
-        scriptArgs: verifyArgs,
-        executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
-        terminalOnFailure: false,
-      });
-
-      const verdictId = deliverableId || jobId;
-      const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
-      const verdict = await parseVerdict(verdictPath);
-
-      if (verdict === null) {
-        verdictRetryCount += 1;
-        warn(`No verdict file. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (verdictRetryCount >= maxRetries) {
-          await failJob(cpbRoot, project, jobId, failure("verification verdict missing after retries", {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "verify",
-            retryable: true,
-          }));
-          printFailureSummary(cpbRoot, project, jobId, {
-            phase: "verify",
-            reason: "verification verdict missing after retries",
-            deliverableId,
-            verdictFile: verdictPath,
-          });
-          return 1;
-        }
-        continue;
+      if (failedNode === "verify" || failInfo?.failPhase === "verify") {
+        const vf = path.join(wikiDir, "outputs", `verdict-${pState.deliverableId || jobId}.md`);
+        printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason, deliverableId: pState.deliverableId, verdictFile: vf });
       }
-
-      if (verdict === "UNKNOWN" || verdict === "INFRA_FAILURE") {
-        verdictRetryCount += 1;
-        const label = verdict === "INFRA_FAILURE" ? "infra error" : "unclear verdict";
-        warn(`${label}: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (verdictRetryCount >= maxRetries) {
-          const reason = verdict === "INFRA_FAILURE"
-            ? "verification infra errors after retries"
-            : "verification verdict unclear after retries";
-          await failJob(cpbRoot, project, jobId, failure(reason, {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "verify",
-            retryable: true,
-          }));
-          printFailureSummary(cpbRoot, project, jobId, {
-            phase: "verify",
-            reason,
-            deliverableId,
-            verdictFile: verdictPath,
-          });
-          return 1;
-        }
-        continue;
-      }
-
-      if (verdict === "PASS") {
-        ok("Pipeline complete!");
-        await completePhase(cpbRoot, project, jobId, {
-          phase: "verify",
-          artifact: `verdict-${verdictId}`,
-        });
-        await completeJob(cpbRoot, project, jobId);
-        pipelineOk = true;
-        return 0;
-      }
-
-      // FAIL or PARTIAL — fix loop
-      qualityFailureCount += 1;
-      warn(`Verdict: ${verdict}. Quality failure ${qualityFailureCount}/${maxRetries}`);
-
-      await completePhase(cpbRoot, project, jobId, {
-        phase: verifyPhaseName,
-        artifact: `verdict-${verdictId}`,
-      });
-
-      if (qualityFailureCount < maxRetries) {
-        log(project, "Re-executing (Claude fix)...");
-        const fixPhaseName = `fix-${qualityFailureCount}`;
-        const fixResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: fixPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: ["execute", "--project", project, "--plan-id", planId],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-          terminalOnFailure: false,
-        });
-
-        const newDeliverableId = extractDeliverableId(fixResult.stdout);
-        if (newDeliverableId) {
-          deliverableId = newDeliverableId;
-          ok(`deliverable-${deliverableId} (fix)`);
-          const fixMismatch = await validateDeliverableIssue(
-            cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
-          );
-          if (fixMismatch) {
-            fail(`Issue mismatch in fix: expected #${fixMismatch.expectedIssueNumber}, got #${fixMismatch.actualIssueNumber}`);
-            await completePhase(cpbRoot, project, jobId, { phase: fixPhaseName, artifact: `deliverable-${deliverableId}` });
-            await failJob(cpbRoot, project, jobId, failure(
-              `issue_mismatch: expected #${fixMismatch.expectedIssueNumber}, got #${fixMismatch.actualIssueNumber}`,
-              { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: fixMismatch },
-            ));
-            return 1;
-          }
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: `deliverable-${deliverableId}`,
-          });
-
-          if (workflowDef.phases.includes("review")) {
-            let reviewPassed = false;
-            let lastReviewVerdict = null;
-
-            for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
-              if (checkTimeout()) {
-                await failJob(cpbRoot, project, jobId, failure("timed out during post-verify review phase", {
-                  code: FAILURE_CODES.RECOVERABLE,
-                  phase: "review",
-                }));
-                return 1;
-              }
-
-              const reviewPhaseName = `post-verify-review-${qualityFailureCount}-${reviewCycle}`;
-              log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review after verify fix attempt ${reviewCycle}/${maxRetries}`);
-              const reviewResult = await dispatchPhase(cpbRoot, {
-                project, jobId, phase: reviewPhaseName,
-                script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-                scriptArgs: ["review", "--project", project, "--deliverable-id", deliverableId],
-                executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
-                terminalOnFailure: false,
-              });
-
-              if (reviewResult.error) {
-                fail(`Review spawn failed: ${reviewResult.error.message}`);
-                await failJob(cpbRoot, project, jobId, failure(`post-verify review spawn error: ${reviewResult.error.message}`, {
-                  code: FAILURE_CODES.RECOVERABLE,
-                  phase: "review",
-                  cause: { message: reviewResult.error.message },
-                }));
-                return 1;
-              }
-
-              const reviewPath = path.resolve(wikiDir, "outputs", `review-${deliverableId}.md`);
-              const reviewVerdict = await parseReviewVerdict(reviewPath);
-              lastReviewVerdict = reviewVerdict;
-
-              if (reviewVerdict === "PASS") {
-                ok(`review-${deliverableId} (post-verify fix)`);
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewPhaseName,
-                  artifact: `review-${deliverableId}`,
-                });
-                reviewPassed = true;
-                break;
-              }
-
-              warn(`Post-verify review did not pass: ${reviewVerdict ?? "missing"}`);
-              await completePhase(cpbRoot, project, jobId, {
-                phase: reviewPhaseName,
-                artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
-              });
-
-              if (reviewVerdict === null || reviewCycle >= maxRetries) {
-                break;
-              }
-
-              log(project, "Re-executing (Claude post-verify review fix)...");
-              const reviewFixPhaseName = `post-verify-review-fix-${qualityFailureCount}-${reviewCycle}`;
-              const reviewFixResult = await dispatchPhase(cpbRoot, {
-                project, jobId, phase: reviewFixPhaseName,
-                script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-                scriptArgs: ["execute", "--project", project, "--plan-id", planId],
-                executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
-                terminalOnFailure: false,
-              });
-
-              const reviewedDeliverableId = extractDeliverableId(reviewFixResult.stdout);
-              if (reviewedDeliverableId) {
-                deliverableId = reviewedDeliverableId;
-                ok(`deliverable-${deliverableId} (post-verify review fix)`);
-                const postVerifyMismatch = await validateDeliverableIssue(
-                  cpbRoot, project, jobId, deliverableId, sourceContext?.issueNumber, sourceContext
-                );
-                if (postVerifyMismatch) {
-                  fail(`Issue mismatch in post-verify fix: expected #${postVerifyMismatch.expectedIssueNumber}, got #${postVerifyMismatch.actualIssueNumber}`);
-                  await completePhase(cpbRoot, project, jobId, { phase: reviewFixPhaseName, artifact: `deliverable-${deliverableId}` });
-                  await failJob(cpbRoot, project, jobId, failure(
-                    `issue_mismatch: expected #${postVerifyMismatch.expectedIssueNumber}, got #${postVerifyMismatch.actualIssueNumber}`,
-                    { code: FAILURE_CODES.ISSUE_MISMATCH, phase: "execute", cause: postVerifyMismatch },
-                  ));
-                  return 1;
-                }
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewFixPhaseName,
-                  artifact: `deliverable-${deliverableId}`,
-                });
-              } else {
-                warn("Post-verify review fix produced no deliverable.");
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewFixPhaseName,
-                  artifact: "",
-                });
-              }
-            }
-
-            if (!reviewPassed) {
-              await failJob(cpbRoot, project, jobId, failure(`post-verify review did not pass: ${lastReviewVerdict ?? "missing"}`, {
-                code: FAILURE_CODES.QUALITY_FAIL,
-                phase: "review",
-                retryable: false,
-              }));
-              return 1;
-            }
-          }
-        } else {
-          warn("Fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: "",
-          });
-        }
-      }
+      return 1;
     }
-
-    fail(`Pipeline failed after ${maxRetries} quality verification failures.`);
-    await failJob(cpbRoot, project, jobId, failure(`pipeline failed after ${maxRetries} quality verification failures`, {
-      code: FAILURE_CODES.FATAL,
-      phase: "verify",
-    }));
-    const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
-    printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
-    return 1;
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
     try {

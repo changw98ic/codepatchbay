@@ -39,7 +39,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const { cmdStop } = await import("../../server/services/hub-cli.js");
     await cmdStop();
   } else if (sub === "acp") {
-    const { getManagedAcpPool } = await import("../../runtime/acp-pool.js");
+    const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
     const pool = getManagedAcpPool({ cpbRoot, hubRoot });
     const status = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
     if (json) {

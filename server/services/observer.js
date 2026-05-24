@@ -1,6 +1,6 @@
 import { readEvents, materializeJob } from "./event-store.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
-import { getManagedAcpPool } from "../../runtime/acp-pool.js";
+import { getManagedAcpPool } from "./acp-pool.js";
 import { listQueue } from "./hub-queue.js";
 import { listInboxMessages } from "./inbox-mail.js";
 import { listSessions } from "./review-session.js";
