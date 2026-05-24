@@ -117,3 +117,7 @@ cpb gc                       # Clean stale jobs + orphan leases
 3. **Wiki isolation** - inbox/outputs boundaries separate unverified from verified content.
 4. **File-based communication** - both sides read and write inspectable local files.
 5. **ACP reuse** - no custom agent runtime, overlay CPB instructions on existing adapters.
+
+## Security
+
+CPB uses provider-native auth, never stores provider tokens, and blocks secrets in task input and artifacts. See [docs/security/codepatchbay-gateway-security.md](docs/security/codepatchbay-gateway-security.md) for the full security model covering install safety, secret redaction, IM key prohibition, webhook signature verification, worktree isolation, verifier constraints, and draft PR policy.
