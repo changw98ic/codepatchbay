@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../bridges/acp-client.mjs";
+import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client.mjs";
 import { resolveHubRoot } from "./hub-registry.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 

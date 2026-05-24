@@ -36,23 +36,22 @@ test("core stays pure", async () => {
   }
 });
 
-test("runtime bridge dependency is limited to acp client exception", async () => {
+test("runtime does not import from bridges", async () => {
   const offenders = [];
   for (const file of await listFiles("runtime")) {
     const source = await readFile(file, "utf8");
-    if (source.includes("../bridges/") && !file.endsWith(path.join("runtime", "acp-pool.js"))) {
+    if (source.includes("../bridges/")) {
       offenders.push(path.relative(repoRoot, file));
     }
   }
   assert.deepEqual(offenders, []);
 });
 
-test("server does not import from bridges (except acp-pool)", async () => {
+test("server does not import from bridges", async () => {
   const offenders = [];
   for (const file of await listFiles("server")) {
     const source = await readFile(file, "utf8");
     if (source.includes("../bridges/") || source.includes("../../bridges/")) {
-      if (file.endsWith(path.join("server", "services", "acp-pool.js"))) continue;
       offenders.push(path.relative(repoRoot, file));
     }
   }
