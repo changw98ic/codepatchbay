@@ -23,6 +23,8 @@ function parseFrontMatter(content) {
     if (tm) {
       fm.triggers = tm[1].split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
     }
+    const sm = line.match(/^status:\s*(.+)/);
+    if (sm) fm.status = sm[1].trim();
   }
   return fm;
 }
@@ -30,64 +32,83 @@ function parseFrontMatter(content) {
 export async function loadProfileSkills(cpbRoot, role, options = {}) {
   const maxSkills = options.maxSkills ?? DEFAULT_SKILL_LIMIT;
   const maxBytes = options.maxBytes ?? DEFAULT_SKILL_MAX_BYTES;
+  const includeDrafts = options.includeDrafts ?? false;
   const skillsDir = path.join(cpbRoot, PROFILES_DIR, role, "skills");
 
-  let entries;
+  // Scan both root skills/ and skills/extracted/
+  const dirsToScan = [skillsDir];
+  const extractedDir = path.join(skillsDir, "extracted");
+  // Check extracted subdirectory exists
   try {
-    entries = await readdir(skillsDir, { withFileTypes: true });
-  } catch {
-    return { skills: [], diagnostics: [] };
-  }
-
-  const mdFiles = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith(".") && !e.name.startsWith("_"))
-    .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b));
+    const extractedStat = await stat(extractedDir);
+    if (extractedStat.isDirectory()) dirsToScan.push(extractedDir);
+  } catch {}
 
   const skills = [];
   const diagnostics = [];
 
-  for (const fname of mdFiles) {
-    const filePath = path.join(skillsDir, fname);
-
-    let fstat;
+  for (const scanDir of dirsToScan) {
+    let entries;
     try {
-      fstat = await stat(filePath);
+      entries = await readdir(scanDir, { withFileTypes: true });
     } catch {
-      diagnostics.push({ code: "unreadable_skill", source: filePath });
-      continue;
-    }
-    if (fstat.size > maxBytes) {
-      diagnostics.push({ code: "size_limit", source: filePath });
       continue;
     }
 
-    let content;
-    try {
-      content = await readFile(filePath, "utf8");
-    } catch {
-      diagnostics.push({ code: "unreadable_skill", source: filePath });
-      continue;
-    }
+    const mdFiles = entries
+      .filter((e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith(".") && !e.name.startsWith("_"))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b));
 
-    const fm = parseFrontMatter(content);
-    if (!fm.name) {
-      diagnostics.push({ code: "malformed_skill", source: filePath });
-      continue;
-    }
+    for (const fname of mdFiles) {
+      const filePath = path.join(scanDir, fname);
 
-    if (skills.length >= maxSkills) {
-      diagnostics.push({ code: "skill_limit", source: filePath });
-      continue;
-    }
+      let fstat;
+      try {
+        fstat = await stat(filePath);
+      } catch {
+        diagnostics.push({ code: "unreadable_skill", source: filePath });
+        continue;
+      }
+      if (fstat.size > maxBytes) {
+        diagnostics.push({ code: "size_limit", source: filePath });
+        continue;
+      }
 
-    skills.push({
-      name: fm.name,
-      description: fm.description || "",
-      triggers: fm.triggers || [],
-      source: filePath,
-      content,
-    });
+      let content;
+      try {
+        content = await readFile(filePath, "utf8");
+      } catch {
+        diagnostics.push({ code: "unreadable_skill", source: filePath });
+        continue;
+      }
+
+      const fm = parseFrontMatter(content);
+      if (!fm.name) {
+        diagnostics.push({ code: "malformed_skill", source: filePath });
+        continue;
+      }
+
+      // Draft skills are skipped unless explicitly requested
+      if (fm.status === "draft" && !includeDrafts) {
+        diagnostics.push({ code: "draft_skipped", source: filePath });
+        continue;
+      }
+
+      if (skills.length >= maxSkills) {
+        diagnostics.push({ code: "skill_limit", source: filePath });
+        continue;
+      }
+
+      skills.push({
+        name: fm.name,
+        description: fm.description || "",
+        triggers: fm.triggers || [],
+        status: fm.status || "active",
+        source: filePath,
+        content,
+      });
+    }
   }
 
   return { skills, diagnostics };
