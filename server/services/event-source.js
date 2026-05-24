@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { appendEvent } from "./event-store.js";
+import { createJob } from "./job-store.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -132,8 +133,9 @@ export async function ingestEvent(cpbRoot, event) {
     const file = candidateFile(cpbRoot);
     const queue = await readQueue(file);
 
-    if (queue.some((e) => e.dedupeKey === entry.dedupeKey)) {
-      return { ...entry, status: "duplicate" };
+    const existing = queue.find((e) => e.dedupeKey === entry.dedupeKey);
+    if (existing) {
+      return { ...existing, status: "duplicate" };
     }
 
     queue.push(entry);
@@ -141,6 +143,92 @@ export async function ingestEvent(cpbRoot, event) {
 
     return entry;
   });
+}
+
+function githubQueueExternalId(event) {
+  if (event.delivery) return event.delivery;
+  return [
+    event.event || "github",
+    event.repo || "repo",
+    event.issueNumber || "issue",
+    event.action || "action",
+    event.commandText || event.label || "",
+  ].join(":");
+}
+
+function githubPriority(labels = []) {
+  return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
+}
+
+function githubQueuePayload(event, match) {
+  return {
+    issueNumber: event.issueNumber ?? null,
+    repo: event.repo || null,
+    title: event.title || (event.issueNumber ? `Issue #${event.issueNumber}` : "GitHub issue"),
+    body: event.body || "",
+    url: event.url || null,
+    actor: event.actor || null,
+    workflow: match.workflow || "standard",
+    action: event.action || null,
+    commandText: event.commandText || null,
+    labels: event.labels || [],
+    delivery: event.delivery || null,
+    triggerReason: match.reason || null,
+  };
+}
+
+export async function createGithubIssueQueueJob(cpbRoot, event, match, { createJobFn = createJob } = {}) {
+  if (!event || event.status !== "ok") {
+    throw new Error("GitHub event must be normalized before queue creation");
+  }
+  if (!match?.matched) {
+    throw new Error("GitHub event did not match a trigger rule");
+  }
+  if (!event.projectId) {
+    throw new Error("GitHub event missing project id");
+  }
+
+  const payload = githubQueuePayload(event, match);
+  const entry = await ingestEvent(cpbRoot, {
+    source: "github-issue",
+    externalId: githubQueueExternalId(event),
+    projectId: event.projectId,
+    priority: githubPriority(event.labels),
+    payload,
+  });
+
+  if (entry.status === "duplicate") {
+    return { status: "duplicate", entry, job: null };
+  }
+
+  const sourceContext = {
+    type: "github_issue",
+    queueEntryId: entry.id,
+    issueNumber: payload.issueNumber,
+    repo: payload.repo,
+    url: payload.url,
+    actor: payload.actor,
+    delivery: payload.delivery,
+    commandText: payload.commandText,
+    triggerReason: payload.triggerReason,
+  };
+  const job = await createJobFn(cpbRoot, {
+    project: event.projectId,
+    task: payload.title,
+    workflow: payload.workflow,
+    queueEntryId: entry.id,
+    sourceContext,
+  });
+  const updated = await updateCandidate(cpbRoot, entry.id, {
+    status: "dispatched",
+    reason: `created job ${job.jobId}`,
+  });
+
+  return {
+    status: "created",
+    entry: updated || entry,
+    job,
+  };
 }
 
 /**

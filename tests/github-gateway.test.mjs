@@ -10,6 +10,8 @@ import { redactSecrets } from "../server/services/secret-policy.js";
 import { githubRoutes } from "../server/routes/github.js";
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
+import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
+import { getJob } from "../server/services/job-store.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -360,5 +362,86 @@ describe("GitHub trigger rule matcher", () => {
     assert.match(matchGithubTrigger(unrelatedLabel, rules).reason, /no trigger rule/i);
     assert.equal(matchGithubTrigger(unrelatedComment, rules).matched, false);
     assert.match(matchGithubTrigger(unrelatedComment, rules).reason, /no trigger rule/i);
+  });
+});
+
+describe("GitHub issue queue entry creation", () => {
+  it("creates a queue entry and linked job from a matched GitHub issue event", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-queue-"));
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-queue-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 123,
+            title: "Fix login redirect",
+            body: "Redirect loops after login.",
+            html_url: "https://github.com/my-org/frontend/issues/123",
+            labels: [{ name: "bug" }, { name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+      const match = matchGithubTrigger(event);
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, match);
+
+      assert.equal(result.status, "created");
+      assert.equal(result.entry.source, "github-issue");
+      assert.equal(result.entry.projectId, "frontend");
+      assert.equal(result.entry.payload.issueNumber, 123);
+      assert.equal(result.entry.payload.repo, "my-org/frontend");
+      assert.equal(result.entry.payload.title, "Fix login redirect");
+      assert.equal(result.entry.payload.body, "Redirect loops after login.");
+      assert.equal(result.entry.payload.url, "https://github.com/my-org/frontend/issues/123");
+      assert.equal(result.entry.payload.actor, "octocat");
+      assert.equal(result.entry.payload.workflow, "standard");
+
+      const job = await getJob(cpbRoot, "frontend", result.job.jobId);
+      assert.equal(job.queueEntryId, result.entry.id);
+      assert.equal(job.workflow, "standard");
+      assert.equal(job.task, "Fix login redirect");
+      assert.equal(job.sourceContext.queueEntryId, result.entry.id);
+      assert.equal(job.sourceContext.issueNumber, 123);
+      assert.equal(job.sourceContext.repo, "my-org/frontend");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates repeated GitHub webhook deliveries without creating another queue entry", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-queue-dup-"));
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issue_comment",
+        delivery: "delivery-queue-dup-1",
+        projectId: "frontend",
+        payload: {
+          action: "created",
+          repository: { full_name: "my-org/frontend" },
+          issue: { number: 123, title: "Fix login redirect", labels: [] },
+          comment: { body: "/cpb run", html_url: "https://github.com/my-org/frontend/issues/123#issuecomment-1" },
+          sender: { login: "maintainer" },
+        },
+      });
+      const match = matchGithubTrigger(event);
+
+      const first = await createGithubIssueQueueJob(cpbRoot, event, match);
+      const second = await createGithubIssueQueueJob(cpbRoot, event, match);
+      const candidates = await listCandidates(cpbRoot, { source: "github-issue" });
+
+      assert.equal(first.status, "created");
+      assert.equal(second.status, "duplicate");
+      assert.equal(second.entry.id, first.entry.id);
+      assert.equal(second.job, null);
+      assert.equal(candidates.length, 1);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
   });
 });

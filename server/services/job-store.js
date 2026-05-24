@@ -65,6 +65,7 @@ export async function createJob(
     executor = null,
     dataRoot,
     sourceContext,
+    queueEntryId = null,
     indexSnapshot = null,
     indexFreshness = null,
   }
@@ -89,6 +90,7 @@ export async function createJob(
     task,
     workflow,
     executor,
+    queueEntryId,
     ts,
   };
   if (sourceContext && typeof sourceContext === "object") {

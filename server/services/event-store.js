@@ -422,6 +422,7 @@ export function materializeJob(events) {
     lineage: null,
     recoveryOf: null,
     sourceContext: null,
+    queueEntryId: null,
     pr: null,
     permissionDenials: [],
     infraStatus: null,
@@ -456,6 +457,7 @@ export function materializeJob(events) {
         state.status = "running";
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;
+        state.queueEntryId = event.queueEntryId ?? state.queueEntryId;
         if (event.sourceContext) state.sourceContext = event.sourceContext;
         if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
         if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
