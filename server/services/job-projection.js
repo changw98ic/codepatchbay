@@ -9,6 +9,7 @@ const STATUS_MAP = {
 };
 
 const ACTIVE_NODE_STATUSES = new Set(["running", "retrying", "blocked"]);
+const GITHUB_STATUS_COMMENT_STATUSES = new Set(["blocked", "failed", "passed", "pr-opened"]);
 
 function orderedUnique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -202,6 +203,48 @@ export function jobToQueueRow(job) {
     redirectContext: job.redirectContext ?? null,
     failureCode: job.failureCode ?? null,
     failurePhase: job.failurePhase ?? null,
+  };
+}
+
+export function githubStatusCommentDedupeKey(projection) {
+  if (!projection?.jobId || !projection?.status) return null;
+  const prMarker = projection.pr?.url || projection.pr?.number || "";
+  return ["github-status", projection.jobId, projection.status, prMarker]
+    .filter((part) => part !== null && part !== undefined && String(part).length > 0)
+    .map((part) => String(part))
+    .join(":");
+}
+
+export function jobToGithubStatusUpdate(job) {
+  const row = jobToQueueRow(job || {});
+  if (!GITHUB_STATUS_COMMENT_STATUSES.has(row.status)) return null;
+
+  const source = row.source || {};
+  if (source.type !== "github_issue") return null;
+
+  const repo = source.repo || job?.sourceContext?.repo || job?.sourceContext?.repository || null;
+  const issueNumber = source.issueNumber ?? job?.sourceContext?.issueNumber ?? null;
+  if (!repo || issueNumber === null || issueNumber === undefined) return null;
+
+  const projection = {
+    jobId: row.jobId,
+    project: row.project,
+    task: row.task,
+    status: row.status,
+    rawStatus: row.rawStatus,
+    workflow: row.workflow,
+    repo,
+    issueNumber,
+    pr: row.pr,
+    retryCount: row.retryCount,
+    reason: job?.blockedReason || job?.failureCause?.message || job?.failureCause || row.lastActivityMessage || null,
+    failureCode: row.failureCode,
+    failurePhase: row.failurePhase,
+    updatedAt: row.updatedAt,
+  };
+  return {
+    ...projection,
+    dedupeKey: githubStatusCommentDedupeKey(projection),
   };
 }
 

@@ -343,6 +343,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
   "merge_index_status",
   "pr_opened",
+  "github_comment_posted", "github_comment_failed",
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
 ]);

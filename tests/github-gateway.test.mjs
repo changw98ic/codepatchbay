@@ -11,10 +11,17 @@ import { githubRoutes } from "../server/routes/github.js";
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
-import { getJob } from "../server/services/job-store.js";
-import { buildQueuedComment, postGithubQueuedComment } from "../server/services/github-comments.js";
+import { completeJob, createJob, getJob } from "../server/services/job-store.js";
+import { readEvents } from "../server/services/event-store.js";
+import {
+  buildGithubStatusComment,
+  buildQueuedComment,
+  postGithubQueuedComment,
+  postGithubStatusComment,
+} from "../server/services/github-comments.js";
 import { openDraftPullRequest } from "../server/services/github-pr.js";
 import { buildCodePatchBayPrBody } from "../server/services/pr-body.js";
+import { jobToGithubStatusUpdate } from "../server/services/job-projection.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -496,6 +503,120 @@ describe("GitHub queued status comment", () => {
     assert.equal(failed.posted, false);
     assert.match(failed.error.message, /network unavailable/);
     assert.match(failed.body, /job-network-fail/);
+  });
+});
+
+describe("GitHub terminal status comments", () => {
+  const baseJob = {
+    jobId: "job-terminal-status",
+    project: "frontend",
+    task: "Fix login redirect",
+    workflow: "standard",
+    sourceContext: {
+      type: "github_issue",
+      repo: "my-org/frontend",
+      issueNumber: 123,
+    },
+  };
+
+  it("builds concise comments for blocked, failed, passed, and PR-opened terminal states", () => {
+    const cases = [
+      {
+        status: "blocked",
+        job: { ...baseJob, status: "blocked", blockedReason: "approval required" },
+        heading: /CodePatchBay blocked this run/,
+        detail: /Reason: approval required/,
+      },
+      {
+        status: "failed",
+        job: { ...baseJob, status: "failed", blockedReason: "verifier rejected patch", failurePhase: "verify" },
+        heading: /CodePatchBay failed this run/,
+        detail: /Phase: verify/,
+      },
+      {
+        status: "passed",
+        job: { ...baseJob, status: "completed" },
+        heading: /Verified patch ready/,
+        detail: /Workflow: standard/,
+      },
+      {
+        status: "pr-opened",
+        job: {
+          ...baseJob,
+          status: "completed",
+          pr: { url: "https://github.com/my-org/frontend/pull/456", number: 456 },
+        },
+        heading: /Draft PR opened/,
+        detail: /PR: #456/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const projection = jobToGithubStatusUpdate(testCase.job);
+      assert.equal(projection.status, testCase.status);
+      const body = buildGithubStatusComment({ projection, job: testCase.job });
+
+      assert.match(body, testCase.heading);
+      assert.match(body, /Job: job-terminal-status/);
+      assert.match(body, /Issue: #123/);
+      assert.match(body, testCase.detail);
+      assert.ok(body.length < 800, `${testCase.status} comment should stay concise`);
+    }
+  });
+
+  it("posts each terminal projection once and records the comment event in the audit log", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-status-comment-"));
+    try {
+      const job = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Fix login redirect",
+        workflow: "standard",
+        jobId: "job-status-dedupe",
+        sourceContext: {
+          type: "github_issue",
+          repo: "my-org/frontend",
+          issueNumber: 123,
+        },
+      });
+      await completeJob(cpbRoot, "frontend", job.jobId);
+      const completed = await getJob(cpbRoot, "frontend", job.jobId);
+
+      let postCount = 0;
+      const postComment = async (request) => {
+        postCount += 1;
+        return {
+          id: 987,
+          html_url: `https://github.com/${request.repo}/issues/${request.issueNumber}#issuecomment-987`,
+        };
+      };
+
+      const first = await postGithubStatusComment({
+        cpbRoot,
+        project: "frontend",
+        job: completed,
+        postComment,
+      });
+      const second = await postGithubStatusComment({
+        cpbRoot,
+        project: "frontend",
+        job: completed,
+        postComment,
+      });
+
+      assert.equal(first.status, "posted");
+      assert.equal(second.status, "duplicate");
+      assert.equal(postCount, 1);
+      assert.equal(first.dedupeKey, second.dedupeKey);
+
+      const events = await readEvents(cpbRoot, "frontend", job.jobId);
+      const commentEvents = events.filter((event) => event.type === "github_comment_posted");
+      assert.equal(commentEvents.length, 1);
+      assert.equal(commentEvents[0].commentKind, "terminal-status");
+      assert.equal(commentEvents[0].dedupeKey, first.dedupeKey);
+      assert.match(commentEvents[0].bodyHash, /^[a-f0-9]{64}$/);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
   });
 });
 
