@@ -514,7 +514,7 @@ export class ProjectWorker {
 
   async finalizeEntry({ entry, sourcePath, projectId, result }) {
     const resolved = await this.resolveCompletedJob(projectId, result);
-    const job = resolved?.job || null;
+    let job = resolved?.job || null;
     if (!job) {
       return {
         ok: false,
@@ -524,6 +524,16 @@ export class ProjectWorker {
         inspectedStatus: null,
         stateSource: "missing",
       };
+    }
+
+    // Re-read job from event log to avoid stale checkpoint (issue #79)
+    if (job.status !== "completed" && job.jobId) {
+      try {
+        const { readEvents, materializeJob } = await import("../../server/services/event-store.js");
+        const events = await readEvents(this.cpbRoot, projectId, job.jobId);
+        const fresh = materializeJob(events);
+        if (fresh?.jobId && fresh.status === "completed") job = fresh;
+      } catch {}
     }
 
     const finalizer = await this._finalizerFn({
@@ -538,6 +548,8 @@ export class ProjectWorker {
       jobId: finalizer?.jobId ?? job.jobId ?? null,
       inspectedStatus: finalizer?.inspectedStatus ?? job.status ?? null,
       stateSource: finalizer?.stateSource ?? resolved.stateSource,
+      actualJobId: job.jobId ?? null,
+      queueEntryId: entry.id ?? null,
     };
   }
 
@@ -607,6 +619,13 @@ export class ProjectWorker {
     let result;
     try {
       result = await this.executeEntry(entry);
+    } catch (err) {
+      // executeEntry threw — update queue entry to failed so it doesn't stay in_progress
+      await updateEntry(this.hubRoot, entry.id, {
+        status: "failed",
+        metadata: { failureReason: `executeEntry threw: ${err.message}`, failedAt: new Date().toISOString() },
+      }).catch(() => {});
+      return { entry, error: err.message };
     } finally {
       this._activeEntryId = null;
     }

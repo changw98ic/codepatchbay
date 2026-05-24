@@ -345,29 +345,43 @@ async function handleExecute(args, agent) {
     return 1;
   }
 
+  if (result.exitCode !== 0) {
+    await logAppend(cpbRoot, project, `executor | execute | ACP exited ${result.exitCode} for plan-${planId} | FAIL`);
+    console.error(`Execute failed: ACP agent exited with code ${result.exitCode}`);
+    return 1;
+  }
+
   await recordUiEscalationsWrapper(result.stdout, cpbRoot, project, "execute", agent);
 
+  let deliverableContent;
   try {
-    const deliverableContent = await readFile(deliverableFile, "utf8");
-    // Check issue match when expected issue is set
-    const expectedIssue = process.env.CPB_ISSUE_NUMBER;
-    if (expectedIssue && deliverableContent.trim()) {
-      const artifactIssue = resolveDeliverableIssue(deliverableContent);
-      const issueResult = validateIssueMatch({
-        expectedIssueNumber: parseInt(expectedIssue, 10),
-        artifactIssueNumber: artifactIssue,
-        artifactPath: deliverableFile,
-      });
-      if (!issueResult.match) {
-        await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} issue mismatch: expected #${issueResult.expected}, got #${issueResult.actual} | FAIL`);
-        console.error(`Deliverable issue mismatch: expected #${issueResult.expected}, resolves to #${issueResult.actual}`);
-        return 1;
-      }
-    }
+    deliverableContent = await readFile(deliverableFile, "utf8");
   } catch {
     await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | FAIL`);
-    console.error("Warning: Deliverable not created.");
+    console.error("Deliverable not created.");
     return 1;
+  }
+
+  if (!deliverableContent.trim()) {
+    await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} is empty (0-byte placeholder) | FAIL`);
+    console.error("Deliverable is empty — agent produced no output.");
+    return 1;
+  }
+
+  // Check issue match when expected issue is set
+  const expectedIssue = process.env.CPB_ISSUE_NUMBER;
+  if (expectedIssue) {
+    const artifactIssue = resolveDeliverableIssue(deliverableContent);
+    const issueResult = validateIssueMatch({
+      expectedIssueNumber: parseInt(expectedIssue, 10),
+      artifactIssueNumber: artifactIssue,
+      artifactPath: deliverableFile,
+    });
+    if (!issueResult.match) {
+      await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} issue mismatch: expected #${issueResult.expected}, got #${issueResult.actual} | FAIL`);
+      console.error(`Deliverable issue mismatch: expected #${issueResult.expected}, resolves to #${issueResult.actual}`);
+      return 1;
+    }
   }
 
   await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`);
@@ -635,7 +649,26 @@ export async function runPhase(phase, {
   if (!agent) {
     try {
       await loadRegistry();
-      agent = defaultAgentForRole(role);
+      if (workflow) {
+        try {
+          const { normalizeWorkflow, resolveNodeAgent } = await import("../core/workflow/definition.js");
+          const dag = normalizeWorkflow(workflow);
+          const node = dag.nodes?.find((n) => n.id === phase || n.phase === phase);
+          if (node) {
+            let poolStatus = null;
+            try {
+              const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+              const pool = getManagedAcpPool({ cpbRoot: resolvedCpbRoot, hubRoot: undefined });
+              const status = await pool.statusAsync();
+              poolStatus = status?.pools || null;
+            } catch {}
+            agent = resolveNodeAgent(node, { poolStatus });
+          }
+        } catch {}
+      }
+      if (!agent) {
+        agent = defaultAgentForRole(role);
+      }
     } catch {
       agent = legacyAgentForPhase(phase);
     }
@@ -740,7 +773,26 @@ async function main() {
   if (!agent) {
     try {
       await loadRegistry();
-      agent = defaultAgentForRole(role);
+      if (parsed.workflow) {
+        try {
+          const { normalizeWorkflow, resolveNodeAgent } = await import("../core/workflow/definition.js");
+          const dag = normalizeWorkflow(parsed.workflow);
+          const node = dag.nodes?.find((n) => n.id === parsed.phase || n.phase === parsed.phase);
+          if (node) {
+            let poolStatus = null;
+            try {
+              const { getManagedAcpPool } = await import("../runtime/acp-pool.js");
+              const pool = getManagedAcpPool({ cpbRoot: parsed.cpbRoot, hubRoot: undefined });
+              const status = await pool.statusAsync();
+              poolStatus = status?.pools || null;
+            } catch {}
+            agent = resolveNodeAgent(node, { poolStatus });
+          }
+        } catch {}
+      }
+      if (!agent) {
+        agent = defaultAgentForRole(role);
+      }
     } catch {
       agent = legacyAgentForPhase(parsed.phase);
     }
