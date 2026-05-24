@@ -104,4 +104,31 @@ describe("agent isolation", () => {
     const cleaned = await cleanupAgentHomes(cpbRoot);
     assert.equal(cleaned, 0);
   });
+
+  it("cleanupAgentHomes skips directories with active lease", async () => {
+    await createAgentHome(cpbRoot, "codex", "leased-job");
+    await createAgentHome(cpbRoot, "codex", "expired-job");
+
+    const activeLeases = new Set(["leased-job"]);
+    const isLeaseActive = async (jobId) => activeLeases.has(jobId);
+
+    const cleaned = await cleanupAgentHomes(cpbRoot, {
+      maxAgeMs: 1,
+      now: Date.now() + 1000,
+      isLeaseActive,
+    });
+
+    assert.equal(cleaned, 1, "should only clean the expired job");
+
+    const leasedDir = path.join(cpbRoot, "cpb-task", "agent-homes", "codex", "leased-job");
+    const info = await stat(leasedDir);
+    assert.ok(info.isDirectory(), "leased job directory should survive cleanup");
+  });
+
+  it("cleanupAgentHomes without isLeaseActive deletes all old dirs", async () => {
+    await createAgentHome(cpbRoot, "codex", "old-1");
+
+    const cleaned = await cleanupAgentHomes(cpbRoot, { maxAgeMs: 1, now: Date.now() + 1000 });
+    assert.ok(cleaned >= 1);
+  });
 });

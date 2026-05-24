@@ -264,19 +264,41 @@ function runChild(command, args, cwd, { env = process.env } = {}) {
 }
 
 /**
- * Recover a single job: determine the next phase and either spawn
+ * Recover a single job: determine the next phase/node(s) and either spawn
  * job-runner.mjs or mark the job complete.
  *
- * Returns { jobId, project, phase, exitCode } on success or error.
+ * Uses readyNodesFor() for DAG-aware scheduling when the workflow has
+ * parallel nodes. Falls back to nextPhaseFor() for legacy linear workflows.
+ *
+ * Returns { jobId, project, phase, exitCode, nodes } on success or error.
  */
 export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExecutor = false } = {}) {
   const callerRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const resolvedExecutorRoot = useCurrentExecutor
     ? callerRoot
     : (job.executor?.root && job.executor.root !== callerRoot ? job.executor.root : callerRoot);
-  const phase = nextPhaseFor(job);
-  if (phase === "") {
+
+  // DAG-aware: get all ready nodes, not just the next linear phase
+  const { ready, isDag } = readyNodesFor(job);
+
+  if (ready.length === 0) {
+    // Check if this is a completed DAG or legacy "complete" signal
+    const legacyPhase = nextPhaseFor(job);
+    if (legacyPhase === "") {
+      return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
+    }
+    if (legacyPhase === "complete") {
+      await completeJobStore(cpbRoot, job.project, job.jobId);
+      return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
+    }
     return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
+  }
+
+  // For legacy workflows (single ready phase), use the old path
+  const phase = ready[0];
+  if (phase === "complete") {
+    await completeJobStore(cpbRoot, job.project, job.jobId);
+    return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
   }
 
   // "complete" phase: no bridge script, just mark done.
@@ -366,7 +388,7 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorR
         recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot, useCurrentExecutor }).catch((err) => ({
           jobId: job.jobId,
           project: job.project,
-          phase: nextPhaseFor(job),
+          phase: readyNodesFor(job).ready[0] || nextPhaseFor(job),
           exitCode: 1,
           error: err.message,
         }))

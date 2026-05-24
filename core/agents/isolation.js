@@ -35,8 +35,12 @@ export async function createAgentHome(cpbRoot, agentName, jobId) {
  * Clean up agent home directories older than CLEANUP_AGE_MS.
  * Safe to call periodically; skips directories that are still in use
  * (checked via the presence of active leases).
+ *
+ * @param {Function} [opts.isLeaseActive] - Async (jobId) => boolean.
+ *   Returns true if the job has a non-stale lease. When provided,
+ *   directories with active leases are never deleted regardless of age.
  */
-export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now() } = {}) {
+export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive } = {}) {
   const homesRoot = path.join(cpbRoot, "cpb-task", "agent-homes");
   let agents;
   try {
@@ -58,10 +62,16 @@ export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, no
       const jobDir = path.join(agentDir, jobId);
       try {
         const info = await stat(jobDir);
-        if (now - info.mtimeMs > maxAgeMs) {
-          await rm(jobDir, { recursive: true, force: true });
-          cleaned++;
+        if (now - info.mtimeMs <= maxAgeMs) continue;
+
+        // Check lease status before deleting
+        if (isLeaseActive) {
+          const active = await isLeaseActive(jobId);
+          if (active) continue;
         }
+
+        await rm(jobDir, { recursive: true, force: true });
+        cleaned++;
       } catch {
         // Skip inaccessible directories
       }

@@ -137,16 +137,27 @@ export function normalizeWorkflow(name) {
 }
 
 /**
- * Resolve `squad` fields in DAG nodes to concrete `agent` names.
- * If a node has both `squad` and `agent`, `squad` takes precedence.
+ * Mark nodes with squad fields but do NOT resolve to concrete agent yet.
+ * Agent resolution happens at execution time via resolveNodeAgent() so
+ * that pool status is available for least-busy strategy.
  */
 function resolveSquadsInNodes(nodes) {
   return nodes.map((node) => {
     if (!node.squad) return node;
-    const agent = resolveSquadAgent(node.squad);
-    if (!agent) return node;
-    return { ...node, agent, _squad: node.squad };
+    return { ...node, _squad: node.squad };
   });
+}
+
+/**
+ * Resolve a node's agent at execution time with current pool status.
+ * Supports squad strategies (least-busy, round-robin, leader-first).
+ */
+export function resolveNodeAgent(node, { poolStatus } = {}) {
+  if (node._squad) {
+    const agent = resolveSquadAgent(node._squad, { poolStatus });
+    if (agent) return agent;
+  }
+  return node.agent || null;
 }
 
 function buildEdges(nodes) {

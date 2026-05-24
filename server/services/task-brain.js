@@ -119,19 +119,22 @@ export async function checkProactiveBudget(cpbRoot) {
   const dailyLimit = parseInt(process.env.CPB_PROACTIVE_DAILY_LIMIT, 10) || DEFAULT_DAILY_LIMIT;
   const failureLimit = parseInt(process.env.CPB_PROACTIVE_FAILURE_LIMIT, 10) || DEFAULT_CONSECUTIVE_FAILURE_LIMIT;
 
-  // Count today's proactive jobs
+  // Rolling 24h window instead of calendar day to prevent midnight bypass
   const jobs = await listJobs(cpbRoot);
-  const today = new Date().toISOString().slice(0, 10);
-  const todayProactive = jobs.filter((j) =>
-    j.trigger === "proactive" && (j.createdAt || "").slice(0, 10) === today
-  );
+  const windowMs = 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - windowMs;
+  const windowProactive = jobs.filter((j) => {
+    if (j.trigger !== "proactive") return false;
+    const ts = j.createdAt ? new Date(j.createdAt).getTime() : 0;
+    return ts > cutoff;
+  });
 
-  if (todayProactive.length >= dailyLimit) {
+  if (windowProactive.length >= dailyLimit) {
     return { allowed: false, reason: `daily limit reached (${dailyLimit})` };
   }
 
-  // Check consecutive failures
-  const recent = todayProactive
+  // Check consecutive failures (most recent first)
+  const recent = [...windowProactive]
     .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
     .slice(0, failureLimit);
 
@@ -140,7 +143,7 @@ export async function checkProactiveBudget(cpbRoot) {
     return { allowed: false, reason: `consecutive failure limit reached (${failureLimit})` };
   }
 
-  return { allowed: true, remaining: dailyLimit - todayProactive.length };
+  return { allowed: true, remaining: dailyLimit - windowProactive.length };
 }
 
 function buildTaskDescription(candidate) {

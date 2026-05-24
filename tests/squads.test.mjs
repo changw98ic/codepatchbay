@@ -79,8 +79,8 @@ describe("squads", () => {
 });
 
 describe("squad in workflow DAG", () => {
-  it("normalizeWorkflow resolves squad field to agent", async () => {
-    const { normalizeWorkflow, registerDagWorkflow } = await import("../core/workflow/definition.js");
+  it("normalizeWorkflow defers squad resolution to runtime", async () => {
+    const { normalizeWorkflow, registerDagWorkflow, resolveNodeAgent } = await import("../core/workflow/definition.js");
 
     registerDagWorkflow("test-squad-dag", {
       nodes: [
@@ -93,9 +93,11 @@ describe("squad in workflow DAG", () => {
     const dag = normalizeWorkflow("test-squad-dag");
     const execNode = dag.nodes.find((n) => n.id === "execute");
     assert.ok(execNode);
-    // squad "frontend" leader is "claude"
-    assert.equal(execNode.agent, "claude");
+    // Squad is deferred — no agent at init time
     assert.equal(execNode._squad, "frontend");
+    // Agent resolved at runtime via resolveNodeAgent
+    const agent = resolveNodeAgent(execNode);
+    assert.equal(agent, "claude");
   });
 
   it("normalizeWorkflow preserves nodes without squad", async () => {

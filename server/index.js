@@ -110,6 +110,49 @@ const agentStatusInterval = setInterval(async () => {
 }, 30_000);
 agentStatusInterval.unref();
 
+// Proactive auto-scan (only when CPB_PROACTIVE=1, every 5 minutes)
+if (process.env.CPB_PROACTIVE === '1') {
+  const { scanCandidates } = await import('./services/task-brain.js');
+  const { checkProactiveBudget } = await import('./services/task-brain.js');
+  const { createJob } = await import('./services/job-store.js');
+  const { updateCandidate } = await import('./services/event-source.js');
+  const proactiveInterval = setInterval(async () => {
+    try {
+      const budget = await checkProactiveBudget(CPB_ROOT);
+      if (!budget.allowed) return;
+
+      const evaluations = await scanCandidates(CPB_ROOT);
+      const safeAuto = evaluations.filter(e => e.recommendation.autoExecutable);
+      let dispatched = 0;
+      for (const { candidate, recommendation } of safeAuto) {
+        if (dispatched >= budget.remaining) break;
+        try {
+          await createJob(CPB_ROOT, {
+            project: candidate.projectId || recommendation.candidateId,
+            task: recommendation.taskDescription,
+            workflow: recommendation.recommendedWorkflow,
+            sourceContext: {
+              type: 'proactive',
+              candidateId: candidate.id,
+              source: candidate.source,
+              category: recommendation.category,
+            },
+          });
+          await updateCandidate(CPB_ROOT, candidate.id, {
+            status: 'dispatched',
+            reason: 'proactive auto-scan',
+          });
+          dispatched++;
+        } catch {}
+      }
+      if (dispatched > 0) {
+        broadcast({ type: 'proactive:dispatched', count: dispatched, ts: new Date().toISOString() });
+      }
+    } catch {}
+  }, 300_000);
+  proactiveInterval.unref();
+}
+
 // Serve pre-built web UI from web/dist/ when available (npx/production mode)
 const webDist = path.join(CPB_EXECUTOR_ROOT, 'web', 'dist');
 if (existsSync(webDist)) {

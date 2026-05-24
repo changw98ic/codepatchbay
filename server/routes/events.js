@@ -1,5 +1,6 @@
 import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, ciFailureToCandidate } from "../services/event-source.js";
 import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/task-brain.js";
+import { createJob } from "../services/job-store.js";
 
 export function eventRoutes(fastify, opts, done) {
   // POST /api/events/ingest — ingest an external event
@@ -57,6 +58,51 @@ export function eventRoutes(fastify, opts, done) {
   fastify.get("/proactive/budget", async (req, reply) => {
     const budget = await checkProactiveBudget(req.cpbRoot);
     return budget;
+  });
+
+  // POST /api/proactive/dispatch — create jobs from safe-auto candidates
+  fastify.post("/proactive/dispatch", async (req, reply) => {
+    const budget = await checkProactiveBudget(req.cpbRoot);
+    if (!budget.allowed) {
+      return reply.code(429).send({ error: budget.reason });
+    }
+
+    const evaluations = await scanCandidates(req.cpbRoot);
+    const safeAuto = evaluations.filter((e) => e.recommendation.autoExecutable);
+
+    if (safeAuto.length === 0) {
+      return { dispatched: [], message: "no safe-auto candidates" };
+    }
+
+    const dispatched = [];
+    for (const { candidate, recommendation } of safeAuto) {
+      if (dispatched.length >= budget.remaining) break;
+
+      try {
+        const job = await createJob(req.cpbRoot, {
+          project: candidate.projectId || recommendation.candidateId,
+          task: recommendation.taskDescription,
+          workflow: recommendation.recommendedWorkflow,
+          sourceContext: {
+            type: "proactive",
+            candidateId: candidate.id,
+            source: candidate.source,
+            category: recommendation.category,
+          },
+        });
+
+        await updateCandidate(req.cpbRoot, candidate.id, {
+          status: "dispatched",
+          reason: `job ${job.jobId}`,
+        });
+
+        dispatched.push({ candidateId: candidate.id, jobId: job.jobId, category: recommendation.category });
+      } catch (err) {
+        dispatched.push({ candidateId: candidate.id, error: err.message });
+      }
+    }
+
+    return { dispatched };
   });
 
   done();
