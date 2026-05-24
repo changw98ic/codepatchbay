@@ -3,6 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
+import { getProject, resolveHubRoot } from "./hub-registry.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase, normalizeWorkflow } from "../../core/workflow/definition.js";
 import { readyNodes as dagReadyNodes, scheduleReadyNodes, isDagComplete } from "../../core/workflow/dag-executor.js";
@@ -415,8 +416,20 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
     ...bridge.args,
   ];
 
+  // Resolve project runtime root so child process writes to correct data dir
+  const projectEnv = {};
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    if (hubRoot) {
+      const registered = await getProject(hubRoot, recoveryJob.project);
+      if (registered?.projectRuntimeRoot) {
+        projectEnv.CPB_PROJECT_RUNTIME_ROOT = registered.projectRuntimeRoot;
+      }
+    }
+  } catch {}
+
   const result = await runChild("node", runnerArgs, cpbRoot, {
-    env: executorEnv(process.env, {
+    env: executorEnv({ ...process.env, ...projectEnv }, {
       cpbRoot,
       executorRoot: resolvedExecutorRoot,
     }),
