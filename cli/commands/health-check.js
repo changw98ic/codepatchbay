@@ -31,7 +31,7 @@ function runCmd(cmd, args, cwd = CPB_ROOT) {
   });
 }
 
-async function main() {
+async function check() {
   const checks = [];
 
   // Check 1: HTTP
@@ -39,7 +39,7 @@ async function main() {
   checks.push({ name: "http", ok: httpOk });
   if (!httpOk) {
     console.log("FAIL: HTTP health check failed");
-    process.exit(1);
+    return checks;
   }
 
   // Check 2: Backend tests
@@ -52,9 +52,17 @@ async function main() {
   checks.push({ name: "build", ok: build.ok });
   if (!build.ok) console.log("FAIL: build\n" + build.output.slice(-500));
 
-  const allOk = checks.every((c) => c.ok);
-  console.log(allOk ? "PASS" : `FAIL: ${checks.filter((c) => !c.ok).map((c) => c.name).join(", ")}`);
-  process.exit(allOk ? 0 : 1);
+  return checks;
 }
 
-main();
+export async function run() {
+  const checks = await check();
+  const allOk = checks.every((c) => c.ok);
+  console.log(allOk ? "PASS" : `FAIL: ${checks.filter((c) => !c.ok).map((c) => c.name).join(", ")}`);
+  return allOk ? 0 : 1;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const code = await run();
+  if (Number.isInteger(code)) process.exitCode = code;
+}

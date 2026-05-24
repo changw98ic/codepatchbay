@@ -7,6 +7,10 @@ const POLLUTION_NAME_PATTERNS = [
   { pattern: /fake-repo/i, reason: "fake-repo name" },
   { pattern: /-test$/i, reason: "test-suffix name" },
   { pattern: /^exec-/i, reason: "exec-prefix name" },
+  { pattern: /^pbi-test/i, reason: "pbi-test prefix" },
+  { pattern: /^temp-prod/i, reason: "temp-prod prefix" },
+  { pattern: /^jobs-test/i, reason: "jobs-test prefix" },
+  { pattern: /^calc-test/i, reason: "calc-test prefix" },
 ];
 
 function isUnderTestPath(filePath) {

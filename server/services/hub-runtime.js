@@ -74,25 +74,38 @@ function isPidAlive(pid) {
 
 export async function readHubLiveness(hubRoot) {
   const statePath = path.join(path.resolve(hubRoot), "state", "hub.json");
+  let meta = null;
   try {
     const raw = await readFile(statePath, "utf8");
-    const meta = JSON.parse(raw);
-
-    if (meta.health === "dead") {
-      return { alive: false, reason: "shutdown", pid: meta.pid, stoppedAt: meta.stoppedAt, startedAt: meta.startedAt };
-    }
-
-    if (!isPidAlive(meta.pid)) {
-      return { alive: false, reason: "process-gone", pid: meta.pid, startedAt: meta.startedAt };
-    }
-
-    return { alive: true, pid: meta.pid, startedAt: meta.startedAt, version: meta.version, runtime: meta.runtime };
+    meta = JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT") {
       return { alive: false, reason: "no-hub-json" };
     }
     return { alive: false, reason: "read-error", error: err.message };
   }
+
+  // If hub.json claims alive, verify PID
+  if (meta.health !== "dead" && meta.pid) {
+    if (isPidAlive(meta.pid)) {
+      return { alive: true, pid: meta.pid, startedAt: meta.startedAt, version: meta.version, runtime: meta.runtime };
+    }
+  }
+
+  // hub.json says dead or PID gone — try HTTP probe as fallback
+  const port = parseInt(process.env.CPB_PORT || "3456", 10);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/projects`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      return { alive: true, pid: meta.pid || null, startedAt: meta.startedAt, version: meta.version, runtime: meta.runtime, source: "http-probe" };
+    }
+  } catch {}
+
+  // Truly dead
+  if (meta.health === "dead") {
+    return { alive: false, reason: "shutdown", pid: meta.pid, stoppedAt: meta.stoppedAt, startedAt: meta.startedAt };
+  }
+  return { alive: false, reason: "process-gone", pid: meta.pid, startedAt: meta.startedAt };
 }
 
 export function resetInstances() {

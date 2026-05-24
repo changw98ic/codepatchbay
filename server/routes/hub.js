@@ -409,7 +409,7 @@ export async function hubRoutes(fastify) {
           rateLimits: durLimits,
         };
       })().catch(() => null),
-      knowledgePolicySummary().catch(() => null),
+      Promise.resolve(knowledgePolicySummary()).catch(() => null),
       queueStatus(hr).catch(() => null),
       listQueue(hr, {}).catch(() => []),
       listDispatches(hr, {}).catch(() => []),

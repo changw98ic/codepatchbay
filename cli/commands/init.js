@@ -184,6 +184,17 @@ cpb:
   console.log("");
   console.log(`Project '${projectName}' ready.`);
   console.log(`Wiki: ${wikiDir}`);
+
+  // 6. Auto-register with Hub (if hub root exists)
+  try {
+    const { registerProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+    const hubRoot = resolveHubRoot(cpbRoot);
+    await registerProject(hubRoot, { name: projectName, sourcePath: resolvedPath });
+    console.log(`Registered with Hub.`);
+  } catch (err) {
+    console.log(`Hub registration skipped (${err.message}). Run: cpb attach ${resolvedPath} ${projectName}`);
+  }
+
   console.log("");
   console.log(`Next: cpb plan ${projectName} "<task>"`);
 }
