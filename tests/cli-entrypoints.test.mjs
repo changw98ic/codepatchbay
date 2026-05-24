@@ -436,7 +436,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
     "demo", "research", "evolve-multi", "index", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
     "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "github", "wiki", "release",
-    "cancel", "redirect", "merge-preview", "install-bin", "ui", "version",
+    "cancel", "redirect", "merge-preview", "install-bin", "ui", "version", "audit",
   ];
 
   for (const cmd of publicCommands) {
@@ -452,7 +452,7 @@ test("all routed CLI command modules import successfully", async () => {
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
-    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
+    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "audit",
   ];
   for (const mod of moduleFiles) {
     const result = await runNode(["-e", `import("./cli/commands/${mod}.js")`]);
@@ -532,7 +532,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
-    "cancel-redirect.js", "merge-preview.js",
+    "cancel-redirect.js", "merge-preview.js", "audit.js",
   ]);
 
   for (const file of jsFiles) {
@@ -540,6 +540,23 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
       assert.fail(`cli/commands/${file} is not routed and not marked intentional`);
     }
   }
+});
+
+// --- D47: Audit export command ---
+
+test("D47: cpb audit is a routed public command", async () => {
+  const result = await runNode(["./cpb", "audit", "--help"]);
+  assert.equal(result.code, 0, `cpb audit not routed: ${result.stderr || result.stdout}`);
+  assert.doesNotMatch(result.stderr + result.stdout, /Unknown command/);
+});
+
+test("D47: audit command module exports run()", async () => {
+  const result = await runNode(["-e", `
+    import("./cli/commands/audit.js").then(m => {
+      if (typeof m.run !== "function") throw new Error("audit missing run()");
+    })
+  `]);
+  assert.equal(result.code, 0, `audit module missing run(): ${result.stderr}`);
 });
 
 // --- D42: Quickstart command readiness ---

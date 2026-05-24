@@ -286,6 +286,109 @@ describe("event-store hardening", () => {
     assert.equal(leaked, undefined);
   });
 
+  // --- D47: Audit export ---
+
+  it("D47: buildJobAuditExport is deterministic and redacts secrets", async () => {
+    const { eventFileFor } = await import("../server/services/event-store.js");
+    const { buildJobAuditExport, writeJobAuditExport } = await import("../server/services/audit-export.js");
+    const project = "audit-export";
+    const jobId = "job-audit-d47";
+    const cpbRoot = tmpDir;
+
+    const eventFile = eventFileFor(cpbRoot, project, jobId, { dataRoot: tmpDir });
+    await mkdir(path.dirname(eventFile), { recursive: true });
+    const rawEvents = [
+      {
+        type: "job_created", jobId, project, task: "audit export test",
+        githubToken: "ghp_1234567890abcdef",
+        ts: "2026-05-25T00:00:00.000Z",
+      },
+      {
+        type: "phase_completed", jobId, project, phase: "plan", artifact: "plan-001.md", agent: "codex",
+        ts: "2026-05-25T00:01:00.000Z",
+      },
+      {
+        type: "phase_completed", jobId, project, phase: "execute", artifact: "deliverable-missing.md", agent: "claude",
+        ts: "2026-05-25T00:02:00.000Z",
+      },
+      {
+        type: "phase_activity", jobId, project, phase: "execute",
+        message: "configuring api key sk-test-secret-value for deployment",
+        ts: "2026-05-25T00:02:30.000Z",
+      },
+      {
+        type: "phase_completed", jobId, project, phase: "verify", artifact: "verdict-001.md", agent: "codex",
+        ts: "2026-05-25T00:03:00.000Z",
+      },
+      {
+        type: "pr_opened", jobId, project,
+        prNumber: 42,
+        prUrl: "https://github.com/org/repo/pull/42",
+        artifact: "pr-001.md",
+        ts: "2026-05-25T00:04:00.000Z",
+      },
+    ];
+    await writeFile(eventFile, `${rawEvents.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+
+    // Write a plan artifact file so it resolves as present
+    const wikiInbox = path.join(tmpDir, "wiki", "projects", project, "inbox");
+    const wikiOutputs = path.join(tmpDir, "wiki", "projects", project, "outputs");
+    await mkdir(wikiInbox, { recursive: true });
+    await mkdir(wikiOutputs, { recursive: true });
+    await writeFile(path.join(wikiInbox, "plan-001.md"), "# Plan\n", "utf8");
+    // No deliverable-missing.md — intentional broken ref
+    await writeFile(path.join(wikiOutputs, "verdict-001.md"), JSON.stringify({
+      status: "pass",
+      confidence: 0.91,
+      reason: "Verified without leaking sk-test-secret-value.",
+      blocking: [],
+    }), "utf8");
+
+    // Determinism: two calls must produce identical output
+    const pkg1 = await buildJobAuditExport(cpbRoot, project, jobId, { dataRoot: tmpDir });
+    const pkg2 = await buildJobAuditExport(cpbRoot, project, jobId, { dataRoot: tmpDir });
+    assert.deepStrictEqual(pkg1, pkg2);
+
+    // Package structure
+    assert.ok(Array.isArray(pkg1.eventLog), "package must contain eventLog array");
+    assert.equal(pkg1.schemaVersion, 1);
+    assert.equal(pkg1.project, project);
+    assert.equal(pkg1.jobId, jobId);
+    assert.ok(pkg1.artifactIndex, "package must contain artifactIndex");
+    assert.ok(pkg1.verdict, "package must contain verdict");
+    assert.ok(pkg1.pr, "package must contain pr metadata");
+    assert.equal(pkg1.pr.number, 42);
+    assert.equal(pkg1.verdict.status, "pass");
+    assert.equal(pkg1.verdict.confidence, 0.91);
+
+    // Secret redaction in returned package
+    const serialized = JSON.stringify(pkg1);
+    assert.doesNotMatch(serialized, /sk-test-secret-value/, "sk-test secret must be redacted");
+    assert.doesNotMatch(serialized, /ghp_[A-Za-z0-9]/, "GitHub token pattern must be redacted");
+
+    // Missing artifact → brokenReferences
+    assert.ok(
+      Array.isArray(pkg1.artifactIndex.brokenReferences),
+      "artifactIndex must have brokenReferences array",
+    );
+    assert.ok(
+      pkg1.artifactIndex.brokenReferences.some((ref) => JSON.stringify(ref).includes("deliverable-missing.md")),
+      "missing execute artifact must appear in brokenReferences",
+    );
+
+    // writeJobAuditExport writes a file with redacted content
+    const exportDir = path.join(tmpDir, "audit-export-out");
+    await mkdir(exportDir, { recursive: true });
+    const exportPath = await writeJobAuditExport(exportDir, {
+      ...pkg1,
+      unsafeNote: "do not leak sk-write-secret-value",
+    });
+    const fileContent = await import("node:fs/promises").then((fs) => fs.readFile(exportPath, "utf8"));
+    assert.match(path.basename(exportPath), /^audit-export-job-audit-d47-audit\.json$/);
+    assert.doesNotMatch(fileContent, /sk-test-secret-value/, "written export must redact secrets");
+    assert.doesNotMatch(fileContent, /sk-write-secret-value/, "writeJobAuditExport must redact before writing");
+  });
+
   it("secret input rejection event stores redacted evidence", async () => {
     const { appendEvent, readEvents } = await import("../server/services/event-store.js");
     const { makeSecretInputRejectedEvent } = await import("../server/services/secret-policy.js");
