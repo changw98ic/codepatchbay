@@ -92,6 +92,9 @@ const COMMANDS = {
   inbox: "inbox.js",
   outputs: "outputs.js",
   doctor: "doctor.js",
+  "health-check": "health-check.js",
+  gc: "reconcile.js",
+  recover: "reconcile.js",
   wiki: "wiki.js",
   ui: "ui.js",
   version: "version.js",
@@ -114,11 +117,11 @@ async function main() {
     }
   }
 
-  if (args.length === 0) {
+  if (args.length === 0 || args[0] === "help" || args[0] === "--help") {
     usage();
     console.log("");
     await checkDeps();
-    return;
+    return args.length === 0 ? undefined : 0;
   }
 
   let cmd = args[0];

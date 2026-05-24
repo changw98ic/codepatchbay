@@ -424,7 +424,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     for (const d of agents) {
       const override = adapterOverrides?.[d.name];
       const command = override?.command || d.command;
-      const args = override?.args || d.args || ["--help"];
+      const args = override?.args || (d.args?.length ? d.args : ["--help"]);
       const npxPkg = d.fallbackCommand === "npx" && d.fallbackArgs?.length
         ? d.fallbackArgs.find((a) => !a.startsWith("-"))
         : undefined;

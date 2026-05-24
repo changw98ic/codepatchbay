@@ -4,7 +4,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const mod = await import("./reconcile.js");
     await mod.run(args.slice(1), { cpbRoot });
   } else if (sub === "cleanup" || sub === "gc") {
-    console.log("Jobs cleanup: use cpb gc");
+    const mod = await import("./reconcile.js");
+    await mod.run(args.slice(1), { cpbRoot });
   } else if (sub === "report") {
     const { buildJobRunReport, formatReportHuman } = await import("../../server/services/job-run-report.js");
     const report = await buildJobRunReport({ cpbRoot });
