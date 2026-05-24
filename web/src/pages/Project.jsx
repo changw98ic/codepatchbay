@@ -76,18 +76,25 @@ export default function Project() {
   };
 
   useEffect(() => {
-    fetchFileList(fileType);
+    const controller = new AbortController();
+    fetch(`/api/projects/${name}/${fileType}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then(setFiles)
+      .catch(() => setFiles([]));
+    return () => controller.abort();
   }, [fileType, name]);
 
   useEffect(() => {
+    const controller = new AbortController();
     if (selectedFile) {
-      fetch(`/api/projects/${name}/files/${selectedFile}`)
+      fetch(`/api/projects/${name}/files/${selectedFile}`, { signal: controller.signal })
         .then((r) => r.json())
         .then((data) => setFileContent(data.content))
         .catch(() => setFileContent(null));
     } else {
       setFileContent(null);
     }
+    return () => controller.abort();
   }, [selectedFile, name]);
 
   const { displayed: displayFiles, showAll: showAllFiles, toggle: toggleFiles, hasMore: hasMoreFiles } = useCappedList(files, {
@@ -129,22 +136,16 @@ export default function Project() {
       if (match) {
         const checked = match[1].toLowerCase();
         const title = match[2].trim();
-        let stage = 'backlog';
-        if (checked === 'x') {
-          stage = 'reviewing';
-        } else if (checked === '/') {
-          stage = 'executing';
-        } else {
-          stage = index % 3 === 0 ? 'planning' : index % 3 === 1 ? 'backlog' : 'verifying';
-        }
+        const state = checked === 'x' ? 'done' : checked === '/' ? 'in_progress' : 'open';
+        const stateLabel = checked === 'x' ? 'Done' : checked === '/' ? 'In progress' : 'Open';
         list.push({
           id: `task-${index}`,
           title,
-          stage,
+          state,
+          stateLabel,
           checked: checked === 'x',
-          priority: index % 2 === 0 ? 'High' : 'Normal',
-          assignee: 'Antigravity Agent',
-          description: `This task belongs to the ${stage} workflow group for project ${name}.`
+          sourceLine: index + 1,
+          description: 'Parsed from project task markdown.'
         });
       }
     });
@@ -152,20 +153,15 @@ export default function Project() {
   };
 
   const parsedTasks = parseTasksFromMarkdown(project.tasks);
-  const tasksList = parsedTasks.length > 0 ? parsedTasks : [
-    { id: '1', title: 'Initialize codebase indexing', stage: 'backlog', priority: 'High', assignee: 'System', description: 'Run full structural symbol indexing on main branch.' },
-    { id: '2', title: 'Fix broken import references', stage: 'planning', priority: 'Normal', assignee: 'Agent', description: 'Address circular dependency warnings in utils/.' },
-    { id: '3', title: 'Implement JWT session token renewal', stage: 'executing', priority: 'High', assignee: 'Agent', description: 'Update auth handler to support token refresh.' },
-    { id: '4', title: 'Add unit tests for workspace validation', stage: 'verifying', priority: 'Normal', assignee: 'Agent', description: 'Write unit tests matching jest standards.' },
-    { id: '5', title: 'Merge security patch release', stage: 'reviewing', priority: 'High', assignee: 'Human', description: 'Review security dependencies before trunk merge.' },
-  ];
+  const tasksList = parsedTasks.length > 0 ? parsedTasks : [];
+  const indexState = project.projectIndex?.state;
+  const indexBranch = project.projectIndex?.branch;
+  const indexReady = indexState === 'ready';
 
   const lanes = [
-    { id: 'backlog', title: 'Backlog' },
-    { id: 'planning', title: 'Planning' },
-    { id: 'executing', title: 'Executing' },
-    { id: 'verifying', title: 'Verifying' },
-    { id: 'reviewing', title: 'Reviewing' },
+    { id: 'open', title: 'Open' },
+    { id: 'in_progress', title: 'In Progress' },
+    { id: 'done', title: 'Done' },
   ];
 
   return (
@@ -182,15 +178,20 @@ export default function Project() {
         )}
       </div>
 
-      <div className="tabs">
+      <div className="tabs" role="tablist">
         {TABS.map((t) => (
           <button
             key={t}
+            id={`tab-${t}`}
             className={`tab ${tab === t ? 'active' : ''}`}
             onClick={() => {
               setTab(t);
               setSelectedTask(null);
             }}
+            role="tab"
+            aria-selected={tab === t}
+            aria-controls={`panel-${t}`}
+            type="button"
           >
             {t}
           </button>
@@ -199,21 +200,27 @@ export default function Project() {
 
       <div className="tab-content">
         {tab === 'overview' && (
-          <div className="overview-tab-content">
+          <div id="panel-overview" className="overview-tab-content" role="tabpanel" aria-labelledby="tab-overview">
             <div className="overview-grid">
               <section className="panel story-section">
                 <h3>Project Narrative Summary</h3>
                 <div className="overview-narrative">
-                  <p>
-                    <strong>{name}</strong> is connected to the Global Hub and indexed successfully on the{' '}
-                    <code>{project.projectIndex?.branch || 'main'}</code> branch. The indexing status is currently{' '}
-                    <span className="badge badge-success badge-uppercase">
-                      {project.projectIndex?.state || 'ready'}
-                    </span>.
-                  </p>
+                  {project.projectIndex ? (
+                    <p>
+                      <strong>{name}</strong> has codebase index data for the{' '}
+                      <code>{indexBranch || 'unknown'}</code> branch. The indexing status is currently{' '}
+                      <span className={`badge ${indexReady ? 'badge-success' : indexState === 'stale' ? 'badge-warning' : 'badge-running'} badge-uppercase`}>
+                        {indexState || 'unknown'}
+                      </span>.
+                    </p>
+                  ) : (
+                    <p>
+                      <strong>{name}</strong> does not have codebase index data available yet.
+                    </p>
+                  )}
                   <p>
                     The codebase features automated context tracking. There are{' '}
-                    <strong>{files.length} active files</strong> currently listed in the inbox/outputs queue. No active structural pollution or dependency blockades have been detected.
+                    <strong>{files.length} active files</strong> currently listed in the inbox/outputs queue. Structural pollution and dependency blockade diagnostics are not reported by this view.
                   </p>
                 </div>
               </section>
@@ -259,10 +266,10 @@ export default function Project() {
         )}
 
         {tab === 'tasks' && (
-          <div className="tasks-tab-content">
+          <div id="panel-tasks" className="tasks-tab-content" role="tabpanel" aria-labelledby="tab-tasks">
             <div className="workflow-board">
               {lanes.map((lane) => {
-                const laneTasks = tasksList.filter((t) => t.stage === lane.id);
+                const laneTasks = tasksList.filter((t) => t.state === lane.id);
                 return (
                   <div key={lane.id} className="workflow-lane">
                     <div className="lane-header">
@@ -277,8 +284,8 @@ export default function Project() {
                       >
                         <h5>{task.title}</h5>
                         <div className="task-meta">
-                          <span>{task.priority}</span>
-                          <span>{task.assignee}</span>
+                          <span>{task.stateLabel}</span>
+                          <span>Line {task.sourceLine}</span>
                         </div>
                       </div>
                     ))}
@@ -297,15 +304,11 @@ export default function Project() {
                   <div>
                     <p className="task-detail-desc">{selectedTask.description}</p>
                     <dl className="task-detail-dl">
-                      <dt>Workflow stage</dt>
-                      <dd>{selectedTask.stage}</dd>
-                      <dt>Priority</dt>
-                      <dd>{selectedTask.priority}</dd>
+                      <dt>Checklist state</dt>
+                      <dd>{selectedTask.stateLabel}</dd>
+                      <dt>Source line</dt>
+                      <dd>{selectedTask.sourceLine}</dd>
                     </dl>
-                  </div>
-                  <div className="task-actions">
-                    <button className="btn btn-primary">Move to next stage</button>
-                    <button className="btn btn-secondary">Archive task</button>
                   </div>
                 </div>
               </div>
@@ -371,7 +374,7 @@ export default function Project() {
         )}
 
         {tab === 'knowledge' && (
-          <div className="knowledge-tab-content">
+          <div id="panel-knowledge" className="knowledge-tab-content" role="tabpanel" aria-labelledby="tab-knowledge">
             <section className="panel">
               <h3>Knowledge Base</h3>
               <p className="muted">
@@ -395,7 +398,7 @@ export default function Project() {
         )}
 
         {tab === 'settings' && (
-          <div className="settings-tab-content">
+          <div id="panel-settings" className="settings-tab-content" role="tabpanel" aria-labelledby="tab-settings">
             <div className="settings-panel">
               <div className="settings-row">
                 <div className="settings-info">

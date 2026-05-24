@@ -14,6 +14,7 @@ export default function Review() {
   const [evolveHistory, setEvolveHistory] = useState([]);
   const [sessionQuery, setSessionQuery] = useState('');
   const { subscribe } = useWebSocket();
+  const terminalStatuses = new Set(['expired', 'cancelled', 'completed']);
 
   const filteredSessions = useMemo(() =>
     sessions.filter(s =>
@@ -37,7 +38,7 @@ export default function Review() {
   }, []);
 
   const loadSessions = useCallback(() => {
-    fetch('/api/review')
+    return fetch('/api/review')
       .then((r) => r.json())
       .then((data) => {
         setSessions(data);
@@ -45,6 +46,16 @@ export default function Review() {
           const cur = data.find((s) => s.sessionId === activeId);
           if (cur) setActiveSession(cur);
         }
+      })
+      .catch(() => {});
+  }, [activeId]);
+
+  const loadActiveSession = useCallback((id = activeId) => {
+    if (!id) return Promise.resolve();
+    return fetch(`/api/review/${id}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data) setActiveSession(data);
       })
       .catch(() => {});
   }, [activeId]);
@@ -72,6 +83,8 @@ export default function Review() {
   };
 
   const isEvolveRunning = !!evolveStatus?.running;
+  const evolveStatusLabel = isEvolveRunning ? 'running' : 'stopped';
+  const evolveProjectCount = Array.isArray(evolveStatus?.projects) ? evolveStatus.projects.length : 0;
 
   useEffect(() => {
     loadSessions();
@@ -89,8 +102,7 @@ export default function Review() {
 
   const selectSession = async (id) => {
     setActiveId(id);
-    const res = await fetch(`/api/review/${id}`);
-    if (res.ok) setActiveSession(await res.json());
+    await loadActiveSession(id);
   };
 
   const createSession = async (e) => {
@@ -116,6 +128,13 @@ export default function Review() {
     loadSessions();
   };
 
+  const runReviewAction = async (action) => {
+    if (!activeId) return;
+    await fetch(`/api/review/${activeId}/${action}`, { method: 'POST' });
+    await loadSessions();
+    await loadActiveSession(activeId);
+  };
+
   const approve = async () => {
     if (!activeId) return;
     await fetch(`/api/review/${activeId}/approve`, { method: 'POST' });
@@ -127,6 +146,10 @@ export default function Review() {
     await fetch(`/api/review/${activeId}/reject`, { method: 'POST' });
     loadSessions();
   };
+
+  const canAcceptChanges = activeSession?.status === 'dispatched';
+  const canAutoApprove = activeSession && ['user_review', 'dispatched'].includes(activeSession.status);
+  const canCancel = activeSession && !terminalStatuses.has(activeSession.status);
 
   return (
     <div className="review-page">
@@ -163,19 +186,9 @@ export default function Review() {
           <h3>Self-Evolve</h3>
           {evolveStatus ? (
             <>
-              <div className="evolve-status">Status: {evolveStatus.status}</div>
-              <div className="evolve-status">
-                Source: {evolveStatus.source || 'manual'}
-              </div>
-              <div className="evolve-status">
-                Lease started: {evolveStatus.leaseStartedAt ? new Date(evolveStatus.leaseStartedAt).toLocaleTimeString() : 'n/a'}
-              </div>
-              <div className="evolve-status">
-                Round: {evolveStatus.round}/{evolveStatus.maxRounds ?? '-'}
-              </div>
-              <div className="evolve-status">
-                Running: {isEvolveRunning ? `yes (${evolveStatus.pid || 'n/a'})` : 'no'}
-              </div>
+              <div className="evolve-status">Status: {evolveStatusLabel}</div>
+              <div className="evolve-status">PID: {evolveStatus?.pid || 'n/a'}</div>
+              <div className="evolve-status">Projects: {evolveProjectCount}</div>
               <div className="action-buttons">
                 <button className="btn btn-primary" onClick={startEvolve} disabled={isEvolveRunning}>Start</button>
                 <button className="btn btn-reject" onClick={stopEvolve} disabled={!isEvolveRunning}>Stop</button>
@@ -266,11 +279,28 @@ export default function Review() {
               <span className={`badge badge-${reviewBadgeClass(activeSession.status)}`}>
                 {activeSession.status}
               </span>
-              {activeSession.status === 'idle' && (
-                <button className="btn btn-primary" onClick={startReview}>
-                  Start Review
-                </button>
-              )}
+              <div className="action-buttons">
+                {activeSession.status === 'idle' && (
+                  <button className="btn btn-primary" onClick={startReview}>
+                    Start Review
+                  </button>
+                )}
+                {canAcceptChanges && (
+                  <button className="btn btn-primary" onClick={() => runReviewAction('accept')}>
+                    Accept Changes
+                  </button>
+                )}
+                {canAutoApprove && (
+                  <button className="btn btn-secondary" onClick={() => runReviewAction('auto-approve')}>
+                    Auto-Approve
+                  </button>
+                )}
+                {canCancel && (
+                  <button className="btn btn-reject" onClick={() => runReviewAction('cancel')}>
+                    Cancel Session
+                  </button>
+                )}
+              </div>
             </div>
             <ReviewChat
               session={activeSession}

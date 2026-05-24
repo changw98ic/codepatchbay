@@ -53,6 +53,12 @@ describe('WebSocketProvider subscribe/unsubscribe', () => {
     });
   }
 
+  function dispatchRawMessage(data) {
+    act(() => {
+      mockWs.onmessage({ data });
+    });
+  }
+
   it('removes empty callback bucket after last unsubscribe', () => {
     const { result } = renderHook(() => useWebSocket(), { wrapper: createWrapper() });
     openConnection();
@@ -170,5 +176,59 @@ describe('WebSocketProvider subscribe/unsubscribe', () => {
     dispatchMessage('ev', { val: 3 });
     expect(starFn).toHaveBeenCalledTimes(2);
     expect(chFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores malformed messages without closing or dropping later events', () => {
+    const { result } = renderHook(() => useWebSocket(), { wrapper: createWrapper() });
+    openConnection();
+
+    const fn = vi.fn();
+    result.current.subscribe('good-event', fn);
+
+    dispatchRawMessage('{not-json');
+    expect(fn).not.toHaveBeenCalled();
+    expect(result.current.connected).toBe(true);
+    expect(mockWs.close).not.toHaveBeenCalled();
+
+    dispatchMessage('good-event', { ok: true });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith({ type: 'good-event', ok: true });
+  });
+
+  it('reconnects after an unexpected close', () => {
+    const sockets = [];
+    class ReconnectingWebSocket {
+      constructor() {
+        const ws = {
+          onopen: null,
+          onclose: null,
+          onerror: null,
+          onmessage: null,
+          close: vi.fn(),
+          send: vi.fn(),
+          readyState: 1,
+        };
+        sockets.push(ws);
+        return ws;
+      }
+    }
+    vi.stubGlobal('WebSocket', ReconnectingWebSocket);
+
+    const { result } = renderHook(() => useWebSocket(), { wrapper: createWrapper() });
+
+    act(() => { sockets[0].onopen(); });
+    expect(result.current.connected).toBe(true);
+
+    act(() => { sockets[0].onclose(); });
+    expect(result.current.connected).toBe(false);
+
+    act(() => { vi.advanceTimersByTime(999); });
+    expect(sockets).toHaveLength(1);
+
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(sockets).toHaveLength(2);
+
+    act(() => { sockets[1].onopen(); });
+    expect(result.current.connected).toBe(true);
   });
 });

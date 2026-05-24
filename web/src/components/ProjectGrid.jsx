@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import PipelineStatus from './PipelineStatus';
 
 function formatAge(ageMs) {
@@ -10,7 +10,6 @@ function formatAge(ageMs) {
 }
 
 export default function ProjectGrid({ primaryProjects, secondaryProjects, diagnostics, workerAgeById }) {
-  const navigate = useNavigate();
   const [projSearch, setProjSearch] = useState('');
   const [projFilter, setProjFilter] = useState('all');
 
@@ -29,7 +28,7 @@ export default function ProjectGrid({ primaryProjects, secondaryProjects, diagno
       } else if (projFilter === 'completed') {
         return pStatus === 'completed' || pStatus === 'done' || pStatus === 'success';
       } else if (projFilter === 'blocked') {
-        return pStatus === 'failed' || pStatus === 'blocked';
+        return pStatus === 'failed' || pStatus === 'blocked' || pStatus === 'cancelled';
       }
     }
     return true;
@@ -78,11 +77,7 @@ export default function ProjectGrid({ primaryProjects, secondaryProjects, diagno
           </div>
         )}
       </details>
-      <div className="card-cta" onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        navigate(`/project/${p.name || p.id}`);
-      }}>
+      <div className="card-cta">
         Open Project
       </div>
     </Link>
@@ -105,11 +100,7 @@ export default function ProjectGrid({ primaryProjects, secondaryProjects, diagno
           <span>Outputs: {p.outputs}</span>
         </div>
       </details>
-      <div className="card-cta" onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        navigate(`/project/${p.name}`);
-      }}>
+      <div className="card-cta">
         Open Project
       </div>
     </Link>
@@ -137,6 +128,7 @@ export default function ProjectGrid({ primaryProjects, secondaryProjects, diagno
                 className={`filter-pill ${projFilter === filter ? 'active' : ''}`}
                 onClick={() => setProjFilter(filter)}
                 type="button"
+                aria-pressed={projFilter === filter}
               >
                 {filter.charAt(0).toUpperCase() + filter.slice(1)}
               </button>

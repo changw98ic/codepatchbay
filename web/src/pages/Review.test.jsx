@@ -156,4 +156,134 @@ describe('Review Page', () => {
     expect(screen.queryByText('00000005')).not.toBeInTheDocument();
     expect(screen.queryByText('00000006')).not.toBeInTheDocument();
   });
+
+  it('exposes review lifecycle actions for a dispatched session', async () => {
+    const calls = [];
+    global.fetch.mockImplementation((url, options = {}) => {
+      calls.push({ url, method: options.method || 'GET' });
+      if (url.includes('/api/projects')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([{ name: 'proj-1' }]),
+        });
+      }
+      if (url === '/api/review/session-00000002') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            sessionId: 'session-00000002',
+            status: 'dispatched',
+            intent: 'Ship reviewed work',
+            history: [],
+          }),
+        });
+      }
+      if (url === '/api/review/session-00000002/cancel' || url === '/api/review/session-00000002/accept' || url === '/api/review/session-00000002/auto-approve') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ accepted: true, sessionId: 'session-00000002' }),
+        });
+      }
+      if (url === '/api/review') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([{ sessionId: 'session-00000002', status: 'dispatched' }]),
+        });
+      }
+      if (url.includes('/api/evolve/status')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ running: false }),
+        });
+      }
+      if (url.includes('/api/evolve/history')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      }
+      return Promise.reject(new Error(`Unhandled mock url: ${url}`));
+    });
+
+    render(<Review />);
+
+    const sessionButton = await waitFor(() => screen.getByRole('button', { name: /00000002/ }));
+    fireEvent.click(sessionButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'session-00000002' })).toBeInTheDocument();
+    });
+
+    const cancelButton = screen.getByRole('button', { name: 'Cancel Session' });
+    const acceptButton = screen.getByRole('button', { name: 'Accept Changes' });
+    const autoApproveButton = screen.getByRole('button', { name: 'Auto-Approve' });
+
+    fireEvent.click(autoApproveButton);
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000002/auto-approve', method: 'POST' });
+    });
+
+    fireEvent.click(acceptButton);
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000002/accept', method: 'POST' });
+    });
+
+    fireEvent.click(cancelButton);
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000002/cancel', method: 'POST' });
+    });
+  });
+
+  it('does not show Accept Changes before a user_review session is dispatched', async () => {
+    render(<Review />);
+
+    const sessionButton = await waitFor(() => screen.getByRole('button', { name: /00000001/ }));
+    fireEvent.click(sessionButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'session-00000001' })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: 'Accept Changes' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve & Dispatch' })).toBeInTheDocument();
+  });
+
+  it('renders self-evolve status using the API response contract', async () => {
+    global.fetch.mockImplementation((url) => {
+      if (url.includes('/api/projects')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([{ name: 'proj-1' }]),
+        });
+      }
+      if (url.includes('/api/review')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      }
+      if (url.includes('/api/evolve/status')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ running: true, pid: 4321, projects: ['proj-1', 'proj-2'] }),
+        });
+      }
+      if (url.includes('/api/evolve/history')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      }
+      return Promise.reject(new Error(`Unhandled mock url: ${url}`));
+    });
+
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Status: running')).toBeInTheDocument();
+    });
+    expect(screen.getByText('PID: 4321')).toBeInTheDocument();
+    expect(screen.getByText('Projects: 2')).toBeInTheDocument();
+    expect(screen.queryByText(/Round:/)).not.toBeInTheDocument();
+  });
 });

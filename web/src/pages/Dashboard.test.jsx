@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Dashboard from './Dashboard';
 
 vi.mock('../hooks/useWebSocket', () => ({
@@ -46,6 +46,11 @@ const baseMap = {
   '/api/hub/observability': null,
   '/api/hub/task-ledger?limit=50': null,
 };
+
+function LocationEcho() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
+}
 
 function compileDashboardSummary(includeTest) {
   return {
@@ -226,6 +231,44 @@ describe('Dashboard Hub projects as primary project list', () => {
     render(<Dashboard />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByText(/No projects found/)).toBeInTheDocument());
+  });
+});
+
+describe('Dashboard attention contracts', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('counts failed, blocked, and cancelled project states and links to an existing project tab', async () => {
+    global.fetch = mockFetch({
+      ...baseMap,
+      '/api/hub/status': { projectCount: 3, enabledProjectCount: 3, workerCount: 0, hubRoot: '/tmp/hub' },
+      '/api/hub/projects': [
+        { id: 'failed-proj', name: 'failed-proj', pipelineState: { status: 'failed', error: 'failed pipeline' } },
+        { id: 'blocked-proj', name: 'blocked-proj', pipelineState: { status: 'blocked', error: 'waiting for approval' } },
+        { id: 'cancelled-proj', name: 'cancelled-proj', pipelineState: { status: 'cancelled', error: 'cancelled by operator' } },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/project/:name" element={<LocationEcho />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getAllByText('failed-proj').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('blocked-proj').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('cancelled-proj').length).toBeGreaterThan(0);
+    expect(screen.getByText((_, node) =>
+      node?.className === 'today-brief-summary' &&
+      node.textContent?.includes('Currently, 3 projects are in a blocked state.')
+    )).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Retry Pipeline' })[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/project/failed-proj?tab=overview');
+    });
   });
 });
 
@@ -1408,12 +1451,12 @@ describe('Dashboard List Capping and Toggles', () => {
 
     // Toggle to Show All Durable Jobs
     fireEvent.click(durableBtn);
-    expect(container.querySelectorAll('.job-row').length).toBe(7);
+    await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(7));
 
     // Toggle back to Show Less
     const showLessBtnDurable = screen.getAllByText('Show Less')[0];
     fireEvent.click(showLessBtnDurable);
-    expect(container.querySelectorAll('.job-row').length).toBe(5);
+    await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(5));
 
     // Verify Recent Runs capping (default limit is 5)
     expect(container.querySelectorAll('.dispatch-row').length).toBe(5);
@@ -1423,7 +1466,7 @@ describe('Dashboard List Capping and Toggles', () => {
 
     // Toggle to Show All Recent Runs
     fireEvent.click(recentBtn);
-    expect(container.querySelectorAll('.dispatch-row').length).toBe(7);
+    await waitFor(() => expect(container.querySelectorAll('.dispatch-row').length).toBe(7));
   });
 
   it('caps Task Ledger to 5 items by default and supports Show All', async () => {

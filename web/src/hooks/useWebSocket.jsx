@@ -45,6 +45,7 @@ export function WebSocketProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    intentionalClose.current = false;
     connect();
     return () => {
       intentionalClose.current = true;

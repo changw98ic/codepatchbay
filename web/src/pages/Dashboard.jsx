@@ -11,6 +11,13 @@ import RecentDispatches from '../components/RecentDispatches';
 import DurableJobs from '../components/DurableJobs';
 import TaskLedger from '../components/TaskLedger';
 
+const PROJECT_ATTENTION_STATUSES = new Set(['failed', 'blocked', 'cancelled']);
+
+function projectAttentionStatus(project) {
+  const status = project?.pipelineState?.status;
+  return PROJECT_ATTENTION_STATUSES.has(status) ? status : null;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -57,7 +64,7 @@ export default function Dashboard() {
     return { ...hp, ...(legacy || {}) };
   });
   const hubIds = new Set(hubProjects.map((p) => p.id));
-  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name));
+  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name) && !hubIds.has(p.id));
 
   const workerAgeById = new Map(
     (observability?.workers?.details || []).map((w) => [w.id, w])
@@ -68,22 +75,24 @@ export default function Dashboard() {
     .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
     .slice(0, 10);
 
+  const allProjects = [...primaryProjects, ...secondaryProjects];
   const activeTasksCount = (taskLedger?.tasks || []).filter(t => t.status === 'running' || t.progress?.stage === 'running').length;
   const failedRunsCount = (observability?.dispatchSummary?.failed || 0) + (queueStatus?.failed || 0);
-  const blockedProjectsCount = primaryProjects.filter(p => p.pipelineState?.status === 'failed').length + secondaryProjects.filter(p => p.pipelineState?.status === 'failed').length;
+  const blockedProjectsCount = allProjects.filter(projectAttentionStatus).length;
   const completedRunsCount = observability?.dispatchSummary?.completed || 0;
 
   // Attention items
   const attentionItems = [];
-  primaryProjects.forEach(p => {
-    if (p.pipelineState?.status === 'failed') {
+  allProjects.forEach(p => {
+    const status = projectAttentionStatus(p);
+    if (status) {
       attentionItems.push({
-        id: `proj-${p.id}`,
+        id: `proj-${p.id || p.name}`,
         project: p.name || p.id,
-        reason: p.pipelineState?.error || 'Pipeline execution failed',
+        reason: p.pipelineState?.error || `Pipeline status is ${status}`,
         impact: 'Downstream deployments and testing are on hold.',
-        action: 'Retry Pipeline',
-        link: `/project/${p.name || p.id}?tab=log`
+        action: status === 'failed' ? 'Retry Pipeline' : 'Review Project',
+        link: `/project/${p.name || p.id}?tab=overview`
       });
     }
   });
@@ -95,7 +104,7 @@ export default function Dashboard() {
         reason: `Durable job failed in phase: ${job.phase}`,
         impact: 'Workspace lock remains active. Task is incomplete.',
         action: 'View Job Logs',
-        link: `/project/${job.project}?tab=log`
+        link: `/project/${job.project}?tab=overview`
       });
     }
   });
@@ -119,23 +128,38 @@ export default function Dashboard() {
         <Link to="/new-task" className="btn btn-primary">+ New Task</Link>
       </div>
 
-      <div className="view-tabs">
+      <div className="view-tabs" role="tablist">
         <button
+          id="tab-overview"
           className={`view-tab ${activeTab === 'overview' ? 'active' : ''}`}
           onClick={() => setActiveTab('overview')}
+          role="tab"
+          aria-selected={activeTab === 'overview'}
+          aria-controls="panel-overview"
+          type="button"
         >
           Overview
         </button>
         <button
+          id="tab-health"
           className={`view-tab ${activeTab === 'health' ? 'active' : ''}`}
           onClick={() => setActiveTab('health')}
+          role="tab"
+          aria-selected={activeTab === 'health'}
+          aria-controls="panel-health"
+          type="button"
         >
           System Health
         </button>
       </div>
 
       {/* OVERVIEW TAB */}
-      <div className={activeTab === 'overview' ? '' : 'hidden'}>
+      <div
+        id="panel-overview"
+        className={activeTab === 'overview' ? '' : 'hidden'}
+        role="tabpanel"
+        aria-labelledby="tab-overview"
+      >
         <TodayBrief
           activeTasks={activeTasksCount}
           failedRuns={failedRunsCount}
@@ -152,7 +176,12 @@ export default function Dashboard() {
       </div>
 
       {/* HEALTH TAB */}
-      <div className={activeTab === 'health' ? '' : 'hidden'}>
+      <div
+        id="panel-health"
+        className={activeTab === 'health' ? '' : 'hidden'}
+        role="tabpanel"
+        aria-labelledby="tab-health"
+      >
         <HubHealthPanel
           hubStatus={hubStatus}
           hubProjects={hubProjects}

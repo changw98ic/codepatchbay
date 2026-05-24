@@ -424,6 +424,83 @@ body {
   gap: 12px;
 }
 
+.pipeline-nodes {
+  display: grid;
+  gap: 8px;
+}
+
+.pipeline-node {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  row-gap: 3px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.pipeline-node.completed {
+  color: var(--text);
+}
+
+.pipeline-node.running,
+.pipeline-node.retrying {
+  color: var(--accent-light);
+}
+
+.pipeline-node.failed,
+.pipeline-node.cancelled {
+  color: var(--error);
+}
+
+.pipeline-node.blocked {
+  color: var(--warning);
+}
+
+.pipeline-node.completed .phase-dot {
+  background: var(--success);
+}
+
+.pipeline-node.running .phase-dot,
+.pipeline-node.retrying .phase-dot {
+  background: var(--accent);
+  animation: pulse-glow 1.5s infinite;
+}
+
+.pipeline-node.failed .phase-dot,
+.pipeline-node.cancelled .phase-dot {
+  background: var(--error);
+}
+
+.pipeline-node.blocked .phase-dot {
+  background: var(--warning);
+}
+
+.pipeline-node-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.pipeline-node-status,
+.pipeline-node-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.pipeline-node-reason {
+  grid-column: 2;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .phase {
   display: flex;
   align-items: center;
@@ -1151,7 +1228,7 @@ body {
 }
 
 .dispatch-project {
-  font-weight: 7500;
+  font-weight: 700;
   color: var(--accent-light);
 }
 
@@ -1250,7 +1327,7 @@ body {
 
 .review-form h3 {
   font-size: 14px;
-  font-weight: 7500;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-dim);
@@ -1266,7 +1343,7 @@ body {
 
 .session-list h3 {
   font-size: 13px;
-  font-weight: 7500;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-dim);
@@ -2928,6 +3005,5 @@ input:checked + .toggle-slider:before {
 }
 .mt-24 { margin-top: 24px; }
 .mt-32 { margin-top: 32px; }
-
 
 

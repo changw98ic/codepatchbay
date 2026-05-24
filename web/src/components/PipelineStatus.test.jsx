@@ -68,4 +68,27 @@ describe('PipelineStatus', () => {
     expect(screen.getByText('Deploy')).toBeInTheDocument();
     expect(screen.queryByText('Execute')).not.toBeInTheDocument();
   });
+
+  it('renders DAG nodes when node state is available', () => {
+    render(<PipelineStatus state={{
+      nodes: [
+        { id: 'plan', phase: 'plan', status: 'completed', durationMs: 90_000 },
+        { id: 'execute', phase: 'execute', status: 'retrying', attempt: 2, reason: 'verify failed' },
+        { id: 'verify', phase: 'verify', status: 'failed', error: 'quality gate failed' },
+      ],
+    }} />);
+
+    expect(screen.getByText('Plan')).toBeInTheDocument();
+    expect(screen.getByText('1m 30s')).toBeInTheDocument();
+    expect(screen.getByText('Attempt 2')).toBeInTheDocument();
+    expect(screen.getByText('verify failed')).toBeInTheDocument();
+    expect(screen.getByText('quality gate failed')).toBeInTheDocument();
+  });
+
+  it('uses phase fallback when DAG nodes are absent', () => {
+    render(<PipelineStatus state={{ phase: 'execute', status: 'running', nodes: [] }} />);
+    expect(screen.getByText('Plan')).toBeInTheDocument();
+    expect(screen.getByText('Execute')).toBeInTheDocument();
+    expect(screen.getByText('Verify')).toBeInTheDocument();
+  });
 });

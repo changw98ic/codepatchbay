@@ -36,7 +36,7 @@ export default function AgentBoard() {
       .then((r) => r.json())
       .then((data) => setAgentJobs(data.jobs || []))
       .catch(() => setAgentJobs([]));
-  }, [selectedAgent, agents]);
+  }, [selectedAgent]);
 
   if (loading) {
     return <div className="page-loading">Loading agents...</div>;

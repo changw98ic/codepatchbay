@@ -131,6 +131,40 @@ describe('Project Page', () => {
     expect(screen.getByText('318')).toBeInTheDocument();
   });
 
+  it('does not invent a ready index state when projectIndex is missing', async () => {
+    global.fetch.mockImplementation((url) => {
+      if (url.includes('/api/projects/test-project/inbox')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      }
+      if (url.includes('/api/projects/test-project/outputs')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        });
+      }
+      if (url.includes('/api/projects/test-project')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...mockProjectData, projectIndex: null }),
+        });
+      }
+      return Promise.reject(new Error(`Unhandled mock url: ${url}`));
+    });
+
+    renderComponent();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'test-project' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('No codebase index available. This project has not been indexed yet.')).toBeInTheDocument();
+    expect(screen.queryByText(/indexed successfully/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No active structural pollution/)).not.toBeInTheDocument();
+  });
+
   it('switches to tasks tab and displays files with list capping', async () => {
     renderComponent();
 
@@ -139,7 +173,7 @@ describe('Project Page', () => {
     });
 
     // Click 'tasks' tab button
-    const tasksTab = screen.getByRole('button', { name: 'tasks' });
+    const tasksTab = screen.getByRole('tab', { name: 'tasks' });
     fireEvent.click(tasksTab);
 
     // Verify task lists render correctly
@@ -174,6 +208,34 @@ describe('Project Page', () => {
     });
   });
 
+  it('presents markdown tasks as parsed checklist items without invented workflow facts', async () => {
+    renderComponent();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'test-project' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'tasks' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('First backlog task')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('High')).not.toBeInTheDocument();
+    expect(screen.queryByText('Normal')).not.toBeInTheDocument();
+    expect(screen.queryByText('Antigravity Agent')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Move to next stage' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Archive task' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('First backlog task'));
+    await waitFor(() => {
+      expect(screen.getByText('Checklist state')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Source line')).toBeInTheDocument();
+    expect(screen.queryByText('Workflow stage')).not.toBeInTheDocument();
+    expect(screen.queryByText('Priority')).not.toBeInTheDocument();
+  });
+
   it('retains active file selection in the visible capped subset whencollapsed', async () => {
     renderComponent();
 
@@ -181,7 +243,7 @@ describe('Project Page', () => {
       expect(screen.getByRole('heading', { level: 2, name: 'test-project' })).toBeInTheDocument();
     });
 
-    const tasksTab = screen.getByRole('button', { name: 'tasks' });
+    const tasksTab = screen.getByRole('tab', { name: 'tasks' });
     fireEvent.click(tasksTab);
 
     // Wait for files to load
