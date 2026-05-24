@@ -108,6 +108,14 @@ Pipeline 通过 grep 此行决定下一步。
 ./cpb status my-project
 ./cpb list
 ./cpb jobs
+./cpb jobs reconcile              # Mark stale jobs as failed
+./cpb gc                          # Clean stale jobs + orphan leases + pollution
+./cpb gc --dry-run                # Preview cleanup
+./cpb doctor [--json]             # Health check (exit 0=ok, 1=errors)
+./cpb health-check                # HTTP + test suite + frontend build
+./cpb recover                     # Alias for gc
+./cpb hub status|start|stop
+./cpb release list|use|install|doctor|gc
 ./cpb supervisor
 ./cpb wiki lint
 

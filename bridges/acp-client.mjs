@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -480,8 +481,8 @@ export class AcpClient {
       env.npm_config_cache = instanceCache;
     }
 
-    // Per-agent HOME isolation (opt-in via CPB_AGENT_ISOLATE_HOME=1)
-    if (env.CPB_AGENT_ISOLATE_HOME === "1") {
+    // Per-agent HOME isolation (default on; disable with CPB_AGENT_ISOLATE_HOME=0)
+    if (env.CPB_AGENT_ISOLATE_HOME !== "0") {
       const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
       if (cpbRoot) {
         const { createAgentHome } = await import("../core/agents/isolation.js");
@@ -821,7 +822,19 @@ export class AcpClient {
 
   validateWritePath(targetPath) {
     if (!this.writeAllowPaths) return;
-    const resolved = path.resolve(targetPath);
+    // Resolve symlinks to prevent escape via symlink chains
+    let resolved;
+    try {
+      resolved = realpathSync(path.resolve(targetPath));
+    } catch {
+      // Path doesn't exist yet — resolve parent and append basename
+      try {
+        const parentReal = realpathSync(path.dirname(path.resolve(targetPath)));
+        resolved = path.join(parentReal, path.basename(targetPath));
+      } catch {
+        resolved = path.resolve(targetPath);
+      }
+    }
     const allowed = this.writeAllowPaths.some((pattern) => {
       const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
       const regex = new RegExp(`^${escaped}$`);

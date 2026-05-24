@@ -523,7 +523,11 @@ export function mergeProfilePolicy(basePolicy, profileConfig) {
     merged.denyCommands = [...profileConfig.deny_commands];
   }
   if (Array.isArray(profileConfig.write_paths)) {
-    merged.writeAllowed = [...merged.writeAllowed, ...profileConfig.write_paths];
+    // Restrict glob-all write_paths (**/*) unless CPB_DANGEROUS=1
+    const paths = process.env.CPB_DANGEROUS === "1"
+      ? profileConfig.write_paths
+      : profileConfig.write_paths.filter((p) => p !== "**/*");
+    merged.writeAllowed = [...merged.writeAllowed, ...paths];
   }
   if (profileConfig.execution_boundary) {
     merged.executionBoundary = profileConfig.execution_boundary;

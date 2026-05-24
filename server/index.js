@@ -79,6 +79,22 @@ app.addHook('onRequest', (req, _res, done) => {
   done();
 });
 
+// API key authentication (gate behind CPB_API_KEYS env var)
+const apiKeys = process.env.CPB_API_KEYS
+  ? new Set(process.env.CPB_API_KEYS.split(',').map(k => k.trim()).filter(Boolean))
+  : null;
+if (apiKeys && apiKeys.size > 0) {
+  app.addHook('onRequest', (req, res, done) => {
+    if (req.url.startsWith('/ws') || req.url === '/api/health') return done();
+    const key = req.headers['x-api-key'] || req.query?.api_key;
+    if (!key || !apiKeys.has(key)) {
+      res.code(401).send({ error: 'Unauthorized: valid x-api-key required' });
+      return;
+    }
+    done();
+  });
+}
+
 // File watcher + notification service
 const notifService = initNotificationService(CPB_ROOT);
 const notifBroadcast = async (event) => {

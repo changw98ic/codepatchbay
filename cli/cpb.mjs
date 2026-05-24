@@ -42,12 +42,16 @@ function usage() {
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
   console.log(`  ${CYAN}jobs${NC} [reconcile|cleanup|report]         Job management`);
+  console.log(`  ${CYAN}gc${NC} [--dry-run]                          Clean stale jobs, orphan leases, pollution`);
+  console.log(`  ${CYAN}recover${NC} [--dry-run]                     Alias for gc`);
   console.log(`  ${CYAN}diff${NC} <project>                         Git diff`);
   console.log(`  ${CYAN}review${NC} <project> [id] [--agent]          Review deliverable`);
   console.log(`  ${CYAN}inbox${NC} <project>                        List plans`);
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
+  console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
   console.log(`  ${CYAN}wiki${NC} [lint|list]                       Wiki operations`);
+  console.log(`  ${CYAN}release${NC} <list|use|install|doctor|gc>    Release management`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
