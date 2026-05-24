@@ -1,4 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,11 +14,17 @@ const POLLUTION_NAME_PATTERNS = [
   { pattern: /^calc-test/i, reason: "calc-test prefix" },
 ];
 
-function isUnderTestPath(filePath) {
+export function isUnderTestPath(filePath) {
   if (!filePath || typeof filePath !== "string") return false;
-  const tmpDir = os.tmpdir();
-  const resolved = path.resolve(filePath);
-  return resolved.startsWith(tmpDir + path.sep) || resolved === tmpDir;
+  const tmpDir = realpathSync(os.tmpdir());
+  try {
+    const resolved = realpathSync(path.resolve(filePath));
+    return resolved.startsWith(tmpDir + path.sep) || resolved === tmpDir;
+  } catch {
+    // Path doesn't exist — check unresolved path
+    const resolved = path.resolve(filePath);
+    return resolved.startsWith(tmpDir + path.sep) || resolved === tmpDir;
+  }
 }
 
 export function classifyProject(project, { hubRoot, skipPathChecks = false } = {}) {

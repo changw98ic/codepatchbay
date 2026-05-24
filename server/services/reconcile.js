@@ -10,7 +10,7 @@ import { resolveHubRoot, loadRegistry, saveRegistry } from "./hub-registry.js";
 import { projectRuntimeRoot } from "./runtime-root.js";
 import { listProcesses, classifyLiveness, removeProcess } from "./process-registry.js";
 import { listQueue as listHubQueue, updateEntry as updateQueueEntry } from "./hub-queue.js";
-import { scanHubPollution } from "./project-pollution.js";
+import { scanHubPollution, isUnderTestPath } from "./project-pollution.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -447,7 +447,17 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   }
 
   // 6. Clean up test/fixture pollution and orphan runtime dirs
-  if (!dryRun) {
+  if (dryRun) {
+    try {
+      const preview = await cleanupDryRun(cpbRoot);
+      report.pollutionPreview = {
+        testProjectsToRemove: preview.testProjectsToRemove?.length || 0,
+        orphanRuntimeDirsToRemove: preview.orphanRuntimeDirsToRemove?.length || 0,
+        candidates: preview.testProjectsToRemove,
+        orphanDirs: preview.orphanRuntimeDirsToRemove,
+      };
+    } catch {}
+  } else {
     try {
       report.pollution = await cleanupPollution(cpbRoot);
     } catch {}
@@ -643,7 +653,7 @@ export async function cleanupPollution(cpbRoot) {
   const pollution = await scanHubPollution(hubRoot);
   const registry = await loadRegistry(hubRoot);
 
-  // Remove registry entries classified as pollution — only when deletion boundary is proven safe
+  // Remove registry entries classified as pollution
   for (const candidate of pollution.candidates) {
     const project = registry.projects[candidate.projectId];
     if (!project) continue;
@@ -656,6 +666,12 @@ export async function cleanupPollution(cpbRoot) {
     });
 
     if (!safety.canDelete) {
+      // Source under tmpdir — safe to remove registry entry, skip runtime dir
+      if (isUnderTestPath(project.sourcePath)) {
+        delete registry.projects[candidate.projectId];
+        projectsRemoved++;
+        continue;
+      }
       unsafeProjectsSkipped.push({
         projectId: candidate.projectId,
         attemptedRoot: project.projectRuntimeRoot || null,

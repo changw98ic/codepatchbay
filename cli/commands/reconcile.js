@@ -71,6 +71,21 @@ export async function run(args, { cpbRoot }) {
     }
   }
 
+  if (report.pollutionPreview) {
+    const pp = report.pollutionPreview;
+    console.log(`\nPollution preview (${dryRun ? "dry-run" : "preview"}): ${pp.testProjectsToRemove} test project(s), ${pp.orphanRuntimeDirsToRemove} orphan dir(s)`);
+    if (pp.candidates?.length > 0) {
+      for (const c of pp.candidates) {
+        console.log(`  [would remove] ${c.projectId}: ${c.reasons?.join(", ")}`);
+      }
+    }
+    if (pp.orphanDirs?.length > 0) {
+      for (const d of pp.orphanDirs) {
+        console.log(`  [would remove] orphan: ${d.projectId}`);
+      }
+    }
+  }
+
   if (report.streamErrors.length > 0) {
     process.exitCode = 1;
   }
