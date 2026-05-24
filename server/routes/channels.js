@@ -5,6 +5,11 @@ import { registerTask, unregisterTask } from "../services/executor.js";
 import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
+import {
+  parseSlackFormBody,
+  parseSlackSlashCommand,
+  verifySlackSignature,
+} from "../services/channel-slack.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -166,6 +171,42 @@ async function loadChannelConfig(cpbRoot) {
 }
 
 export async function channelRoutes(fastify, opts) {
+  fastify.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "buffer" }, (req, body, done) => {
+    req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
+    done(null, parseSlackFormBody(req.rawBody));
+  });
+
+  fastify.post("/channels/slack/commands", async (req, reply) => {
+    const signingSecret = opts.slackSigningSecret || process.env.CPB_SLACK_SIGNING_SECRET;
+    const verification = verifySlackSignature({
+      signingSecret,
+      timestamp: req.headers["x-slack-request-timestamp"],
+      signature: req.headers["x-slack-signature"],
+      rawBody: req.rawBody,
+    });
+    if (!verification.ok) {
+      return reply.code(401).send({ ok: false, error: verification.reason });
+    }
+
+    const parsed = parseSlackSlashCommand(req.body || {});
+    const dryRun = opts.slackDryRun === true || req.query?.dryRun === "1" || req.query?.dry_run === "1";
+    if (dryRun) {
+      return {
+        ok: true,
+        channel: "slack",
+        dryRun: true,
+        parsed,
+      };
+    }
+
+    return reply.code(202).send({
+      ok: true,
+      channel: "slack",
+      dryRun: false,
+      parsed,
+      dispatch: "pending",
+    });
+  });
 
   // Feishu event callback
   fastify.post("/channels/feishu", async (req, reply) => {

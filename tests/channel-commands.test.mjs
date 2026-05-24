@@ -1,7 +1,31 @@
+import { createHmac } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import Fastify from "fastify";
 
+import { channelRoutes } from "../server/routes/channels.js";
 import { CHANNEL_COMMAND_HELP, parseChannelCommand } from "../server/services/channel-commands.js";
+import {
+  parseSlackSlashCommand,
+  verifySlackSignature,
+} from "../server/services/channel-slack.js";
+
+function slackSignature(secret, timestamp, rawBody) {
+  return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+}
+
+async function buildChannelApp(cpbRoot, routeOptions = {}) {
+  const app = Fastify({ logger: false });
+  app.addHook("onRequest", (req, _reply, done) => {
+    req.cpbRoot = cpbRoot;
+    done();
+  });
+  await app.register(channelRoutes, { prefix: "/api", ...routeOptions });
+  return app;
+}
 
 function assertCommandShape(command) {
   for (const field of ["project", "job", "issue", "task", "workflow"]) {
@@ -73,5 +97,90 @@ describe("channel command parser", () => {
     assert.equal(malformed.ok, false);
     assert.equal(malformed.code, "INVALID_COMMAND");
     assert.match(malformed.help, /\/cpb issue <project> <number>/);
+  });
+});
+
+describe("Slack channel command skeleton", () => {
+  it("verifies Slack request signatures against the raw form body", () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const rawBody = "command=%2Fcpb&text=run+frontend+fix+login";
+    const valid = slackSignature("slack-signing-secret", timestamp, rawBody);
+
+    assert.equal(verifySlackSignature({
+      signingSecret: "slack-signing-secret",
+      timestamp,
+      signature: valid,
+      rawBody,
+    }).ok, true);
+
+    const invalid = verifySlackSignature({
+      signingSecret: "slack-signing-secret",
+      timestamp,
+      signature: slackSignature("wrong-secret", timestamp, rawBody),
+      rawBody,
+    });
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.reason, /signature/i);
+  });
+
+  it("maps Slack slash-command payloads through the shared parser", () => {
+    const result = parseSlackSlashCommand({
+      command: "/cpb",
+      text: 'run frontend --workflow strict "fix login redirect"',
+      user_id: "U123",
+      channel_id: "C123",
+      team_id: "T123",
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.channel, "slack");
+    assert.equal(result.actor.userId, "U123");
+    assert.equal(result.command.type, "run");
+    assert.equal(result.command.project, "frontend");
+    assert.equal(result.command.task, "fix login redirect");
+    assert.equal(result.command.workflow, "strict");
+  });
+
+  it("exposes a signed dry-run slash-command endpoint and rejects invalid signatures", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-route-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+      slackDryRun: true,
+    });
+    try {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = "command=%2Fcpb&text=status+job-20260524-153011-a13f9c&user_id=U123&channel_id=C123&team_id=T123";
+      const valid = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("wrong-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(valid.statusCode, 200);
+      const parsed = JSON.parse(valid.body);
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.dryRun, true);
+      assert.equal(parsed.parsed.command.type, "status");
+      assert.equal(parsed.parsed.command.job, "job-20260524-153011-a13f9c");
+      assert.equal(invalid.statusCode, 401);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
   });
 });
