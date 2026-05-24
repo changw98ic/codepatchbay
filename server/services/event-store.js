@@ -436,13 +436,22 @@ export function materializeJob(events) {
         state.leaseId = event.leaseId ?? null;
         state.status = "running";
         state.blockedReason = null;
+        if (event.phase && !state.runningNodes.includes(event.phase)) {
+          state.runningNodes = [...state.runningNodes, event.phase];
+        }
         break;
       case "phase_completed":
         state.phase = event.phase ?? state.phase;
         state.leaseId = null;
         state.status = "running";
-        if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) {
-          state.completedPhases = [...state.completedPhases, event.phase];
+        if (event.phase !== undefined) {
+          state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
+          if (!state.completedPhases.includes(event.phase)) {
+            state.completedPhases = [...state.completedPhases, event.phase];
+          }
+          if (!state.completedNodes.includes(event.phase)) {
+            state.completedNodes = [...state.completedNodes, event.phase];
+          }
         }
         if (event.phase !== undefined && event.artifact !== undefined) {
           state.artifacts[event.phase] = event.artifact;
@@ -487,6 +496,9 @@ export function materializeJob(events) {
         state.retryable = event.retryable ?? state.retryable;
         state.retryCount = event.retryCount ?? state.retryCount;
         state.failureCause = event.cause ?? state.failureCause;
+        if (event.phase !== undefined) {
+          state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
+        }
         terminal = true;
         break;
       case "budget_exceeded":

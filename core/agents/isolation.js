@@ -49,6 +49,33 @@ export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, no
     return 0;
   }
 
+  let activeCheck = isLeaseActive;
+  if (!activeCheck) {
+    try {
+      const { runtimeDataPath } = await import("../../server/services/runtime-root.js");
+      const { readLease, isLeaseStale } = await import("../../server/services/lease-manager.js");
+      activeCheck = async (jobId) => {
+        try {
+          const leasesDir = runtimeDataPath(cpbRoot, "leases");
+          const files = await readdir(leasesDir);
+          const prefix = `lease-${jobId}-`;
+          for (const f of files) {
+            if (f.startsWith(prefix) && f.endsWith(".json")) {
+              const leaseId = path.basename(f, ".json");
+              const lease = await readLease(cpbRoot, leaseId);
+              if (lease !== null && !isLeaseStale(lease)) {
+                return true;
+              }
+            }
+          }
+        } catch {}
+        return false;
+      };
+    } catch {
+      activeCheck = () => false;
+    }
+  }
+
   let cleaned = 0;
   for (const agentName of agents) {
     const agentDir = path.join(homesRoot, agentName);
@@ -65,10 +92,8 @@ export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, no
         if (now - info.mtimeMs <= maxAgeMs) continue;
 
         // Check lease status before deleting
-        if (isLeaseActive) {
-          const active = await isLeaseActive(jobId);
-          if (active) continue;
-        }
+        const active = await activeCheck(jobId);
+        if (active) continue;
 
         await rm(jobDir, { recursive: true, force: true });
         cleaned++;

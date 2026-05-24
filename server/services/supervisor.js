@@ -121,6 +121,45 @@ export async function recoverJobs(cpbRoot, { now } = {}) {
       continue;
     }
 
+    // DAG-specific checks
+    let isDagJob = false;
+    try {
+      const dag = normalizeWorkflow(job.workflow);
+      if (dag.isDag && dag.nodes.length > 0) {
+        isDagJob = true;
+      }
+    } catch {}
+
+    if (isDagJob) {
+      const { ready } = readyNodesFor(job);
+      if (ready.length > 0) {
+        staleTracker.delete(job.jobId);
+        recoverable.push(job);
+        continue;
+      }
+
+      // Check if any currently running node has a stale lease.
+      let hasStaleRunningNode = false;
+      const runningNodes = job.runningNodes || [];
+      for (const nodeVal of runningNodes) {
+        const nodeLeaseId = `lease-${job.jobId}-${nodeVal}`;
+        const lease = await readLease(cpbRoot, nodeLeaseId);
+        if (lease === null || isLeaseStale(lease, now)) {
+          hasStaleRunningNode = true;
+          break;
+        }
+      }
+
+      if (hasStaleRunningNode) {
+        staleTracker.delete(job.jobId);
+        recoverable.push(job);
+        continue;
+      }
+
+      // Skip scheduling for this job if no ready nodes and all running nodes are active.
+      continue;
+    }
+
     if (nextPhaseFor(job) === "") {
       staleTracker.delete(job.jobId);
       continue;
@@ -330,6 +369,29 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
     return { jobId: recoveryJob.jobId, project: recoveryJob.project, phase, exitCode: 1, error: "no bridge for phase" };
   }
 
+  // Resolve node agent using poolStatus
+  let poolStatus = null;
+  try {
+    const { getManagedAcpPool } = await import("../../runtime/acp-pool.js");
+    const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
+    const status = await pool.statusAsync();
+    poolStatus = status?.pools || null;
+  } catch {}
+
+  let resolvedAgent = null;
+  try {
+    const dag = normalizeWorkflow(recoveryJob.workflow);
+    const node = dag.nodes?.find((n) => n.id === phase);
+    if (node) {
+      const { resolveNodeAgent } = await import("../../core/workflow/definition.js");
+      resolvedAgent = resolveNodeAgent(node, { poolStatus });
+    }
+  } catch {}
+
+  if (resolvedAgent) {
+    bridge.args.push("--agent", resolvedAgent);
+  }
+
   const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
   if (!await fileExists(jobRunner)) {
     return {
@@ -376,6 +438,12 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
  * Returns an array of recovery results.
  */
 export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorRoot, useCurrentExecutor = false } = {}) {
+  // Periodically clean up old isolated agent home directories
+  try {
+    const { cleanupAgentHomes } = await import("../../core/agents/isolation.js");
+    await cleanupAgentHomes(cpbRoot);
+  } catch {}
+
   const jobs = await recoverJobs(cpbRoot, { now });
   const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const results = [];

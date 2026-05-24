@@ -3,4 +3,5 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const result = await runReadinessChecks({ cpbRoot });
   if (args.includes("--json")) console.log(formatReadinessJson(result));
   else console.log(formatReadinessHuman(result));
+  return result.summary.success ? 0 : 1;
 }

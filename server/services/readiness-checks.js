@@ -172,10 +172,6 @@ async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability }
   return ok(id, "acp", msg, { details: version ? { version } : undefined });
 }
 
-async function checkRustRuntime(cpbRoot) {
-  return skipped("rust-runtime", "runtime", "Rust runtime is a legacy diagnostic adapter, not part of the main workflow path");
-}
-
 async function checkHubLiveness(hubRoot) {
   try {
     const liveness = await readHubLiveness(hubRoot);
@@ -430,7 +426,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
       const command = override?.command || d.command;
       const args = override?.args || d.args || ["--help"];
       const npxPkg = d.fallbackCommand === "npx" && d.fallbackArgs?.length
-        ? d.fallbackArgs.join("").replace(/^-y\s+/, "")
+        ? d.fallbackArgs.find((a) => !a.startsWith("-"))
         : undefined;
       adapterChecks.push(
         checkAcpAdapter(d.name, command, args, {
@@ -457,7 +453,6 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkDiskSpace(resolvedCpbRoot, "project"),
     checkDiskSpace(resolvedHubRoot, "hub"),
     ...adapterChecks,
-    checkRustRuntime(resolvedCpbRoot),
     checkHubLiveness(resolvedHubRoot),
     checkHubWritability(resolvedHubRoot),
     checkRegistryConsistency(resolvedHubRoot),
@@ -740,12 +735,11 @@ export function formatReleaseDoctorJson(result) {
 
 // --- Output formatters ---
 
-const CATEGORY_ORDER = ["toolchain", "disk", "acp", "runtime", "hub", "registry", "jobs", "workers", "leases", "provider"];
+const CATEGORY_ORDER = ["toolchain", "disk", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
 const CATEGORY_LABELS = {
   toolchain: "Toolchain",
   disk: "Disk",
   acp: "ACP Adapters",
-  runtime: "Runtime",
   hub: "Hub",
   registry: "Registry",
   jobs: "Jobs",
