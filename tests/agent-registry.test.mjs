@@ -444,3 +444,179 @@ describe("assertValidRoutingRules", () => {
     assertValidRoutingRules(routing);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D38 Agent Metrics Score tests
+// ---------------------------------------------------------------------------
+
+describe("scoreAgentMetrics", () => {
+  it("returns all required top-level fields", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const result = scoreAgentMetrics({
+      totalJobs: 10,
+      successes: 8,
+      failures: 2,
+      totalDurationMs: 600_000,
+      retries: 1,
+      verifierPasses: 7,
+      verifierRuns: 8,
+      timeouts: 1,
+      userRejections: 0,
+    });
+
+    assert.equal(typeof result.value, "number");
+    assert.ok(result.value >= 0 && result.value <= 1);
+    assert.equal(typeof result.confidence, "number");
+    assert.ok(result.confidence >= 0 && result.confidence <= 1);
+    assert.equal(typeof result.sampleSize, "number");
+    assert.ok(result.sampleSize > 0);
+    assert.equal(typeof result.components, "object");
+  });
+
+  it("includes all six component scores", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const result = scoreAgentMetrics({
+      totalJobs: 10,
+      successes: 8,
+      failures: 2,
+      totalDurationMs: 600_000,
+      retries: 1,
+      verifierPasses: 7,
+      verifierRuns: 8,
+      timeouts: 1,
+      userRejections: 0,
+    });
+
+    const keys = Object.keys(result.components);
+    const required = [
+      "successRate",
+      "durationScore",
+      "retryRate",
+      "verifierPassRate",
+      "timeoutRate",
+      "userRejectionRate",
+    ];
+    for (const r of required) {
+      assert.ok(keys.includes(r), `missing component: ${r}`);
+      assert.equal(typeof result.components[r], "number");
+    }
+  });
+
+  it("computes successRate as successes / totalJobs", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const result = scoreAgentMetrics({
+      totalJobs: 20,
+      successes: 15,
+      failures: 5,
+      totalDurationMs: 1_200_000,
+      retries: 2,
+      verifierPasses: 14,
+      verifierRuns: 15,
+      timeouts: 1,
+      userRejections: 1,
+    });
+
+    assert.equal(result.components.successRate, 15 / 20);
+  });
+
+  it("produces neutral score with low confidence for empty history", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const result = scoreAgentMetrics({
+      totalJobs: 0,
+      successes: 0,
+      failures: 0,
+      totalDurationMs: 0,
+      retries: 0,
+      verifierPasses: 0,
+      verifierRuns: 0,
+      timeouts: 0,
+      userRejections: 0,
+    });
+
+    assert.equal(result.sampleSize, 0);
+    assert.equal(result.value, 0.5);
+    assert.ok(result.confidence < 0.3, `confidence should be low, got ${result.confidence}`);
+  });
+
+  it("penalises high timeout and user rejection rates", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const good = scoreAgentMetrics({
+      totalJobs: 10,
+      successes: 10,
+      failures: 0,
+      totalDurationMs: 300_000,
+      retries: 0,
+      verifierPasses: 10,
+      verifierRuns: 10,
+      timeouts: 0,
+      userRejections: 0,
+    });
+
+    const bad = scoreAgentMetrics({
+      totalJobs: 10,
+      successes: 5,
+      failures: 5,
+      totalDurationMs: 3_600_000,
+      retries: 8,
+      verifierPasses: 2,
+      verifierRuns: 5,
+      timeouts: 4,
+      userRejections: 3,
+    });
+
+    assert.ok(good.value > bad.value, `good (${good.value}) should exceed bad (${bad.value})`);
+  });
+
+  it("confidence increases with sample size", async () => {
+    const { scoreAgentMetrics } = await import("../core/agents/scoring.js");
+    const small = scoreAgentMetrics({
+      totalJobs: 2,
+      successes: 2,
+      failures: 0,
+      totalDurationMs: 60_000,
+      retries: 0,
+      verifierPasses: 2,
+      verifierRuns: 2,
+      timeouts: 0,
+      userRejections: 0,
+    });
+
+    const large = scoreAgentMetrics({
+      totalJobs: 100,
+      successes: 90,
+      failures: 10,
+      totalDurationMs: 6_000_000,
+      retries: 5,
+      verifierPasses: 88,
+      verifierRuns: 90,
+      timeouts: 2,
+      userRejections: 1,
+    });
+
+    assert.ok(large.confidence > small.confidence, `large (${large.confidence}) > small (${small.confidence})`);
+  });
+});
+
+describe("collectAgentMetrics includes score", () => {
+  it("adds score field to each agent while preserving jobs stats", async () => {
+    const { collectAgentMetrics } = await import("../server/services/agent-metrics.js");
+
+    const tmpMetrics = await mkdtemp(path.join(os.tmpdir(), "cpb-metrics-"));
+    try {
+      const metrics = await collectAgentMetrics(tmpMetrics);
+      assert.ok(Array.isArray(metrics.agents), "agents should be an array");
+
+      const codex = metrics.agents.find((a) => a.name === "codex");
+      assert.ok(codex, "codex agent should appear");
+      assert.equal(typeof codex.jobs, "object", "jobs stats should remain an object");
+      assert.equal(typeof codex.jobs.total, "number");
+      assert.ok(Object.hasOwn(codex.jobs, "successRate"));
+      assert.ok(codex.score, "score object should exist");
+      assert.equal(typeof codex.score.value, "number");
+      assert.equal(typeof codex.score.confidence, "number");
+      assert.equal(typeof codex.score.components, "object");
+    } finally {
+      await rm(tmpMetrics, { recursive: true });
+    }
+  });
+});
