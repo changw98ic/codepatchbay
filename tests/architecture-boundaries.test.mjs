@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
@@ -108,4 +108,141 @@ test("server-to-runtime imports are limited to the exception list", async () => 
     }
   }
   assert.deepEqual(offenders, [], "server files importing runtime must be in ALLOWED_SERVER_RUNTIME_IMPORTS");
+});
+
+// ---------------------------------------------------------------------------
+// D48: Remote Runner Boundary Contract - RED phase
+// ---------------------------------------------------------------------------
+
+test("D48: runner-contract exports boundary version and contract schema", async () => {
+  const mod = await import("../core/workflow/runner-contract.js");
+
+  assert.equal(typeof mod.BOUNDARY_VERSION, "string", "BOUNDARY_VERSION must be a string");
+  assert.ok(mod.BOUNDARY_VERSION.length > 0, "BOUNDARY_VERSION must not be empty");
+
+  assert.ok(mod.CONTRACT, "CONTRACT must be exported");
+  const contract = mod.CONTRACT;
+  const requiredKeys = ["jobInput", "artifactOutput", "eventStream", "secretBoundary", "cancellation"];
+  for (const key of requiredKeys) {
+    assert.ok(Object.hasOwn(contract, key), `CONTRACT must define "${key}"`);
+  }
+});
+
+test("D48: runner-contract exports validateRunnerAdapter and createLocalRunnerAdapter", async () => {
+  const mod = await import("../core/workflow/runner-contract.js");
+
+  assert.equal(typeof mod.validateRunnerAdapter, "function", "validateRunnerAdapter must be a function");
+  assert.equal(typeof mod.createLocalRunnerAdapter, "function", "createLocalRunnerAdapter must be a function");
+});
+
+test("D48: local adapter validates job input fields and forwards to injected runner", async () => {
+  const { createLocalRunnerAdapter } = await import("../core/workflow/runner-contract.js");
+
+  let received = null;
+  const fakeRunner = async (input) => { received = input; return { exitCode: 0 }; };
+
+  const adapter = createLocalRunnerAdapter(fakeRunner);
+
+  const validInput = {
+    project: "test-project",
+    jobId: "job-001",
+    task: "Add dark mode",
+    workflow: "standard",
+    sourcePath: "/tmp/test-project",
+    worktree: "/tmp/worktrees/job-001",
+    envRefs: { API_KEY: "secret-ref://vault/api-key" },
+  };
+
+  const result = await adapter.run(validInput);
+  assert.equal(result.exitCode, 0);
+  assert.deepStrictEqual(received, validInput);
+});
+
+test("D48: local adapter rejects job input missing required fields", async () => {
+  const { createLocalRunnerAdapter } = await import("../core/workflow/runner-contract.js");
+
+  const adapter = createLocalRunnerAdapter(async () => ({ exitCode: 0 }));
+
+  const badInput = { project: "test-project" };
+
+  await assert.rejects(
+    () => adapter.run(badInput),
+    { message: /jobInput/i },
+  );
+});
+
+test("D48: local adapter rejects job input containing raw secrets", async () => {
+  const { createLocalRunnerAdapter } = await import("../core/workflow/runner-contract.js");
+
+  const adapter = createLocalRunnerAdapter(async () => ({ exitCode: 0 }));
+
+  const inputWithSecret = {
+    project: "test-project",
+    jobId: "job-002",
+    task: "Do something",
+    workflow: "standard",
+    sourcePath: "/tmp/test",
+    worktree: "/tmp/wt",
+    envRefs: {},
+    secrets: { API_KEY: "super-secret-value-12345" },
+  };
+
+  await assert.rejects(
+    () => adapter.run(inputWithSecret),
+    { message: /secret/i },
+  );
+});
+
+test("D48: runner-contract has no remote/network runner exports or imports", async () => {
+  const mod = await import("../core/workflow/runner-contract.js");
+
+  assert.equal(mod.createRemoteRunner, undefined, "must not export createRemoteRunner");
+  assert.equal(mod.createNetworkRunner, undefined, "must not export createNetworkRunner");
+
+  const source = await readFile(
+    path.resolve(import.meta.dirname, "..", "core", "workflow", "runner-contract.js"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(source, /import.*(?:fetch|node:http|node:https|node:net)\b/, "must not import network modules");
+  assert.doesNotMatch(source, /createRemoteRunner|createNetworkRunner/, "must not contain remote runner implementation");
+});
+
+test("D48: docs/architecture/runner-boundary.md exists with required sections", async () => {
+  const docPath = path.resolve(import.meta.dirname, "..", "docs", "architecture", "runner-boundary.md");
+  const st = await stat(docPath);
+  assert.ok(st.isFile(), "runner-boundary.md must be a file");
+
+  const content = await readFile(docPath, "utf8");
+  const requiredSections = [
+    "Job Input",
+    "Artifact Output",
+    "Event Stream",
+    "Secret Boundary",
+    "Cancellation",
+  ];
+  for (const section of requiredSections) {
+    assert.match(content, new RegExp(section, "i"), `must mention "${section}"`);
+  }
+
+  assert.doesNotMatch(content, /remote runner implementation/i, "must not describe remote runner implementation");
+});
+
+test("D48: validateRunnerAdapter validates adapter shape", async () => {
+  const { validateRunnerAdapter, createLocalRunnerAdapter } = await import("../core/workflow/runner-contract.js");
+
+  const goodAdapter = createLocalRunnerAdapter(async () => ({ exitCode: 0 }));
+  assert.doesNotThrow(() => validateRunnerAdapter(goodAdapter));
+
+  assert.throws(
+    () => validateRunnerAdapter({}),
+    { message: /adapter/i },
+    "empty object should fail validation",
+  );
+
+  assert.throws(
+    () => validateRunnerAdapter(null),
+    { message: /adapter/i },
+    "null should fail validation",
+  );
 });
