@@ -6,7 +6,14 @@ import { defaultProjectRuntimeRoot, projectRuntimeRoot as resolveProjectRuntimeR
 
 const REGISTRY_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+const SAFE_GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const SAFE_GITHUB_REPO = /^[A-Za-z0-9._-]+$/;
 const REGISTRY_LOCK_TTL_MS = 30_000;
+
+export const DEFAULT_GITHUB_TRIGGERS = [
+  { event: "issues.labeled", label: "cpb", workflow: "standard" },
+  { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
+];
 
 export function resolveHubRoot(cpbRoot = process.cwd()) {
   if (process.env.CPB_HUB_ROOT) return path.resolve(process.env.CPB_HUB_ROOT);
@@ -202,6 +209,40 @@ export async function listProjects(hubRoot, { enabledOnly = false } = {}) {
 export async function getProject(hubRoot, id) {
   const registry = await loadRegistry(hubRoot);
   return registry.projects[id] || null;
+}
+
+export function parseGithubRepo(value) {
+  const input = String(value || "").trim();
+  const parts = input.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error("invalid GitHub repo: expected owner/repo");
+  }
+
+  const [owner, repo] = parts;
+  if (!SAFE_GITHUB_OWNER.test(owner)) {
+    throw new Error(`invalid GitHub repo owner: ${owner}`);
+  }
+  if (!SAFE_GITHUB_REPO.test(repo) || repo === "." || repo === ".." || repo.endsWith(".git")) {
+    throw new Error(`invalid GitHub repo name: ${repo}`);
+  }
+  return { owner, repo, fullName: `${owner}/${repo}` };
+}
+
+export async function bindProjectGithub(hubRoot, id, repoFullName, { triggers = DEFAULT_GITHUB_TRIGGERS } = {}) {
+  if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
+  const repo = parseGithubRepo(repoFullName);
+  const existing = await getProject(hubRoot, id);
+  if (!existing) return null;
+  return await updateProject(hubRoot, id, {
+    github: {
+      ...(existing.github || {}),
+      owner: repo.owner,
+      repo: repo.repo,
+      fullName: repo.fullName,
+      triggers: Array.isArray(existing.github?.triggers) ? existing.github.triggers : triggers,
+      boundAt: nowIso(),
+    },
+  });
 }
 
 export async function updateProject(hubRoot, id, patch = {}) {

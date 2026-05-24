@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -145,6 +145,62 @@ test("cpb auth connect codex --json returns local setup instructions", async () 
   assert.equal(parsed.provider.id, "codex");
   assert.equal(parsed.providerNativeCommand, "codex");
   assert.match(parsed.localSetupUrl, /\/setup\/auth\/codex$/);
+});
+
+test("cpb github bind persists repo metadata and default trigger rules", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-github-bind-"));
+  const source = path.join(tmp, "frontend");
+  const hubRoot = path.join(tmp, "hub");
+  try {
+    await mkdir(source, { recursive: true });
+    const { registerProject, registryPath } = await import("../server/services/hub-registry.js");
+    await registerProject(hubRoot, { name: "frontend", sourcePath: source });
+
+    const result = await runNode(["./cpb", "github", "bind", "frontend", "my-org/frontend", "--json"], {
+      env: { CPB_ROOT: tmp, CPB_HUB_ROOT: hubRoot },
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.bound, true);
+    assert.equal(parsed.project.id, "frontend");
+    assert.equal(parsed.project.github.owner, "my-org");
+    assert.equal(parsed.project.github.repo, "frontend");
+    assert.equal(parsed.project.github.fullName, "my-org/frontend");
+    assert.deepEqual(parsed.project.github.triggers, [
+      { event: "issues.labeled", label: "cpb", workflow: "standard" },
+      { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
+    ]);
+
+    const registry = JSON.parse(await readFile(registryPath(hubRoot), "utf8"));
+    assert.equal(registry.projects.frontend.sourcePath, await realpath(source));
+    assert.equal(registry.projects.frontend.github.fullName, "my-org/frontend");
+    assert.equal(registry.projects.frontend.enabled, true);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("cpb github bind rejects invalid repo names without changing the project", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-github-bind-invalid-"));
+  const source = path.join(tmp, "frontend");
+  const hubRoot = path.join(tmp, "hub");
+  try {
+    await mkdir(source, { recursive: true });
+    const { registerProject, registryPath } = await import("../server/services/hub-registry.js");
+    await registerProject(hubRoot, { name: "frontend", sourcePath: source });
+
+    const result = await runNode(["./cpb", "github", "bind", "frontend", "not-a-repo", "--json"], {
+      env: { CPB_ROOT: tmp, CPB_HUB_ROOT: hubRoot },
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr + result.stdout, /invalid GitHub repo/i);
+    const registry = JSON.parse(await readFile(registryPath(hubRoot), "utf8"));
+    assert.equal(registry.projects.frontend.github, undefined);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test("cpb jobs worktrees --dry-run --json is routed", async () => {
@@ -379,7 +435,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline",
     "demo", "research", "evolve-multi", "index", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
-    "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "wiki", "release",
+    "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "github", "wiki", "release",
     "cancel", "redirect", "merge-preview", "install-bin", "ui", "version",
   ];
 
@@ -395,7 +451,7 @@ test("all routed CLI command modules import successfully", async () => {
   const moduleFiles = [
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
-    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
+    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
   for (const mod of moduleFiles) {
@@ -408,7 +464,7 @@ test("all routed command modules export run()", async () => {
   const moduleFiles = [
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
-    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
+    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
   for (const mod of moduleFiles) {
@@ -474,7 +530,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "init.js", "attach.js", "hub.js", "plan.js", "execute.js", "verify.js",
     "pipeline.js", "demo.js", "research.js", "status.js", "list.js", "jobs.js", "artifacts.js", "verdict.js",
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
-    "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "reconcile.js",
+    "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js",
   ]);
