@@ -99,7 +99,7 @@ describe("descriptor lifecycle fields", () => {
     const reg = await import("../core/agents/registry.js");
     await reg.loadRegistry();
 
-    for (const name of ["claude", "codex", "gemini"]) {
+    for (const name of ["claude", "codex"]) {
       const desc = reg.getDescriptor(name);
       assert.ok(desc, `${name} should be in registry`);
       assert.ok(

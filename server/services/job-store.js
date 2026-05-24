@@ -189,7 +189,7 @@ export async function completePhase(
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const agent = await resolveAgentForPhase(cpbRoot, job, phase);
   const role = job?.workflow ? getWorkflow(job.workflow).roleForPhase?.[phase] : null;
-  recordPerformance(cpbRoot, project, jobId, {
+  await recordPerformance(cpbRoot, project, jobId, {
     agent,
     role,
     phase,
@@ -416,7 +416,7 @@ export async function completeJob(
   const verdict = job?.verdict || job?.artifacts?.verdict || null;
   if (verdict) {
     const agent = await resolveAgentForPhase(cpbRoot, job, "verify");
-    recordQualityScore(cpbRoot, project, jobId, {
+    await recordQualityScore(cpbRoot, project, jobId, {
       agent,
       phase: "verify",
       verdict: verdict.toUpperCase(),

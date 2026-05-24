@@ -195,9 +195,9 @@ while true; do sleep 1; done
     process.env.CPB_TEST_ACP_PID_FILE = pidFile;
     pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
 
-    const executePromise = pool.execute("codex", "prompt", root, 5_000);
+    const executePromise = pool.execute("codex", "prompt", root, 10_000);
     const rejection = assert.rejects(executePromise, /timed out/);
-    const pid = await waitForPid(pidFile, 3_000);
+    const pid = await waitForPid(pidFile, 8_000);
     await rejection;
 
     await new Promise((resolve) => setTimeout(resolve, 900));

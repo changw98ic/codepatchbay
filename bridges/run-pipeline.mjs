@@ -840,19 +840,63 @@ export async function runPipeline({
       });
     }
 
+    async function appendDagNodeEvent(type, nodeId, node, ctx = {}, extra = {}) {
+      const event = {
+        type,
+        jobId,
+        project,
+        nodeId,
+        ts: ts(),
+        ...extra,
+      };
+      if (node?.phase !== undefined) event.phase = node.phase;
+      if (ctx?.attempt !== undefined) event.attempt = ctx.attempt;
+      await appendEvent(cpbRoot, project, jobId, event);
+    }
+
     const dagResult = await executeDag(dag, {
       seedCompleted: ["plan"],
       shouldStop: () => timedOut,
-      onBeforeNode: async (nodeId) => {
+      onBeforeNode: async (nodeId, ctx) => {
+        const dagNode = ctx?.node ?? dag.nodes.find((n) => n.id === nodeId);
+        await appendDagNodeEvent("dag_node_started", nodeId, dagNode, ctx);
+
         if (nodeId === "plan" || nodeId === "execute") return true;
         const check = await checkCancelAndRedirect(cpbRoot, project, jobId, nodeId);
         if (check.cancelled) {
+          await appendDagNodeEvent("dag_node_cancelled", nodeId, dagNode, ctx, {
+            reason: `cancelled before ${nodeId}`,
+          });
           await failJob(cpbRoot, project, jobId, failure(`cancelled before ${nodeId}`, { code: FAILURE_CODES.BLOCKED, phase: nodeId }));
           return false;
         }
         return true;
       },
-      onNodeResult: async (nodeId, result) => {
+      onNodeResult: async (nodeId, result, ctx) => {
+        const dagNode = ctx?.node ?? dag.nodes.find((n) => n.id === nodeId);
+
+        if (result.ok) {
+          await appendDagNodeEvent("dag_node_completed", nodeId, dagNode, ctx);
+        } else if (result.retryable) {
+          await appendDagNodeEvent("dag_node_retrying", nodeId, dagNode, {
+            ...ctx,
+            attempt: Math.min((ctx?.attempt ?? 0) + 1, ctx?.maxAttempts ?? ((ctx?.attempt ?? 0) + 1)),
+          }, {
+            reason: result.reason ?? null,
+          });
+        } else {
+          await appendDagNodeEvent("dag_node_failed", nodeId, dagNode, ctx, {
+            error: result.reason ?? null,
+            reason: result.reason ?? null,
+          });
+          if (result.reactivate) {
+            const targetNode = dag.nodes.find((n) => n.id === result.reactivate);
+            await appendDagNodeEvent("dag_node_retrying", result.reactivate, targetNode, {}, {
+              reason: `reactivated by ${nodeId}: ${result.reason ?? "retry"}`,
+            });
+          }
+        }
+
         if (!result.ok && !result.retryable && !result.reactivate) {
           const job = await getJob(cpbRoot, project, jobId);
           if (job && !["completed", "failed", "cancelled"].includes(job.status)) {

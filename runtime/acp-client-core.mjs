@@ -407,8 +407,8 @@ export class AcpClient {
   async start() {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
-    const { command, args } = resolveAgentCommand(this.agent);
     const env = { ...this.env };
+    const { command, args } = await resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(instanceCache, { recursive: true });

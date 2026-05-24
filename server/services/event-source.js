@@ -1,10 +1,11 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { appendEvent } from "./event-store.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
+const CANDIDATE_LOCK_TTL_MS = 30_000;
 
 function sourceDir(cpbRoot) {
   return runtimeDataPath(cpbRoot, EVENT_SOURCE_DIR);
@@ -20,6 +21,78 @@ function generateId() {
 
 function dedupeKey(source, externalId) {
   return `${source}:${externalId}`;
+}
+
+const candidateChains = new Map();
+
+async function withCandidateFileLock(cpbRoot, fn) {
+  const file = candidateFile(cpbRoot);
+  const lockDir = `${file}.lock`;
+  await mkdir(path.dirname(lockDir), { recursive: true });
+
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        const info = await stat(lockDir);
+        if (Date.now() - info.mtimeMs >= CANDIDATE_LOCK_TTL_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // The lock disappeared between mkdir and stat; retry.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (!acquired) throw new Error(`candidate queue lock busy: ${path.basename(file)}`);
+
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
+}
+
+function withCandidateLock(cpbRoot, fn) {
+  const key = path.resolve(cpbRoot);
+  const prev = candidateChains.get(key) || Promise.resolve();
+  const next = prev.then(() => withCandidateFileLock(cpbRoot, fn));
+  candidateChains.set(key, next.catch(() => {}));
+  const cleanup = () => {
+    if (candidateChains.get(key) === next) candidateChains.delete(key);
+  };
+  next.then(cleanup, cleanup);
+  return next;
+}
+
+async function atomicWriteJson(file, data) {
+  const tmp = `${file}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
+  await rename(tmp, file);
+}
+
+async function readQueue(file) {
+  try {
+    const raw = await readFile(file, "utf8");
+    const queue = JSON.parse(raw);
+    if (!Array.isArray(queue)) {
+      throw new Error(`candidate queue malformed: expected array in ${file}`);
+    }
+    return queue;
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    if (err instanceof SyntaxError) {
+      throw new Error(`candidate queue malformed: ${err.message}`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -40,9 +113,6 @@ export async function ingestEvent(cpbRoot, event) {
     throw new Error("ingestEvent requires source and externalId");
   }
 
-  const dir = sourceDir(cpbRoot);
-  await mkdir(dir, { recursive: true });
-
   const entry = {
     id: generateId(),
     source,
@@ -55,25 +125,22 @@ export async function ingestEvent(cpbRoot, event) {
     status: "pending",
   };
 
-  const file = candidateFile(cpbRoot);
-  let queue = [];
-  try {
-    const raw = await readFile(file, "utf8");
-    queue = JSON.parse(raw);
-    if (!Array.isArray(queue)) queue = [];
-  } catch {
-    queue = [];
-  }
+  return withCandidateLock(cpbRoot, async () => {
+    const dir = sourceDir(cpbRoot);
+    await mkdir(dir, { recursive: true });
 
-  // Dedupe: skip if dedupeKey already exists
-  if (queue.some((e) => e.dedupeKey === entry.dedupeKey)) {
-    return { ...entry, status: "duplicate" };
-  }
+    const file = candidateFile(cpbRoot);
+    const queue = await readQueue(file);
 
-  queue.push(entry);
-  await writeFile(file, JSON.stringify(queue, null, 2), "utf8");
+    if (queue.some((e) => e.dedupeKey === entry.dedupeKey)) {
+      return { ...entry, status: "duplicate" };
+    }
 
-  return entry;
+    queue.push(entry);
+    await atomicWriteJson(file, queue);
+
+    return entry;
+  });
 }
 
 /**
@@ -81,14 +148,7 @@ export async function ingestEvent(cpbRoot, event) {
  */
 export async function listCandidates(cpbRoot, { status, source } = {}) {
   const file = candidateFile(cpbRoot);
-  let queue;
-  try {
-    const raw = await readFile(file, "utf8");
-    queue = JSON.parse(raw);
-    if (!Array.isArray(queue)) return [];
-  } catch {
-    return [];
-  }
+  const queue = await readQueue(file);
 
   return queue.filter((e) => {
     if (status && e.status !== status) return false;
@@ -101,25 +161,21 @@ export async function listCandidates(cpbRoot, { status, source } = {}) {
  * Update a candidate's status (pending → processed | dismissed).
  */
 export async function updateCandidate(cpbRoot, candidateId, { status, reason }) {
-  const file = candidateFile(cpbRoot);
-  let queue;
-  try {
-    const raw = await readFile(file, "utf8");
-    queue = JSON.parse(raw);
-    if (!Array.isArray(queue)) return null;
-  } catch {
-    return null;
-  }
+  return withCandidateLock(cpbRoot, async () => {
+    const file = candidateFile(cpbRoot);
+    const queue = await readQueue(file);
+    if (!queue.length) return null;
 
-  const entry = queue.find((e) => e.id === candidateId);
-  if (!entry) return null;
+    const entry = queue.find((e) => e.id === candidateId);
+    if (!entry) return null;
 
-  entry.status = status;
-  if (reason) entry.statusReason = reason;
-  entry.updatedAt = new Date().toISOString();
+    entry.status = status;
+    if (reason) entry.statusReason = reason;
+    entry.updatedAt = new Date().toISOString();
 
-  await writeFile(file, JSON.stringify(queue, null, 2), "utf8");
-  return entry;
+    await atomicWriteJson(file, queue);
+    return entry;
+  });
 }
 
 /**

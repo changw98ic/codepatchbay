@@ -21,7 +21,7 @@
 ./cpb pipeline your-project "Add unit tests for utils"
 ```
 
-## 巶作流
+## 工作流
 
 ```
 ┌─────────┐     plan-{id}.md      ┌─────────────┐   deliverable-{id}.md   ┌─────────┐
@@ -48,14 +48,14 @@ cpb execute my-project 001
 cpb verify my-project 001
 ```
 
-### 2. 分屏协作
+### 2. Web UI / 手动协作
 
-在 tmux 中左右分屏，Claude Code 一侧，Codex 一侧，通过 Wiki 文件实时同步。
+启动 Web UI 查看项目状态和 handoff 文件，或用 `cpb status` / `cpb inbox` / `cpb outputs` 检查中间产物。
 
 ```bash
-cpb interop
-# 左侧 Claude Code，右侧 Codex
-# 两侧都读写同一个 Wiki
+cpb ui --port 3210
+# 浏览器访问 Dashboard，查看 plan/deliverable/verdict 文件
+# 也可用 cpb status / cpb inbox / cpb outputs 在终端检查
 ```
 
 ### 3. 全自动流水线
@@ -81,12 +81,14 @@ cpb/
 │   └── projects/{name}/    # 项目空间
 │       ├── inbox/          # Codex 写入（计划、审查）
 │       └── outputs/        # Claude 写入（交付、测试）
-├── bridges/                # 调度脚本
-│   ├── codex-plan.sh
-│   ├── claude-execute.sh
-│   ├── codex-verify.sh
-│   ├── run-pipeline.sh
-│   └── init-project.sh
+├── bridges/                # ACP bridges + runtime
+│   ├── acp-client.mjs      # ACP stdio JSON-RPC client
+│   ├── acp-pool.mjs        # ACP session pool
+│   ├── run-phase.mjs       # Single-phase runner (plan/execute/verify)
+│   ├── run-pipeline.mjs    # Full pipeline orchestrator
+│   ├── supervisor-loop.mjs # Unattended supervisor loop
+│   ├── job-runner.mjs      # Durable job single-step executor
+│   └── ...                 # research, review, evolve, etc.
 └── templates/handoff/      # 交接文档模板
 ```
 
@@ -157,8 +159,10 @@ CodePatchbay 会把这些变量映射为 Claude Code 识别的 `ANTHROPIC_BASE_U
 CodePatchbay 的无人值守模式基于 durable job、event log、lease heartbeat、task worktree 和 supervisor resume。
 
 ```bash
-cpb jobs
-cpb supervisor
+cpb jobs                     # 查看持久化 job 列表
+cpb jobs reconcile           # 标记过期 job 为 failed
+cpb gc                       # 清理过期 job + 孤儿 lease
+cpb hub status               # 检查 Hub 运行状态
 ```
 
 设计说明见 `wiki/system/unattended-supervisor.md`。

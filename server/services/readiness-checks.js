@@ -68,6 +68,87 @@ export function deriveSummary(checks) {
   return { ...counts, success: counts.error === 0 };
 }
 
+function statusForCategories(checks, categories) {
+  const selected = checks.filter((check) => categories.includes(check.category));
+  if (selected.length === 0) return "skipped";
+  if (selected.some((check) => check.status === "error")) return "fail";
+  if (selected.some((check) => check.status === "warn")) return "warn";
+  if (selected.every((check) => check.status === "skipped")) return "skipped";
+  return "pass";
+}
+
+function evidenceForCategories(checks, categories) {
+  const selected = checks.filter((check) => categories.includes(check.category));
+  return {
+    checks: selected.map((check) => ({
+      id: check.id,
+      category: check.category,
+      status: check.status,
+      severity: check.severity,
+    })),
+  };
+}
+
+export function deriveReadinessLevels(checks = []) {
+  const normalizedChecks = Array.isArray(checks) ? checks : [];
+  const levels = [
+    {
+      level: 0,
+      id: "repo-package",
+      name: "Repo/package usable",
+      status: statusForCategories(normalizedChecks, ["toolchain", "disk"]),
+      evidence: evidenceForCategories(normalizedChecks, ["toolchain", "disk"]),
+      recommendedAction: null,
+    },
+    {
+      level: 1,
+      id: "tests-build",
+      name: "Node tests, web tests, and web build",
+      status: "skipped",
+      evidence: { reason: "doctor does not run long test/build gates" },
+      recommendedAction: "Run: cpb health-check or npm test && npm --workspace codepatchbay-web test -- --run && npm run build:web",
+    },
+    {
+      level: 2,
+      id: "hub-runtime",
+      name: "Hub runtime, registry, jobs, workers, and leases",
+      status: statusForCategories(normalizedChecks, ["hub", "registry", "jobs", "workers", "leases"]),
+      evidence: evidenceForCategories(normalizedChecks, ["hub", "registry", "jobs", "workers", "leases"]),
+      recommendedAction: null,
+    },
+    {
+      level: 3,
+      id: "fake-acp-smoke",
+      name: "Fake ACP pipeline smoke",
+      status: "skipped",
+      evidence: { reason: "doctor does not launch pipeline smoke" },
+      recommendedAction: "Run: cpb health-check --skip-http --skip-tests --skip-build --fake-acp-smoke",
+    },
+    {
+      level: 4,
+      id: "real-provider-smoke",
+      name: "Optional real ACP provider smoke",
+      status: "skipped",
+      optional: true,
+      evidence: { reason: "real provider smoke is opt-in to avoid accidental provider spend or rate limits" },
+      recommendedAction: "Run the live provider smoke explicitly when provider credentials and budget are available.",
+    },
+  ];
+
+  let currentLevel = -1;
+  for (const level of levels) {
+    if (level.optional) continue;
+    if (level.status !== "pass") break;
+    currentLevel = level.level;
+  }
+
+  return {
+    currentLevel,
+    targetLevel: 3,
+    levels,
+  };
+}
+
 // --- Individual checks ---
 
 async function checkNode() {
@@ -800,5 +881,15 @@ export function formatReadinessHuman(result) {
 }
 
 export function formatReadinessJson(result) {
-  return JSON.stringify(redactSecrets(result), null, 2);
+  const redacted = redactSecrets(result);
+  const normalized = {
+    ...redacted,
+    readiness: redacted.readiness ?? deriveReadinessLevels(redacted.checks || []),
+    checks: (redacted.checks || []).map((check) => ({
+      ...check,
+      evidence: check.evidence ?? check.details ?? { message: check.message },
+      recommendedAction: check.recommendedAction ?? check.remediation ?? null,
+    })),
+  };
+  return JSON.stringify(normalized, null, 2);
 }

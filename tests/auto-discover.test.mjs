@@ -34,6 +34,27 @@ describe("auto-discover", () => {
     // Create a fake binary in tmpDir
     const binDir = path.join(tmpDir, "bin");
     await mkdir(binDir, { recursive: true });
+    const fakeBin = path.join(binDir, "goose");
+    await writeFile(fakeBin, "#!/bin/sh\nexit 0\n");
+    await chmod(fakeBin, 0o755);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const { autoDiscoverAgents } = await import("../core/agents/auto-discover.js");
+      const result = await autoDiscoverAgents();
+      const goose = result.find((d) => d.name === "goose");
+      assert.ok(goose, "should find goose in custom PATH");
+      assert.equal(goose.command, fakeBin);
+      assert.equal(goose.stability, "discovered");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("does not auto-discover gemini even when the binary is on PATH", async () => {
+    const binDir = path.join(tmpDir, "bin-gemini");
+    await mkdir(binDir, { recursive: true });
     const fakeBin = path.join(binDir, "gemini");
     await writeFile(fakeBin, "#!/bin/sh\nexit 0\n");
     await chmod(fakeBin, 0o755);
@@ -43,10 +64,7 @@ describe("auto-discover", () => {
     try {
       const { autoDiscoverAgents } = await import("../core/agents/auto-discover.js");
       const result = await autoDiscoverAgents();
-      const gemini = result.find((d) => d.name === "gemini");
-      assert.ok(gemini, "should find gemini in custom PATH");
-      assert.equal(gemini.command, fakeBin);
-      assert.equal(gemini.stability, "discovered");
+      assert.equal(result.find((d) => d.name === "gemini"), undefined);
     } finally {
       process.env.PATH = originalPath;
     }
@@ -89,10 +107,11 @@ describe("registry auto-discover integration", () => {
       assert.equal(goose.stability, "discovered");
       assert.equal(goose.source, "auto-discovered");
 
-      // codex/claude/gemini should still be from builtin descriptors
+      // codex/claude should still be from builtin descriptors
       const codex = reg.getDescriptor("codex");
       assert.ok(codex, "codex should be in registry");
       assert.notEqual(codex.stability, "discovered", "codex should not be discovered");
+      assert.equal(reg.getDescriptor("gemini"), null, "gemini adapter should not be registered");
     } finally {
       process.env.PATH = originalPath;
       await rm(tmpDir, { recursive: true, force: true });

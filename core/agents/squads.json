@@ -2,7 +2,7 @@
   "squads": {
     "frontend": {
       "leader": "claude",
-      "members": ["claude", "gemini"],
+      "members": ["claude", "codex"],
       "strategy": "leader-first"
     },
     "backend": {
@@ -12,7 +12,7 @@
     },
     "full-stack": {
       "leader": "claude",
-      "members": ["claude", "codex", "gemini"],
+      "members": ["claude", "codex"],
       "strategy": "round-robin"
     },
     "review": {

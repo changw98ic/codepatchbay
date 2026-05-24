@@ -20,7 +20,7 @@ describe("agent registry", () => {
     await loadRegistry();
     assert.equal(hasAgent("codex"), true);
     assert.equal(hasAgent("claude"), true);
-    assert.equal(hasAgent("gemini"), true);
+    assert.equal(hasAgent("gemini"), false);
 
     const codex = getDescriptor("codex");
     assert.equal(codex.name, "codex");
@@ -62,11 +62,9 @@ describe("agent registry", () => {
     const { loadRegistry, defaultAgentForRole } = await import("../core/agents/registry.js");
     await loadRegistry();
 
-    // gemini claims executor+verifier, but claude claims executor+repairer and codex claims planner+verifier+reviewer
-    // defaultAgentForRole returns first match — order-dependent but consistent
-    assert.ok(["codex", "claude", "gemini"].includes(defaultAgentForRole("planner")));
-    assert.ok(["codex", "claude", "gemini"].includes(defaultAgentForRole("executor")));
-    assert.ok(["codex", "claude", "gemini"].includes(defaultAgentForRole("verifier")));
+    assert.equal(defaultAgentForRole("planner"), "codex");
+    assert.equal(defaultAgentForRole("executor"), "claude");
+    assert.equal(defaultAgentForRole("verifier"), "codex");
   });
 
   it("defaultAgentForRole falls back to legacy for unknown roles", async () => {
@@ -130,7 +128,7 @@ describe("agent registry", () => {
     const names = planners.map((d) => d.name);
     assert.ok(names.includes("codex"));
     assert.ok(names.includes("claude"));
-    assert.ok(names.includes("gemini"));
+    assert.ok(!names.includes("gemini"));
 
     const repairers = agentsWithCapability("repair");
     const repairNames = repairers.map((d) => d.name);
@@ -169,11 +167,11 @@ describe("agent registry", () => {
     await loadRegistry();
 
     const agents = listAgents();
-    assert.ok(agents.length >= 3);
+    assert.ok(agents.length >= 2);
     const names = listAgentNames();
     assert.ok(names.includes("codex"));
     assert.ok(names.includes("claude"));
-    assert.ok(names.includes("gemini"));
+    assert.ok(!names.includes("gemini"));
   });
 
   it("skips invalid descriptors gracefully", async () => {

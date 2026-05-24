@@ -88,18 +88,17 @@ function formatHuman(result, projectId) {
   return `${lines.join("\n")}\n`;
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+export async function run(args, context) {
+  const options = parseArgs(args);
   if (options.help) {
     console.log(usage());
-    return;
+    return 0;
   }
   if (!options.projectId || !options.candidate || options.extra.length > 0) {
     throw new Error(usage());
   }
 
-  const bridgeDir = path.dirname(fileURLToPath(import.meta.url));
-  const cpbRoot = path.resolve(process.env.CPB_ROOT || path.join(bridgeDir, ".."));
+  const cpbRoot = context?.cpbRoot || path.resolve(process.env.CPB_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".."));
   const hubRoot = resolveHubRoot(cpbRoot);
   const project = await getProject(hubRoot, options.projectId);
   if (!project?.sourcePath) {
@@ -118,10 +117,17 @@ async function main() {
     process.stdout.write(formatHuman(result, options.projectId));
   }
 
-  if (!result.safeForSteward) process.exitCode = 2;
+  if (!result.safeForSteward) return 2;
+  return 0;
 }
 
-main().catch((err) => {
-  console.error(err?.message || String(err));
-  process.exitCode = 1;
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run(process.argv.slice(2))
+    .then((code) => {
+      if (Number.isInteger(code)) process.exitCode = code;
+    })
+    .catch((err) => {
+      console.error(err?.message || String(err));
+      process.exitCode = 1;
+    });
+}

@@ -123,4 +123,46 @@ describe("Defects fixes verification", () => {
     assert.equal(recoverable.length, 1);
     assert.equal(recoverable[0].jobId, jobId);
   });
+
+  it("job-store metrics resolution resolves executor object to string name", async () => {
+    const { createJob, completePhase, completeJob } = await import("../server/services/job-store.js");
+    const executorObj = {
+      root: "/path/to/claude/root",
+      packageName: "claude",
+      version: "1.0.0",
+    };
+    const job = await createJob(tmpRoot, {
+      project: "my-project",
+      workflow: "standard",
+      executor: executorObj,
+    });
+    const jobId = job.jobId;
+
+    const { startPhase } = await import("../server/services/job-store.js");
+    await startPhase(tmpRoot, "my-project", jobId, { phase: "execute", attempt: 1, leaseId: "lease-1" });
+    await completePhase(tmpRoot, "my-project", jobId, { phase: "execute" });
+
+    // Verify it recorded performance under the resolved string name "claude"
+    const { readdir: rd } = await import("node:fs/promises");
+    const perfDir = path.join(tmpRoot, "cpb-task", "performance");
+    const filesBefore = await rd(perfDir);
+    assert.ok(filesBefore.includes("claude.jsonl"), "Should create claude.jsonl performance file");
+    assert.ok(!filesBefore.includes("[object Object].jsonl"), "Should NOT create [object Object].jsonl performance file");
+
+    // Add a verdict for the completeJob check
+    const { appendEvent } = await import("../server/services/event-store.js");
+    await appendEvent(tmpRoot, "my-project", jobId, {
+      type: "phase_completed",
+      jobId,
+      project: "my-project",
+      phase: "verdict",
+      artifact: "PASS",
+    });
+
+    await completeJob(tmpRoot, "my-project", jobId);
+
+    const filesAfter = await rd(perfDir);
+    assert.ok(filesAfter.includes("claude-quality.jsonl"), "Should create claude-quality.jsonl performance file");
+    assert.ok(!filesAfter.includes("[object Object]-quality.jsonl"), "Should NOT create [object Object]-quality.jsonl file");
+  });
 });

@@ -7,7 +7,6 @@ import path from "node:path";
 const KNOWN_AGENTS = [
   { name: "codex", command: "codex-acp", displayName: "Codex CLI", envPrefix: "CPB_ACP_CODEX" },
   { name: "claude", command: "claude-agent-acp", displayName: "Claude Code", envPrefix: "CPB_ACP_CLAUDE" },
-  { name: "gemini", command: "gemini", args: ["--acp"], displayName: "Gemini CLI", envPrefix: "CPB_ACP_GEMINI" },
   { name: "opencode", command: "opencode", displayName: "OpenCode", envPrefix: "CPB_ACP_OPENCODE" },
   { name: "augment", command: "auggie", displayName: "Augment Code", envPrefix: "CPB_ACP_AUGMENT" },
   { name: "copilot", command: "copilot", displayName: "GitHub Copilot", envPrefix: "CPB_ACP_COPILOT" },

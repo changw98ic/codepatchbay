@@ -39,6 +39,9 @@ function usage() {
   console.log(`  ${CYAN}verify${NC} <project> <deliverable-id>      Codex verification`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
+  console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
+  console.log(`  ${CYAN}index${NC} <status|refresh> <project> [--json]  Project code index`);
+  console.log(`  ${CYAN}repair${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
   console.log(`  ${CYAN}jobs${NC} [reconcile|cleanup|report]         Job management`);
@@ -48,10 +51,16 @@ function usage() {
   console.log(`  ${CYAN}review${NC} <project> [id] [--agent]          Review deliverable`);
   console.log(`  ${CYAN}inbox${NC} <project>                        List plans`);
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
+  console.log(`  ${CYAN}setup${NC} [--json]                         Detect prerequisites and recommended agents`);
+  console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
   console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
   console.log(`  ${CYAN}wiki${NC} [lint|list]                       Wiki operations`);
   console.log(`  ${CYAN}release${NC} <list|use|install|doctor|gc>    Release management`);
+  console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
+  console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
+  console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
+  console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
@@ -74,7 +83,7 @@ async function checkDeps() {
   console.log(`${GREEN}ACP client ready.${NC}`);
 }
 
-// ─── Command router ───
+// --- Command router ---
 
 const COMMANDS = {
   init: "init.js",
@@ -95,6 +104,8 @@ const COMMANDS = {
   review: "review.js",
   inbox: "inbox.js",
   outputs: "outputs.js",
+  setup: "setup.js",
+  agents: "agents.js",
   doctor: "doctor.js",
   "health-check": "health-check.js",
   gc: "reconcile.js",
@@ -102,11 +113,14 @@ const COMMANDS = {
   wiki: "wiki.js",
   ui: "ui.js",
   version: "version.js",
+  cancel: "cancel-redirect.js",
+  redirect: "cancel-redirect.js",
+  "merge-preview": "merge-preview.js",
   release: "release-select.js",
   "install-bin": "install-bin.js",
 };
 
-// ─── Main ───
+// --- Main ---
 
 async function main() {
   const rawArgs = process.argv.slice(2);
@@ -149,7 +163,7 @@ async function main() {
   }
 
   try {
-    const result = await mod.run(cmdArgs, { cpbRoot: CPB_ROOT, executorRoot: CPB_EXECUTOR_ROOT });
+    const result = await mod.run(cmdArgs, { cpbRoot: CPB_ROOT, executorRoot: CPB_EXECUTOR_ROOT, command: cmd });
     return Number.isInteger(result) ? result : 0;
   } catch (err) {
     console.error(`${RED}Error:${NC}`, err.message);

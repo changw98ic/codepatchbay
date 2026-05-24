@@ -21,7 +21,7 @@ Expected result:
 
 - `npm ci` installs root, server, and web workspace dependencies.
 - `./cpb help` prints the CodePatchbay CLI help.
-- `npm test` runs Node and shell integration tests.
+- `npm test` runs Node.js unit tests.
 - `npm run build:web` builds the Vite UI.
 
 Known boundary: this proves one macOS clean checkout path only. Linux, Windows, GitHub Actions, real adapter auth, and long-running operation still need separate evidence.

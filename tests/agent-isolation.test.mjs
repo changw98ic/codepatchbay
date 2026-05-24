@@ -39,8 +39,8 @@ describe("agent isolation", () => {
   });
 
   it("createAgentHome uses agent name and job ID in path", async () => {
-    const env = await createAgentHome(cpbRoot, "gemini", "job-abc");
-    assert.ok(env.HOME.includes("gemini"));
+    const env = await createAgentHome(cpbRoot, "sample-agent", "job-abc");
+    assert.ok(env.HOME.includes("sample-agent"));
     assert.ok(env.HOME.includes("job-abc"));
   });
 

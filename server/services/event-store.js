@@ -198,16 +198,12 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
 
   return withEventLock(file, async () => {
     // Terminal seal: reject business-state mutations on terminal job event logs.
-    try {
-      const existing = await readEvents(cpbRoot, project, jobId, opts);
-      if (existing.length > 0) {
-        const state = materializeJob(existing);
-        if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
-          throw new Error(`terminal job event log is sealed: ${state.status}`);
-        }
+    const existing = await readEvents(cpbRoot, project, jobId, opts);
+    if (existing.length > 0) {
+      const state = materializeJob(existing);
+      if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
+        throw new Error(`terminal job event log is sealed: ${state.status}`);
       }
-    } catch (err) {
-      if (err.message.startsWith("terminal job event log is sealed")) throw err;
     }
 
     const writeBlocked = async (artifactName, reason) => {
@@ -347,7 +343,40 @@ const POST_TERMINAL_ALLOWED = new Set([
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
   "merge_index_status",
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
+  "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
 ]);
+
+const NODE_STATE_DEFAULTS = {
+  status: "pending",
+  phase: null,
+  attempt: null,
+  artifact: null,
+  reason: null,
+  error: null,
+  startedAt: null,
+  completedAt: null,
+  failedAt: null,
+  retryingAt: null,
+  skippedAt: null,
+  cancelledAt: null,
+  blockedAt: null,
+  durationMs: null,
+};
+
+function _updateNodeState(state, nodeId, updates) {
+  if (!nodeId) return;
+  const prev = state.nodeStates[nodeId] || { ...NODE_STATE_DEFAULTS };
+  const definedUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([, value]) => value !== undefined),
+  );
+  const next = { ...prev, ...definedUpdates };
+  const terminalTs = definedUpdates.completedAt || definedUpdates.failedAt || definedUpdates.cancelledAt;
+  if (terminalTs && prev.startedAt) {
+    const ms = new Date(terminalTs).getTime() - new Date(prev.startedAt).getTime();
+    next.durationMs = Number.isFinite(ms) ? ms : null;
+  }
+  state.nodeStates = { ...state.nodeStates, [nodeId]: next };
+}
 
 export function materializeJob(events) {
   const state = {
@@ -364,6 +393,7 @@ export function materializeJob(events) {
     completedNodes: [],
     runningNodes: [],
     blockedNodes: [],
+    nodeStates: {},
     leaseId: null,
     worktree: null,
     createdAt: null,
@@ -462,6 +492,18 @@ export function materializeJob(events) {
           state.runningNodes = [...state.runningNodes, event.nodeId];
         }
         state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
+        _updateNodeState(state, event.nodeId, {
+          status: "running",
+          phase: event.phase,
+          attempt: event.attempt,
+          startedAt: event.ts,
+          completedAt: null,
+          failedAt: null,
+          skippedAt: null,
+          cancelledAt: null,
+          blockedAt: null,
+          durationMs: null,
+        });
         break;
       case "dag_node_completed":
         state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
@@ -474,17 +516,81 @@ export function materializeJob(events) {
         if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) {
           state.completedPhases = [...state.completedPhases, event.phase];
         }
+        _updateNodeState(state, event.nodeId, {
+          status: "completed",
+          phase: event.phase,
+          artifact: event.artifact,
+          completedAt: event.ts,
+        });
         break;
       case "dag_node_failed":
         state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
         state.failureCode = event.code ?? state.failureCode;
         state.failurePhase = event.phase ?? state.failurePhase;
+        _updateNodeState(state, event.nodeId, {
+          status: "failed",
+          phase: event.phase,
+          error: event.error ?? event.reason,
+          reason: event.reason,
+          failedAt: event.ts,
+        });
         break;
       case "dag_node_blocked":
         state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
         if (event.nodeId && !state.blockedNodes.includes(event.nodeId)) {
           state.blockedNodes = [...state.blockedNodes, event.nodeId];
         }
+        _updateNodeState(state, event.nodeId, {
+          status: "blocked",
+          reason: event.reason,
+          blockedAt: event.ts,
+        });
+        break;
+      case "dag_node_retrying":
+        if (event.nodeId) {
+          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+          state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
+          state.completedNodes = state.completedNodes.filter((n) => n !== event.nodeId);
+        }
+        if (event.phase !== undefined) {
+          state.completedPhases = state.completedPhases.filter((p) => p !== event.phase);
+        }
+        _updateNodeState(state, event.nodeId, {
+          status: "retrying",
+          phase: event.phase,
+          attempt: event.attempt,
+          artifact: null,
+          reason: event.reason,
+          retryingAt: event.ts,
+          completedAt: null,
+          failedAt: null,
+          skippedAt: null,
+          cancelledAt: null,
+          blockedAt: null,
+          durationMs: null,
+        });
+        break;
+      case "dag_node_skipped":
+        if (event.nodeId) {
+          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+        }
+        _updateNodeState(state, event.nodeId, {
+          status: "skipped",
+          phase: event.phase,
+          reason: event.reason,
+          skippedAt: event.ts,
+        });
+        break;
+      case "dag_node_cancelled":
+        if (event.nodeId) {
+          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+        }
+        _updateNodeState(state, event.nodeId, {
+          status: "cancelled",
+          phase: event.phase,
+          reason: event.reason,
+          cancelledAt: event.ts,
+        });
         break;
       case "phase_failed":
         state.phase = event.phase ?? state.phase;

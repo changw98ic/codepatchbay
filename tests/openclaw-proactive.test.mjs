@@ -1,8 +1,25 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+
+const repoRoot = path.resolve(import.meta.dirname, "..");
+
+function runGateNode(source, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, ...args], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
 
 describe("event-source", () => {
   let tmpDir;
@@ -147,6 +164,98 @@ describe("event-source", () => {
     const result = await listCandidates(emptyDir);
     assert.deepEqual(result, []);
     await rm(emptyDir, { recursive: true });
+  });
+});
+
+describe("event-source concurrency", () => {
+  let tmpDir;
+
+  before(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-evt-conc-"));
+  });
+
+  after(async () => {
+    try { await rm(tmpDir, { recursive: true }); } catch {}
+  });
+
+  it("concurrent ingest with unique externalIds preserves all entries", async () => {
+    const { ingestEvent, listCandidates } = await import("../server/services/event-source.js");
+
+    const N = 20;
+    const ingests = [];
+    for (let i = 0; i < N; i++) {
+      ingests.push(ingestEvent(tmpDir, {
+        source: "concurrent-unique",
+        externalId: `uniq-${i}`,
+        projectId: "stress-test",
+      }));
+    }
+    const results = await Promise.all(ingests);
+
+    const pending = results.filter((r) => r.status === "pending");
+    assert.equal(pending.length, N, "all ingests should be pending");
+
+    const candidates = await listCandidates(tmpDir, { source: "concurrent-unique" });
+    assert.equal(candidates.length, N, "all N entries should be persisted");
+  });
+
+  it("concurrent duplicate ingestion: one pending, rest duplicate", async () => {
+    const { ingestEvent, listCandidates } = await import("../server/services/event-source.js");
+
+    const N = 15;
+    const ingests = [];
+    for (let i = 0; i < N; i++) {
+      ingests.push(ingestEvent(tmpDir, {
+        source: "concurrent-dup",
+        externalId: "same-id",
+        projectId: "dedup-test",
+      }));
+    }
+    const results = await Promise.all(ingests);
+
+    const pending = results.filter((r) => r.status === "pending");
+    const duplicates = results.filter((r) => r.status === "duplicate");
+    assert.equal(pending.length, 1, "exactly one should be pending");
+    assert.equal(duplicates.length, N - 1, "rest should be duplicate");
+
+    const candidates = await listCandidates(tmpDir, { source: "concurrent-dup" });
+    assert.equal(candidates.length, 1, "only one entry persisted");
+  });
+
+  it("cross-process ingest with unique externalIds preserves all entries", async () => {
+    const { listCandidates } = await import("../server/services/event-source.js");
+
+    const root = await mkdtemp(path.join(os.tmpdir(), "cpb-evt-xproc-"));
+    const gate = path.join(root, "go");
+    const N = 32;
+    const source = `
+      import { access } from "node:fs/promises";
+      import { ingestEvent } from "./server/services/event-source.js";
+      const [root, gate, externalId] = process.argv.slice(1);
+      for (;;) {
+        try { await access(gate); break; } catch { await new Promise((r) => setTimeout(r, 5)); }
+      }
+      await ingestEvent(root, {
+        source: "cross-process-unique",
+        externalId,
+        projectId: "stress-test",
+      });
+    `;
+
+    try {
+      const processes = Array.from({ length: N }, (_, i) =>
+        runGateNode(source, [root, gate, `xproc-${i}`])
+      );
+      await writeFile(gate, "go", "utf8");
+      const results = await Promise.all(processes);
+      const failed = results.filter((result) => result.code !== 0);
+      assert.deepEqual(failed, [], `child processes failed: ${failed.map((r) => r.stderr).join("\n")}`);
+
+      const candidates = await listCandidates(root, { source: "cross-process-unique" });
+      assert.equal(candidates.length, N, "all cross-process entries should be persisted");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

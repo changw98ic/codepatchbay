@@ -4,22 +4,25 @@
 
 ## 项目概览
 
-CodePatchbay 是一个 multi-agent 工作流编排系统。通过 ACP (Agent Client Protocol) stdio 协议连接 Codex 和 Claude Code，实现 plan → execute → verify 的自动化流水线。支持手动逐步、分屏协作、全自动流水线三种使用模式，以及基于 durable event log 的 24h 无人值守模式。
+CodePatchbay 是一个 multi-agent 工作流编排系统。通过 ACP (Agent Client Protocol) stdio 协议连接 Codex 和 Claude Code，实现 plan → execute → verify 的自动化流水线。支持手动逐步、Web UI 协作、全自动流水线三种使用模式，以及基于 durable event log 的 24h 无人值守模式。
 
 ## 架构
 
 ```
-cpb (CLI入口, Bash)
-├── bridges/               # 调度脚本 + ACP client
-│   ├── common.sh          # 共享函数库 (ID生成、日志、状态、RTK prompt构建)
-│   ├── acp-client.mjs     # ACP stdio JSON-RPC client (Node.js)
-│   ├── codex-plan.sh      # Codex 规划 bridge
-│   ├── claude-execute.sh  # Claude 执行 bridge
-│   ├── codex-verify.sh    # Codex 验证 bridge
-│   ├── run-pipeline.sh    # 全自动流水线 (plan→execute→verify+retry)
+cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
+├── bridges/               # ACP bridges + runtime
+│   ├── acp-client.mjs     # ACP stdio JSON-RPC client
+│   ├── acp-pool.mjs       # ACP session pool
+│   ├── run-phase.mjs      # Single-phase runner (plan/execute/verify)
+│   ├── run-pipeline.mjs   # Full pipeline orchestrator (plan→execute→verify+retry)
 │   ├── job-runner.mjs     # Durable job 单步执行器 (lease heartbeat)
 │   ├── supervisor-loop.mjs# 无人值守 supervisor
-│   └── init-project.sh    # 项目初始化
+│   ├── dual-research.mjs  # Dual-agent research
+│   ├── multi-evolve.mjs   # Multi-phase evolution
+│   └── ...                # review, merge, provider-soak, etc.
+├── cli/                   # CLI router + command modules
+│   ├── cpb.mjs            # Entry point + command router
+│   └── commands/          # Individual command implementations
 ├── server/                # Fastify REST + WebSocket 后端
 │   ├── index.js           # 入口 (Fastify + WS + file watcher)
 │   ├── routes/projects.js # 项目 CRUD API
@@ -32,7 +35,7 @@ cpb (CLI入口, Bash)
 ├── web/                   # React 19 + Vite 前端
 │   └── src/
 │       ├── App.jsx        # Router + sidebar layout
-│       ├── pages/         # Dashboard, Project, NewTask
+│       ├── pages/         # Dashboard, Project, NewTask, Review
 │       └── hooks/         # WebSocket hook
 ├── wiki/                  # 共享记忆文件系统
 │   ├── schema.md          # Wiki 宪法 (命名规则、权限、不可变规则)
@@ -45,8 +48,8 @@ cpb (CLI入口, Bash)
 
 | 层 | 技术 |
 |---|---|
-| CLI | Bash (入口 `cpb`) |
-| Bridge 脚本 | Bash + Node.js (mjs) |
+| CLI | Node.js (`cli/cpb.mjs` → `cli/commands/*.js`) |
+| Bridge | Node.js (mjs) — ACP client, phase runner, pipeline, job runner |
 | ACP 通信 | JSON-RPC over stdio |
 | 后端 | Fastify 5 + @fastify/websocket + chokidar |
 | 前端 | React 19 + React Router 7 + Vite 6 |
@@ -105,6 +108,10 @@ Pipeline 通过 grep 此行决定下一步。
 ./cpb execute my-project 001
 ./cpb verify my-project 001
 ./cpb pipeline my-project "Add unit tests" 3
+./cpb research my-project "Investigate auth patterns"
+./cpb evolve-multi --once --project my-project
+./cpb repair my-project <job-id> [--agent codex]
+./cpb index refresh my-project
 ./cpb status my-project
 ./cpb list
 ./cpb jobs
@@ -116,7 +123,10 @@ Pipeline 通过 grep 此行决定下一步。
 ./cpb recover                     # Alias for gc
 ./cpb hub status|start|stop
 ./cpb release list|use|install|doctor|gc
-./cpb supervisor
+./cpb cancel my-project <jobId> "reason"
+./cpb redirect my-project <jobId> "new instruction"
+./cpb merge-preview my-project <ref> --base main
+./cpb install-bin                 # Install cpb to PATH
 ./cpb wiki lint
 
 # Web UI (启动后端 + 前端)
@@ -129,16 +139,15 @@ cd server && npm run dev    # node --watch index.js
 cd web && npm run dev       # vite dev server :5173
 
 # 测试
-cd /path/to/cpb && node --test tests/*.mjs     # 单元测试
-bash tests/cpb-jobs.test.sh                     # Job 系统集成测试
-bash tests/cpb-bridges.test.sh                  # Bridge 集成测试
+npm test                          # Node.js 单元测试 (tests/*.test.mjs)
+npm run build:web                 # 构建 Vite UI
+cd web && npm test                # 前端组件测试
 ```
 
 ## 测试结构
 
-- `tests/*.test.mjs` — Node.js 内置测试运行器的单元测试
-- `tests/cpb-jobs.test.sh` — Job/lease/event 系统的 Bash 集成测试
-- `tests/cpb-bridges.test.sh` — Bridge 脚本的 Bash 集成测试
+- `tests/*.test.mjs` — Node.js 内置测试运行器的单元测试 (`npm test`)
+- `web/src/**/*.test.{jsx,js}` — Vitest 前端组件测试 (`cd web && npm test`)
 - `tests/fixtures/` — fake ACP agent stub
 - `tests/helpers/` — 测试工具 (如 spawn-file)
 

@@ -27,6 +27,8 @@ wiki/
 !.env.example
 channels.json
 *.local
+.antigravitycli/
+.claude/
 
 # Logs and OS/editor files
 *.log

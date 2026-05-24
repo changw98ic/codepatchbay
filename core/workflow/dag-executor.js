@@ -157,8 +157,8 @@ export function scheduleReadyNodes(nodes, completedNodeIds, runningNodeIds, maxC
  * @param {Object} callbacks
  * @param {Function} callbacks.executor - async (node, ctx) => { ok, reason?, retryable?, reactivate? }
  * @param {Function} [callbacks.shouldStop] - () => boolean
- * @param {Function} [callbacks.onBeforeNode] - async (nodeId) => boolean|void
- * @param {Function} [callbacks.onNodeResult] - async (nodeId, result) => void
+ * @param {Function} [callbacks.onBeforeNode] - async (nodeId, ctx) => boolean|void
+ * @param {Function} [callbacks.onNodeResult] - async (nodeId, result, ctx) => void
  * @param {string[]} [callbacks.seedCompleted] - Node IDs to pre-mark as completed
  * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string}>}
  */
@@ -180,15 +180,16 @@ export async function executeDag(dag, callbacks) {
     const maxAttempts = node.maxRetries ?? 3;
     const attempt = (attempts.get(nodeId) || 0) + 1;
     attempts.set(nodeId, attempt);
+    const ctx = { node, attempt, maxAttempts };
 
     if (onBeforeNode) {
-      const proceed = await onBeforeNode(nodeId);
+      const proceed = await onBeforeNode(nodeId, ctx);
       if (proceed === false) return { ok: false, results, failedNode: nodeId, reason: "cancelled" };
     }
 
-    const result = await executor(node, { attempt, maxAttempts });
+    const result = await executor(node, ctx);
     results.set(nodeId, result);
-    if (onNodeResult) await onNodeResult(nodeId, result);
+    if (onNodeResult) await onNodeResult(nodeId, result, ctx);
 
     if (result.ok) {
       completed.add(nodeId);

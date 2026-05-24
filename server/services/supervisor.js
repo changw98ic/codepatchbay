@@ -222,15 +222,40 @@ export function getStaleTrackerSnapshot() {
   return Object.fromEntries(staleTracker);
 }
 
+function nodeForReadyId(job, readyId) {
+  try {
+    const dag = normalizeWorkflow(job.workflow);
+    return dag.nodes?.find((node) => node.id === readyId) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function bridgePhaseFor(job, readyId) {
+  return nodeForReadyId(job, readyId)?.phase ?? readyId;
+}
+
+async function staleRunningDagNodes(cpbRoot, job, { now } = {}) {
+  const staleNodes = [];
+  for (const nodeId of job.runningNodes || []) {
+    const lease = await readLease(cpbRoot, `lease-${job.jobId}-${nodeId}`);
+    if (lease === null || isLeaseStale(lease, now)) {
+      staleNodes.push(nodeId);
+    }
+  }
+  return staleNodes;
+}
+
 /**
  * Resolve the bridge script and extra arguments for a given phase.
  * Returns { script, args } or null if the phase is "complete" (no script needed).
  */
 export function bridgeForPhase(phase, project, job) {
   const bridgesDir = "bridges";
+  const bridgePhase = bridgePhaseFor(job, phase);
 
   // Use hardcoded mapping for known phases (preserves existing arg logic)
-  switch (phase) {
+  switch (bridgePhase) {
     case "plan":
       return {
         script: path.join(bridgesDir, "run-phase.mjs"),
@@ -262,7 +287,7 @@ export function bridgeForPhase(phase, project, job) {
     default: {
       // Unknown phase: try workflow definition
       const workflow = getWorkflow(job.workflow);
-      const bridge = workflowBridgeForPhase(workflow, phase);
+      const bridge = workflowBridgeForPhase(workflow, bridgePhase);
       if (bridge) return { script: path.join(bridgesDir, bridge), args: [project] };
       return null;
     }
@@ -313,14 +338,19 @@ function runChild(command, args, cwd, { env = process.env } = {}) {
  *
  * Returns { jobId, project, phase, exitCode, nodes } on success or error.
  */
-export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExecutor = false } = {}) {
+export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExecutor = false, now } = {}) {
   const callerRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const resolvedExecutorRoot = useCurrentExecutor
     ? callerRoot
     : (job.executor?.root && job.executor.root !== callerRoot ? job.executor.root : callerRoot);
 
   // DAG-aware: get all ready nodes, not just the next linear phase
-  const { ready, isDag } = readyNodesFor(job);
+  const readiness = readyNodesFor(job);
+  let ready = readiness.ready;
+  const { isDag } = readiness;
+  if (ready.length === 0 && isDag) {
+    ready = await staleRunningDagNodes(cpbRoot, job, { now });
+  }
 
   if (ready.length === 0) {
     // Check if this is a completed DAG or legacy "complete" signal
@@ -335,19 +365,6 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
     return { jobId: job.jobId, project: job.project, phase: "skipped", exitCode: 0 };
   }
 
-  // For legacy workflows (single ready phase), use the old path
-  const phase = ready[0];
-  if (phase === "complete") {
-    await completeJobStore(cpbRoot, job.project, job.jobId);
-    return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
-  }
-
-  // "complete" phase: no bridge script, just mark done.
-  if (phase === "complete") {
-    await completeJobStore(cpbRoot, job.project, job.jobId);
-    return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
-  }
-
   // Create a fresh recovery job with lineage; original terminal record stays auditable
   let recoveryJob = job;
   const TERMINAL_SET = new Set(["failed", "blocked", "cancelled"]);
@@ -355,7 +372,7 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
     try {
       const currentExecutor = useCurrentExecutor ? await executorMetadata(callerRoot) : null;
       recoveryJob = await recoverAsNewJob(cpbRoot, job.project, job.jobId, {
-        reason: `supervisor recovery: ${job.status} job needs phase ${phase}`,
+        reason: `supervisor recovery: ${job.status} job needs phase ${ready[0]}`,
         trigger: "supervisor",
         useCurrentExecutor,
         currentExecutor,
@@ -366,83 +383,112 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
     }
   }
 
-  const bridge = bridgeForPhase(phase, recoveryJob.project, recoveryJob);
-  if (!bridge) {
-    return { jobId: recoveryJob.jobId, project: recoveryJob.project, phase, exitCode: 1, error: "no bridge for phase" };
-  }
-
-  // Resolve node agent using poolStatus
-  let poolStatus = null;
-  try {
-    const { getManagedAcpPool } = await import("./acp-pool.js");
-    const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
-    const status = await pool.statusAsync();
-    poolStatus = status?.pools || null;
-  } catch {}
-
-  let resolvedAgent = null;
-  try {
-    const dag = normalizeWorkflow(recoveryJob.workflow);
-    const node = dag.nodes?.find((n) => n.id === phase);
-    if (node) {
-      const { resolveNodeAgent } = await import("../../core/workflow/definition.js");
-      resolvedAgent = resolveNodeAgent(node, { poolStatus });
+  async function runReadyPhase(phase) {
+    if (phase === "complete") {
+      await completeJobStore(cpbRoot, recoveryJob.project, recoveryJob.jobId);
+      return { jobId: recoveryJob.jobId, project: recoveryJob.project, phase: "complete", exitCode: 0 };
     }
-  } catch {}
 
-  if (resolvedAgent) {
-    bridge.args.push("--agent", resolvedAgent);
-  }
+    const bridge = bridgeForPhase(phase, recoveryJob.project, recoveryJob);
+    if (!bridge) {
+      return { jobId: recoveryJob.jobId, project: recoveryJob.project, phase, exitCode: 1, error: "no bridge for phase" };
+    }
 
-  const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
-  if (!await fileExists(jobRunner)) {
+    // Resolve node agent using poolStatus
+    let poolStatus = null;
+    try {
+      const { getManagedAcpPool } = await import("./acp-pool.js");
+      const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
+      const status = await pool.statusAsync();
+      poolStatus = status?.pools || null;
+    } catch {}
+
+    let resolvedAgent = null;
+    try {
+      const node = nodeForReadyId(recoveryJob, phase);
+      if (node) {
+        const { resolveNodeAgent } = await import("../../core/workflow/definition.js");
+        resolvedAgent = resolveNodeAgent(node, { poolStatus });
+      }
+    } catch {}
+
+    if (resolvedAgent) {
+      bridge.args.push("--agent", resolvedAgent);
+    }
+
+    const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.mjs");
+    if (!await fileExists(jobRunner)) {
+      return {
+        jobId: recoveryJob.jobId,
+        project: recoveryJob.project,
+        phase,
+        exitCode: 1,
+        error: `job runner not found: ${jobRunner}`,
+      };
+    }
+
+    const runnerArgs = [
+      jobRunner,
+      "--cpb-root", cpbRoot,
+      "--project", recoveryJob.project,
+      "--job-id", recoveryJob.jobId,
+      "--phase", phase,
+      "--script", path.resolve(resolvedExecutorRoot, bridge.script),
+      "--",
+      ...bridge.args,
+    ];
+
+    // Resolve project runtime root so child process writes to correct data dir
+    const projectEnv = {};
+    try {
+      const hubRoot = resolveHubRoot(cpbRoot);
+      if (hubRoot) {
+        const registered = await getProject(hubRoot, recoveryJob.project);
+        if (registered?.projectRuntimeRoot) {
+          projectEnv.CPB_PROJECT_RUNTIME_ROOT = registered.projectRuntimeRoot;
+        }
+      }
+    } catch {}
+
+    const result = await runChild("node", runnerArgs, cpbRoot, {
+      env: executorEnv({ ...process.env, ...projectEnv }, {
+        cpbRoot,
+        executorRoot: resolvedExecutorRoot,
+      }),
+    });
+
     return {
       jobId: recoveryJob.jobId,
       project: recoveryJob.project,
       phase,
-      exitCode: 1,
-      error: `job runner not found: ${jobRunner}`,
+      exitCode: result.exitCode,
+      error: result.error?.message ?? null,
+      recoveredFrom: recoveryJob.jobId !== job.jobId ? job.jobId : null,
     };
   }
 
-  const runnerArgs = [
-    jobRunner,
-    "--cpb-root", cpbRoot,
-    "--project", recoveryJob.project,
-    "--job-id", recoveryJob.jobId,
-    "--phase", phase,
-    "--script", path.resolve(resolvedExecutorRoot, bridge.script),
-    "--",
-    ...bridge.args,
-  ];
+  const phasesToRun = isDag ? ready : [ready[0]];
+  const nodes = [];
+  for (const phase of phasesToRun) {
+    const result = await runReadyPhase(phase);
+    nodes.push(result);
+    if (!isDag && result.exitCode !== 0) return result;
+  }
 
-  // Resolve project runtime root so child process writes to correct data dir
-  const projectEnv = {};
-  try {
-    const hubRoot = resolveHubRoot(cpbRoot);
-    if (hubRoot) {
-      const registered = await getProject(hubRoot, recoveryJob.project);
-      if (registered?.projectRuntimeRoot) {
-        projectEnv.CPB_PROJECT_RUNTIME_ROOT = registered.projectRuntimeRoot;
-      }
-    }
-  } catch {}
+  if (phasesToRun.length > 1) {
+    const failed = nodes.find((node) => node.exitCode !== 0);
+    return {
+      jobId: recoveryJob.jobId,
+      project: recoveryJob.project,
+      phase: nodes.map((node) => node.phase).join(","),
+      exitCode: failed ? failed.exitCode : 0,
+      error: failed?.error ?? null,
+      recoveredFrom: recoveryJob.jobId !== job.jobId ? job.jobId : null,
+      nodes,
+    };
+  }
 
-  const result = await runChild("node", runnerArgs, cpbRoot, {
-    env: executorEnv({ ...process.env, ...projectEnv }, {
-      cpbRoot,
-      executorRoot: resolvedExecutorRoot,
-    }),
-  });
-
-  return {
-    jobId: recoveryJob.jobId,
-    project: recoveryJob.project,
-    phase,
-    exitCode: result.exitCode,
-    error: result.error?.message ?? null,
-    recoveredFrom: recoveryJob.jobId !== job.jobId ? job.jobId : null,
-  };
+  return nodes[0];
 }
 
 /**
@@ -484,7 +530,7 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorR
     const batch = jobs.slice(i, i + maxConcurrent);
     const batchResults = await Promise.all(
       batch.map((job) =>
-        recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot, useCurrentExecutor }).catch((err) => ({
+        recoverOneJob(cpbRoot, job, { executorRoot: resolvedExecutorRoot, useCurrentExecutor, now }).catch((err) => ({
           jobId: job.jobId,
           project: job.project,
           phase: readyNodesFor(job).ready[0] || nextPhaseFor(job),

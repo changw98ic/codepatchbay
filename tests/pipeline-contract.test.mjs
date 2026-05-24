@@ -4,8 +4,9 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-import { createJob, startPhase, completePhase, failJob } from "../server/services/job-store.js";
+import { createJob, startPhase, completePhase, failJob, getJob } from "../server/services/job-store.js";
 import { appendEvent } from "../server/services/event-store.js";
+import { jobToPipelineState } from "../server/services/job-projection.js";
 import { buildPhaseContextPacket } from "../server/services/phase-context.js";
 import { buildBudgetReport } from "../server/services/prompt-budget.js";
 import { evaluatePermissionDecision } from "../server/services/permission-matrix.js";
@@ -547,6 +548,145 @@ describe("pipeline-contract", () => {
       assert.ok(req1Entry.included);
       assert.ok(opt1Entry.included, "opt1 should fit");
       assert.ok(!opt2Entry.included, "opt2 should not fit");
+    });
+  });
+
+  describe("Test 8: DAG node projection in pipeline state", () => {
+    it("includes pending DAG nodes from the workflow definition before they emit events", async () => {
+      const workflow = `projection-pending-${process.pid}`;
+      const { registerDagWorkflow } = await import("../core/workflow/definition.js");
+      registerDagWorkflow(workflow, {
+        nodes: [
+          { id: "plan", phase: "plan", dependsOn: [] },
+          { id: "exec-a", phase: "execute", dependsOn: ["plan"] },
+          { id: "exec-b", phase: "execute", dependsOn: ["plan"] },
+          { id: "verify", phase: "verify", dependsOn: ["exec-a", "exec-b"] },
+        ],
+        maxConcurrentNodes: 2,
+      });
+
+      const job = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "show pending DAG nodes",
+        workflow,
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_started",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "plan",
+        phase: "plan",
+        ts: "2026-01-01T00:00:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_completed",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "plan",
+        phase: "plan",
+        ts: "2026-01-01T00:01:00Z",
+      });
+
+      const current = await getJob(tmpDir, "test-proj", job.jobId);
+      const state = jobToPipelineState(current);
+
+      assert.deepEqual(state.nodes.map((node) => node.id), ["plan", "exec-a", "exec-b", "verify"]);
+      assert.equal(state.nodes.find((node) => node.id === "plan").status, "completed");
+      assert.equal(state.nodes.find((node) => node.id === "exec-a").status, "pending");
+      assert.equal(state.nodes.find((node) => node.id === "exec-b").status, "pending");
+      assert.equal(state.nodes.find((node) => node.id === "verify").status, "pending");
+    });
+
+    it("exposes DAG node states for UI/API consumers without duplicate completed nodes", async () => {
+      const job = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "ship DAG visibility",
+      });
+
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_started",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "plan",
+        phase: "plan",
+        attempt: 1,
+        ts: "2026-01-01T00:00:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_completed",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "plan",
+        phase: "plan",
+        artifact: "plan-001",
+        ts: "2026-01-01T00:01:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_started",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "execute",
+        phase: "execute",
+        attempt: 1,
+        ts: "2026-01-01T00:02:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_completed",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "execute",
+        phase: "execute",
+        artifact: "deliverable-001",
+        ts: "2026-01-01T00:03:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_started",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "verify",
+        phase: "verify",
+        attempt: 1,
+        ts: "2026-01-01T00:04:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_failed",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "verify",
+        phase: "verify",
+        reason: "quality failed",
+        ts: "2026-01-01T00:05:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", job.jobId, {
+        type: "dag_node_retrying",
+        jobId: job.jobId,
+        project: "test-proj",
+        nodeId: "execute",
+        phase: "execute",
+        reason: "reactivated by verify",
+        attempt: 2,
+        ts: "2026-01-01T00:06:00Z",
+      });
+
+      const current = await getJob(tmpDir, "test-proj", job.jobId);
+      const state = jobToPipelineState(current);
+
+      assert.deepEqual(state.completedNodes, ["plan"]);
+      assert.deepEqual(state.runningNodes, []);
+      assert.equal(state.nodes.length, 3);
+
+      const plan = state.nodes.find((node) => node.id === "plan");
+      const execute = state.nodes.find((node) => node.id === "execute");
+      const verify = state.nodes.find((node) => node.id === "verify");
+
+      assert.equal(plan.status, "completed");
+      assert.equal(plan.artifact, "plan-001");
+      assert.equal(plan.durationMs, 60_000);
+      assert.equal(execute.status, "retrying");
+      assert.equal(execute.attempt, 2);
+      assert.equal(execute.reason, "reactivated by verify");
+      assert.equal(verify.status, "failed");
+      assert.equal(verify.reason, "quality failed");
     });
   });
 });

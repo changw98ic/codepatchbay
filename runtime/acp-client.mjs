@@ -15,7 +15,7 @@ const usage = `Usage: acp-client.mjs --agent <name> [--cwd <path>]
 
 Reads a prompt from stdin and sends it to an ACP agent over stdio.
 
-Supported agents: codex, claude, gemini (and any registered via CPB_AGENTS_CONFIG_DIR)
+Supported agents: codex, claude (and any registered via CPB_AGENTS_CONFIG_DIR)
 
 Environment:
   CPB_ACP_{PREFIX}_COMMAND   Override command for agent (e.g. CPB_ACP_CODEX_COMMAND)

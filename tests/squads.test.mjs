@@ -30,7 +30,7 @@ describe("squads", () => {
     assert.equal(frontend.leader, "claude");
     assert.ok(Array.isArray(frontend.members));
     assert.ok(frontend.members.includes("claude"));
-    assert.ok(frontend.members.includes("gemini"));
+    assert.ok(!frontend.members.includes("gemini"));
   });
 
   it("getSquad returns null for unknown squad", () => {
