@@ -14,6 +14,8 @@ import { reviewRoutes } from './routes/review.js';
 import { evolveRoutes } from './routes/evolve.js';
 import { hubRoutes } from './routes/hub.js';
 import { agentRoutes } from './routes/agents.js';
+import { eventRoutes } from './routes/events.js';
+import { skillRoutes } from './routes/skills.js';
 import { resolveHubRoot } from './services/hub-registry.js';
 import { getHubRuntime } from './services/hub-runtime.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
@@ -95,6 +97,8 @@ app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
 app.register(agentRoutes, { prefix: '/api' });
+app.register(eventRoutes, { prefix: '/api' });
+app.register(skillRoutes, { prefix: '/api' });
 
 // Low-frequency agent status broadcast (every 30s)
 const { collectAgentMetrics } = await import('./services/agent-metrics.js');

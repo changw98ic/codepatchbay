@@ -8,6 +8,8 @@ import {
 import { getWorkflow } from "../../core/workflow/definition.js";
 import { appendEvent } from "./event-store.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
+import { recordPerformance } from "./performance-tracker.js";
+import { recordQualityScore } from "./performance-tracker.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -141,6 +143,19 @@ export async function completePhase(
     artifact,
     ts,
   }, { dataRoot });
+
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
+  const agent = job?.executor || job?.agent || null;
+  const role = job?.workflow ? getWorkflow(job.workflow).roleForPhase?.[phase] : null;
+  recordPerformance(cpbRoot, project, jobId, {
+    agent,
+    role,
+    phase,
+    status: "completed",
+    durationMs: job?.phaseStartedAt ? (Date.now() - new Date(job.phaseStartedAt).getTime()) : null,
+    ts,
+  }).catch(() => {});
+
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -354,6 +369,19 @@ export async function completeJob(
     project,
     ts,
   }, { dataRoot });
+
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
+  const verdict = job?.verdict || job?.artifacts?.verdict || null;
+  if (verdict) {
+    const agent = job?.executor || job?.agent || null;
+    recordQualityScore(cpbRoot, project, jobId, {
+      agent,
+      phase: "verify",
+      verdict: verdict.toUpperCase(),
+      ts,
+    }).catch(() => {});
+  }
+
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
