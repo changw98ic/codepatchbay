@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -32,7 +32,7 @@ describe("Defects fixes verification", () => {
     assert.ok(cached?.sessionId);
   });
 
-  it("agent home GC automatic lease detection", async () => {
+  it("agent home GC with injected lease check", async () => {
     const jobDirActive = path.join(tmpRoot, "cpb-task", "agent-homes", "claude", "job-active");
     const jobDirExpired = path.join(tmpRoot, "cpb-task", "agent-homes", "claude", "job-expired");
     await mkdir(jobDirActive, { recursive: true });
@@ -57,7 +57,23 @@ describe("Defects fixes verification", () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     }));
 
-    const cleaned = await cleanupAgentHomes(tmpRoot, { maxAgeMs: 24 * 60 * 60 * 1000 });
+    const { readLease, isLeaseStale } = await import("../server/services/lease-manager.js");
+    const cleaned = await cleanupAgentHomes(tmpRoot, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      isLeaseActive: async (jobId) => {
+        try {
+          const files = await readdir(leasesDir);
+          const prefix = `lease-${jobId}-`;
+          for (const f of files) {
+            if (f.startsWith(prefix) && f.endsWith(".json")) {
+              const lease = await readLease(tmpRoot, path.basename(f, ".json"));
+              if (lease !== null && !isLeaseStale(lease)) return true;
+            }
+          }
+        } catch {}
+        return false;
+      },
+    });
     assert.equal(cleaned, 1);
 
     try {

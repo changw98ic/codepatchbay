@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
+import { runtimeDataPath } from "./runtime-root.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase, normalizeWorkflow } from "../../core/workflow/definition.js";
 import { readyNodes as dagReadyNodes, scheduleReadyNodes, isDagComplete } from "../../core/workflow/dag-executor.js";
@@ -441,7 +442,24 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorR
   // Periodically clean up old isolated agent home directories
   try {
     const { cleanupAgentHomes } = await import("../../core/agents/isolation.js");
-    await cleanupAgentHomes(cpbRoot);
+    const { readLease, isLeaseStale } = await import("./lease-manager.js");
+    const leasesDir = runtimeDataPath(cpbRoot, "leases");
+    await cleanupAgentHomes(cpbRoot, {
+      isLeaseActive: async (jobId) => {
+        try {
+          const files = await readdir(leasesDir);
+          const prefix = `lease-${jobId}-`;
+          for (const f of files) {
+            if (f.startsWith(prefix) && f.endsWith(".json")) {
+              const leaseId = path.basename(f, ".json");
+              const lease = await readLease(cpbRoot, leaseId);
+              if (lease !== null && !isLeaseStale(lease)) return true;
+            }
+          }
+        } catch {}
+        return false;
+      },
+    });
   } catch {}
 
   const jobs = await recoverJobs(cpbRoot, { now });

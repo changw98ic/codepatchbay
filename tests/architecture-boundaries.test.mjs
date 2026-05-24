@@ -32,6 +32,7 @@ test("core stays pure", async () => {
   for (const file of await listFiles("core")) {
     const source = await readFile(file, "utf8");
     assert.doesNotMatch(source, /from ["'][.\/]+(?:server|bridges|cli|runtime)\//, `${path.relative(repoRoot, file)} imports outside core`);
+    assert.doesNotMatch(source, /import\(["'][.\/]+(?:server)\//, `${path.relative(repoRoot, file)} dynamic-imports server`);
   }
 });
 
