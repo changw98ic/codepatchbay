@@ -8,6 +8,7 @@ import Fastify from "fastify";
 
 import { redactSecrets } from "../server/services/secret-policy.js";
 import { githubRoutes } from "../server/routes/github.js";
+import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -178,5 +179,97 @@ describe("GitHub webhook signature verification", () => {
       await app.close();
       await rm(hubRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("GitHub event normalization", () => {
+  it("normalizes issues and issue_comment events into trigger-ready envelopes", () => {
+    const issueEvent = normalizeGithubWebhookEvent({
+      event: "issues",
+      delivery: "delivery-issue-1",
+      projectId: "frontend",
+      payload: {
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "cpb" },
+        issue: {
+          number: 123,
+          title: "Fix login redirect",
+          body: "Redirect loops after login.",
+          html_url: "https://github.com/my-org/frontend/issues/123",
+          labels: [{ name: "bug" }, { name: "cpb" }],
+        },
+        sender: { login: "octocat" },
+      },
+    });
+
+    assert.equal(issueEvent.status, "ok");
+    assert.equal(issueEvent.type, "github_issue");
+    assert.equal(issueEvent.repo, "my-org/frontend");
+    assert.equal(issueEvent.projectId, "frontend");
+    assert.equal(issueEvent.issueNumber, 123);
+    assert.equal(issueEvent.actor, "octocat");
+    assert.equal(issueEvent.action, "labeled");
+    assert.equal(issueEvent.commandText, null);
+    assert.deepEqual(issueEvent.labels, ["bug", "cpb"]);
+    assert.equal(issueEvent.url, "https://github.com/my-org/frontend/issues/123");
+
+    const commentEvent = normalizeGithubWebhookEvent({
+      event: "issue_comment",
+      delivery: "delivery-comment-1",
+      projectId: "frontend",
+      payload: {
+        action: "created",
+        repository: { full_name: "my-org/frontend" },
+        issue: {
+          number: 123,
+          title: "Fix login redirect",
+          html_url: "https://github.com/my-org/frontend/issues/123",
+          labels: [{ name: "bug" }],
+        },
+        comment: {
+          body: "/cpb run",
+          html_url: "https://github.com/my-org/frontend/issues/123#issuecomment-1",
+        },
+        sender: { login: "maintainer" },
+      },
+    });
+
+    assert.equal(commentEvent.status, "ok");
+    assert.equal(commentEvent.type, "github_issue_comment");
+    assert.equal(commentEvent.commandText, "/cpb run");
+    assert.equal(commentEvent.actor, "maintainer");
+    assert.equal(commentEvent.url, "https://github.com/my-org/frontend/issues/123#issuecomment-1");
+    assert.deepEqual(commentEvent.labels, ["bug"]);
+  });
+
+  it("normalizes installation events and ignores unsupported events with a reason", () => {
+    const installation = normalizeGithubWebhookEvent({
+      event: "installation",
+      delivery: "delivery-installation-1",
+      payload: {
+        action: "created",
+        installation: { id: 98765 },
+        repositories: [{ full_name: "my-org/frontend" }],
+        sender: { login: "admin" },
+      },
+    });
+
+    assert.equal(installation.status, "ok");
+    assert.equal(installation.type, "github_installation");
+    assert.equal(installation.installationId, 98765);
+    assert.equal(installation.actor, "admin");
+    assert.deepEqual(installation.repositories, ["my-org/frontend"]);
+    assert.equal(installation.issueNumber, null);
+    assert.deepEqual(installation.labels, []);
+
+    const ignored = normalizeGithubWebhookEvent({
+      event: "push",
+      delivery: "delivery-push-1",
+      payload: { action: "created" },
+    });
+
+    assert.equal(ignored.status, "ignored");
+    assert.match(ignored.reason, /unsupported event/i);
   });
 });

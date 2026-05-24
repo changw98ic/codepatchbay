@@ -22,6 +22,10 @@ function normalizeLabel(label) {
   return label?.name || null;
 }
 
+export function normalizeGithubLabels(labels) {
+  return Array.isArray(labels) ? labels.map(normalizeLabel).filter(Boolean) : [];
+}
+
 export function normalizeGithubIssue(issue = {}, { repo, projectId } = {}) {
   return {
     repository: issue.repository || issue.repo || issue.repositoryFullName || repo || null,
@@ -30,7 +34,7 @@ export function normalizeGithubIssue(issue = {}, { repo, projectId } = {}) {
     title: issue.title || `Issue #${issue.number}`,
     state: String(issue.state || "OPEN").toUpperCase(),
     url: issue.url || null,
-    labels: Array.isArray(issue.labels) ? issue.labels.map(normalizeLabel).filter(Boolean) : [],
+    labels: normalizeGithubLabels(issue.labels),
     body: issue.body || "",
     createdAt: issue.createdAt || null,
     updatedAt: issue.updatedAt || issue.createdAt || null,
