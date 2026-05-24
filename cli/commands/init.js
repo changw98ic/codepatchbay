@@ -53,9 +53,20 @@ async function copyProjectTemplate(templateDir, wikiDir, projectName) {
 export async function initProject(args, { cpbRoot, executorRoot }) {
   const projectPathRaw = args[0];
   let projectName = args[1];
-  if (!projectPathRaw || !projectName) {
-    console.error("Usage: cpb init <path> <name>");
+
+  if (!projectPathRaw) {
+    console.error("Usage: cpb init <path> [name]");
     process.exit(1);
+  }
+
+  // Infer name from package.json or directory basename when omitted
+  if (!projectName) {
+    const resolved = path.resolve(projectPathRaw);
+    try {
+      const pkg = JSON.parse(await readFile(path.join(resolved, "package.json"), "utf8"));
+      if (pkg.name) projectName = sanitizeName(pkg.name);
+    } catch {}
+    if (!projectName) projectName = path.basename(resolved);
   }
 
   const safeName = sanitizeName(projectName);

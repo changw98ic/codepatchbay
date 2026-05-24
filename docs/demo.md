@@ -2,7 +2,7 @@
 
 This document keeps the demo honest: no hosted mock, no real-provider claims without evidence, and no claim of 24-hour unattended operation.
 
-CodePatchBay's initial public shape is a local gateway for coding agents. The minimum credible demo should show a task becoming plan, deliverable, verdict, event log, and eventually a verified PR path.
+CodePatchBay is the local gateway for coding agents. The minimum credible demo shows a task becoming plan, deliverable, verdict, event log, and eventually a verified PR path. The demo runs locally and does not use provider APIs.
 
 ## Local mock demo
 
@@ -27,6 +27,16 @@ The JSON output includes:
 - `sourcePath`: toy repo path
 - `eventLog`: JSONL event log
 - `artifacts`: plan, deliverable, and verdict file paths
+
+## Quick start walkthrough
+
+```bash
+npm i -g codepatchbay
+cpb setup          # detect agents
+cpb demo           # mock pipeline, no keys needed
+cpb init .         # register current project
+cpb run "add a README section describing the public API"
+```
 
 ## Clean clone verification
 
@@ -71,10 +81,16 @@ export CPB_ACP_TIMEOUT_MS=1800000
 Run a small, low-risk task:
 
 ```bash
-./cpb init /absolute/path/to/target-project target-demo
-./cpb plan target-demo "Make a tiny documentation-only change"
-./cpb execute target-demo 001
-./cpb verify target-demo 001
+cpb init /absolute/path/to/target-project target-demo
+cpb run --project target-demo "Make a tiny documentation-only change"
+```
+
+Or from inside the project directory:
+
+```bash
+cd /absolute/path/to/target-project
+cpb init .
+cpb run "Make a tiny documentation-only change"
 ```
 
 Inspect the handoff artifacts:
@@ -96,11 +112,10 @@ The useful demo moment is not just that agents ran. It is that each handoff rema
 
 1. Show the target repo before the task.
 2. Run `cpb demo --json` and open the generated event log plus artifacts.
-3. Run `./cpb plan` and open the generated plan.
-4. Run `./cpb execute` and show the target repo diff.
-5. Run `./cpb verify` and open the verdict.
-6. Show the event log file and explain that CodePatchBay is local-first and inspectable.
-7. End with the boundary: alpha, local-first, mock demo works without provider keys, real-agent demo requires authenticated adapters.
+3. Run `cpb init .` from the target project.
+4. Run `cpb run "add a contributing guide"` and show the pipeline executing.
+5. Show the event log file and explain that CodePatchBay is local-first and inspectable.
+6. End with the boundary: alpha, local-first, mock demo works without provider keys, real-agent demo requires authenticated adapters.
 
 ## What not to claim yet
 

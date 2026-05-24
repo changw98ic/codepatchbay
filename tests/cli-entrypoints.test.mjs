@@ -10,7 +10,7 @@ const repoRoot = path.resolve(import.meta.dirname, "..");
 function runNode(args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, {
-      cwd: repoRoot,
+      cwd: options.cwd || repoRoot,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -531,7 +531,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "pipeline.js", "demo.js", "research.js", "status.js", "list.js", "jobs.js", "artifacts.js", "verdict.js",
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
-    "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
+    "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js",
   ]);
 
@@ -539,5 +539,75 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     if (!routedModules.has(file) && !intentionalInternal.has(file)) {
       assert.fail(`cli/commands/${file} is not routed and not marked intentional`);
     }
+  }
+});
+
+// --- D42: Quickstart command readiness ---
+
+test("D42: cpb run is a routed command (or aliased to pipeline)", async () => {
+  // D42 quickstart requires 'cpb run'. It must either be its own command
+  // or an alias that routes to an existing command like 'pipeline'.
+  const result = await runNode(["./cpb", "run", "--help"]);
+  assert.equal(result.code, 0, `cpb run not routed: ${result.stderr || result.stdout}`);
+  assert.doesNotMatch(result.stderr + result.stdout, /Unknown command/);
+});
+
+test("D42: cpb init . works with dot-path (single-arg or default-name)", async () => {
+  // D42 quickstart shows 'cpb init .'. Current init requires <path> <name>.
+  // This test proves that 'cpb init .' works by inferring name from
+  // directory or by accepting a single arg.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-init-dot-"));
+  const projectDir = path.join(tmp, "my-app");
+  try {
+    await mkdir(projectDir, { recursive: true });
+    const projectRoot = await realpath(tmp);
+    await writeFile(path.join(projectDir, "package.json"), JSON.stringify({ name: "my-app" }), "utf8");
+
+    const result = await runNode([path.join(repoRoot, "cpb"), "init", "."], {
+      cwd: projectDir,
+      env: {
+        CPB_ROOT: path.join(tmp, "cpb-root"),
+        CPB_HUB_ROOT: path.join(tmp, "hub"),
+        CPB_PROJECT_ROOTS: projectRoot,
+      },
+    });
+
+    // Should not fail with "Usage" or missing-args error
+    assert.doesNotMatch(
+      result.stderr + result.stdout,
+      /Usage:.*init/i,
+      "cpb init . should not show usage; it should accept dot-path"
+    );
+    assert.equal(result.code, 0, `cpb init . failed: ${result.stderr || result.stdout}`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("D42: cpb run can use current project with a blocked workflow smoke", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-run-dot-"));
+  const projectDir = path.join(tmp, "my-app");
+  const projectRoot = await realpath(tmp);
+  const env = {
+    CPB_ROOT: path.join(tmp, "cpb-root"),
+    CPB_HUB_ROOT: path.join(tmp, "hub"),
+    CPB_PROJECT_ROOTS: projectRoot,
+  };
+
+  try {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(path.join(projectDir, "package.json"), JSON.stringify({ name: "my-app" }), "utf8");
+
+    const init = await runNode([path.join(repoRoot, "cpb"), "init", "."], { cwd: projectDir, env });
+    assert.equal(init.code, 0, init.stderr || init.stdout);
+
+    const run = await runNode([path.join(repoRoot, "cpb"), "run", "--workflow", "blocked", "doc smoke"], {
+      cwd: projectDir,
+      env,
+    });
+    assert.equal(run.code, 0, run.stderr || run.stdout);
+    assert.match(run.stdout + run.stderr, /workflow: blocked|blocked/i);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
 });

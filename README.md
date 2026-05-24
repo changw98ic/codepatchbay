@@ -1,203 +1,119 @@
-# CodePatchbay — Codex + Claude Code ACP Workflow
+# CodePatchBay - the local gateway for coding agents
 
-> Codex 做规划验证，Claude Code 做执行，ACP 做统一连接层，Wiki 做共享记忆。
+> Route coding tasks to Codex and Claude Code through a single local CLI. No hosted CodePatchBay service required.
 
-## 快速开始
-
-```bash
-# 1. 初始化一个项目
-./cpb init /path/to/your-project your-project
-
-# 2. 通过 Codex ACP adapter 规划一个任务
-./cpb plan your-project "Add dark mode toggle"
-
-# 3. 通过 Claude ACP adapter 执行计划
-./cpb execute your-project 001
-
-# 4. 通过 Codex ACP adapter 验证结果
-./cpb verify your-project 001
-
-# 或者一步到位：全自动流水线
-./cpb pipeline your-project "Add unit tests for utils"
-```
-
-## 工作流
-
-```
-┌─────────┐     plan-{id}.md      ┌─────────────┐   deliverable-{id}.md   ┌─────────┐
-│ Codex ACP │ ─────────────────>  │ Claude ACP   │ ─────────────────────> │ Codex ACP │
-│ (规划)   │      inbox/          │   (执行)     │       outputs/          │ (验证)   │
-└─────────┘                       └─────────────┘                         └─────────┘
-     ↑                                                                  │
-     │                      review-{id}.md                              │
-     └──────────────────────────────────────────────────────────────────┘
-                                  inbox/                         (如果 FAIL)
-```
-
-## 三层使用模式
-
-### 1. 手动逐步
-
-逐个命令执行，每步确认后再继续。
+## Quick Start
 
 ```bash
-cpb plan my-project "Add auth"
-# 检查 inbox/plan-001.md ...
-cpb execute my-project 001
-# 检查 outputs/deliverable-001.md ...
-cpb verify my-project 001
+npm i -g codepatchbay
+cpb setup
+cpb demo
+cpb init .
+cpb run "fix failing tests"
 ```
 
-### 2. Web UI / 手动协作
+## What it does
 
-启动 Web UI 查看项目状态和 handoff 文件，或用 `cpb status` / `cpb inbox` / `cpb outputs` 检查中间产物。
+CodePatchBay orchestrates coding agents on your machine:
+
+1. **`cpb setup`** - detect installed agents (Codex, Claude Code, OpenCode) and report what's ready.
+2. **`cpb demo`** - run a mock plan -> execute -> verify pipeline locally, no provider keys needed.
+3. **`cpb init .`** - register the current project (name inferred from `package.json` or directory).
+4. **`cpb run "task"`** - run a task through the full plan -> execute -> verify pipeline, inferring the project from the current directory.
+
+## Workflow
+
+```text
+Codex plan
+  -> inbox/plan-{id}.md
+  -> Claude Code execute
+  -> outputs/deliverable-{id}.md
+  -> Codex verify
+  -> outputs/verdict-{id}.md
+
+On FAIL, review-{id}.md returns to inbox/ for retry or human review.
+```
+
+## Commands
 
 ```bash
-cpb ui --port 3210
-# 浏览器访问 Dashboard，查看 plan/deliverable/verdict 文件
-# 也可用 cpb status / cpb inbox / cpb outputs 在终端检查
+cpb init <path> [name]             # Initialize project (name inferred if omitted)
+cpb run "<task>" [--project <id>]  # Run task through full pipeline
+cpb pipeline <project> "<task>"    # Full pipeline (explicit project)
+cpb plan <project> "<task>"        # Codex planning only
+cpb execute <project> <plan-id>    # Claude execution only
+cpb verify <project> <id>          # Codex verification only
+cpb demo [--json]                  # Local mock demo (no keys needed)
+cpb setup [--json]                 # Detect agents and prerequisites
+cpb agents [list|detect|install]   # Agent gateway management
+cpb auth [status]                  # Provider auth checks
+cpb status <project>               # Project status
+cpb list                           # List projects
+cpb jobs [reconcile|cleanup]       # Job management
+cpb artifacts <job-id>             # List job artifacts
+cpb verdict <job-id>               # Show job verdict
+cpb doctor [--json]                # Health check
+cpb ui [--port] [--host]           # Start Web UI
+cpb version                        # Show version
 ```
 
-### 3. 全自动流水线
+## Architecture
 
-一个命令跑完 plan → execute → verify 循环，失败自动重试。
-
-```bash
-cpb pipeline my-project "Add dark mode" 3
-# 自动规划 → 执行 → 验证，最多重试 3 次
+```text
+cpb (CLI entry, Node.js)
+|-- bridges/                # ACP bridges + runtime
+|   |-- acp-client.mjs      # ACP stdio JSON-RPC client
+|   |-- run-phase.mjs       # Single-phase runner (plan/execute/verify)
+|   |-- run-pipeline.mjs    # Full pipeline orchestrator
+|   |-- job-runner.mjs      # Durable job executor (lease heartbeat)
+|   `-- supervisor-loop.mjs # Unattended supervisor
+|-- cli/commands/           # CLI command modules
+|-- server/                 # Fastify REST + WebSocket backend
+|-- web/                    # React 19 + Vite frontend
+`-- wiki/                   # Shared memory filesystem
+    `-- projects/{name}/
+        |-- inbox/          # Codex writes (plans, reviews)
+        `-- outputs/        # Claude writes (deliverables, verdicts)
 ```
 
-## 目录结构
+## ACP Connection
 
-```
-cpb/
-├── cpb                    # CLI 入口
-├── profiles/
-│   ├── codex/soul.md       # Codex 角色定义
-│   └── claude/soul.md      # Claude 角色定义
-├── wiki/
-│   ├── schema.md           # Wiki 宪法
-│   ├── system/             # 全局管理
-│   └── projects/{name}/    # 项目空间
-│       ├── inbox/          # Codex 写入（计划、审查）
-│       └── outputs/        # Claude 写入（交付、测试）
-├── bridges/                # ACP bridges + runtime
-│   ├── acp-client.mjs      # ACP stdio JSON-RPC client
-│   ├── acp-pool.mjs        # ACP session pool
-│   ├── run-phase.mjs       # Single-phase runner (plan/execute/verify)
-│   ├── run-pipeline.mjs    # Full pipeline orchestrator
-│   ├── supervisor-loop.mjs # Unattended supervisor loop
-│   ├── job-runner.mjs      # Durable job single-step executor
-│   └── ...                 # research, review, evolve, etc.
-└── templates/handoff/      # 交接文档模板
-```
+Agents connect via ACP stdio (JSON-RPC). Default adapters:
 
-## ACP 连接
+- Codex: `codex-acp` or `npx -y @zed-industries/codex-acp`
+- Claude Code: `claude-agent-acp` or `npx -y @agentclientprotocol/claude-agent-acp`
 
-CodePatchbay 现在通过 ACP stdio 连接 agent，不再直接调用 `omx exec` 或 `claude -p`。
-
-默认 adapter：
-
-- Codex: 优先使用 PATH 中的 `codex-acp`，否则使用 `npx -y @zed-industries/codex-acp`
-- Claude Code: 优先使用 PATH 中的 `claude-agent-acp`，否则使用 `npx -y @agentclientprotocol/claude-agent-acp`
-
-可用环境变量覆盖：
+Override with environment variables:
 
 ```bash
 CPB_ACP_CODEX_COMMAND=codex-acp
 CPB_ACP_CODEX_ARGS='["--some-arg"]'
 CPB_ACP_CLAUDE_COMMAND=claude-agent-acp
 CPB_ACP_CLAUDE_ARGS='["--some-arg"]'
-CPB_ACP_CWD=/path/to/project
-CPB_ACP_TIMEOUT_MS=1800000
+CPB_ACP_TIMEOUT_MS=1800000   # idle timeout (activity-based), 0 to disable
 ```
 
-`CPB_ACP_TIMEOUT_MS` 是**空闲超时**，不是总运行时长限制。只要 ACP adapter 还在输出日志、发送 tool/progress 更新、返回 JSON-RPC 消息，计时器就会刷新；设置为 `0` 可完全禁用空闲超时。
+## Durable Jobs
 
-### Claude Code provider variants
-
-`cpb execute` 启动 Claude ACP adapter 前会自动应用一次性的 provider 环境变量 overlay，不会写入 secrets。
-
-默认选择规则：
-
-- 未显式设置 `CPB_CLAUDE_VARIANT` 时，默认不启用 overlay，直接继承当前 `ANTHROPIC_*`
-- 设置 `CPB_CLAUDE_VARIANT=kimi-k2.6` 才使用 Kimi/Ollama Cloud 变量
-- 设置 `CPB_CLAUDE_VARIANT=mimo-v2.5pro` 才使用小米变量
-- 设置 `CPB_CLAUDE_VARIANT=none` 可显式禁用 overlay
-
-显式切换：
+The unattended mode uses durable jobs with event logs, lease heartbeats, task worktrees, and supervisor recovery.
 
 ```bash
-CPB_CLAUDE_VARIANT=kimi-k2.6 cpb execute my-project 001
-CPB_CLAUDE_VARIANT=mimo-v2.5pro cpb execute my-project 001
+cpb jobs                     # List durable jobs
+cpb jobs reconcile           # Mark stale jobs as failed
+cpb gc                       # Clean stale jobs + orphan leases
 ```
 
-支持的 Kimi/Ollama Cloud 变量名：
+## Requirements
 
-```bash
-OLLAMA_CLOUD_URL=...
-OLLAMA_CLOUD_KEY=...
-OLLAMA_CLOUD_MODEL=kimi-k2.6
-```
+- **Node.js 20+**: runtime for CLI and bridges
+- **Codex ACP adapter**: `codex-acp` or `npx -y @zed-industries/codex-acp`
+- **Claude ACP adapter**: `claude-agent-acp` or `npx -y @agentclientprotocol/claude-agent-acp`
+- **Agent login / API key**: handled by each adapter
 
-兼容别名：`OLLAMA_CLOUD_BASE_URL`、`OLLAMA_CLOUD_API_KEY`、`OLLAMACLOUD_*`、`KIMI_*`、`MOONSHOT_*`。
+## Design Principles
 
-支持的小米变量名：
-
-```bash
-XIAOMI_BASE_URL=...
-XIAOMI_API_KEY=...
-XIAOMI_MODEL=mimo-v2.5pro
-```
-
-兼容别名：`MIMO_BASE_URL`、`MIMO_API_KEY`、`MIMO_MODEL`。
-
-CodePatchbay 会把这些变量映射为 Claude Code 识别的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL`、`ANTHROPIC_CUSTOM_MODEL_OPTION` 以及 `ANTHROPIC_DEFAULT_*_MODEL`。
-
-## 24h 无人值守
-
-CodePatchbay 的无人值守模式基于 durable job、event log、lease heartbeat、task worktree 和 supervisor resume。
-
-```bash
-cpb jobs                     # 查看持久化 job 列表
-cpb jobs reconcile           # 标记过期 job 为 failed
-cpb gc                       # 清理过期 job + 孤儿 lease
-cpb hub status               # 检查 Hub 运行状态
-```
-
-设计说明见 `wiki/system/unattended-supervisor.md`。
-
-## 前置要求
-
-- **Node.js / npx**: 用于运行 CodePatchbay 的 ACP client 和按需启动 adapter
-- **Codex ACP adapter**: `codex-acp` 或 `npx -y @zed-industries/codex-acp`
-- **Claude ACP adapter**: `claude-agent-acp` 或 `npx -y @agentclientprotocol/claude-agent-acp`
-- **Codex / Claude 登录状态或 API key**: 由各自 adapter 处理
-- **tmux** (可选): 用于分屏协作模式
-
-## 设计理念
-
-灵感来自 Hermes 多 Agent 架构：
-
-1. **角色分离** — Codex 只规划不执行，Claude 只执行不审批
-2. **Wiki 防污染** — inbox/outputs 边界隔离未验证和已验证内容
-3. **文件通信** — 不依赖 API，两侧都通过文件系统读写
-4. **复用现有基础设施** — 不建新 agent，通过 ACP adapter 叠加 CodePatchbay 指令
-5. **Codex 无状态** — 每次调用读 Wiki 获取完整上下文，不依赖 session
-
-## 团队 Profile 规划
-
-CodePatchbay 的下一阶段会从 `codex/claude` 双角色升级为 profile 驱动的小型 AI 项目团队：
-
-- PRD: `wiki/system/team-prd.md`
-- 架构: `wiki/system/team-architecture.md`
-
-核心方向：
-
-- `coordinator` 是唯一入口；第一步只做轻量分类、workflow 选择、roles/model variants 选择
-- 分类结果写入 `wiki/projects/{project}/tasks/{task-id}/classification.yaml`
-- 任务分类为 `simple`、`standard`、`complex` 或 `blocked`，并支持失败后自动升级 workflow
-- `researcher`、`planner`、`builder`、`reviewer`、`verifier`、`writer`、`security` 通过 profile 定义职责和边界
-- Claude Code 角色通过临时环境变量选择 `glm5.1`、`kimi-k2.6`、`mimo-v2.5pro` 等模型 variant
-- 写代码任务默认使用 task-level git worktree；非 git 项目默认先 `git init`，再创建受保护 baseline 和任务 worktree
-- ACP 继续作为统一连接层，wiki/state 继续作为共享记忆
+1. **Local-first** - everything runs on your machine; provider adapters keep their own auth.
+2. **Role separation** - Codex plans and verifies, Claude executes.
+3. **Wiki isolation** - inbox/outputs boundaries separate unverified from verified content.
+4. **File-based communication** - both sides read and write inspectable local files.
+5. **ACP reuse** - no custom agent runtime, overlay CPB instructions on existing adapters.
