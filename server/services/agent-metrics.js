@@ -1,12 +1,36 @@
 import * as agentRegistry from "../../core/agents/registry.js";
 import { listJobs } from "./job-store.js";
+import { getWorkflow, roleForPhase } from "../../core/workflow/definition.js";
 
 const TERMINAL_STATES = new Set(["completed", "failed", "blocked", "cancelled"]);
+
+function resolveAgentForJob(j) {
+  if (j.agent && typeof j.agent === "string") {
+    return j.agent;
+  }
+  if (j.executor && typeof j.executor === "string") {
+    return j.executor;
+  }
+  if (j.executor && typeof j.executor === "object" && j.executor.packageName) {
+    return j.executor.packageName;
+  }
+
+  // Use the job's actual last phase for accurate attribution
+  const phases = j.completedPhases || [];
+  const lastPhase = phases.length > 0 ? phases[phases.length - 1] : (j.phase || "execute");
+  try {
+    const wf = getWorkflow(j.workflow || "standard");
+    const role = roleForPhase(wf, lastPhase) || "executor";
+    const agent = agentRegistry.defaultAgentForRole(role);
+    if (agent) return agent;
+  } catch {}
+  return "unknown";
+}
 
 function classifyJobsByAgent(allJobs) {
   const byAgent = new Map();
   for (const j of allJobs) {
-    const agent = j.executor || "unknown";
+    const agent = resolveAgentForJob(j);
     if (!byAgent.has(agent)) byAgent.set(agent, []);
     byAgent.get(agent).push(j);
   }
@@ -127,7 +151,7 @@ export async function getAgentJobs(cpbRoot, agentName, opts = {}) {
   const limit = opts.limit ?? 50;
   const allJobs = await listJobs(cpbRoot).catch(() => []);
   return allJobs
-    .filter((j) => (j.executor || "unknown") === agentName)
+    .filter((j) => resolveAgentForJob(j) === agentName)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, limit)
     .map((j) => ({
@@ -136,7 +160,7 @@ export async function getAgentJobs(cpbRoot, agentName, opts = {}) {
       task: j.task,
       status: j.status,
       phase: j.phase,
-      executor: j.executor,
+      executor: typeof j.executor === "string" ? j.executor : (j.executor?.packageName || "unknown"),
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
       workflow: j.workflow,
