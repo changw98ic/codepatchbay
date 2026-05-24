@@ -36,6 +36,9 @@ jobs:
       - name: Build web UI
         run: npm run build:web
 
+      - name: CI smoke test (cpb setup + demo)
+        run: node scripts/ci-smoke.mjs
+
   lint:
     runs-on: ubuntu-latest
     steps:
