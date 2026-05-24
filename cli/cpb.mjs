@@ -53,6 +53,7 @@ function usage() {
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
   console.log(`  ${CYAN}setup${NC} [--json]                         Detect prerequisites and recommended agents`);
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
+  console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
   console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
   console.log(`  ${CYAN}wiki${NC} [lint|list]                       Wiki operations`);
@@ -106,6 +107,7 @@ const COMMANDS = {
   outputs: "outputs.js",
   setup: "setup.js",
   agents: "agents.js",
+  auth: "auth.js",
   doctor: "doctor.js",
   "health-check": "health-check.js",
   gc: "reconcile.js",

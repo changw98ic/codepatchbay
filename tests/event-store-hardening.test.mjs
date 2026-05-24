@@ -285,4 +285,31 @@ describe("event-store hardening", () => {
     const leaked = events.find((e) => e.type === "phase_completed" && e.artifact === "terraform-output.txt");
     assert.equal(leaked, undefined);
   });
+
+  it("secret input rejection event stores redacted evidence", async () => {
+    const { appendEvent, readEvents } = await import("../server/services/event-store.js");
+    const { makeSecretInputRejectedEvent } = await import("../server/services/secret-policy.js");
+    const project = "secret-input";
+    const jobId = "job-secret-input";
+    const cpbRoot = tmpDir;
+
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "job_created", jobId, project, task: "secret input test", ts: new Date().toISOString(),
+    }, { dataRoot: tmpDir });
+
+    const result = await appendEvent(cpbRoot, project, jobId, makeSecretInputRejectedEvent({
+      source: "cli",
+      input: "cpb auth connect codex OPENAI_API_KEY=sk-test-secret-value",
+    }), { dataRoot: tmpDir });
+
+    assert.equal(result.type, "secret_input_rejected");
+    assert.equal(result.reason, "raw secret input rejected");
+
+    const events = await readEvents(cpbRoot, project, jobId, { dataRoot: tmpDir });
+    const rejected = events.find((event) => event.type === "secret_input_rejected");
+    assert.ok(rejected, "secret_input_rejected event must be persisted");
+    const serialized = JSON.stringify(rejected);
+    assert.match(serialized, /OPENAI_API_KEY=\[REDACTED\]/);
+    assert.doesNotMatch(serialized, /sk-test-secret-value/);
+  });
 });

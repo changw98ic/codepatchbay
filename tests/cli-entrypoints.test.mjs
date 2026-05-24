@@ -128,6 +128,25 @@ test("cpb agents detect --json is routed", async () => {
   assert.ok(parsed.agents.claude);
 });
 
+test("cpb auth status --json is routed", async () => {
+  const result = await runNode(["./cpb", "auth", "status", "--json"]);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  const parsed = JSON.parse(result.stdout);
+  assert.ok(parsed.providers.codex);
+  assert.ok(parsed.providers.claude);
+  assert.ok(parsed.providers.opencode);
+  assert.ok(parsed.providers.github);
+});
+
+test("cpb auth connect codex --json returns local setup instructions", async () => {
+  const result = await runNode(["./cpb", "auth", "connect", "codex", "--json"]);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.provider.id, "codex");
+  assert.equal(parsed.providerNativeCommand, "codex");
+  assert.match(parsed.localSetupUrl, /\/setup\/auth\/codex$/);
+});
+
 test("cpb agents install without --yes prints a non-executed install plan", async () => {
   const result = await runNode(["./cpb", "agents", "install", "codex", "--method", "npm", "--json"]);
   assert.equal(result.code, 0);
@@ -251,7 +270,7 @@ test("all routed CLI command modules import successfully", async () => {
   const moduleFiles = [
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "research",
     "status", "list", "jobs", "evolve-multi", "index", "repair", "diff", "review",
-    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "reconcile", "wiki", "ui",
+    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
   for (const mod of moduleFiles) {
@@ -264,7 +283,7 @@ test("all routed command modules export run()", async () => {
   const moduleFiles = [
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "research",
     "status", "list", "jobs", "evolve-multi", "index", "repair", "diff", "review",
-    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "reconcile", "wiki", "ui",
+    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
   for (const mod of moduleFiles) {
@@ -330,7 +349,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "init.js", "attach.js", "hub.js", "plan.js", "execute.js", "verify.js",
     "pipeline.js", "research.js", "status.js", "list.js", "jobs.js",
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
-    "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "reconcile.js",
+    "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "reconcile.js",
     "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js",
   ]);

@@ -74,12 +74,14 @@ export { RUNTIME_BASICS, PROVIDER_CREDENTIALS, ALLOWED_ENV };
 const SECRET_KEY_PATTERN = /authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook/i;
 const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
+const SECRET_INPUT_GUIDANCE = "Do not paste API keys or tokens into CodePatchBay. Use provider-native login or the local setup URL.";
 
 function redactString(value, key = "") {
   if (typeof key === "string" && SECRET_KEY_PATTERN.test(key)) return "[REDACTED]";
   return String(value)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
-    .replace(/\bsk-[a-zA-Z0-9_-]{20,}/g, "[REDACTED]")
+    .replace(/\bsk-(?:ant-)?[a-zA-Z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, "[REDACTED]")
     .replace(/\bAKIA[0-9A-Z]{16}/g, "[REDACTED]")
     .replace(/\bAIza[0-9A-Za-z_-]{35}/g, "[REDACTED]")
     .replace(/\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+/gi, "$1$2$3[REDACTED]")
@@ -122,6 +124,57 @@ export function redactSecrets(value, key = "") {
   }
 
   return walk(value);
+}
+
+// --- Raw input secret detection ---
+
+const RAW_SECRET_INPUT_PATTERNS = [
+  { name: "credential_assignment", pattern: /\b[A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*\s*[:=]\s*\S+/i },
+  { name: "bearer_token", pattern: /\bBearer\s+[A-Za-z0-9._~+/-]+=*/i },
+  { name: "provider_key", pattern: /\bsk-(?:ant-)?[A-Za-z0-9_-]{8,}\b/i },
+  { name: "github_token", pattern: /\bgh[pousr]_[A-Za-z0-9_]{8,}\b/i },
+  { name: "aws_access_key", pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  { name: "google_api_key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+];
+
+export function detectSecretInput(input) {
+  const text = Array.isArray(input) ? input.join(" ") : String(input ?? "");
+  const match = RAW_SECRET_INPUT_PATTERNS.find(({ pattern }) => pattern.test(text));
+  return {
+    matched: Boolean(match),
+    kind: match ? "raw_secret_input" : null,
+    pattern: match?.name || null,
+    redacted: redactSecrets(text),
+    guidance: SECRET_INPUT_GUIDANCE,
+  };
+}
+
+export function assertNoSecretInput(input) {
+  const detected = detectSecretInput(input);
+  if (detected.matched) {
+    const error = new Error(SECRET_INPUT_GUIDANCE);
+    error.code = "SECRET_INPUT_REJECTED";
+    error.detection = detected;
+    throw error;
+  }
+  return detected;
+}
+
+export function makeSecretInputRejectedEvent({ source, input, reason } = {}) {
+  const detected = detectSecretInput(input);
+  return {
+    type: "secret_input_rejected",
+    messageKey: "secret_input_rejected",
+    source: redactSecrets(source || "unknown"),
+    reason: reason || "raw secret input rejected",
+    evidence: {
+      matched: detected.matched,
+      pattern: detected.pattern,
+      input: detected.redacted,
+    },
+    guidance: detected.guidance,
+    ts: new Date().toISOString(),
+  };
 }
 
 // --- Secret-path detection ---
