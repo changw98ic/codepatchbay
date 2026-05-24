@@ -1,4 +1,5 @@
 import { listJobs } from "./job-store.js";
+import { listProjects, resolveHubRoot } from "./hub-registry.js";
 
 const STATUS_MAP = {
   running: "EXECUTING",
@@ -23,8 +24,25 @@ export function jobToPipelineState(job) {
   };
 }
 
+async function allJobs(cpbRoot) {
+  const results = await listJobs(cpbRoot);
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    if (hubRoot) {
+      const projects = await listProjects(hubRoot);
+      for (const p of projects) {
+        if (p.projectRuntimeRoot) {
+          const hubJobs = await listJobs(cpbRoot, { dataRoot: p.projectRuntimeRoot });
+          results.push(...hubJobs);
+        }
+      }
+    }
+  } catch {}
+  return results;
+}
+
 export async function projectPipelineState(cpbRoot, project) {
-  const jobs = await listJobs(cpbRoot);
+  const jobs = await allJobs(cpbRoot);
   const matching = jobs.filter((j) => j.project === project);
   if (matching.length === 0) return null;
 
@@ -33,7 +51,7 @@ export async function projectPipelineState(cpbRoot, project) {
 }
 
 export async function listProjectPipelineStates(cpbRoot) {
-  const jobs = await listJobs(cpbRoot);
+  const jobs = await allJobs(cpbRoot);
   const byProject = new Map();
   for (const job of jobs) {
     const existing = byProject.get(job.project);

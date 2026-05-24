@@ -197,7 +197,7 @@ if (existsSync(webDist)) {
   });
 }
 
-const watchers = registerWatcher(CPB_ROOT, notifBroadcast);
+const watchers = await registerWatcher(CPB_ROOT, notifBroadcast);
 
 // Start
 try {

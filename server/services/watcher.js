@@ -3,10 +3,31 @@ import fs from 'fs/promises';
 import path from 'path';
 import { projectPipelineState } from './job-projection.js';
 import { readEventsReadOnly, materializeJob } from './event-store.js';
+import { listProjects, resolveHubRoot } from './hub-registry.js';
 
 const TERMINAL_STATES = new Set(['completed', 'failed', 'blocked', 'cancelled']);
 
-export function registerWatcher(cpbRoot, broadcast) {
+function extractEventPath(filePath, legacyEventsDir, hubProjectsDirs) {
+  // Try legacy path first: cpb-task/events/{project}/{jobId}.jsonl
+  const legacyRel = path.relative(legacyEventsDir, filePath);
+  if (!legacyRel.startsWith('..')) {
+    const [projectName, fileName] = legacyRel.split(path.sep);
+    return { projectName, jobId: fileName.replace(/\.jsonl$/, '') };
+  }
+  // Try hub project paths: {runtimeRoot}/events/{project}/{jobId}.jsonl
+  for (const dir of hubProjectsDirs) {
+    const rel = path.relative(dir, filePath);
+    if (!rel.startsWith('..')) {
+      const parts = rel.split(path.sep);
+      if (parts.length >= 2) {
+        return { projectName: parts[0], jobId: parts[1].replace(/\.jsonl$/, '') };
+      }
+    }
+  }
+  return null;
+}
+
+export async function registerWatcher(cpbRoot, broadcast) {
   const projectsDir = path.join(cpbRoot, 'wiki/projects');
 
   // Watch project wiki files
@@ -46,8 +67,27 @@ export function registerWatcher(cpbRoot, broadcast) {
     }
   });
 
+  // Build event watch patterns: legacy + hub project runtime roots
+  const legacyEventsDir = path.join(cpbRoot, 'cpb-task', 'events');
+  const watchPatterns = [path.join(legacyEventsDir, '*', '*.jsonl')];
+  const hubProjectsDirs = [];
+
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    if (hubRoot) {
+      const projects = await listProjects(hubRoot);
+      for (const p of projects) {
+        if (p.projectRuntimeRoot) {
+          const eventsDir = path.join(p.projectRuntimeRoot, 'events', p.id);
+          watchPatterns.push(path.join(eventsDir, '*.jsonl'));
+          hubProjectsDirs.push(path.join(p.projectRuntimeRoot, 'events'));
+        }
+      }
+    }
+  } catch {}
+
   // Watch durable job event logs
-  const eventsWatcher = chokidar.watch(path.join(cpbRoot, 'cpb-task', 'events', '*', '*.jsonl'), {
+  const eventsWatcher = chokidar.watch(watchPatterns, {
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200 },
@@ -55,9 +95,10 @@ export function registerWatcher(cpbRoot, broadcast) {
 
   eventsWatcher.on('all', async (_event, filePath) => {
     try {
-      const rel = path.relative(path.join(cpbRoot, 'cpb-task', 'events'), filePath);
-      const [projectName, fileName] = rel.split(path.sep);
-      const jobId = fileName.replace(/\.jsonl$/, '');
+      const parsed = extractEventPath(filePath, legacyEventsDir, hubProjectsDirs);
+      if (!parsed) return;
+      const { projectName, jobId } = parsed;
+
       broadcast({ type: 'job:update', project: projectName, jobId });
       const state = await projectPipelineState(cpbRoot, projectName);
       broadcast({ type: 'pipeline:update', project: projectName, state });
