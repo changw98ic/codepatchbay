@@ -1,0 +1,38 @@
+{
+  "id": "opencode",
+  "displayName": "OpenCode",
+  "vendor": "Anomaly",
+  "binary": "opencode",
+  "tier": 1,
+  "recommended": true,
+  "roles": ["executor", "reviewer", "fallback"],
+  "capabilities": ["repo_inspect", "file_edit", "shell", "provider_keys"],
+  "sourceUrl": "https://opencode.ai/docs/",
+  "install": {
+    "script": {
+      "label": "install script",
+      "command": "curl -fsSL https://opencode.ai/install | bash",
+      "sourceUrl": "https://opencode.ai/docs/",
+      "notes": ["Shows a fetched installer command; require local confirmation before executing."]
+    },
+    "npm": {
+      "label": "npm",
+      "command": "npm install -g opencode-ai",
+      "sourceUrl": "https://opencode.ai/docs/"
+    },
+    "brew": {
+      "label": "Homebrew",
+      "command": "brew install anomalyco/tap/opencode",
+      "sourceUrl": "https://opencode.ai/docs/"
+    }
+  },
+  "auth": {
+    "methods": ["provider_api_key", "connect"],
+    "connectCommand": "opencode auth login",
+    "statusCommand": "opencode auth list"
+  },
+  "adapter": {
+    "protocol": "cli",
+    "command": "opencode"
+  }
+}

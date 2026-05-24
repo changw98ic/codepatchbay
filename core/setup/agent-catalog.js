@@ -1,157 +1,79 @@
-import { assertValidSetupAgentCatalog } from "./manifest-schema.js";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { assertValidSetupAgentCatalog, validateSetupAgentManifest } from "./manifest-schema.js";
 
-const SETUP_AGENTS = [
-  {
-    id: "codex",
-    displayName: "OpenAI Codex CLI",
-    vendor: "OpenAI",
-    binary: "codex",
-    tier: 1,
-    recommended: true,
-    roles: ["planner", "verifier", "executor"],
-    capabilities: ["repo_inspect", "file_edit", "shell", "verify", "pr_review"],
-    sourceUrl: "https://github.com/openai/codex/blob/main/codex-rs/README.md",
-    install: {
-      npm: {
-        label: "npm",
-        command: "npm i -g @openai/codex",
-        sourceUrl: "https://github.com/openai/codex/blob/main/codex-rs/README.md",
-      },
-      brew: {
-        label: "Homebrew",
-        command: "brew install --cask codex",
-        sourceUrl: "https://github.com/openai/codex/blob/main/codex-rs/README.md",
-      },
-    },
-    auth: {
-      methods: ["chatgpt", "api_key"],
-      connectCommand: "codex",
-      statusCommand: "codex auth status",
-    },
-    adapter: {
-      protocol: "acp",
-      command: "codex-acp",
-    },
-  },
-  {
-    id: "claude",
-    displayName: "Claude Code",
-    vendor: "Anthropic",
-    binary: "claude",
-    tier: 1,
-    recommended: true,
-    roles: ["executor", "repairer"],
-    capabilities: ["repo_inspect", "file_edit", "shell", "large_context"],
-    sourceUrl: "https://code.claude.com/docs/en/installation",
-    install: {
-      native: {
-        label: "native installer",
-        command: "curl -fsSL https://claude.ai/install.sh | bash",
-        sourceUrl: "https://code.claude.com/docs/en/quickstart",
-        notes: ["Shows a fetched installer command; require local confirmation before executing."],
-      },
-      brew: {
-        label: "Homebrew",
-        command: "brew install --cask claude-code",
-        sourceUrl: "https://code.claude.com/docs/en/quickstart",
-      },
-      npm: {
-        label: "npm",
-        command: "npm install -g @anthropic-ai/claude-code",
-        sourceUrl: "https://support.claude.com/en/articles/14552382-your-first-day-in-claude-code",
-        notes: ["Do not use sudo with global npm installs."],
-      },
-    },
-    auth: {
-      methods: ["browser_login", "console", "bedrock", "vertex"],
-      connectCommand: "claude",
-      statusCommand: "claude doctor",
-    },
-    adapter: {
-      protocol: "acp",
-      command: "claude-agent-acp",
-    },
-  },
-  {
-    id: "opencode",
-    displayName: "OpenCode",
-    vendor: "Anomaly",
-    binary: "opencode",
-    tier: 1,
-    recommended: true,
-    roles: ["executor", "reviewer", "fallback"],
-    capabilities: ["repo_inspect", "file_edit", "shell", "provider_keys"],
-    sourceUrl: "https://opencode.ai/docs/",
-    install: {
-      script: {
-        label: "install script",
-        command: "curl -fsSL https://opencode.ai/install | bash",
-        sourceUrl: "https://opencode.ai/docs/",
-        notes: ["Shows a fetched installer command; require local confirmation before executing."],
-      },
-      npm: {
-        label: "npm",
-        command: "npm install -g opencode-ai",
-        sourceUrl: "https://opencode.ai/docs/",
-      },
-      brew: {
-        label: "Homebrew",
-        command: "brew install anomalyco/tap/opencode",
-        sourceUrl: "https://opencode.ai/docs/",
-      },
-    },
-    auth: {
-      methods: ["provider_api_key", "connect"],
-      connectCommand: "opencode auth login",
-      statusCommand: "opencode auth list",
-    },
-    adapter: {
-      protocol: "cli",
-      command: "opencode",
-    },
-  },
-  {
-    id: "cursor",
-    displayName: "Cursor Agent",
-    vendor: "Anysphere",
-    binary: "cursor-agent",
-    tier: 2,
-    recommended: false,
-    roles: ["executor"],
-    capabilities: ["repo_inspect", "file_edit", "shell", "automation"],
-    sourceUrl: "https://docs.cursor.com/en/cli/installation",
-    install: {
-      script: {
-        label: "install script",
-        command: "curl https://cursor.com/install -fsS | bash",
-        sourceUrl: "https://docs.cursor.com/en/cli/installation",
-        notes: ["Shows a fetched installer command; require local confirmation before executing."],
-      },
-    },
-    auth: {
-      methods: ["browser_login"],
-      connectCommand: "cursor-agent",
-      statusCommand: "cursor-agent --version",
-    },
-    adapter: {
-      protocol: "cli",
-      command: "cursor-agent",
-    },
-  },
-];
+const BUILTIN_MANIFEST_DIR = path.join(import.meta.dirname, "manifests");
+const BUILTIN_ORDER = new Map([
+  ["codex", 10],
+  ["claude", 20],
+  ["opencode", 30],
+  ["cursor", 40],
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function orderFor(agent) {
+  return BUILTIN_ORDER.get(agent.id) ?? 1000;
+}
+
+function sortCatalog(agents) {
+  return [...agents].sort((a, b) => {
+    const byOrder = orderFor(a) - orderFor(b);
+    return byOrder || a.id.localeCompare(b.id);
+  });
+}
+
+function failOrSkip(error, strict) {
+  if (strict) throw error;
+  return null;
+}
+
+export function loadSetupAgentCatalog({ manifestDir = BUILTIN_MANIFEST_DIR, strict = false } = {}) {
+  let files;
+  try {
+    files = readdirSync(manifestDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT" && !strict) return [];
+    throw error;
+  }
+
+  const agents = [];
+  for (const entry of files) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const file = path.join(manifestDir, entry.name);
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(file, "utf8"));
+    } catch (error) {
+      failOrSkip(new Error(`Invalid setup agent manifest JSON ${entry.name}: ${error.message}`), strict);
+      continue;
+    }
+
+    const validation = validateSetupAgentManifest(manifest);
+    if (!validation.valid) {
+      failOrSkip(
+        new Error(`Invalid setup agent manifest ${entry.name}: ${validation.errors.join("; ")}`),
+        strict,
+      );
+      continue;
+    }
+    agents.push(manifest);
+  }
+
+  return clone(sortCatalog(agents));
+}
+
 export function listSetupAgents({ includeOptional = true } = {}) {
-  assertValidSetupAgentCatalog(SETUP_AGENTS);
-  const agents = includeOptional ? SETUP_AGENTS : SETUP_AGENTS.filter((agent) => agent.recommended);
-  return clone(agents);
+  const agents = loadSetupAgentCatalog({ strict: true });
+  assertValidSetupAgentCatalog(agents);
+  return includeOptional ? agents : agents.filter((agent) => agent.recommended);
 }
 
 export function getSetupAgent(id) {
-  assertValidSetupAgentCatalog(SETUP_AGENTS);
-  const agent = SETUP_AGENTS.find((entry) => entry.id === id);
+  const agents = loadSetupAgentCatalog({ strict: true });
+  assertValidSetupAgentCatalog(agents);
+  const agent = agents.find((entry) => entry.id === id);
   return agent ? clone(agent) : null;
 }
