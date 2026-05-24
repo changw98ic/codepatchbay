@@ -9,6 +9,49 @@ function parseSimpleCommand(command) {
   };
 }
 
+function packageNameFromNpm(command) {
+  const parts = command.trim().split(/\s+/);
+  return parts[parts.length - 1] || null;
+}
+
+function brewPackageFromCommand(command) {
+  const parts = command.trim().split(/\s+/);
+  return parts[parts.length - 1] || null;
+}
+
+function rollbackFor(method, install) {
+  if (method === "npm") {
+    const pkg = packageNameFromNpm(install.command);
+    return {
+      command: pkg ? `npm uninstall -g ${pkg}` : null,
+      notes: pkg ? [] : ["Package name could not be inferred; use vendor uninstall guidance."],
+    };
+  }
+  if (method === "brew") {
+    const pkg = brewPackageFromCommand(install.command);
+    const cask = install.command.includes("--cask");
+    return {
+      command: pkg ? `brew uninstall ${cask ? "--cask " : ""}${pkg}` : null,
+      notes: pkg ? [] : ["Formula name could not be inferred; use vendor uninstall guidance."],
+    };
+  }
+  return {
+    command: null,
+    notes: ["Use vendor uninstall guidance for fetched installer rollback."],
+  };
+}
+
+function supplyChainNotesFor({ shell, install }) {
+  const notes = ["Review the source URL before executing this plan."];
+  if (shell) {
+    notes.push("Fetched installer commands require extra supply-chain review before execution.");
+  }
+  for (const note of install.notes || []) {
+    if (!notes.includes(note)) notes.push(note);
+  }
+  return notes;
+}
+
 function pickMethod(agent, detected) {
   if (agent.install.brew && detected?.tools?.brew?.installed) return "brew";
   if (agent.install.npm && detected?.tools?.npm?.installed) return "npm";
@@ -46,6 +89,8 @@ export function createInstallPlan({ agentId, method, detected } = {}) {
     displayCommand: install.command,
     sourceUrl: install.sourceUrl || agent.sourceUrl,
     notes: install.notes || [],
+    rollback: rollbackFor(selectedMethod, install),
+    supplyChainNotes: supplyChainNotesFor({ shell, install }),
     requiresExplicitConfirmation: true,
     shell,
   };

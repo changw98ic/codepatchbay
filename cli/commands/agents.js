@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
-import { createInstallPlan, executeInstallPlan } from "../../core/setup/install-plan.js";
+import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
+import { createInstallPlan } from "../../core/setup/install-plan.js";
+import { runInstallPlanWithEvents } from "../../server/services/setup-events.js";
 
 function usage() {
   return [
@@ -66,7 +68,7 @@ export async function run(args = []) {
     const result = { executed: false, plan };
 
     if (shouldExecute) {
-      result.installResult = await executeInstallPlan(plan);
+      result.installResult = await runInstallPlanWithEvents(plan, { cpbRoot: process.env.CPB_ROOT });
       result.executed = true;
     }
 
@@ -85,19 +87,13 @@ export async function run(args = []) {
       console.error(usage());
       return 1;
     }
-    const snapshot = await detectSetupEnvironment();
-    const result = snapshot.agents[agentId];
-    if (!result) {
-      console.error(`Unknown agent: ${agentId}`);
-      return 1;
-    }
+    const result = await checkSetupAgentHealth(agentId);
     if (args.includes("--json")) {
-      console.log(JSON.stringify({ agent: result }, null, 2));
+      console.log(JSON.stringify(result, null, 2));
     } else {
-      const version = result.version ? ` (${result.version})` : "";
-      console.log(`${agentId}: ${result.installed ? "installed" : "missing"}${version}`);
+      console.log(`${agentId}: ${result.status}`);
     }
-    return result.installed ? 0 : 1;
+    return result.status === "ready" ? 0 : 1;
   }
 
   console.error(usage());

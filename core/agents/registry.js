@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
+import { getSetupAgent } from "../setup/agent-catalog.js";
 
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
 const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
@@ -130,6 +131,27 @@ export function getDescriptor(name) {
 export function listDiscoveredAgents() {
   ensureLoaded();
   return [..._discovered.values()];
+}
+
+export function getSetupMetadata(name) {
+  ensureLoaded();
+  if (!hasAgent(name)) return null;
+  const setup = getSetupAgent(name);
+  if (!setup) return null;
+  return {
+    id: setup.id,
+    displayName: setup.displayName,
+    vendor: setup.vendor || null,
+    binary: setup.binary,
+    tier: setup.tier,
+    recommended: setup.recommended,
+    roles: setup.roles || [],
+    capabilities: setup.capabilities || [],
+    installMethods: Object.keys(setup.install || {}),
+    sourceUrl: setup.sourceUrl,
+    auth: setup.auth || null,
+    adapter: setup.adapter || null,
+  };
 }
 
 /**

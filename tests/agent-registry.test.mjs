@@ -34,6 +34,21 @@ describe("agent registry", () => {
     assert.ok(claude.defaultRoles.includes("repairer"));
   });
 
+  it("exposes setup metadata for known runtime agents without changing ACP descriptors", async () => {
+    const { loadRegistry, getDescriptor, getSetupMetadata } = await import("../core/agents/registry.js");
+    await loadRegistry();
+
+    const codexDescriptor = getDescriptor("codex");
+    const codexSetup = getSetupMetadata("codex");
+
+    assert.equal(codexDescriptor.command, "codex-acp");
+    assert.equal(codexSetup.id, "codex");
+    assert.equal(codexSetup.binary, "codex");
+    assert.deepEqual(codexSetup.installMethods, ["npm", "brew"]);
+    assert.ok(codexSetup.roles.includes("planner"));
+    assert.equal(getSetupMetadata("nonexistent"), null);
+  });
+
   it("loads user descriptors from config dir", async () => {
     const configDir = path.join(tmpDir, "agents");
     await mkdir(configDir, { recursive: true });

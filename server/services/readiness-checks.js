@@ -30,6 +30,8 @@ import {
 } from "./release-store.js";
 import { executorMetadata } from "./executor-root.js";
 import * as agentRegistry from "../../core/agents/registry.js";
+import { listSetupAgents } from "../../core/setup/agent-catalog.js";
+import { detectSetupEnvironment } from "../../core/setup/detect.js";
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -251,6 +253,44 @@ async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability }
     ? `${adapterName} adapter available (v${version})`
     : `${adapterName} adapter available`;
   return ok(id, "acp", msg, { details: version ? { version } : undefined });
+}
+
+function preferredInstallMethod(agent, setupSnapshot) {
+  const methods = Object.keys(agent.install || {});
+  if (methods.includes("brew") && setupSnapshot?.tools?.brew?.installed) return "brew";
+  if (methods.includes("npm") && setupSnapshot?.tools?.npm?.installed) return "npm";
+  return methods[0] || "manual";
+}
+
+export function buildSetupReadinessChecks(setupSnapshot = {}, catalog = []) {
+  const checks = [];
+  for (const agent of catalog) {
+    const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
+    if (probe.installed) {
+      checks.push(ok(`setup-agent-${agent.id}`, "setup", `${agent.displayName} installed`, {
+        details: {
+          agentId: agent.id,
+          binary: agent.binary,
+          version: probe.version || null,
+          status: probe.status || "installed",
+        },
+      }));
+      continue;
+    }
+
+    const method = preferredInstallMethod(agent, setupSnapshot);
+    checks.push(warn(`setup-agent-${agent.id}`, "setup", `${agent.displayName} not installed`, {
+      details: {
+        agentId: agent.id,
+        binary: agent.binary,
+        recommended: Boolean(agent.recommended),
+        status: probe.status || "missing",
+        error: probe.error || null,
+      },
+      remediation: `Run: cpb agents install ${agent.id} --method ${method}`,
+    }));
+  }
+  return checks;
 }
 
 async function checkHubLiveness(hubRoot) {
@@ -496,6 +536,15 @@ async function checkServerDeps(cpbRoot) {
 export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
+  let setup = null;
+  let setupChecks = [];
+  try {
+    setup = await detectSetupEnvironment();
+    setupChecks = buildSetupReadinessChecks(setup, listSetupAgents());
+  } catch (e) {
+    setup = { schemaVersion: 1, error: e.message };
+    setupChecks = [warn("setup-readiness", "setup", `Setup readiness unavailable: ${e.message}`)];
+  }
 
   // Resolve adapter checks from registry
   let adapterChecks = [];
@@ -544,7 +593,8 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkHubProjectPollution(resolvedHubRoot),
   ]);
 
-  const summary = deriveSummary(results);
+  const checks = [...results, ...setupChecks];
+  const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots
   let projectRuntimeRoots = {};
@@ -565,8 +615,9 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
       hubRoot: resolvedHubRoot,
       projectRuntimeRoots,
     },
+    setup,
     summary,
-    checks: results,
+    checks,
   };
 }
 
@@ -816,10 +867,11 @@ export function formatReleaseDoctorJson(result) {
 
 // --- Output formatters ---
 
-const CATEGORY_ORDER = ["toolchain", "disk", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
+const CATEGORY_ORDER = ["toolchain", "disk", "setup", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
 const CATEGORY_LABELS = {
   toolchain: "Toolchain",
   disk: "Disk",
+  setup: "Setup",
   acp: "ACP Adapters",
   hub: "Hub",
   registry: "Registry",

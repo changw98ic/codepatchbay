@@ -136,6 +136,8 @@ test("cpb agents install without --yes prints a non-executed install plan", asyn
   assert.equal(parsed.plan.agent.id, "codex");
   assert.equal(parsed.plan.displayCommand, "npm i -g @openai/codex");
   assert.equal(parsed.plan.requiresExplicitConfirmation, true);
+  assert.equal(parsed.plan.rollback.command, "npm uninstall -g @openai/codex");
+  assert.ok(parsed.plan.supplyChainNotes.includes("Review the source URL before executing this plan."));
 });
 
 // --- Newly routed commands ---

@@ -3,6 +3,7 @@ import os from "node:os";
 import { promisify } from "node:util";
 import { listSetupAgents } from "./agent-catalog.js";
 
+const SCHEMA_VERSION = 1;
 const execFileAsync = promisify(execFile);
 
 async function defaultRunCommand(command, args = []) {
@@ -26,12 +27,44 @@ function firstLine(text) {
   return String(text || "").trim().split(/\r?\n/)[0] || null;
 }
 
-function normalizeProbe(result) {
+function errorKind(error) {
+  if (!error) return "unavailable";
+  if (error.code === "ENOENT") return "missing";
+  if (error.code === "ETIMEDOUT" || error.timedOut || error.killed) return "timeout";
+  return "error";
+}
+
+function normalizeError(error) {
+  if (!error) return { kind: "unavailable", code: null, message: "unavailable", signal: null };
   return {
-    installed: Boolean(result?.ok),
-    version: result?.ok ? firstLine(result.stdout || result.stderr) : null,
-    error: result?.ok ? null : (result?.error?.code || result?.error?.message || "unavailable"),
+    kind: errorKind(error),
+    code: error.code || null,
+    message: error.message || String(error),
+    signal: error.signal || null,
   };
+}
+
+export function normalizeCommandProbe(result) {
+  if (result?.ok) {
+    return {
+      installed: true,
+      status: "installed",
+      version: firstLine(result.stdout || result.stderr),
+      error: null,
+    };
+  }
+
+  const error = normalizeError(result?.error);
+  return {
+    installed: false,
+    status: error.kind,
+    version: null,
+    error,
+  };
+}
+
+function normalizeProbe(result) {
+  return normalizeCommandProbe(result);
 }
 
 async function probeTool(name, args, runCommand) {
@@ -73,6 +106,7 @@ export async function detectSetupEnvironment({
   }
 
   return {
+    schemaVersion: SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     system: {
       platform,

@@ -1,3 +1,5 @@
+import { assertValidSetupAgentCatalog } from "./manifest-schema.js";
+
 const SETUP_AGENTS = [
   {
     id: "codex",
@@ -143,11 +145,13 @@ function clone(value) {
 }
 
 export function listSetupAgents({ includeOptional = true } = {}) {
+  assertValidSetupAgentCatalog(SETUP_AGENTS);
   const agents = includeOptional ? SETUP_AGENTS : SETUP_AGENTS.filter((agent) => agent.recommended);
   return clone(agents);
 }
 
 export function getSetupAgent(id) {
+  assertValidSetupAgentCatalog(SETUP_AGENTS);
   const agent = SETUP_AGENTS.find((entry) => entry.id === id);
   return agent ? clone(agent) : null;
 }
