@@ -446,6 +446,13 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     report.indexRebuilt = true;
   }
 
+  // 6. Clean up test/fixture pollution and orphan runtime dirs
+  if (!dryRun) {
+    try {
+      report.pollution = await cleanupPollution(cpbRoot);
+    } catch {}
+  }
+
   return report;
 }
 

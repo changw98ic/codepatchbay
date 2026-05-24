@@ -63,6 +63,14 @@ export async function run(args, { cpbRoot }) {
     console.log("\nJobs index rebuilt.");
   }
 
+  if (report.pollution) {
+    const p = report.pollution;
+    console.log(`\nPollution cleanup: ${p.projectsRemoved} project(s) removed, ${p.orphanDirsRemoved} orphan dir(s) removed`);
+    if (p.unsafeProjectsSkipped?.length > 0) {
+      console.log(`  Skipped ${p.unsafeProjectsSkipped.length} unsafe target(s)`);
+    }
+  }
+
   if (report.streamErrors.length > 0) {
     process.exitCode = 1;
   }
