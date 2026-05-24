@@ -1,5 +1,6 @@
 import { createPublicKey, verify } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -70,4 +71,17 @@ export function parseDiscordInteraction(payload = {}) {
     interactionId: payload.id || null,
     tokenPresent: Boolean(payload.token),
   };
+}
+
+export async function authorizeDiscordInteraction(cpbRoot, policy, parsed) {
+  if (!policy || parsed?.type === "ping") return { allowed: true, reason: "channel policy not configured" };
+  const command = parsed?.command;
+  const request = channelPolicyRequest({
+    channel: "discord",
+    action: command?.type || null,
+    project: command?.project || null,
+    job: command?.job || null,
+    actor: parsed?.actor,
+  });
+  return enforceChannelPolicy(cpbRoot, policy, request);
 }

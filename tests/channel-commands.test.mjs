@@ -20,6 +20,9 @@ import {
   parseDiscordInteraction,
   verifyDiscordSignature,
 } from "../server/services/channel-discord.js";
+import {
+  readChannelPolicyEvents,
+} from "../server/services/channel-policy.js";
 
 const DISCORD_VECTOR = {
   publicKey: "3e9ec34321874728d02aa46b151aa62c6f4aa179202b1b2e4e09830b1acdca70",
@@ -545,6 +548,218 @@ describe("Discord channel command skeleton", () => {
       assert.equal(body.parsed.command.type, "run");
       assert.doesNotMatch(response.body, /discord-token-secret/);
       assert.deepEqual(await readdir(cpbRoot), []);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("channel permission policy", () => {
+  const statusOnlyPolicy = {
+    default: "deny",
+    rules: [
+      {
+        effect: "allow",
+        channel: "slack",
+        project: "frontend",
+        channelId: "C123",
+        userId: "U123",
+        actions: ["status"],
+      },
+    ],
+  };
+
+  it("denies unauthorized Slack run commands and audit logs the decision", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-policy-run-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+      channelPolicy: statusOnlyPolicy,
+    });
+    try {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = slackBody({
+        command: "/cpb",
+        text: 'run frontend "fix login redirect"',
+        user_id: "U123",
+        channel_id: "C123",
+        team_id: "T123",
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 403);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, false);
+      assert.equal(body.code, "CHANNEL_POLICY_DENIED");
+      assert.match(body.reason, /not allowed/i);
+
+      const audit = await readChannelPolicyEvents(cpbRoot);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0].allowed, false);
+      assert.equal(audit[0].request.action, "run");
+      assert.equal(audit[0].request.project, "frontend");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows read-only Slack status while denying approve and cancel actions", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-policy-status-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+      channelPolicy: statusOnlyPolicy,
+    });
+    try {
+      const statusJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Status job",
+        workflow: "standard",
+        jobId: "job-policy-status",
+      });
+      const approveJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Approve job",
+        workflow: "standard",
+        jobId: "job-policy-approve",
+      });
+      const cancelJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Cancel job",
+        workflow: "standard",
+        jobId: "job-policy-cancel",
+      });
+
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const statusBody = slackBody({
+        command: "/cpb",
+        text: `status ${statusJob.jobId}`,
+        user_id: "U123",
+        channel_id: "C123",
+        team_id: "T123",
+      });
+      const approveBody = slackBody({
+        payload: JSON.stringify({
+          type: "block_actions",
+          user: { id: "U123", username: "alice" },
+          team: { id: "T123" },
+          channel: { id: "C123" },
+          actions: [{ action_id: "cpb:approve", value: approveJob.jobId }],
+        }),
+      });
+      const cancelBody = slackBody({
+        payload: JSON.stringify({
+          type: "block_actions",
+          user: { id: "U123", username: "alice" },
+          team: { id: "T123" },
+          channel: { id: "C123" },
+          actions: [{ action_id: "cpb:cancel", value: cancelJob.jobId }],
+        }),
+      });
+
+      const status = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, statusBody),
+        },
+        payload: statusBody,
+      });
+      const approve = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/actions",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, approveBody),
+        },
+        payload: approveBody,
+      });
+      const cancel = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/actions",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, cancelBody),
+        },
+        payload: cancelBody,
+      });
+
+      assert.equal(status.statusCode, 200);
+      assert.equal(JSON.parse(status.body).status.jobId, statusJob.jobId);
+      assert.equal(approve.statusCode, 403);
+      assert.equal(JSON.parse(approve.body).code, "CHANNEL_POLICY_DENIED");
+      assert.equal(cancel.statusCode, 403);
+      assert.equal(JSON.parse(cancel.body).code, "CHANNEL_POLICY_DENIED");
+      assert.equal((await getJob(cpbRoot, "frontend", cancelJob.jobId)).status, "running");
+
+      const audit = await readChannelPolicyEvents(cpbRoot);
+      assert.deepEqual(audit.map((event) => [event.request.action, event.allowed]), [
+        ["status", true],
+        ["approve", false],
+        ["cancel", false],
+      ]);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("denies unauthorized Discord run interactions and audit logs the decision", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-policy-discord-"));
+    const app = await buildChannelApp(cpbRoot, {
+      discordPublicKey: DISCORD_VECTOR.publicKey,
+      discordDryRun: true,
+      channelPolicy: {
+        default: "deny",
+        rules: [
+          {
+            effect: "allow",
+            channel: "discord",
+            project: "frontend",
+            channelId: "C123",
+            userId: "U123",
+            actions: ["status"],
+          },
+        ],
+      },
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/discord/interactions",
+        headers: {
+          "content-type": "application/json",
+          "x-signature-ed25519": DISCORD_VECTOR.signature,
+          "x-signature-timestamp": DISCORD_VECTOR.timestamp,
+        },
+        payload: DISCORD_VECTOR.body,
+      });
+
+      assert.equal(response.statusCode, 403);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, false);
+      assert.equal(body.code, "CHANNEL_POLICY_DENIED");
+      assert.match(body.reason, /not allowed/i);
+
+      const audit = await readChannelPolicyEvents(cpbRoot);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0].allowed, false);
+      assert.equal(audit[0].request.channel, "discord");
+      assert.equal(audit[0].request.action, "run");
+      assert.equal(audit[0].request.project, "frontend");
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

@@ -6,6 +6,7 @@ import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import {
+  authorizeDiscordInteraction,
   parseDiscordInteraction,
   verifyDiscordSignature,
 } from "../services/channel-discord.js";
@@ -215,8 +216,9 @@ export async function channelRoutes(fastify, opts) {
       };
     }
 
-    const result = await handleSlackSlashCommand(req.cpbRoot, parsed);
-    return reply.code(result.ok ? 200 : 400).send(result);
+    const policy = opts.channelPolicy || null;
+    const result = await handleSlackSlashCommand(req.cpbRoot, parsed, { policy });
+    return reply.code(result.statusCode || (result.ok ? 200 : 400)).send(result);
   });
 
   fastify.post("/channels/slack/actions", async (req, reply) => {
@@ -239,8 +241,9 @@ export async function channelRoutes(fastify, opts) {
     }
 
     const parsed = parseSlackInteractiveAction(payload);
-    const result = await handleSlackInteractiveAction(req.cpbRoot, parsed);
-    return reply.code(result.ok ? 200 : 400).send(result);
+    const policy = opts.channelPolicy || null;
+    const result = await handleSlackInteractiveAction(req.cpbRoot, parsed, { policy });
+    return reply.code(result.statusCode || (result.ok ? 200 : 400)).send(result);
   });
 
   fastify.post("/channels/discord/interactions", async (req, reply) => {
@@ -258,6 +261,16 @@ export async function channelRoutes(fastify, opts) {
     if (req.body?.type === 1) return { type: 1 };
 
     const parsed = parseDiscordInteraction(req.body || {});
+    const policy = opts.channelPolicy || null;
+    const authorization = await authorizeDiscordInteraction(req.cpbRoot, policy, parsed);
+    if (!authorization.allowed) {
+      return reply.code(403).send({
+        ok: false,
+        code: "CHANNEL_POLICY_DENIED",
+        reason: authorization.reason,
+      });
+    }
+
     const dryRun = opts.discordDryRun === true || req.query?.dryRun === "1" || req.query?.dry_run === "1";
     if (dryRun) {
       return {

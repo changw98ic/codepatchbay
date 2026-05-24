@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
 import { createChannelQueueJob } from "./event-source.js";
 import { cancelJob, listJobsAcrossRuntimeRoots, retryJob } from "./job-store.js";
 import { jobToQueueRow } from "./job-projection.js";
@@ -150,7 +151,27 @@ async function findJobById(cpbRoot, jobId) {
   return jobs.find((job) => job.jobId === jobId) || null;
 }
 
-export async function handleSlackSlashCommand(cpbRoot, parsed) {
+function policyDenied(decision) {
+  return {
+    ok: false,
+    code: "CHANNEL_POLICY_DENIED",
+    statusCode: 403,
+    reason: decision.reason,
+  };
+}
+
+async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project = null, job = null } = {}) {
+  if (!policy) return { allowed: true, reason: "channel policy not configured" };
+  return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
+    channel: "slack",
+    action,
+    project,
+    job,
+    actor: parsed.actor,
+  }));
+}
+
+export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null } = {}) {
   const command = parsed?.command;
   if (!parsed?.ok || !command?.ok) {
     return {
@@ -163,6 +184,19 @@ export async function handleSlackSlashCommand(cpbRoot, parsed) {
   }
 
   if (command.type === "run") {
+    const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
+      action: "run",
+      project: command.project,
+    });
+    if (!decision.allowed) {
+      return {
+        ...policyDenied(decision),
+        channel: "slack",
+        action: "run",
+        parsed,
+      };
+    }
+
     const result = await createChannelQueueJob(cpbRoot, command, {
       channel: "slack",
       actor: parsed.actor.userId,
@@ -195,6 +229,20 @@ export async function handleSlackSlashCommand(cpbRoot, parsed) {
         error: `job not found: ${command.job}`,
       };
     }
+    const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
+      action: "status",
+      project: job.project,
+      job: job.jobId,
+    });
+    if (!decision.allowed) {
+      return {
+        ...policyDenied(decision),
+        channel: "slack",
+        action: "status",
+        parsed,
+      };
+    }
+
     return {
       ok: true,
       channel: "slack",
@@ -214,7 +262,7 @@ export async function handleSlackSlashCommand(cpbRoot, parsed) {
   };
 }
 
-export async function handleSlackInteractiveAction(cpbRoot, parsed) {
+export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null } = {}) {
   if (!parsed?.ok || !parsed.action?.type || !parsed.action?.job) {
     return {
       ok: false,
@@ -233,6 +281,20 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed) {
       action: parsed.action.type,
       parsed,
       error: `job not found: ${parsed.action.job}`,
+    };
+  }
+
+  const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
+    action: parsed.action.type,
+    project: job.project,
+    job: job.jobId,
+  });
+  if (!decision.allowed) {
+    return {
+      ...policyDenied(decision),
+      channel: "slack",
+      action: parsed.action.type,
+      parsed,
     };
   }
 
