@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -230,5 +230,69 @@ describe("job-recovery hardening", () => {
     const job = await getJob(tmpDir, "recovery-test", "job-isrec-fail-001");
 
     assert.equal(isRecoverable(job), true);
+  });
+
+  it("plans worktree retention with completed cleanup policy and failed/blocked preservation", async () => {
+    const { createJob, completeJob, failJob, blockJob, recordWorktreeCreated } = await import("../server/services/job-store.js");
+    const { buildWorktreeRetentionPlan } = await import("../server/services/worktree-retention.js");
+    const worktreesRoot = path.join(tmpDir, "retention-worktrees");
+    const completedPath = path.join(worktreesRoot, "job-retain-completed-pipeline");
+    const failedPath = path.join(worktreesRoot, "job-retain-failed-pipeline");
+    const blockedPath = path.join(worktreesRoot, "job-retain-blocked-pipeline");
+
+    await mkdir(completedPath, { recursive: true });
+    await mkdir(failedPath, { recursive: true });
+    await mkdir(blockedPath, { recursive: true });
+
+    await createJob(tmpDir, { project: "recovery-test", task: "completed worktree", jobId: "job-retain-completed" });
+    await recordWorktreeCreated(tmpDir, "recovery-test", "job-retain-completed", {
+      worktree: completedPath,
+      branch: "cpb/job-retain-completed-pipeline",
+      baseBranch: "main",
+    });
+    await completeJob(tmpDir, "recovery-test", "job-retain-completed");
+
+    await createJob(tmpDir, { project: "recovery-test", task: "failed worktree", jobId: "job-retain-failed" });
+    await recordWorktreeCreated(tmpDir, "recovery-test", "job-retain-failed", {
+      worktree: failedPath,
+      branch: "cpb/job-retain-failed-pipeline",
+      baseBranch: "main",
+    });
+    await failJob(tmpDir, "recovery-test", "job-retain-failed", { reason: "verify failed", code: "RECOVERABLE" });
+
+    await createJob(tmpDir, { project: "recovery-test", task: "blocked worktree", jobId: "job-retain-blocked" });
+    await recordWorktreeCreated(tmpDir, "recovery-test", "job-retain-blocked", {
+      worktree: blockedPath,
+      branch: "cpb/job-retain-blocked-pipeline",
+      baseBranch: "main",
+    });
+    await blockJob(tmpDir, "recovery-test", "job-retain-blocked", { reason: "approval required" });
+
+    const deletePlan = await buildWorktreeRetentionPlan(tmpDir, {
+      policy: { completed: "delete" },
+      dryRun: true,
+    });
+
+    const completed = deletePlan.entries.find((entry) => entry.jobId === "job-retain-completed");
+    const failed = deletePlan.entries.find((entry) => entry.jobId === "job-retain-failed");
+    const blocked = deletePlan.entries.find((entry) => entry.jobId === "job-retain-blocked");
+
+    assert.equal(deletePlan.dryRun, true);
+    assert.equal(completed.action, "delete");
+    assert.equal(completed.worktree, completedPath);
+    assert.match(completed.reason, /completed.*policy/i);
+    assert.equal(failed.action, "preserve");
+    assert.match(failed.reason, /failed.*inspection/i);
+    assert.equal(blocked.action, "preserve");
+    assert.match(blocked.reason, /blocked.*inspection/i);
+
+    const archivePlan = await buildWorktreeRetentionPlan(tmpDir, {
+      policy: { completed: "archive", archiveRoot: path.join(tmpDir, "retention-archive") },
+      dryRun: true,
+    });
+    const archived = archivePlan.entries.find((entry) => entry.jobId === "job-retain-completed");
+    assert.equal(archived.action, "archive");
+    assert.equal(archived.worktree, completedPath);
+    assert.equal(archived.archivePath, path.join(tmpDir, "retention-archive", "job-retain-completed-pipeline"));
   });
 });

@@ -74,6 +74,122 @@ export function classifyVerdict(verdict) {
   return "inconclusive";
 }
 
+function oneLine(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function truncate(value, max = 240) {
+  const text = oneLine(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+function uniqueNonEmpty(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const clean = oneLine(value);
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    result.push(clean);
+  }
+  return result;
+}
+
+function summarizeBlockingEntry(entry) {
+  if (typeof entry === "string") return truncate(entry);
+  if (!entry || typeof entry !== "object") return truncate(entry);
+
+  const criterion = oneLine(entry.criterion || entry.input || entry.check || entry.title);
+  const file = oneLine(entry.file || entry.path);
+  const evidence = oneLine(entry.evidence || entry.detail || entry.reason);
+  const fixHint = oneLine(entry.fix_hint || entry.fixHint || entry.hint);
+
+  const parts = [];
+  if (criterion) parts.push(criterion);
+  if (file) parts.push(`file: ${file}`);
+  if (evidence) parts.push(`evidence: ${evidence}`);
+  if (fixHint) parts.push(`fix: ${fixHint}`);
+  return truncate(parts.join(" | "));
+}
+
+function failedLayerChecks(envelope) {
+  const layers = envelope?.layers;
+  if (!layers || typeof layers !== "object" || Array.isArray(layers)) return [];
+  return Object.entries(layers)
+    .filter(([, layer]) => String(layer?.status || "").toLowerCase() === "fail")
+    .map(([name, layer]) => truncate(`${name}: ${layer?.detail || "failed"}`));
+}
+
+function repairScopeFromEnvelope(envelope) {
+  const explicit = Array.isArray(envelope?.fix_scope) ? envelope.fix_scope : [];
+  const blockingFiles = Array.isArray(envelope?.blocking)
+    ? envelope.blocking.map((entry) => typeof entry === "object" && entry ? entry.file || entry.path : "")
+    : [];
+  return uniqueNonEmpty([...explicit, ...blockingFiles]);
+}
+
+export function buildRetryInputFromVerdict(envelope, {
+  retryCount = 1,
+  previousVerdictId = null,
+  previousVerdictPath = null,
+  maxItems = 5,
+} = {}) {
+  const status = classifyVerdict(envelope?.status || "inconclusive");
+  const base = {
+    shouldRetry: false,
+    status,
+    retryCount,
+    previousVerdictId,
+    previousVerdictPath,
+    reason: oneLine(envelope?.reason),
+    failingChecks: [],
+    repairScope: [],
+    prompt: "",
+  };
+
+  if (status !== "fail") return base;
+
+  const blockingChecks = Array.isArray(envelope?.blocking)
+    ? envelope.blocking.map(summarizeBlockingEntry)
+    : [];
+  const missingInputChecks = Array.isArray(envelope?.blockingMissingInputs)
+    ? envelope.blockingMissingInputs.map((item) => truncate(`missing input: ${item}`))
+    : [];
+  const structuredChecks = uniqueNonEmpty([
+    ...blockingChecks,
+    ...failedLayerChecks(envelope),
+    ...missingInputChecks,
+  ]);
+  const failingChecks = (structuredChecks.length ? structuredChecks : uniqueNonEmpty([envelope?.reason])).slice(0, maxItems);
+
+  const repairScope = repairScopeFromEnvelope(envelope).slice(0, maxItems);
+  const reason = oneLine(envelope?.reason) || "verifier rejected the previous deliverable";
+  const verdictLabel = previousVerdictId || "previous verifier verdict";
+  const lines = [
+    `Retry ${retryCount}: ${verdictLabel} failed verification.`,
+    previousVerdictPath ? `Verdict file: ${previousVerdictPath}` : "",
+    `Reason: ${reason}`,
+    "",
+    "Failing checks:",
+    ...(failingChecks.length ? failingChecks.map((check) => `- ${check}`) : ["- Verifier reported a failure without structured blocking details."]),
+    "",
+    "Expected repair scope:",
+    ...(repairScope.length ? repairScope.map((scope) => `- ${scope}`) : ["- Keep changes limited to the failing behavior and directly related tests."]),
+    "",
+    "Repair only the failing checks above unless local evidence proves a smaller adjacent change is required.",
+  ].filter((line) => line !== "");
+
+  return {
+    ...base,
+    shouldRetry: true,
+    reason,
+    failingChecks,
+    repairScope,
+    prompt: lines.join("\n"),
+  };
+}
+
 // Back-fill v1 basis fields from v2 structured fields for backward compatibility
 function backfillLegacy(envelope) {
   if (!envelope.basis) {

@@ -212,6 +212,109 @@ describe("phase-locator-contract", () => {
     });
   });
 
+  describe("artifact index", () => {
+    it("normalizes artifact references with hashes, producers, and broken references", async () => {
+      const jobId = "job-20260523-art001-llll";
+      const ts = "2026-05-24T10:00:00.000Z";
+      const files = {
+        plan: path.join(wikiDir, "inbox", "plan-321.md"),
+        deliverable: path.join(wikiDir, "outputs", "deliverable-321.md"),
+        review: path.join(wikiDir, "outputs", "review-321.md"),
+        diff: path.join(wikiDir, "outputs", "diff-321.patch"),
+        pr: path.join(wikiDir, "outputs", "pr-321.md"),
+      };
+      await writeFile(files.plan, "# Plan\n", "utf8");
+      await writeFile(files.deliverable, "# Deliverable\n", "utf8");
+      await writeFile(files.review, "# Review\n", "utf8");
+      await writeFile(files.diff, "diff --git a/a b/a\n", "utf8");
+      await writeFile(files.pr, "PR: https://example.invalid/pull/321\n", "utf8");
+
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "job_created",
+        jobId,
+        project: "test-proj",
+        task: "artifact index test",
+        workflow: "standard",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "phase_completed",
+        jobId,
+        project: "test-proj",
+        phase: "plan",
+        artifact: "plan-321.md",
+        agent: "codex",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "phase_completed",
+        jobId,
+        project: "test-proj",
+        phase: "execute",
+        artifact: "deliverable-321.md",
+        agent: "claude",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "phase_completed",
+        jobId,
+        project: "test-proj",
+        phase: "review",
+        artifact: "review-321.md",
+        agent: "opencode",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "phase_completed",
+        jobId,
+        project: "test-proj",
+        phase: "verify",
+        artifact: "verdict-321.md",
+        agent: "codex",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "artifact_created",
+        jobId,
+        project: "test-proj",
+        phase: "verify",
+        kind: "diff",
+        artifact: "diff-321.patch",
+        agent: "codex",
+        ts,
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "pr_opened",
+        jobId,
+        project: "test-proj",
+        kind: "pr",
+        artifact: "pr-321.md",
+        agent: "github",
+        ts,
+      });
+
+      const { buildArtifactIndex } = await import("../server/services/artifact-index.js");
+      const index = await buildArtifactIndex(tmpDir, "test-proj", jobId);
+
+      assert.equal(index.schemaVersion, 1);
+      assert.deepEqual(index.entries.map((entry) => entry.kind), ["plan", "deliverable", "review", "verdict", "diff", "pr"]);
+
+      const plan = index.entries.find((entry) => entry.kind === "plan");
+      assert.equal(plan.phase, "plan");
+      assert.equal(plan.path, files.plan);
+      assert.match(plan.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(plan.createdAt, ts);
+      assert.equal(plan.producerAgent, "codex");
+      assert.equal(plan.broken, false);
+
+      const verdict = index.entries.find((entry) => entry.kind === "verdict");
+      assert.equal(verdict.path, path.join(wikiDir, "outputs", "verdict-321.md"));
+      assert.equal(verdict.sha256, null);
+      assert.equal(verdict.broken, true);
+      assert.match(verdict.reason, /missing/i);
+    });
+  });
+
   describe("buildPhaseContextPacket (locator-first contract)", () => {
     it("packet contains jobId in serialized form", async () => {
       const jobId = "job-20260523-ctx001-ffff";

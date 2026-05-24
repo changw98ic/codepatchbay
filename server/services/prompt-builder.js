@@ -10,6 +10,7 @@ import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-l
 import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { readCompactProjectCodeIndexSummary, readFilteredCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
 import { runtimeDataRoot } from "./runtime-root.js";
+import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../core/workflow/verdict.js";
 
 function dataRoot(cpbRoot) {
   return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
@@ -237,11 +238,19 @@ export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId
   let fixSection = "";
   if (verdictFile) {
     try {
-      await readFile(verdictFile, "utf8");
+      const verdictContent = await readFile(verdictFile, "utf8");
+      const retryInput = buildRetryInputFromVerdict(parseVerdictEnvelope(verdictContent), {
+        retryCount: Number(process.env.CPB_RETRY_COUNT || 1),
+        previousVerdictId: path.basename(verdictFile, path.extname(verdictFile)),
+        previousVerdictPath: verdictFile,
+      });
       fixSection = `## Previous Verification Failure (FIX REQUIRED)
 The previous deliverable was verified and REJECTED. Read the verdict for details:
 - Verdict file: ${verdictFile}
-You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach.`;
+You MUST address the specific failures listed in the verdict. Do NOT repeat the same approach.
+${retryInput.shouldRetry ? `
+## Normalized Retry Input
+${retryInput.prompt}` : ""}`;
     } catch {
       // verdict file doesn't exist yet, skip fix section
     }

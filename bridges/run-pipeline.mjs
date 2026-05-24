@@ -11,7 +11,7 @@ import { runtimeDataPath, runtimeDataRoot } from "../server/services/runtime-roo
 import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
-import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
+import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
   completeJob,
   completePhase,
@@ -21,6 +21,7 @@ import {
   FAILURE_CODES,
   failJob,
   getJob,
+  recordWorktreeCreated,
 } from "../server/services/job-store.js";
 import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "../core/workflow/definition.js";
 import { executeDag } from "../core/workflow/dag-executor.js";
@@ -320,6 +321,42 @@ function runCommand(command, commandArgs, cwd, options = {}) {
   });
 }
 
+function runCommandCapture(command, commandArgs, cwd, options = {}) {
+  return new Promise((resolve) => {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let proc;
+    try {
+      proc = spawn(command, commandArgs, {
+        cwd,
+        env: options.env || process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      resolve({ exitCode: 1, stdout: "", stderr: "", error: err });
+      return;
+    }
+    proc.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
+    proc.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    proc.on("error", (err) => {
+      resolve({
+        exitCode: 1,
+        stdout: combineChunks(stdoutChunks),
+        stderr: combineChunks(stderrChunks),
+        error: err,
+      });
+    });
+    proc.on("close", (code, signal) => {
+      resolve({
+        exitCode: code ?? 1,
+        stdout: combineChunks(stdoutChunks),
+        stderr: combineChunks(stderrChunks),
+        signal,
+      });
+    });
+  });
+}
+
 function combineChunks(chunks) {
   if (chunks.length === 0) return "";
   return Buffer.concat(chunks).toString("utf8");
@@ -420,17 +457,49 @@ function extractDeliverableId(stdout) {
   return match ? match[1] : null;
 }
 
-// ─── Verdict parsing from verdict file ───
+// ─── Verdict parsing and retry input helpers ───
 
-export async function parseVerdict(verdictPath) {
+const VERDICT_MAP = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
+
+export async function parseVerdictResult(verdictPath) {
   try {
     const content = await readFile(verdictPath, "utf8");
     const envelope = parseVerdictEnvelope(content);
-    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
-    return mapped[envelope.status] || "UNKNOWN";
+    return {
+      verdict: VERDICT_MAP[envelope.status] || "UNKNOWN",
+      envelope,
+      content,
+    };
   } catch {
     return null;
   }
+}
+
+export async function parseVerdict(verdictPath) {
+  const result = await parseVerdictResult(verdictPath);
+  return result?.verdict ?? null;
+}
+
+export function buildExecuteScriptArgs({ project, planId, jobId, retryInput } = {}) {
+  const args = ["execute", "--project", project];
+  if (planId) args.push("--plan-id", planId);
+  else if (jobId) args.push("--job-id", jobId);
+  if (retryInput?.shouldRetry && retryInput.previousVerdictPath) {
+    args.push("--verdict-file", retryInput.previousVerdictPath);
+  }
+  return args;
+}
+
+function retryInputEventFields(retryInput) {
+  if (!retryInput?.shouldRetry) return {};
+  return {
+    retryCount: retryInput.retryCount,
+    previousVerdictId: retryInput.previousVerdictId,
+    previousVerdictPath: retryInput.previousVerdictPath,
+    failingChecks: retryInput.failingChecks,
+    repairScope: retryInput.repairScope,
+    retryPrompt: retryInput.prompt,
+  };
 }
 
 async function parseReviewVerdict(reviewPath) {
@@ -453,23 +522,40 @@ async function parseReviewVerdict(reviewPath) {
 
 // ─── Phase execution ───
 
+function envDisablesWorktree() {
+  const value = process.env.CPB_USE_WORKTREE;
+  return typeof value === "string" && ["0", "false", "off", "no"].includes(value.toLowerCase());
+}
+
+function projectDisablesWorktree(projectConfig) {
+  return projectConfig?.policy?.useWorktree === false
+    || projectConfig?.worktree?.enabled === false
+    || projectConfig?.worktreeMode === "off";
+}
+
+async function currentBaseBranch(sourcePath) {
+  const branch = await runCommandCapture("git", ["-C", sourcePath, "symbolic-ref", "--short", "HEAD"], sourcePath);
+  if (branch.exitCode === 0 && branch.stdout.trim()) return branch.stdout.trim();
+
+  const head = await runCommandCapture("git", ["-C", sourcePath, "rev-parse", "--short", "HEAD"], sourcePath);
+  if (head.exitCode === 0 && head.stdout.trim()) return `detached:${head.stdout.trim()}`;
+  return null;
+}
+
 async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
-  if (process.env.CPB_USE_WORKTREE !== "1") {
+  const projectJsonPath = path.join(wikiDir, "project.json");
+  const projectConfig = await readJsonObject(projectJsonPath);
+  if (envDisablesWorktree() || projectDisablesWorktree(projectConfig)) {
     return null;
   }
 
-  const projectJsonPath = path.join(wikiDir, "project.json");
   let sourcePath = sourcePathOverride || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
   if (!sourcePath) {
-    try {
-      const raw = await readFile(projectJsonPath, "utf8");
-      sourcePath = JSON.parse(raw).sourcePath;
-    } catch {
-      return null;
-    }
+    sourcePath = projectConfig.sourcePath || null;
   }
   if (!sourcePath) return null;
 
+  const baseBranch = await currentBaseBranch(sourcePath);
   const worktreesRoot = path.join(process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot), "worktrees");
   const result = await runCommand(
     process.execPath,
@@ -495,15 +581,12 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   const created = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
   process.env.CPB_PROJECT_PATH_OVERRIDE = created.path;
   process.env.CPB_ACP_CWD = created.path;
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "worktree_created",
-    jobId,
-    project,
+  await recordWorktreeCreated(cpbRoot, project, jobId, {
     worktree: created.path,
     branch: created.branch,
-    ts: ts(),
+    baseBranch,
   });
-  return created;
+  return { ...created, baseBranch };
 }
 
 async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
@@ -819,7 +902,7 @@ export async function runPipeline({
       else n.maxRetries = maxRetries;
     }
 
-    const pState = { deliverableId: null, fixCount: 0, reviewAttempt: 0, verifyAttempt: 0 };
+    const pState = { deliverableId: null, fixCount: 0, reviewAttempt: 0, verifyAttempt: 0, retryInput: null };
 
     async function checkIssue(did, phaseName) {
       const mismatch = await validateDeliverableIssue(cpbRoot, project, jobId, did, sourceContext?.issueNumber, sourceContext);
@@ -829,13 +912,13 @@ export async function runPipeline({
       return mismatch;
     }
 
-    function dispatchRun(scriptPhase, bridgePhase, scriptArgs) {
+    function dispatchRun(scriptPhase, bridgePhase, scriptArgs, envOverrides = {}) {
       return dispatchPhase(cpbRoot, {
         project, jobId, phase: scriptPhase,
         script: `bridges/${bridgeForPhase(workflowDef, bridgePhase)}`,
         scriptArgs,
         executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...envOverrides },
         terminalOnFailure: false,
       });
     }
@@ -883,16 +966,19 @@ export async function runPipeline({
             attempt: Math.min((ctx?.attempt ?? 0) + 1, ctx?.maxAttempts ?? ((ctx?.attempt ?? 0) + 1)),
           }, {
             reason: result.reason ?? null,
+            ...retryInputEventFields(result.retryInput),
           });
         } else {
           await appendDagNodeEvent("dag_node_failed", nodeId, dagNode, ctx, {
             error: result.reason ?? null,
             reason: result.reason ?? null,
+            ...retryInputEventFields(result.retryInput),
           });
           if (result.reactivate) {
             const targetNode = dag.nodes.find((n) => n.id === result.reactivate);
             await appendDagNodeEvent("dag_node_retrying", result.reactivate, targetNode, {}, {
               reason: `reactivated by ${nodeId}: ${result.reason ?? "retry"}`,
+              ...retryInputEventFields(result.retryInput),
             });
           }
         }
@@ -918,11 +1004,25 @@ export async function runPipeline({
           const phaseName = isFix ? `fix-${pState.fixCount}` : (attempt > 1 ? `execute-retry-${attempt}` : "execute");
           log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude)${isFix ? " fix" : ""} attempt ${isFix ? pState.fixCount : attempt}/${maxAttempts}`);
 
-          const execResult = await dispatchRun(phaseName, "execute", ["execute", "--project", project, "--plan-id", planId]);
+          const retryInput = isFix ? pState.retryInput : null;
+          const retryEnv = retryInput?.shouldRetry
+            ? {
+                CPB_RETRY_COUNT: String(retryInput.retryCount),
+                CPB_PREVIOUS_VERDICT_ID: retryInput.previousVerdictId || "",
+                CPB_PREVIOUS_VERDICT_PATH: retryInput.previousVerdictPath || "",
+              }
+            : {};
+          const execResult = await dispatchRun(
+            phaseName,
+            "execute",
+            buildExecuteScriptArgs({ project, planId, jobId, retryInput }),
+            retryEnv,
+          );
           const did = extractDeliverableId(execResult.stdout);
 
           if (did) {
             ok(`deliverable-${did}${isFix ? " (fix)" : ""}`);
+            pState.retryInput = null;
             const mismatch = await checkIssue(did, phaseName);
             if (mismatch) {
               return { ok: false, reason: `issue_mismatch: expected #${mismatch.expectedIssueNumber}, got #${mismatch.actualIssueNumber}`, retryable: false, failPhase: phaseName, failCode: FAILURE_CODES.ISSUE_MISMATCH, failCause: mismatch };
@@ -994,7 +1094,8 @@ export async function runPipeline({
 
           const verdictId = pState.deliverableId || jobId;
           const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
-          const verdict = await parseVerdict(verdictPath);
+          const verdictResult = await parseVerdictResult(verdictPath);
+          const verdict = verdictResult?.verdict ?? null;
 
           if (verdict === null) {
             await completePhase(cpbRoot, project, jobId, { phase: phaseName, artifact: "" });
@@ -1015,6 +1116,7 @@ export async function runPipeline({
 
           if (verdict === "PASS") {
             ok("Pipeline complete!");
+            pState.retryInput = null;
             await completePhase(cpbRoot, project, jobId, { phase: "verify", artifact: `verdict-${verdictId}` });
             await completeJob(cpbRoot, project, jobId);
             pipelineOk = true;
@@ -1029,9 +1131,15 @@ export async function runPipeline({
             return { ok: false, reason: `pipeline failed after ${maxRetries} quality verification failures`, retryable: false, failPhase: "verify", failCode: FAILURE_CODES.FATAL };
           }
 
+          const retryInput = buildRetryInputFromVerdict(verdictResult.envelope, {
+            retryCount: pState.fixCount + 1,
+            previousVerdictId: `verdict-${verdictId}`,
+            previousVerdictPath: verdictPath,
+          });
           pState.fixCount++;
+          pState.retryInput = retryInput;
           log(project, "Re-executing (Claude fix)...");
-          return { ok: false, reason: "verify failed", retryable: false, reactivate: "execute" };
+          return { ok: false, reason: "verify failed", retryable: false, reactivate: "execute", retryInput };
         }
 
         return { ok: false, reason: `unknown phase: ${node.phase}` };

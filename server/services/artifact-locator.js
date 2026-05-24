@@ -2,6 +2,8 @@ import { mkdir, readdir, writeFile, access, stat } from "node:fs/promises";
 import path from "node:path";
 import { projectRuntimePath } from "./runtime-root.js";
 
+export { buildArtifactIndex } from "./artifact-index.js";
+
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 function validateName(value, label) {

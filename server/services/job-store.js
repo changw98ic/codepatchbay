@@ -428,6 +428,25 @@ export async function completeJob(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
+export async function recordWorktreeCreated(
+  cpbRoot,
+  project,
+  jobId,
+  { worktree, branch, baseBranch = null, ts = nowIso(), dataRoot }
+) {
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "worktree_created",
+    jobId,
+    project,
+    worktree,
+    branch,
+    baseBranch,
+    ts,
+  }, { dataRoot });
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
+}
+
 export async function recordActivity(
   cpbRoot,
   project,

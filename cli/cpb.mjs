@@ -38,6 +38,7 @@ function usage() {
   console.log(`  ${CYAN}execute${NC} <project> <plan-id>            Claude execution`);
   console.log(`  ${CYAN}verify${NC} <project> <deliverable-id>      Codex verification`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
+  console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/execute/verify demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
   console.log(`  ${CYAN}index${NC} <status|refresh> <project> [--json]  Project code index`);
@@ -45,6 +46,8 @@ function usage() {
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
   console.log(`  ${CYAN}jobs${NC} [reconcile|cleanup|report]         Job management`);
+  console.log(`  ${CYAN}artifacts${NC} <job-id> [--json]              List job artifacts`);
+  console.log(`  ${CYAN}verdict${NC} <job-id> [--json]                Show job verdict`);
   console.log(`  ${CYAN}gc${NC} [--dry-run]                          Clean stale jobs, orphan leases, pollution`);
   console.log(`  ${CYAN}recover${NC} [--dry-run]                     Alias for gc`);
   console.log(`  ${CYAN}diff${NC} <project>                         Git diff`);
@@ -94,10 +97,13 @@ const COMMANDS = {
   execute: "execute.js",
   verify: "verify.js",
   pipeline: "pipeline.js",
+  demo: "demo.js",
   research: "research.js",
   status: "status.js",
   list: "list.js",
   jobs: "jobs.js",
+  artifacts: "artifacts.js",
+  verdict: "verdict.js",
   "evolve-multi": "evolve-multi.js",
   index: "index.js",
   repair: "repair.js",

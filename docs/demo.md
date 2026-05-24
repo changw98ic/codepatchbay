@@ -1,8 +1,32 @@
-# CodePatchbay demo path
+# CodePatchBay Demo
 
-This document keeps the demo honest: no stub demo, no hosted mock, and no claim of 24-hour unattended operation.
+This document keeps the demo honest: no hosted mock, no real-provider claims without evidence, and no claim of 24-hour unattended operation.
 
-CodePatchbay's initial public shape is a real local pairing of Codex plus Claude Code. The minimum demo should show Codex planning, Claude Code executing, Codex verifying, and the handoff files written to disk.
+CodePatchBay's initial public shape is a local gateway for coding agents. The minimum credible demo should show a task becoming plan, deliverable, verdict, event log, and eventually a verified PR path.
+
+## Local mock demo
+
+Run a local mock pipeline without provider credentials:
+
+```bash
+cpb demo
+```
+
+For machine-readable output:
+
+```bash
+cpb demo --json
+```
+
+The demo creates a temporary toy repo, a temporary CodePatchBay root, a real job event log, and mock plan, deliverable, and verifier verdict artifacts. It does not call Codex, Claude, OpenCode, or any provider API.
+
+The JSON output includes:
+
+- `tempRoot`: parent directory for cleanup after inspection
+- `cpbRoot`: demo CodePatchBay root
+- `sourcePath`: toy repo path
+- `eventLog`: JSONL event log
+- `artifacts`: plan, deliverable, and verdict file paths
 
 ## Clean clone verification
 
@@ -20,7 +44,7 @@ npm run build:web
 Expected result:
 
 - `npm ci` installs root, server, and web workspace dependencies.
-- `./cpb help` prints the CodePatchbay CLI help.
+- `./cpb help` prints the CodePatchBay CLI help.
 - `npm test` runs Node.js unit tests.
 - `npm run build:web` builds the Vite UI.
 
@@ -71,11 +95,12 @@ The useful demo moment is not just that agents ran. It is that each handoff rema
 ## Demo script for a short video
 
 1. Show the target repo before the task.
-2. Run `./cpb plan` and open the generated plan.
-3. Run `./cpb execute` and show the target repo diff.
-4. Run `./cpb verify` and open the verdict.
-5. Show the event log file and explain that CodePatchbay is local-first and inspectable.
-6. End with the boundary: alpha, non-commercial, Codex + Claude Code only for now.
+2. Run `cpb demo --json` and open the generated event log plus artifacts.
+3. Run `./cpb plan` and open the generated plan.
+4. Run `./cpb execute` and show the target repo diff.
+5. Run `./cpb verify` and open the verdict.
+6. Show the event log file and explain that CodePatchBay is local-first and inspectable.
+7. End with the boundary: alpha, local-first, mock demo works without provider keys, real-agent demo requires authenticated adapters.
 
 ## What not to claim yet
 

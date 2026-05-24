@@ -147,6 +147,131 @@ test("cpb auth connect codex --json returns local setup instructions", async () 
   assert.match(parsed.localSetupUrl, /\/setup\/auth\/codex$/);
 });
 
+test("cpb jobs worktrees --dry-run --json is routed", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-jobs-worktrees-"));
+  try {
+    const result = await runNode(["./cpb", "jobs", "worktrees", "--dry-run", "--json"], {
+      env: { CPB_ROOT: tmp },
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.dryRun, true);
+    assert.ok(Array.isArray(parsed.entries));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("cpb artifacts and verdict resolve legacy jobs", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-artifacts-legacy-"));
+  const jobId = "job-artifacts-legacy";
+  try {
+    const { appendEvent } = await import("../server/services/event-store.js");
+    const outputs = path.join(tmp, "wiki", "projects", "demo", "outputs");
+    await mkdir(outputs, { recursive: true });
+    await writeFile(path.join(outputs, "verdict-001.md"), "VERDICT: PASS\n", "utf8");
+    await appendEvent(tmp, "demo", jobId, {
+      type: "job_created",
+      jobId,
+      project: "demo",
+      task: "legacy artifact cli",
+      workflow: "standard",
+      ts: "2026-05-24T00:00:00.000Z",
+    });
+    await appendEvent(tmp, "demo", jobId, {
+      type: "phase_completed",
+      jobId,
+      project: "demo",
+      phase: "verify",
+      artifact: "verdict-001.md",
+      agent: "codex",
+      ts: "2026-05-24T00:01:00.000Z",
+    });
+
+    const artifacts = await runNode(["./cpb", "artifacts", jobId, "--json"], { env: { CPB_ROOT: tmp } });
+    assert.equal(artifacts.code, 0, artifacts.stderr || artifacts.stdout);
+    const parsedArtifacts = JSON.parse(artifacts.stdout);
+    assert.equal(parsedArtifacts.entries[0].kind, "verdict");
+    assert.equal(parsedArtifacts.entries[0].path, path.join(outputs, "verdict-001.md"));
+
+    const verdict = await runNode(["./cpb", "verdict", jobId, "--json"], { env: { CPB_ROOT: tmp } });
+    assert.equal(verdict.code, 0, verdict.stderr || verdict.stdout);
+    const parsedVerdict = JSON.parse(verdict.stdout);
+    assert.match(parsedVerdict.content, /VERDICT: PASS/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("cpb artifacts resolves Hub runtime roots", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-artifacts-hub-"));
+  const hubRoot = path.join(tmp, ".hub");
+  const projectRuntimeRoot = path.join(hubRoot, "projects", "hubproj");
+  const jobId = "job-artifacts-hub";
+  try {
+    const { appendEvent } = await import("../server/services/event-store.js");
+    const outputs = path.join(projectRuntimeRoot, "wiki", "outputs");
+    await mkdir(outputs, { recursive: true });
+    await writeFile(path.join(outputs, "deliverable-002.md"), "# Deliverable\n", "utf8");
+    await mkdir(hubRoot, { recursive: true });
+    await writeFile(path.join(hubRoot, "projects.json"), JSON.stringify({
+      version: 1,
+      updatedAt: new Date(0).toISOString(),
+      projects: {
+        hubproj: {
+          id: "hubproj",
+          name: "hubproj",
+          sourcePath: tmp,
+          projectRoot: path.join(tmp, "cpb-task"),
+          projectRuntimeRoot,
+          enabled: true,
+        },
+      },
+    }), "utf8");
+    await appendEvent(tmp, "hubproj", jobId, {
+      type: "job_created",
+      jobId,
+      project: "hubproj",
+      task: "hub artifact cli",
+      workflow: "standard",
+      ts: "2026-05-24T00:00:00.000Z",
+    }, { dataRoot: projectRuntimeRoot });
+    await appendEvent(tmp, "hubproj", jobId, {
+      type: "phase_completed",
+      jobId,
+      project: "hubproj",
+      phase: "execute",
+      artifact: "deliverable-002.md",
+      agent: "claude",
+      ts: "2026-05-24T00:01:00.000Z",
+    }, { dataRoot: projectRuntimeRoot });
+
+    const result = await runNode(["./cpb", "artifacts", jobId, "--json"], {
+      env: { CPB_ROOT: tmp, CPB_HUB_ROOT: hubRoot },
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.project, "hubproj");
+    assert.equal(parsed.entries[0].path, path.join(outputs, "deliverable-002.md"));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("cpb artifacts missing job exits non-zero without stack trace", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-artifacts-missing-"));
+  try {
+    const result = await runNode(["./cpb", "artifacts", "job-does-not-exist", "--json"], {
+      env: { CPB_ROOT: tmp },
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr + result.stdout, /not found/i);
+    assert.doesNotMatch(result.stderr + result.stdout, /\n\s*at\s+/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("cpb agents install without --yes prints a non-executed install plan", async () => {
   const result = await runNode(["./cpb", "agents", "install", "codex", "--method", "npm", "--json"]);
   assert.equal(result.code, 0);
@@ -252,9 +377,9 @@ test("cpb help lists all public COMMANDS keys", async () => {
   // These are the commands that should appear in help output
   const publicCommands = [
     "init", "attach", "hub", "plan", "execute", "verify", "pipeline",
-    "research", "evolve-multi", "index", "repair",
+    "demo", "research", "evolve-multi", "index", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
-    "inbox", "outputs", "doctor", "health-check", "setup", "agents", "wiki", "release",
+    "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "wiki", "release",
     "cancel", "redirect", "merge-preview", "install-bin", "ui", "version",
   ];
 
@@ -268,8 +393,8 @@ test("cpb help lists all public COMMANDS keys", async () => {
 test("all routed CLI command modules import successfully", async () => {
   // Module filenames (values in COMMANDS), deduplicated
   const moduleFiles = [
-    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "research",
-    "status", "list", "jobs", "evolve-multi", "index", "repair", "diff", "review",
+    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
+    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
@@ -281,8 +406,8 @@ test("all routed CLI command modules import successfully", async () => {
 
 test("all routed command modules export run()", async () => {
   const moduleFiles = [
-    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "research",
-    "status", "list", "jobs", "evolve-multi", "index", "repair", "diff", "review",
+    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
+    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
@@ -347,7 +472,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
   // All module files that COMMANDS maps to (values, deduplicated)
   const routedModules = new Set([
     "init.js", "attach.js", "hub.js", "plan.js", "execute.js", "verify.js",
-    "pipeline.js", "research.js", "status.js", "list.js", "jobs.js",
+    "pipeline.js", "demo.js", "research.js", "status.js", "list.js", "jobs.js", "artifacts.js", "verdict.js",
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "reconcile.js",
     "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",

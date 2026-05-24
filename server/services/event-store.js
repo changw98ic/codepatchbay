@@ -396,6 +396,8 @@ export function materializeJob(events) {
     nodeStates: {},
     leaseId: null,
     worktree: null,
+    worktreeBranch: null,
+    worktreeBaseBranch: null,
     createdAt: null,
     updatedAt: null,
     blockedReason: null,
@@ -460,6 +462,8 @@ export function materializeJob(events) {
         break;
       case "worktree_created":
         state.worktree = event.worktree ?? event.path ?? state.worktree;
+        state.worktreeBranch = event.branch ?? event.worktreeBranch ?? state.worktreeBranch;
+        state.worktreeBaseBranch = event.baseBranch ?? event.worktreeBaseBranch ?? state.worktreeBaseBranch;
         break;
       case "phase_started":
         state.phase = event.phase ?? state.phase;

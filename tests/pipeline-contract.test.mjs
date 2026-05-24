@@ -1,8 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { promisify } from "node:util";
 
 import { createJob, startPhase, completePhase, failJob, getJob } from "../server/services/job-store.js";
 import { appendEvent } from "../server/services/event-store.js";
@@ -14,6 +16,15 @@ import { createSession, startSessionResearch, noteReviewAcpCall, assertReviewBud
 import { writeInboxMessage, listInboxMessages, ackInboxMessage, completeInboxMessage } from "../server/services/inbox-mail.js";
 import { buildChainSnapshot, analyzeChainSnapshot } from "../server/services/observer.js";
 import { acquireLease } from "../server/services/lease-manager.js";
+import { buildExecutorPrompt } from "../server/services/prompt-builder.js";
+import { buildRetryInputFromVerdict } from "../core/workflow/verdict.js";
+
+const execFileAsync = promisify(execFile);
+const repoRoot = path.resolve(import.meta.dirname, "..");
+
+async function git(cwd, args) {
+  return execFileAsync("git", args, { cwd });
+}
 
 describe("pipeline-contract", () => {
   let tmpDir;
@@ -687,6 +698,204 @@ describe("pipeline-contract", () => {
       assert.equal(execute.reason, "reactivated by verify");
       assert.equal(verify.status, "failed");
       assert.equal(verify.reason, "quality failed");
+    });
+  });
+
+  describe("Test 9: Default worktree policy", () => {
+    async function createRepo(name) {
+      const repo = path.join(tmpDir, name);
+      await mkdir(repo, { recursive: true });
+      await git(repo, ["init", "-b", "main"]);
+      await git(repo, ["config", "user.email", "tests@example.invalid"]);
+      await git(repo, ["config", "user.name", "Tests"]);
+      await writeFile(path.join(repo, "README.md"), `${name}\n`, "utf8");
+      await git(repo, ["add", "README.md"]);
+      await git(repo, ["commit", "-m", "initial"]);
+      return repo;
+    }
+
+    async function withWorktreeEnv(fn) {
+      const saved = {
+        CPB_USE_WORKTREE: process.env.CPB_USE_WORKTREE,
+        CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
+        CPB_PROJECT_PATH_OVERRIDE: process.env.CPB_PROJECT_PATH_OVERRIDE,
+        CPB_ACP_CWD: process.env.CPB_ACP_CWD,
+      };
+      try {
+        delete process.env.CPB_USE_WORKTREE;
+        process.env.CPB_PROJECT_RUNTIME_ROOT = tmpDir;
+        return await fn();
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    }
+
+    it("creates an isolated worktree by default and records branch metadata", async () => {
+      const sourceRepo = await createRepo("source-default-worktree");
+      const projectDir = path.join(tmpDir, "wiki", "projects", "test-proj");
+      await writeFile(
+        path.join(projectDir, "project.json"),
+        JSON.stringify({ sourcePath: sourceRepo }),
+        "utf8",
+      );
+      const { runPipeline } = await import("../bridges/run-pipeline.mjs");
+
+      await withWorktreeEnv(async () => {
+        const code = await runPipeline({
+          project: "test-proj",
+          task: "default worktree policy",
+          workflow: "blocked",
+          jobIdOverride: "job-default-worktree",
+          sourcePath: sourceRepo,
+          executorRoot: repoRoot,
+          cpbRoot: tmpDir,
+        });
+        assert.equal(code, 0);
+      });
+
+      const job = await getJob(tmpDir, "test-proj", "job-default-worktree", { dataRoot: tmpDir });
+      assert.equal(job.jobId, "job-default-worktree");
+      assert.ok(job.worktree, "job should record the created worktree path");
+      assert.match(job.worktree, /job-default-worktree-pipeline$/);
+      assert.equal(job.worktreeBaseBranch, "main");
+      assert.equal(job.worktreeBranch, "cpb/job-default-worktree-pipeline");
+    });
+
+    it("honors project policy opt-out and keeps legacy jobs readable without worktree metadata", async () => {
+      const sourceRepo = await createRepo("source-worktree-off");
+      const projectDir = path.join(tmpDir, "wiki", "projects", "test-proj");
+      await writeFile(
+        path.join(projectDir, "project.json"),
+        JSON.stringify({ sourcePath: sourceRepo, policy: { useWorktree: false } }),
+        "utf8",
+      );
+      const { runPipeline } = await import("../bridges/run-pipeline.mjs");
+
+      await withWorktreeEnv(async () => {
+        const code = await runPipeline({
+          project: "test-proj",
+          task: "worktree opt out",
+          workflow: "blocked",
+          jobIdOverride: "job-worktree-off",
+          sourcePath: sourceRepo,
+          executorRoot: repoRoot,
+          cpbRoot: tmpDir,
+        });
+        assert.equal(code, 0);
+      });
+
+      const optedOut = await getJob(tmpDir, "test-proj", "job-worktree-off", { dataRoot: tmpDir });
+      assert.equal(optedOut.jobId, "job-worktree-off");
+      assert.equal(optedOut.worktree, null);
+      assert.equal(optedOut.worktreeBaseBranch, null);
+
+      const legacy = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "legacy no worktree metadata",
+        jobId: "job-legacy-no-worktree",
+      });
+      assert.equal(legacy.worktree, null);
+      assert.equal(legacy.worktreeBaseBranch, null);
+    });
+  });
+
+  describe("Test 10: Retry reason normalization", () => {
+    it("turns a failing verifier envelope into concise executor retry input", () => {
+      const retryInput = buildRetryInputFromVerdict({
+        status: "fail",
+        reason: "Missing regression coverage for expired-token redirects.",
+        blocking: [
+          {
+            criterion: "Expired token redirect is covered by tests",
+            evidence: "npm test did not include an expired-token redirect case.",
+            file: "tests/auth.test.ts",
+            fix_hint: "Add a regression test that asserts expired tokens redirect to /login.",
+          },
+          {
+            criterion: "Redirect code handles expired tokens",
+            evidence: "src/auth/redirect.ts only checks missing tokens.",
+            file: "src/auth/redirect.ts",
+            fix_hint: "Treat expired tokens the same as missing tokens before redirecting.",
+          },
+        ],
+        fix_scope: ["src/auth/redirect.ts", "tests/auth.test.ts"],
+      }, {
+        retryCount: 2,
+        previousVerdictId: "verdict-007",
+        previousVerdictPath: "/tmp/cpb/verdict-007.md",
+      });
+
+      assert.equal(retryInput.shouldRetry, true);
+      assert.equal(retryInput.retryCount, 2);
+      assert.equal(retryInput.previousVerdictId, "verdict-007");
+      assert.deepEqual(retryInput.repairScope, ["src/auth/redirect.ts", "tests/auth.test.ts"]);
+      assert.equal(retryInput.failingChecks.length, 2);
+      assert.match(retryInput.failingChecks[0], /Expired token redirect is covered by tests/);
+      assert.match(retryInput.failingChecks[0], /tests\/auth\.test\.ts/);
+      assert.match(retryInput.prompt, /Retry 2/);
+      assert.match(retryInput.prompt, /verdict-007/);
+      assert.match(retryInput.prompt, /Missing regression coverage/);
+      assert.match(retryInput.prompt, /Expected repair scope/);
+      assert.match(retryInput.prompt, /src\/auth\/redirect\.ts/);
+    });
+
+    it("does not create retry input for a PASS verdict", () => {
+      const retryInput = buildRetryInputFromVerdict({
+        status: "pass",
+        reason: "All checks passed.",
+        blocking: [],
+        fix_scope: [],
+      }, {
+        retryCount: 1,
+        previousVerdictId: "verdict-pass",
+      });
+
+      assert.equal(retryInput.shouldRetry, false);
+      assert.deepEqual(retryInput.failingChecks, []);
+      assert.deepEqual(retryInput.repairScope, []);
+      assert.equal(retryInput.prompt, "");
+    });
+
+    it("includes normalized retry input in the executor prompt when a verdict file is provided", async () => {
+      const planId = "007";
+      const deliverableFile = path.join(wikiDir, "outputs", "deliverable-008.md");
+      const verdictFile = path.join(wikiDir, "outputs", "verdict-007.md");
+      await writeFile(path.join(wikiDir, "inbox", `plan-${planId}.md`), "# Plan\n\nFix expired-token redirect.\n", "utf8");
+      await writeFile(verdictFile, JSON.stringify({
+        status: "fail",
+        confidence: 0.8,
+        layers: {
+          fast: { status: "fail", detail: "Focused auth tests missed expired-token redirect coverage." },
+          changed: { status: "fail", detail: "Changed auth redirect path was not covered." },
+          regression: { status: "skipped", detail: "Skipped after focused failure." },
+          acceptance: { status: "fail", detail: "Expired token acceptance criterion is unmet." },
+        },
+        blocking: [
+          {
+            criterion: "Expired token redirect is covered by tests",
+            evidence: "No test asserts expired tokens redirect to /login.",
+            file: "tests/auth.test.ts",
+            fix_hint: "Add a focused regression test.",
+          },
+        ],
+        diff_summary: "2 files changed",
+        task_goal: "Fix expired-token redirect.",
+        executor_summary: "Implemented missing-token redirect only.",
+        reason: "Expired-token redirect remains unverified.",
+        fix_scope: ["src/auth/redirect.ts", "tests/auth.test.ts"],
+      }), "utf8");
+
+      const prompt = await buildExecutorPrompt(repoRoot, tmpDir, "test-proj", planId, deliverableFile, verdictFile);
+
+      assert.match(prompt, /Previous Verification Failure/);
+      assert.match(prompt, /Retry 1/);
+      assert.match(prompt, /Expired token redirect is covered by tests/);
+      assert.match(prompt, /Expected repair scope/);
+      assert.match(prompt, /src\/auth\/redirect\.ts/);
+      assert.match(prompt, /tests\/auth\.test\.ts/);
     });
   });
 });
