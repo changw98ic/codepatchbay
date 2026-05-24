@@ -149,11 +149,14 @@ export async function installRelease({ sourceRoot, destRoot, name, now = new Dat
     }
 
     await mkdir(path.join(tmpPath, "wiki"), { recursive: true });
-    await cp(
-      path.join(resolvedSource, "wiki", "system"),
-      path.join(tmpPath, "wiki", "system"),
-      { recursive: true, verbatimSymlinks: true, filter: copyFilter },
-    );
+    const wikiSystemDir = path.join(resolvedSource, "wiki", "system");
+    if (await exists(wikiSystemDir)) {
+      await cp(
+        wikiSystemDir,
+        path.join(tmpPath, "wiki", "system"),
+        { recursive: true, verbatimSymlinks: true, filter: copyFilter },
+      );
+    }
     await mkdir(path.join(tmpPath, "wiki", "projects"), { recursive: true });
 
     const templateDir = path.join(resolvedSource, "wiki", "projects", "_template");
