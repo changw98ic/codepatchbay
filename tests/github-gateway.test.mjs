@@ -12,6 +12,7 @@ import { normalizeGithubWebhookEvent } from "../server/services/github-events.js
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
 import { getJob } from "../server/services/job-store.js";
+import { buildQueuedComment, postGithubQueuedComment } from "../server/services/github-comments.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -443,5 +444,55 @@ describe("GitHub issue queue entry creation", () => {
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("GitHub queued status comment", () => {
+  it("builds a queued comment with job id, workflow, and selected agents", () => {
+    const body = buildQueuedComment({
+      job: { jobId: "job-20260524-153011-a13f9c", workflow: "standard" },
+      agents: { planner: "codex", executor: "claude", verifier: "codex" },
+    });
+
+    assert.match(body, /CodePatchBay queued this issue/);
+    assert.match(body, /job-20260524-153011-a13f9c/);
+    assert.match(body, /Workflow: standard/);
+    assert.match(body, /Planner: codex/);
+    assert.match(body, /Executor: claude/);
+    assert.match(body, /Verifier: codex/);
+  });
+
+  it("supports dry-run and reports network failure without throwing", async () => {
+    let called = false;
+    const dryRun = await postGithubQueuedComment({
+      repo: "my-org/frontend",
+      issueNumber: 123,
+      job: { jobId: "job-dry-run", workflow: "standard" },
+      agents: { planner: "codex", executor: "claude", verifier: "codex" },
+      dryRun: true,
+      postComment: async () => {
+        called = true;
+      },
+    });
+
+    assert.equal(dryRun.status, "dry-run");
+    assert.equal(dryRun.posted, false);
+    assert.equal(called, false);
+    assert.match(dryRun.body, /job-dry-run/);
+
+    const failed = await postGithubQueuedComment({
+      repo: "my-org/frontend",
+      issueNumber: 123,
+      job: { jobId: "job-network-fail", workflow: "standard" },
+      agents: { planner: "codex", executor: "claude", verifier: "codex" },
+      postComment: async () => {
+        throw new Error("network unavailable");
+      },
+    });
+
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.posted, false);
+    assert.match(failed.error.message, /network unavailable/);
+    assert.match(failed.body, /job-network-fail/);
   });
 });
