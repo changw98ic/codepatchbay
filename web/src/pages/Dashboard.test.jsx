@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Dashboard from './Dashboard';
 
@@ -1297,5 +1297,186 @@ describe('Dashboard diagnostics mode', () => {
     await waitFor(() => expect(screen.getByText('prod-clean')).toBeInTheDocument());
     const testBadges = screen.queryAllByText('test');
     expect(testBadges.length).toBe(0);
+  });
+});
+
+describe('Dashboard List Capping and Toggles', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('caps Attention Queue with a Show All / Show Less toggle', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects') {
+        return jsonResponse([
+          { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
+          { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
+          { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
+          { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
+        ]);
+      }
+      if (url === '/api/tasks/durable') return jsonResponse([]);
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+          registryProjects: [
+            { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
+            { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
+            { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
+            { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
+          ],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [],
+          observability: null,
+          taskLedger: null,
+        });
+      }
+      return jsonResponse(null);
+    });
+
+    const { container } = render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=overview']}>{children}</MemoryRouter>,
+    });
+
+    // 1. Verify Attention Queue capping (default limit is 3)
+    await waitFor(() => expect(screen.getByText('Attention Queue')).toBeInTheDocument());
+    expect(container.querySelectorAll('.attention-row').length).toBe(3);
+
+    const attentionBtn = screen.getByText('+ 1 more critical failures (Show All)');
+    expect(attentionBtn).toBeInTheDocument();
+
+    // Toggle to Show All
+    fireEvent.click(attentionBtn);
+    expect(container.querySelectorAll('.attention-row').length).toBe(4);
+    const showLessBtn = screen.getByText('Show Less');
+    expect(showLessBtn).toBeInTheDocument();
+
+    // Toggle back to Show Less
+    fireEvent.click(showLessBtn);
+    expect(container.querySelectorAll('.attention-row').length).toBe(3);
+  });
+
+  it('caps Durable Jobs and Recent Runs in health tab', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects') return jsonResponse([]);
+      if (url === '/api/tasks/durable') {
+        return jsonResponse([
+          { jobId: 'job-1', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-2', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-3', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-4', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-5', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-6', project: 'proj-1', status: 'running', phase: 'plan' },
+          { jobId: 'job-7', project: 'proj-1', status: 'running', phase: 'plan' },
+        ]);
+      }
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+          registryProjects: [],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [
+            { dispatchId: 'd-1', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-2', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-3', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-4', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-5', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-6', projectId: 'p1', status: 'completed' },
+            { dispatchId: 'd-7', projectId: 'p1', status: 'completed' },
+          ],
+          observability: null,
+          taskLedger: null,
+        });
+      }
+      return jsonResponse(null);
+    });
+
+    const { container } = render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
+
+    // Verify Durable Jobs capping (default limit is 5)
+    await waitFor(() => expect(screen.getByText('Durable Jobs')).toBeInTheDocument());
+    expect(container.querySelectorAll('.job-row').length).toBe(5);
+
+    const durableBtn = screen.getByText('+ 2 more durable jobs (Show All)');
+    expect(durableBtn).toBeInTheDocument();
+
+    // Toggle to Show All Durable Jobs
+    fireEvent.click(durableBtn);
+    expect(container.querySelectorAll('.job-row').length).toBe(7);
+
+    // Toggle back to Show Less
+    const showLessBtnDurable = screen.getAllByText('Show Less')[0];
+    fireEvent.click(showLessBtnDurable);
+    expect(container.querySelectorAll('.job-row').length).toBe(5);
+
+    // Verify Recent Runs capping (default limit is 5)
+    expect(container.querySelectorAll('.dispatch-row').length).toBe(5);
+
+    const recentBtn = screen.getByText('+ 2 more recent runs (Show All)');
+    expect(recentBtn).toBeInTheDocument();
+
+    // Toggle to Show All Recent Runs
+    fireEvent.click(recentBtn);
+    expect(container.querySelectorAll('.dispatch-row').length).toBe(7);
+  });
+
+  it('caps Task Ledger to 5 items by default and supports Show All', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects') return jsonResponse([]);
+      if (url === '/api/tasks/durable') return jsonResponse([]);
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+          registryProjects: [],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [],
+          observability: null,
+          taskLedger: {
+            summary: { total: 7, running: 2, ready: 5, open: 0, failed: 0, archived: 0 },
+            tasks: [
+              { id: 't-1', title: 'Task 1', status: 'ready' },
+              { id: 't-2', title: 'Task 2', status: 'ready' },
+              { id: 't-3', title: 'Task 3', status: 'ready' },
+              { id: 't-4', title: 'Task 4', status: 'ready' },
+              { id: 't-5', title: 'Task 5', status: 'ready' },
+              { id: 't-6', title: 'Task 6', status: 'ready' },
+              { id: 't-7', title: 'Task 7', status: 'ready' },
+            ]
+          },
+        });
+      }
+      return jsonResponse(null);
+    });
+
+    const { container } = render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=overview']}>{children}</MemoryRouter>,
+    });
+
+    // Verify Task Ledger is loaded
+    await waitFor(() => expect(screen.getByText('Task Ledger')).toBeInTheDocument());
+
+    // Verify list is capped at 5 rows
+    expect(container.querySelectorAll('.ledger-row').length).toBe(5);
+
+    const taskBtn = screen.getByText('+ 2 more tasks (Show All)');
+    expect(taskBtn).toBeInTheDocument();
+
+    // Toggle to Show All
+    fireEvent.click(taskBtn);
+    expect(container.querySelectorAll('.ledger-row').length).toBe(7);
+
+    // Toggle back to Show Less
+    const showLessBtn = screen.getByText('Show Less');
+    fireEvent.click(showLessBtn);
+    expect(container.querySelectorAll('.ledger-row').length).toBe(5);
   });
 });

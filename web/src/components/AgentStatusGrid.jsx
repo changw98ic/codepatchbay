@@ -1,29 +1,16 @@
 import React from 'react';
 
-const STABILITY_COLORS = {
-  stable: '#4caf50',
-  experimental: '#ff9800',
-  unknown: '#9e9e9e',
-};
-
-const STATUS_COLORS = {
-  ok: '#4caf50',
-  warn: '#ff9800',
-  error: '#f44336',
-  idle: '#9e9e9e',
-};
-
 export default function AgentStatusGrid({ agents, onSelect, selectedAgent }) {
   if (!agents || agents.length === 0) {
     return (
-      <div style={{ color: '#888', textAlign: 'center', padding: 32 }}>
+      <div className="empty-agents-container" style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '48px 32px' }}>
         No agents registered. Check that agent descriptors exist in core/agents/descriptors/.
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+    <div className="agent-grid">
       {agents.map((agent) => {
         const poolActive = agent.pool?.active || 0;
         const poolLimit = agent.pool?.limit || 0;
@@ -31,74 +18,63 @@ export default function AgentStatusGrid({ agents, onSelect, selectedAgent }) {
         const statusKey = rateLimited ? 'warn' : poolActive > 0 ? 'ok' : 'idle';
         const isSelected = selectedAgent === agent.name;
 
+        const successRateClass = agent.jobs.successRate >= 80 
+          ? 'high' 
+          : agent.jobs.successRate >= 50 
+            ? 'mid' 
+            : 'low';
+
         return (
           <div
             key={agent.name}
+            className={`agent-card ${isSelected ? 'selected' : ''}`}
             onClick={() => onSelect?.(isSelected ? null : agent.name)}
-            style={{ cursor: 'pointer' }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                onSelect?.(isSelected ? null : agent.name);
+              }
+            }}
           >
-            <div style={{
-              border: `1px solid ${isSelected ? '#2196f3' : '#333'}`,
-              borderRadius: 8,
-              padding: 16,
-              background: '#1a1a2e',
-              minWidth: 280,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <h3 style={{ margin: 0, color: '#e0e0e0' }}>{agent.displayName}</h3>
-                <span style={{
-                  fontSize: 11,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  background: STABILITY_COLORS[agent.stability] || STABILITY_COLORS.unknown,
-                  color: '#fff',
-                  textTransform: 'uppercase',
-                  fontWeight: 600,
-                }}>
-                  {agent.stability}
-                </span>
-              </div>
+            <div className="agent-card-header">
+              <h3 className="agent-display-name">{agent.displayName}</h3>
+              <span className={`agent-stability-badge ${agent.stability || 'unknown'}`}>
+                {agent.stability}
+              </span>
+            </div>
 
-              <div style={{ display: 'flex', gap: 16, fontSize: 13, color: '#bbb' }}>
-                <div>
-                  <span style={{ color: STATUS_COLORS[statusKey] }}>&#9679;</span>
-                  {' '}Pool: {poolActive}/{poolLimit} active
-                </div>
-                <div>
-                  Jobs: {agent.jobs.total} ({agent.jobs.running} running)
-                </div>
-                {agent.jobs.successRate !== null && (
-                  <div style={{
-                    color: agent.jobs.successRate >= 80 ? '#4caf50' : agent.jobs.successRate >= 50 ? '#ff9800' : '#f44336',
-                  }}>
-                    Success: {agent.jobs.successRate}%
-                  </div>
-                )}
+            <div className="agent-metrics">
+              <div className="agent-metric-item">
+                <span className={`agent-status-dot ${statusKey}`} />
+                <span>Pool: {poolActive}/{poolLimit} active</span>
               </div>
-
-              {rateLimited && (
-                <div style={{ marginTop: 8, fontSize: 12, color: '#ff9800' }}>
-                  Rate limited until {new Date(agent.pool.rateLimitedUntil).toLocaleTimeString()}
+              <div className="agent-metric-item">
+                <span>Jobs: {agent.jobs.total} ({agent.jobs.running} running)</span>
+              </div>
+              {agent.jobs.successRate !== null && (
+                <div className="agent-metric-item">
+                  <span>Success: <span className={`agent-success-rate ${successRateClass}`}>{agent.jobs.successRate}%</span></span>
                 </div>
               )}
+            </div>
 
-              <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {(agent.capabilities || []).map((cap) => (
-                  <span key={cap} style={{
-                    fontSize: 11,
-                    padding: '1px 6px',
-                    borderRadius: 3,
-                    background: '#2a2a4a',
-                    color: '#aaa',
-                  }}>
-                    {cap}
-                  </span>
-                ))}
+            {rateLimited && (
+              <div className="agent-rate-limited" style={{ marginTop: '8px', fontSize: '12px', color: 'var(--warning)', fontWeight: 600 }}>
+                Rate limited until {new Date(agent.pool.rateLimitedUntil).toLocaleTimeString()}
               </div>
+            )}
 
-              <div style={{ marginTop: 8, fontSize: 11, color: '#666' }}>
-                {agent.command} {agent.defaultRoles?.length > 0 && `| roles: ${agent.defaultRoles.join(', ')}`}
-              </div>
+            <div className="agent-capability-pills">
+              {(agent.capabilities || []).map((cap) => (
+                <span key={cap} className="agent-capability-pill">
+                  {cap}
+                </span>
+              ))}
+            </div>
+
+            <div className="agent-info-footer">
+              {agent.command} {agent.defaultRoles?.length > 0 && `| roles: ${agent.defaultRoles.join(', ')}`}
             </div>
           </div>
         );

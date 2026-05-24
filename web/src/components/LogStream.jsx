@@ -10,14 +10,17 @@ export default function LogStream({ project, initialLog }) {
 
   // Reset when project or initialLog changes
   useEffect(() => {
-    setLines((initialLog || '').split('\n').filter((l) => l.trim()));
+    const splitLines = (initialLog || '').split('\n').filter((l) => l.trim());
+    // Cap initial logs at 150 lines for performance
+    setLines(splitLines.slice(-150));
     setAutoScroll(true);
   }, [initialLog, project]);
 
   useEffect(() => {
     const unsub = subscribe('log:append', (msg) => {
       if (msg.project === project && msg.entry) {
-        setLines((prev) => [...prev, msg.entry]);
+        // Cap lines at 150 lines to prevent DOM bloat
+        setLines((prev) => [...prev, msg.entry].slice(-150));
       }
     });
     return unsub;
@@ -46,32 +49,54 @@ export default function LogStream({ project, initialLog }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const handleClearLogs = () => {
+    setLines([]);
+  };
+
   return (
-    <div style={{ position: 'relative' }}>
-      <div 
-        className="log-stream" 
-        ref={containerRef}
-        onScroll={handleScroll}
-      >
-        {lines.length === 0 ? (
-          <p className="empty">No log entries</p>
-        ) : (
-          lines.map((line, i) => (
-            <div key={i} className="log-line">{line}</div>
-          ))
-        )}
-        <div ref={bottomRef} />
-      </div>
-      {!autoScroll && lines.length > 0 && (
+    <div className="log-stream-container">
+      <div className="log-stream-header">
+        <div className="log-stream-title-group">
+          <span className="log-stream-pulse" data-testid="log-pulse" />
+          <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Live Feed
+          </span>
+        </div>
         <button 
-          className="log-autoscroll-pill" 
-          onClick={handleEnableAutoScroll}
+          className="log-clear-btn" 
+          onClick={handleClearLogs}
           type="button"
         >
-          ↓ Auto-Scroll Paused
+          Clear Logs
         </button>
-      )}
+      </div>
+
+      <div style={{ position: 'relative' }}>
+        <div 
+          className="log-stream" 
+          ref={containerRef}
+          onScroll={handleScroll}
+          style={{ border: 'none', borderRadius: 0 }}
+        >
+          {lines.length === 0 ? (
+            <p className="empty">No log entries</p>
+          ) : (
+            lines.map((line, i) => (
+              <div key={i} className="log-line">{line}</div>
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
+        {!autoScroll && lines.length > 0 && (
+          <button 
+            className="log-autoscroll-pill" 
+            onClick={handleEnableAutoScroll}
+            type="button"
+          >
+            ↓ Auto-Scroll Paused
+          </button>
+        )}
+      </div>
     </div>
   );
 }
-

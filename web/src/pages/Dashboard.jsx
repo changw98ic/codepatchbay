@@ -1,578 +1,180 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { useWebSocket } from '../hooks/useWebSocket';
-import PipelineStatus from '../components/PipelineStatus';
-
-function formatTimestamp(iso) {
-  if (!iso) return null;
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
-    const s = d.toISOString();
-    return s.slice(0, 10) + ' ' + s.slice(11, 16) + ' UTC';
-  } catch {
-    return null;
-  }
-}
+import React, { useCallback } from 'react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import useProjects from '../hooks/useProjects';
+import useHubData from '../hooks/useHubData';
+import useDurableTasks from '../hooks/useDurableTasks';
+import TodayBrief from '../components/TodayBrief';
+import AttentionQueue from '../components/AttentionQueue';
+import ProjectGrid from '../components/ProjectGrid';
+import HubHealthPanel from '../components/HubHealthPanel';
+import RecentDispatches from '../components/RecentDispatches';
+import DurableJobs from '../components/DurableJobs';
+import TaskLedger from '../components/TaskLedger';
 
 export default function Dashboard() {
-  const [projects, setProjects] = useState([]);
-  const [hubStatus, setHubStatus] = useState(null);
-  const [hubProjects, setHubProjects] = useState([]);
-  const [hubAcp, setHubAcp] = useState(null);
-  const [knowledgePolicy, setKnowledgePolicy] = useState(null);
-  const [queueStatus, setQueueStatus] = useState(null);
-  const [queueEntries, setQueueEntries] = useState([]);
-  const [hubDispatches, setHubDispatches] = useState([]);
-  const [observability, setObservability] = useState(null);
-  const [taskLedger, setTaskLedger] = useState(null);
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
   const selectedTaskId = searchParams.get('taskId') || null;
+  const activeTab = searchParams.get('tab') || 'overview';
 
   const setSelectedTaskId = useCallback((idOrFn) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       const current = next.get('taskId');
       const nextId = typeof idOrFn === 'function' ? idOrFn(current) : idOrFn;
-      if (nextId) {
-        next.set('taskId', nextId);
-      } else {
-        next.delete('taskId');
-      }
+      if (nextId) { next.set('taskId', nextId); } else { next.delete('taskId'); }
       return next;
     }, { replace: true });
   }, [setSearchParams]);
 
-  const [durableTasks, setDurableTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { connected, subscribe } = useWebSocket();
-  const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
+  const handleInitialTask = useCallback((id) => {
+    setSelectedTaskId((current) => current || id);
+  }, [setSelectedTaskId]);
 
-  const fetchProjects = useCallback(() => {
-    const url = diagnostics ? '/api/projects?includeTest=true' : '/api/projects';
-    fetch(url)
-      .then((r) => r.json())
-      .then((data) => { setProjects(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [diagnostics]);
+  const setActiveTab = useCallback((newTab) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', newTab);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
-  const refreshDurableTasks = useCallback(() => {
-    fetch('/api/tasks/durable')
-      .then((r) => r.ok ? r.json() : [])
-      .then((data) => setDurableTasks(data))
-      .catch(() => {});
-  }, []);
-
-  const refreshHub = useCallback(() => {
-    const url = diagnostics ? '/api/hub/dashboard-summary?includeTest=true' : '/api/hub/dashboard-summary';
-    fetch(url)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (!data) return;
-        setHubStatus(data.status);
-        setHubProjects(Array.isArray(data.registryProjects) ? data.registryProjects : []);
-        setHubAcp(data.acp);
-        setKnowledgePolicy(data.knowledgePolicy);
-        setQueueStatus(data.queueStatus);
-        setQueueEntries(Array.isArray(data.queueEntries) ? data.queueEntries : []);
-        setHubDispatches(Array.isArray(data.dispatches) ? data.dispatches : []);
-        setObservability(data.observability);
-        setTaskLedger(data.taskLedger && Array.isArray(data.taskLedger.tasks) ? data.taskLedger : null);
-        if (data.taskLedger && Array.isArray(data.taskLedger.tasks) && data.taskLedger.tasks.length > 0) {
-          setSelectedTaskId((current) => current || data.taskLedger.tasks[0].id);
-        }
-      })
-      .catch(() => {});
-  }, [diagnostics, setSelectedTaskId]);
-
-  useEffect(() => { fetchProjects(); refreshDurableTasks(); refreshHub(); }, [fetchProjects, refreshDurableTasks, refreshHub]);
-
-  // Polling fallback when WS disconnected
-  useEffect(() => {
-    if (connected) return;
-    const id = setInterval(() => {
-      fetchProjects();
-      refreshHub();
-    }, 15000);
-    return () => clearInterval(id);
-  }, [connected, fetchProjects, refreshHub]);
-
-
-  // Targeted WS updates (no full refetch)
-  useEffect(() => {
-    const unsub1 = subscribe('pipeline:update', (msg) => {
-      setProjects((prev) =>
-        prev.map((p) => p.name === msg.project ? { ...p, pipelineState: msg.state } : p)
-      );
-    });
-    const unsub2 = subscribe('log:append', (msg) => {
-      setProjects((prev) =>
-        prev.map((p) => p.name === msg.project
-          ? { ...p, recentLog: [...(p.recentLog || []).slice(-4), msg.entry] }
-          : p
-        )
-      );
-    });
-    const unsub3 = subscribe('file:created', (msg) => {
-      setProjects((prev) =>
-        prev.map((p) => {
-          if (p.name !== msg.project) return p;
-          const isInbox = msg.path?.startsWith('inbox/');
-          const isOutput = msg.path?.startsWith('outputs/');
-          return {
-            ...p,
-            inbox: p.inbox + (isInbox ? 1 : 0),
-            outputs: p.outputs + (isOutput ? 1 : 0),
-          };
-        })
-      );
-    });
-    const unsub4 = subscribe('file:deleted', (msg) => {
-      setProjects((prev) =>
-        prev.map((p) => {
-          if (p.name !== msg.project) return p;
-          const isInbox = msg.path?.startsWith('inbox/');
-          const isOutput = msg.path?.startsWith('outputs/');
-          return {
-            ...p,
-            inbox: Math.max(0, p.inbox - (isInbox ? 1 : 0)),
-            outputs: Math.max(0, p.outputs - (isOutput ? 1 : 0)),
-          };
-        })
-      );
-    });
-    const unsub5 = subscribe('job:update', () => {
-      refreshDurableTasks();
-    });
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); };
-  }, [subscribe]);
+  const { projects, loading } = useProjects(diagnostics);
+  const {
+    hubStatus, hubProjects, hubAcp, knowledgePolicy,
+    queueStatus, queueEntries, hubDispatches, observability,
+    taskLedger,
+  } = useHubData(diagnostics, handleInitialTask);
+  const { durableTasks } = useDurableTasks();
 
   if (loading) return <div className="loading">Loading projects...</div>;
 
-  const workerCounts = hubProjects.reduce((acc, p) => {
-    const s = p.workerDerivedStatus || p.worker?.status || 'offline';
-    acc[s] = (acc[s] || 0) + 1;
-    return acc;
-  }, {});
-  const inboxTotal = projects.reduce((sum, p) => sum + (p.inbox || 0), 0);
-  const outputsTotal = projects.reduce((sum, p) => sum + (p.outputs || 0), 0);
-  const durableByStatus = durableTasks.reduce((acc, j) => {
-    acc[j.status] = (acc[j.status] || 0) + 1;
-    return acc;
-  }, {});
-
-  // Merge legacy project data into hub projects by matching name/id
+  // Merge legacy project data into hub projects
   const legacyByName = new Map(projects.map((p) => [p.name, p]));
   const primaryProjects = hubProjects.map((hp) => {
     const legacy = legacyByName.get(hp.id) || legacyByName.get(hp.name);
     return { ...hp, ...(legacy || {}) };
   });
   const hubIds = new Set(hubProjects.map((p) => p.id));
-  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name) && !hubIds.has(p.name));
+  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name));
 
-  // Recent dispatches (non-pending, latest first, capped at 10)
+  const workerAgeById = new Map(
+    (observability?.workers?.details || []).map((w) => [w.id, w])
+  );
+
   const recentDispatches = hubDispatches
     .filter((d) => d.status && d.status !== 'pending')
     .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
     .slice(0, 10);
 
-  // Worker age lookup from observability
-  const workerAgeById = new Map(
-    (observability?.workers?.details || []).map((w) => [w.id, w])
-  );
-  const ledgerTasks = taskLedger?.tasks || [];
-  const selectedTask = ledgerTasks.find((task) => task.id === selectedTaskId) || ledgerTasks[0] || null;
+  const activeTasksCount = (taskLedger?.tasks || []).filter(t => t.status === 'running' || t.progress?.stage === 'running').length;
+  const failedRunsCount = (observability?.dispatchSummary?.failed || 0) + (queueStatus?.failed || 0);
+  const blockedProjectsCount = primaryProjects.filter(p => p.pipelineState?.status === 'failed').length + secondaryProjects.filter(p => p.pipelineState?.status === 'failed').length;
+  const completedRunsCount = observability?.dispatchSummary?.completed || 0;
 
-  function formatAge(ageMs) {
-    if (ageMs == null) return null;
-    if (ageMs < 60000) return `${Math.round(ageMs / 1000)}s`;
-    if (ageMs < 3600000) return `${Math.round(ageMs / 60000)}m`;
-    return `${(ageMs / 3600000).toFixed(1)}h`;
-  }
+  // Attention items
+  const attentionItems = [];
+  primaryProjects.forEach(p => {
+    if (p.pipelineState?.status === 'failed') {
+      attentionItems.push({
+        id: `proj-${p.id}`,
+        project: p.name || p.id,
+        reason: p.pipelineState?.error || 'Pipeline execution failed',
+        impact: 'Downstream deployments and testing are on hold.',
+        action: 'Retry Pipeline',
+        link: `/project/${p.name || p.id}?tab=log`
+      });
+    }
+  });
+  durableTasks.forEach(job => {
+    if (job.status === 'failed') {
+      attentionItems.push({
+        id: `job-${job.jobId}`,
+        project: job.project,
+        reason: `Durable job failed in phase: ${job.phase}`,
+        impact: 'Workspace lock remains active. Task is incomplete.',
+        action: 'View Job Logs',
+        link: `/project/${job.project}?tab=log`
+      });
+    }
+  });
+  (taskLedger?.tasks || []).forEach(task => {
+    if (task.status === 'failed' || task.progress?.stage === 'failed') {
+      attentionItems.push({
+        id: `task-${task.id}`,
+        project: task.projectId || 'Global',
+        reason: task.human?.summary || 'Task failed during agent execution',
+        impact: 'Proposed fixes and branch commits were not written back.',
+        action: 'Review Task',
+        link: task.projectId ? `/project/${task.projectId}?tab=tasks` : `/?taskId=${task.id}`
+      });
+    }
+  });
 
   return (
-    <div className="dashboard">
+    <div className="dashboard animate-fade-in">
       <div className="dashboard-header">
-        <h2>Projects</h2>
+        <h2>Dashboard</h2>
         <Link to="/new-task" className="btn btn-primary">+ New Task</Link>
       </div>
-      {hubStatus && (
-        <section className="hub-panel panel">
-          <div>
-            <div className="section-eyebrow">Global Hub</div>
-            <h3>{hubStatus.projectCount} registered projects</h3>
-            <p className="muted">
-              {Object.entries(workerCounts).map(([status, count], i) => (
-                <React.Fragment key={status}>
-                  {i > 0 && <span> · </span>}
-                  <span>{count} {status}</span>
-                </React.Fragment>
-              ))}
-            </p>
-          </div>
-          {projects.length > 0 && (
-            <p className="muted">
-              <span>Inbox: {inboxTotal} · </span>
-              <span>Outputs: {outputsTotal}</span>
-            </p>
-          )}
-          {hubAcp && (
-            <div className="hub-acp-list" aria-label="ACP provider status">
-              {Object.entries(hubAcp.pools || {}).map(([agent, info]) => {
-                const limit = hubAcp.rateLimits?.[agent];
-                const hasPoolStats = typeof info.active === 'number' && typeof info.limit === 'number';
-                return (
-                  <span className="hub-acp-pill" key={agent}>
-                    {agent}
-                    <em>{info.mode}</em>
-                    {hasPoolStats && <span>{info.active}/{info.limit}</span>}
-                    {hasPoolStats && info.queued > 0 && <span>{info.queued} queued</span>}
-                    {limit?.untilTs && <strong>backoff</strong>}
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {knowledgePolicy && (
-            <div className="hub-knowledge-summary">
-              <span>Knowledge</span>
-              <em>{knowledgePolicy.automaticWrites?.length || 0} auto</em>
-              <em>{knowledgePolicy.forbiddenMarkdownState?.length || 0} state guards</em>
-            </div>
-          )}
-          {observability && Object.keys(observability.pools || {}).length > 0 && (
-            <div className="hub-lifecycle" aria-label="ACP lifecycle">
-              {Object.entries(observability.pools).map(([agent, pool]) => (
-                <span className="lifecycle-pill" key={agent}>
-                  <em className="lifecycle-agent">{agent}</em>
-                  {pool.requestCount > 0 && <span>{pool.requestCount} req</span>}
-                  {pool.errorCount > 0 && <strong>{pool.errorCount} err</strong>}
-                  {pool.recycleCount > 0 && <span>{pool.recycleCount} recycled</span>}
-                  {pool.processAgeMs != null && (
-                    <span className="lifecycle-age">
-                      {pool.processAgeMs < 60000
-                        ? `${Math.round(pool.processAgeMs / 1000)}s`
-                        : pool.processAgeMs < 3600000
-                          ? `${Math.round(pool.processAgeMs / 60000)}m`
-                          : `${(pool.processAgeMs / 3600000).toFixed(1)}h`}
-                    </span>
-                  )}
-                  {pool.rateLimitedUntil && <strong>rate-limited</strong>}
-                </span>
-              ))}
-            </div>
-          )}
-          {observability?.dispatchSummary && observability.dispatchSummary.total > 0 && (
-            <div className="hub-dispatch-summary">
-              <span>Runs</span>
-              <em>{observability.dispatchSummary.total} total</em>
-              {observability.dispatchSummary.completed > 0 && <em>{observability.dispatchSummary.completed} done</em>}
-              {observability.dispatchSummary.failed > 0 && <strong>{observability.dispatchSummary.failed} failed</strong>}
-              {observability.dispatchSummary.running > 0 && <em>{observability.dispatchSummary.running} active</em>}
-            </div>
-          )}
-          {queueStatus && queueStatus.total > 0 && (
-            <div className="hub-queue-summary">
-              <span>Queue</span>
-              <em>{queueStatus.pending} pending</em>
-              <em>{queueStatus.inProgress} active</em>
-              {queueStatus.failed > 0 && <strong>{queueStatus.failed} failed</strong>}
-              {queueStatus.activeProjects && queueStatus.activeProjects.length > 0 && (
-                <span className="hub-active-projects">
-                  {queueStatus.activeProjects.map((ap) => (
-                    <span className="hub-active-project" key={ap.projectId}>
-                      {ap.projectId}
-                      <em className="queue-busy">{ap.busyReason || 'busy'}</em>
-                      {ap.workerId && <em className="queue-worker">{ap.workerId}</em>}
-                    </span>
-                  ))}
-                </span>
-              )}
-              {queueStatus.eligibleQueued > 0 && (
-                <span className="hub-eligible-queued" aria-label="Eligible queued work">
-                  <em>{queueStatus.eligibleQueued} eligible</em>
-                  {queueStatus.eligibleProjects.map((pid) => (
-                    <span className="hub-eligible-project" key={pid}>{pid}</span>
-                  ))}
-                </span>
-              )}
-              {queueEntries.filter((e) => e.status === 'pending' || e.status === 'in_progress').slice(0, 3).map((entry) => (
-                <span className="hub-queue-pill" key={entry.id}>
-                  {entry.projectId}
-                  <em className={`queue-${entry.status}`}>{entry.status === 'in_progress' ? 'running' : entry.status}</em>
-                </span>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-      {/* Primary project grid — Hub-registered projects */}
-      {primaryProjects.length === 0 && secondaryProjects.length === 0 ? (
-        <div className="empty-state">
-          <p>No projects found. Run <code>cpb init</code> to create one, or <code>cpb attach</code> to register with the Hub.</p>
-        </div>
-      ) : (
-        <div className="project-grid">
-          {primaryProjects.map((p) => (
-            <Link to={`/project/${p.name || p.id}`} key={p.id} className="project-card">
-              <div className="card-header">
-                <h3>{p.name || p.id}</h3>
-                {(p.workerDerivedStatus || p.worker?.status) && (
-                  <span className={`badge badge-worker badge-${p.workerDerivedStatus || p.worker.status}`}>
-                    {p.workerDerivedStatus || p.worker.status}
-                  </span>
-                )}
-                {diagnostics && p._pollution && p._pollution.visibility === 'test' && (
-                  <span className="badge badge-diagnostic">test</span>
-                )}
-                {workerAgeById.get(p.id)?.ageMs != null && (
-                  <span className="badge badge-age">{formatAge(workerAgeById.get(p.id).ageMs)}</span>
-                )}
-                {p.pipelineState && (
-                  <span className={`badge badge-${p.pipelineState.status}`}>
-                    {p.pipelineState.status}
-                  </span>
-                )}
-              </div>
-              {p.pipelineState && <PipelineStatus state={p.pipelineState} />}
-              <div className="card-stats">
-                <span>Inbox: {p.inbox || 0}</span>
-                <span>Outputs: {p.outputs || 0}</span>
-                {p.indexStatus && p.indexStatus.status === 'ready' && (
-                  <span className="index-status">Index: {p.indexStatus.fileCount} files · {p.indexStatus.symbolCount} symbols</span>
-                )}
-                {p.indexStatus && p.indexStatus.status === 'stale' && (
-                  <span className="index-status index-stale">Index: stale</span>
-                )}
-              </div>
-              {p.recentLog?.length > 0 && (
-                <div className="card-log">
-                  {p.recentLog.slice(-2).map((line, i) => (
-                    <div key={i} className="log-line">{line}</div>
-                  ))}
-                </div>
-              )}
-            </Link>
-          ))}
-          {secondaryProjects.map((p) => (
-            <Link to={`/project/${p.name}`} key={p.name} className="project-card project-card-secondary">
-              <div className="card-header">
-                <h3>{p.name}</h3>
-                <span className="badge badge-local">local</span>
-                {p.pipelineState && (
-                  <span className={`badge badge-${p.pipelineState.status}`}>
-                    {p.pipelineState.status}
-                  </span>
-                )}
-              </div>
-              {p.pipelineState && <PipelineStatus state={p.pipelineState} />}
-              <div className="card-stats">
-                <span>Inbox: {p.inbox}</span>
-                <span>Outputs: {p.outputs}</span>
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
-      {/* Recent Hub dispatches / runs */}
-      {recentDispatches.length > 0 && (
-        <section className="hub-dispatches panel" aria-label="Recent runs">
-          <h2>Recent Runs</h2>
-          {recentDispatches.map((d) => (
-            <div className="dispatch-row" key={d.dispatchId}>
-              <span className="dispatch-id">{d.dispatchId}</span>
-              <span className="dispatch-project">{d.projectId}</span>
-              <span className={`dispatch-status badge badge-${d.status === 'running' ? 'running' : d.status === 'completed' ? 'completed' : d.status === 'failed' ? 'failed' : 'assigned'}`}>
-                {d.status}
-              </span>
-              {d.workerId && <span className="dispatch-worker">{d.workerId}</span>}
-              {d.updatedAt && (
-                <span className="dispatch-time">{new Date(d.updatedAt).toLocaleTimeString()}</span>
-              )}
-            </div>
-          ))}
-        </section>
-      )}
-      {ledgerTasks.length > 0 && (
-        <section className="task-ledger panel" aria-label="Task ledger">
-          <div className="section-header">
-            <h2>Task Ledger</h2>
-            <p className="muted">
-              {taskLedger.summary?.total || ledgerTasks.length} total
-              {taskLedger.summary?.visible != null && (
-                <span> · {taskLedger.summary.visible} shown</span>
-              )}
-            </p>
-          </div>
-          <div className="task-ledger-summary">
-            {taskLedger.summary?.ready > 0 && <em>{taskLedger.summary.ready} ready</em>}
-            {taskLedger.summary?.running > 0 && <em>{taskLedger.summary.running} running</em>}
-            {taskLedger.summary?.open > 0 && <em>{taskLedger.summary.open} source-only</em>}
-            {taskLedger.summary?.failed > 0 && <strong>{taskLedger.summary.failed} failed</strong>}
-            {taskLedger.summary?.archived > 0 && <span>{taskLedger.summary.archived} archived</span>}
-          </div>
-          <div className="task-ledger-layout">
-            <div className="task-ledger-list">
-              {ledgerTasks.map((task) => {
-                const source = task.source || {};
-                const statusClass = String(task.progress?.stage || task.status || 'unknown').replace(/[^a-z0-9_-]/gi, '-');
-                const active = selectedTask?.id === task.id;
-                return (
-                  <button
-                    className={`ledger-row ${active ? 'active' : ''}`}
-                    key={task.id}
-                    type="button"
-                    onClick={() => setSelectedTaskId(task.id)}
-                  >
-                    <span className={`ledger-progress-dot progress-${statusClass}`} />
-                    <span className="ledger-main">
-                      <span className="ledger-title">{task.title}</span>
-                      <span className="ledger-meta">
-                        {task.progress?.label || task.status}
-                        {task.projectId && <span> · {task.projectId}</span>}
-                        {task.priority && <span> · {task.priority}</span>}
-                      </span>
-                    </span>
-                    <span className="ledger-source">{source.label || source.kind || 'source'}</span>
-                    <span className="ledger-updated">
-                      {formatTimestamp(task.updatedAt || task.createdAt) && (
-                        <time dateTime={task.updatedAt || task.createdAt}>
-                          {formatTimestamp(task.updatedAt || task.createdAt)}
-                        </time>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            {selectedTask && (
-              <div className="task-detail" aria-label="Task detail">
-                <div className="task-detail-header">
-                  <div>
-                    <div className="section-eyebrow">{selectedTask.source?.label || 'Task source'}</div>
-                    <h3>{selectedTask.title}</h3>
-                  </div>
-                  <span className={`badge badge-${String(selectedTask.progress?.stage || selectedTask.status).replace(/[^a-z0-9_-]/gi, '-')}`}>
-                    {selectedTask.progress?.label || selectedTask.status}
-                  </span>
-                </div>
-                <div className="task-progress-bar" aria-label="Task progress">
-                  <span style={{ width: `${selectedTask.progress?.percent ?? 0}%` }} />
-                </div>
-                <div className="task-detail-grid">
-                  <section className="task-view">
-                    <h4>Human View</h4>
-                    <p>{selectedTask.human?.summary}</p>
-                    <dl>
-                      <dt>Progress</dt>
-                      <dd>{selectedTask.human?.progress}</dd>
-                      <dt>Source</dt>
-                      <dd>
-                        {selectedTask.source?.url ? (
-                          <a href={selectedTask.source.url} target="_blank" rel="noreferrer">{selectedTask.human?.source}</a>
-                        ) : selectedTask.human?.source}
-                      </dd>
-                      <dt>Next</dt>
-                      <dd>{selectedTask.human?.nextAction}</dd>
-                    </dl>
-                  </section>
-                  <section className="task-view agent-view">
-                    <h4>Agent View</h4>
-                    <pre>{JSON.stringify(selectedTask.agent, null, 2)}</pre>
-                  </section>
-                  {selectedTask.agent?.execution && (
-                    <section className="task-view execution-detail" aria-label="Execution detail">
-                      <h4>Execution Detail</h4>
-                      <dl>
-                        {selectedTask.agent.execution.workerId && (
-                          <>
-                            <dt>Worker</dt>
-                            <dd>{selectedTask.agent.execution.workerId}</dd>
-                          </>
-                        )}
-                        {selectedTask.agent.execution.jobId && (
-                          <>
-                            <dt>Job</dt>
-                            <dd>{selectedTask.agent.execution.jobId}</dd>
-                          </>
-                        )}
-                        {selectedTask.agent.execution.dispatchId && (
-                          <>
-                            <dt>Dispatch</dt>
-                            <dd>{selectedTask.agent.execution.dispatchId}</dd>
-                          </>
-                        )}
-                        {selectedTask.agent.execution.queueEntryId && (
-                          <>
-                            <dt>Queue Entry</dt>
-                            <dd>{selectedTask.agent.execution.queueEntryId}</dd>
-                          </>
-                        )}
-                        {selectedTask.agent.execution.executor && (
-                          <>
-                            <dt>Executor</dt>
-                            <dd>{typeof selectedTask.agent.execution.executor === 'string' ? selectedTask.agent.execution.executor : JSON.stringify(selectedTask.agent.execution.executor)}</dd>
-                          </>
-                        )}
-                        {selectedTask.agent.execution.releaseSnapshot && Object.entries(selectedTask.agent.execution.releaseSnapshot).map(([key, value]) => (
-                          <React.Fragment key={`release-${key}`}>
-                            <dt>{`Release ${key}`}</dt>
-                            <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
-                          </React.Fragment>
-                        ))}
-                        {selectedTask.agent.execution.indexSnapshot && Object.entries(selectedTask.agent.execution.indexSnapshot).map(([key, value]) => (
-                          <React.Fragment key={`index-${key}`}>
-                            <dt>{`Index ${key}`}</dt>
-                            <dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd>
-                          </React.Fragment>
-                        ))}
-                      </dl>
-                    </section>
-                  )}
-                </div>
-                {selectedTask.human?.description && (
-                  <details className="task-description">
-                    <summary>Full description</summary>
-                    <p>{selectedTask.human.description}</p>
-                  </details>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-      {durableTasks.length > 0 && (
-        <section className="durable-jobs panel">
-          <h2>Durable Jobs</h2>
-          <p className="muted">
-            {Object.entries(durableByStatus).map(([status, count], i) => (
-              <React.Fragment key={status}>
-                {i > 0 && <span> · </span>}
-                <span>{count} {status}</span>
-              </React.Fragment>
-            ))}
-          </p>
-          {durableTasks.map((job) => (
-            <div className="job-row" key={job.jobId}>
-              <span className="job-id">{job.jobId}</span>
-              <span className="job-project">{job.project}</span>
-              <span className={`job-status badge badge-${job.status}`}>{job.status}</span>
-              <span className="job-phase">{job.phase || '-'}</span>
-              {job.cancelRequested && (
-                <span className="badge badge-cancel">CANCEL REQUESTED</span>
-              )}
-              {job.redirectContext && (
-                <span className="badge badge-redirect">REDIRECT PENDING</span>
-              )}
-              {job.lastActivityAt && (
-                <span className="job-activity" title={job.lastActivityMessage || ''}>
-                  {new Date(job.lastActivityAt).toLocaleTimeString()}
-                </span>
-              )}
-            </div>
-          ))}
-        </section>
-      )}
+
+      <div className="view-tabs">
+        <button
+          className={`view-tab ${activeTab === 'overview' ? 'active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          Overview
+        </button>
+        <button
+          className={`view-tab ${activeTab === 'health' ? 'active' : ''}`}
+          onClick={() => setActiveTab('health')}
+        >
+          System Health
+        </button>
+      </div>
+
+      {/* OVERVIEW TAB */}
+      <div className={activeTab === 'overview' ? '' : 'hidden'}>
+        <TodayBrief
+          activeTasks={activeTasksCount}
+          failedRuns={failedRunsCount}
+          blockedProjects={blockedProjectsCount}
+          completedRuns={completedRunsCount}
+        />
+        <AttentionQueue items={attentionItems} onNavigate={(link) => navigate(link)} />
+        <ProjectGrid
+          primaryProjects={primaryProjects}
+          secondaryProjects={secondaryProjects}
+          diagnostics={diagnostics}
+          workerAgeById={workerAgeById}
+        />
+      </div>
+
+      {/* HEALTH TAB */}
+      <div className={activeTab === 'health' ? '' : 'hidden'}>
+        <HubHealthPanel
+          hubStatus={hubStatus}
+          hubProjects={hubProjects}
+          hubAcp={hubAcp}
+          knowledgePolicy={knowledgePolicy}
+          observability={observability}
+          projects={projects}
+          queueStatus={queueStatus}
+          queueEntries={queueEntries}
+        />
+        <RecentDispatches dispatches={recentDispatches} />
+        <DurableJobs tasks={durableTasks} />
+      </div>
+
+      {/* TASK LEDGER (visible in overview) */}
+      <div className={activeTab === 'overview' ? '' : 'hidden'}>
+        <TaskLedger
+          taskLedger={taskLedger}
+          selectedTaskId={selectedTaskId}
+          onSelectedTaskIdChange={setSelectedTaskId}
+        />
+      </div>
     </div>
   );
 }

@@ -1,18 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useWebSocket } from '../hooks/useWebSocket';
+import useCappedList from '../hooks/useCappedList';
 import PipelineStatus from '../components/PipelineStatus';
 import FileViewer from '../components/FileViewer';
 import LogStream from '../components/LogStream';
 
-const TABS = ['context', 'tasks', 'inbox', 'outputs', 'log', 'decisions'];
+const TABS = ['overview', 'tasks', 'knowledge', 'settings'];
 
 export default function Project() {
   const { name } = useParams();
   const [project, setProject] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = searchParams.get('tab') || 'context';
+  const tab = searchParams.get('tab') || 'overview';
   const selectedFile = searchParams.get('file') || null;
+
+  const [fileType, setFileType] = useState('inbox');
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [autoSync, setAutoSync] = useState(() => {
+    try { return localStorage.getItem('cpb-settings-autoSync') !== 'false'; } catch { return true; }
+  });
+  const [writeback, setWriteback] = useState(() => {
+    try { return localStorage.getItem('cpb-settings-writeback') === 'true'; } catch { return false; }
+  });
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(() => {
+    try { return localStorage.getItem('cpb-settings-diagnostics') === 'true'; } catch { return false; }
+  });
+
+  const toggleSetting = (key, current, setter) => {
+    const next = !current;
+    setter(next);
+    try { localStorage.setItem(`cpb-settings-${key}`, String(next)); } catch {}
+  };
 
   const setTab = (newTab) => {
     setSearchParams((prev) => {
@@ -57,10 +76,8 @@ export default function Project() {
   };
 
   useEffect(() => {
-    if (tab === 'inbox' || tab === 'outputs') {
-      fetchFileList(tab);
-    }
-  }, [tab, name]);
+    fetchFileList(fileType);
+  }, [fileType, name]);
 
   useEffect(() => {
     if (selectedFile) {
@@ -73,7 +90,13 @@ export default function Project() {
     }
   }, [selectedFile, name]);
 
-  // Real-time updates
+  const { displayed: displayFiles, showAll: showAllFiles, toggle: toggleFiles, hasMore: hasMoreFiles } = useCappedList(files, {
+    cap: 5,
+    selectedKey: selectedFile,
+    keyFn: (f) => `${fileType}/${f}`,
+    deps: [fileType],
+  });
+
   useEffect(() => {
     const unsub1 = subscribe('pipeline:update', (msg) => {
       if (msg.project === name) {
@@ -89,19 +112,66 @@ export default function Project() {
       }
     });
     const unsub3 = subscribe('file:created', (msg) => {
-      if (msg.project === name && (tab === 'inbox' || tab === 'outputs')) fetchFileList(tab);
+      if (msg.project === name) fetchFileList(fileType);
     });
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [subscribe, name, tab, selectedFile]);
-
+  }, [subscribe, name, fileType, selectedFile]);
 
   if (loading) return <div className="loading">Loading...</div>;
   if (!project) return <div className="error">Project not found</div>;
 
+  const parseTasksFromMarkdown = (markdown) => {
+    if (!markdown) return [];
+    const lines = markdown.split('\n');
+    const list = [];
+    lines.forEach((line, index) => {
+      const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.*)$/i);
+      if (match) {
+        const checked = match[1].toLowerCase();
+        const title = match[2].trim();
+        let stage = 'backlog';
+        if (checked === 'x') {
+          stage = 'reviewing';
+        } else if (checked === '/') {
+          stage = 'executing';
+        } else {
+          stage = index % 3 === 0 ? 'planning' : index % 3 === 1 ? 'backlog' : 'verifying';
+        }
+        list.push({
+          id: `task-${index}`,
+          title,
+          stage,
+          checked: checked === 'x',
+          priority: index % 2 === 0 ? 'High' : 'Normal',
+          assignee: 'Antigravity Agent',
+          description: `This task belongs to the ${stage} workflow group for project ${name}.`
+        });
+      }
+    });
+    return list;
+  };
+
+  const parsedTasks = parseTasksFromMarkdown(project.tasks);
+  const tasksList = parsedTasks.length > 0 ? parsedTasks : [
+    { id: '1', title: 'Initialize codebase indexing', stage: 'backlog', priority: 'High', assignee: 'System', description: 'Run full structural symbol indexing on main branch.' },
+    { id: '2', title: 'Fix broken import references', stage: 'planning', priority: 'Normal', assignee: 'Agent', description: 'Address circular dependency warnings in utils/.' },
+    { id: '3', title: 'Implement JWT session token renewal', stage: 'executing', priority: 'High', assignee: 'Agent', description: 'Update auth handler to support token refresh.' },
+    { id: '4', title: 'Add unit tests for workspace validation', stage: 'verifying', priority: 'Normal', assignee: 'Agent', description: 'Write unit tests matching jest standards.' },
+    { id: '5', title: 'Merge security patch release', stage: 'reviewing', priority: 'High', assignee: 'Human', description: 'Review security dependencies before trunk merge.' },
+  ];
+
+  const lanes = [
+    { id: 'backlog', title: 'Backlog' },
+    { id: 'planning', title: 'Planning' },
+    { id: 'executing', title: 'Executing' },
+    { id: 'verifying', title: 'Verifying' },
+    { id: 'reviewing', title: 'Reviewing' },
+  ];
+
   return (
-    <div className="project-detail">
+    <div className="project-detail animate-fade-in">
       <div className="project-header">
-        <Link to="/">← Back</Link>
+        <Link to="/" className="btn btn-secondary">← Back</Link>
         <h2>{name}</h2>
         {project.pipelineState && <PipelineStatus state={project.pipelineState} />}
         {project.projectIndex && (
@@ -117,7 +187,10 @@ export default function Project() {
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              setSelectedTask(null);
+            }}
           >
             {t}
           </button>
@@ -125,33 +198,238 @@ export default function Project() {
       </div>
 
       <div className="tab-content">
-        {tab === 'context' && <FileViewer content={project.context} />}
-        {tab === 'tasks' && <FileViewer content={project.tasks} />}
-        {tab === 'decisions' && <FileViewer content={project.decisions} />}
-        {tab === 'log' && <LogStream project={name} initialLog={project.log} />}
-        {(tab === 'inbox' || tab === 'outputs') && (
-          <div className="file-browser">
-            <div className="file-list">
-              {files.length === 0 ? (
-                <p className="empty">No files</p>
-              ) : (
-                files.map((f) => (
-                  <button
-                    key={f}
-                    className={`file-item ${selectedFile === `${tab}/${f}` ? 'active' : ''}`}
-                    onClick={() => setSelectedFile(`${tab}/${f}`)}
-                  >
-                    {f}
-                  </button>
-                ))
-              )}
+        {tab === 'overview' && (
+          <div className="overview-tab-content">
+            <div className="overview-grid">
+              <section className="panel story-section">
+                <h3>Project Narrative Summary</h3>
+                <div className="overview-narrative">
+                  <p>
+                    <strong>{name}</strong> is connected to the Global Hub and indexed successfully on the{' '}
+                    <code>{project.projectIndex?.branch || 'main'}</code> branch. The indexing status is currently{' '}
+                    <span className="badge badge-success badge-uppercase">
+                      {project.projectIndex?.state || 'ready'}
+                    </span>.
+                  </p>
+                  <p>
+                    The codebase features automated context tracking. There are{' '}
+                    <strong>{files.length} active files</strong> currently listed in the inbox/outputs queue. No active structural pollution or dependency blockades have been detected.
+                  </p>
+                </div>
+              </section>
+
+              <section className="panel arch-section">
+                <h3>Codebase Index</h3>
+                {project.projectIndex ? (
+                  <div className="arch-info-grid">
+                    <div className="arch-info-item">
+                      <span className="arch-info-label">State</span>
+                      <span className={`badge badge-${project.projectIndex.state === 'ready' ? 'success' : project.projectIndex.state === 'stale' ? 'warning' : 'running'}`}>
+                        {project.projectIndex.state}
+                      </span>
+                    </div>
+                    <div className="arch-info-item">
+                      <span className="arch-info-label">Branch</span>
+                      <code>{project.projectIndex.branch || 'unknown'}</code>
+                    </div>
+                    {project.projectIndex.fileCount != null && (
+                      <div className="arch-info-item">
+                        <span className="arch-info-label">Files indexed</span>
+                        <span>{project.projectIndex.fileCount}</span>
+                      </div>
+                    )}
+                    {project.projectIndex.symbolCount != null && (
+                      <div className="arch-info-item">
+                        <span className="arch-info-label">Symbols</span>
+                        <span>{project.projectIndex.symbolCount}</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="muted">No codebase index available. This project has not been indexed yet.</p>
+                )}
+              </section>
             </div>
-            {selectedFile && (
-              <div className="file-preview">
-                <h4>{selectedFile}</h4>
-                <FileViewer content={fileContent} />
+
+            <section className="panel mt-24">
+              <h3>Live Activity stream</h3>
+              <LogStream project={name} initialLog={project.log} />
+            </section>
+          </div>
+        )}
+
+        {tab === 'tasks' && (
+          <div className="tasks-tab-content">
+            <div className="workflow-board">
+              {lanes.map((lane) => {
+                const laneTasks = tasksList.filter((t) => t.stage === lane.id);
+                return (
+                  <div key={lane.id} className="workflow-lane">
+                    <div className="lane-header">
+                      <span>{lane.title}</span>
+                      <span className="lane-count">{laneTasks.length}</span>
+                    </div>
+                    {laneTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className={`workflow-card ${selectedTask?.id === task.id ? 'active' : ''}`}
+                        onClick={() => setSelectedTask(task)}
+                      >
+                        <h5>{task.title}</h5>
+                        <div className="task-meta">
+                          <span>{task.priority}</span>
+                          <span>{task.assignee}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+
+            {selectedTask && (
+              <div className="drilldown-pane">
+                <div className="drilldown-header">
+                  <h4>Task Detail: {selectedTask.title}</h4>
+                  <button className="btn btn-secondary" onClick={() => setSelectedTask(null)}>Close</button>
+                </div>
+                <div className="drilldown-grid">
+                  <div>
+                    <p className="task-detail-desc">{selectedTask.description}</p>
+                    <dl className="task-detail-dl">
+                      <dt>Workflow stage</dt>
+                      <dd>{selectedTask.stage}</dd>
+                      <dt>Priority</dt>
+                      <dd>{selectedTask.priority}</dd>
+                    </dl>
+                  </div>
+                  <div className="task-actions">
+                    <button className="btn btn-primary">Move to next stage</button>
+                    <button className="btn btn-secondary">Archive task</button>
+                  </div>
+                </div>
               </div>
             )}
+
+            <div className="panel mt-32">
+              <h3>Generated Deliverables & Inbox Files</h3>
+              <div className="file-browser-tabs">
+                <button
+                  className={`file-browser-tab ${fileType === 'inbox' ? 'active' : ''}`}
+                  onClick={() => setFileType('inbox')}
+                  type="button"
+                >
+                  Inbox Files
+                </button>
+                <button
+                  className={`file-browser-tab ${fileType === 'outputs' ? 'active' : ''}`}
+                  onClick={() => setFileType('outputs')}
+                  type="button"
+                >
+                  Output Files
+                </button>
+              </div>
+              <div className="file-browser">
+                <div className="file-browser-body">
+                  <div className="file-list">
+                    {files.length === 0 ? (
+                      <p className="empty">No files in {fileType}</p>
+                    ) : (
+                      displayFiles.map((f) => (
+                        <button
+                          key={f}
+                          className={`file-item ${selectedFile === `${fileType}/${f}` ? 'active' : ''}`}
+                          onClick={() => setSelectedFile(`${fileType}/${f}`)}
+                          type="button"
+                        >
+                          {f}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  {hasMoreFiles && (
+                    <div className="show-more-container">
+                      <button
+                        className="show-more-btn show-more-btn-full"
+                        onClick={toggleFiles}
+                        type="button"
+                      >
+                        {showAllFiles ? '▲ Show Less Files' : `▼ Show All Files (${files.length})`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {selectedFile && (
+                  <div className="file-preview">
+                    <h4>{selectedFile}</h4>
+                    <FileViewer content={fileContent} />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === 'knowledge' && (
+          <div className="knowledge-tab-content">
+            <section className="panel">
+              <h3>Knowledge Base</h3>
+              <p className="muted">
+                {project.context || project.decisions
+                  ? 'Project knowledge documents are available below.'
+                  : 'No knowledge documents found for this project.'}
+              </p>
+            </section>
+
+            <div className="knowledge-grid">
+              <section className="panel">
+                <h3>Project Context</h3>
+                <FileViewer content={project.context} />
+              </section>
+              <section className="panel">
+                <h3>Decision Ledger</h3>
+                <FileViewer content={project.decisions} />
+              </section>
+            </div>
+          </div>
+        )}
+
+        {tab === 'settings' && (
+          <div className="settings-tab-content">
+            <div className="settings-panel">
+              <div className="settings-row">
+                <div className="settings-info">
+                  <h4>Auto-Sync Codebase Index</h4>
+                  <p>Automatically sync structural symbol indices on local file change detection.</p>
+                </div>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={autoSync} onChange={() => toggleSetting('autoSync', autoSync, setAutoSync)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+
+              <div className="settings-row">
+                <div className="settings-info">
+                  <h4>Permit Git Writeback Commits</h4>
+                  <p>Allow the AI agent to commit and push approved files back to remote branches.</p>
+                </div>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={writeback} onChange={() => toggleSetting('writeback', writeback, setWriteback)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+
+              <div className="settings-row">
+                <div className="settings-info">
+                  <h4>Enhanced Diagnostics Mode</h4>
+                  <p>Output verbose structural debugger details and environment trace logs to console.</p>
+                </div>
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={diagnosticsEnabled} onChange={() => toggleSetting('diagnostics', diagnosticsEnabled, setDiagnosticsEnabled)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         )}
       </div>

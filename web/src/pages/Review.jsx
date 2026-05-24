@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import ReviewChat from '../components/ReviewChat';
+import { reviewBadgeClass } from '../utils/badge';
+import useCappedList from '../hooks/useCappedList';
 
 export default function Review() {
   const [sessions, setSessions] = useState([]);
@@ -10,7 +12,22 @@ export default function Review() {
   const [projects, setProjects] = useState([]);
   const [evolveStatus, setEvolveStatus] = useState(null);
   const [evolveHistory, setEvolveHistory] = useState([]);
+  const [sessionQuery, setSessionQuery] = useState('');
   const { subscribe } = useWebSocket();
+
+  const filteredSessions = useMemo(() =>
+    sessions.filter(s =>
+      s.sessionId.toLowerCase().includes(sessionQuery.toLowerCase()) ||
+      s.status.toLowerCase().includes(sessionQuery.toLowerCase())
+    ), [sessions, sessionQuery]
+  );
+
+  const { displayed: displaySessions, showAll: showAllSessions, toggle: toggleSessions, hasMore: hasMoreSessions } = useCappedList(filteredSessions, {
+    cap: 5,
+    selectedKey: activeId,
+    keyFn: (s) => s.sessionId,
+    deps: [sessionQuery],
+  });
 
   useEffect(() => {
     fetch('/api/projects')
@@ -64,9 +81,8 @@ export default function Review() {
   }, [loadSessions, loadEvolve]);
 
   useEffect(() => {
-    const unsub = subscribe('review:update', (msg) => {
-      if (msg.sessionId === activeId) loadSessions();
-      else loadSessions();
+    const unsub = subscribe('review:update', () => {
+      loadSessions();
     });
     return unsub;
   }, [subscribe, activeId, loadSessions]);
@@ -185,18 +201,60 @@ export default function Review() {
         </div>
 
         <div className="session-list">
-          <h3>Sessions</h3>
-          {sessions.map((s) => (
-            <button
-              key={s.sessionId}
-              className={`session-item ${s.sessionId === activeId ? 'active' : ''}`}
-              onClick={() => selectSession(s.sessionId)}
-            >
-              <span className="session-id">{s.sessionId.slice(-8)}</span>
-              <span className={`badge badge-${s.status === 'user_review' ? 'running' : s.status === 'dispatched' ? 'completed' : s.status === 'expired' ? 'failed' : 'idle'}`}>{s.status}</span>
-            </button>
-          ))}
-          {sessions.length === 0 && <div className="empty">No sessions</div>}
+          <div className="session-list-header">
+            <h3>Sessions</h3>
+            <span className="session-list-count">{sessions.length} total</span>
+          </div>
+
+          <div className="session-search-wrapper">
+            <input
+              type="text"
+              placeholder="Search sessions..."
+              value={sessionQuery}
+              onChange={(e) => setSessionQuery(e.target.value)}
+              className="session-search-input"
+            />
+            {sessionQuery && (
+              <button
+                onClick={() => setSessionQuery('')}
+                className="session-search-clear"
+                type="button"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <div className="session-list-body">
+            {filteredSessions.length === 0 ? (
+              <div className="empty">No sessions found</div>
+            ) : (
+              <>
+                {displaySessions.map((s) => (
+                  <button
+                    key={s.sessionId}
+                    className={`session-item ${s.sessionId === activeId ? 'active' : ''}`}
+                    onClick={() => selectSession(s.sessionId)}
+                    type="button"
+                  >
+                    <span className="session-id">{s.sessionId.slice(-8)}</span>
+                    <span className={`badge badge-${reviewBadgeClass(s.status)}`}>{s.status}</span>
+                  </button>
+                ))}
+                {hasMoreSessions && (
+                  <div className="show-more-container">
+                    <button
+                      className="show-more-btn show-more-btn-full"
+                      onClick={toggleSessions}
+                      type="button"
+                    >
+                      {showAllSessions ? '▲ Show Less' : `▼ Show All (${filteredSessions.length})`}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -205,7 +263,7 @@ export default function Review() {
           <>
             <div className="review-header">
               <h2>{activeSession.sessionId}</h2>
-              <span className={`badge badge-${activeSession.status === 'user_review' ? 'running' : activeSession.status === 'dispatched' ? 'completed' : activeSession.status === 'expired' ? 'failed' : 'idle'}`}>
+              <span className={`badge badge-${reviewBadgeClass(activeSession.status)}`}>
                 {activeSession.status}
               </span>
               {activeSession.status === 'idle' && (
