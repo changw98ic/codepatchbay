@@ -7,7 +7,7 @@ import os from "node:os";
 import { promisify } from "node:util";
 
 import { createJob, startPhase, completePhase, failJob, getJob } from "../server/services/job-store.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent, readEvents } from "../server/services/event-store.js";
 import { jobToPipelineState, jobToQueueRow } from "../server/services/job-projection.js";
 import { buildPhaseContextPacket } from "../server/services/phase-context.js";
 import { buildBudgetReport } from "../server/services/prompt-budget.js";
@@ -1089,6 +1089,118 @@ describe("pipeline-contract", () => {
       assert.equal(prRow.status, "pr-opened");
       assert.equal(prRow.pr.url, "https://github.com/org/repo/pull/456");
       assert.equal(prRow.nextHumanAction.kind, "review_pr");
+    });
+  });
+
+  describe("Test 12: D39 Fallback routing", () => {
+    it("falls back to configured fallback executor when preferred is unavailable", async () => {
+      const routing = {
+        bugfix: {
+          workflow: "standard",
+          executor: "claude",
+          fallback: { executor: "codex" },
+        },
+      };
+      const agentAvailability = {
+        claude: { available: false, reason: "rate_limited" },
+        codex: { available: true },
+      };
+
+      const job = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "fix login redirect bug",
+        routingCategory: "bugfix",
+        routing,
+        agentAvailability,
+      });
+
+      assert.equal(job.executor, "codex");
+      assert.ok(job.executorSelection);
+      assert.equal(job.executorSelection.fallbackApplied, true);
+      assert.equal(job.executorSelection.preferredAgent, "claude");
+      assert.equal(job.executorSelection.selectedAgent, "codex");
+      assert.ok(
+        job.executorSelection.reason.includes("rate_limited"),
+        `reason should mention rate_limited, got: ${job.executorSelection.reason}`,
+      );
+
+      const events = await readEvents(tmpDir, "test-proj", job.jobId);
+      const routingEvent = events.find((e) => e.type === "agent_routing_decision");
+      assert.ok(routingEvent, "should emit agent_routing_decision event");
+      assert.equal(routingEvent.preferredAgent, "claude");
+      assert.equal(routingEvent.selectedAgent, "codex");
+      assert.equal(routingEvent.fallbackApplied, true);
+    });
+
+    it("records fallback decision in job metadata and audit log", async () => {
+      const routing = {
+        frontend: {
+          workflow: "standard",
+          executor: "codex",
+          fallback: { executor: "claude" },
+        },
+      };
+      const agentAvailability = {
+        codex: { available: false, reason: "maintenance" },
+        claude: { available: true },
+      };
+
+      const job = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "add export csv feature",
+        routingCategory: "frontend",
+        routing,
+        agentAvailability,
+      });
+
+      assert.equal(job.executor, "claude");
+      assert.ok(job.executorSelection);
+      assert.equal(job.executorSelection.fallbackApplied, true);
+      assert.equal(job.executorSelection.preferredAgent, "codex");
+      assert.equal(job.executorSelection.selectedAgent, "claude");
+
+      const events = await readEvents(tmpDir, "test-proj", job.jobId);
+      const routingEvent = events.find((e) => e.type === "agent_routing_decision");
+      assert.ok(routingEvent);
+      assert.equal(routingEvent.reason, "maintenance");
+      assert.ok(routingEvent.jobId);
+      assert.equal(routingEvent.project, "test-proj");
+    });
+
+    it("does not fall back when policy forbids it", async () => {
+      const routing = {
+        security: {
+          workflow: "complex",
+          executor: "claude",
+          fallback: { executor: "codex" },
+          allowFallback: false,
+        },
+      };
+      const agentAvailability = {
+        claude: { available: false, reason: "rate_limited" },
+        codex: { available: true },
+      };
+
+      const job = await createJob(tmpDir, {
+        project: "test-proj",
+        task: "hotfix prod crash",
+        routingCategory: "security",
+        routing,
+        agentAvailability,
+      });
+
+      assert.equal(job.executor, "claude");
+      assert.ok(job.executorSelection);
+      assert.equal(job.executorSelection.fallbackApplied, false);
+
+      const events = await readEvents(tmpDir, "test-proj", job.jobId);
+      const routingEvent = events.find((e) => e.type === "agent_routing_decision");
+      assert.ok(routingEvent);
+      assert.equal(routingEvent.fallbackApplied, false);
+      assert.ok(
+        routingEvent.reason.includes("fallbackAllowed") || routingEvent.reason.includes("fallback allowed"),
+        `reason should mention fallback policy, got: ${routingEvent.reason}`,
+      );
     });
   });
 });

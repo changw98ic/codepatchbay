@@ -455,6 +455,7 @@ export function materializeJob(events) {
       case "job_created":
         state.task = event.task ?? state.task;
         state.executor = event.executor ?? state.executor;
+        state.executorSelection = event.executorSelection ?? state.executorSelection;
         state.status = "running";
         state.createdAt = event.ts ?? state.createdAt;
         state.blockedReason = null;
@@ -464,6 +465,20 @@ export function materializeJob(events) {
         if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
         if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
         terminal = false;
+        break;
+      case "agent_routing_decision":
+        state.executorSelection = event.executorSelection ?? {
+          role: event.role ?? null,
+          category: event.category ?? null,
+          workflow: event.workflow ?? null,
+          preferredAgent: event.preferredAgent ?? null,
+          selectedAgent: event.selectedAgent ?? null,
+          fallbackAgent: event.fallbackAgent ?? null,
+          fallbackAllowed: event.fallbackAllowed ?? null,
+          fallbackApplied: event.fallbackApplied ?? null,
+          reason: event.reason ?? null,
+        };
+        if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
         break;
       case "worktree_created":
         state.worktree = event.worktree ?? event.path ?? state.worktree;

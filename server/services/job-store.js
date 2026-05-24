@@ -5,11 +5,17 @@ import {
   readCheckpoint,
   readEvents,
 } from "./event-store.js";
-import { getWorkflow } from "../../core/workflow/definition.js";
+import { getWorkflow, isWorkflowName } from "../../core/workflow/definition.js";
 import { appendEvent } from "./event-store.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 import { recordPerformance } from "./performance-tracker.js";
 import { recordQualityScore } from "./performance-tracker.js";
+import {
+  assertValidRoutingRules,
+  fallbackAgentForRole,
+  resolveEffectiveRouting,
+  selectAgentWithFallback,
+} from "../../core/agents/routing.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -68,9 +74,34 @@ export async function createJob(
     queueEntryId = null,
     indexSnapshot = null,
     indexFreshness = null,
+    routingCategory = null,
+    routing = null,
+    agentAvailability = null,
   }
 ) {
   const jobId = providedJobId || makeJobId(ts);
+  let selectedWorkflow = workflow;
+  let selectedExecutor = executor;
+  let executorSelection = null;
+
+  if (!selectedExecutor && (routingCategory || routing)) {
+    assertValidRoutingRules(routing, { isWorkflowName });
+    const routingSelection = resolveEffectiveRouting(routingCategory, routing, { workflow });
+    selectedWorkflow = routingSelection.workflow || selectedWorkflow;
+    executorSelection = selectAgentWithFallback({
+      role: "executor",
+      preferredAgent: routingSelection.executor,
+      fallbackAgent: fallbackAgentForRole(routingSelection, "executor"),
+      agentAvailability,
+      allowFallback: routingSelection.allowFallback,
+    });
+    selectedExecutor = executorSelection.selectedAgent || null;
+    executorSelection = {
+      ...executorSelection,
+      category: routingSelection.category || routingCategory || null,
+      workflow: selectedWorkflow,
+    };
+  }
 
   // Guard: reject creation with an existing job id
   if (providedJobId) {
@@ -88,11 +119,12 @@ export async function createJob(
     jobId,
     project,
     task,
-    workflow,
-    executor,
+    workflow: selectedWorkflow,
+    executor: selectedExecutor,
     queueEntryId,
     ts,
   };
+  if (executorSelection) event.executorSelection = executorSelection;
   if (sourceContext && typeof sourceContext === "object") {
     event.sourceContext = sourceContext;
   }
@@ -104,6 +136,24 @@ export async function createJob(
     event.indexFreshness = indexFreshness;
   }
   await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
+  if (executorSelection) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "agent_routing_decision",
+      jobId,
+      project,
+      role: "executor",
+      category: executorSelection.category,
+      workflow: selectedWorkflow,
+      preferredAgent: executorSelection.preferredAgent,
+      selectedAgent: executorSelection.selectedAgent,
+      fallbackAgent: executorSelection.fallbackAgent,
+      fallbackAllowed: executorSelection.fallbackAllowed,
+      fallbackApplied: executorSelection.fallbackApplied,
+      reason: executorSelection.reason,
+      executorSelection,
+      ts,
+    }, { dataRoot });
+  }
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
