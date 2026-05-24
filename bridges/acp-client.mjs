@@ -596,9 +596,13 @@ export class AcpClient {
     const terminateTimer = setTimeout(() => {
       if (!this.closed) this.terminateAgent("SIGTERM");
     }, 500).unref();
-    const waitTimer = new Promise((resolve) => setTimeout(resolve, 1_000));
+    const killTimer = setTimeout(() => {
+      if (!this.closed) this.terminateAgent("SIGKILL");
+    }, 1_500).unref();
+    const waitTimer = new Promise((resolve) => setTimeout(resolve, 2_000));
     await Promise.race([closed, waitTimer]);
     clearTimeout(terminateTimer);
+    clearTimeout(killTimer);
   }
 
   request(method, params) {
@@ -1020,7 +1024,25 @@ async function main() {
   const terminalPolicy = process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow";
   const toolPolicy = await parseToolPolicy();
 
-  await new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy }).run();
+  const client = new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy });
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const code = signal === "SIGINT" ? 130 : 143;
+    client.close().finally(() => process.exit(code));
+  };
+  const onSigint = () => shutdown("SIGINT");
+  const onSigterm = () => shutdown("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  try {
+    await client.run();
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

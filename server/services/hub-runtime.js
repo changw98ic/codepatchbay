@@ -16,6 +16,14 @@ async function writeAtomic(filePath, content) {
   await rename(tmp, filePath);
 }
 
+async function readRuntimeState(statePath) {
+  try {
+    return JSON.parse(await readFile(statePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function buildRuntimeMeta(cpbRoot, hubRoot) {
   return {
     pid: process.pid,
@@ -26,6 +34,17 @@ function buildRuntimeMeta(cpbRoot, hubRoot) {
     runtime: "node",
     health: "alive",
   };
+}
+
+function sameRuntime(a, b) {
+  return Boolean(
+    a &&
+    b &&
+    a.pid === b.pid &&
+    a.startedAt === b.startedAt &&
+    path.resolve(a.cpbRoot || "") === path.resolve(b.cpbRoot || "") &&
+    path.resolve(a.hubRoot || "") === path.resolve(b.hubRoot || ""),
+  );
 }
 
 export function getHubRuntime(cpbRoot, hubRoot) {
@@ -41,6 +60,10 @@ export function getHubRuntime(cpbRoot, hubRoot) {
     statePath,
 
     async persist() {
+      const current = await readRuntimeState(statePath);
+      if (current && !sameRuntime(current, meta) && current.health !== "dead" && isPidAlive(current.pid)) {
+        return { ...current, statePath, skipped: "live-owner-present" };
+      }
       await writeAtomic(statePath, `${JSON.stringify(meta, null, 2)}\n`);
       return meta;
     },
@@ -50,6 +73,10 @@ export function getHubRuntime(cpbRoot, hubRoot) {
     },
 
     async markDead() {
+      const current = await readRuntimeState(statePath);
+      if (current && !sameRuntime(current, meta) && current.health !== "dead" && isPidAlive(current.pid)) {
+        return { ...current, statePath, skipped: "live-owner-present" };
+      }
       const deadMeta = { ...meta, health: "dead", stoppedAt: new Date().toISOString() };
       await writeAtomic(statePath, `${JSON.stringify(deadMeta, null, 2)}\n`);
       return deadMeta;

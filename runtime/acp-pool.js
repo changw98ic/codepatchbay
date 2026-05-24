@@ -21,6 +21,8 @@ async function getRegistry() {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = 300_000;
+const CHILD_TERM_GRACE_MS = 500;
+const CHILD_KILL_GRACE_MS = 1_500;
 
 export class RateLimitError extends Error {
   constructor(agent, untilTs, message = "ACP provider is rate limited") {
@@ -117,6 +119,45 @@ function booleanOption(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   if (typeof value === "boolean") return value;
   return !/^(0|false|no|off)$/i.test(String(value).trim());
+}
+
+function signalChild(child, signal) {
+  if (!child?.pid) return;
+  try {
+    if (child.detached && process.platform !== "win32") {
+      process.kill(-child.pid, signal);
+    } else {
+      child.kill(signal);
+    }
+  } catch {
+    try { child.kill(signal); } catch {}
+  }
+}
+
+function terminateChild(child) {
+  return new Promise((resolve) => {
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(termTimer);
+      clearTimeout(killTimer);
+      child.removeListener("close", finish);
+      resolve();
+    };
+    const termTimer = setTimeout(() => signalChild(child, "SIGTERM"), 0);
+    const killTimer = setTimeout(() => {
+      signalChild(child, "SIGKILL");
+      setTimeout(finish, CHILD_KILL_GRACE_MS).unref();
+    }, CHILD_TERM_GRACE_MS);
+    termTimer.unref();
+    killTimer.unref();
+    child.once("close", finish);
+  });
 }
 
 export class AcpPool {
@@ -488,6 +529,7 @@ export class AcpPool {
       const child = spawn(command, args, {
         cwd: this.cpbRoot,
         env: { ...process.env, CPB_ROOT: this.cpbRoot },
+        detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
@@ -496,9 +538,11 @@ export class AcpPool {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        child.kill("SIGTERM");
-        reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
+        terminateChild(child).finally(() => {
+          reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
+        });
       }, timeoutMs);
+      timer.unref();
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
       child.on("error", (error) => {

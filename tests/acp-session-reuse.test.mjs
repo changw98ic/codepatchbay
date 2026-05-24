@@ -1,5 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { AcpPool, resetManagedAcpPoolsForTests } from "../runtime/acp-pool.js";
 
 function fakeRunner(responses = []) {
@@ -17,6 +20,7 @@ function fakeRunner(responses = []) {
 describe("AcpPool session reuse", () => {
   let pool;
   let savedEnv;
+  let tempDirs = [];
 
   beforeEach(() => {
     resetManagedAcpPoolsForTests();
@@ -35,7 +39,36 @@ describe("AcpPool session reuse", () => {
     process.env = savedEnv;
     if (pool) pool.stop();
     resetManagedAcpPoolsForTests();
+    for (const dir of tempDirs) rm(dir, { recursive: true, force: true }).catch(() => {});
+    tempDirs = [];
   });
+
+  async function tempDir(prefix) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  function isPidAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return err.code === "EPERM";
+    }
+  }
+
+  async function waitForPid(file, timeoutMs = 1000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const pid = Number(await readFile(file, "utf8"));
+        if (pid) return pid;
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`pid file not written: ${file}`);
+  }
 
   it("increments sessionRequestCount on same-agent requests", async () => {
     const { runner, calls } = fakeRunner(["a", "b", "c"]);
@@ -145,5 +178,33 @@ describe("AcpPool session reuse", () => {
     // sessionRequestCount should be 1 (the 4th request started a new session)
     assert.equal(status.pools.codex.sessionRequestCount, 1, "sessionRequestCount resets after recycle");
     assert.equal(status.pools.codex.recycleCount, 1, "recycled once");
+  });
+
+  it("hard-stops a timed-out one-shot ACP client that ignores SIGTERM", async () => {
+    const root = await tempDir("cpb-acp-timeout-");
+    const pidFile = path.join(root, "client.pid");
+    const clientPath = path.join(root, "ignore-sigterm-client.sh");
+    await writeFile(clientPath, `#!/bin/sh
+echo $$ > "$CPB_TEST_ACP_PID_FILE"
+trap "" TERM
+while true; do sleep 1; done
+`);
+    await chmod(clientPath, 0o755);
+
+    process.env.CPB_ACP_CLIENT = clientPath;
+    process.env.CPB_TEST_ACP_PID_FILE = pidFile;
+    pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
+
+    const executePromise = pool.execute("codex", "prompt", root, 5_000);
+    const rejection = assert.rejects(executePromise, /timed out/);
+    const pid = await waitForPid(pidFile, 3_000);
+    await rejection;
+
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    try {
+      assert.equal(isPidAlive(pid), false, `timed-out ACP client pid ${pid} should be gone`);
+    } finally {
+      try { process.kill(pid, "SIGKILL"); } catch {}
+    }
   });
 });
