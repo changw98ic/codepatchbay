@@ -11,6 +11,7 @@ export default function AgentBoard() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [agentJobs, setAgentJobs] = useState([]);
   const [timestamp, setTimestamp] = useState(null);
+  const [setupAgents, setSetupAgents] = useState([]);
   const { connected } = useWebSocket();
 
   const fetchAgents = useCallback(() => {
@@ -24,11 +25,23 @@ export default function AgentBoard() {
       .catch(() => setLoading(false));
   }, []);
 
+  const fetchSetupReadiness = useCallback(() => {
+    fetch('/api/agents/setup-readiness')
+      .then((r) => r.json())
+      .then((data) => setSetupAgents(data.agents || []))
+      .catch(() => setSetupAgents([]));
+  }, []);
+
   useEffect(() => {
     fetchAgents();
+    fetchSetupReadiness();
     const interval = setInterval(fetchAgents, 15000);
-    return () => clearInterval(interval);
-  }, [fetchAgents]);
+    const setupInterval = setInterval(fetchSetupReadiness, 60000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(setupInterval);
+    };
+  }, [fetchAgents, fetchSetupReadiness]);
 
   useEffect(() => {
     if (!selectedAgent) { setAgentJobs([]); return; }
@@ -77,6 +90,7 @@ export default function AgentBoard() {
       {/* Agent cards grid */}
       <AgentStatusGrid
         agents={agents}
+        setupAgents={setupAgents}
         selectedAgent={selectedAgent}
         onSelect={setSelectedAgent}
       />

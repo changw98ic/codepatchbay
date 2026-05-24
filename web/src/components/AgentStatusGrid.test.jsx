@@ -69,4 +69,35 @@ describe('AgentStatusGrid', () => {
     fireEvent.click(firstCard);
     expect(onSelectSpy).toHaveBeenCalledWith(null);
   });
+
+  it('renders catalog setup readiness without install actions', () => {
+    render(<AgentStatusGrid
+      agents={MOCK_AGENTS}
+      setupAgents={[
+        {
+          id: 'codex',
+          displayName: 'OpenAI Codex CLI',
+          vendor: 'OpenAI',
+          recommended: true,
+          installed: false,
+          status: 'missing',
+          install: {
+            method: 'npm',
+            label: 'npm',
+            safePlanCommand: 'cpb agents install codex --method npm',
+            displayCommand: 'npm i -g @openai/codex',
+            sourceUrl: 'https://example.invalid/codex',
+          },
+          roles: ['planner', 'verifier'],
+          adapter: { protocol: 'acp', command: 'codex-acp' },
+        },
+      ]}
+    />);
+
+    expect(screen.getByText('OpenAI Codex CLI')).toBeInTheDocument();
+    expect(screen.getByText('missing')).toBeInTheDocument();
+    expect(screen.getByText(/Install:\s*npm/)).toBeInTheDocument();
+    expect(screen.getByText('cpb agents install codex --method npm')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
+  });
 });

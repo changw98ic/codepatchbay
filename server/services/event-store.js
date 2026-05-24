@@ -342,6 +342,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "finalizer_result",
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
   "merge_index_status",
+  "pr_opened",
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
 ]);
@@ -421,6 +422,7 @@ export function materializeJob(events) {
     lineage: null,
     recoveryOf: null,
     sourceContext: null,
+    pr: null,
     permissionDenials: [],
     infraStatus: null,
     finalizer: null,
@@ -645,6 +647,15 @@ export function materializeJob(events) {
         state.retryCount = 0;
         state.failureCause = null;
         terminal = true;
+        break;
+      case "pr_opened":
+        state.pr = {
+          url: event.prUrl || event.pullRequestUrl || event.url || null,
+          number: event.prNumber || event.number || null,
+          artifact: event.artifact || null,
+          openedAt: event.ts || null,
+        };
+        if (event.artifact) state.artifacts.pr = event.artifact;
         break;
       case "job_cancel_requested":
         state.cancelRequested = true;

@@ -1,4 +1,5 @@
 import { collectAgentMetrics, getAgentDetail, getAgentJobs } from "../services/agent-metrics.js";
+import { collectAgentSetupReadiness } from "../services/agent-setup-readiness.js";
 
 export function agentRoutes(fastify, opts, done) {
   const notifBroadcast = fastify.notifBroadcast;
@@ -7,6 +8,11 @@ export function agentRoutes(fastify, opts, done) {
   fastify.get("/agents", async (req, reply) => {
     const metrics = await collectAgentMetrics(req.cpbRoot);
     return metrics;
+  });
+
+  // GET /api/agents/setup-readiness — catalog setup status and safe install-plan commands
+  fastify.get("/agents/setup-readiness", async (req, reply) => {
+    return collectAgentSetupReadiness();
   });
 
   // GET /api/agents/:name — single agent details

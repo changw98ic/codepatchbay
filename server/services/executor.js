@@ -1,4 +1,5 @@
 import { listJobsAcrossRuntimeRoots } from "./job-store.js";
+import { jobToQueueRow } from "./job-projection.js";
 
 const runningTasks = new Map();
 
@@ -19,5 +20,6 @@ export function getRunningTasks() {
 }
 
 export async function getDurableTasks(cpbRoot) {
-  return listJobsAcrossRuntimeRoots(cpbRoot);
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
+  return jobs.map((job) => ({ ...job, ...jobToQueueRow(job) }));
 }

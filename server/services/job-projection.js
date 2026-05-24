@@ -8,6 +8,8 @@ const STATUS_MAP = {
   blocked: "BLOCKED",
 };
 
+const ACTIVE_NODE_STATUSES = new Set(["running", "retrying", "blocked"]);
+
 function orderedUnique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -70,13 +72,14 @@ function workflowNodeById(job, id) {
 }
 
 export function jobToPipelineState(job) {
+  const retryCount = retryCountForJob(job);
   return {
     project: job.project,
     task: job.task,
     jobId: job.jobId,
     phase: job.phase,
     status: STATUS_MAP[job.status] ?? job.status,
-    retryCount: job.attempt != null ? job.attempt - 1 : null,
+    retryCount,
     maxRetries: null,
     started: job.createdAt,
     updated: job.updatedAt,
@@ -86,6 +89,119 @@ export function jobToPipelineState(job) {
     runningNodes: job.runningNodes ?? [],
     blockedNodes: job.blockedNodes ?? [],
     nodes: projectDagNodes(job),
+  };
+}
+
+function retryCountForJob(job) {
+  const nodeAttempts = Object.values(job.nodeStates ?? {})
+    .map((node) => Number.isFinite(node?.attempt) ? Math.max(0, node.attempt - 1) : 0);
+  return Math.max(job.retryCount ?? 0, job.attempt != null ? Math.max(0, job.attempt - 1) : 0, ...nodeAttempts);
+}
+
+function currentPhaseForJob(job) {
+  const active = projectDagNodes(job).find((node) => ACTIVE_NODE_STATUSES.has(node.status));
+  if (active?.phase) return active.phase;
+  if (job.failurePhase) return job.failurePhase;
+  if (job.phase && job.phase !== "completed") return job.phase;
+  return null;
+}
+
+function sourceForJob(job) {
+  const source = job.sourceContext || {};
+  if (source.type === "github_issue" || source.issueNumber !== undefined) {
+    return {
+      type: "github_issue",
+      label: source.issueNumber ? `GitHub issue #${source.issueNumber}` : "GitHub issue",
+      issueNumber: source.issueNumber ?? null,
+      repo: source.repo || source.repository || null,
+      channel: null,
+    };
+  }
+  if (source.type === "slack" || source.channel === "slack") {
+    return {
+      type: "slack",
+      label: source.channelName ? `Slack ${source.channelName}` : "Slack",
+      issueNumber: null,
+      repo: null,
+      channel: source.channelName || source.channelId || null,
+    };
+  }
+  if (source.type === "discord" || source.channel === "discord") {
+    return {
+      type: "discord",
+      label: source.channelName ? `Discord ${source.channelName}` : "Discord",
+      issueNumber: null,
+      repo: null,
+      channel: source.channelName || source.channelId || null,
+    };
+  }
+  if (source.type) {
+    return {
+      type: source.type,
+      label: source.type.replace(/_/g, " "),
+      issueNumber: null,
+      repo: source.repo || null,
+      channel: source.channelName || source.channelId || null,
+    };
+  }
+  return { type: "manual", label: "Manual", issueNumber: null, repo: null, channel: null };
+}
+
+function queueStatusForJob(job) {
+  if (job.pr?.url || job.pr?.number || job.artifacts?.pr) return "pr-opened";
+  if (job.status === "completed") return "passed";
+  return job.status || "queued";
+}
+
+function nextHumanActionForJob(job, status) {
+  if (job.cancelRequested) {
+    return { kind: "cancel", label: "Review cancellation request" };
+  }
+  if (job.redirectContext) {
+    return { kind: "redirect", label: "Review redirect instructions" };
+  }
+  if (status === "queued") {
+    return { kind: "start_worker", label: "Start a worker or wait for dispatcher" };
+  }
+  if (status === "blocked") {
+    return { kind: "approval", label: "Review blocker or approval gate" };
+  }
+  if (status === "failed") {
+    return { kind: "retry", label: "Review failure and retry or cancel" };
+  }
+  if (status === "passed") {
+    return { kind: "review_patch", label: "Review verified patch" };
+  }
+  if (status === "pr-opened") {
+    return { kind: "review_pr", label: "Review draft PR" };
+  }
+  return null;
+}
+
+export function jobToQueueRow(job) {
+  const status = queueStatusForJob(job);
+  const currentPhase = currentPhaseForJob(job);
+  return {
+    jobId: job.jobId,
+    project: job.project,
+    task: job.task,
+    status,
+    rawStatus: job.status || null,
+    workflow: job.workflow || "standard",
+    currentPhase,
+    phase: currentPhase,
+    retryCount: retryCountForJob(job),
+    source: sourceForJob(job),
+    nextHumanAction: nextHumanActionForJob(job, status),
+    pr: job.pr || null,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    lastActivityAt: job.lastActivityAt ?? null,
+    lastActivityMessage: job.lastActivityMessage ?? null,
+    cancelRequested: job.cancelRequested ?? false,
+    redirectContext: job.redirectContext ?? null,
+    failureCode: job.failureCode ?? null,
+    failurePhase: job.failurePhase ?? null,
   };
 }
 

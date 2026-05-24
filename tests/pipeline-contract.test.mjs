@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 import { createJob, startPhase, completePhase, failJob, getJob } from "../server/services/job-store.js";
 import { appendEvent } from "../server/services/event-store.js";
-import { jobToPipelineState } from "../server/services/job-projection.js";
+import { jobToPipelineState, jobToQueueRow } from "../server/services/job-projection.js";
 import { buildPhaseContextPacket } from "../server/services/phase-context.js";
 import { buildBudgetReport } from "../server/services/prompt-budget.js";
 import { evaluatePermissionDecision } from "../server/services/permission-matrix.js";
@@ -896,6 +896,116 @@ describe("pipeline-contract", () => {
       assert.match(prompt, /Expected repair scope/);
       assert.match(prompt, /src\/auth\/redirect\.ts/);
       assert.match(prompt, /tests\/auth\.test\.ts/);
+    });
+  });
+
+  describe("Test 11: Queue dashboard projection", () => {
+    it("projects source, workflow, phase, retry count, and next human action from event-log state", async () => {
+      const jobId = "job-queue-projection-001";
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "job_created",
+        jobId,
+        project: "test-proj",
+        task: "fix login redirect",
+        workflow: "strict",
+        sourceContext: {
+          type: "github_issue",
+          issueNumber: 123,
+          repo: "org/frontend",
+        },
+        ts: "2026-05-24T00:00:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "dag_node_started",
+        jobId,
+        project: "test-proj",
+        nodeId: "execute",
+        phase: "execute",
+        attempt: 1,
+        ts: "2026-05-24T00:01:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "dag_node_retrying",
+        jobId,
+        project: "test-proj",
+        nodeId: "execute",
+        phase: "execute",
+        attempt: 2,
+        retryCount: 1,
+        reason: "reactivated by verify",
+        ts: "2026-05-24T00:02:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "job_redirect_requested",
+        jobId,
+        project: "test-proj",
+        instructions: "Narrow the change to auth redirect tests.",
+        reason: "manual correction",
+        redirectEventId: "redirect-1",
+        ts: "2026-05-24T00:03:00Z",
+      });
+
+      const job = await getJob(tmpDir, "test-proj", jobId);
+      const row = jobToQueueRow(job);
+
+      assert.equal(row.status, "running");
+      assert.equal(row.workflow, "strict");
+      assert.equal(row.currentPhase, "execute");
+      assert.equal(row.retryCount, 1);
+      assert.equal(row.source.type, "github_issue");
+      assert.equal(row.source.label, "GitHub issue #123");
+      assert.equal(row.source.repo, "org/frontend");
+      assert.equal(row.nextHumanAction.kind, "redirect");
+      assert.match(row.nextHumanAction.label, /Review redirect/);
+    });
+
+    it("distinguishes passed and PR-opened terminal states from event-log state", async () => {
+      const passedJobId = "job-queue-passed-001";
+      await appendEvent(tmpDir, "test-proj", passedJobId, {
+        type: "job_created",
+        jobId: passedJobId,
+        project: "test-proj",
+        task: "passed job",
+        workflow: "standard",
+        ts: "2026-05-24T01:00:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", passedJobId, {
+        type: "job_completed",
+        jobId: passedJobId,
+        project: "test-proj",
+        ts: "2026-05-24T01:01:00Z",
+      });
+
+      const prJobId = "job-queue-pr-001";
+      await appendEvent(tmpDir, "test-proj", prJobId, {
+        type: "job_created",
+        jobId: prJobId,
+        project: "test-proj",
+        task: "pr job",
+        workflow: "standard",
+        ts: "2026-05-24T02:00:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", prJobId, {
+        type: "job_completed",
+        jobId: prJobId,
+        project: "test-proj",
+        ts: "2026-05-24T02:01:00Z",
+      });
+      await appendEvent(tmpDir, "test-proj", prJobId, {
+        type: "pr_opened",
+        jobId: prJobId,
+        project: "test-proj",
+        prUrl: "https://github.com/org/repo/pull/456",
+        prNumber: 456,
+        artifact: "pr-456.md",
+        ts: "2026-05-24T02:02:00Z",
+      });
+
+      assert.equal(jobToQueueRow(await getJob(tmpDir, "test-proj", passedJobId)).status, "passed");
+      const prRow = jobToQueueRow(await getJob(tmpDir, "test-proj", prJobId));
+      assert.equal(prRow.status, "pr-opened");
+      assert.equal(prRow.pr.url, "https://github.com/org/repo/pull/456");
+      assert.equal(prRow.nextHumanAction.kind, "review_pr");
     });
   });
 });
