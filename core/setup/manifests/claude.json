@@ -23,8 +23,21 @@
     "npm": {
       "label": "npm",
       "command": "npm install -g @anthropic-ai/claude-code",
+      "pinnedCommandTemplate": "npm install -g @anthropic-ai/claude-code@{version}",
       "sourceUrl": "https://support.claude.com/en/articles/14552382-your-first-day-in-claude-code",
       "notes": ["Do not use sudo with global npm installs."]
+    }
+  },
+  "upgrade": {
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade --cask claude-code",
+      "sourceUrl": "https://code.claude.com/docs/en/quickstart"
+    },
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g @anthropic-ai/claude-code",
+      "sourceUrl": "https://support.claude.com/en/articles/14552382-your-first-day-in-claude-code"
     }
   },
   "auth": {

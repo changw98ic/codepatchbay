@@ -18,11 +18,24 @@
     "npm": {
       "label": "npm",
       "command": "npm install -g opencode-ai",
+      "pinnedCommandTemplate": "npm install -g opencode-ai@{version}",
       "sourceUrl": "https://opencode.ai/docs/"
     },
     "brew": {
       "label": "Homebrew",
       "command": "brew install anomalyco/tap/opencode",
+      "sourceUrl": "https://opencode.ai/docs/"
+    }
+  },
+  "upgrade": {
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g opencode-ai",
+      "sourceUrl": "https://opencode.ai/docs/"
+    },
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade anomalyco/tap/opencode",
       "sourceUrl": "https://opencode.ai/docs/"
     }
   },

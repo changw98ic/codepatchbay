@@ -9,6 +9,19 @@ function parseSimpleCommand(command) {
   };
 }
 
+function renderPinnedCommand(template, version) {
+  if (typeof version !== "string" || !version.trim()) {
+    throw new Error("version must be a non-empty string");
+  }
+  if (!/^[A-Za-z0-9._+-]+$/.test(version)) {
+    throw new Error("version contains unsupported characters");
+  }
+  if (!template || typeof template !== "string") {
+    throw new Error("pinnedCommandTemplate is required when version is supplied");
+  }
+  return template.replaceAll("{version}", version);
+}
+
 function packageNameFromNpm(command) {
   const parts = command.trim().split(/\s+/);
   return parts[parts.length - 1] || null;
@@ -52,13 +65,38 @@ function supplyChainNotesFor({ shell, install }) {
   return notes;
 }
 
+function planCommand(command) {
+  const shell = /[|&;<>()]/.test(command);
+  const parsed = shell
+    ? { command: "sh", args: ["-lc", command] }
+    : parseSimpleCommand(command);
+  return { ...parsed, shell };
+}
+
+function upgradeFor(method, agent) {
+  const upgrade = agent.upgrade?.[method] || null;
+  if (!upgrade?.command) return null;
+  const parsed = planCommand(upgrade.command);
+  return {
+    method,
+    label: upgrade.label || "upgrade",
+    command: parsed.command,
+    args: parsed.args,
+    displayCommand: upgrade.command,
+    sourceUrl: upgrade.sourceUrl || agent.sourceUrl,
+    notes: upgrade.notes || [],
+    requiresExplicitConfirmation: true,
+    shell: parsed.shell,
+  };
+}
+
 function pickMethod(agent, detected) {
   if (agent.install.brew && detected?.tools?.brew?.installed) return "brew";
   if (agent.install.npm && detected?.tools?.npm?.installed) return "npm";
   return Object.keys(agent.install)[0];
 }
 
-export function createInstallPlan({ agentId, method, detected } = {}) {
+export function createInstallPlan({ agentId, method, version, detected } = {}) {
   const agent = getSetupAgent(agentId);
   if (!agent) {
     throw new Error(`Unknown setup agent: ${agentId}`);
@@ -70,10 +108,11 @@ export function createInstallPlan({ agentId, method, detected } = {}) {
     throw new Error(`Agent '${agentId}' does not support install method '${selectedMethod}'`);
   }
 
-  const shell = /[|&;<>()]/.test(install.command);
-  const parsed = shell
-    ? { command: "sh", args: ["-lc", install.command] }
-    : parseSimpleCommand(install.command);
+  const hasVersion = version !== undefined && version !== null;
+  const displayCommand = hasVersion
+    ? renderPinnedCommand(install.pinnedCommandTemplate, version)
+    : install.command;
+  const parsed = planCommand(displayCommand);
 
   return {
     agent: {
@@ -86,13 +125,15 @@ export function createInstallPlan({ agentId, method, detected } = {}) {
     label: install.label,
     command: parsed.command,
     args: parsed.args,
-    displayCommand: install.command,
+    displayCommand,
+    version: hasVersion ? version : undefined,
     sourceUrl: install.sourceUrl || agent.sourceUrl,
     notes: install.notes || [],
     rollback: rollbackFor(selectedMethod, install),
-    supplyChainNotes: supplyChainNotesFor({ shell, install }),
+    upgrade: upgradeFor(selectedMethod, agent),
+    supplyChainNotes: supplyChainNotesFor({ shell: parsed.shell, install }),
     requiresExplicitConfirmation: true,
-    shell,
+    shell: parsed.shell,
   };
 }
 

@@ -415,3 +415,102 @@ describe("D40 manifest registry layout", () => {
     }
   });
 });
+
+describe("D41 version pin and upgrade plan", () => {
+  const detected = { tools: { npm: { installed: true }, brew: { installed: false } } };
+
+  it("uses pinnedCommandTemplate when version is supplied", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    const plan = createInstallPlan({
+      agentId: "codex",
+      method: "npm",
+      version: "0.130.0",
+      detected,
+    });
+
+    assert.equal(plan.version, "0.130.0");
+    assert.equal(plan.displayCommand, "npm i -g @openai/codex@0.130.0");
+    assert.equal(plan.command, "npm");
+    assert.deepEqual(plan.args, ["i", "-g", "@openai/codex@0.130.0"]);
+  });
+
+  it("plan shape includes version, upgrade, rollback, requiresExplicitConfirmation, displayCommand", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    const plan = createInstallPlan({
+      agentId: "codex",
+      method: "npm",
+      version: "0.130.0",
+      detected,
+    });
+
+    assert.equal(plan.version, "0.130.0");
+    assert.ok(plan.upgrade, "plan.upgrade must exist");
+    assert.ok(plan.rollback, "plan.rollback must exist");
+    assert.equal(plan.requiresExplicitConfirmation, true);
+    assert.ok(plan.displayCommand.length > 0);
+  });
+
+  it("exposes upgrade metadata from manifest", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    const plan = createInstallPlan({
+      agentId: "codex",
+      method: "npm",
+      version: "0.130.0",
+      detected,
+    });
+
+    assert.ok(plan.upgrade);
+    assert.ok(typeof plan.upgrade.displayCommand === "string");
+    assert.ok(plan.upgrade.displayCommand.length > 0);
+    assert.equal(plan.upgrade.requiresExplicitConfirmation, true);
+  });
+
+  it("omits version pin when version is not supplied", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    const plan = createInstallPlan({
+      agentId: "codex",
+      method: "npm",
+      detected,
+    });
+
+    assert.equal(plan.version, undefined);
+    assert.equal(plan.displayCommand, "npm i -g @openai/codex");
+  });
+
+  it("version-pinned plan never auto-executes: requiresExplicitConfirmation is always true", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    const plan = createInstallPlan({
+      agentId: "codex",
+      method: "npm",
+      version: "0.130.0",
+      detected,
+    });
+
+    assert.equal(plan.requiresExplicitConfirmation, true);
+    assert.equal(plan.upgrade.requiresExplicitConfirmation, true);
+  });
+
+  it("throws on empty version string", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    assert.throws(
+      () => createInstallPlan({ agentId: "codex", method: "npm", version: "", detected }),
+      /version/i,
+    );
+  });
+
+  it("throws on manifest method without pinnedCommandTemplate when version is supplied", async () => {
+    const { createInstallPlan } = await import("../core/setup/install-plan.js");
+
+    // brew method has no pinnedCommandTemplate — should throw when version is requested
+    assert.throws(
+      () => createInstallPlan({ agentId: "codex", method: "brew", version: "0.130.0", detected }),
+      /pinnedCommandTemplate|version/i,
+    );
+  });
+});

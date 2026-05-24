@@ -57,13 +57,14 @@ export async function run(args = []) {
   if (command === "install") {
     const agentId = args[1];
     const method = optionValue(args, "--method");
+    const version = optionValue(args, "--version");
     if (!agentId) {
       console.error(usage());
       return 1;
     }
 
     const detected = await detectSetupEnvironment();
-    const plan = createInstallPlan({ agentId, method, detected });
+    const plan = createInstallPlan({ agentId, method, version, detected });
     const shouldExecute = args.includes("--yes");
     const result = { executed: false, plan };
 

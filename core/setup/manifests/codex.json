@@ -12,11 +12,24 @@
     "npm": {
       "label": "npm",
       "command": "npm i -g @openai/codex",
+      "pinnedCommandTemplate": "npm i -g @openai/codex@{version}",
       "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
     },
     "brew": {
       "label": "Homebrew",
       "command": "brew install --cask codex",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    }
+  },
+  "upgrade": {
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g @openai/codex",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    },
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade --cask codex",
       "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
     }
   },
