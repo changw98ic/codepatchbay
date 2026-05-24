@@ -16,6 +16,7 @@ import {
   resolveEffectiveRouting,
   selectAgentWithFallback,
 } from "../../core/agents/routing.js";
+import { validatePolicy } from "../../core/policy/team-policy.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
@@ -77,8 +78,16 @@ export async function createJob(
     routingCategory = null,
     routing = null,
     agentAvailability = null,
+    teamPolicy = null,
   }
 ) {
+  if (teamPolicy != null) {
+    const { valid, errors } = validatePolicy(teamPolicy);
+    if (!valid) {
+      throw new Error(`invalid team policy: ${errors.join("; ")}`);
+    }
+  }
+
   const jobId = providedJobId || makeJobId(ts);
   let selectedWorkflow = workflow;
   let selectedExecutor = executor;
