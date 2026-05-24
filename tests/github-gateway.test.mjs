@@ -9,6 +9,7 @@ import Fastify from "fastify";
 import { redactSecrets } from "../server/services/secret-policy.js";
 import { githubRoutes } from "../server/routes/github.js";
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
+import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -271,5 +272,93 @@ describe("GitHub event normalization", () => {
 
     assert.equal(ignored.status, "ignored");
     assert.match(ignored.reason, /unsupported event/i);
+  });
+});
+
+describe("GitHub trigger rule matcher", () => {
+  it("matches cpb labels and cpb run comments to the standard workflow", () => {
+    const rules = [
+      { event: "issues.labeled", label: "cpb", workflow: "standard" },
+      { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
+    ];
+    const labeled = normalizeGithubWebhookEvent({
+      event: "issues",
+      projectId: "frontend",
+      payload: {
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "cpb" },
+        issue: {
+          number: 123,
+          title: "Fix login redirect",
+          html_url: "https://github.com/my-org/frontend/issues/123",
+          labels: [{ name: "bug" }, { name: "cpb" }],
+        },
+        sender: { login: "octocat" },
+      },
+    });
+    const commented = normalizeGithubWebhookEvent({
+      event: "issue_comment",
+      projectId: "frontend",
+      payload: {
+        action: "created",
+        repository: { full_name: "my-org/frontend" },
+        issue: {
+          number: 123,
+          title: "Fix login redirect",
+          html_url: "https://github.com/my-org/frontend/issues/123",
+          labels: [{ name: "bug" }],
+        },
+        comment: { body: "/cpb run", html_url: "https://github.com/my-org/frontend/issues/123#issuecomment-1" },
+        sender: { login: "maintainer" },
+      },
+    });
+
+    assert.deepEqual(matchGithubTrigger(labeled, rules), {
+      matched: true,
+      workflow: "standard",
+      rule: rules[0],
+      reason: "matched label cpb",
+    });
+    assert.deepEqual(matchGithubTrigger(commented, rules), {
+      matched: true,
+      workflow: "standard",
+      rule: rules[1],
+      reason: "matched command /cpb run",
+    });
+  });
+
+  it("does not match unrelated labels or comments", () => {
+    const rules = [
+      { event: "issues.labeled", label: "cpb", workflow: "standard" },
+      { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
+    ];
+    const unrelatedLabel = normalizeGithubWebhookEvent({
+      event: "issues",
+      payload: {
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "triage" },
+        issue: {
+          number: 123,
+          title: "Fix login redirect",
+          labels: [{ name: "triage" }],
+        },
+      },
+    });
+    const unrelatedComment = normalizeGithubWebhookEvent({
+      event: "issue_comment",
+      payload: {
+        action: "created",
+        repository: { full_name: "my-org/frontend" },
+        issue: { number: 123, title: "Fix login redirect" },
+        comment: { body: "Looks good to me" },
+      },
+    });
+
+    assert.equal(matchGithubTrigger(unrelatedLabel, rules).matched, false);
+    assert.match(matchGithubTrigger(unrelatedLabel, rules).reason, /no trigger rule/i);
+    assert.equal(matchGithubTrigger(unrelatedComment, rules).matched, false);
+    assert.match(matchGithubTrigger(unrelatedComment, rules).reason, /no trigger rule/i);
   });
 });
