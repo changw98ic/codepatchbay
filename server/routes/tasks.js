@@ -2,7 +2,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
-import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
+import { requestCancelJob, requestRedirectJob, makeJobId } from '../services/job-store.js';
 import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
@@ -89,11 +89,12 @@ export async function taskRoutes(fastify, opts) {
       if (lane.error) throw fastify.httpErrors.badRequest(lane.error);
     }
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
+    const jobId = makeJobId();
     // Preserve ACP lane fields from API request (issue #62)
-    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow];
+    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow, '--job-id', jobId];
     if (acpProfile) pipelineArgs.push('--acp-profile', acpProfile);
     if (uiLaneReason) pipelineArgs.push('--ui-lane-reason', uiLaneReason);
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.mjs', pipelineArgs, req.log, '', extraEnv);
+    return spawnBridge(req.cpbRoot, name, 'run-pipeline.mjs', pipelineArgs, req.log, jobId, extraEnv);
   });
 
   // Cancel a running job
