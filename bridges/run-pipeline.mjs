@@ -11,6 +11,7 @@ import { runtimeDataPath, runtimeDataRoot } from "../server/services/runtime-roo
 import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import { buildGithubIssueBranchParts } from "../server/services/branch-names.js";
+import { maybeOpenDraftPrAfterPass } from "../server/services/github-pr.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
@@ -1127,6 +1128,15 @@ export async function runPipeline({
             pState.retryInput = null;
             await completePhase(cpbRoot, project, jobId, { phase: "verify", artifact: `verdict-${verdictId}` });
             await completeJob(cpbRoot, project, jobId);
+            if (process.env.CPB_GITHUB_PR_AFTER_PASS === "1" || process.env.CPB_GITHUB_PR_DRY_RUN === "1") {
+              const prResult = await maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, {
+                verdict,
+                branchPushed: process.env.CPB_GITHUB_BRANCH_PUSHED === "1",
+                dryRun: process.env.CPB_GITHUB_PR_DRY_RUN === "1",
+              }).catch((error) => ({ status: "blocked.pr", error: { message: error.message } }));
+              if (prResult.status === "dry-run") warn(`Draft PR dry-run: ${prResult.request.head} -> ${prResult.request.base}`);
+              if (prResult.status === "blocked.pr") warn(`Draft PR blocked: ${prResult.evidence?.reason || prResult.error?.message || "unknown"}`);
+            }
             pipelineOk = true;
             return { ok: true };
           }

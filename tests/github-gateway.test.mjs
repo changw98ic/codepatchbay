@@ -13,6 +13,7 @@ import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
 import { getJob } from "../server/services/job-store.js";
 import { buildQueuedComment, postGithubQueuedComment } from "../server/services/github-comments.js";
+import { openDraftPullRequest } from "../server/services/github-pr.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -494,5 +495,81 @@ describe("GitHub queued status comment", () => {
     assert.equal(failed.posted, false);
     assert.match(failed.error.message, /network unavailable/);
     assert.match(failed.body, /job-network-fail/);
+  });
+});
+
+describe("GitHub draft PR creation", () => {
+  const passedJob = {
+    jobId: "job-pr-ready",
+    status: "completed",
+    task: "Fix login redirect",
+    workflow: "standard",
+    worktreeBranch: "cpb/issue-123-fix-login-redirect",
+    worktreeBaseBranch: "main",
+    sourceContext: {
+      type: "github_issue",
+      repo: "my-org/frontend",
+      issueNumber: 123,
+      url: "https://github.com/my-org/frontend/issues/123",
+    },
+  };
+
+  it("requires a PASS verdict and pushed branch readiness", async () => {
+    const notPass = await openDraftPullRequest({
+      job: passedJob,
+      verdict: "FAIL",
+      branchPushed: true,
+      dryRun: true,
+    });
+    const notPushed = await openDraftPullRequest({
+      job: passedJob,
+      verdict: "PASS",
+      branchPushed: false,
+    });
+
+    assert.equal(notPass.status, "skipped");
+    assert.match(notPass.reason, /PASS verdict/);
+    assert.equal(notPushed.status, "blocked.pr");
+    assert.equal(notPushed.jobStatus, "passed");
+    assert.match(notPushed.evidence.reason, /branch has not been pushed/);
+  });
+
+  it("returns a draft PR request in dry-run without calling network transport", async () => {
+    let called = false;
+    const result = await openDraftPullRequest({
+      job: passedJob,
+      verdict: "PASS",
+      branchPushed: true,
+      dryRun: true,
+      createPullRequest: async () => {
+        called = true;
+      },
+    });
+
+    assert.equal(result.status, "dry-run");
+    assert.equal(called, false);
+    assert.equal(result.request.repo, "my-org/frontend");
+    assert.equal(result.request.head, "cpb/issue-123-fix-login-redirect");
+    assert.equal(result.request.base, "main");
+    assert.equal(result.request.draft, true);
+    assert.match(result.request.title, /Fix login redirect/);
+    assert.match(result.request.body, /Issue: #123/);
+  });
+
+  it("returns blocked.pr evidence when PR transport fails", async () => {
+    const result = await openDraftPullRequest({
+      job: passedJob,
+      verdict: "PASS",
+      branchPushed: true,
+      createPullRequest: async () => {
+        throw new Error("GitHub unavailable");
+      },
+    });
+
+    assert.equal(result.status, "blocked.pr");
+    assert.equal(result.jobStatus, "passed");
+    assert.match(result.error.message, /GitHub unavailable/);
+    assert.equal(result.evidence.head, "cpb/issue-123-fix-login-redirect");
+    assert.equal(result.evidence.base, "main");
   });
 });
