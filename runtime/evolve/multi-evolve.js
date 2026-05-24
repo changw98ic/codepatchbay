@@ -120,7 +120,7 @@ Options:
   --no-clean-check    skip dirty-worktree check in guarded-repair
   --project <id>      restrict to a single project
   --agent codex|claude
-  --workflow standard|complex|blocked|accelerated
+  --workflow standard|complex|blocked
   --timeout-ms <n>    per-agent timeout (default: 300000)
   --max-duration-ms <n> wall-clock duration limit for loop modes (0 = unlimited)
   --local-acp-pool    bypass Hub managed pool for isolated debugging`;

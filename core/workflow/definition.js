@@ -34,6 +34,7 @@ const WORKCPBS = {
   },
   accelerated: {
     name: "accelerated",
+    stub: true,
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     bridgeForPhase: {
@@ -88,11 +89,11 @@ export function getSubagentConfig(workflow) {
 }
 
 export function listWorkflows() {
-  return Object.keys(WORKCPBS);
+  return Object.keys(WORKCPBS).filter((k) => !WORKCPBS[k].stub);
 }
 
 export function isWorkflowName(name) {
-  return Object.hasOwn(WORKCPBS, name);
+  return Object.hasOwn(WORKCPBS, name) && !WORKCPBS[name].stub;
 }
 
 // --- DAG support ---

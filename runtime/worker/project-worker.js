@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // project-worker.mjs — Per-project worker that polls Hub queue and runs pipeline
-// Usage: node bridges/project-worker.mjs --project <id> [--once] [--workflow standard|complex|blocked|accelerated]
+// Usage: node bridges/project-worker.mjs --project <id> [--once] [--workflow standard|complex|blocked]
 
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
@@ -717,7 +717,7 @@ Options:
   --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
-  --workflow <type>          Pipeline workflow: standard|complex|blocked|accelerated (default: standard)
+  --workflow <type>          Pipeline workflow: standard|complex|blocked (default: standard)
   --worktree-mode <mode>     Worker source isolation mode: required|off (default: required)
   --auto-finalizer-mode <mode> Successful queue finalization: off|dry-run|local|remote (default: remote for issue-linked CLI workers)
   --cpb-root <path>          CPB root directory
