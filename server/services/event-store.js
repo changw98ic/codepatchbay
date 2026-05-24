@@ -666,6 +666,7 @@ export function materializeJob(events) {
         break;
       case "job_cancelled":
         state.cancelRequested = true;
+        state.cancelReason = event.reason ?? state.cancelReason;
         state.status = "cancelled";
         state.leaseId = null;
         terminal = true;

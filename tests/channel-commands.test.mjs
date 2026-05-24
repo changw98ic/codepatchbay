@@ -8,9 +8,11 @@ import Fastify from "fastify";
 
 import { channelRoutes } from "../server/routes/channels.js";
 import { listCandidates } from "../server/services/event-source.js";
-import { createJob, getJob } from "../server/services/job-store.js";
+import { createJob, failJob, FAILURE_CODES, getJob } from "../server/services/job-store.js";
+import { readEvents } from "../server/services/event-store.js";
 import { CHANNEL_COMMAND_HELP, parseChannelCommand } from "../server/services/channel-commands.js";
 import {
+  parseSlackInteractiveAction,
   parseSlackSlashCommand,
   verifySlackSignature,
 } from "../server/services/channel-slack.js";
@@ -285,6 +287,172 @@ describe("Slack channel command skeleton", () => {
       assert.equal(body.status.status, "running");
       assert.equal(body.actions.viewRun.label, "View Run");
       assert.equal(body.actions.cancel.command, `/cpb cancel ${job.jobId}`);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("maps Slack interactive button payloads to job actions", () => {
+    const parsed = parseSlackInteractiveAction({
+      type: "block_actions",
+      user: { id: "U123", username: "alice" },
+      team: { id: "T123" },
+      channel: { id: "C123" },
+      actions: [
+        {
+          action_id: "cpb:retry",
+          value: JSON.stringify({ action: "retry", job: "job-20260524-153011-a13f9c" }),
+        },
+      ],
+    });
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.channel, "slack");
+    assert.equal(parsed.actor.userId, "U123");
+    assert.equal(parsed.action.type, "retry");
+    assert.equal(parsed.action.job, "job-20260524-153011-a13f9c");
+  });
+
+  it("records approval actors and uses the existing cancel path for signed Slack actions", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-actions-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+    });
+    try {
+      const approvedJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Approve plan",
+        workflow: "strict",
+        jobId: "job-approve-action",
+      });
+      const cancelledJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Cancel run",
+        workflow: "standard",
+        jobId: "job-cancel-action",
+      });
+
+      const approvePayload = {
+        type: "block_actions",
+        user: { id: "U123", username: "alice" },
+        team: { id: "T123" },
+        channel: { id: "C123" },
+        actions: [{ action_id: "cpb:approve", value: approvedJob.jobId }],
+      };
+      const cancelPayload = {
+        type: "block_actions",
+        user: { id: "U456", username: "bob" },
+        team: { id: "T123" },
+        channel: { id: "C123" },
+        actions: [{ action_id: "cpb:cancel", value: cancelledJob.jobId }],
+      };
+
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const approveBody = slackBody({ payload: JSON.stringify(approvePayload) });
+      const cancelBody = slackBody({ payload: JSON.stringify(cancelPayload) });
+      const approve = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/actions",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, approveBody),
+        },
+        payload: approveBody,
+      });
+      const cancel = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/actions",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, cancelBody),
+        },
+        payload: cancelBody,
+      });
+
+      assert.equal(approve.statusCode, 200);
+      const approveResult = JSON.parse(approve.body);
+      assert.equal(approveResult.ok, true);
+      assert.equal(approveResult.action, "approved");
+      assert.equal(approveResult.actor.userId, "U123");
+      assert.match(approveResult.approvedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+      const approvalEvents = (await readEvents(cpbRoot, "frontend", approvedJob.jobId))
+        .filter((event) => event.type === "job_approved");
+      assert.equal(approvalEvents.length, 1);
+      assert.equal(approvalEvents[0].actor.userId, "U123");
+      assert.match(approvalEvents[0].ts, /^\d{4}-\d{2}-\d{2}T/);
+
+      assert.equal(cancel.statusCode, 200);
+      const cancelResult = JSON.parse(cancel.body);
+      assert.equal(cancelResult.ok, true);
+      assert.equal(cancelResult.action, "cancelled");
+      const cancelled = await getJob(cpbRoot, "frontend", cancelledJob.jobId);
+      assert.equal(cancelled.status, "cancelled");
+      assert.match(cancelled.cancelReason, /Slack/);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retries failed jobs from signed Slack retry actions", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-retry-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+    });
+    try {
+      const failed = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Retry run",
+        workflow: "standard",
+        jobId: "job-retry-action",
+      });
+      await failJob(cpbRoot, "frontend", failed.jobId, {
+        reason: "verifier failed",
+        code: FAILURE_CODES.RECOVERABLE,
+        phase: "execute",
+        retryable: true,
+      });
+
+      const payload = {
+        type: "block_actions",
+        user: { id: "U123", username: "alice" },
+        team: { id: "T123" },
+        channel: { id: "C123" },
+        actions: [
+          {
+            action_id: "cpb:retry",
+            value: JSON.stringify({ action: "retry", job: failed.jobId }),
+          },
+        ],
+      };
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = slackBody({ payload: JSON.stringify(payload) });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/actions",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.action, "retried");
+      assert.equal(body.recoveryOf, failed.jobId);
+      assert.notEqual(body.job.jobId, failed.jobId);
+      assert.equal(body.actions.viewRun.label, "View Run");
+
+      const recovery = await getJob(cpbRoot, "frontend", body.job.jobId);
+      assert.equal(recovery.recoveryOf, failed.jobId);
+      assert.equal(recovery.sourceContext, null);
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

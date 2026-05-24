@@ -6,7 +6,9 @@ import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import {
+  handleSlackInteractiveAction,
   handleSlackSlashCommand,
+  parseSlackInteractiveAction,
   parseSlackFormBody,
   parseSlackSlashCommand,
   verifySlackSignature,
@@ -201,6 +203,30 @@ export async function channelRoutes(fastify, opts) {
     }
 
     const result = await handleSlackSlashCommand(req.cpbRoot, parsed);
+    return reply.code(result.ok ? 200 : 400).send(result);
+  });
+
+  fastify.post("/channels/slack/actions", async (req, reply) => {
+    const signingSecret = opts.slackSigningSecret || process.env.CPB_SLACK_SIGNING_SECRET;
+    const verification = verifySlackSignature({
+      signingSecret,
+      timestamp: req.headers["x-slack-request-timestamp"],
+      signature: req.headers["x-slack-signature"],
+      rawBody: req.rawBody,
+    });
+    if (!verification.ok) {
+      return reply.code(401).send({ ok: false, error: verification.reason });
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(req.body?.payload || "{}");
+    } catch {
+      return reply.code(400).send({ ok: false, error: "invalid Slack action payload" });
+    }
+
+    const parsed = parseSlackInteractiveAction(payload);
+    const result = await handleSlackInteractiveAction(req.cpbRoot, parsed);
     return reply.code(result.ok ? 200 : 400).send(result);
   });
 
