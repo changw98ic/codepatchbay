@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import Fastify from "fastify";
 
 import { channelRoutes } from "../server/routes/channels.js";
+import { listCandidates } from "../server/services/event-source.js";
+import { createJob, getJob } from "../server/services/job-store.js";
 import { CHANNEL_COMMAND_HELP, parseChannelCommand } from "../server/services/channel-commands.js";
 import {
   parseSlackSlashCommand,
@@ -15,6 +17,10 @@ import {
 
 function slackSignature(secret, timestamp, rawBody) {
   return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+}
+
+function slackBody(params) {
+  return new URLSearchParams(params).toString();
 }
 
 async function buildChannelApp(cpbRoot, routeOptions = {}) {
@@ -178,6 +184,107 @@ describe("Slack channel command skeleton", () => {
       assert.equal(parsed.parsed.command.type, "status");
       assert.equal(parsed.parsed.command.job, "job-20260524-153011-a13f9c");
       assert.equal(invalid.statusCode, 401);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a queue entry and job for signed Slack run commands with action metadata", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-run-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+    });
+    try {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = slackBody({
+        command: "/cpb",
+        text: 'run frontend --workflow strict "fix login redirect"',
+        user_id: "U123",
+        channel_id: "C123",
+        team_id: "T123",
+        trigger_id: "trigger-run-1",
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.action, "queued");
+      assert.equal(body.job.project, "frontend");
+      assert.match(body.job.jobId, /^job-/);
+      assert.equal(body.queueEntry.source, "slack");
+      assert.equal(body.actions.viewRun.label, "View Run");
+      assert.equal(body.actions.cancel.command, `/cpb cancel ${body.job.jobId}`);
+
+      const candidates = await listCandidates(cpbRoot, { source: "slack" });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].status, "dispatched");
+      assert.equal(candidates[0].payload.task, "fix login redirect");
+
+      const job = await getJob(cpbRoot, "frontend", body.job.jobId);
+      assert.equal(job.task, "fix login redirect");
+      assert.equal(job.workflow, "strict");
+      assert.equal(job.queueEntryId, body.queueEntry.id);
+      assert.equal(job.sourceContext.type, "slack");
+      assert.equal(job.sourceContext.channelId, "C123");
+      assert.equal(job.sourceContext.actor, "U123");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a job projection for signed Slack status commands with action metadata", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-status-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+    });
+    try {
+      const job = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Fix login redirect",
+        workflow: "standard",
+        jobId: "job-20260524-153011-a13f9c",
+        sourceContext: { type: "slack", channelId: "C123", actor: "U123" },
+      });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = slackBody({
+        command: "/cpb",
+        text: `status ${job.jobId}`,
+        user_id: "U123",
+        channel_id: "C123",
+        team_id: "T123",
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/slack/commands",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.action, "status");
+      assert.equal(body.status.jobId, job.jobId);
+      assert.equal(body.status.project, "frontend");
+      assert.equal(body.status.status, "running");
+      assert.equal(body.actions.viewRun.label, "View Run");
+      assert.equal(body.actions.cancel.command, `/cpb cancel ${job.jobId}`);
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

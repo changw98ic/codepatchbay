@@ -231,6 +231,86 @@ export async function createGithubIssueQueueJob(cpbRoot, event, match, { createJ
   };
 }
 
+function channelExternalId(source, context = {}) {
+  if (context.externalId) return context.externalId;
+  if (context.triggerId) return context.triggerId;
+  return [
+    source,
+    context.teamId || "team",
+    context.channelId || "channel",
+    context.actor || "actor",
+    Date.now().toString(36),
+    Math.random().toString(36).slice(2, 8),
+  ].join(":");
+}
+
+function channelQueuePayload(command, context = {}) {
+  return {
+    task: command.task || "",
+    workflow: command.workflow || "standard",
+    command: command.command || command.type || null,
+    commandText: context.commandText || null,
+    actor: context.actor || null,
+    actorName: context.actorName || null,
+    teamId: context.teamId || null,
+    channelId: context.channelId || null,
+    channelName: context.channelName || null,
+    triggerId: context.triggerId || null,
+  };
+}
+
+export async function createChannelQueueJob(cpbRoot, command, context = {}, { createJobFn = createJob } = {}) {
+  if (!command || command.type !== "run") {
+    throw new Error("channel command must be a run command before queue creation");
+  }
+  if (!command.project || !command.task) {
+    throw new Error("channel run command requires project and task");
+  }
+
+  const source = context.channel || "channel";
+  const payload = channelQueuePayload(command, context);
+  const entry = await ingestEvent(cpbRoot, {
+    source,
+    externalId: channelExternalId(source, context),
+    projectId: command.project,
+    payload,
+  });
+
+  if (entry.status === "duplicate") {
+    return { status: "duplicate", entry, job: null };
+  }
+
+  const sourceContext = {
+    type: source,
+    channel: source,
+    queueEntryId: entry.id,
+    actor: payload.actor,
+    actorName: payload.actorName,
+    teamId: payload.teamId,
+    channelId: payload.channelId,
+    channelName: payload.channelName,
+    commandText: payload.commandText,
+    triggerId: payload.triggerId,
+  };
+  const job = await createJobFn(cpbRoot, {
+    project: command.project,
+    task: command.task,
+    workflow: command.workflow || "standard",
+    queueEntryId: entry.id,
+    sourceContext,
+  });
+  const updated = await updateCandidate(cpbRoot, entry.id, {
+    status: "dispatched",
+    reason: `created job ${job.jobId}`,
+  });
+
+  return {
+    status: "created",
+    entry: updated || entry,
+    job,
+  };
+}
+
 /**
  * List candidate events, optionally filtered by status or source.
  */

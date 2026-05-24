@@ -6,6 +6,7 @@ import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import {
+  handleSlackSlashCommand,
   parseSlackFormBody,
   parseSlackSlashCommand,
   verifySlackSignature,
@@ -199,13 +200,8 @@ export async function channelRoutes(fastify, opts) {
       };
     }
 
-    return reply.code(202).send({
-      ok: true,
-      channel: "slack",
-      dryRun: false,
-      parsed,
-      dispatch: "pending",
-    });
+    const result = await handleSlackSlashCommand(req.cpbRoot, parsed);
+    return reply.code(result.ok ? 200 : 400).send(result);
   });
 
   // Feishu event callback

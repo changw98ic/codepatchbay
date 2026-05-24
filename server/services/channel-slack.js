@@ -1,5 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
+import { createChannelQueueJob } from "./event-source.js";
+import { listJobsAcrossRuntimeRoots } from "./job-store.js";
+import { jobToQueueRow } from "./job-projection.js";
 
 const DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 300;
 
@@ -64,6 +67,105 @@ export function parseSlackSlashCommand(payload = {}) {
       channelName: payload.channel_name || null,
     },
     command,
+    triggerId: payload.trigger_id || null,
+    commandText,
     responseUrlPresent: Boolean(payload.response_url),
+  };
+}
+
+export function slackActionMetadata(jobId) {
+  return {
+    viewRun: {
+      type: "link",
+      label: "View Run",
+      url: `/jobs/${jobId}`,
+      value: jobId,
+    },
+    cancel: {
+      type: "command",
+      label: "Cancel",
+      command: `/cpb cancel ${jobId}`,
+      value: jobId,
+    },
+  };
+}
+
+function jobSummary(job) {
+  if (!job) return null;
+  return {
+    jobId: job.jobId,
+    project: job.project,
+    task: job.task,
+    workflow: job.workflow || "standard",
+    status: job.status || null,
+  };
+}
+
+async function findJobById(cpbRoot, jobId) {
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
+  return jobs.find((job) => job.jobId === jobId) || null;
+}
+
+export async function handleSlackSlashCommand(cpbRoot, parsed) {
+  const command = parsed?.command;
+  if (!parsed?.ok || !command?.ok) {
+    return {
+      ok: false,
+      channel: "slack",
+      action: "help",
+      parsed,
+      error: command?.message || "invalid Slack command",
+    };
+  }
+
+  if (command.type === "run") {
+    const result = await createChannelQueueJob(cpbRoot, command, {
+      channel: "slack",
+      actor: parsed.actor.userId,
+      actorName: parsed.actor.userName,
+      teamId: parsed.actor.teamId,
+      channelId: parsed.actor.channelId,
+      channelName: parsed.actor.channelName,
+      triggerId: parsed.triggerId,
+      commandText: parsed.commandText,
+    });
+    return {
+      ok: result.status === "created",
+      channel: "slack",
+      action: result.status === "created" ? "queued" : result.status,
+      parsed,
+      queueEntry: result.entry,
+      job: jobSummary(result.job),
+      actions: result.job ? slackActionMetadata(result.job.jobId) : null,
+    };
+  }
+
+  if (command.type === "status") {
+    const job = await findJobById(cpbRoot, command.job);
+    if (!job) {
+      return {
+        ok: false,
+        channel: "slack",
+        action: "status",
+        parsed,
+        error: `job not found: ${command.job}`,
+      };
+    }
+    return {
+      ok: true,
+      channel: "slack",
+      action: "status",
+      parsed,
+      status: jobToQueueRow(job),
+      actions: slackActionMetadata(job.jobId),
+    };
+  }
+
+  return {
+    ok: false,
+    channel: "slack",
+    action: command.type,
+    parsed,
+    error: `${command.type} is not wired yet`,
   };
 }
