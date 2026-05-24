@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { redactSecrets } from "./secret-policy.js";
@@ -161,4 +162,38 @@ export function buildGithubAppReadiness(config) {
       recommendedAction: config.installationId ? null : "Run: cpb github install-app",
     },
   ];
+}
+
+export function resolveSecretRef(secretRef, { env = process.env } = {}) {
+  if (typeof secretRef !== "string" || secretRef.trim() === "") {
+    throw new Error("secret reference is required");
+  }
+  if (secretRef.startsWith("env:")) {
+    const name = secretRef.slice("env:".length);
+    const value = env[name];
+    if (!value) throw new Error(`secret reference not available: env:${name}`);
+    return value;
+  }
+  throw new Error(`unsupported secret reference: ${secretRef.split(":")[0] || "unknown"}`);
+}
+
+export function resolveGithubWebhookSecret(config, options = {}) {
+  if (!config?.webhookSecretRef) {
+    throw new Error("GitHub webhook secret reference missing");
+  }
+  return resolveSecretRef(config.webhookSecretRef, options);
+}
+
+export function verifyGithubWebhookSignature({ signature, rawBody, secret }) {
+  if (typeof signature !== "string" || !signature.startsWith("sha256=")) return false;
+  if (!secret || !rawBody) return false;
+
+  const providedHex = signature.slice("sha256=".length);
+  if (!/^[0-9a-f]{64}$/i.test(providedHex)) return false;
+
+  const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody));
+  const expectedHex = createHmac("sha256", secret).update(body).digest("hex");
+  const provided = Buffer.from(providedHex, "hex");
+  const expected = Buffer.from(expectedHex, "hex");
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
