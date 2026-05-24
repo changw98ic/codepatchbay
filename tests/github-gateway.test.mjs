@@ -14,6 +14,7 @@ import { createGithubIssueQueueJob, listCandidates } from "../server/services/ev
 import { getJob } from "../server/services/job-store.js";
 import { buildQueuedComment, postGithubQueuedComment } from "../server/services/github-comments.js";
 import { openDraftPullRequest } from "../server/services/github-pr.js";
+import { buildCodePatchBayPrBody } from "../server/services/pr-body.js";
 import {
   buildGithubAppReadiness,
   githubAppConfigPath,
@@ -571,5 +572,66 @@ describe("GitHub draft PR creation", () => {
     assert.match(result.error.message, /GitHub unavailable/);
     assert.equal(result.evidence.head, "cpb/issue-123-fix-login-redirect");
     assert.equal(result.evidence.base, "main");
+  });
+});
+
+describe("CodePatchBay PR body", () => {
+  it("includes run, plan, tests, verification, and audit sections with unavailable artifacts", () => {
+    const body = buildCodePatchBayPrBody({
+      job: {
+        jobId: "job-pr-body",
+        project: "frontend",
+        workflow: "standard",
+        retryCount: 1,
+        sourceContext: { issueNumber: 123, repo: "my-org/frontend" },
+      },
+      agents: { planner: "codex", executor: "claude", verifier: "codex" },
+      artifacts: {
+        plan: { id: "plan-001", path: "/tmp/plan-001.md" },
+        deliverable: { id: "deliverable-001", path: "/tmp/deliverable-001.md" },
+        verdict: { id: "verdict-001", path: "/tmp/verdict-001.md" },
+      },
+      tests: ["npm test: pass", "npm run lint: pass"],
+      verdict: { status: "pass", confidence: 0.86, reason: "Focused and regression tests passed.", blockingCount: 0 },
+      audit: { eventLog: "/tmp/events.jsonl" },
+    });
+
+    assert.match(body, /## CodePatchBay Run/);
+    assert.match(body, /## Plan/);
+    assert.match(body, /## Tests/);
+    assert.match(body, /## Verification/);
+    assert.match(body, /## Audit/);
+    assert.match(body, /Job: job-pr-body/);
+    assert.match(body, /Planner: codex/);
+    assert.match(body, /npm test: pass/);
+    assert.match(body, /Status: pass/);
+    assert.match(body, /Diff: unavailable/);
+    assert.match(body, /Review: unavailable/);
+  });
+
+  it("is deterministic for the same job projection", async () => {
+    const job = {
+      jobId: "job-pr-deterministic",
+      project: "frontend",
+      task: "Fix login redirect",
+      workflow: "standard",
+      worktreeBranch: "cpb/issue-123-fix-login-redirect",
+      worktreeBaseBranch: "main",
+      sourceContext: { type: "github_issue", repo: "my-org/frontend", issueNumber: 123 },
+    };
+
+    const first = buildCodePatchBayPrBody({ job });
+    const second = buildCodePatchBayPrBody({ job });
+    assert.equal(first, second);
+
+    const pr = await openDraftPullRequest({
+      job,
+      verdict: "PASS",
+      branchPushed: true,
+      dryRun: true,
+    });
+    assert.match(pr.request.body, /## CodePatchBay Run/);
+    assert.match(pr.request.body, /## Verification/);
+    assert.equal(pr.request.body, buildCodePatchBayPrBody({ job, verdict: { status: "pass" } }));
   });
 });

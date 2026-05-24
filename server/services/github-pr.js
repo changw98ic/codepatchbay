@@ -1,5 +1,6 @@
 import { appendEvent } from "./event-store.js";
 import { getJob } from "./job-store.js";
+import { buildCodePatchBayPrBody } from "./pr-body.js";
 
 function isPass(verdict) {
   return String(verdict || "").toUpperCase() === "PASS";
@@ -11,19 +12,7 @@ function prTitle(job) {
 }
 
 function prBody(job) {
-  const issue = job.sourceContext?.issueNumber ? `#${job.sourceContext.issueNumber}` : "unavailable";
-  return [
-    "## CodePatchBay Run",
-    "",
-    `- Job: ${job.jobId}`,
-    `- Workflow: ${job.workflow || "standard"}`,
-    `- Issue: ${issue}`,
-    "",
-    "## Verification",
-    "",
-    "- Verdict: PASS",
-    "",
-  ].join("\n");
+  return buildCodePatchBayPrBody({ job, verdict: { status: "pass" } });
 }
 
 function buildRequest(job) {
