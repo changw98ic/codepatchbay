@@ -54,7 +54,7 @@ function enqueueWrite(cpbRoot, opts, fn) {
 }
 
 function _base(cpbRoot, opts) {
-  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
+  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
 function indexFilePath(cpbRoot, opts = {}) {

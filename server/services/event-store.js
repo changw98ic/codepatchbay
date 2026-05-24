@@ -46,7 +46,7 @@ import {
 export const JOBS_EVENTS_FORMAT_VERSION = 1;
 
 function _base(cpbRoot, opts) {
-  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
+  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
 function validatePathComponent(name, value) {

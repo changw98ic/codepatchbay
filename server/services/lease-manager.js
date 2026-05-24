@@ -7,7 +7,7 @@ import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 export const LEASE_FORMAT_VERSION = 1;
 
 function _base(cpbRoot, opts) {
-  return opts?.dataRoot || runtimeDataRoot(cpbRoot);
+  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
 const ownedLeaseTokens = new Map();

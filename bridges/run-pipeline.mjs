@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeDataPath } from "../server/services/runtime-root.js";
+import { runtimeDataPath, runtimeDataRoot } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
@@ -470,7 +470,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   }
   if (!sourcePath) return null;
 
-  const worktreesRoot = runtimeDataPath(cpbRoot, "worktrees");
+  const worktreesRoot = path.join(process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot), "worktrees");
   const result = await runCommand(
     process.execPath,
     [
