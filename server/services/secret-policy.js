@@ -72,9 +72,14 @@ export { RUNTIME_BASICS, PROVIDER_CREDENTIALS, ALLOWED_ENV };
 // --- Secret redaction ---
 
 const SECRET_KEY_PATTERN = /authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook/i;
+const SECRET_REFERENCE_KEY_PATTERN = /(?:authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook)[A-Za-z0-9_-]*(?:ref|reference)$/i;
 const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
 const SECRET_INPUT_GUIDANCE = "Do not paste API keys or tokens into CodePatchBay. Use provider-native login or the local setup URL.";
+
+function isSecretReferenceKey(key = "") {
+  return SECRET_REFERENCE_KEY_PATTERN.test(String(key));
+}
 
 function redactString(value, key = "") {
   if (typeof key === "string" && SECRET_KEY_PATTERN.test(key)) return "[REDACTED]";
@@ -112,10 +117,10 @@ export function redactSecrets(value, key = "") {
 
     const out = {};
     for (const [k, v] of Object.entries(val)) {
-      if (SECRET_KEY_PATTERN.test(k)) {
+      if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
         out[k] = "[REDACTED]";
       } else if (typeof v === "string") {
-        out[k] = redactString(v, k);
+        out[k] = redactString(v, isSecretReferenceKey(k) ? "" : k);
       } else {
         out[k] = walk(v);
       }
