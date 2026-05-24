@@ -141,6 +141,48 @@ describe("phase-locator-contract", () => {
 
       assert.deepEqual(locator.completedPhases, ["plan", "execute"]);
     });
+
+    it("resolves eventLogPath through Hub project runtime root", async () => {
+      const hubRoot = path.join(tmpDir, ".hub");
+      const projectRuntimeRoot = path.join(hubRoot, "projects", "test-proj");
+      const hubEventDir = path.join(projectRuntimeRoot, "events", "test-proj");
+      await mkdir(hubEventDir, { recursive: true });
+
+      await writeFile(path.join(hubRoot, "projects.json"), JSON.stringify({
+        version: 1,
+        updatedAt: new Date(0).toISOString(),
+        projects: {
+          "test-proj": {
+            id: "test-proj",
+            name: "test-proj",
+            sourcePath: tmpDir,
+            projectRoot: path.join(tmpDir, "cpb-task"),
+            projectRuntimeRoot,
+            enabled: true,
+          },
+        },
+      }));
+
+      const jobId = "job-20260524-hub001-aaaa";
+      await appendEvent(tmpDir, "test-proj", jobId, {
+        type: "job_created",
+        jobId,
+        project: "test-proj",
+        task: "hub runtime root test",
+        workflow: "standard",
+        ts: new Date().toISOString(),
+      }, { dataRoot: projectRuntimeRoot });
+
+      const prevHubRoot = process.env.CPB_HUB_ROOT;
+      process.env.CPB_HUB_ROOT = hubRoot;
+      try {
+        const locator = await buildPhaseLocator(tmpDir, "test-proj", jobId, "plan");
+        assert.match(locator.eventLogPath, /projects\/test-proj\/events\/test-proj\/job-/);
+      } finally {
+        if (prevHubRoot) process.env.CPB_HUB_ROOT = prevHubRoot;
+        else delete process.env.CPB_HUB_ROOT;
+      }
+    });
   });
 
   describe("locatorEnvelope", () => {

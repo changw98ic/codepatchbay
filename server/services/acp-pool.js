@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client.mjs";
+import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
 import { resolveHubRoot } from "./hub-registry.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 
@@ -714,30 +714,48 @@ function managedView(pool) {
   });
 }
 
+function resolvePoolRoots(hubRoot, cpbRoot) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || path.join(__dirname, ".."));
+  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
+  return {
+    cpbRoot: resolvedCpbRoot,
+    hubRoot: resolvedHubRoot,
+    key: `${resolvedHubRoot}\0${resolvedCpbRoot}`,
+  };
+}
+
 export function getPoolRuntime(hubRoot, cpbRoot, opts = {}) {
-  if (!runtimes.has(hubRoot)) {
+  const roots = resolvePoolRoots(hubRoot, cpbRoot);
+  if (!runtimes.has(roots.key)) {
     const persistentProcesses = opts.persistentProcesses ?? (
       opts.runner ? false : process.env.CPB_ACP_PERSISTENT_PROCESS !== "0"
     );
-    runtimes.set(hubRoot, new AcpPool({ ...opts, cpbRoot, hubRoot, persistentProcesses }));
+    runtimes.set(roots.key, new AcpPool({ ...opts, cpbRoot: roots.cpbRoot, hubRoot: roots.hubRoot, persistentProcesses }));
   }
-  return runtimes.get(hubRoot);
+  return runtimes.get(roots.key);
 }
 
 export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
-  const pool = getPoolRuntime(hubRoot, cpbRoot, opts);
-  if (!managedViews.has(hubRoot)) {
-    managedViews.set(hubRoot, managedView(pool));
+  const roots = resolvePoolRoots(hubRoot, cpbRoot);
+  const pool = getPoolRuntime(roots.hubRoot, roots.cpbRoot, opts);
+  if (!managedViews.has(roots.key)) {
+    managedViews.set(roots.key, managedView(pool));
   }
-  return managedViews.get(hubRoot);
+  return managedViews.get(roots.key);
 }
 
-export function resetPoolRuntime(hubRoot) {
-  const pool = runtimes.get(hubRoot);
+export function resetPoolRuntime(hubRootOrObj) {
+  let key;
+  if (typeof hubRootOrObj === "string") {
+    key = hubRootOrObj;
+  } else if (hubRootOrObj) {
+    key = resolvePoolRoots(hubRootOrObj.hubRoot, hubRootOrObj.cpbRoot).key;
+  }
+  const pool = runtimes.get(key);
   if (pool) {
     pool.stop();
-    runtimes.delete(hubRoot);
-    managedViews.delete(hubRoot);
+    runtimes.delete(key);
+    managedViews.delete(key);
   }
 }
 

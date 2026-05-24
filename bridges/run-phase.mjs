@@ -834,6 +834,15 @@ async function main() {
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 
-if (realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
+function isDirectRun(metaUrl, argvPath) {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(argvPath);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun(import.meta.url, process.argv[1])) {
   process.exitCode = await main();
 }

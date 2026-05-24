@@ -1,4 +1,5 @@
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event-store.js";
+import { listRuntimeDataRoots } from "./runtime-context.js";
 
 const STATUS_KEYS = ["running", "completed", "failed", "blocked", "cancelled", "unknown"];
 
@@ -18,12 +19,23 @@ function isAnomalous(job, jobIdSet) {
   return false;
 }
 
-export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10 } = {}) {
-  const eventFiles = await listEventFiles(cpbRoot);
+export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot } = {}) {
+  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
+  const seenPaths = new Set();
+  const eventFiles = [];
+  for (const root of roots) {
+    const dataRoot = root.kind === "legacy" ? undefined : root.dataRoot;
+    const batch = await listEventFiles(cpbRoot, { dataRoot });
+    for (const f of batch) {
+      if (seenPaths.has(f.file)) continue;
+      seenPaths.add(f.file);
+      eventFiles.push({ ...f, dataRoot });
+    }
+  }
 
   const jobs = [];
-  for (const { project, jobId, file } of eventFiles) {
-    const events = await readEventsReadOnly(cpbRoot, project, jobId);
+  for (const { project, jobId, file, dataRoot } of eventFiles) {
+    const events = await readEventsReadOnly(cpbRoot, project, jobId, dataRoot ? { dataRoot } : {});
     if (!events || events.length === 0) continue;
     const job = materializeJob(events);
     if (!job.jobId || !job.project || !job.createdAt) continue;

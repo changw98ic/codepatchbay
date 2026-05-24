@@ -19,3 +19,8 @@ New pure logic goes to `core/`.
 New executable compatibility surfaces go to `bridges/`.
 New CLI routing goes to `cli/commands/`.
 New durable state writes stay in `server/services/` until a single migration moves them behind a runtime adapter.
+
+## Current Debt Register
+
+- `server/services/acp-pool.js` imports `runtime/acp-client-core.mjs` for managed in-process ACP sessions. The core module re-exports `AcpClient` class without CLI side effects. This exception remains until the ACP client core migrates to `server/services/`.
+- Runtime-root reads must go through `server/services/runtime-context.js`; direct legacy-only `runtimeDataPath(cpbRoot, "events", ...)` reads are compatibility-only.

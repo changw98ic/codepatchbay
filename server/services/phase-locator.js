@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
 import { getJob } from "./job-store.js";
 import { getWorkflow } from "../../core/workflow/definition.js";
 
@@ -68,9 +69,10 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
   locator.sourcePath = process.env.CPB_PROJECT_PATH_OVERRIDE || await resolveProjectSourcePath(cpbRoot, project);
 
   if (jobId) {
-    locator.eventLogPath = eventLogPath(cpbRoot, project, jobId);
-    locator.processRegistryDir = runtimeDataPath(cpbRoot, "processes");
-    locator.stateFilePath = runtimeDataPath(cpbRoot, "state", `pipeline-${project}.json`);
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+    locator.eventLogPath = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
+    locator.processRegistryDir = path.join(dataRoot, "processes");
+    locator.stateFilePath = path.join(dataRoot, "state", `pipeline-${project}.json`);
     const job = await getJob(cpbRoot, project, jobId);
     if (job?.jobId) {
       locator.task = job.task;

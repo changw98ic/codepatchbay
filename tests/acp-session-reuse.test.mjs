@@ -207,4 +207,23 @@ while true; do sleep 1; done
       try { process.kill(pid, "SIGKILL"); } catch {}
     }
   });
+
+  it("managed ACP pools are keyed by resolved cpbRoot and hubRoot", async () => {
+    const rootA = await mkdtemp(path.join(os.tmpdir(), "cpb-pool-a-"));
+    const rootB = await mkdtemp(path.join(os.tmpdir(), "cpb-pool-b-"));
+
+    resetManagedAcpPoolsForTests();
+    const { getManagedAcpPool } = await import("../server/services/acp-pool.js");
+
+    const poolA = getManagedAcpPool({ cpbRoot: rootA, persistentProcesses: false });
+    const poolB = getManagedAcpPool({ cpbRoot: rootB, persistentProcesses: false });
+
+    assert.notEqual(poolA, poolB);
+    assert.equal(poolA.cpbRoot, path.resolve(rootA));
+    assert.equal(poolB.cpbRoot, path.resolve(rootB));
+    resetManagedAcpPoolsForTests();
+
+    await rm(rootA, { recursive: true, force: true }).catch(() => {});
+    await rm(rootB, { recursive: true, force: true }).catch(() => {});
+  });
 });

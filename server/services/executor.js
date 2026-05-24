@@ -1,4 +1,4 @@
-import { listJobs } from "./job-store.js";
+import { listJobsAcrossRuntimeRoots } from "./job-store.js";
 
 const runningTasks = new Map();
 
@@ -19,5 +19,5 @@ export function getRunningTasks() {
 }
 
 export async function getDurableTasks(cpbRoot) {
-  return listJobs(cpbRoot);
+  return listJobsAcrossRuntimeRoots(cpbRoot);
 }

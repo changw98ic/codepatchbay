@@ -128,6 +128,48 @@ export async function startPhase(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
+async function resolveAgentForPhase(cpbRoot, job, phase) {
+  if (job?.agent && typeof job.agent === "string") {
+    return job.agent;
+  }
+  if (job?.executor && typeof job.executor === "string") {
+    return job.executor;
+  }
+  if (job?.executor && typeof job.executor === "object" && job.executor.packageName) {
+    return job.executor.packageName;
+  }
+
+  try {
+    const { normalizeWorkflow, resolveNodeAgent } = await import("../../core/workflow/definition.js");
+    const dag = normalizeWorkflow(job.workflow || "standard");
+    if (dag && dag.nodes) {
+      const node = dag.nodes.find(n => n.id === phase || n.phase === phase);
+      if (node) {
+        let poolStatus = null;
+        try {
+          const { getManagedAcpPool } = await import("./acp-pool.js");
+          const pool = getManagedAcpPool({ cpbRoot, hubRoot: undefined });
+          poolStatus = await pool.statusAsync().catch(() => null);
+        } catch {}
+        const resolved = resolveNodeAgent(node, { poolStatus });
+        if (resolved) return resolved;
+      }
+    }
+  } catch {}
+
+  try {
+    const { roleForPhase } = await import("../../core/workflow/definition.js");
+    const wf = getWorkflow(job.workflow || "standard");
+    const role = roleForPhase(wf, phase) || "executor";
+    const agentRegistry = await import("../../core/agents/registry.js");
+    await agentRegistry.loadRegistry().catch(() => {});
+    const agent = agentRegistry.defaultAgentForRole(role);
+    if (agent) return agent;
+  } catch {}
+
+  return "unknown";
+}
+
 export async function completePhase(
   cpbRoot,
   project,
@@ -145,7 +187,7 @@ export async function completePhase(
   }, { dataRoot });
 
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
-  const agent = job?.executor || job?.agent || null;
+  const agent = await resolveAgentForPhase(cpbRoot, job, phase);
   const role = job?.workflow ? getWorkflow(job.workflow).roleForPhase?.[phase] : null;
   recordPerformance(cpbRoot, project, jobId, {
     agent,
@@ -373,7 +415,7 @@ export async function completeJob(
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const verdict = job?.verdict || job?.artifacts?.verdict || null;
   if (verdict) {
-    const agent = job?.executor || job?.agent || null;
+    const agent = await resolveAgentForPhase(cpbRoot, job, "verify");
     recordQualityScore(cpbRoot, project, jobId, {
       agent,
       phase: "verify",
@@ -500,4 +542,21 @@ export async function listJobs(cpbRoot, options = {}) {
   const { dataRoot, ...rest } = options;
   const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+}
+
+export async function listJobsAcrossRuntimeRoots(cpbRoot, options = {}) {
+  const { listRuntimeDataRoots } = await import("./runtime-context.js");
+  const roots = await listRuntimeDataRoots(cpbRoot, options);
+  const seen = new Set();
+  const jobs = [];
+  for (const root of roots) {
+    const batch = await listJobs(cpbRoot, { dataRoot: root.kind === "legacy" ? undefined : root.dataRoot });
+    for (const job of batch) {
+      const key = `${job.project}/${job.jobId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      jobs.push(job);
+    }
+  }
+  return jobs.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }

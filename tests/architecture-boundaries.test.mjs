@@ -1,4 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -56,4 +57,55 @@ test("server does not import from bridges", async () => {
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+test("server ACP pool imports without CLI argv side effects", () => {
+  const result = spawnSync(process.execPath, [
+    "--input-type=module",
+    "-e",
+    "await import('./server/services/acp-pool.js'); console.log('ok');",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /ok/);
+});
+
+test("CLI-style executable modules are import safe", async () => {
+  const modules = [
+    "./runtime/acp-client.mjs",
+    "./bridges/run-phase.mjs",
+    "./bridges/run-pipeline.mjs",
+  ];
+
+  for (const mod of modules) {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `await import(${JSON.stringify(mod)}); console.log('ok')`,
+    ], { cwd: repoRoot, encoding: "utf8" });
+    assert.equal(result.status, 0, `${mod}: ${result.stderr || result.stdout}`);
+  }
+});
+
+test("server-to-runtime imports are limited to the exception list", async () => {
+  const ALLOWED_SERVER_RUNTIME_IMPORTS = new Set([
+    "server/services/acp-pool.js",
+    // acp-pool imports runtime/acp-client-core.mjs for managed in-process sessions.
+    // Core module re-exports AcpClient class — safe to import without CLI side effects.
+    // Remove entry after acp-client-core.mjs migrates to server/services/.
+  ]);
+
+  const offenders = [];
+  for (const file of await listFiles("server")) {
+    if (ALLOWED_SERVER_RUNTIME_IMPORTS.has(path.relative(repoRoot, file))) continue;
+    const source = await readFile(file, "utf8");
+    const runtimeImport = source.match(/from ["'][.\/]+runtime\/|import\(["'][.\/]+runtime\//);
+    if (runtimeImport) {
+      offenders.push(`${path.relative(repoRoot, file)}: ${runtimeImport[0].trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], "server files importing runtime must be in ALLOWED_SERVER_RUNTIME_IMPORTS");
 });
