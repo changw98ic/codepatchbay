@@ -28,6 +28,28 @@ function containsPath(candidate, roots) {
   return false;
 }
 
+async function createMinimalProjectWiki(wikiDir, projectName) {
+  await mkdir(wikiDir, { recursive: true });
+  const files = {
+    "context.md": `# ${projectName}\n\n## Context\n\n- Initialized without a project template.\n`,
+    "tasks.md": `# Tasks: ${projectName}\n\n`,
+    "decisions.md": `# Decisions: ${projectName}\n\n`,
+    "log.md": `# Log: ${projectName}\n\n`,
+  };
+  await Promise.all(Object.entries(files).map(([file, content]) => {
+    return writeFile(path.join(wikiDir, file), content, "utf8");
+  }));
+}
+
+async function copyProjectTemplate(templateDir, wikiDir, projectName) {
+  try {
+    await cp(templateDir, wikiDir, { recursive: true, force: true });
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+    await createMinimalProjectWiki(wikiDir, projectName);
+  }
+}
+
 export async function initProject(args, { cpbRoot, executorRoot }) {
   const projectPathRaw = args[0];
   let projectName = args[1];
@@ -97,7 +119,7 @@ export async function initProject(args, { cpbRoot, executorRoot }) {
 
   // 1. Create from template
   const templateDir = path.join(executorRoot, "wiki/projects/_template");
-  await cp(templateDir, wikiDir, { recursive: true, force: true });
+  await copyProjectTemplate(templateDir, wikiDir, projectName);
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   console.log(`Created: ${wikiDir}`);

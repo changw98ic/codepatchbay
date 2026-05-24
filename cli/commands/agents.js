@@ -5,11 +5,13 @@ import { createInstallPlan, executeInstallPlan } from "../../core/setup/install-
 
 function usage() {
   return [
-    "Usage: cpb agents <list|install> [options]",
+    "Usage: cpb agents <list|detect|install|test> [options]",
     "",
     "Commands:",
     "  cpb agents list [--json]",
+    "  cpb agents detect [--json]",
     "  cpb agents install <agent> --method <method> [--json] [--yes]",
+    "  cpb agents test <agent> [--json]",
   ].join("\n");
 }
 
@@ -32,6 +34,19 @@ export async function run(args = []) {
     } else {
       for (const agent of agents) {
         console.log(`${agent.id}\t${agent.displayName}`);
+      }
+    }
+    return 0;
+  }
+
+  if (command === "detect") {
+    const snapshot = await detectSetupEnvironment();
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(snapshot, null, 2));
+    } else {
+      for (const [id, agent] of Object.entries(snapshot.agents)) {
+        const version = agent.version ? ` (${agent.version})` : "";
+        console.log(`${id}\t${agent.installed ? "installed" : "missing"}${version}`);
       }
     }
     return 0;
@@ -62,6 +77,27 @@ export async function run(args = []) {
       console.log(shouldExecute ? "Executed: yes" : "Executed: no (pass --yes to run)");
     }
     return 0;
+  }
+
+  if (command === "test") {
+    const agentId = args[1];
+    if (!agentId) {
+      console.error(usage());
+      return 1;
+    }
+    const snapshot = await detectSetupEnvironment();
+    const result = snapshot.agents[agentId];
+    if (!result) {
+      console.error(`Unknown agent: ${agentId}`);
+      return 1;
+    }
+    if (args.includes("--json")) {
+      console.log(JSON.stringify({ agent: result }, null, 2));
+    } else {
+      const version = result.version ? ` (${result.version})` : "";
+      console.log(`${agentId}: ${result.installed ? "installed" : "missing"}${version}`);
+    }
+    return result.installed ? 0 : 1;
   }
 
   console.error(usage());

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -52,6 +52,32 @@ test("cpb init command uses the command module contract", async () => {
   assert.notEqual(result.code, 0);
 });
 
+test("initProject creates a minimal wiki when executor template is absent", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-init-no-template-"));
+  const source = path.join(tmp, "source");
+  const cpbRoot = path.join(tmp, "cpb-root");
+  const executorRoot = path.join(tmp, "executor-root");
+  const savedProjectRoots = process.env.CPB_PROJECT_ROOTS;
+
+  try {
+    await mkdir(source, { recursive: true });
+    await mkdir(cpbRoot, { recursive: true });
+    await mkdir(executorRoot, { recursive: true });
+    await writeFile(path.join(source, "package.json"), JSON.stringify({ name: "no-template" }), "utf8");
+    process.env.CPB_PROJECT_ROOTS = tmp;
+
+    const { initProject } = await import("../cli/commands/init.js");
+    await initProject([source, "no-template"], { cpbRoot, executorRoot });
+
+    const context = await readFile(path.join(cpbRoot, "wiki", "projects", "no-template", "context.md"), "utf8");
+    assert.match(context, /Initialized without a project template/);
+  } finally {
+    if (savedProjectRoots === undefined) delete process.env.CPB_PROJECT_ROOTS;
+    else process.env.CPB_PROJECT_ROOTS = savedProjectRoots;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("cpb version exits zero", async () => {
   const result = await runNode(["./cpb", "version"]);
   assert.equal(result.code, 0);
@@ -92,6 +118,14 @@ test("cpb agents list --json is routed", async () => {
   const parsed = JSON.parse(result.stdout);
   assert.ok(Array.isArray(parsed.agents));
   assert.ok(parsed.agents.some((agent) => agent.id === "codex"));
+});
+
+test("cpb agents detect --json is routed", async () => {
+  const result = await runNode(["./cpb", "agents", "detect", "--json"]);
+  assert.equal(result.code, 0);
+  const parsed = JSON.parse(result.stdout);
+  assert.ok(parsed.agents.codex);
+  assert.ok(parsed.agents.claude);
 });
 
 test("cpb agents install without --yes prints a non-executed install plan", async () => {
