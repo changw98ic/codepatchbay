@@ -4,6 +4,15 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
+import {
+  ROUTING_TASK_CATEGORIES,
+  resolveRoutingForCategory,
+  validateRoutingRules,
+  assertValidRoutingRules,
+} from "../core/agents/routing.js";
+
+import { normalizeWorkflow } from "../core/workflow/definition.js";
+
 describe("agent registry", () => {
   let tmpDir;
 
@@ -199,5 +208,239 @@ describe("agent registry", () => {
     const { loadRegistry, hasAgent } = await import("../core/agents/registry.js");
     await loadRegistry(configDir);
     assert.equal(hasAgent("bad1"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D37 Routing Rules Config tests
+// ---------------------------------------------------------------------------
+
+// 1. All required categories are supported
+describe("ROUTING_TASK_CATEGORIES", () => {
+  it("contains every required task category", () => {
+    const required = [
+      "bugfix",
+      "test",
+      "docs",
+      "security",
+      "frontend",
+      "backend",
+      "infra",
+      "research",
+      "review",
+    ];
+    for (const cat of required) {
+      assert.ok(
+        ROUTING_TASK_CATEGORIES.includes(cat),
+        `missing category: ${cat}`,
+      );
+    }
+  });
+});
+
+// 2. Project routing config overrides workflow + phase agents
+describe("resolveRoutingForCategory", () => {
+  it("applies project routing rule for a known category", () => {
+    const routing = {
+      security: {
+        workflow: "complex",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+        reviewer: "codex",
+      },
+    };
+
+    const resolved = resolveRoutingForCategory("security", routing);
+    assert.equal(resolved.workflow, "complex");
+    assert.equal(resolved.planner, "codex");
+    assert.equal(resolved.executor, "claude");
+    assert.equal(resolved.verifier, "codex");
+    assert.equal(resolved.reviewer, "codex");
+  });
+
+  it("returns null when no rule matches the category", () => {
+    const routing = {
+      security: {
+        workflow: "complex",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+        reviewer: "codex",
+      },
+    };
+
+    const resolved = resolveRoutingForCategory("frontend", routing);
+    assert.equal(resolved, null);
+  });
+});
+
+// 3. normalizeWorkflow with routing yields correct DAG nodes
+describe("normalizeWorkflow with routing", () => {
+  it("yields complex workflow nodes when security routing is configured", () => {
+    const routing = {
+      security: {
+        workflow: "complex",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+        reviewer: "codex",
+      },
+    };
+
+    const dag = normalizeWorkflow("standard", {
+      category: "security",
+      routing,
+    });
+
+    // Complex workflow has 4 phases: plan, execute, review, verify
+    assert.equal(dag.name, "complex");
+    assert.equal(dag.nodes.length, 4);
+
+    const phaseIds = dag.nodes.map((n) => n.id ?? n.phase);
+    assert.ok(phaseIds.includes("plan"));
+    assert.ok(phaseIds.includes("execute"));
+    assert.ok(phaseIds.includes("review"));
+    assert.ok(phaseIds.includes("verify"));
+
+    // Agents from routing rule should be applied to nodes
+    const planNode = dag.nodes.find((n) => (n.id ?? n.phase) === "plan");
+    assert.equal(planNode.agent, "codex");
+
+    const executeNode = dag.nodes.find((n) => (n.id ?? n.phase) === "execute");
+    assert.equal(executeNode.agent, "claude");
+
+    const reviewNode = dag.nodes.find((n) => (n.id ?? n.phase) === "review");
+    assert.equal(reviewNode.agent, "codex");
+
+    const verifyNode = dag.nodes.find((n) => (n.id ?? n.phase) === "verify");
+    assert.equal(verifyNode.agent, "codex");
+  });
+});
+
+// 4. Fallback: category with no project rule uses default agents
+describe("normalizeWorkflow fallback", () => {
+  it("uses default agents when category has no routing rule", () => {
+    const routing = {};
+
+    const dag = normalizeWorkflow("standard", {
+      category: "docs",
+      routing,
+    });
+
+    // Standard workflow: plan -> execute -> verify
+    assert.equal(dag.name, "standard");
+    assert.equal(dag.nodes.length, 3);
+
+    // Default agents: planner codex, executor claude, verifier codex
+    const planNode = dag.nodes.find((n) => (n.id ?? n.phase) === "plan");
+    assert.equal(planNode.agent, "codex");
+
+    const executeNode = dag.nodes.find((n) => (n.id ?? n.phase) === "execute");
+    assert.equal(executeNode.agent, "claude");
+
+    const verifyNode = dag.nodes.find((n) => (n.id ?? n.phase) === "verify");
+    assert.equal(verifyNode.agent, "codex");
+  });
+
+  it("uses default agents when routing is null", () => {
+    const dag = normalizeWorkflow("standard", {
+      category: "infra",
+      routing: null,
+    });
+
+    assert.equal(dag.name, "standard");
+    assert.equal(dag.nodes.length, 3);
+
+    const planNode = dag.nodes.find((n) => (n.id ?? n.phase) === "plan");
+    assert.equal(planNode.agent, "codex");
+  });
+});
+
+// 5. Invalid agent names fail validation before job start
+describe("validateRoutingRules", () => {
+  it("rejects routing with unknown agent name", () => {
+    const routing = {
+      security: {
+        workflow: "standard",
+        planner: "codex",
+        executor: "totally-fake-agent",
+        verifier: "codex",
+      },
+    };
+
+    const result = validateRoutingRules(routing);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.length > 0);
+    assert.ok(
+      result.errors[0].includes("totally-fake-agent"),
+      `error should mention the bad agent, got: ${result.errors[0]}`,
+    );
+  });
+
+  it("accepts routing with valid agent names", () => {
+    const routing = {
+      security: {
+        workflow: "complex",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+        reviewer: "codex",
+      },
+    };
+
+    const result = validateRoutingRules(routing);
+    assert.equal(result.valid, true);
+    assert.equal(result.errors.length, 0);
+  });
+
+  it("rejects unknown category names", () => {
+    const routing = {
+      totally_fake_category: {
+        workflow: "standard",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+      },
+    };
+
+    const result = validateRoutingRules(routing);
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.errors.some((e) => e.includes("totally_fake_category")),
+      `error should mention unknown category`,
+    );
+  });
+});
+
+describe("assertValidRoutingRules", () => {
+  it("throws on invalid agent name", () => {
+    const routing = {
+      frontend: {
+        workflow: "standard",
+        planner: "codex",
+        executor: "no-such-agent",
+        verifier: "codex",
+      },
+    };
+
+    assert.throws(
+      () => assertValidRoutingRules(routing),
+      (err) => err.message.includes("no-such-agent"),
+    );
+  });
+
+  it("does not throw on valid rules", () => {
+    const routing = {
+      bugfix: {
+        workflow: "standard",
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+      },
+    };
+
+    // Should not throw
+    assertValidRoutingRules(routing);
   });
 });

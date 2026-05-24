@@ -1,5 +1,10 @@
 import { phasesToDag, validateDag } from "./dag-executor.js";
 import { resolveSquadAgent } from "../agents/registry.js";
+import {
+  agentForRoutingPhase,
+  assertValidRoutingRules,
+  resolveEffectiveRouting,
+} from "../agents/routing.js";
 
 const WORKCPBS = {
   standard: {
@@ -103,7 +108,12 @@ export function isWorkflowName(name) {
  * If workflow has explicit `nodes`, validate and use them.
  * Otherwise, convert legacy `phases` to a single-chain DAG.
  */
-export function normalizeWorkflow(name) {
+export function normalizeWorkflow(name, options = {}) {
+  const hasRouting = Boolean(options?.category || options?.routing);
+  if (hasRouting) {
+    return normalizeWorkflowWithRouting(name, options);
+  }
+
   const wf = getWorkflow(name);
 
   // Explicit DAG nodes defined on workflow
@@ -135,6 +145,45 @@ export function normalizeWorkflow(name) {
   };
   _dagCache.set(cacheKey, result);
   return result;
+}
+
+function normalizeWorkflowWithRouting(name, { category, routing = null } = {}) {
+  assertValidRoutingRules(routing, { isWorkflowName });
+  const selection = resolveEffectiveRouting(category, routing, { workflow: name });
+  const wf = getWorkflow(selection.workflow || name);
+
+  if (wf.nodes && wf.nodes.length > 0) {
+    const validation = validateDag(wf.nodes);
+    if (!validation.valid) {
+      throw new Error(`workflow ${wf.name} has invalid DAG: ${validation.errors.join(", ")}`);
+    }
+    const nodes = applyRoutingAgents(resolveSquadsInNodes(wf.nodes), selection);
+    return {
+      name: wf.name,
+      nodes,
+      edges: wf.edges || buildEdges(nodes),
+      maxConcurrentNodes: wf.maxConcurrentNodes || 2,
+      isDag: true,
+      routing: selection,
+    };
+  }
+
+  const nodes = applyRoutingAgents(phasesToDag(wf.phases, wf.roleForPhase), selection);
+  return {
+    name: wf.name,
+    nodes: resolveSquadsInNodes(nodes),
+    edges: buildEdges(nodes),
+    maxConcurrentNodes: 1,
+    isDag: wf.phases.length > 0,
+    routing: selection,
+  };
+}
+
+function applyRoutingAgents(nodes, selection) {
+  return nodes.map((node) => {
+    const agent = agentForRoutingPhase(selection, node.phase, node.role);
+    return agent ? { ...node, agent } : node;
+  });
 }
 
 /**
