@@ -276,12 +276,21 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
           });
         }
       } else {
-        await failJob(cpbRoot, job.project, job.jobId, {
-          reason: `stale_runtime_reconciled: ${staleReason}`,
-          code: "FATAL",
-          phase: cause?.phase || job.phase,
-          cause,
-        });
+        try {
+          await failJob(cpbRoot, job.project, job.jobId, {
+            reason: `stale_runtime_reconciled: ${staleReason}`,
+            code: "FATAL",
+            phase: cause?.phase || job.phase,
+            cause,
+          });
+        } catch (err) {
+          if (err.message?.includes("job is terminal") || err.message?.includes("job not found")) {
+            jobReport.skipped = true;
+            jobReport.skipReason = err.message;
+          } else {
+            throw err;
+          }
+        }
 
         // Mark matching queue entry failed with failure metadata
         if (cause) {
