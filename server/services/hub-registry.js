@@ -11,6 +11,7 @@ const SAFE_GITHUB_REPO = /^[A-Za-z0-9._-]+$/;
 const REGISTRY_LOCK_TTL_MS = 30_000;
 
 export const DEFAULT_GITHUB_TRIGGERS = [
+  { event: "issues.labeled", label: "sdd", workflow: "sdd-standard", planMode: "parent" },
   { event: "issues.labeled", label: "cpb", workflow: "standard" },
   { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
 ];

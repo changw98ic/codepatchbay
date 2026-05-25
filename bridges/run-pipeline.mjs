@@ -54,6 +54,7 @@ import {
   resolveDeliverableIssue,
   validateIssueMatch,
 } from "../server/services/artifact-integrity.js";
+import { resolveParentPlanCache, writeParentPlanCache } from "../server/services/plan-cache.js";
 
 const PLAN_MODES = new Set(["auto", "none", "light", "full", "parent"]);
 
@@ -885,6 +886,13 @@ export async function runPipeline({
 
   // Create job
   const sourceContext = buildSourceContext();
+  let parentPlanCache = null;
+  if (planDecision.planMode === "parent") {
+    parentPlanCache = await resolveParentPlanCache(cpbRoot, { project, task, sourceContext });
+  }
+  const jobSourceContext = parentPlanCache
+    ? { ...(sourceContext || {}), parentPlan: parentPlanCache }
+    : sourceContext;
   const job = await createJob(cpbRoot, {
     project,
     task,
@@ -892,10 +900,11 @@ export async function runPipeline({
     planMode: planDecision.planMode,
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
-    sourceContext,
+    sourceContext: jobSourceContext,
     queueEntryId: sourceContext?.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null,
     indexSnapshot: jobIndexSnapshot,
     indexFreshness: jobIndexFreshness,
+    planCache: parentPlanCache,
     teamPolicy: effectiveTeamPolicy,
   });
   const jobId = job.jobId;
@@ -907,8 +916,19 @@ export async function runPipeline({
     planMode: planDecision.planMode,
     runPlan: planDecision.runPlan,
     reason: planDecision.reason,
+    parentPlanCache,
     ts: ts(),
   });
+  if (parentPlanCache) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "plan_cache_decision",
+      jobId,
+      project,
+      ...parentPlanCache,
+      action: parentPlanCache.cacheHit ? "reuse" : "miss",
+      ts: ts(),
+    });
+  }
 
   // Structured line for project-worker to parse and write back jobId to queue entry
   const queueEntryId = process.env.CPB_QUEUE_ENTRY_ID || null;
@@ -980,7 +1000,7 @@ export async function runPipeline({
   }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
-  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath, sourceContext);
+  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath, jobSourceContext);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow}, planMode: ${planDecision.planMode})`);
 
   // Blocked workflow: record and exit without launching agents
@@ -1016,7 +1036,13 @@ export async function runPipeline({
 
   try {
     let planId = null;
-    if (planDecision.runPlan) {
+    if (parentPlanCache?.cacheHit && parentPlanCache.reusedPlanId) {
+      planId = parentPlanCache.reusedPlanId;
+      log(project, `Reusing parent plan ${parentPlanCache.reusedPlanArtifact || `plan-${planId}`} (cache ${parentPlanCache.planCacheKey})`);
+      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: parentPlanCache.reusedPlanArtifact || `plan-${planId}` });
+    }
+
+    if (planDecision.runPlan && !planId) {
       // ─── Phase 1: Plan ───
       {
         const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
@@ -1101,6 +1127,23 @@ export async function runPipeline({
 
       ok(`plan-${planId}`);
       await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+      if (parentPlanCache) {
+        parentPlanCache = await writeParentPlanCache(cpbRoot, {
+          ...parentPlanCache,
+          project,
+          task,
+          sourceContext,
+          planId,
+          planArtifact: `plan-${planId}`,
+        });
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "plan_cache_updated",
+          jobId,
+          project,
+          ...parentPlanCache,
+          ts: ts(),
+        });
+      }
 
       // Cancel check after plan
       {
@@ -1110,8 +1153,14 @@ export async function runPipeline({
           return 1;
         }
       }
-    } else {
+    } else if (!planDecision.runPlan) {
       log(project, `Skipping Plan phase (${planDecision.reason}, planMode: ${planDecision.planMode})`);
+      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
+      if (check.cancelled) {
+        await failJob(cpbRoot, project, jobId, failure("cancelled before execute", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
+        return 1;
+      }
+    } else {
       const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
       if (check.cancelled) {
         await failJob(cpbRoot, project, jobId, failure("cancelled before execute", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));

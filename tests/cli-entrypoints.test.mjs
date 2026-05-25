@@ -170,6 +170,7 @@ test("cpb github bind persists repo metadata and default trigger rules", async (
     assert.equal(parsed.project.github.repo, "frontend");
     assert.equal(parsed.project.github.fullName, "my-org/frontend");
     assert.deepEqual(parsed.project.github.triggers, [
+      { event: "issues.labeled", label: "sdd", workflow: "sdd-standard", planMode: "parent" },
       { event: "issues.labeled", label: "cpb", workflow: "standard" },
       { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
     ]);

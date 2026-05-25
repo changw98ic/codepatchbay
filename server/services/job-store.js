@@ -76,6 +76,7 @@ export async function createJob(
     queueEntryId = null,
     indexSnapshot = null,
     indexFreshness = null,
+    planCache = null,
     routingCategory = null,
     routing = null,
     agentAvailability = null,
@@ -145,6 +146,9 @@ export async function createJob(
   }
   if (indexFreshness) {
     event.indexFreshness = indexFreshness;
+  }
+  if (planCache) {
+    event.planCache = planCache;
   }
   await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
   if (executorSelection) {

@@ -3,12 +3,13 @@ import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { enqueue as enqueueHubQueue } from "./hub-queue.js";
 import { getProject } from "./hub-registry.js";
-import { classifyRoute } from "../../core/workflow/triage.js";
-import { defaultSddTrace, sddQueueMetadata } from "../../core/sdd/trace.js";
+import { triageChannelCommand, triageGithubIssue } from "./issue-triage.js";
+import { bootstrapSddFromIssue } from "./sdd-automation.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
+const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
 
 function sourceDir(cpbRoot) {
   return runtimeDataPath(cpbRoot, EVENT_SOURCE_DIR);
@@ -162,7 +163,35 @@ function githubPriority(labels = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
 }
 
+function effectiveRoute(route) {
+  return route?.effectiveRoute || route?.effective || {};
+}
+
+function requestedRoute(route) {
+  return route?.requestedRoute || route?.requested || null;
+}
+
+function routingMetadata(route) {
+  if (!route) return null;
+  return {
+    category: route.effectiveRoute?.category || route.requestedRoute?.category || route.requested?.category || null,
+    requested: requestedRoute(route),
+    ruleRoute: route.ruleRoute || null,
+    acpRoute: route.acpRoute || null,
+    effective: effectiveRoute(route),
+    effectiveRoute: route.effectiveRoute || null,
+    protectedUpgrade: route.protectedUpgrade ?? ((route.protectedScopes || []).length > 0 || Boolean(route.actualDiffRisk?.protected)),
+    protectedKeywords: route.protectedKeywords || (route.protectedScopes || []).map((scope) => scope.scope),
+    protectedScopes: route.protectedScopes || [],
+    actualDiffRisk: route.actualDiffRisk || null,
+    actorTrust: route.actorTrust || null,
+    downgradeAllowed: route.downgradeAllowed ?? null,
+    reasons: route.reasons || [],
+  };
+}
+
 function githubQueuePayload(event, match, route) {
+  const effective = effectiveRoute(route);
   return {
     issueNumber: event.issueNumber ?? null,
     repo: event.repo || null,
@@ -170,8 +199,8 @@ function githubQueuePayload(event, match, route) {
     body: event.body || "",
     url: event.url || null,
     actor: event.actor || null,
-    workflow: route.effective.workflow || match.workflow || "standard",
-    planMode: route.effective.planMode || "full",
+    workflow: effective.workflow || match.workflow || "standard",
+    planMode: effective.planMode || match.planMode || "full",
     route,
     action: event.action || null,
     commandText: event.commandText || null,
@@ -198,11 +227,19 @@ function sourcePathForQueue(explicitSourcePath, project) {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
-function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath }) {
+function isSddRoute(route) {
+  const effective = effectiveRoute(route);
+  const requested = requestedRoute(route);
+  return effective.workflow === "sdd-standard"
+    || requested?.workflow === "sdd-standard"
+    || route?.ruleRoute?.workflow === "sdd-standard"
+    || requested?.category === "sdd"
+    || route?.ruleRoute?.category === "sdd";
+}
+
+function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null }) {
   const route = payload.route;
-  const sddMetadata = route?.requested?.category === "sdd"
-    ? sddQueueMetadata(defaultSddTrace(event.projectId, { status: "queued" }))
-    : {};
+  const sddMetadata = sddAutomation?.queueMetadata || {};
   return {
     projectId: event.projectId,
     sourcePath,
@@ -224,18 +261,51 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
       workflow: payload.workflow || match.workflow || "standard",
       planMode: payload.planMode || "full",
       ...sddMetadata,
-      requestedRoute: route?.requested || null,
-      routing: route ? {
-        category: route.requested?.category || null,
-        effective: route.effective,
-        protectedUpgrade: route.protectedUpgrade,
-        protectedKeywords: route.protectedKeywords,
-        actorTrust: route.actorTrust,
-        reasons: route.reasons,
-      } : null,
+      requestedRoute: requestedRoute(route),
+      routing: routingMetadata(route),
       autoFinalize: true,
     },
   };
+}
+
+async function enqueueSddTaskEntries({
+  hubRoot,
+  enqueueFn,
+  event,
+  parentQueueEntry,
+  sourcePath,
+  sddAutomation,
+  route,
+}) {
+  if (!sddAutomation?.tasks?.length) return [];
+  const entries = [];
+  for (const task of sddAutomation.tasks) {
+    const entry = await enqueueFn(hubRoot, {
+      projectId: event.projectId,
+      sourcePath,
+      priority: "P2",
+      description: `SDD task: ${task.title}`,
+      type: "sdd_task",
+      metadata: {
+        source: "github",
+        parentQueueEntryId: parentQueueEntry.id,
+        issueNumber: event.issueNumber,
+        issueUrl: event.url,
+        repo: event.repo,
+        issueTitle: event.title,
+        workflow: task.workflow,
+        planMode: task.planMode,
+        requestedRoute: requestedRoute(route),
+        routing: routingMetadata(route),
+        sddTask: task,
+        sddTrace: sddAutomation.queueMetadata?.sddTrace || null,
+        queueDedupeKey: `${parentQueueEntry.metadata?.queueDedupeKey || parentQueueEntry.id}:sdd-task:${task.id}`,
+        autoFinalize: true,
+      },
+    });
+    entries.push(entry);
+  }
+  return entries;
 }
 
 export async function createGithubIssueQueueJob(
@@ -259,13 +329,7 @@ export async function createGithubIssueQueueJob(
     throw new Error("GitHub event missing project id");
   }
 
-  const route = classifyRoute({
-    labels: event.labels,
-    title: event.title,
-    body: event.body,
-    actor: event.actor,
-    authorAssociation: event.raw?.authorAssociation || event.authorAssociation || null,
-  });
+  const route = triageGithubIssue(event);
   const payload = githubQueuePayload(event, match, route);
   const entry = await ingestEvent(cpbRoot, {
     source: "github-issue",
@@ -280,6 +344,10 @@ export async function createGithubIssueQueueJob(
   }
 
   const project = await resolveRegisteredProject(hubRoot, event.projectId, getProjectFn);
+  const sourcePathForEntry = sourcePathForQueue(sourcePath, project);
+  const sddAutomation = isSddRoute(route)
+    ? await bootstrapSddFromIssue(cpbRoot, event.projectId, event)
+    : null;
   const queueEntry = await enqueueFn(
     hubRoot,
     githubHubQueueInput({
@@ -287,9 +355,19 @@ export async function createGithubIssueQueueJob(
       match,
       payload,
       candidateEntry: entry,
-      sourcePath: sourcePathForQueue(sourcePath, project),
+      sourcePath: sourcePathForEntry,
+      sddAutomation,
     }),
   );
+  const sddTaskQueueEntries = await enqueueSddTaskEntries({
+    hubRoot,
+    enqueueFn,
+    event,
+    parentQueueEntry: queueEntry,
+    sourcePath: sourcePathForEntry,
+    sddAutomation,
+    route,
+  });
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
     reason: `queued hub entry ${queueEntry.id}`,
@@ -300,6 +378,7 @@ export async function createGithubIssueQueueJob(
     entry: updated || entry,
     candidateEntry: updated || entry,
     queueEntry,
+    sddTaskQueueEntries,
     job: null,
   };
 }
@@ -317,12 +396,22 @@ function channelExternalId(source, context = {}) {
   ].join(":");
 }
 
-function channelQueuePayload(command, context = {}) {
+function channelQueuePayload(command, context = {}, route = null) {
+  const effective = effectiveRoute(route);
+  const workflowRequested = command.workflowRequested || (command.workflow && command.workflow !== "standard");
+  const explicitCustomWorkflow = workflowRequested
+    && command.workflow
+    && !ROUTABLE_WORKFLOWS.has(command.workflow);
   return {
     task: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
-    workflow: command.workflow || "standard",
+    workflow: explicitCustomWorkflow ? command.workflow : (effective.workflow || command.workflow || "standard"),
+    planMode: effective.planMode || command.planMode || "light",
     command: command.command || command.type || null,
     issueNumber: command.issue || null,
+    requestedWorkflow: command.workflow || null,
+    requestedPlanMode: command.planMode || null,
+    triage: command.triage || null,
+    route,
     commandText: context.commandText || null,
     actor: context.actor || null,
     actorName: context.actorName || null,
@@ -362,6 +451,10 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
       issueUrl,
       repo,
       workflow: payload.workflow || "standard",
+      planMode: payload.planMode || "light",
+      requestedRoute: requestedRoute(payload.route),
+      routing: routingMetadata(payload.route),
+      triage: payload.triage,
       autoFinalize: false,
     },
   };
@@ -386,7 +479,8 @@ export async function createChannelQueueJob(
   }
 
   const source = context.channel || "channel";
-  const payload = channelQueuePayload(command, context);
+  const route = triageChannelCommand(command, context);
+  const payload = channelQueuePayload(command, context, route);
   const entry = await ingestEvent(cpbRoot, {
     source,
     externalId: channelExternalId(source, context),
