@@ -7,6 +7,7 @@
     "test": "vitest",
     "dev": "vite",
     "build": "vite build",
+    "build:pack": "vite build --logLevel error",
     "preview": "vite preview"
   },
   "dependencies": {

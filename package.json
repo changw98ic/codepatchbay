@@ -32,6 +32,7 @@
     "web"
   ],
   "scripts": {
+    "prepack": "npm run build:pack --workspace codepatchbay-web",
     "test": "npm run test:node",
     "test:node": "node scripts/run-node-tests.mjs",
     "build:web": "npm run build --workspace codepatchbay-web"
