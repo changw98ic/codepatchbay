@@ -138,10 +138,13 @@ async function handleQueueEntryAction(hubRoot, queueEntry, command, parsed, { ch
     }
     const sddTaskQueueEntries = await enqueueSddTaskEntriesForApprovedParent(hubRoot, queueEntry);
     const updated = await updateEntry(hubRoot, queueEntry.id, {
-      status: "pending",
+      status: queueEntry.metadata?.sddApproval?.requiresApproval ? "completed" : "pending",
       metadata: {
         approvedAt: ts,
         approvedBy: actor.userId || null,
+        finalDisposition: queueEntry.metadata?.sddApproval?.requiresApproval
+          ? "approved.children_queued"
+          : queueEntry.metadata?.finalDisposition,
         sddApproval: queueEntry.metadata?.sddApproval?.requiresApproval ? {
           ...queueEntry.metadata.sddApproval,
           status: "approved",
