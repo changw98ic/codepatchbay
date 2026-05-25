@@ -23,9 +23,6 @@ export default function Review() {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedSession, setSelectedSession] = useState(null);
   const [query, setQuery] = useState('');
-  const [projects, setProjects] = useState([]);
-  const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ project: '', intent: '' });
   const [analysis, setAnalysis] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const { subscribe } = useWebSocket();
@@ -46,13 +43,6 @@ export default function Review() {
     })).filter(g => g.items.length > 0),
     [filteredSessions]
   );
-
-  useEffect(() => {
-    fetch('/api/projects')
-      .then((r) => r.json())
-      .then((data) => setProjects(data.map((p) => p.name)))
-      .catch(() => {});
-  }, []);
 
   const loadSessions = useCallback(() => {
     fetch('/api/review')
@@ -96,24 +86,6 @@ export default function Review() {
     setSelectedId(id);
     loadDetail(id);
     setAnalysis(null);
-  };
-
-  const createSession = async (e) => {
-    e.preventDefault();
-    if (!form.project || !form.intent.trim()) return;
-    const res = await fetch('/api/review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: form.project, intent: form.intent.trim() }),
-    });
-    if (res.ok) {
-      const session = await res.json();
-      setForm({ project: '', intent: '' });
-      setShowCreate(false);
-      setSelectedId(session.sessionId);
-      setSelectedSession(session);
-      loadSessions();
-    }
   };
 
   const startReview = async (id) => {
@@ -186,35 +158,8 @@ export default function Review() {
             onChange={(e) => setQuery(e.target.value)}
             className="review-search-input"
           />
-          <button className="btn btn-secondary" onClick={() => setShowCreate(!showCreate)}>
-            {showCreate ? 'Cancel' : '+ New'}
-          </button>
         </div>
       </div>
-
-      {showCreate && (
-        <form className="review-create-form animate-fade-in" onSubmit={createSession}>
-          <div className="form-group">
-            <label>Project</label>
-            <select value={form.project} onChange={(e) => setForm(f => ({ ...f, project: e.target.value }))}>
-              <option value="">Select project...</option>
-              {projects.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Intent</label>
-            <textarea
-              rows={2}
-              placeholder="What should the review accomplish?"
-              value={form.intent}
-              onChange={(e) => setForm(f => ({ ...f, intent: e.target.value }))}
-            />
-          </div>
-          <button className="btn btn-primary" type="submit" disabled={!form.project || !form.intent.trim()}>
-            Create & Start
-          </button>
-        </form>
-      )}
 
       {groups.length === 0 && (
         <div className="empty" style={{ margin: '40px 0' }}>No review sessions</div>
@@ -229,6 +174,8 @@ export default function Review() {
                 key={session.sessionId}
                 className={`review-card ${session.sessionId === selectedId ? 'active' : ''}`}
                 onClick={() => selectSession(session.sessionId)}
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') selectSession(session.sessionId); }}
               >
                 <div className="review-card-top">
                   <span className="review-card-project">{session.project || '—'}</span>

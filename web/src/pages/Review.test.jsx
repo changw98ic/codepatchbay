@@ -170,22 +170,15 @@ describe('Review Page', () => {
     expect(screen.queryByRole('button', { name: 'Accept Changes' })).not.toBeInTheDocument();
   });
 
-  it('toggles create form with + New button', async () => {
+  it('does not show create form (sessions are system-created)', async () => {
     render(<Review />);
 
     await waitFor(() => {
       expect(screen.getByText('proj-a')).toBeInTheDocument();
     });
 
-    // Create form hidden initially
+    // No create form or + New button — sessions are created by system triggers
     expect(screen.queryByPlaceholderText(/What should the review accomplish/)).not.toBeInTheDocument();
-
-    // Show form
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
-    expect(screen.getByPlaceholderText(/What should the review accomplish/)).toBeInTheDocument();
-
-    // Hide form
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByPlaceholderText(/What should the review accomplish/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '+ New' })).not.toBeInTheDocument();
   });
 });
