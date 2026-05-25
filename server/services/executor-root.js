@@ -1,5 +1,6 @@
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { buildChildEnv } from "../../core/policy/child-env.js";
 
 export const REQUIRED_EXECUTOR_FILES = [
   "cpb",
@@ -18,11 +19,10 @@ export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.
 }
 
 export function executorEnv(env = process.env, { cpbRoot, executorRoot } = {}) {
-  return {
-    ...env,
+  return buildChildEnv(env, {
     CPB_ROOT: path.resolve(cpbRoot || env.CPB_ROOT || process.cwd()),
     CPB_EXECUTOR_ROOT: path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || cpbRoot || process.cwd()),
-  };
+  });
 }
 
 export async function assertExecutorRoot(executorRoot) {
