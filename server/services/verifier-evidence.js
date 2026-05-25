@@ -5,8 +5,18 @@ import path from "node:path";
 import { readEvents } from "./event-store.js";
 import { reconstructJobState } from "./phase-locator.js";
 import { contextPath, decisionsPath, outputsDir } from "./phase-locator.js";
+import { CPB_RUNTIME_ENV, RUNTIME_BASICS } from "./secret-policy.js";
 
 const execFileAsync = promisify(execFile);
+
+function buildVerifierCommandEnv(parentEnv = process.env) {
+  const allowed = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
+  const env = {};
+  for (const [key, value] of Object.entries(parentEnv || {})) {
+    if (allowed.has(key)) env[key] = value;
+  }
+  return env;
+}
 
 export async function collectCurrentDiff(sourcePath, { maxLines = 200 } = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
@@ -14,6 +24,7 @@ export async function collectCurrentDiff(sourcePath, { maxLines = 200 } = {}) {
   try {
     const { stdout } = await execFileAsync("git", ["diff", "--stat", "HEAD"], {
       cwd: sourcePath,
+      env: buildVerifierCommandEnv(),
       maxBuffer: 1024 * 1024,
     });
     return { available: true, diff: stdout.slice(0, maxLines * 200) };
@@ -28,6 +39,7 @@ export async function collectUncommittedDiff(sourcePath, { maxLines = 200 } = {}
   try {
     const { stdout } = await execFileAsync("git", ["diff"], {
       cwd: sourcePath,
+      env: buildVerifierCommandEnv(),
       maxBuffer: 1024 * 1024,
     });
     const truncated = stdout.split("\n").slice(0, maxLines).join("\n");
@@ -49,6 +61,7 @@ export async function collectTestResults(sourcePath, { timeout = 30_000 } = {}) 
 
     const { stdout, stderr } = await execFileAsync("npm", ["test"], {
       cwd: sourcePath,
+      env: buildVerifierCommandEnv(),
       timeout,
       maxBuffer: 2 * 1024 * 1024,
     });
