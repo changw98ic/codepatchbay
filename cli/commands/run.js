@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 function usage() {
-  return `Usage: cpb run "<task>" [--project <id>] [--workflow <name>]
+  return `Usage: cpb run "<task>" [--project <id>] [--workflow <name>] [--plan-mode <mode>] [--triage <mode>]
 
 Run a task through the plan -> execute -> verify pipeline.
 
@@ -10,10 +10,12 @@ If --project is omitted, infers the project from the current working
 directory (Hub registry match or package.json name).
 
 Options:
-  --project <id>   Target project ID
-  --workflow <n>   Workflow name (default: standard)
-  --retries <n>    Max pipeline retries (default: 3)
-  --help           Show this help`;
+  --project <id>       Target project ID
+  --workflow <n>       Workflow name (default: standard)
+  --plan-mode <mode>   Plan mode: auto, none, light, full, parent (default: auto)
+  --triage <mode>      Triage mode: auto, rules, acp, none
+  --retries <n>        Max pipeline retries (default: 3)
+  --help               Show this help`;
 }
 
 export async function run(args, { cpbRoot, executorRoot }) {
@@ -21,6 +23,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
   let projectId;
   let retries = 3;
   let workflow = "standard";
+  let planMode = "auto";
+  let triageMode = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -38,6 +42,26 @@ export async function run(args, { cpbRoot, executorRoot }) {
       workflow = args[++i];
       if (!workflow) {
         console.error("Error: --workflow requires a value");
+        return 1;
+      }
+    } else if (arg === "--plan-mode") {
+      planMode = args[++i];
+      if (!planMode) {
+        console.error("Error: --plan-mode requires a value");
+        return 1;
+      }
+      if (!["auto", "none", "light", "full", "parent"].includes(planMode)) {
+        console.error(`Error: invalid --plan-mode '${planMode}'`);
+        return 1;
+      }
+    } else if (arg === "--triage") {
+      triageMode = args[++i];
+      if (!triageMode) {
+        console.error("Error: --triage requires a value");
+        return 1;
+      }
+      if (!["auto", "rules", "acp", "none"].includes(triageMode)) {
+        console.error(`Error: invalid --triage '${triageMode}'`);
         return 1;
       }
     } else if (arg === "--retries") {
@@ -94,6 +118,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
     project: projectId,
     task,
     workflow,
+    planMode,
+    triageMode,
     maxRetries: Number.parseInt(String(retries), 10) || 3,
     cpbRoot,
     executorRoot,

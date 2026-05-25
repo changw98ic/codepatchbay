@@ -13,7 +13,7 @@ import { githubRoutes } from "../server/routes/github.js";
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
-import { listQueue } from "../server/services/hub-queue.js";
+import { enqueue as enqueueHubQueue, listQueue } from "../server/services/hub-queue.js";
 import { completeJob, createJob, getJob, recordWorktreeCreated } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
 import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
@@ -1012,6 +1012,97 @@ describe("GitHub draft PR creation", () => {
       assert.equal(prEvents.length, 1);
       assert.equal(prEvents[0].prUrl, "https://github.com/my-org/frontend/pull/456");
       assert.equal(prEvents[0].prNumber, 456);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects direct no-plan protected diffs and requeues them as complex/full", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-finalizer-route-guard-"));
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const hubRoot = path.join(tmpRoot, "hub");
+    const sourcePath = path.join(tmpRoot, "source");
+    const worktreePath = path.join(tmpRoot, "worktree");
+    const git = (cwd, args) => execFileAsync("git", args, { cwd, maxBuffer: 1024 * 1024 });
+
+    try {
+      await mkdir(sourcePath, { recursive: true });
+      await git(sourcePath, ["init", "-b", "main"]);
+      await git(sourcePath, ["config", "user.email", "cpb@example.invalid"]);
+      await git(sourcePath, ["config", "user.name", "CodePatchBay Test"]);
+      await writeFile(path.join(sourcePath, "README.md"), "hello\n", "utf8");
+      await git(sourcePath, ["add", "README.md"]);
+      await git(sourcePath, ["commit", "-m", "initial"]);
+      await git(sourcePath, ["worktree", "add", "-b", "cpb/direct-docs", worktreePath]);
+      await mkdir(path.join(worktreePath, "server", "auth"), { recursive: true });
+      await writeFile(path.join(worktreePath, "server", "auth", "session.js"), "export const rotate = true;\n", "utf8");
+      await git(worktreePath, ["add", "server/auth/session.js"]);
+      await git(worktreePath, ["commit", "-m", "touch protected auth file"]);
+
+      const created = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Docs cleanup",
+        workflow: "direct",
+        planMode: "none",
+        sourceContext: {
+          type: "github_issue",
+          repo: "my-org/frontend",
+          issueNumber: 502,
+          issueTitle: "Docs cleanup",
+        },
+      });
+      await recordWorktreeCreated(cpbRoot, "frontend", created.jobId, {
+        worktree: worktreePath,
+        branch: "cpb/direct-docs",
+        baseBranch: "main",
+      });
+      const completed = await completeJob(cpbRoot, "frontend", created.jobId);
+      const queueEntry = await enqueueHubQueue(hubRoot, {
+        projectId: "frontend",
+        sourcePath,
+        type: "github_issue",
+        description: "Docs cleanup",
+        metadata: {
+          issueNumber: 502,
+          issueUrl: "https://github.com/my-org/frontend/issues/502",
+          repo: "my-org/frontend",
+          workflow: "direct",
+          planMode: "none",
+          routing: {
+            effectiveRoute: { workflow: "direct", planMode: "none", reviewer: false },
+            effective: { workflow: "direct", planMode: "none", reviewer: false },
+          },
+        },
+      });
+
+      const result = await finalizeSuccessfulQueueEntry({
+        cpbRoot,
+        hubRoot,
+        project: "frontend",
+        entry: queueEntry,
+        job: completed,
+        sourcePath,
+        mode: "local",
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, "rejected");
+      assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
+      assert.equal(result.requeuedWorkflow, "complex");
+      assert.equal(result.requeuedPlanMode, "full");
+      assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
+
+      const entries = await listQueue(hubRoot, { projectId: "frontend" });
+      const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
+      assert.ok(upgraded, "expected a complex/full requeue entry");
+      assert.equal(upgraded.status, "pending");
+      assert.equal(upgraded.type, "routing_upgrade");
+      assert.equal(upgraded.metadata.workflow, "complex");
+      assert.equal(upgraded.metadata.planMode, "full");
+      assert.equal(upgraded.metadata.originQueueId, queueEntry.id);
+      assert.equal(upgraded.metadata.supersedesQueueEntryId, queueEntry.id);
+      assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
+      assert.ok(upgraded.metadata.finalDiffGuard.protectedScopes.some((scope) => scope.scope === "auth"));
     } finally {
       await rm(tmpRoot, { recursive: true, force: true });
     }

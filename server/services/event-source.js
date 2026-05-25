@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
-import { enqueue as enqueueHubQueue } from "./hub-queue.js";
+import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { getProject } from "./hub-registry.js";
 import {
   triageChannelCommand,
@@ -471,6 +471,9 @@ async function enqueueSddTaskEntries({
         issueTitle: event.title,
         workflow: task.workflow,
         planMode: task.planMode,
+        planGroupId: task.planGroupId || null,
+        parentPlanId: task.parentPlanId || null,
+        planCacheKey: task.planCacheKey || null,
         requestedRoute: requestedRoute(route),
         routing: routingMetadata(route),
         sddTask: task,
@@ -554,7 +557,7 @@ export async function createGithubIssueQueueJob(
         timeoutMs: sddDrafterTimeoutMs,
       })
     : null;
-  const queueEntry = await enqueueFn(
+  let queueEntry = await enqueueFn(
     hubRoot,
     githubHubQueueInput({
       event,
@@ -566,16 +569,31 @@ export async function createGithubIssueQueueJob(
       contextPackResult,
     }),
   );
-  const sddTaskQueueEntries = await enqueueSddTaskEntries({
-    hubRoot,
-    enqueueFn,
-    event,
-    parentQueueEntry: queueEntry,
-    sourcePath: sourcePathForEntry,
-    sddAutomation,
-    route,
-    contextPackResult,
-  });
+  if (sddAutomation?.requiresApproval) {
+    queueEntry = await updateHubQueueEntry(hubRoot, queueEntry.id, {
+      status: "blocked",
+      metadata: {
+        sddApproval: {
+          ...(queueEntry.metadata?.sddApproval || {}),
+          requiresApproval: true,
+          status: "waiting_approval",
+          blockedAt: new Date().toISOString(),
+        },
+      },
+    }) || queueEntry;
+  }
+  const sddTaskQueueEntries = sddAutomation?.requiresApproval
+    ? []
+    : await enqueueSddTaskEntries({
+        hubRoot,
+        enqueueFn,
+        event,
+        parentQueueEntry: queueEntry,
+        sourcePath: sourcePathForEntry,
+        sddAutomation,
+        route,
+        contextPackResult,
+      });
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
     reason: `queued hub entry ${queueEntry.id}`,

@@ -10,6 +10,9 @@ import {
 } from "./merge-steward.js";
 import { appendEvent } from "./event-store.js";
 import { openDraftPullRequest } from "./github-pr.js";
+import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
+import { actualDiffRiskGuard } from "../../core/triage/rules.js";
+import { normalizeRoute } from "../../core/triage/schema.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -153,6 +156,115 @@ function unsafeFiles(summary) {
   ));
 }
 
+function routingEffectiveRoute(entry = {}, job = {}) {
+  const metadata = entry?.metadata || {};
+  const routing = metadata.routing || {};
+  return normalizeRoute(
+    routing.effectiveRoute || routing.effective || {
+      workflow: metadata.workflow || job.workflow || "standard",
+      planMode: metadata.planMode || job.planMode || "light",
+      reviewer: Boolean(routing.effectiveRoute?.reviewer || routing.effective?.reviewer),
+      source: "queue_metadata",
+      reason: "queue routing metadata",
+    },
+  );
+}
+
+function isDirectNoPlan(route) {
+  return route?.workflow === "direct" && route?.planMode === "none";
+}
+
+function protectedDiffForDirectRoute(files, entry, job) {
+  const route = routingEffectiveRoute(entry, job);
+  const protectedDiff = actualDiffRiskGuard({ files });
+  if (!isDirectNoPlan(route) || !protectedDiff.actualDiffRisk.protected) {
+    return { blocked: false, route, protectedDiff };
+  }
+  return { blocked: true, route, protectedDiff };
+}
+
+async function requeueProtectedDiffUpgrade({
+  hubRoot,
+  entry,
+  job,
+  projectId,
+  sourcePath,
+  issue,
+  jobId,
+  route,
+  protectedDiff,
+} = {}) {
+  if (!hubRoot || !entry?.id || !projectId) return null;
+  const upgradeRoute = normalizeRoute({
+    category: "protected",
+    workflow: "complex",
+    planMode: "full",
+    reviewer: true,
+    source: "final_diff_guard",
+    reason: "direct/no-plan final diff touched protected scopes",
+  });
+  const guardMetadata = {
+    protected: true,
+    originalRoute: route,
+    effectiveRoute: upgradeRoute,
+    protectedScopes: protectedDiff.protectedScopes,
+    actualDiffRisk: protectedDiff.actualDiffRisk,
+    files: protectedDiff.actualDiffRisk.files,
+    sourceJobId: jobId,
+    checkedAt: new Date().toISOString(),
+  };
+  const metadata = {
+    ...(entry.metadata || {}),
+    workflow: upgradeRoute.workflow,
+    planMode: upgradeRoute.planMode,
+    requestedRoute: upgradeRoute,
+    routing: {
+      ...(entry.metadata?.routing || {}),
+      effective: upgradeRoute,
+      effectiveRoute: upgradeRoute,
+      protectedUpgrade: true,
+      protectedScopes: protectedDiff.protectedScopes,
+      actualDiffRisk: protectedDiff.actualDiffRisk,
+      reasons: [
+        ...new Set([
+          ...((entry.metadata?.routing || {}).reasons || []),
+          "final diff guard forced complex/full",
+        ]),
+      ],
+    },
+    finalDiffGuard: guardMetadata,
+    originQueueId: entry.id,
+    originJobId: jobId,
+    supersedesQueueEntryId: entry.id,
+    queueDedupeKey: `${entry.metadata?.queueDedupeKey || entry.id}:final-diff-guard:${jobId}`,
+    autoFinalize: entry.metadata?.autoFinalize ?? true,
+  };
+
+  const upgraded = await enqueueHubQueue(hubRoot, {
+    projectId,
+    sourcePath: entry.sourcePath || sourcePath || null,
+    sessionId: entry.sessionId || null,
+    workerId: null,
+    cwd: entry.cwd || null,
+    executionBoundary: entry.executionBoundary || null,
+    type: "routing_upgrade",
+    priority: entry.priority || "P1",
+    description: entry.description || job?.task || issue?.url || "protected diff routing upgrade",
+    metadata,
+  });
+
+  await updateHubQueueEntry(hubRoot, entry.id, {
+    metadata: {
+      finalDisposition: "rejected.final_diff_guard",
+      supersededByQueueEntryId: upgraded.id,
+      supersededByJobId: jobId,
+      finalDiffGuard: guardMetadata,
+    },
+  }).catch(() => {});
+
+  return upgraded;
+}
+
 function commitMessage({ jobId, issueNumber }) {
   return [
     `Finalize CPB job ${jobId} for issue #${issueNumber}`,
@@ -176,6 +288,7 @@ export async function finalizeSuccessfulQueueEntry({
   pushToken = null,
   transportMode = null,
   dataRoot,
+  hubRoot = null,
 } = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
   const projectId = project || job?.project || entry?.projectId || null;
@@ -246,6 +359,44 @@ export async function finalizeSuccessfulQueueEntry({
       jobId,
       files: summary.entries,
       unsafeFiles: unsafeFiles(summary),
+    });
+  }
+
+  const routeGuard = protectedDiffForDirectRoute(files, entry, job);
+  if (routeGuard.blocked) {
+    const upgraded = await requeueProtectedDiffUpgrade({
+      hubRoot,
+      entry,
+      job,
+      projectId,
+      sourcePath: canonicalSourcePath,
+      issue,
+      jobId,
+      route: routeGuard.route,
+      protectedDiff: routeGuard.protectedDiff,
+    });
+    if (cpbRoot && projectId) {
+      await appendEvent(cpbRoot, projectId, jobId, {
+        type: "finalizer_route_guard",
+        jobId,
+        project: projectId,
+        issue,
+        originalRoute: routeGuard.route,
+        protectedDiff: routeGuard.protectedDiff,
+        requeuedQueueEntryId: upgraded?.id || null,
+        action: upgraded ? "requeued_complex_full" : "rejected_no_requeue",
+        ts: new Date().toISOString(),
+      }, { dataRoot });
+    }
+    return reject("ROUTE_PROTECTED_DIFF", {
+      issue,
+      jobId,
+      files: summary.entries,
+      protectedDiff: routeGuard.protectedDiff,
+      originalRoute: routeGuard.route,
+      requeuedQueueEntryId: upgraded?.id || null,
+      requeuedWorkflow: upgraded?.metadata?.workflow || "complex",
+      requeuedPlanMode: upgraded?.metadata?.planMode || "full",
     });
   }
 

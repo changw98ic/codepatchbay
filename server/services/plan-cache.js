@@ -21,8 +21,14 @@ function stablePayload({ project, task, sourceContext = {} } = {}) {
       designHash: sourceContext?.designHash || sourceContext?.sddTrace?.hashes?.design || null,
       tasksHash: sourceContext?.tasksHash || sourceContext?.sddTrace?.hashes?.tasks || null,
       taskId: sourceContext?.sddTask?.id || sourceContext?.taskId || null,
+      parentPlanId: sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null,
     },
   };
+}
+
+function explicitParentPlanId(sourceContext = {}) {
+  const value = sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null;
+  return value ? String(value).replace(/^plan-/, "") : null;
 }
 
 function hashPayload(payload) {
@@ -58,7 +64,8 @@ export async function resolveParentPlanCache(cpbRoot, { project, task, sourceCon
   const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey);
   const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey);
 
-  const planId = cached?.parentPlanId || cached?.planId || null;
+  const explicitPlanId = explicitParentPlanId(sourceContext);
+  const planId = cached?.parentPlanId || cached?.planId || explicitPlanId || null;
   const planArtifact = cached?.planArtifact || (planId ? `plan-${planId}` : null);
   const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact) : null;
   const cacheHit = Boolean(planId && artifactPath && await artifactExists(artifactPath));
