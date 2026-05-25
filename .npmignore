@@ -1,0 +1,9 @@
+# npm falls back to .gitignore when this file is absent. Keep publish
+# ignores separate so package.json "files" can include generated web/dist.
+node_modules/
+.git/
+.omx/
+.omc/
+omx_wiki/
+providers/
+*.log
