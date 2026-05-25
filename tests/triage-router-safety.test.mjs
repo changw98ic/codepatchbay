@@ -18,6 +18,8 @@ import { resolveParentPlanCache, writeParentPlanCache } from "../server/services
 import { readParentPlanRecord } from "../server/services/plan-store.js";
 import { buildExecutorJobPrompt, buildPlannerPrompt } from "../server/services/prompt-builder.js";
 import { createJob } from "../server/services/job-store.js";
+import { handleChannelCommand } from "../server/services/channel-queue-actions.js";
+import { listQueue } from "../server/services/hub-queue.js";
 
 describe("issue triage safety lattice", () => {
   it("treats deterministic docs/test rules as requested downgrades, not base authority", () => {
@@ -515,7 +517,7 @@ describe("SDD automatic GitHub entry", () => {
     }
   });
 
-  it("can draft SDD files through ACP and blocks the queue when approval is required", async () => {
+  it("can draft SDD files through ACP and waits for queue approval before child dispatch", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-sdd-acp-draft-"));
     let acpCalls = 0;
     const acpPool = {
@@ -525,7 +527,13 @@ describe("SDD automatic GitHub entry", () => {
         return JSON.stringify({
           spec: "# Spec: ACP checkout\n\n## Problem\nGenerated from issue.\n",
           design: "# Design: ACP checkout\n\n## Approach\nUse explicit trace.\n",
-          tasks: "# Tasks: ACP checkout\n\n- [ ] Implement traced checkout task\n",
+          tasks: [
+            "# Tasks: ACP checkout",
+            "",
+            "- [ ] Implement traced checkout task",
+            "- [ ] Verify traced checkout task",
+            "",
+          ].join("\n"),
           requiresApproval: true,
         });
       },
@@ -556,7 +564,7 @@ describe("SDD automatic GitHub entry", () => {
       });
 
       assert.equal(acpCalls, 1);
-      assert.equal(result.queueEntry.status, "blocked");
+      assert.equal(result.queueEntry.status, "waiting.approval");
       assert.equal(result.queueEntry.metadata.sddApproval.requiresApproval, true);
       assert.equal(result.queueEntry.metadata.sddApproval.status, "waiting_approval");
       assert.equal(result.sddTaskQueueEntries.length, 0);
@@ -571,6 +579,31 @@ describe("SDD automatic GitHub entry", () => {
       assert.match(spec, /ACP checkout/);
       const audit = await readFile(result.queueEntry.metadata.sddBootstrap.generationEventPath, "utf8");
       assert.match(audit, /sdd_generation_event/);
+
+      const approval = await handleChannelCommand(cpbRoot, {
+        ok: true,
+        channel: "slack",
+        actor: { userId: "U-sdd-reviewer", userName: "reviewer" },
+        command: parseChannelCommand(`/cpb approve ${result.queueEntry.id}`),
+        commandText: `/cpb approve ${result.queueEntry.id}`,
+      }, {
+        hubRoot: cpbRoot,
+        channel: "slack",
+      });
+
+      assert.equal(approval.ok, true);
+      assert.equal(approval.action, "approved");
+      assert.equal(approval.queueEntry.status, "pending");
+      assert.equal(approval.queueEntry.metadata.sddApproval.status, "approved");
+      assert.deepEqual(approval.sddTaskQueueEntries.map((entry) => entry.metadata.sddTask.title), [
+        "Implement traced checkout task",
+        "Verify traced checkout task",
+      ]);
+
+      const queued = await listQueue(cpbRoot, { projectId: "frontend" });
+      const children = queued.filter((entry) => entry.type === "sdd_task");
+      assert.equal(children.length, 2);
+      assert.ok(children.every((entry) => entry.metadata.parentQueueEntryId === result.queueEntry.id));
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }

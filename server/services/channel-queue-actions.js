@@ -1,6 +1,6 @@
 import { approveGate } from "./approval-gate.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
-import { createChannelQueueJob } from "./event-source.js";
+import { createChannelQueueJob, enqueueSddTaskEntriesForApprovedParent } from "./event-source.js";
 import { readEvents } from "./event-store.js";
 import { listQueue, updateEntry } from "./hub-queue.js";
 import { cancelJob, listJobsAcrossRuntimeRoots, retryJob } from "./job-store.js";
@@ -136,11 +136,19 @@ async function handleQueueEntryAction(hubRoot, queueEntry, command, parsed, { ch
         error: `queue entry is not waiting for approval: ${queueEntry.id}`,
       };
     }
+    const sddTaskQueueEntries = await enqueueSddTaskEntriesForApprovedParent(hubRoot, queueEntry);
     const updated = await updateEntry(hubRoot, queueEntry.id, {
       status: "pending",
       metadata: {
         approvedAt: ts,
         approvedBy: actor.userId || null,
+        sddApproval: queueEntry.metadata?.sddApproval?.requiresApproval ? {
+          ...queueEntry.metadata.sddApproval,
+          status: "approved",
+          approvedAt: ts,
+          approvedBy: actor.userId || null,
+          childQueueEntryIds: sddTaskQueueEntries.map((entry) => entry.id),
+        } : queueEntry.metadata?.sddApproval,
       },
     });
     return {
@@ -150,6 +158,7 @@ async function handleQueueEntryAction(hubRoot, queueEntry, command, parsed, { ch
       actor,
       approvedAt: ts,
       queueEntry: updated,
+      sddTaskQueueEntries,
       status: queueEntryStatus(updated),
       actions: queueActionMetadata(updated.id),
     };

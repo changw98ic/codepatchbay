@@ -443,9 +443,9 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
   };
 }
 
-async function enqueueSddTaskEntries({
+export async function enqueueSddTaskEntries({
   hubRoot,
-  enqueueFn,
+  enqueueFn = enqueueHubQueue,
   event,
   parentQueueEntry,
   sourcePath,
@@ -454,6 +454,11 @@ async function enqueueSddTaskEntries({
   contextPackResult = null,
 }) {
   if (!sddAutomation?.tasks?.length) return [];
+  const parentMetadata = parentQueueEntry?.metadata || {};
+  const contextPack = contextPackResult?.contextPack || parentMetadata.contextPack || null;
+  const contextPackError = contextPackResult?.error || parentMetadata.contextPackError || null;
+  const effectiveRouting = route ? routingMetadata(route) : parentMetadata.routing || null;
+  const effectiveRequestedRoute = route ? requestedRoute(route) : parentMetadata.requestedRoute || null;
   const entries = [];
   for (const task of sddAutomation.tasks) {
     const entry = await enqueueFn(hubRoot, {
@@ -474,13 +479,13 @@ async function enqueueSddTaskEntries({
         planGroupId: task.planGroupId || null,
         parentPlanId: task.parentPlanId || null,
         planCacheKey: task.planCacheKey || null,
-        requestedRoute: requestedRoute(route),
-        routing: routingMetadata(route),
+        requestedRoute: effectiveRequestedRoute,
+        routing: effectiveRouting,
         sddTask: task,
         sddTrace: sddAutomation.queueMetadata?.sddTrace || null,
-        contextPackPath: contextPackResult?.contextPack?.path || null,
-        contextPack: contextPackResult?.contextPack || null,
-        contextPackError: contextPackResult?.error || null,
+        contextPackPath: contextPack?.path || parentMetadata.contextPackPath || null,
+        contextPack,
+        contextPackError,
         queueDedupeKey: `${parentQueueEntry.metadata?.queueDedupeKey || parentQueueEntry.id}:sdd-task:${task.id}`,
         autoFinalize: true,
       },
@@ -488,6 +493,37 @@ async function enqueueSddTaskEntries({
     entries.push(entry);
   }
   return entries;
+}
+
+export async function enqueueSddTaskEntriesForApprovedParent(hubRoot, parentQueueEntry, {
+  enqueueFn = enqueueHubQueue,
+} = {}) {
+  const metadata = parentQueueEntry?.metadata || {};
+  if (!metadata.sddApproval?.requiresApproval || !Array.isArray(metadata.sddTasks)) return [];
+  return enqueueSddTaskEntries({
+    hubRoot,
+    enqueueFn,
+    event: {
+      projectId: parentQueueEntry.projectId,
+      issueNumber: metadata.issueNumber ?? null,
+      url: metadata.issueUrl || null,
+      repo: metadata.repo || null,
+      title: metadata.issueTitle || parentQueueEntry.description || null,
+    },
+    parentQueueEntry,
+    sourcePath: parentQueueEntry.sourcePath || null,
+    sddAutomation: {
+      tasks: metadata.sddTasks,
+      queueMetadata: {
+        sddTrace: metadata.sddTrace || null,
+      },
+    },
+    route: null,
+    contextPackResult: {
+      contextPack: metadata.contextPack || null,
+      error: metadata.contextPackError || null,
+    },
+  });
 }
 
 export async function createGithubIssueQueueJob(
@@ -571,7 +607,7 @@ export async function createGithubIssueQueueJob(
   );
   if (sddAutomation?.requiresApproval) {
     queueEntry = await updateHubQueueEntry(hubRoot, queueEntry.id, {
-      status: "blocked",
+      status: "waiting.approval",
       metadata: {
         sddApproval: {
           ...(queueEntry.metadata?.sddApproval || {}),
