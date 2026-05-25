@@ -246,9 +246,10 @@ function channelExternalId(source, context = {}) {
 
 function channelQueuePayload(command, context = {}) {
   return {
-    task: command.task || "",
+    task: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
     workflow: command.workflow || "standard",
     command: command.command || command.type || null,
+    issueNumber: command.issue || null,
     commandText: context.commandText || null,
     actor: context.actor || null,
     actorName: context.actorName || null,
@@ -260,11 +261,11 @@ function channelQueuePayload(command, context = {}) {
 }
 
 export async function createChannelQueueJob(cpbRoot, command, context = {}, { createJobFn = createJob } = {}) {
-  if (!command || command.type !== "run") {
-    throw new Error("channel command must be a run command before queue creation");
+  if (!command || !["run", "issue"].includes(command.type)) {
+    throw new Error("channel command must be a run or issue command before queue creation");
   }
-  if (!command.project || !command.task) {
-    throw new Error("channel run command requires project and task");
+  if (!command.project || (!command.task && !command.issue)) {
+    throw new Error("channel command requires project and task or issue");
   }
 
   const source = context.channel || "channel";
@@ -291,10 +292,11 @@ export async function createChannelQueueJob(cpbRoot, command, context = {}, { cr
     channelName: payload.channelName,
     commandText: payload.commandText,
     triggerId: payload.triggerId,
+    issueNumber: payload.issueNumber,
   };
   const job = await createJobFn(cpbRoot, {
     project: command.project,
-    task: command.task,
+    task: payload.task,
     workflow: command.workflow || "standard",
     queueEntryId: entry.id,
     sourceContext,

@@ -5,11 +5,14 @@ import { registerTask, unregisterTask } from "../services/executor.js";
 import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
+import { parseChannelCommand } from "../services/channel-commands.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
 import {
   authorizeDiscordInteraction,
   parseDiscordInteraction,
   verifyDiscordSignature,
 } from "../services/channel-discord.js";
+import { createChannelQueueJob } from "../services/event-source.js";
 import {
   handleSlackInteractiveAction,
   handleSlackSlashCommand,
@@ -178,6 +181,85 @@ async function loadChannelConfig(cpbRoot) {
   }
 }
 
+function channelJobSummary(job) {
+  if (!job) return null;
+  return {
+    jobId: job.jobId,
+    project: job.project,
+    task: job.task,
+    workflow: job.workflow || "standard",
+    status: job.status || null,
+  };
+}
+
+async function authorizeChannelCommand(cpbRoot, policy, { channel, command, actor }) {
+  if (!policy) return { allowed: true, reason: "channel policy not configured" };
+  return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
+    channel,
+    action: command?.type || null,
+    project: command?.project || null,
+    job: command?.job || null,
+    actor,
+  }));
+}
+
+async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = null } = {}) {
+  const command = parsed?.command;
+  const channel = context.channel || parsed?.channel || "channel";
+  if (!parsed?.ok || !command?.ok) {
+    return {
+      ok: false,
+      channel,
+      action: "help",
+      parsed,
+      error: command?.message || "invalid channel command",
+    };
+  }
+  const decision = await authorizeChannelCommand(cpbRoot, policy, {
+    channel,
+    command,
+    actor: parsed.actor || {},
+  });
+  if (!decision.allowed) {
+    return {
+      ok: false,
+      code: "CHANNEL_POLICY_DENIED",
+      statusCode: 403,
+      channel,
+      action: command.type,
+      reason: decision.reason,
+      parsed,
+    };
+  }
+  if (command.type !== "run" && command.type !== "issue") {
+    return {
+      ok: false,
+      channel,
+      action: command.type,
+      parsed,
+      error: `${command.type} is not wired for ${channel}`,
+    };
+  }
+  const result = await createChannelQueueJob(cpbRoot, command, {
+    channel,
+    actor: parsed.actor?.userId || context.actor || null,
+    actorName: parsed.actor?.userName || context.actorName || null,
+    teamId: parsed.actor?.teamId || parsed.actor?.guildId || context.teamId || null,
+    channelId: parsed.actor?.channelId || context.channelId || null,
+    channelName: parsed.actor?.channelName || context.channelName || null,
+    triggerId: parsed.triggerId || parsed.interactionId || context.triggerId || null,
+    commandText: parsed.commandText || context.commandText || null,
+  });
+  return {
+    ok: result.status === "created",
+    channel,
+    action: result.status === "created" ? "queued" : result.status,
+    parsed,
+    queueEntry: result.entry,
+    job: channelJobSummary(result.job),
+  };
+}
+
 export async function channelRoutes(fastify, opts) {
   fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
     req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
@@ -281,13 +363,10 @@ export async function channelRoutes(fastify, opts) {
       };
     }
 
-    return reply.code(202).send({
-      ok: true,
+    const result = await queueChannelCommand(req.cpbRoot, parsed, {
       channel: "discord",
-      dryRun: false,
-      parsed,
-      dispatch: "pending",
-    });
+    }, { policy });
+    return reply.code(result.statusCode || (result.ok ? 202 : 400)).send(result);
   });
 
   // Feishu event callback
@@ -325,10 +404,42 @@ export async function channelRoutes(fastify, opts) {
     const reviewCmd = parseReviewCommand(text);
     if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
 
-    const cmd = parseCommand(text);
-    if (!cmd) return { ok: true, parsed: false };
+    const commandText = text.trim();
+    const command = parseChannelCommand(commandText);
+    if (!command.ok && command.code === "NOT_CPB_COMMAND") {
+      const legacy = parseCommand(text);
+      if (!legacy) return { ok: true, parsed: false };
+      return queueChannelCommand(cpbRoot, {
+        ok: true,
+        channel: "feishu",
+        actor: {
+          userId: event.sender?.sender_id?.user_id || event.sender?.id || null,
+          channelId: event.message.chat_id || null,
+        },
+        command: {
+          ok: true,
+          type: "run",
+          command: "run",
+          project: legacy.project,
+          task: legacy.task,
+          job: null,
+          issue: null,
+          workflow: "standard",
+        },
+        commandText,
+      }, { channel: "feishu", commandText }, { policy: opts.channelPolicy || null });
+    }
 
-    return spawnPipeline(cpbRoot, cmd.project, cmd.task, req.log);
+    return queueChannelCommand(cpbRoot, {
+      ok: command.ok,
+      channel: "feishu",
+      actor: {
+        userId: event.sender?.sender_id?.user_id || event.sender?.id || null,
+        channelId: event.message.chat_id || null,
+      },
+      command,
+      commandText,
+    }, { channel: "feishu", commandText }, { policy: opts.channelPolicy || null });
   });
 
   // DingTalk outgoing robot callback
@@ -354,9 +465,41 @@ export async function channelRoutes(fastify, opts) {
     const reviewCmd = parseReviewCommand(text);
     if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
 
-    const cmd = parseCommand(text);
-    if (!cmd) return { ok: true, parsed: false };
+    const commandText = text.trim();
+    const command = parseChannelCommand(commandText);
+    if (!command.ok && command.code === "NOT_CPB_COMMAND") {
+      const legacy = parseCommand(text);
+      if (!legacy) return { ok: true, parsed: false };
+      return queueChannelCommand(cpbRoot, {
+        ok: true,
+        channel: "dingtalk",
+        actor: {
+          userId: body.senderId || null,
+          channelId: body.conversationId || null,
+        },
+        command: {
+          ok: true,
+          type: "run",
+          command: "run",
+          project: legacy.project,
+          task: legacy.task,
+          job: null,
+          issue: null,
+          workflow: "standard",
+        },
+        commandText,
+      }, { channel: "dingtalk", commandText }, { policy: opts.channelPolicy || null });
+    }
 
-    return spawnPipeline(cpbRoot, cmd.project, cmd.task, req.log);
+    return queueChannelCommand(cpbRoot, {
+      ok: command.ok,
+      channel: "dingtalk",
+      actor: {
+        userId: body.senderId || null,
+        channelId: body.conversationId || null,
+      },
+      command,
+      commandText,
+    }, { channel: "dingtalk", commandText }, { policy: opts.channelPolicy || null });
   });
 }

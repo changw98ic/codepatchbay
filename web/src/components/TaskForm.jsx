@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 
 const MODES = [
   { value: 'plan', label: 'Plan Only' },
-  { value: 'pipeline', label: 'Full Pipeline (Plan → Execute → Verify)' },
+  { value: 'pipeline', label: 'Full Pipeline' },
 ];
 
 export default function TaskForm({ projects, onSubmit }) {

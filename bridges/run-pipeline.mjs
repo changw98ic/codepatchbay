@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath, runtimeDataRoot } from "../server/services/runtime-root.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent, readEvents } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 import { buildGithubIssueBranchParts } from "../server/services/branch-names.js";
 import { maybeOpenDraftPrAfterPass } from "../server/services/github-pr.js";
@@ -40,6 +40,8 @@ import {
 import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
 import { resolveAcpLane } from "../core/acp/policy.js";
+import { requiresApproval } from "../core/policy/team-policy.js";
+import { requestApprovalGate, timeoutApprovalGate } from "../server/services/approval-gate.js";
 import {
   validateNonEmptyMarkdownArtifact,
   resolveDeliverableIssue,
@@ -88,8 +90,9 @@ function parseArgs(argv) {
   const sourcePath = options.get("--source-path") ? path.resolve(options.get("--source-path")) : null;
   const acpProfile = options.get("--acp-profile") || null;
   const uiLaneReason = options.get("--ui-lane-reason") || "";
+  const teamPolicyJson = options.get("--team-policy-json") || null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason };
+  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -612,6 +615,39 @@ async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
   return { cancelled: false, redirect };
 }
 
+function parseTeamPolicyInput(teamPolicy, teamPolicyJson) {
+  if (teamPolicy && typeof teamPolicy === "object") return teamPolicy;
+  const raw = teamPolicyJson || process.env.CPB_TEAM_POLICY_JSON || "";
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`invalid team policy JSON: ${error.message}`);
+  }
+}
+
+function approvalOperationForPhase(phase) {
+  if (phase === "PR") return "PR";
+  if (phase === "execute" || String(phase || "").startsWith("fix-") || String(phase || "").startsWith("execute-")) return "write";
+  if (phase === "review") return "write";
+  if (phase === "verify") return "shell";
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function hasApprovalAfter(cpbRoot, project, jobId, requestedAt) {
+  const requestedMs = new Date(requestedAt).getTime();
+  const events = await readEvents(cpbRoot, project, jobId);
+  return events.some((event) => {
+    if (event.type !== "job_approved") return false;
+    const approvedMs = new Date(event.ts || 0).getTime();
+    return Number.isFinite(approvedMs) && approvedMs >= requestedMs;
+  });
+}
+
 // ─── Exported API (for Node.js CLI consumption) ───
 
 export async function runPipeline({
@@ -627,6 +663,10 @@ export async function runPipeline({
   sourcePath: rawSourcePath = null,
   executorRoot: providedExecutorRoot = null,
   cpbRoot: providedCpbRoot = null,
+  teamPolicy = null,
+  teamPolicyJson = null,
+  approvalPollMs = Number(process.env.CPB_APPROVAL_POLL_MS || 2_000),
+  approvalTimeoutMs = Number(process.env.CPB_APPROVAL_TIMEOUT_MS || 30 * 60_000),
 } = {}) {
   const defaultExecutorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const executorRoot = resolveExecutorRoot({ fallbackRoot: providedExecutorRoot || defaultExecutorRoot });
@@ -674,6 +714,7 @@ export async function runPipeline({
 
   let pipelineOk = false;
   const workflowDef = getWorkflow(workflow);
+  const effectiveTeamPolicy = parseTeamPolicyInput(teamPolicy, teamPolicyJson);
   const phaseTotal = workflowDef.phases.length || 0;
   const phaseIndex = (phase) => {
     const idx = workflowDef.phases.indexOf(phase);
@@ -751,8 +792,52 @@ export async function runPipeline({
     sourceContext,
     indexSnapshot: jobIndexSnapshot,
     indexFreshness: jobIndexFreshness,
+    teamPolicy: effectiveTeamPolicy,
   });
   const jobId = job.jobId;
+
+  async function waitForApprovalIfRequired({ nodeId, phase }) {
+    const operation = approvalOperationForPhase(phase);
+    if (!operation || !requiresApproval(effectiveTeamPolicy, operation)) return { ok: true };
+
+    const requestedAt = ts();
+    await requestApprovalGate(cpbRoot, project, jobId, {
+      operation,
+      phase,
+      channels: effectiveTeamPolicy?.approvals?.[operation]?.channels || [],
+      reason: `${operation} approval required before ${phase}`,
+      timeoutAt: new Date(Date.now() + approvalTimeoutMs).toISOString(),
+      ts: requestedAt,
+    });
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "dag_node_blocked",
+      jobId,
+      project,
+      nodeId,
+      phase,
+      reason: `${operation} approval required`,
+      ts: requestedAt,
+    });
+    warn(`Waiting for ${operation} approval before ${phase}...`);
+
+    const deadline = Date.now() + approvalTimeoutMs;
+    while (Date.now() < deadline) {
+      if (await hasApprovalAfter(cpbRoot, project, jobId, requestedAt)) {
+        ok(`Approval received for ${phase}`);
+        return { ok: true };
+      }
+      const current = await getJob(cpbRoot, project, jobId);
+      if (current.cancelRequested || current.status === "cancelled") {
+        return { ok: false, reason: "cancelled while waiting for approval", cancelled: true };
+      }
+      await sleep(Math.max(100, approvalPollMs));
+    }
+
+    await timeoutApprovalGate(cpbRoot, project, jobId, {
+      reason: `${operation} approval timed out before ${phase}`,
+    });
+    return { ok: false, reason: `${operation} approval timed out before ${phase}`, approvalTimedOut: true };
+  }
 
   // Block job when index is unavailable for a direct start (no worker snapshot).
   // Blocked workflow skips this gate — it doesn't execute code.
@@ -953,13 +1038,25 @@ export async function runPipeline({
         const dagNode = ctx?.node ?? dag.nodes.find((n) => n.id === nodeId);
         await appendDagNodeEvent("dag_node_started", nodeId, dagNode, ctx);
 
-        if (nodeId === "plan" || nodeId === "execute") return true;
+        if (nodeId === "plan") return true;
         const check = await checkCancelAndRedirect(cpbRoot, project, jobId, nodeId);
         if (check.cancelled) {
           await appendDagNodeEvent("dag_node_cancelled", nodeId, dagNode, ctx, {
             reason: `cancelled before ${nodeId}`,
           });
           await failJob(cpbRoot, project, jobId, failure(`cancelled before ${nodeId}`, { code: FAILURE_CODES.BLOCKED, phase: nodeId }));
+          return false;
+        }
+        const approval = await waitForApprovalIfRequired({
+          nodeId,
+          phase: dagNode?.phase || nodeId,
+        });
+        if (!approval.ok) {
+          if (!approval.approvalTimedOut) {
+            await appendDagNodeEvent("dag_node_cancelled", nodeId, dagNode, ctx, {
+              reason: approval.reason,
+            });
+          }
           return false;
         }
         return true;
@@ -1129,6 +1226,11 @@ export async function runPipeline({
             await completePhase(cpbRoot, project, jobId, { phase: "verify", artifact: `verdict-${verdictId}` });
             await completeJob(cpbRoot, project, jobId);
             if (process.env.CPB_GITHUB_PR_AFTER_PASS === "1" || process.env.CPB_GITHUB_PR_DRY_RUN === "1") {
+              const prApproval = await waitForApprovalIfRequired({ nodeId: "PR", phase: "PR" });
+              if (!prApproval.ok) {
+                pipelineOk = false;
+                return { ok: false, reason: prApproval.reason, retryable: false, failPhase: "PR", failCode: FAILURE_CODES.BLOCKED };
+              }
               const prResult = await maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, {
                 verdict,
                 branchPushed: process.env.CPB_GITHUB_BRANCH_PUSHED === "1",

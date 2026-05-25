@@ -7,6 +7,8 @@ export const CHANNEL_COMMAND_HELP = [
   "/cpb status <job>",
   "/cpb approve <job>",
   "/cpb cancel <job>",
+  "/cpb retry <job>",
+  "/cpb logs <job>",
 ].join("\n");
 
 const SAFE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
@@ -197,7 +199,7 @@ export function parseChannelCommand(input) {
 
   if (command === "run") return parseRun(command, tokens);
   if (command === "issue") return parseIssue(command, tokens);
-  if (command === "status" || command === "approve" || command === "cancel") {
+  if (command === "status" || command === "approve" || command === "cancel" || command === "retry" || command === "logs") {
     return parseJobCommand(command, tokens);
   }
 

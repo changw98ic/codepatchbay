@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -75,11 +75,13 @@ describe("channel command parser", () => {
     assertCommandShape(command);
   });
 
-  it("parses issue, status, approve, and cancel commands into typed payloads", () => {
+  it("parses issue, status, approve, cancel, retry, and logs commands into typed payloads", () => {
     const issue = parseChannelCommand("/cpb issue frontend 123");
     const status = parseChannelCommand("/cpb status job-20260524-153011-a13f9c");
     const approve = parseChannelCommand("/cpb approve job-20260524-153011-a13f9c");
     const cancel = parseChannelCommand("/cpb cancel job-20260524-153011-a13f9c");
+    const retry = parseChannelCommand("/cpb retry job-20260524-153011-a13f9c");
+    const logs = parseChannelCommand("/cpb logs job-20260524-153011-a13f9c");
 
     assert.deepEqual(issue, {
       ok: true,
@@ -102,6 +104,12 @@ describe("channel command parser", () => {
     assert.equal(cancel.type, "cancel");
     assert.equal(cancel.job, "job-20260524-153011-a13f9c");
     assertCommandShape(cancel);
+    assert.equal(retry.type, "retry");
+    assert.equal(retry.job, "job-20260524-153011-a13f9c");
+    assertCommandShape(retry);
+    assert.equal(logs.type, "logs");
+    assert.equal(logs.job, "job-20260524-153011-a13f9c");
+    assertCommandShape(logs);
   });
 
   it("rejects secret-like channel input with the shared secret policy", () => {
@@ -478,6 +486,99 @@ describe("Slack channel command skeleton", () => {
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
+
+  it("wires Slack slash issue, approve, cancel, retry, and logs commands", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-expanded-"));
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+    });
+    try {
+      const approveJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Approve slash",
+        workflow: "standard",
+        jobId: "job-slash-approve",
+      });
+      const cancelJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Cancel slash",
+        workflow: "standard",
+        jobId: "job-slash-cancel",
+      });
+      const retryJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Retry slash",
+        workflow: "standard",
+        jobId: "job-slash-retry",
+      });
+      await failJob(cpbRoot, "frontend", retryJob.jobId, {
+        reason: "recoverable",
+        code: FAILURE_CODES.RECOVERABLE,
+        phase: "execute",
+        retryable: true,
+      });
+
+      async function slackCommand(text) {
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const rawBody = slackBody({
+          command: "/cpb",
+          text,
+          user_id: "U123",
+          user_name: "alice",
+          channel_id: "C123",
+          team_id: "T123",
+        });
+        return app.inject({
+          method: "POST",
+          url: "/api/channels/slack/commands",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+          },
+          payload: rawBody,
+        });
+      }
+
+      const issue = await slackCommand("issue frontend 42");
+      const approve = await slackCommand(`approve ${approveJob.jobId}`);
+      const cancel = await slackCommand(`cancel ${cancelJob.jobId}`);
+      const retry = await slackCommand(`retry ${retryJob.jobId}`);
+      const logs = await slackCommand(`logs ${approveJob.jobId}`);
+
+      assert.equal(issue.statusCode, 200);
+      const issueBody = JSON.parse(issue.body);
+      assert.equal(issueBody.ok, true);
+      assert.equal(issueBody.action, "queued");
+      assert.equal(issueBody.job.project, "frontend");
+      assert.equal(issueBody.queueEntry.payload.issueNumber, 42);
+      assert.match(issueBody.job.task, /GitHub issue #42/);
+
+      assert.equal(approve.statusCode, 200);
+      assert.equal(JSON.parse(approve.body).action, "approved");
+      const approvalEvents = (await readEvents(cpbRoot, "frontend", approveJob.jobId))
+        .filter((event) => event.type === "job_approved");
+      assert.equal(approvalEvents.length, 1);
+      assert.equal(approvalEvents[0].actor.userId, "U123");
+
+      assert.equal(cancel.statusCode, 200);
+      assert.equal((await getJob(cpbRoot, "frontend", cancelJob.jobId)).status, "cancelled");
+
+      assert.equal(retry.statusCode, 200);
+      const retryBody = JSON.parse(retry.body);
+      assert.equal(retryBody.action, "retried");
+      assert.notEqual(retryBody.job.jobId, retryJob.jobId);
+
+      assert.equal(logs.statusCode, 200);
+      const logsBody = JSON.parse(logs.body);
+      assert.equal(logsBody.action, "logs");
+      assert.equal(logsBody.events.length >= 1, true);
+      assert.equal(logsBody.events[0].type, "job_created");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Discord channel command skeleton", () => {
@@ -548,6 +649,122 @@ describe("Discord channel command skeleton", () => {
       assert.equal(body.parsed.command.type, "run");
       assert.doesNotMatch(response.body, /discord-token-secret/);
       assert.deepEqual(await readdir(cpbRoot), []);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("queues signed Discord run interactions through the shared channel queue", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-discord-queue-"));
+    const app = await buildChannelApp(cpbRoot, {
+      discordPublicKey: DISCORD_VECTOR.publicKey,
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/discord/interactions",
+        headers: {
+          "content-type": "application/json",
+          "x-signature-ed25519": DISCORD_VECTOR.signature,
+          "x-signature-timestamp": DISCORD_VECTOR.timestamp,
+        },
+        payload: DISCORD_VECTOR.body,
+      });
+
+      assert.equal(response.statusCode, 202);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.channel, "discord");
+      assert.equal(body.action, "queued");
+      assert.equal(body.job.project, "frontend");
+      assert.match(body.job.jobId, /^job-/);
+
+      const candidates = await listCandidates(cpbRoot, { source: "discord" });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].payload.task, "fix login redirect");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Feishu and DingTalk unified channel queue", () => {
+  it("queues Feishu /cpb run commands without spawning pipelines directly", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-feishu-queue-"));
+    const app = await buildChannelApp(cpbRoot);
+    try {
+      await writeFile(path.join(cpbRoot, "channels.json"), JSON.stringify({
+        channels: { feishu: { enabled: true, verificationToken: "feishu-token" } },
+      }), "utf8");
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/feishu",
+        headers: { "content-type": "application/json" },
+        payload: {
+          token: "feishu-token",
+          event: {
+            message: {
+              chat_id: "chat-1",
+              sender: { id: "user-1" },
+              content: JSON.stringify({ text: '/cpb run frontend "fix login redirect"' }),
+            },
+          },
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.channel, "feishu");
+      assert.equal(body.action, "queued");
+      assert.equal(body.job.project, "frontend");
+      assert.equal(body.queueEntry.source, "feishu");
+
+      const candidates = await listCandidates(cpbRoot, { source: "feishu" });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].payload.task, "fix login redirect");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("queues DingTalk /cpb run commands through the shared parser and policy path", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-dingtalk-queue-"));
+    const app = await buildChannelApp(cpbRoot, {
+      channelPolicy: {
+        default: "allow",
+        rules: [{ effect: "allow", channel: "dingtalk", project: "frontend", actions: ["run"] }],
+      },
+    });
+    try {
+      await writeFile(path.join(cpbRoot, "channels.json"), JSON.stringify({
+        channels: { dingtalk: { enabled: true, outgoingToken: "ding-token" } },
+      }), "utf8");
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/dingtalk",
+        headers: {
+          "content-type": "application/json",
+          "x-dingtalk-signature": "ignored,ding-token",
+        },
+        payload: { text: { content: '/cpb run frontend "fix login redirect"' }, senderId: "user-1", conversationId: "chat-1" },
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.channel, "dingtalk");
+      assert.equal(body.action, "queued");
+      assert.equal(body.job.project, "frontend");
+
+      const candidates = await listCandidates(cpbRoot, { source: "dingtalk" });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].payload.task, "fix login redirect");
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

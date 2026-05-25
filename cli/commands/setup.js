@@ -53,15 +53,76 @@ function formatHuman(snapshot, catalog) {
   return `${lines.join("\n")}\n`;
 }
 
-export async function run(args) {
+function optionValue(args, name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : null;
+}
+
+function parseAgents(value) {
+  return String(value || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function wantsWizard(args) {
+  return (
+    args.includes("--recommended") ||
+    args.includes("--interactive") ||
+    args.includes("--non-interactive") ||
+    args.includes("--agents") ||
+    args.some((arg) => arg.startsWith("--agents="))
+  );
+}
+
+function wizardMode(args) {
+  if (args.includes("--recommended")) return "recommended";
+  if (args.includes("--non-interactive")) return "non-interactive";
+  return "interactive";
+}
+
+function formatWizardHuman(result) {
+  const lines = [
+    "CodePatchBay Setup Wizard",
+    "",
+    "Selected agents:",
+  ];
+  for (const agent of result.selectedAgents) {
+    const install = result.installations[agent.id];
+    const health = result.health[agent.id];
+    lines.push(`  ${agent.id}\tinstall:${install?.status || "skipped"}\thealth:${health?.status || "unknown"}`);
+  }
+  lines.push("", `Setup profile: ${result.profilePath || "cpb-task/setup-profile.json"}`, "");
+  return lines.join("\n");
+}
+
+export async function run(args = [], { cpbRoot } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: cpb setup [--json]");
+    console.log("Usage: cpb setup [--recommended|--interactive|--non-interactive --agents codex,claude] [--json]");
     return 0;
   }
 
   const json = args.includes("--json");
   const { detectSetupEnvironment } = await import("../../core/setup/detect.js");
   const { listSetupAgents } = await import("../../core/setup/agent-catalog.js");
+
+  if (wantsWizard(args) || !json) {
+    const agentsFlag = optionValue(args, "--agents")
+      || args.find((arg) => arg.startsWith("--agents="))?.slice("--agents=".length)
+      || "";
+    const { runSetupWizard, setupProfilePath } = await import("../../core/setup/wizard.js");
+    const { runInstallPlanWithEvents } = await import("../../server/services/setup-events.js");
+    const result = await runSetupWizard({
+      cpbRoot,
+      mode: wizardMode(args),
+      agents: parseAgents(agentsFlag),
+      runInstallPlanFn: runInstallPlanWithEvents,
+    });
+    result.profilePath = setupProfilePath(cpbRoot);
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else console.log(formatWizardHuman(result));
+    return 0;
+  }
 
   const snapshot = await detectSetupEnvironment();
   const catalog = listSetupAgents();

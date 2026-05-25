@@ -1,7 +1,5 @@
 import React from 'react';
 
-const BAR_WIDTH = 24;
-const BAR_GAP = 4;
 const MAX_BARS = 20;
 
 export default function QualityTrend({ agents }) {
@@ -13,42 +11,36 @@ export default function QualityTrend({ agents }) {
 
   if (data.length === 0) {
     return (
-      <div style={{ padding: 12, color: '#666', fontSize: 12 }}>
+      <div className="panel muted">
         Quality trend: no data available
       </div>
     );
   }
 
-  const barHeight = (rate) => Math.max(4, (rate / 100) * 60);
-  const barColor = (rate) => (rate >= 80 ? '#4caf50' : rate >= 50 ? '#ff9800' : '#f44336');
+  const barHeight = (rate) => Math.max(4, (rate / 100) * 110);
+  const barColor = (rate) => (rate >= 80 ? 'var(--success)' : rate >= 50 ? 'var(--warning)' : 'var(--error)');
+
+  const visible = data.slice(0, MAX_BARS);
 
   return (
-    <div style={{ padding: 12, border: '1px solid #333', borderRadius: 8, background: '#1a1a2e' }}>
-      <h4 style={{ margin: '0 0 8px', color: '#aaa', fontSize: 13 }}>Quality Trend (Success Rate)</h4>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: BAR_GAP, height: 72 }}>
-        {data.slice(0, MAX_BARS).map((d) => (
-          <div key={d.name} title={`${d.name}: ${d.rate}%`} style={{
-            width: BAR_WIDTH,
-            height: barHeight(d.rate),
-            background: barColor(d.rate),
-            borderRadius: '2px 2px 0 0',
-            transition: 'height 0.3s ease',
-          }} />
+    <div className="panel">
+      <h4>Quality Trend (Success Rate)</h4>
+      <div className="quality-chart">
+        {visible.map((d) => (
+          <div
+            key={d.name}
+            className="quality-bar"
+            data-label={`${d.name}: ${d.rate}%`}
+            style={{
+              height: barHeight(d.rate),
+              background: barColor(d.rate),
+            }}
+          />
         ))}
       </div>
-      <div style={{ display: 'flex', gap: BAR_GAP, marginTop: 4 }}>
-        {data.slice(0, MAX_BARS).map((d) => (
-          <div key={d.name} style={{
-            width: BAR_WIDTH,
-            fontSize: 9,
-            color: '#888',
-            textAlign: 'center',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}>
-            {d.name.slice(0, 4)}
-          </div>
+      <div className="quality-labels">
+        {visible.map((d) => (
+          <span key={d.name}>{d.name.slice(0, 4)}</span>
         ))}
       </div>
     </div>

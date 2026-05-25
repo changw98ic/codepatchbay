@@ -35,13 +35,14 @@ function githubSignature(secret, rawBody) {
   return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
 }
 
-async function buildGithubWebhookApp(hubRoot) {
+async function buildGithubWebhookApp(hubRoot, routeOptions = {}) {
   const app = Fastify({ logger: false });
   app.addHook("onRequest", (req, _reply, done) => {
+    req.cpbRoot = hubRoot;
     req.cpbHubRoot = hubRoot;
     done();
   });
-  await app.register(githubRoutes, { prefix: "/api" });
+  await app.register(githubRoutes, { prefix: "/api", ...routeOptions });
   return app;
 }
 
@@ -191,6 +192,86 @@ describe("GitHub webhook signature verification", () => {
       else process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = previousSecret;
       await app.close();
       await rm(hubRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GitHub webhook queue glue", () => {
+  it("normalizes a signed issue event, matches a bound project trigger, creates a queue job, and comments queued", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-webhook-glue-"));
+    const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-github-source-"));
+    const previousSecret = process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
+    const posted = [];
+    const app = await buildGithubWebhookApp(hubRoot, {
+      githubPostComment: async (request) => {
+        posted.push(request);
+        return { id: 123, html_url: `https://github.com/${request.repo}/issues/${request.issueNumber}#issuecomment-123` };
+      },
+    });
+    try {
+      process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = "webhook-test-secret";
+      const { registerProject, bindProjectGithub } = await import("../server/services/hub-registry.js");
+      await registerProject(hubRoot, { id: "frontend", sourcePath });
+      await bindProjectGithub(hubRoot, "frontend", "my-org/frontend");
+      await saveGithubAppConfig(hubRoot, {
+        appId: 12345,
+        installationId: 67890,
+        webhookSecretRef: "env:CPB_TEST_GITHUB_WEBHOOK_SECRET",
+      });
+
+      const rawBody = JSON.stringify({
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "cpb" },
+        issue: {
+          number: 42,
+          title: "Fix login redirect",
+          body: "Redirect loops after login.",
+          html_url: "https://github.com/my-org/frontend/issues/42",
+          labels: [{ name: "bug" }, { name: "cpb" }],
+        },
+        sender: { login: "octocat" },
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/github/webhook",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "issues",
+          "x-github-delivery": "delivery-glue-1",
+          "x-hub-signature-256": githubSignature("webhook-test-secret", rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 202);
+      const body = JSON.parse(response.body);
+      assert.equal(body.accepted, true);
+      assert.equal(body.normalized.status, "ok");
+      assert.equal(body.projectId, "frontend");
+      assert.equal(body.match.matched, true);
+      assert.equal(body.queue.status, "created");
+      assert.match(body.queue.jobId, /^job-/);
+      assert.equal(body.comment.status, "posted");
+
+      const candidates = await listCandidates(hubRoot, { source: "github-issue" });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].payload.issueNumber, 42);
+      assert.equal(candidates[0].payload.repo, "my-org/frontend");
+
+      const job = await getJob(hubRoot, "frontend", body.queue.jobId);
+      assert.equal(job.task, "Fix login redirect");
+      assert.equal(job.sourceContext.repo, "my-org/frontend");
+      assert.equal(job.sourceContext.issueNumber, 42);
+      assert.equal(posted.length, 1);
+      assert.equal(posted[0].repo, "my-org/frontend");
+      assert.equal(posted[0].issueNumber, 42);
+    } finally {
+      if (previousSecret === undefined) delete process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
+      else process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = previousSecret;
+      await app.close();
+      await rm(hubRoot, { recursive: true, force: true });
+      await rm(sourcePath, { recursive: true, force: true });
     }
   });
 });
@@ -693,6 +774,63 @@ describe("GitHub draft PR creation", () => {
     assert.match(result.error.message, /GitHub unavailable/);
     assert.equal(result.evidence.head, "cpb/issue-123-fix-login-redirect");
     assert.equal(result.evidence.base, "main");
+  });
+
+  it("uses gh CLI as the default draft PR transport", async () => {
+    const calls = [];
+    const result = await openDraftPullRequest({
+      job: passedJob,
+      verdict: "PASS",
+      branchPushed: true,
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, options });
+        assert.equal(command, "gh");
+        assert.deepEqual(args.slice(0, 3), ["pr", "create", "--draft"]);
+        assert.ok(args.includes("--body-file"));
+        return {
+          stdout: "https://github.com/my-org/frontend/pull/456\n",
+          stderr: "",
+        };
+      },
+    });
+
+    assert.equal(result.status, "pr.opened");
+    assert.equal(result.prUrl, "https://github.com/my-org/frontend/pull/456");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[calls[0].args.indexOf("--repo") + 1], "my-org/frontend");
+    assert.equal(calls[0].args[calls[0].args.indexOf("--head") + 1], "cpb/issue-123-fix-login-redirect");
+    assert.equal(calls[0].args[calls[0].args.indexOf("--base") + 1], "main");
+  });
+
+  it("prepares an unpushed worktree branch before opening the draft PR", async () => {
+    const calls = [];
+    const result = await openDraftPullRequest({
+      job: { ...passedJob, worktree: "/tmp/cpb-worktree" },
+      verdict: "PASS",
+      branchPushed: false,
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, options });
+        if (command === "git" && args[0] === "status") return { stdout: "M src/login.js\n", stderr: "" };
+        if (command === "git" && args[0] === "rev-parse") return { stdout: "abc123\n", stderr: "" };
+        if (command === "gh") return { stdout: "https://github.com/my-org/frontend/pull/789\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    assert.equal(result.status, "pr.opened");
+    assert.equal(result.prUrl, "https://github.com/my-org/frontend/pull/789");
+    assert.equal(result.branchPreparation.committed, true);
+    assert.deepEqual(calls.map((call) => [call.command, call.args[0], call.args[1]]), [
+      ["git", "add", "--all"],
+      ["git", "status", "--porcelain"],
+      ["git", "commit", "-m"],
+      ["git", "rev-parse", "HEAD"],
+      ["git", "push", "origin"],
+      ["gh", "pr", "create"],
+    ]);
+    const pushCall = calls.find((call) => call.command === "git" && call.args[0] === "push");
+    assert.equal(pushCall.options.cwd, "/tmp/cpb-worktree");
+    assert.equal(pushCall.args[2], "HEAD:refs/heads/cpb/issue-123-fix-login-redirect");
   });
 });
 
