@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
+import {
+  parentPlanRecordPath,
+  readParentPlanRecord,
+  writeParentPlanRecord,
+} from "./plan-store.js";
 
 function stablePayload({ project, task, sourceContext = {} } = {}) {
   return {
@@ -12,27 +16,17 @@ function stablePayload({ project, task, sourceContext = {} } = {}) {
       issueNumber: sourceContext?.issueNumber ?? null,
       issueUrl: sourceContext?.issueUrl || null,
       sddTraceId: sourceContext?.sddTrace?.traceId || null,
+      sourceFingerprint: sourceContext?.sourceFingerprint || null,
+      specHash: sourceContext?.specHash || sourceContext?.sddTrace?.hashes?.spec || null,
+      designHash: sourceContext?.designHash || sourceContext?.sddTrace?.hashes?.design || null,
+      tasksHash: sourceContext?.tasksHash || sourceContext?.sddTrace?.hashes?.tasks || null,
+      taskId: sourceContext?.sddTask?.id || sourceContext?.taskId || null,
     },
   };
 }
 
 function hashPayload(payload) {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-}
-
-function cacheDir(cpbRoot, project) {
-  return runtimeDataPath(cpbRoot, "plan-cache", project);
-}
-
-function cachePath(cpbRoot, project, planCacheKey) {
-  return path.join(cacheDir(cpbRoot, project), `${planCacheKey}.json`);
-}
-
-async function writeAtomic(filePath, content) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, filePath);
 }
 
 function planArtifactPath(cpbRoot, project, planArtifact) {
@@ -61,15 +55,10 @@ export function parentPlanCacheIdentity({ project, task, sourceContext = {} } = 
 
 export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {} } = {}) {
   const identity = parentPlanCacheIdentity({ project, task, sourceContext });
-  const file = cachePath(cpbRoot, project, identity.planCacheKey);
-  let cached = null;
-  try {
-    cached = JSON.parse(await readFile(file, "utf8"));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
+  const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey);
+  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey);
 
-  const planId = cached?.planId || null;
+  const planId = cached?.parentPlanId || cached?.planId || null;
   const planArtifact = cached?.planArtifact || (planId ? `plan-${planId}` : null);
   const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact) : null;
   const cacheHit = Boolean(planId && artifactPath && await artifactExists(artifactPath));
@@ -82,6 +71,7 @@ export async function resolveParentPlanCache(cpbRoot, { project, task, sourceCon
     ...identity,
     cachePath: file,
     cacheHit,
+    parentPlanId: cacheHit ? planId : null,
     reusedPlanId: cacheHit ? planId : null,
     reusedPlanArtifact: cacheHit ? planArtifact : null,
     mergedPlanIds: cacheHit ? [...new Set([planId, ...(cached?.mergedPlanIds || [])])] : [],
@@ -113,6 +103,7 @@ export async function writeParentPlanCache(cpbRoot, {
     task,
     planGroupId: identity.planGroupId,
     planCacheKey: identity.planCacheKey,
+    parentPlanId: String(planId),
     planId: String(planId),
     planArtifact: artifact,
     planArtifactPath: planArtifactPath(cpbRoot, project, artifact),
@@ -120,12 +111,11 @@ export async function writeParentPlanCache(cpbRoot, {
     payload: identity.payload,
     updatedAt: new Date().toISOString(),
   };
-  const file = cachePath(cpbRoot, project, identity.planCacheKey);
-  await writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`);
+  const stored = await writeParentPlanRecord(cpbRoot, project, identity.planCacheKey, record);
   return {
-    ...record,
-    cachePath: file,
+    ...stored,
     cacheHit: true,
+    parentPlanId: record.parentPlanId,
     reusedPlanId: record.planId,
     reusedPlanArtifact: record.planArtifact,
   };

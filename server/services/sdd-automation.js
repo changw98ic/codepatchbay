@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { defaultSddTrace, sddDir, sddQueueMetadata, sddTracePath } from "../../core/sdd/trace.js";
 
@@ -27,6 +28,29 @@ function clean(value, fallback = "") {
 
 function issueRef(event = {}) {
   return event.issueNumber ? `#${event.issueNumber}` : "unlinked issue";
+}
+
+function issueHash(event = {}) {
+  const payload = {
+    repo: event.repo || null,
+    issueNumber: event.issueNumber ?? null,
+    title: event.title || null,
+    body: event.body || null,
+    url: event.url || null,
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
+}
+
+function sddGenerationEventsPath(cpbRoot, project) {
+  return path.join(sddDir(cpbRoot, project), "generation-events.jsonl");
+}
+
+function stripJsonFence(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 }
 
 function specFromIssue(project, event) {
@@ -85,8 +109,91 @@ function taskFromIssue(project, event) {
   ].join("\n");
 }
 
-export async function bootstrapSddFromIssue(cpbRoot, project, event = {}) {
+function buildSddDrafterPrompt(project, event = {}) {
+  return [
+    "You are the CodePatchBay SDD drafter.",
+    "Return only JSON. Do not execute code or modify files.",
+    "",
+    "Draft auditable SDD skeleton files from this issue.",
+    "Output schema: { spec: markdown, design: markdown, tasks: markdown, requiresApproval: boolean }.",
+    "",
+    JSON.stringify({
+      project,
+      issue: {
+        number: event.issueNumber ?? null,
+        title: event.title || "",
+        body: event.body || "",
+        url: event.url || null,
+        repo: event.repo || null,
+      },
+    }, null, 2),
+  ].join("\n");
+}
+
+function parseSddDrafterResponse(raw) {
+  const text = stripJsonFence(raw);
+  if (!text) return { parsed: null, error: "empty ACP SDD response" };
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      parsed: {
+        spec: clean(parsed.spec),
+        design: clean(parsed.design),
+        tasks: clean(parsed.tasks),
+        requiresApproval: Boolean(parsed.requiresApproval),
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { parsed: null, error: `invalid ACP SDD JSON: ${error.message}` };
+  }
+}
+
+async function draftSddFiles(cpbRoot, project, event, {
+  sddDrafterMode = process.env.CPB_SDD_DRAFTER_MODE || "template",
+  acpPool = null,
+  hubRoot = null,
+  cwd = process.cwd(),
+  agent = "claude",
+  timeoutMs = 60_000,
+} = {}) {
+  const template = {
+    spec: specFromIssue(project, event),
+    design: designFromIssue(project, event),
+    tasks: taskFromIssue(project, event),
+    requiresApproval: false,
+  };
+  if (sddDrafterMode !== "acp") {
+    return { ...template, generator: "template", acp: null };
+  }
+
+  const prompt = buildSddDrafterPrompt(project, event);
+  let raw = null;
+  let error = null;
+  try {
+    const pool = acpPool || (await import("./acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
+    raw = await pool.execute(agent, prompt, cwd, timeoutMs);
+  } catch (err) {
+    error = err.message;
+  }
+  const parsed = raw ? parseSddDrafterResponse(raw) : { parsed: null, error };
+  if (!parsed.parsed?.spec || !parsed.parsed?.design || !parsed.parsed?.tasks) {
+    return {
+      ...template,
+      generator: "template",
+      acp: { agent, prompt, raw, error: error || parsed.error || "ACP SDD response missing required files" },
+    };
+  }
+  return {
+    ...parsed.parsed,
+    generator: "acp",
+    acp: { agent, prompt, raw, error: null },
+  };
+}
+
+export async function bootstrapSddFromIssue(cpbRoot, project, event = {}, options = {}) {
   const dir = sddDir(cpbRoot, project);
+  const draft = await draftSddFiles(cpbRoot, project, event, options);
   const trace = {
     ...defaultSddTrace(project, { status: "queued" }),
     source: {
@@ -103,11 +210,37 @@ export async function bootstrapSddFromIssue(cpbRoot, project, event = {}) {
   };
 
   const files = {
-    spec: await writeIfMissing(path.join(dir, "spec.md"), specFromIssue(project, event)),
-    design: await writeIfMissing(path.join(dir, "design.md"), designFromIssue(project, event)),
-    tasks: await writeIfMissing(path.join(dir, "tasks.md"), taskFromIssue(project, event)),
+    spec: await writeIfMissing(path.join(dir, "spec.md"), draft.spec),
+    design: await writeIfMissing(path.join(dir, "design.md"), draft.design),
+    tasks: await writeIfMissing(path.join(dir, "tasks.md"), draft.tasks),
   };
   await writeAtomic(sddTracePath(cpbRoot, project), `${JSON.stringify(trace, null, 2)}\n`);
+
+  const generationEventPath = sddGenerationEventsPath(cpbRoot, project);
+  const generationEvent = {
+    type: "sdd_generation_event",
+    schemaVersion: 1,
+    project,
+    generator: draft.generator,
+    source: "github_issue",
+    sourceIssueHash: issueHash(event),
+    issueNumber: event.issueNumber ?? null,
+    issueUrl: event.url || null,
+    repo: event.repo || null,
+    generatedFiles: Object.fromEntries(Object.entries(files).map(([name, file]) => [name, {
+      path: file.path,
+      created: file.created,
+    }])),
+    requiresApproval: Boolean(draft.requiresApproval),
+    acp: draft.acp ? {
+      agent: draft.acp.agent || null,
+      error: draft.acp.error || null,
+      used: draft.generator === "acp" && !draft.acp.error,
+    } : null,
+    ts: new Date().toISOString(),
+  };
+  await mkdir(path.dirname(generationEventPath), { recursive: true });
+  await appendFile(generationEventPath, `${JSON.stringify(generationEvent)}\n`, "utf8");
 
   const tasks = [{
     id: `sdd-${project}-issue-${event.issueNumber || "unlinked"}-task-1`,
@@ -130,6 +263,8 @@ export async function bootstrapSddFromIssue(cpbRoot, project, event = {}) {
         issueNumber: event.issueNumber ?? null,
         issueUrl: event.url || null,
         repo: event.repo || null,
+        generationEvent,
+        generationEventPath,
         files: Object.fromEntries(Object.entries(files).map(([name, file]) => [name, {
           path: file.path,
           created: file.created,

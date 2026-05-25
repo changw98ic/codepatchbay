@@ -33,6 +33,7 @@ import {
 } from "../server/services/job-store.js";
 import { enqueue as enqueueQueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
 import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "../core/workflow/definition.js";
+import { isRouteDowngrade, normalizeRoute } from "../core/triage/schema.js";
 import { executeDag } from "../core/workflow/dag-executor.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
 import {
@@ -155,6 +156,7 @@ function buildSourceContext() {
         return {
           ...parsed,
           queueEntryId: parsed.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null,
+          contextPackPath: parsed.contextPackPath || process.env.CPB_CONTEXT_PACK_PATH || parsed.contextPack?.path || null,
         };
       }
     } catch {}
@@ -171,6 +173,7 @@ function buildSourceContext() {
     failedQueueId: process.env.CPB_FAILED_QUEUE_ID || null,
     failedJobId: process.env.CPB_FAILED_JOB_ID || null,
     failureArtifact: process.env.CPB_FAILURE_ARTIFACT || null,
+    contextPackPath: process.env.CPB_CONTEXT_PACK_PATH || null,
   };
 }
 
@@ -770,6 +773,27 @@ export async function runPipeline({
   async function enqueueRoutingUpgrade(feedback, phaseName) {
     const sourceQueueEntryId = sourceContext?.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null;
     if (!hubRoot || !sourceQueueEntryId) return null;
+    const currentRoute = normalizeRoute({
+      workflow,
+      planMode: planDecision.planMode,
+      source: "current_job",
+      reason: "current job route",
+    });
+    const feedbackRoute = normalizeRoute({
+      ...feedback.requested,
+      source: "executor_feedback",
+      reason: feedback.reason,
+    }, currentRoute);
+    if (isRouteDowngrade(feedbackRoute, currentRoute)) {
+      throw new Error(`executor routing feedback cannot downgrade ${currentRoute.workflow}/${currentRoute.planMode} to ${feedbackRoute.workflow}/${feedbackRoute.planMode}`);
+    }
+    if (
+      feedbackRoute.workflow === currentRoute.workflow
+      && feedbackRoute.planMode === currentRoute.planMode
+      && feedbackRoute.reviewer === currentRoute.reviewer
+    ) {
+      throw new Error(`executor routing feedback must request a stronger route than ${currentRoute.workflow}/${currentRoute.planMode}`);
+    }
 
     const existingEntries = await listQueue(hubRoot, { projectId: project }).catch(() => []);
     const sourceEntry = existingEntries.find((entry) => entry.id === sourceQueueEntryId) || null;
@@ -894,7 +918,11 @@ export async function runPipeline({
     delete process.env.CPB_PARENT_PLAN_CACHE_JSON;
   }
   const jobSourceContext = parentPlanCache
-    ? { ...(sourceContext || {}), parentPlan: parentPlanCache }
+    ? {
+        ...(sourceContext || {}),
+        parentPlan: parentPlanCache,
+        parentPlanId: parentPlanCache.parentPlanId || parentPlanCache.reusedPlanId || null,
+      }
     : sourceContext;
   const job = await createJob(cpbRoot, {
     project,
@@ -920,6 +948,10 @@ export async function runPipeline({
     runPlan: planDecision.runPlan,
     reason: planDecision.reason,
     parentPlanCache,
+    planGroupId: parentPlanCache?.planGroupId || null,
+    planCacheKey: parentPlanCache?.planCacheKey || null,
+    cacheHit: parentPlanCache?.cacheHit ?? null,
+    parentPlanId: parentPlanCache?.parentPlanId || parentPlanCache?.reusedPlanId || null,
     ts: ts(),
   });
   if (parentPlanCache) {
