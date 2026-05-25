@@ -10,6 +10,54 @@ function agentLine(label, value) {
   return `- ${label}: ${value || "not selected"}`;
 }
 
+function isSddApprovalQueue(queueEntry) {
+  const approval = queueEntry?.metadata?.sddApproval || {};
+  return Boolean(
+    approval.requiresApproval
+    && (
+      queueEntry?.status === "waiting.approval"
+      || approval.status === "waiting_approval"
+    )
+  );
+}
+
+function sddFilePath(metadata, name) {
+  return metadata?.sddBootstrap?.files?.[name]?.path
+    || metadata?.sddBootstrap?.generationEvent?.generatedFiles?.[name]?.path
+    || null;
+}
+
+function displaySddPath(filePath) {
+  if (!filePath) return "unavailable";
+  const normalized = String(filePath).replace(/\\/g, "/");
+  const sddIndex = normalized.lastIndexOf("/sdd/");
+  if (sddIndex >= 0) return normalized.slice(sddIndex + 1);
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.slice(-2).join("/") || normalized;
+}
+
+function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
+  const metadata = queueEntry?.metadata || {};
+  const workflow = metadata.workflow || "sdd-standard";
+  const taskCount = Array.isArray(metadata.sddTasks) ? metadata.sddTasks.length : 0;
+  return [
+    "SDD draft requires approval.",
+    "",
+    queueEntry?.id ? `- Queue: ${queueEntry.id}` : null,
+    `- Workflow: ${workflow}`,
+    `- Spec: ${displaySddPath(sddFilePath(metadata, "spec"))}`,
+    `- Design: ${displaySddPath(sddFilePath(metadata, "design"))}`,
+    `- Tasks: ${displaySddPath(sddFilePath(metadata, "tasks"))}`,
+    `- Parsed tasks: ${taskCount}`,
+    agentLine("Planner", agents.planner),
+    agentLine("Executor", agents.executor),
+    agentLine("Verifier", agents.verifier),
+    "",
+    queueEntry?.id ? `Approve with \`/cpb approve ${queueEntry.id}\`.` : "Approve from a connected channel command.",
+    "",
+  ].filter((line) => line !== null).join("\n");
+}
+
 function hashBody(body) {
   return createHash("sha256").update(body || "", "utf8").digest("hex");
 }
@@ -76,6 +124,10 @@ function statusDetailLines(projection) {
 }
 
 export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } = {}) {
+  if (isSddApprovalQueue(queueEntry)) {
+    return buildSddApprovalComment({ queueEntry, agents });
+  }
+
   const normalizedJob = job || {};
   const workflow = normalizedJob.workflow || queueEntry?.payload?.workflow || queueEntry?.metadata?.workflow || "standard";
   return [
