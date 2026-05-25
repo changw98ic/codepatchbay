@@ -593,7 +593,8 @@ describe("SDD automatic GitHub entry", () => {
 
       assert.equal(approval.ok, true);
       assert.equal(approval.action, "approved");
-      assert.equal(approval.queueEntry.status, "pending");
+      assert.equal(approval.queueEntry.status, "completed");
+      assert.equal(approval.queueEntry.metadata.finalDisposition, "approved.children_queued");
       assert.equal(approval.queueEntry.metadata.sddApproval.status, "approved");
       assert.deepEqual(approval.sddTaskQueueEntries.map((entry) => entry.metadata.sddTask.title), [
         "Implement traced checkout task",
@@ -601,9 +602,11 @@ describe("SDD automatic GitHub entry", () => {
       ]);
 
       const queued = await listQueue(cpbRoot, { projectId: "frontend" });
+      assert.equal(queued.find((entry) => entry.id === result.queueEntry.id)?.status, "completed");
       const children = queued.filter((entry) => entry.type === "sdd_task");
       assert.equal(children.length, 2);
       assert.ok(children.every((entry) => entry.metadata.parentQueueEntryId === result.queueEntry.id));
+      assert.ok(children.every((entry) => entry.status === "pending"));
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }
