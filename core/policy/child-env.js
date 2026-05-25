@@ -5,6 +5,7 @@
 const RUNTIME_BASICS = new Set([
   "PATH", "HOME", "SHELL", "TERM", "TMPDIR", "TEMP", "TMP",
   "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE",
+  "NODE_ENV", "CI",
   "CODEX_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
   "npm_config_cache", "NPM_CONFIG_CACHE",
 ]);
