@@ -170,14 +170,14 @@ function routingEffectiveRoute(entry = {}, job = {}) {
   );
 }
 
-function isDirectNoPlan(route) {
-  return route?.workflow === "direct" && route?.planMode === "none";
+function routeAllowsProtectedDiff(route) {
+  return route?.workflow === "complex" && route?.planMode === "full";
 }
 
-function protectedDiffForDirectRoute(files, entry, job) {
+function protectedDiffForRoute(files, entry, job) {
   const route = routingEffectiveRoute(entry, job);
   const protectedDiff = actualDiffRiskGuard({ files });
-  if (!isDirectNoPlan(route) || !protectedDiff.actualDiffRisk.protected) {
+  if (!protectedDiff.actualDiffRisk.protected || routeAllowsProtectedDiff(route)) {
     return { blocked: false, route, protectedDiff };
   }
   return { blocked: true, route, protectedDiff };
@@ -201,7 +201,7 @@ async function requeueProtectedDiffUpgrade({
     planMode: "full",
     reviewer: true,
     source: "final_diff_guard",
-    reason: "direct/no-plan final diff touched protected scopes",
+    reason: "final diff touched protected scopes before complex/full review",
   });
   const guardMetadata = {
     protected: true,
@@ -362,7 +362,7 @@ export async function finalizeSuccessfulQueueEntry({
     });
   }
 
-  const routeGuard = protectedDiffForDirectRoute(files, entry, job);
+  const routeGuard = protectedDiffForRoute(files, entry, job);
   if (routeGuard.blocked) {
     const upgraded = await requeueProtectedDiffUpgrade({
       hubRoot,
