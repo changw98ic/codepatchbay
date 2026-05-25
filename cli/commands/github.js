@@ -98,93 +98,166 @@ async function runConnect(args, { cpbRoot } = {}) {
   }
 }
 
+function buildTransportSummary(transport) {
+  if (!transport) {
+    return { mode: "unknown", healthy: false, errors: ["Transport not checked"] };
+  }
+  if (transport.mode === "api") {
+    return {
+      mode: "api",
+      healthy: true,
+      comment: "ok",
+      pullRequest: "ok",
+      branchPush: "ok",
+    };
+  }
+  if (transport.mode === "gh") {
+    const reason = transport.diagnostics?.find((d) => d.level === "info")?.message || "fallback active";
+    return {
+      mode: "gh",
+      healthy: true,
+      reason,
+    };
+  }
+  return {
+    mode: "unavailable",
+    healthy: false,
+    errors: transport.diagnostics?.map((d) => d.message) || ["Transport unavailable"],
+  };
+}
+
 async function runDoctor(args, { cpbRoot } = {}) {
   const json = args.includes("--json");
   const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
-  const { loadGithubAppConfig, resolveGithubWebhookSecret, buildGithubAppReadiness } = await import("../../server/services/github-app.js");
+  const { loadGithubAppConfig, resolveGithubWebhookSecret } = await import("../../server/services/github-app.js");
+  const { resolveGithubTransport } = await import("../../server/services/github-api.js");
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const execFileAsync = promisify(execFile);
   const hubRoot = resolveHubRoot(cpbRoot);
 
-  const checks = [];
+  const layers = [];
+  let transportResult = null;
 
-  // 1. App config exists
+  // Layer 1: App config
   let config = null;
   try {
     config = await loadGithubAppConfig(hubRoot);
-    checks.push({ id: "app-config", status: "ok", message: `App ${config.appId} configured` });
+    layers.push({ id: "github-app-config", status: "ok", message: `App config: app ${config.appId} configured` });
   } catch {
-    checks.push({ id: "app-config", status: "error", message: "App config missing or invalid", action: "Run: cpb github connect" });
+    layers.push({ id: "github-app-config", status: "error", message: "App config missing or invalid", action: "Run: cpb github connect" });
   }
 
-  // 2. Webhook secret env exists
+  // Layer 2: Webhook secret
   if (config?.webhookSecretRef) {
     try {
       resolveGithubWebhookSecret(config);
-      checks.push({ id: "webhook-secret", status: "ok", message: `Webhook secret available (${config.webhookSecretRef})` });
+      layers.push({ id: "github-webhook-secret", status: "ok", message: `Webhook secret: ${config.webhookSecretRef} available` });
     } catch {
       const envName = config.webhookSecretRef.replace("env:", "");
-      checks.push({ id: "webhook-secret", status: "error", message: `Secret not found: ${config.webhookSecretRef}`, action: `Set: export ${envName}=<your-webhook-secret>` });
+      layers.push({ id: "github-webhook-secret", status: "error", message: `Webhook secret: ${config.webhookSecretRef} not found`, action: `Set: export ${envName}=<your-webhook-secret>` });
     }
   } else {
-    checks.push({ id: "webhook-secret", status: "error", message: "No webhook secret ref configured", action: "Run: cpb github connect --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET" });
+    layers.push({ id: "github-webhook-secret", status: "error", message: "Webhook secret: not configured", action: "Run: cpb github connect --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET" });
   }
 
-  // 3. Installation ID
+  // Layer 3: Installation
   if (config?.installationId) {
-    checks.push({ id: "installation-id", status: "ok", message: `Installation ${config.installationId}` });
+    layers.push({ id: "github-app-installation", status: "ok", message: `Installation: ${config.installationId} configured` });
   } else {
-    checks.push({ id: "installation-id", status: "warn", message: "No installation ID", action: "Run: cpb github connect --installation-id <id>" });
+    layers.push({ id: "github-app-installation", status: "warn", message: "Installation: not configured", action: "Run: cpb github connect --installation-id <id>" });
   }
 
-  // 3b. Private key (for REST API transport)
+  // Layer 4: Private key
   if (config?.privateKeyRef) {
     try {
       const { resolvePrivateKey } = await import("../../server/services/github-api.js");
       resolvePrivateKey(config);
-      checks.push({ id: "private-key", status: "ok", message: `Private key available (${config.privateKeyRef.split(":")[0]}:*)` });
+      layers.push({ id: "github-app-private-key", status: "ok", message: `Private key: ${config.privateKeyRef.split(":")[0]}:* available` });
     } catch {
-      checks.push({ id: "private-key", status: "error", message: `Private key not found: ${config.privateKeyRef}`, action: "Set the private key secret and retry" });
+      layers.push({ id: "github-app-private-key", status: "error", message: `Private key: ${config.privateKeyRef} not found`, action: "Set the private key secret and retry" });
     }
   } else {
-    checks.push({ id: "private-key", status: "warn", message: "No private key — REST API transport unavailable", action: "Run: cpb github connect --private-key-ref env:CPB_GITHUB_PRIVATE_KEY" });
+    layers.push({ id: "github-app-private-key", status: "warn", message: "Private key: not configured", action: "Run: cpb github connect --private-key-ref env:CPB_GITHUB_PRIVATE_KEY" });
   }
 
-  // 4. Repo binding exists (at least one project has github binding)
+  // Layer 5: Transport
+  try {
+    const transport = await resolveGithubTransport(hubRoot);
+    transportResult = transport;
+    if (transport.mode === "api") {
+      layers.push({ id: "github-transport", status: "ok", message: "Transport: api", mode: "api" });
+    } else if (transport.mode === "gh") {
+      const reason = transport.diagnostics?.find((d) => d.level === "warn" || d.level === "info")?.message || "gh CLI fallback";
+      layers.push({ id: "github-transport", status: "ok", message: `Transport: gh (${reason})`, mode: "gh" });
+    } else {
+      layers.push({ id: "github-transport", status: "error", message: "Transport: unavailable", mode: "unavailable" });
+    }
+  } catch (error) {
+    layers.push({ id: "github-transport", status: "error", message: `Transport: check failed (${error.message})`, mode: "unknown" });
+  }
+
+  // Layer 6: Repo bindings
   try {
     const { listProjects } = await import("../../server/services/hub-registry.js");
     const projects = await listProjects(hubRoot);
     const bound = projects.filter((p) => p.github?.fullName);
     if (bound.length > 0) {
-      checks.push({ id: "repo-binding", status: "ok", message: `${bound.length} repo(s) bound: ${bound.map((p) => p.github.fullName).join(", ")}` });
+      layers.push({ id: "github-repo-bindings", status: "ok", message: `Repo bindings: ${bound.map((p) => `${p.github.fullName} → project ${p.id}`).join(", ")}` });
     } else {
-      checks.push({ id: "repo-binding", status: "warn", message: "No repos bound", action: "Run: cpb github bind <project> <owner/repo>" });
+      layers.push({ id: "github-repo-bindings", status: "warn", message: "Repo bindings: none", action: "Run: cpb github bind <project> <owner/repo>" });
     }
   } catch {
-    checks.push({ id: "repo-binding", status: "warn", message: "Could not check repo bindings" });
+    layers.push({ id: "github-repo-bindings", status: "warn", message: "Repo bindings: could not check" });
   }
 
-  // 5. gh auth status
-  let ghOk = false;
+  // Layer 7: Branch push readiness
+  if (transportResult?.mode === "api" && transportResult?.getToken) {
+    layers.push({ id: "github-branch-push", status: "ok", message: "Branch push: api token available" });
+  } else if (transportResult?.mode === "gh") {
+    layers.push({ id: "github-branch-push", status: "warn", message: "Branch push: will use local git credentials / gh auth" });
+  } else {
+    layers.push({ id: "github-branch-push", status: "warn", message: "Branch push: transport unavailable" });
+  }
+
+  // Layer 8: PR creation
+  if (transportResult?.mode === "api" && transportResult?.createPullRequest) {
+    layers.push({ id: "github-pr-creation", status: "ok", message: "PR creation: api transport available" });
+  } else if (transportResult?.mode === "gh" && transportResult?.createPullRequest) {
+    layers.push({ id: "github-pr-creation", status: "ok", message: "PR creation: gh transport available" });
+  } else {
+    layers.push({ id: "github-pr-creation", status: "warn", message: "PR creation: transport unavailable" });
+  }
+
+  // Layer 9: gh auth (for fallback)
   try {
     await execFileAsync("gh", ["auth", "status"], { timeout: 5000 });
-    ghOk = true;
-    checks.push({ id: "gh-auth", status: "ok", message: "gh CLI authenticated" });
+    layers.push({ id: "github-gh-auth", status: "ok", message: "gh CLI: authenticated" });
   } catch {
-    checks.push({ id: "gh-auth", status: "warn", message: "gh CLI not authenticated", action: "Run: gh auth login" });
+    layers.push({ id: "github-gh-auth", status: "warn", message: "gh CLI: not authenticated", action: "Run: gh auth login" });
   }
 
-  const hasError = checks.some((c) => c.status === "error");
+  const hasError = layers.some((c) => c.status === "error");
+  const transportSummary = buildTransportSummary(transportResult);
+
   if (json) {
-    console.log(JSON.stringify({ healthy: !hasError, checks }, null, 2));
+    console.log(JSON.stringify({
+      healthy: !hasError,
+      transport: transportSummary,
+      checks: layers,
+    }, null, 2));
   } else {
-    for (const c of checks) {
-      const icon = c.status === "ok" ? "✓" : c.status === "warn" ? "!" : "✗";
-      const color = c.status === "ok" ? "\x1b[0;32m" : c.status === "warn" ? "\x1b[1;33m" : "\x1b[0;31m";
-      console.log(`  ${color}${icon}\x1b[0m ${c.message}`);
-      if (c.action) console.log(`    → ${c.action}`);
+    console.log("GitHub integration");
+    console.log("");
+    for (const layer of layers) {
+      const icon = layer.status === "ok" ? "✓" : layer.status === "warn" ? "!" : "✗";
+      const color = layer.status === "ok" ? "\x1b[0;32m" : layer.status === "warn" ? "\x1b[1;33m" : "\x1b[0;31m";
+      console.log(`  ${color}${icon}\x1b[0m ${layer.message}`);
+      if (layer.action) console.log(`    → ${layer.action}`);
     }
+    console.log("");
+    console.log("Webhook URL:");
+    console.log("  http://127.0.0.1:3456/api/github/webhook");
     console.log("");
     console.log(hasError ? "GitHub integration not ready — fix errors above." : "GitHub integration OK.");
   }

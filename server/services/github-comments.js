@@ -101,6 +101,7 @@ export async function postGithubQueuedComment({
   agents,
   dryRun = false,
   postComment,
+  transportMode = null,
 } = {}) {
   const body = buildQueuedComment({ job, queueEntry, agents });
   const request = {
@@ -115,6 +116,7 @@ export async function postGithubQueuedComment({
       posted: false,
       request,
       body,
+      transportMode,
     };
   }
 
@@ -129,6 +131,7 @@ export async function postGithubQueuedComment({
       request,
       body,
       response,
+      transportMode,
     };
   } catch (error) {
     return {
@@ -140,6 +143,7 @@ export async function postGithubQueuedComment({
         message: error.message,
         code: error.code || null,
       },
+      transportMode,
     };
   }
 }
@@ -178,6 +182,7 @@ export async function postGithubStatusComment({
   dryRun = false,
   postComment,
   dataRoot,
+  transportMode = null,
 } = {}) {
   const update = projection || jobToGithubStatusUpdate(job);
   if (!update) {
@@ -233,6 +238,8 @@ export async function postGithubStatusComment({
       issueNumber: update.issueNumber,
       bodyHash: hashBody(body),
       response: responseSummary(response),
+      transportMode,
+      transportFallback: transportMode === "gh",
       ts: new Date().toISOString(),
     }, { dataRoot });
 
@@ -260,6 +267,8 @@ export async function postGithubStatusComment({
           message: error.message,
           code: error.code || null,
         },
+        transportMode,
+        transportFallback: transportMode === "gh",
         ts: new Date().toISOString(),
       }, { dataRoot }).catch(() => {});
     }

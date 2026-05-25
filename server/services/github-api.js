@@ -156,18 +156,57 @@ export async function closeGithubIssueWithApi({ repo, number, body }, config, { 
   };
 }
 
-// --- Composite transport selector ---
+// --- Composite transport selector (never throws) ---
+
+function makeDiagnostic(level, message) {
+  return { level, message };
+}
 
 export async function resolveGithubTransport(hubRoot, { env = process.env } = {}) {
-  const { loadGithubAppConfig } = await import("./github-app.js");
-  const config = await loadGithubAppConfig(hubRoot);
+  const diagnostics = [];
+  let config = null;
 
-  // If we have private key + installation, use REST API
-  const hasPrivateKey = config?.privateKeyRef && resolvePrivateKey(config, { env }) !== null;
-  if (hasPrivateKey && config?.installationId) {
+  // Load config
+  try {
+    const { loadGithubAppConfig } = await import("./github-app.js");
+    config = await loadGithubAppConfig(hubRoot);
+  } catch (error) {
+    diagnostics.push(makeDiagnostic("error", `Failed to load GitHub App config: ${error.message}`));
+  }
+
+  if (!config) {
+    diagnostics.push(makeDiagnostic("warn", "GitHub App config not found"));
+  }
+
+  // Determine if API mode is possible
+  let apiAvailable = false;
+  let apiDiagnostics = [];
+
+  if (config) {
+    if (!config.installationId) {
+      apiDiagnostics.push(makeDiagnostic("warn", "GitHub App installation ID not configured"));
+    }
+    if (!config.privateKeyRef) {
+      apiDiagnostics.push(makeDiagnostic("warn", "GitHub App private key not configured"));
+    } else {
+      try {
+        const pk = resolvePrivateKey(config, { env });
+        if (!pk) {
+          apiDiagnostics.push(makeDiagnostic("error", `Private key not resolvable: ${config.privateKeyRef}`));
+        }
+      } catch (error) {
+        apiDiagnostics.push(makeDiagnostic("error", `Private key resolution failed: ${error.message}`));
+      }
+    }
+    apiAvailable = config.installationId && config.privateKeyRef && apiDiagnostics.length === 0;
+  }
+
+  if (apiAvailable) {
     return {
       mode: "api",
+      healthy: true,
       config,
+      diagnostics: [],
       getToken: () => getInstallationToken(config, { env }),
       postComment: (req) => postGithubCommentWithApi(req, config, { env }),
       createPullRequest: (req) => createPullRequestWithApi(req, config, { env }),
@@ -176,14 +215,54 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
   }
 
   // Fallback: use gh CLI
-  const { postGithubCommentWithGh } = await import("./github-comments.js");
-  const { createPullRequestWithGh } = await import("./github-pr.js");
-  const { closeGithubIssueWithGh } = await import("./github-issues.js");
+  let ghAvailable = false;
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    await execFileAsync("gh", ["--version"], { timeout: 5000 });
+    ghAvailable = true;
+  } catch {
+    diagnostics.push(makeDiagnostic("warn", "gh CLI not available"));
+  }
+
+  if (ghAvailable) {
+    const { postGithubCommentWithGh } = await import("./github-comments.js");
+    const { createPullRequestWithGh } = await import("./github-pr.js");
+    const { closeGithubIssueWithGh } = await import("./github-issues.js");
+
+    const fallbackReason = apiDiagnostics.length > 0
+      ? apiDiagnostics.map((d) => d.message).join("; ")
+      : (config ? "API prerequisites not met" : "GitHub App config missing");
+
+    return {
+      mode: "gh",
+      healthy: true,
+      config,
+      diagnostics: [
+        makeDiagnostic("info", `Using gh CLI fallback: ${fallbackReason}`),
+        ...apiDiagnostics,
+      ],
+      getToken: null,
+      postComment: (req) => postGithubCommentWithGh(req),
+      createPullRequest: (req) => createPullRequestWithGh(req),
+      closeIssue: (req) => closeGithubIssueWithGh(req),
+    };
+  }
+
+  // Unavailable
   return {
-    mode: "gh",
+    mode: "unavailable",
+    healthy: false,
     config,
-    postComment: (req) => postGithubCommentWithGh(req),
-    createPullRequest: (req) => createPullRequestWithGh(req),
-    closeIssue: (req) => closeGithubIssueWithGh(req),
+    diagnostics: [
+      ...diagnostics,
+      ...apiDiagnostics,
+      makeDiagnostic("error", "GitHub outbound transport unavailable: neither API nor gh CLI is usable"),
+    ],
+    getToken: null,
+    postComment: null,
+    createPullRequest: null,
+    closeIssue: null,
   };
 }

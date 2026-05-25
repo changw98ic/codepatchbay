@@ -124,11 +124,14 @@ function profileFromResult(result) {
     const install = result.installations[agent.id] || null;
     const health = result.health[agent.id] || null;
     const auth = result.auth[agent.id] || null;
+    const authStatus = health?.status === "ok" ? "connected" : health?.status === "skipped" ? "skipped" : auth?.error ? "error" : auth?.providerNativeCommand || auth?.localSetupUrl ? "pending" : "unknown";
     agents[agent.id] = {
       displayName: agent.displayName,
       installed: install?.status === "succeeded" || result.detected.agents?.[agent.id]?.installed === true,
       installStatus: install?.status || (result.detected.agents?.[agent.id]?.installed ? "already-installed" : "skipped"),
       healthStatus: health?.status || null,
+      authStatus,
+      authCheckedAt: new Date().toISOString(),
       auth: auth ? {
         localSetupUrl: auth.localSetupUrl || null,
         providerNativeCommand: auth.providerNativeCommand || null,
@@ -259,9 +262,9 @@ export async function runSetupWizard({
       // Spawn each provider-native auth command with stdio inherit
       for (const agent of degraded) {
         const auth = result.auth[agent.id];
-        const nativeCommand = auth?.providerNativeCommand;
-        if (nativeCommand) {
-          const [cmd, ...args] = nativeCommand.split(/\s+/);
+        const native = auth?.providerNative;
+        if (native?.command) {
+          const { command: cmd, args } = native;
           if (stdio === "inherit") {
             console.log(`\n[setup] Running: ${nativeCommand}\n`);
           }

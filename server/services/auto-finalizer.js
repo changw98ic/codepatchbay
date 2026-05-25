@@ -174,6 +174,7 @@ export async function finalizeSuccessfulQueueEntry({
   runCommand = execFileAsync,
   createPullRequest,
   pushToken = null,
+  transportMode = null,
   dataRoot,
 } = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
@@ -317,6 +318,8 @@ export async function finalizeSuccessfulQueueEntry({
       prUrl: pr.prUrl,
       prNumber: pr.prNumber,
       artifact: pr.request?.body ? { type: "github_pr", url: pr.prUrl, number: pr.prNumber } : null,
+      transportMode: transportMode || null,
+      transportFallback: transportMode === "gh",
       ts: new Date().toISOString(),
     }, { dataRoot });
 

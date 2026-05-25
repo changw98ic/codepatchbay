@@ -75,6 +75,7 @@ const SECRET_KEY_PATTERN = /authorization|cookie|api[_-]?key|auth[_-]?token|toke
 const SECRET_REFERENCE_KEY_PATTERN = /(?:authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook)[A-Za-z0-9_-]*(?:ref|reference)$/i;
 const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
+const GITHUB_URL_TOKEN_PATTERN = /https:\/\/x-access-token:[^@\s"']+@github\.com\/[^\s"']*/gi;
 const SECRET_INPUT_GUIDANCE = "Do not paste API keys or tokens into CodePatchBay. Use provider-native login or the local setup URL.";
 
 function isSecretReferenceKey(key = "") {
@@ -85,13 +86,15 @@ function redactString(value, key = "") {
   if (typeof key === "string" && SECRET_KEY_PATTERN.test(key)) return "[REDACTED]";
   return String(value)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
+    .replace(GITHUB_URL_TOKEN_PATTERN, "[REDACTED_URL]")
+    .replace(QUERY_SECRET_PATTERN, "$1[REDACTED]")
     .replace(/\bsk-(?:ant-)?[a-zA-Z0-9_-]{8,}/g, "[REDACTED]")
     .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, "[REDACTED]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{8,}\b/g, "[REDACTED]")
     .replace(/\bAKIA[0-9A-Z]{16}/g, "[REDACTED]")
     .replace(/\bAIza[0-9A-Za-z_-]{35}/g, "[REDACTED]")
-    .replace(/\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+/gi, "$1$2$3[REDACTED]")
-    .replace(WEBHOOK_URL_PATTERN, "[REDACTED_URL]")
-    .replace(QUERY_SECRET_PATTERN, "$1[REDACTED]");
+    .replace(/\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"&?]+/gi, "$1$2$3[REDACTED]")
+    .replace(WEBHOOK_URL_PATTERN, "[REDACTED_URL]");
 }
 
 export function redactSecrets(value, key = "") {
@@ -134,10 +137,12 @@ export function redactSecrets(value, key = "") {
 // --- Raw input secret detection ---
 
 const RAW_SECRET_INPUT_PATTERNS = [
+  { name: "github_url_token", pattern: /https:\/\/x-access-token:[^@\s"']+@github\.com\//i },
   { name: "credential_assignment", pattern: /\b[A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret|password|credential)[A-Za-z0-9_]*\s*[:=]\s*\S+/i },
   { name: "bearer_token", pattern: /\bBearer\s+[A-Za-z0-9._~+/-]+=*/i },
   { name: "provider_key", pattern: /\bsk-(?:ant-)?[A-Za-z0-9_-]{8,}\b/i },
   { name: "github_token", pattern: /\bgh[pousr]_[A-Za-z0-9_]{8,}\b/i },
+  { name: "github_pat", pattern: /\bgithub_pat_[A-Za-z0-9_]{8,}\b/i },
   { name: "aws_access_key", pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: "google_api_key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
 ];

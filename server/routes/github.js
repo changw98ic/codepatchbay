@@ -100,6 +100,7 @@ export async function githubRoutes(fastify, opts = {}) {
       queueEntry: queue.queueEntry,
       dryRun: opts.githubDryRun === true,
       postComment: opts.githubPostComment || transport.postComment,
+      transportMode: transport.mode,
     });
 
     return reply.code(202).send({
@@ -121,6 +122,10 @@ export async function githubRoutes(fastify, opts = {}) {
       comment: {
         status: comment.status,
         posted: comment.posted,
+      },
+      transport: {
+        mode: transport.mode,
+        healthy: transport.healthy,
       },
     });
   });

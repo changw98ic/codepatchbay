@@ -533,6 +533,77 @@ async function checkServerDeps(cpbRoot) {
   }
 }
 
+async function checkGithubReadiness(hubRoot) {
+  const checks = [];
+  try {
+    const { resolveGithubTransport } = await import("./github-api.js");
+    const { loadGithubAppConfig, resolveGithubWebhookSecret } = await import("./github-app.js");
+    const { listProjects } = await import("./hub-registry.js");
+
+    // App config
+    let config = null;
+    try {
+      config = await loadGithubAppConfig(hubRoot);
+      checks.push(ok("github-app-config", "github", `GitHub App ${config.appId} configured`));
+      if (config.installationId) {
+        checks.push(ok("github-app-installation", "github", `Installation ${config.installationId} configured`));
+      } else {
+        checks.push(warn("github-app-installation", "github", "GitHub App installation id missing"));
+      }
+      if (config.privateKeyRef) {
+        checks.push(ok("github-app-private-key", "github", `Private key configured (${config.privateKeyRef.split(":")[0]}:*)`));
+      } else {
+        checks.push(warn("github-app-private-key", "github", "No private key — outbound transport will use gh CLI"));
+      }
+    } catch {
+      checks.push(error("github-app-config", "github", "GitHub App config missing or invalid"));
+    }
+
+    // Webhook secret
+    if (config?.webhookSecretRef) {
+      try {
+        resolveGithubWebhookSecret(config);
+        checks.push(ok("github-webhook-secret", "github", "Webhook secret available"));
+      } catch {
+        checks.push(error("github-webhook-secret", "github", "GitHub webhook secret unavailable"));
+      }
+    } else {
+      checks.push(warn("github-webhook-secret", "github", "No webhook secret configured"));
+    }
+
+    // Transport
+    try {
+      const transport = await resolveGithubTransport(hubRoot);
+      if (transport.mode === "api") {
+        checks.push(ok("github-transport", "github", "Transport: api"));
+      } else if (transport.mode === "gh") {
+        const reason = transport.diagnostics?.find((d) => d.level === "info")?.message || "gh CLI fallback";
+        checks.push(warn("github-transport", "github", `Transport: gh (${reason})`));
+      } else {
+        checks.push(error("github-transport", "github", "GitHub outbound transport unavailable"));
+      }
+    } catch (e) {
+      checks.push(error("github-transport", "github", `GitHub transport check failed: ${e.message}`));
+    }
+
+    // Repo bindings
+    try {
+      const projects = await listProjects(hubRoot, { enabledOnly: true });
+      const bound = projects.filter((p) => p.github?.fullName);
+      if (bound.length > 0) {
+        checks.push(ok("github-repo-bindings", "github", `${bound.length} repo(s) bound`));
+      } else {
+        checks.push(warn("github-repo-bindings", "github", "No repos bound to GitHub"));
+      }
+    } catch {
+      checks.push(warn("github-repo-bindings", "github", "Could not check repo bindings"));
+    }
+  } catch (e) {
+    checks.push(error("github-readiness", "github", `GitHub readiness check failed: ${e.message}`));
+  }
+  return checks;
+}
+
 export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
@@ -575,7 +646,8 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     ];
   }
 
-  const results = await Promise.all([
+  const [githubChecks, ...results] = await Promise.all([
+    checkGithubReadiness(resolvedHubRoot),
     checkNode(),
     checkNpm(),
     checkGit(),
@@ -593,7 +665,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkHubProjectPollution(resolvedHubRoot),
   ]);
 
-  const checks = [...results, ...setupChecks];
+  const checks = [...results, ...setupChecks, ...githubChecks];
   const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots

@@ -366,7 +366,7 @@ export class ProjectWorker {
 
   _resolveGithubTransport() {
     if (!this._githubTransportPromise) {
-      this._githubTransportPromise = resolveGithubTransport(this.hubRoot).catch(() => null);
+      this._githubTransportPromise = resolveGithubTransport(this.hubRoot);
     }
     return this._githubTransportPromise;
   }
@@ -626,6 +626,7 @@ export class ProjectWorker {
       issueCloser,
       createPullRequest: transport?.createPullRequest || null,
       pushToken,
+      transportMode: transport?.mode || null,
     });
     return {
       ...finalizer,
@@ -649,6 +650,7 @@ export class ProjectWorker {
         project: projectId,
         job,
         postComment: transport?.postComment || (() => { throw new Error("GitHub comment transport not configured"); }),
+        transportMode: transport?.mode || null,
       }).catch((error) => ({
         status: "failed",
         posted: false,

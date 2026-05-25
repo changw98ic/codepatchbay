@@ -17,10 +17,13 @@ Connect GitHub for unattended issue-driven workflow:
 ```bash
 cpb github bind myproj owner/repo
 cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET
+cpb github doctor                # verify transport before starting daemon
 cpb daemon start
 ```
 
 Then add the label `cpb` to a GitHub issue. CodePatchBay picks it up, plans, executes, verifies, and opens a draft PR.
+
+`cpb github doctor` runs nine layered checks: app config, webhook secret, installation, private key, transport mode, repo bindings, branch-push readiness, PR creation, and gh CLI auth. Use `--json` for machine-readable output.
 
 Fast install from a checkout or release tarball:
 

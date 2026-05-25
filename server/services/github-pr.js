@@ -2,10 +2,11 @@ import { appendEvent } from "./event-store.js";
 import { getJob } from "./job-store.js";
 import { buildCodePatchBayPrBody } from "./pr-body.js";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { redactSecrets } from "./secret-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,8 +61,23 @@ function parseGhPrUrl(stdout) {
   return { url: match[0], number: Number.parseInt(match[1], 10) };
 }
 
-async function runGit(cwd, args, { runCommand = execFileAsync } = {}) {
-  return runCommand("git", args, { cwd, maxBuffer: 1024 * 1024 });
+async function runGit(cwd, args, { runCommand = execFileAsync, env } = {}) {
+  const opts = { cwd, maxBuffer: 1024 * 1024 };
+  if (env) opts.env = env;
+  return runCommand("git", args, opts);
+}
+
+async function createGitAskpassScript(tmpDir, token) {
+  const askpass = path.join(tmpDir, "git-askpass.sh");
+  const script = `#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\\n' "x-access-token" ;;
+  *) printf '%s\\n' "${token}" ;;
+esac
+`;
+  await writeFile(askpass, script, "utf8");
+  await chmod(askpass, 0o700);
+  return askpass;
 }
 
 export async function preparePullRequestBranchWithGit(request, job, {
@@ -77,6 +93,9 @@ export async function preparePullRequestBranchWithGit(request, job, {
     };
   }
 
+  let tmpDir = null;
+  let askpass = null;
+
   try {
     await runGit(job.worktree, ["add", "--all"], { runCommand });
     const status = await runGit(job.worktree, ["status", "--porcelain"], { runCommand });
@@ -87,12 +106,24 @@ export async function preparePullRequestBranchWithGit(request, job, {
       const rev = await runGit(job.worktree, ["rev-parse", "HEAD"], { runCommand });
       commit = String(rev.stdout || "").trim() || null;
     }
+
     if (token && request.repo) {
-      const httpsUrl = `https://x-access-token:${token}@github.com/${request.repo}.git`;
-      await runGit(job.worktree, ["push", httpsUrl, `HEAD:refs/heads/${request.head}`], { runCommand });
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-git-askpass-"));
+      askpass = await createGitAskpassScript(tmpDir, token);
+      const pushEnv = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: askpass,
+      };
+      await runGit(job.worktree, [
+        "push",
+        `https://github.com/${request.repo}.git`,
+        `HEAD:refs/heads/${request.head}`,
+      ], { runCommand, env: pushEnv });
     } else {
       await runGit(job.worktree, ["push", remote, `HEAD:refs/heads/${request.head}`], { runCommand });
     }
+
     return {
       ok: true,
       committed: hasChanges,
@@ -111,10 +142,14 @@ export async function preparePullRequestBranchWithGit(request, job, {
         head: request.head,
       },
       error: {
-        message: error.message,
+        message: redactSecrets(error.message),
         code: error.code || null,
       },
     };
+  } finally {
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -139,7 +174,7 @@ export async function createPullRequestWithGh(request, { runCommand = execFileAs
       html_url: parsed.url,
       number: parsed.number,
       stdout: result.stdout || "",
-      stderr: result.stderr || "",
+      stderr: redactSecrets(result.stderr || ""),
     };
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -211,7 +246,7 @@ export async function openDraftPullRequest({
     };
   } catch (error) {
     return blocked("failed to open draft PR", evidence, {
-      message: error.message,
+      message: redactSecrets(error.message),
       code: error.code || null,
     });
   }
@@ -226,6 +261,7 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options
     dryRun: options.dryRun,
     createPullRequest: options.createPullRequest,
     runCommand: options.runCommand,
+    pushToken: options.pushToken,
   });
 
   if (result.status === "pr.opened") {
@@ -236,6 +272,8 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options
       prUrl: result.prUrl,
       prNumber: result.prNumber,
       artifact: options.artifact || null,
+      transportMode: options.transportMode || null,
+      transportFallback: options.transportMode === "gh",
       ts: new Date().toISOString(),
     }, { dataRoot: options.dataRoot });
   }

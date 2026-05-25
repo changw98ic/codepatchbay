@@ -14,6 +14,19 @@ export function getAuthConnectInstructions(providerId, { baseUrl = DEFAULT_BASE_
   }
 
   const providerNativeCommand = provider.auth?.connectCommand || null;
+  let providerNative = null;
+  if (providerNativeCommand) {
+    const trimmed = providerNativeCommand.trim();
+    const firstSpace = trimmed.indexOf(" ");
+    if (firstSpace > 0) {
+      providerNative = {
+        command: trimmed.slice(0, firstSpace),
+        args: trimmed.slice(firstSpace + 1).split(/\s+/).filter(Boolean),
+      };
+    } else {
+      providerNative = { command: trimmed, args: [] };
+    }
+  }
   return {
     schemaVersion: SCHEMA_VERSION,
     provider: {
@@ -23,6 +36,7 @@ export function getAuthConnectInstructions(providerId, { baseUrl = DEFAULT_BASE_
     },
     methods: provider.auth?.methods || [],
     providerNativeCommand,
+    providerNative,
     localSetupUrl: `${normalizeBaseUrl(baseUrl)}/setup/auth/${provider.id}`,
     guidance: [
       "Use the provider-native command or open the local setup URL on this machine.",
