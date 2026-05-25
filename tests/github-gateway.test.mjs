@@ -508,7 +508,7 @@ describe("GitHub issue queue entry creation", () => {
       assert.equal(result.entry.payload.body, "Redirect loops after login.");
       assert.equal(result.entry.payload.url, "https://github.com/my-org/frontend/issues/123");
       assert.equal(result.entry.payload.actor, "octocat");
-      assert.equal(result.entry.payload.workflow, "standard");
+      assert.equal(result.entry.payload.workflow, "complex");
 
       assert.match(result.queueEntry.id, /^q-/);
       assert.equal(result.queueEntry.status, "pending");
@@ -519,7 +519,9 @@ describe("GitHub issue queue entry creation", () => {
       assert.equal(result.queueEntry.metadata.candidateEntryId, result.entry.id);
       assert.equal(result.queueEntry.metadata.issueNumber, 123);
       assert.equal(result.queueEntry.metadata.repo, "my-org/frontend");
-      assert.equal(result.queueEntry.metadata.workflow, "standard");
+      assert.equal(result.queueEntry.metadata.workflow, "complex");
+      assert.equal(result.queueEntry.metadata.planMode, "full");
+      assert.equal(result.queueEntry.metadata.routing.protectedUpgrade, true);
       assert.equal(result.queueEntry.metadata.autoFinalize, true);
 
       const hubQueue = await listQueue(hubRoot, { projectId: "frontend" });
@@ -528,6 +530,42 @@ describe("GitHub issue queue entry creation", () => {
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
       await rm(sourcePath, { recursive: true, force: true });
+    }
+  });
+
+  it("writes deterministic workflow and planMode routing metadata for docs issues", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-queue-routing-"));
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-routing-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 125,
+            title: "Docs: update API examples",
+            body: "The README examples are stale.",
+            html_url: "https://github.com/my-org/frontend/issues/125",
+            labels: [{ name: "cpb" }, { name: "docs" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+      const match = matchGithubTrigger(event);
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, match);
+
+      assert.equal(result.queueEntry.metadata.workflow, "direct");
+      assert.equal(result.queueEntry.metadata.planMode, "none");
+      assert.equal(result.queueEntry.metadata.requestedRoute.workflow, "direct");
+      assert.equal(result.queueEntry.metadata.requestedRoute.planMode, "none");
+      assert.equal(result.queueEntry.metadata.routing.category, "docs");
+      assert.equal(result.queueEntry.metadata.routing.actorTrust.level, "unknown");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
     }
   });
 

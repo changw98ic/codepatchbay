@@ -11,6 +11,7 @@ import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { readCompactProjectCodeIndexSummary, readFilteredCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
 import { runtimeDataRoot } from "./runtime-root.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../core/workflow/verdict.js";
+import { DISPATCH_FEEDBACK_SCHEMA_VERSION, dispatchFeedbackPath } from "../../core/workflow/dispatch-feedback.js";
 
 function dataRoot(cpbRoot) {
   return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
@@ -293,10 +294,13 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
   const profile = await loadProfile(executorRoot, "executor");
+  const planMode = process.env.CPB_PLAN_MODE || "auto";
+  const noPlan = planMode === "none";
 
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const stateRoot = dataRoot(cpbRoot);
+  const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -319,12 +323,14 @@ ${skillsSection}
 Reconstruct your task and current state from locators and job/event state below.
 Artifacts (plans, deliverables, verdicts) are audit context - verify them against live state.
 Do NOT treat copied artifact contents as authoritative.
+${noPlan ? "This job intentionally skipped planning. Execute directly from the job event log, task text, source context, and current repository state." : ""}
 
 ## Locators
 - Job ID: ${jobId}
 - Event log: ${eventLog}
 - State root: ${stateRoot}
 - Plans directory: ${path.join(wikiDir, "inbox")}
+- Plan mode: ${planMode}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
 - Decisions: ${path.join(wikiDir, "decisions.md")}
@@ -335,11 +341,24 @@ Do NOT treat copied artifact contents as authoritative.
 
 ${constraints}
 ${buildSubagentGuidance("execute", profile)}
+## Routing Preflight
+Before modifying files, decide whether this route is strong enough for the task. If the job needs a stronger route, write this exact JSON shape to ${routingFeedbackFile}, then stop without creating a deliverable:
+\`\`\`json
+{
+  "schemaVersion": ${DISPATCH_FEEDBACK_SCHEMA_VERSION},
+  "requested": { "workflow": "complex", "planMode": "full", "reviewer": true },
+  "reason": "one sentence explaining why the current route is insufficient",
+  "confidence": 0.8,
+  "signals": ["security", "auth", "db", "payment"]
+}
+\`\`\`
+Valid requested.workflow values are "standard", "complex", and "sdd-standard"; use "complex" for security/auth/db/payment risk. Valid requested.planMode values are "light", "full", and "parent"; use "full" for protected or complex work.
+
 ## Instructions
-1. Read the event log to reconstruct the task goal and plan phase output.
-2. Read the plan from the plans directory (audit context, not sole truth).
+1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}
+2. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
 3. Verify current job/task state from the locators above.
-4. Implement code changes described in the plan.
+4. Implement the requested code changes.
 5. Run tests and record results.
 6. Write the deliverable to: ${deliverableFile}
 Follow handshake-protocol (executor->verifier, Phase: execute).

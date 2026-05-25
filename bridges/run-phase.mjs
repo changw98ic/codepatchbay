@@ -32,6 +32,7 @@ import {
 } from "../server/services/artifact-locator.js";
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import { isWorkflowName, listWorkflows } from "../core/workflow/definition.js";
+import { ROUTING_FEEDBACK_EXIT_CODE, readDispatchFeedbackFile } from "../core/workflow/dispatch-feedback.js";
 import { applyVariant } from "../runtime/apply-variant.js";
 import { runRepair, completeRepair } from "../server/services/repair-handler.js";
 import { resolveAcpLane } from "../core/acp/policy.js";
@@ -343,6 +344,19 @@ async function handleExecute(args, agent) {
   if (result.error) {
     console.error(`Execute spawn failed: ${result.error.message}`);
     return 1;
+  }
+
+  const routingFeedback = jobId
+    ? await readDispatchFeedbackFile(cpbRoot, project, jobId).catch((error) => ({ error }))
+    : null;
+  if (routingFeedback?.error) {
+    console.error(`Executor routing feedback invalid: ${routingFeedback.error.message}`);
+    return 1;
+  }
+  if (routingFeedback?.feedback) {
+    await logAppend(cpbRoot, project, `executor | execute | routing feedback requested ${routingFeedback.feedback.requested.workflow}/${routingFeedback.feedback.requested.planMode}: ${routingFeedback.feedback.reason} | ROUTE`);
+    console.error(`Executor requested routing upgrade: ${routingFeedback.feedback.reason}`);
+    return ROUTING_FEEDBACK_EXIT_CODE;
   }
 
   if (result.exitCode !== 0) {

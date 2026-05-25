@@ -18,6 +18,16 @@ const WORKCPBS = {
       verify: "run-phase.mjs",
     },
   },
+  direct: {
+    name: "direct",
+    phases: ["execute", "verify"],
+    roleForPhase: { execute: "executor", verify: "verifier" },
+    dispatchForPhase: { execute: "executor", verify: "verifier" },
+    bridgeForPhase: {
+      execute: "run-phase.mjs",
+      verify: "run-phase.mjs",
+    },
+  },
   complex: {
     name: "complex",
     phases: ["plan", "execute", "review", "verify"],
@@ -27,6 +37,17 @@ const WORKCPBS = {
       plan: "run-phase.mjs",
       execute: "run-phase.mjs",
       review: "run-phase.mjs",
+      verify: "run-phase.mjs",
+    },
+  },
+  "sdd-standard": {
+    name: "sdd-standard",
+    phases: ["plan", "execute", "verify"],
+    roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    bridgeForPhase: {
+      plan: "run-phase.mjs",
+      execute: "run-phase.mjs",
       verify: "run-phase.mjs",
     },
   },

@@ -89,7 +89,7 @@ export async function taskRoutes(fastify, opts) {
   // Trigger full pipeline
   fastify.post('/tasks/:name/pipeline', async (req) => {
     const { name } = req.params;
-    const { task, maxRetries = '3', timeout = '0', workflow = 'standard', acpProfile, uiLaneReason } = req.body || {};
+    const { task, maxRetries = '3', timeout = '0', workflow = 'standard', planMode = 'auto', acpProfile, uiLaneReason } = req.body || {};
     if (!task) throw fastify.httpErrors.badRequest('task required');
     if (acpProfile !== undefined) {
       const lane = resolveAcpLane({ profile: acpProfile, uiLaneReason });
@@ -98,7 +98,7 @@ export async function taskRoutes(fastify, opts) {
     const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
     const jobId = makeJobId();
     // Preserve ACP lane fields from API request (issue #62)
-    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow, '--job-id', jobId];
+    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow, '--plan-mode', planMode, '--job-id', jobId];
     if (acpProfile) pipelineArgs.push('--acp-profile', acpProfile);
     if (uiLaneReason) pipelineArgs.push('--ui-lane-reason', uiLaneReason);
     return spawnBridge(req.cpbRoot, name, 'run-pipeline.mjs', pipelineArgs, req.log, jobId, extraEnv);

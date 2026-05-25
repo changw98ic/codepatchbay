@@ -43,7 +43,8 @@ function usage() {
   console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/execute/verify demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
-  console.log(`  ${CYAN}index${NC} <status|refresh> <project> [--json]  Project code index`);
+  console.log(`  ${CYAN}index${NC} <status|refresh|graph|impact|context-pack> <project> [args] [--json]  Project code index and graph`);
+  console.log(`  ${CYAN}sdd${NC} <init|bootstrap|verify|drift> <project> [--json]  Spec-driven development skeleton`);
   console.log(`  ${CYAN}repair${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
@@ -112,6 +113,7 @@ const COMMANDS = {
   verdict: "verdict.js",
   "evolve-multi": "evolve-multi.js",
   index: "index.js",
+  sdd: "sdd.js",
   repair: "repair.js",
   diff: "diff.js",
   review: "review.js",
