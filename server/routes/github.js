@@ -7,8 +7,8 @@ import { normalizeGithubWebhookEvent } from "../services/github-events.js";
 import { matchGithubTrigger } from "../services/github-triggers.js";
 import { createGithubIssueQueueJob } from "../services/event-source.js";
 import { listProjects } from "../services/hub-registry.js";
+import { resolveGithubTransport } from "../services/github-api.js";
 import {
-  postGithubCommentWithGh,
   postGithubQueuedComment,
 } from "../services/github-comments.js";
 
@@ -92,13 +92,14 @@ export async function githubRoutes(fastify, opts = {}) {
       hubRoot: req.cpbHubRoot,
       sourcePath: project.sourcePath || null,
     });
+    const transport = await resolveGithubTransport(req.cpbHubRoot);
     const comment = await postGithubQueuedComment({
       repo: normalized.repo,
       issueNumber: normalized.issueNumber,
       job: queue.job,
       queueEntry: queue.queueEntry,
       dryRun: opts.githubDryRun === true,
-      postComment: opts.githubPostComment || ((request) => postGithubCommentWithGh(request)),
+      postComment: opts.githubPostComment || transport.postComment,
     });
 
     return reply.code(202).send({

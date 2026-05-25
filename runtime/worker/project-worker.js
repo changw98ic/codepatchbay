@@ -10,7 +10,8 @@ import { promisify } from "node:util";
 import { getProject, heartbeatWorker, resolveHubRoot } from "../../server/services/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../../server/services/hub-queue.js";
 import { getJob, recordFinalizerResult } from "../../server/services/job-store.js";
-import { postGithubCommentWithGh, postGithubStatusComment } from "../../server/services/github-comments.js";
+import { postGithubStatusComment } from "../../server/services/github-comments.js";
+import { resolveGithubTransport } from "../../server/services/github-api.js";
 import { postSlackStatusComment } from "../../server/services/slack-comments.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import {
@@ -355,11 +356,19 @@ export class ProjectWorker {
     this._heartbeatTimer = null;
     this._stopRequested = false;
     this._activeEntryId = null;
+    this._githubTransportPromise = null;
     this.project = null;
   }
 
   requestStop() {
     this._stopRequested = true;
+  }
+
+  _resolveGithubTransport() {
+    if (!this._githubTransportPromise) {
+      this._githubTransportPromise = resolveGithubTransport(this.hubRoot).catch(() => null);
+    }
+    return this._githubTransportPromise;
   }
 
   async init() {
@@ -591,6 +600,7 @@ export class ProjectWorker {
       } catch {}
     }
 
+    const transport = await this._resolveGithubTransport();
     const finalizer = await this._finalizerFn({
       cpbRoot: this.cpbRoot,
       project: projectId,
@@ -599,6 +609,7 @@ export class ProjectWorker {
       sourcePath,
       mode: this.autoFinalizerMode,
       issueCloser: this._issueCloser,
+      createPullRequest: transport?.createPullRequest || null,
     });
     return {
       ...finalizer,
@@ -615,16 +626,19 @@ export class ProjectWorker {
     const resolved = await this.resolveCompletedJob(projectId, result);
     const job = resolved?.job || null;
     if (!job?.sourceContext) return null;
-    if (job.sourceContext.type === "github_issue") return postGithubStatusComment({
-      cpbRoot: this.cpbRoot,
-      project: projectId,
-      job,
-      postComment: (request) => postGithubCommentWithGh(request),
-    }).catch((error) => ({
-      status: "failed",
-      posted: false,
-      error: { message: error.message },
-    }));
+    if (job.sourceContext.type === "github_issue") {
+      const transport = await this._resolveGithubTransport();
+      return postGithubStatusComment({
+        cpbRoot: this.cpbRoot,
+        project: projectId,
+        job,
+        postComment: transport?.postComment || (() => { throw new Error("GitHub comment transport not configured"); }),
+      }).catch((error) => ({
+        status: "failed",
+        posted: false,
+        error: { message: error.message },
+      }));
+    }
     if (job.sourceContext.type === "slack" || job.sourceContext.channel === "slack") {
       return this._slackNotifierFn({
         cpbRoot: this.cpbRoot,
