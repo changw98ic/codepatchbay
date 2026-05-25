@@ -3,7 +3,12 @@ import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { enqueue as enqueueHubQueue } from "./hub-queue.js";
 import { getProject } from "./hub-registry.js";
-import { triageChannelCommand, triageGithubIssue } from "./issue-triage.js";
+import {
+  triageChannelCommand,
+  triageChannelCommandWithAcp,
+  triageGithubIssue,
+  triageGithubIssueWithAcp,
+} from "./issue-triage.js";
 import { bootstrapSddFromIssue } from "./sdd-automation.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
@@ -173,11 +178,20 @@ function requestedRoute(route) {
 
 function routingMetadata(route) {
   if (!route) return null;
+  const acpTriager = route.acpTriager
+    ? {
+        agent: route.acpTriager.agent || null,
+        error: route.acpTriager.error || null,
+        used: Boolean(route.acpTriager.raw && !route.acpTriager.error),
+      }
+    : null;
   return {
+    triageMode: route.triageMode || null,
     category: route.effectiveRoute?.category || route.requestedRoute?.category || route.requested?.category || null,
     requested: requestedRoute(route),
     ruleRoute: route.ruleRoute || null,
     acpRoute: route.acpRoute || null,
+    acpTriager,
     effective: effectiveRoute(route),
     effectiveRoute: route.effectiveRoute || null,
     protectedUpgrade: route.protectedUpgrade ?? ((route.protectedScopes || []).length > 0 || Boolean(route.actualDiffRisk?.protected)),
@@ -187,6 +201,75 @@ function routingMetadata(route) {
     actorTrust: route.actorTrust || null,
     downgradeAllowed: route.downgradeAllowed ?? null,
     reasons: route.reasons || [],
+  };
+}
+
+function normalizeTriageMode(mode, fallback = "rules") {
+  const value = String(mode || fallback || "rules").trim().toLowerCase();
+  if (value === "acp" || value === "auto" || value === "rules" || value === "none") return value;
+  return fallback;
+}
+
+function acpEnabledForAuto() {
+  return process.env.CPB_TRIAGE_ACP === "1" || process.env.CPB_TRIAGE_MODE === "acp";
+}
+
+async function resolveGithubRoute(cpbRoot, event, {
+  hubRoot,
+  triageMode,
+  acpPool,
+  triageAgent = "claude",
+  triageTimeoutMs = 60_000,
+  triageCwd = process.cwd(),
+} = {}) {
+  const requestedMode = normalizeTriageMode(
+    triageMode || process.env.CPB_GITHUB_TRIAGE_MODE || process.env.CPB_TRIAGE_MODE,
+    "rules",
+  );
+  const effectiveMode = requestedMode === "auto"
+    ? (acpEnabledForAuto() ? "acp" : "rules")
+    : requestedMode;
+  if (effectiveMode === "acp") {
+    return triageGithubIssueWithAcp(event, {
+      cpbRoot,
+      hubRoot,
+      cwd: triageCwd,
+      agent: triageAgent,
+      timeoutMs: triageTimeoutMs,
+      acpPool,
+    });
+  }
+  return {
+    ...triageGithubIssue(event),
+    triageMode: effectiveMode,
+  };
+}
+
+async function resolveChannelRoute(cpbRoot, command, context, {
+  hubRoot,
+  triageMode,
+  acpPool,
+  triageAgent = "claude",
+  triageTimeoutMs = 60_000,
+  triageCwd = process.cwd(),
+} = {}) {
+  const requestedMode = normalizeTriageMode(command.triage || triageMode || process.env.CPB_CHANNEL_TRIAGE_MODE || process.env.CPB_TRIAGE_MODE, "rules");
+  const effectiveMode = requestedMode === "auto"
+    ? (acpEnabledForAuto() ? "acp" : "rules")
+    : requestedMode;
+  if (effectiveMode === "acp") {
+    return triageChannelCommandWithAcp(command, context, {
+      cpbRoot,
+      hubRoot,
+      cwd: triageCwd,
+      agent: triageAgent,
+      timeoutMs: triageTimeoutMs,
+      acpPool,
+    });
+  }
+  return {
+    ...triageChannelCommand(command, context),
+    triageMode: effectiveMode,
   };
 }
 
@@ -317,6 +400,10 @@ export async function createGithubIssueQueueJob(
     enqueueFn = enqueueHubQueue,
     sourcePath = null,
     getProjectFn = getProject,
+    triageMode = null,
+    acpPool = null,
+    triageAgent = "claude",
+    triageTimeoutMs = 60_000,
   } = {},
 ) {
   if (!event || event.status !== "ok") {
@@ -329,7 +416,14 @@ export async function createGithubIssueQueueJob(
     throw new Error("GitHub event missing project id");
   }
 
-  const route = triageGithubIssue(event);
+  const route = await resolveGithubRoute(cpbRoot, event, {
+    hubRoot,
+    triageMode,
+    acpPool,
+    triageAgent,
+    triageTimeoutMs,
+    triageCwd: sourcePath || process.cwd(),
+  });
   const payload = githubQueuePayload(event, match, route);
   const entry = await ingestEvent(cpbRoot, {
     source: "github-issue",
@@ -469,6 +563,10 @@ export async function createChannelQueueJob(
     enqueueFn = enqueueHubQueue,
     sourcePath = context.sourcePath || null,
     getProjectFn = getProject,
+    triageMode = null,
+    acpPool = null,
+    triageAgent = "claude",
+    triageTimeoutMs = 60_000,
   } = {},
 ) {
   if (!command || !["run", "issue"].includes(command.type)) {
@@ -479,7 +577,14 @@ export async function createChannelQueueJob(
   }
 
   const source = context.channel || "channel";
-  const route = triageChannelCommand(command, context);
+  const route = await resolveChannelRoute(cpbRoot, command, context, {
+    hubRoot,
+    triageMode,
+    acpPool,
+    triageAgent,
+    triageTimeoutMs,
+    triageCwd: sourcePath || context.sourcePath || process.cwd(),
+  });
   const payload = channelQueuePayload(command, context, route);
   const entry = await ingestEvent(cpbRoot, {
     source,

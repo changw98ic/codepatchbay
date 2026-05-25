@@ -889,6 +889,9 @@ export async function runPipeline({
   let parentPlanCache = null;
   if (planDecision.planMode === "parent") {
     parentPlanCache = await resolveParentPlanCache(cpbRoot, { project, task, sourceContext });
+    process.env.CPB_PARENT_PLAN_CACHE_JSON = JSON.stringify(parentPlanCache);
+  } else {
+    delete process.env.CPB_PARENT_PLAN_CACHE_JSON;
   }
   const jobSourceContext = parentPlanCache
     ? { ...(sourceContext || {}), parentPlan: parentPlanCache }

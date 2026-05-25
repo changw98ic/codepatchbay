@@ -16,8 +16,13 @@ function actorLogin(payload = {}) {
   return payload.sender?.login || payload.actor?.login || payload.sender?.name || null;
 }
 
+function issueAuthorAssociation(issue = {}) {
+  return issue.author_association || issue.authorAssociation || issue.author?.association || null;
+}
+
 function baseEnvelope({ event, delivery, projectId, payload, type, issue, url, commandText = null }) {
   const normalizedIssue = issue ? normalizeGithubIssue(issue, { repo: repoFullName(payload), projectId }) : null;
+  const authorAssociation = issue ? issueAuthorAssociation(issue) : null;
   return {
     status: "ok",
     type,
@@ -33,8 +38,10 @@ function baseEnvelope({ event, delivery, projectId, payload, type, issue, url, c
     url: url || normalizedIssue?.url || null,
     title: normalizedIssue?.title || null,
     body: normalizedIssue?.body || null,
+    authorAssociation,
     raw: {
       action: payload.action || null,
+      authorAssociation,
     },
   };
 }

@@ -19,6 +19,52 @@ function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null
   });
 }
 
+function withMode(decision, triageMode) {
+  return {
+    ...decision,
+    triageMode,
+  };
+}
+
+function githubTriageInput(event = {}, requestedRoute = null) {
+  return {
+    labels: event.labels,
+    title: event.title,
+    body: event.body,
+    actor: event.actor,
+    authorAssociation: event.raw?.authorAssociation || event.authorAssociation || null,
+    requestedRoute,
+  };
+}
+
+function channelRequestedRoute(command = {}) {
+  const hasRequestedRoute = Boolean(
+    command.workflowRequested
+      || command.planModeRequested
+      || (command.workflow && command.workflow !== "standard"),
+  );
+  return hasRequestedRoute
+    ? routeFromWorkflowPlan({
+        workflow: command.workflow,
+        planMode: command.planMode,
+        reason: "channel command requested route",
+        source: "command",
+      })
+    : null;
+}
+
+function channelTriageInput(command = {}, context = {}, requested = null) {
+  return {
+    title: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
+    task: command.task,
+    commandText: context.commandText,
+    actor: context.actor,
+    actorName: context.actorName,
+    authorAssociation: context.authorAssociation || null,
+    requestedRoute: requested,
+  };
+}
+
 export function buildAcpTriagerPrompt(input = {}, ruleDecision = null) {
   const rules = ruleDecision || classifyIssueRules(input);
   return [
@@ -125,37 +171,28 @@ export async function triageIssueWithAcp(input = {}, {
 }
 
 export function triageGithubIssue(event = {}, { requestedRoute = null, acpRoute = null } = {}) {
-  return triageIssue({
-    labels: event.labels,
-    title: event.title,
-    body: event.body,
-    actor: event.actor,
-    authorAssociation: event.raw?.authorAssociation || event.authorAssociation || null,
+  return withMode(triageIssue(githubTriageInput(event, requestedRoute), { requestedRoute, acpRoute }), "rules");
+}
+
+export async function triageGithubIssueWithAcp(event = {}, options = {}) {
+  const requestedRoute = options.requestedRoute || null;
+  const decision = await triageIssueWithAcp(githubTriageInput(event, requestedRoute), {
+    ...options,
     requestedRoute,
-  }, { requestedRoute, acpRoute });
+  });
+  return withMode(decision, "acp");
 }
 
 export function triageChannelCommand(command = {}, context = {}) {
-  const hasRequestedRoute = Boolean(
-    command.workflowRequested
-      || command.planModeRequested
-      || (command.workflow && command.workflow !== "standard"),
-  );
-  const requested = hasRequestedRoute
-    ? routeFromWorkflowPlan({
-        workflow: command.workflow,
-        planMode: command.planMode,
-        reason: "channel command requested route",
-        source: "command",
-      })
-    : null;
-  return triageIssue({
-    title: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
-    task: command.task,
-    commandText: context.commandText,
-    actor: context.actor,
-    actorName: context.actorName,
-    authorAssociation: context.authorAssociation || null,
+  const requested = channelRequestedRoute(command);
+  return withMode(triageIssue(channelTriageInput(command, context, requested), { requestedRoute: requested }), command.triage || "rules");
+}
+
+export async function triageChannelCommandWithAcp(command = {}, context = {}, options = {}) {
+  const requested = channelRequestedRoute(command);
+  const decision = await triageIssueWithAcp(channelTriageInput(command, context, requested), {
+    ...options,
     requestedRoute: requested,
-  }, { requestedRoute: requested });
+  });
+  return withMode(decision, "acp");
 }

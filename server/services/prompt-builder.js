@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   getWorkflow,
@@ -23,6 +23,63 @@ async function preRead(filePath) {
   } catch {
     return `[file not found: ${filePath}]`;
   }
+}
+
+function parseJsonEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function plannerModeSection() {
+  const planMode = process.env.CPB_PLAN_MODE || "auto";
+  if (planMode === "light") {
+    return `## Light Plan Mode
+Produce a concise plan for low-risk work. Keep the step count small, avoid broad research, and include only acceptance criteria needed to execute safely.`;
+  }
+  if (planMode === "parent") {
+    const cache = parseJsonEnv("CPB_PARENT_PLAN_CACHE_JSON");
+    const cacheLines = cache
+      ? [
+          `- Parent plan group: ${cache.planGroupId || "unavailable"}`,
+          `- Plan cache key: ${cache.planCacheKey || "unavailable"}`,
+          `- Cache hit: ${cache.cacheHit ? "yes" : "no"}`,
+        ].join("\n")
+      : "- Parent plan cache metadata unavailable.";
+    return `## Parent Plan Mode
+Create a reusable parent plan that can guide child task planning and future cache reuse. Include task boundaries, shared assumptions, and merge/reuse notes.
+${cacheLines}`;
+  }
+  if (planMode === "full") {
+    return `## Full Plan Mode
+Produce a complete plan with explicit risks, acceptance criteria, and verification steps.`;
+  }
+  return "";
+}
+
+async function latestContextPackPath(cpbRoot) {
+  const dir = path.join(dataRoot(cpbRoot), "context-packs");
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const name of entries) {
+    if (!/^context-pack-.*\.md$/.test(name)) continue;
+    const fullPath = path.join(dir, name);
+    try {
+      const info = await stat(fullPath);
+      if (info.isFile()) candidates.push({ path: fullPath, mtimeMs: info.mtimeMs });
+    } catch {}
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
+  return candidates[0]?.path || null;
 }
 
 export async function buildProjectCodeIndexSection(cpbRoot, project, taskDescription) {
@@ -163,6 +220,7 @@ export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, p
   const handshake = await preRead(path.join(executorRoot, "wiki", "system", "handshake-protocol.md"));
   const planTpl = await preRead(path.join(executorRoot, "templates", "handoff", "plan-to-execute.md"));
   const indexSection = await buildProjectCodeIndexSection(cpbRoot, project, task);
+  const planModeGuidance = plannerModeSection();
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
   const constraints = dangerous
@@ -182,6 +240,8 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 ${constraints}
 
 ${headlessEscalationSection()}
+
+${planModeGuidance}
 
 ## Project Context
 ${projContext}
@@ -301,6 +361,10 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const stateRoot = dataRoot(cpbRoot);
   const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
+  const latestContextPack = await latestContextPackPath(cpbRoot);
+  const contextPackLocator = latestContextPack
+    ? `- Latest context pack: ${latestContextPack}`
+    : `- Latest context pack: ${path.join(stateRoot, "context-packs")} (none found)`;
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -335,6 +399,7 @@ ${noPlan ? "This job intentionally skipped planning. Execute directly from the j
 - Project context: ${path.join(wikiDir, "context.md")}
 - Decisions: ${path.join(wikiDir, "decisions.md")}
 - Project metadata: ${path.join(wikiDir, "project.json")}
+${contextPackLocator}
 - Role definition: ${path.join(executorRoot, "profiles", "executor", "soul.md")}
 - Deliverable template: ${path.join(executorRoot, "templates", "handoff", "execute-to-review.md")}
 - Handshake format: ${path.join(executorRoot, "wiki", "system", "handshake-protocol.md")}
@@ -356,11 +421,12 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 
 ## Instructions
 1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}
-2. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
-3. Verify current job/task state from the locators above.
-4. Implement the requested code changes.
-5. Run tests and record results.
-6. Write the deliverable to: ${deliverableFile}
+2. ${latestContextPack ? "Read the latest context pack locator above before selecting files to inspect." : "If a context pack appears under the context-packs directory, read it before selecting files to inspect."}
+3. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
+4. Verify current job/task state from the locators above.
+5. Implement the requested code changes.
+6. Run tests and record results.
+7. Write the deliverable to: ${deliverableFile}
 Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.`;
 }
