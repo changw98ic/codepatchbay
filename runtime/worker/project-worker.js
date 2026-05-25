@@ -80,6 +80,54 @@ function finalizerShouldFailQueue(result) {
   return !(result.status === "skipped" && result.code === "NO_CHANGES");
 }
 
+function workflowForEntry(entry, fallback) {
+  const candidate = entry?.metadata?.workflow || fallback || "standard";
+  return isWorkflowName(candidate) ? candidate : fallback || "standard";
+}
+
+function sourceContextFromQueueEntry(entry) {
+  const metadata = entry?.metadata || {};
+  const queueEntryId = entry?.id || null;
+  if (metadata.source === "github" || entry?.type === "github_issue" || metadata.issueUrl) {
+    return {
+      type: "github_issue",
+      queueEntryId,
+      issueNumber: metadata.issueNumber ?? null,
+      issueUrl: metadata.issueUrl ?? null,
+      repo: metadata.repo ?? metadata.repository ?? metadata.repositoryFullName ?? null,
+      issueTitle: metadata.issueTitle ?? null,
+      actor: metadata.actor ?? null,
+      delivery: metadata.delivery ?? null,
+      commandText: metadata.commandText ?? null,
+      triggerReason: metadata.triggerReason ?? null,
+      failedQueueId: metadata.originQueueId ?? null,
+      failedJobId: metadata.originJobId ?? null,
+      failureArtifact: metadata.failureArtifact ?? null,
+    };
+  }
+
+  const channel = metadata.channel || metadata.source || null;
+  if (channel) {
+    return {
+      type: channel,
+      channel,
+      queueEntryId,
+      actor: metadata.actor ?? null,
+      actorName: metadata.actorName ?? null,
+      teamId: metadata.teamId ?? null,
+      channelId: metadata.channelId ?? null,
+      channelName: metadata.channelName ?? null,
+      commandText: metadata.commandText ?? null,
+      triggerId: metadata.triggerId ?? null,
+      issueNumber: metadata.issueNumber ?? null,
+      issueUrl: metadata.issueUrl ?? null,
+      repo: metadata.repo ?? null,
+    };
+  }
+
+  return null;
+}
+
 async function defaultIssueCloser({ repo, number, jobId, commit }) {
   const comment = [
     `Closed by CodePatchbay job ${jobId}.`,
@@ -291,7 +339,7 @@ export class ProjectWorker {
     this.autoFinalizerMode = normalizeAutoFinalizerMode(
       opts.autoFinalizerMode
         || process.env.CPB_AUTOFINALIZER_MODE
-        || (this.requireIssueLink ? "remote" : "off"),
+        || "remote",
     );
     this._getProjectFn = opts.getProjectFn || null;
     this._runPipelineFn = opts.runPipelineFn || null;
@@ -462,7 +510,8 @@ export class ProjectWorker {
     }
 
     // Blocked workflow does not launch agents — skip preflight check
-    const availability = this.workflow === "blocked"
+    const workflow = workflowForEntry(entry, this.workflow);
+    const availability = workflow === "blocked"
       ? { available: true, attempt: 0, attempts: 0, health: { codex: true, claude: true, checks: {} } }
       : await this.waitForAgentAvailability();
     if (!availability.available) {
@@ -489,7 +538,7 @@ export class ProjectWorker {
 
     const result = await this.runPipeline(entry, sourcePath, dispatchId, projectId);
 
-    if (result.ok && this.autoFinalizerMode !== "off" && entry.metadata?.autoFinalize !== false) {
+    if (result.ok && this.autoFinalizerMode !== "off" && entry.metadata?.autoFinalize === true) {
       const finalizer = await this.finalizeEntry({ entry, sourcePath, projectId, result });
       result.finalizer = finalizer;
       if (finalizerShouldFailQueue(finalizer)) {
@@ -591,12 +640,14 @@ export class ProjectWorker {
     if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId, worktree);
 
     const projectId = overrideProjectId || this.project?.id;
+    const workflow = workflowForEntry(entry, this.workflow);
+    const sourceContext = sourceContextFromQueueEntry(entry);
     return new Promise((resolve) => {
       const args = [
         path.join(this.executorRoot, "bridges", "run-pipeline.mjs"),
         "--project", projectId,
         "--task", entry.description || entry.id,
-        "--workflow", this.workflow,
+        "--workflow", workflow,
       ];
       if (sourcePath) args.push("--source-path", sourcePath);
       if (dispatchId) args.push("--dispatch-id", dispatchId);
@@ -624,6 +675,7 @@ export class ProjectWorker {
         CPB_INDEX_SNAPSHOT_JSON: entry.metadata?.indexSnapshot
           ? JSON.stringify(entry.metadata.indexSnapshot)
           : "",
+        CPB_SOURCE_CONTEXT_JSON: sourceContext ? JSON.stringify(sourceContext) : "",
       };
       if (useWorktree) env.CPB_USE_WORKTREE = "1";
       else delete env.CPB_USE_WORKTREE;
@@ -782,7 +834,7 @@ export async function main() {
     workflow: opts.workflow,
     worktreeMode: opts.worktreeMode,
     autoFinalizerMode: opts.autoFinalizerMode,
-    requireIssueLink: true,
+    requireIssueLink: false,
     cpbRoot: opts.cpbRoot,
     executorRoot: opts.executorRoot,
     hubRoot: opts.hubRoot,

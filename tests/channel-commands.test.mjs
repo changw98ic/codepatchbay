@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import Fastify from "fastify";
 
 import { channelRoutes } from "../server/routes/channels.js";
-import { listCandidates } from "../server/services/event-source.js";
+import { createChannelQueueJob, listCandidates } from "../server/services/event-source.js";
+import { listQueue } from "../server/services/hub-queue.js";
 import { createJob, failJob, FAILURE_CODES, getJob } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
 import { CHANNEL_COMMAND_HELP, parseChannelCommand } from "../server/services/channel-commands.js";
@@ -47,8 +48,10 @@ function slackBody(params) {
 
 async function buildChannelApp(cpbRoot, routeOptions = {}) {
   const app = Fastify({ logger: false });
+  const hubRoot = routeOptions.hubRoot || cpbRoot;
   app.addHook("onRequest", (req, _reply, done) => {
     req.cpbRoot = cpbRoot;
+    req.cpbHubRoot = hubRoot;
     done();
   });
   await app.register(channelRoutes, { prefix: "/api", ...routeOptions });
@@ -220,10 +223,12 @@ describe("Slack channel command skeleton", () => {
     }
   });
 
-  it("creates a queue entry and job for signed Slack run commands with action metadata", async () => {
+  it("creates a candidate and Hub Queue entry for signed Slack run commands without pre-creating a job", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-run-"));
+    const hubRoot = path.join(cpbRoot, "hub");
     const app = await buildChannelApp(cpbRoot, {
       slackSigningSecret: "slack-signing-secret",
+      hubRoot,
     });
     try {
       const timestamp = String(Math.floor(Date.now() / 1000));
@@ -250,27 +255,138 @@ describe("Slack channel command skeleton", () => {
       const body = JSON.parse(response.body);
       assert.equal(body.ok, true);
       assert.equal(body.action, "queued");
-      assert.equal(body.job.project, "frontend");
-      assert.match(body.job.jobId, /^job-/);
-      assert.equal(body.queueEntry.source, "slack");
-      assert.equal(body.actions.viewRun.label, "View Run");
-      assert.equal(body.actions.cancel.command, `/cpb cancel ${body.job.jobId}`);
+      assert.equal(body.job, null);
+      assert.match(body.queueEntry.id, /^q-/);
+      assert.equal(body.queueEntry.status, "pending");
+      assert.equal(body.queueEntry.projectId, "frontend");
+      assert.equal(body.queueEntry.description, "fix login redirect");
+      assert.equal(body.queueEntry.metadata.source, "slack");
+      assert.equal(body.queueEntry.metadata.workflow, "strict");
+      assert.equal(body.candidateEntry.source, "slack");
+      assert.equal(body.actions.cancel.command, `/cpb cancel ${body.queueEntry.id}`);
 
       const candidates = await listCandidates(cpbRoot, { source: "slack" });
       assert.equal(candidates.length, 1);
-      assert.equal(candidates[0].status, "dispatched");
+      assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
 
-      const job = await getJob(cpbRoot, "frontend", body.job.jobId);
-      assert.equal(job.task, "fix login redirect");
-      assert.equal(job.workflow, "strict");
-      assert.equal(job.queueEntryId, body.queueEntry.id);
-      assert.equal(job.sourceContext.type, "slack");
-      assert.equal(job.sourceContext.channelId, "C123");
-      assert.equal(job.sourceContext.actor, "U123");
+      const queued = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0].id, body.queueEntry.id);
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("supports Slack status and cancel for queued q-id entries before a job exists", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-queue-actions-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+      hubRoot,
+    });
+    try {
+      async function slackCommand(text) {
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const rawBody = slackBody({
+          command: "/cpb",
+          text,
+          user_id: "U123",
+          user_name: "alice",
+          channel_id: "C123",
+          team_id: "T123",
+        });
+        return app.inject({
+          method: "POST",
+          url: "/api/channels/slack/commands",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+          },
+          payload: rawBody,
+        });
+      }
+
+      const queued = JSON.parse((await slackCommand('run frontend "fix login redirect"')).body);
+      const queueId = queued.queueEntry.id;
+
+      const status = await slackCommand(`status ${queueId}`);
+      assert.equal(status.statusCode, 200);
+      const statusBody = JSON.parse(status.body);
+      assert.equal(statusBody.ok, true);
+      assert.equal(statusBody.action, "status");
+      assert.equal(statusBody.status.queueEntryId, queueId);
+      assert.equal(statusBody.status.project, "frontend");
+      assert.equal(statusBody.status.status, "pending");
+      assert.equal(statusBody.actions.cancel.command, `/cpb cancel ${queueId}`);
+
+      const cancel = await slackCommand(`cancel ${queueId}`);
+      assert.equal(cancel.statusCode, 200);
+      const cancelBody = JSON.parse(cancel.body);
+      assert.equal(cancelBody.ok, true);
+      assert.equal(cancelBody.action, "cancelled");
+      assert.equal(cancelBody.queueEntry.id, queueId);
+      assert.equal(cancelBody.queueEntry.status, "cancelled");
+
+      const entries = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].status, "cancelled");
+      assert.match(entries[0].metadata.cancelReason, /Slack/);
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the project worker claim channel-created Hub Queue entries before any job exists", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-worker-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-source-"));
+    try {
+      const result = await createChannelQueueJob(
+        cpbRoot,
+        { type: "run", project: "frontend", task: "fix login redirect", workflow: "strict" },
+        {
+          channel: "slack",
+          actor: "U123",
+          channelId: "C123",
+          commandText: "/cpb run frontend --workflow strict \"fix login redirect\"",
+        },
+        { hubRoot, sourcePath },
+      );
+      assert.equal(result.job, null);
+
+      const { ProjectWorker } = await import("../runtime/worker/project-worker.js");
+      let captured = null;
+      const worker = new ProjectWorker({
+        cpbRoot,
+        hubRoot,
+        pool: true,
+        once: true,
+        workerId: "worker-channel-test",
+        agentHealthFn: async () => ({ codex: true, claude: true, checks: {} }),
+        getProjectFn: async () => null,
+        runPipelineFn: async (entry, entrySourcePath, _dispatchId, projectId, worktree) => {
+          captured = { entry, entrySourcePath, projectId, worktree };
+          return { ok: true, job: null };
+        },
+      });
+
+      const run = await worker.run();
+      assert.equal(run.entry.id, result.queueEntry.id);
+      assert.equal(captured.projectId, "frontend");
+      assert.equal(captured.entry.description, "fix login redirect");
+      assert.equal(captured.entry.metadata.workflow, "strict");
+      assert.equal(captured.entrySourcePath, sourcePath);
+      assert.equal(captured.worktree.useWorktree, true);
+
+      const queued = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(queued[0].status, "completed");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+      await rm(sourcePath, { recursive: true, force: true });
     }
   });
 
@@ -550,9 +666,11 @@ describe("Slack channel command skeleton", () => {
       const issueBody = JSON.parse(issue.body);
       assert.equal(issueBody.ok, true);
       assert.equal(issueBody.action, "queued");
-      assert.equal(issueBody.job.project, "frontend");
-      assert.equal(issueBody.queueEntry.payload.issueNumber, 42);
-      assert.match(issueBody.job.task, /GitHub issue #42/);
+      assert.equal(issueBody.job, null);
+      assert.equal(issueBody.queueEntry.projectId, "frontend");
+      assert.equal(issueBody.queueEntry.description, "GitHub issue #42");
+      assert.equal(issueBody.queueEntry.metadata.issueNumber, 42);
+      assert.equal(issueBody.candidateEntry.payload.issueNumber, 42);
 
       assert.equal(approve.statusCode, 200);
       assert.equal(JSON.parse(approve.body).action, "approved");
@@ -677,11 +795,13 @@ describe("Discord channel command skeleton", () => {
       assert.equal(body.ok, true);
       assert.equal(body.channel, "discord");
       assert.equal(body.action, "queued");
-      assert.equal(body.job.project, "frontend");
-      assert.match(body.job.jobId, /^job-/);
+      assert.equal(body.job, null);
+      assert.equal(body.queueEntry.projectId, "frontend");
+      assert.match(body.queueEntry.id, /^q-/);
 
       const candidates = await listCandidates(cpbRoot, { source: "discord" });
       assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
     } finally {
       await app.close();
@@ -720,11 +840,13 @@ describe("Feishu and DingTalk unified channel queue", () => {
       assert.equal(body.ok, true);
       assert.equal(body.channel, "feishu");
       assert.equal(body.action, "queued");
-      assert.equal(body.job.project, "frontend");
-      assert.equal(body.queueEntry.source, "feishu");
+      assert.equal(body.job, null);
+      assert.equal(body.queueEntry.projectId, "frontend");
+      assert.equal(body.queueEntry.metadata.source, "feishu");
 
       const candidates = await listCandidates(cpbRoot, { source: "feishu" });
       assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
     } finally {
       await app.close();
@@ -760,10 +882,13 @@ describe("Feishu and DingTalk unified channel queue", () => {
       assert.equal(body.ok, true);
       assert.equal(body.channel, "dingtalk");
       assert.equal(body.action, "queued");
-      assert.equal(body.job.project, "frontend");
+      assert.equal(body.job, null);
+      assert.equal(body.queueEntry.projectId, "frontend");
+      assert.equal(body.queueEntry.metadata.source, "dingtalk");
 
       const candidates = await listCandidates(cpbRoot, { source: "dingtalk" });
       assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
     } finally {
       await app.close();

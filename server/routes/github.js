@@ -7,7 +7,6 @@ import { normalizeGithubWebhookEvent } from "../services/github-events.js";
 import { matchGithubTrigger } from "../services/github-triggers.js";
 import { createGithubIssueQueueJob } from "../services/event-source.js";
 import { listProjects } from "../services/hub-registry.js";
-import { enqueue as enqueueHubQueue } from "../services/hub-queue.js";
 import {
   postGithubCommentWithGh,
   postGithubQueuedComment,
@@ -89,33 +88,15 @@ export async function githubRoutes(fastify, opts = {}) {
       return reply.code(202).send({ ...base, normalized, projectId: project.id, match });
     }
 
-    const queue = await createGithubIssueQueueJob(req.cpbRoot || req.cpbHubRoot, normalized, match);
-    let hubQueue = null;
-    if (project.sourcePath) {
-      hubQueue = await enqueueHubQueue(req.cpbHubRoot, {
-        projectId: project.id,
-        sourcePath: project.sourcePath,
-        priority: (normalized.labels || []).some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2",
-        description: normalized.title || `GitHub issue #${normalized.issueNumber}`,
-        type: "github_issue",
-        metadata: {
-          source: "github",
-          queueJobId: queue.job?.jobId || null,
-          candidateEntryId: queue.entry?.id || null,
-          issueNumber: normalized.issueNumber,
-          issueUrl: normalized.url,
-          repo: normalized.repo,
-          issueTitle: normalized.title,
-          workflow: match.workflow || "standard",
-          autoFinalize: true,
-        },
-      }).catch(() => null);
-    }
+    const queue = await createGithubIssueQueueJob(req.cpbRoot || req.cpbHubRoot, normalized, match, {
+      hubRoot: req.cpbHubRoot,
+      sourcePath: project.sourcePath || null,
+    });
     const comment = await postGithubQueuedComment({
       repo: normalized.repo,
       issueNumber: normalized.issueNumber,
       job: queue.job,
-      queueEntry: queue.entry,
+      queueEntry: queue.queueEntry,
       dryRun: opts.githubDryRun === true,
       postComment: opts.githubPostComment || ((request) => postGithubCommentWithGh(request)),
     });
@@ -127,13 +108,14 @@ export async function githubRoutes(fastify, opts = {}) {
       match,
       queue: {
         status: queue.status,
-        entryId: queue.entry?.id || null,
+        candidateEntryId: queue.entry?.id || null,
+        queueEntryId: queue.queueEntry?.id || null,
         jobId: queue.job?.jobId || null,
       },
-      hubQueue: hubQueue ? {
-        id: hubQueue.id,
-        status: hubQueue.status,
-        projectId: hubQueue.projectId,
+      hubQueue: queue.queueEntry ? {
+        id: queue.queueEntry.id,
+        status: queue.queueEntry.status,
+        projectId: queue.queueEntry.projectId,
       } : null,
       comment: {
         status: comment.status,

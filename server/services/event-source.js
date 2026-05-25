@@ -1,8 +1,8 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
-import { appendEvent } from "./event-store.js";
-import { createJob } from "./job-store.js";
+import { enqueue as enqueueHubQueue } from "./hub-queue.js";
+import { getProject } from "./hub-registry.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -177,7 +177,59 @@ function githubQueuePayload(event, match) {
   };
 }
 
-export async function createGithubIssueQueueJob(cpbRoot, event, match, { createJobFn = createJob } = {}) {
+function githubHubPriority(labels = []) {
+  return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2";
+}
+
+async function resolveRegisteredProject(hubRoot, projectId, getProjectFn) {
+  if (!hubRoot || !projectId || typeof getProjectFn !== "function") return null;
+  try {
+    return await getProjectFn(hubRoot, projectId);
+  } catch {
+    return null;
+  }
+}
+
+function sourcePathForQueue(explicitSourcePath, project) {
+  return explicitSourcePath || project?.sourcePath || null;
+}
+
+function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath }) {
+  return {
+    projectId: event.projectId,
+    sourcePath,
+    priority: githubHubPriority(event.labels),
+    description: payload.title || `GitHub issue #${payload.issueNumber}`,
+    type: "github_issue",
+    metadata: {
+      source: "github",
+      candidateEntryId: candidateEntry.id,
+      queueDedupeKey: candidateEntry.dedupeKey,
+      issueNumber: payload.issueNumber,
+      issueUrl: payload.url,
+      repo: payload.repo,
+      issueTitle: payload.title,
+      actor: payload.actor,
+      delivery: payload.delivery,
+      commandText: payload.commandText,
+      triggerReason: payload.triggerReason,
+      workflow: match.workflow || "standard",
+      autoFinalize: true,
+    },
+  };
+}
+
+export async function createGithubIssueQueueJob(
+  cpbRoot,
+  event,
+  match,
+  {
+    hubRoot = cpbRoot,
+    enqueueFn = enqueueHubQueue,
+    sourcePath = null,
+    getProjectFn = getProject,
+  } = {},
+) {
   if (!event || event.status !== "ok") {
     throw new Error("GitHub event must be normalized before queue creation");
   }
@@ -198,36 +250,31 @@ export async function createGithubIssueQueueJob(cpbRoot, event, match, { createJ
   });
 
   if (entry.status === "duplicate") {
-    return { status: "duplicate", entry, job: null };
+    return { status: "duplicate", entry, candidateEntry: entry, queueEntry: null, job: null };
   }
 
-  const sourceContext = {
-    type: "github_issue",
-    queueEntryId: entry.id,
-    issueNumber: payload.issueNumber,
-    repo: payload.repo,
-    url: payload.url,
-    actor: payload.actor,
-    delivery: payload.delivery,
-    commandText: payload.commandText,
-    triggerReason: payload.triggerReason,
-  };
-  const job = await createJobFn(cpbRoot, {
-    project: event.projectId,
-    task: payload.title,
-    workflow: payload.workflow,
-    queueEntryId: entry.id,
-    sourceContext,
-  });
+  const project = await resolveRegisteredProject(hubRoot, event.projectId, getProjectFn);
+  const queueEntry = await enqueueFn(
+    hubRoot,
+    githubHubQueueInput({
+      event,
+      match,
+      payload,
+      candidateEntry: entry,
+      sourcePath: sourcePathForQueue(sourcePath, project),
+    }),
+  );
   const updated = await updateCandidate(cpbRoot, entry.id, {
-    status: "dispatched",
-    reason: `created job ${job.jobId}`,
+    status: "queued",
+    reason: `queued hub entry ${queueEntry.id}`,
   });
 
   return {
     status: "created",
     entry: updated || entry,
-    job,
+    candidateEntry: updated || entry,
+    queueEntry,
+    job: null,
   };
 }
 
@@ -260,7 +307,51 @@ function channelQueuePayload(command, context = {}) {
   };
 }
 
-export async function createChannelQueueJob(cpbRoot, command, context = {}, { createJobFn = createJob } = {}) {
+function channelDescription(payload) {
+  return payload.task || (payload.issueNumber ? `GitHub issue #${payload.issueNumber}` : "");
+}
+
+function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project }) {
+  const repo = project?.github?.fullName || project?.github?.repo || null;
+  const issueUrl = payload.issueNumber && repo ? `https://github.com/${repo}/issues/${payload.issueNumber}` : null;
+  return {
+    projectId: command.project,
+    sourcePath,
+    priority: "P2",
+    description: channelDescription(payload),
+    type: source,
+    metadata: {
+      source,
+      channel: source,
+      candidateEntryId: candidateEntry.id,
+      queueDedupeKey: candidateEntry.dedupeKey,
+      actor: payload.actor,
+      actorName: payload.actorName,
+      teamId: payload.teamId,
+      channelId: payload.channelId,
+      channelName: payload.channelName,
+      commandText: payload.commandText,
+      triggerId: payload.triggerId,
+      issueNumber: payload.issueNumber,
+      issueUrl,
+      repo,
+      workflow: payload.workflow || "standard",
+      autoFinalize: false,
+    },
+  };
+}
+
+export async function createChannelQueueJob(
+  cpbRoot,
+  command,
+  context = {},
+  {
+    hubRoot = cpbRoot,
+    enqueueFn = enqueueHubQueue,
+    sourcePath = context.sourcePath || null,
+    getProjectFn = getProject,
+  } = {},
+) {
   if (!command || !["run", "issue"].includes(command.type)) {
     throw new Error("channel command must be a run or issue command before queue creation");
   }
@@ -278,38 +369,32 @@ export async function createChannelQueueJob(cpbRoot, command, context = {}, { cr
   });
 
   if (entry.status === "duplicate") {
-    return { status: "duplicate", entry, job: null };
+    return { status: "duplicate", entry, candidateEntry: entry, queueEntry: null, job: null };
   }
 
-  const sourceContext = {
-    type: source,
-    channel: source,
-    queueEntryId: entry.id,
-    actor: payload.actor,
-    actorName: payload.actorName,
-    teamId: payload.teamId,
-    channelId: payload.channelId,
-    channelName: payload.channelName,
-    commandText: payload.commandText,
-    triggerId: payload.triggerId,
-    issueNumber: payload.issueNumber,
-  };
-  const job = await createJobFn(cpbRoot, {
-    project: command.project,
-    task: payload.task,
-    workflow: command.workflow || "standard",
-    queueEntryId: entry.id,
-    sourceContext,
-  });
+  const project = await resolveRegisteredProject(hubRoot, command.project, getProjectFn);
+  const queueEntry = await enqueueFn(
+    hubRoot,
+    channelHubQueueInput({
+      command,
+      source,
+      payload,
+      candidateEntry: entry,
+      sourcePath: sourcePathForQueue(sourcePath, project),
+      project,
+    }),
+  );
   const updated = await updateCandidate(cpbRoot, entry.id, {
-    status: "dispatched",
-    reason: `created job ${job.jobId}`,
+    status: "queued",
+    reason: `queued hub entry ${queueEntry.id}`,
   });
 
   return {
     status: "created",
     entry: updated || entry,
-    job,
+    candidateEntry: updated || entry,
+    queueEntry,
+    job: null,
   };
 }
 

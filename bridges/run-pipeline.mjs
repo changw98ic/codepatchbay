@@ -134,6 +134,18 @@ function failure(reason, { code = FAILURE_CODES.FATAL, phase, cause, retryable }
 }
 
 function buildSourceContext() {
+  if (process.env.CPB_SOURCE_CONTEXT_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.CPB_SOURCE_CONTEXT_JSON);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return {
+          ...parsed,
+          queueEntryId: parsed.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null,
+        };
+      }
+    } catch {}
+  }
+
   const issueNumber = process.env.CPB_ISSUE_NUMBER;
   if (!issueNumber) return null;
   return {
@@ -790,6 +802,7 @@ export async function runPipeline({
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
     sourceContext,
+    queueEntryId: sourceContext?.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null,
     indexSnapshot: jobIndexSnapshot,
     indexFreshness: jobIndexFreshness,
     teamPolicy: effectiveTeamPolicy,

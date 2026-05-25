@@ -249,13 +249,16 @@ async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = nul
     channelName: parsed.actor?.channelName || context.channelName || null,
     triggerId: parsed.triggerId || parsed.interactionId || context.triggerId || null,
     commandText: parsed.commandText || context.commandText || null,
+  }, {
+    hubRoot: context.hubRoot || cpbRoot,
   });
   return {
     ok: result.status === "created",
     channel,
     action: result.status === "created" ? "queued" : result.status,
     parsed,
-    queueEntry: result.entry,
+    queueEntry: result.queueEntry,
+    candidateEntry: result.entry,
     job: channelJobSummary(result.job),
   };
 }
@@ -299,7 +302,10 @@ export async function channelRoutes(fastify, opts) {
     }
 
     const policy = opts.channelPolicy || null;
-    const result = await handleSlackSlashCommand(req.cpbRoot, parsed, { policy });
+    const result = await handleSlackSlashCommand(req.cpbRoot, parsed, {
+      policy,
+      hubRoot: req.cpbHubRoot || req.cpbRoot,
+    });
     return reply.code(result.statusCode || (result.ok ? 200 : 400)).send(result);
   });
 
@@ -365,6 +371,7 @@ export async function channelRoutes(fastify, opts) {
 
     const result = await queueChannelCommand(req.cpbRoot, parsed, {
       channel: "discord",
+      hubRoot: req.cpbHubRoot || req.cpbRoot,
     }, { policy });
     return reply.code(result.statusCode || (result.ok ? 202 : 400)).send(result);
   });
@@ -427,7 +434,11 @@ export async function channelRoutes(fastify, opts) {
           workflow: "standard",
         },
         commandText,
-      }, { channel: "feishu", commandText }, { policy: opts.channelPolicy || null });
+      }, {
+        channel: "feishu",
+        commandText,
+        hubRoot: req.cpbHubRoot || cpbRoot,
+      }, { policy: opts.channelPolicy || null });
     }
 
     return queueChannelCommand(cpbRoot, {
@@ -439,7 +450,11 @@ export async function channelRoutes(fastify, opts) {
       },
       command,
       commandText,
-    }, { channel: "feishu", commandText }, { policy: opts.channelPolicy || null });
+    }, {
+      channel: "feishu",
+      commandText,
+      hubRoot: req.cpbHubRoot || cpbRoot,
+    }, { policy: opts.channelPolicy || null });
   });
 
   // DingTalk outgoing robot callback
@@ -488,7 +503,11 @@ export async function channelRoutes(fastify, opts) {
           workflow: "standard",
         },
         commandText,
-      }, { channel: "dingtalk", commandText }, { policy: opts.channelPolicy || null });
+      }, {
+        channel: "dingtalk",
+        commandText,
+        hubRoot: req.cpbHubRoot || cpbRoot,
+      }, { policy: opts.channelPolicy || null });
     }
 
     return queueChannelCommand(cpbRoot, {
@@ -500,6 +519,10 @@ export async function channelRoutes(fastify, opts) {
       },
       command,
       commandText,
-    }, { channel: "dingtalk", commandText }, { policy: opts.channelPolicy || null });
+    }, {
+      channel: "dingtalk",
+      commandText,
+      hubRoot: req.cpbHubRoot || cpbRoot,
+    }, { policy: opts.channelPolicy || null });
   });
 }

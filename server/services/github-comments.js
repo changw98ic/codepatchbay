@@ -76,11 +76,13 @@ function statusDetailLines(projection) {
 }
 
 export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } = {}) {
-  const workflow = job.workflow || queueEntry?.payload?.workflow || "standard";
+  const normalizedJob = job || {};
+  const workflow = normalizedJob.workflow || queueEntry?.payload?.workflow || queueEntry?.metadata?.workflow || "standard";
   return [
     "CodePatchBay queued this issue.",
     "",
-    `- Job: ${job.jobId || "pending"}`,
+    `- Job: ${normalizedJob.jobId || "pending"}`,
+    queueEntry?.id ? `- Queue: ${queueEntry.id}` : null,
     `- Workflow: ${workflow}`,
     agentLine("Planner", agents.planner),
     agentLine("Executor", agents.executor),
@@ -88,7 +90,7 @@ export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } 
     "",
     "I'll post updates here.",
     "",
-  ].join("\n");
+  ].filter((line) => line !== null).join("\n");
 }
 
 export async function postGithubQueuedComment({

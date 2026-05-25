@@ -146,7 +146,7 @@ export function validateIssueLink(entry) {
 }
 
 function entryKey(entry) {
-  const lineage = entry.metadata?.originJobId || "";
+  const lineage = entry.metadata?.queueDedupeKey || entry.metadata?.originJobId || "";
   return `${entry.projectId}::${entry.description}::${lineage}`;
 }
 

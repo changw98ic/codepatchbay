@@ -11,6 +11,7 @@ import { githubRoutes } from "../server/routes/github.js";
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
+import { listQueue } from "../server/services/hub-queue.js";
 import { completeJob, createJob, getJob } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
 import {
@@ -197,7 +198,7 @@ describe("GitHub webhook signature verification", () => {
 });
 
 describe("GitHub webhook queue glue", () => {
-  it("normalizes a signed issue event, matches a bound project trigger, creates a queue job, and comments queued", async () => {
+  it("normalizes a signed issue event, matches a bound project trigger, enqueues Hub Queue work, and comments queued", async () => {
     const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-webhook-glue-"));
     const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-github-source-"));
     const previousSecret = process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
@@ -251,21 +252,28 @@ describe("GitHub webhook queue glue", () => {
       assert.equal(body.projectId, "frontend");
       assert.equal(body.match.matched, true);
       assert.equal(body.queue.status, "created");
-      assert.match(body.queue.jobId, /^job-/);
+      assert.equal(body.queue.jobId, null);
+      assert.match(body.queue.queueEntryId, /^q-/);
+      assert.equal(body.hubQueue.id, body.queue.queueEntryId);
       assert.equal(body.comment.status, "posted");
 
       const candidates = await listCandidates(hubRoot, { source: "github-issue" });
       assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.issueNumber, 42);
       assert.equal(candidates[0].payload.repo, "my-org/frontend");
 
-      const job = await getJob(hubRoot, "frontend", body.queue.jobId);
-      assert.equal(job.task, "Fix login redirect");
-      assert.equal(job.sourceContext.repo, "my-org/frontend");
-      assert.equal(job.sourceContext.issueNumber, 42);
+      const queued = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0].id, body.queue.queueEntryId);
+      assert.equal(queued[0].description, "Fix login redirect");
+      assert.equal(queued[0].metadata.repo, "my-org/frontend");
+      assert.equal(queued[0].metadata.issueNumber, 42);
       assert.equal(posted.length, 1);
       assert.equal(posted[0].repo, "my-org/frontend");
       assert.equal(posted[0].issueNumber, 42);
+      assert.match(posted[0].body, /Job: pending/);
+      assert.match(posted[0].body, new RegExp(`Queue: ${body.queue.queueEntryId}`));
     } finally {
       if (previousSecret === undefined) delete process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
       else process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = previousSecret;
@@ -457,8 +465,10 @@ describe("GitHub trigger rule matcher", () => {
 });
 
 describe("GitHub issue queue entry creation", () => {
-  it("creates a queue entry and linked job from a matched GitHub issue event", async () => {
+  it("creates a candidate and Hub Queue entry from a matched GitHub issue event without pre-creating a job", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-queue-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-github-source-"));
     try {
       const event = normalizeGithubWebhookEvent({
         event: "issues",
@@ -480,10 +490,12 @@ describe("GitHub issue queue entry creation", () => {
       });
       const match = matchGithubTrigger(event);
 
-      const result = await createGithubIssueQueueJob(cpbRoot, event, match);
+      const result = await createGithubIssueQueueJob(cpbRoot, event, match, { hubRoot, sourcePath });
 
       assert.equal(result.status, "created");
+      assert.equal(result.job, null);
       assert.equal(result.entry.source, "github-issue");
+      assert.equal(result.entry.status, "queued");
       assert.equal(result.entry.projectId, "frontend");
       assert.equal(result.entry.payload.issueNumber, 123);
       assert.equal(result.entry.payload.repo, "my-org/frontend");
@@ -493,15 +505,24 @@ describe("GitHub issue queue entry creation", () => {
       assert.equal(result.entry.payload.actor, "octocat");
       assert.equal(result.entry.payload.workflow, "standard");
 
-      const job = await getJob(cpbRoot, "frontend", result.job.jobId);
-      assert.equal(job.queueEntryId, result.entry.id);
-      assert.equal(job.workflow, "standard");
-      assert.equal(job.task, "Fix login redirect");
-      assert.equal(job.sourceContext.queueEntryId, result.entry.id);
-      assert.equal(job.sourceContext.issueNumber, 123);
-      assert.equal(job.sourceContext.repo, "my-org/frontend");
+      assert.match(result.queueEntry.id, /^q-/);
+      assert.equal(result.queueEntry.status, "pending");
+      assert.equal(result.queueEntry.projectId, "frontend");
+      assert.equal(result.queueEntry.sourcePath, sourcePath);
+      assert.equal(result.queueEntry.description, "Fix login redirect");
+      assert.equal(result.queueEntry.type, "github_issue");
+      assert.equal(result.queueEntry.metadata.candidateEntryId, result.entry.id);
+      assert.equal(result.queueEntry.metadata.issueNumber, 123);
+      assert.equal(result.queueEntry.metadata.repo, "my-org/frontend");
+      assert.equal(result.queueEntry.metadata.workflow, "standard");
+      assert.equal(result.queueEntry.metadata.autoFinalize, true);
+
+      const hubQueue = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(hubQueue.length, 1);
+      assert.equal(hubQueue[0].id, result.queueEntry.id);
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
+      await rm(sourcePath, { recursive: true, force: true });
     }
   });
 
@@ -530,7 +551,40 @@ describe("GitHub issue queue entry creation", () => {
       assert.equal(second.status, "duplicate");
       assert.equal(second.entry.id, first.entry.id);
       assert.equal(second.job, null);
+      assert.equal(second.queueEntry, null);
       assert.equal(candidates.length, 1);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps distinct GitHub deliveries with the same title as separate Hub Queue entries", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-queue-distinct-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    try {
+      const makeEvent = (delivery, issueNumber) => normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery,
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: issueNumber,
+            title: "Fix login redirect",
+            labels: [{ name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+
+      await createGithubIssueQueueJob(cpbRoot, makeEvent("delivery-distinct-1", 123), matchGithubTrigger(makeEvent("delivery-distinct-1", 123)), { hubRoot });
+      await createGithubIssueQueueJob(cpbRoot, makeEvent("delivery-distinct-2", 124), matchGithubTrigger(makeEvent("delivery-distinct-2", 124)), { hubRoot });
+
+      const queued = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(queued.length, 2);
+      assert.deepEqual(queued.map((entry) => entry.metadata.issueNumber).sort(), [123, 124]);
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }
