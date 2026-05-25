@@ -13,6 +13,7 @@ import {
   formatDeleteBlockedMessage,
   logDeleteBlock,
 } from "../runtime/delete-guard.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
 import {
   registerProcess,
   updateHeartbeat as updateProcessHeartbeat,
@@ -323,8 +324,7 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    const childEnv = {
-      ...process.env,
+    const childEnv = buildChildEnv(process.env, {
       CPB_JOB_ID: jobId,
       CPB_ACP_JOB_ID: jobId,
       CPB_ACP_PHASE: phase,
@@ -333,7 +333,7 @@ async function main() {
       CPB_ACP_LAUNCH_PROFILE: process.env.CPB_ACP_LAUNCH_PROFILE || "headless",
       CPB_ACP_UI_LANE: process.env.CPB_ACP_UI_LANE || "0",
       CPB_ACP_UI_LANE_REASON: process.env.CPB_ACP_UI_LANE_REASON || "",
-    };
+    });
     const activity = createActivityTracker(cpbRoot, project, jobId);
     childResult = await runChild(script.endsWith('.mjs') ? 'node' : script, script.endsWith('.mjs') ? [script, ...scriptArgs] : scriptArgs, cpbRoot, (output) => {
       const line = output.trim();

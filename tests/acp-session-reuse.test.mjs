@@ -31,6 +31,7 @@ describe("AcpPool session reuse", () => {
     delete process.env.CPB_ACP_POOL_IDLE_MS;
     delete process.env.CPB_ACP_PERSISTENT_PROCESS;
     delete process.env.CPB_ACP_USE_MANAGED_POOL;
+    delete process.env.CPB_ACP_CLIENT;
     delete process.env.CPB_ROOT;
     delete process.env.CPB_ACP_RATE_LIMIT_BACKOFF_MS;
   });
@@ -185,14 +186,13 @@ describe("AcpPool session reuse", () => {
     const pidFile = path.join(root, "client.pid");
     const clientPath = path.join(root, "ignore-sigterm-client.sh");
     await writeFile(clientPath, `#!/bin/sh
-echo $$ > "$CPB_TEST_ACP_PID_FILE"
+echo $$ > "$CPB_ROOT/client.pid"
 trap "" TERM
 while true; do sleep 1; done
 `);
     await chmod(clientPath, 0o755);
 
     process.env.CPB_ACP_CLIENT = clientPath;
-    process.env.CPB_TEST_ACP_PID_FILE = pidFile;
     pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
 
     const executePromise = pool.execute("codex", "prompt", root, 10_000);

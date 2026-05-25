@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { buildChildEnv } from "../../core/policy/child-env.js";
 
 const RED = "\x1b[0;31m";
 const GREEN = "\x1b[0;32m";
@@ -137,11 +138,11 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 `;
 }
 
-function acpRun(agent, cwd, executorRoot, input) {
+function acpRun(agent, cwd, executorRoot, cpbRoot, input) {
   const acp = path.join(executorRoot, "bridges", "acp-client.mjs");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
-      env: { ...process.env, CPB_EXECUTOR_ROOT: executorRoot },
+      env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }),
     });
     let stdout = "";
     let stderr = "";
@@ -187,8 +188,8 @@ export async function runResearch({ project, task, executorRoot, cpbRoot }) {
 
   // Run both agents in parallel
   const [codexResult, claudeResult] = await Promise.all([
-    acpRun("codex", cwd, executorRoot, prompt),
-    acpRun("claude", cwd, executorRoot, prompt),
+    acpRun("codex", cwd, executorRoot, cpbRoot, prompt),
+    acpRun("claude", cwd, executorRoot, cpbRoot, prompt),
   ]);
 
   const codexOk = codexResult.code === 0;

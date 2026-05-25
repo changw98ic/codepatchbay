@@ -1,73 +1,15 @@
 // Shared secret policy for P0.3: child-env allowlist, recursive redaction,
 // secret-path detection, and secret-artifact classification.
 
-// --- Allowlists ---
-
-const RUNTIME_BASICS = new Set([
-  "PATH", "HOME", "SHELL", "TERM", "TMPDIR", "TEMP", "TMP",
-  "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE",
-  "CODEX_HOME", "XDG_CACHE_HOME",
-  // CPB-specific runtime vars
-  "CPB_ROOT", "CPB_EXECUTOR_ROOT", "CPB_HUB_ROOT",
-  "CPB_INSTALL_ROOT", "CPB_PROJECT_RUNTIME_ROOT",
-  "CPB_ACP_PERSISTENT_PROCESS", "CPB_DANGEROUS",
-  "CPB_STALE_GRACE_COUNT", "CPB_ACTIVITY_STALE_MS",
-  "CPB_PROJECT_CACHE",
-  // Variant selection — needed by apply-variant.js in child processes
-  "CPB_CLAUDE_VARIANT", "CPB_BUILDER_VARIANT", "CPB_ACP_CLAUDE_VARIANT",
-  "CPB_ACTIVE_CLAUDE_VARIANT",
-  // ACP pool / supervisor tuning
-  "CPB_SUPERVISOR_INTERVAL_MS", "CPB_SUPERVISOR_MAX_CONCURRENT",
-  "CPB_ACP_CLIENT", "CPB_ACP_CWD", "CPB_ACP_TIMEOUT_MS",
-  "CPB_ACP_CODEX_COMMAND", "CPB_ACP_CODEX_ARGS",
-  "CPB_ACP_CLAUDE_COMMAND", "CPB_ACP_CLAUDE_ARGS",
-  "CPB_ACP_USE_MANAGED_POOL",
-]);
-
-const PROVIDER_CREDENTIALS = new Set([
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "AZURE_OPENAI_API_KEY",
-  "AZURE_OPENAI_ENDPOINT",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  // Kimi / Ollama Cloud variant
-  "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL",
-  "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL",
-  "KIMI_BASE_URL", "MOONSHOT_BASE_URL",
-  "OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY",
-  "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY",
-  "KIMI_API_KEY", "MOONSHOT_API_KEY",
-  "OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL",
-  "KIMI_MODEL", "MOONSHOT_MODEL",
-  // Xiaomi / MiMo variant
-  "XIAOMI_BASE_URL", "MIMO_BASE_URL",
-  "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
-  "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
-  "XIAOMI_MODEL", "MIMO_MODEL",
-]);
-
-const ALLOWED_ENV = new Set([...RUNTIME_BASICS, ...PROVIDER_CREDENTIALS]);
-
-// --- Child-env builder ---
-
-export function buildChildEnv(parentEnv, extra = {}) {
-  const env = {};
-  for (const key of ALLOWED_ENV) {
-    if (key in parentEnv) env[key] = parentEnv[key];
-  }
-  for (const [key, value] of Object.entries(extra || {})) {
-    if (ALLOWED_ENV.has(key)) env[key] = value;
-  }
-  return env;
-}
-
-export { RUNTIME_BASICS, PROVIDER_CREDENTIALS, ALLOWED_ENV };
+export {
+  buildChildEnv,
+  isAllowedChildEnvKey,
+  RUNTIME_BASICS,
+  CPB_RUNTIME_ENV,
+  ACP_RUNTIME_ENV,
+  PROVIDER_CREDENTIALS,
+  ALLOWED_ENV,
+} from "../../core/policy/child-env.js";
 
 // --- Secret redaction ---
 

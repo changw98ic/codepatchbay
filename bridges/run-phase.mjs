@@ -39,6 +39,7 @@ import { resolveAcpLane } from "../core/acp/policy.js";
 import { recordUiEscalations } from "../runtime/record-ui-escalation.js";
 import { validateNonEmptyMarkdownArtifact, resolveDeliverableIssue, validateIssueMatch } from "../server/services/artifact-integrity.js";
 import { loadRegistry, legacyAgentForPhase, defaultAgentForRole } from "../core/agents/registry.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
 
 // --- CLI arg parsing ---
 
@@ -174,12 +175,12 @@ async function runAcp(agent, prompt, cwd, executorRoot) {
     try {
       const command = useDirect ? clientPath : process.execPath;
       const args = useDirect ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
-      const env = { ...process.env };
-
-      if (!process.env.CPB_TEST_ENV_LOG && !env.ANTHROPIC_API_KEY && env.ANTHROPIC_AUTH_TOKEN) {
-        env.ANTHROPIC_API_KEY = env.ANTHROPIC_AUTH_TOKEN;
-        delete env.ANTHROPIC_AUTH_TOKEN;
+      const sourceEnv = { ...process.env };
+      if (!process.env.CPB_TEST_ENV_LOG && !sourceEnv.ANTHROPIC_API_KEY && sourceEnv.ANTHROPIC_AUTH_TOKEN) {
+        sourceEnv.ANTHROPIC_API_KEY = sourceEnv.ANTHROPIC_AUTH_TOKEN;
+        delete sourceEnv.ANTHROPIC_AUTH_TOKEN;
       }
+      const env = buildChildEnv(sourceEnv);
 
       child = spawn(command, args, {
         cwd,

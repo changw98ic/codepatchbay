@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { createSession, getSession, updateSession, parseIssues, startSessionResearch, noteReviewAcpCall, assertReviewBudget } from "../server/services/review-session.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
 
 const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
@@ -50,7 +51,7 @@ class PersistentAcp {
 
   async start() {
     const { command, args } = resolveAgentCommand(this.agent);
-    const env = { ...process.env };
+    const env = buildChildEnv(process.env);
     if (command === "npx" && !env.npm_config_cache) {
       const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(cache, { recursive: true });
@@ -59,7 +60,7 @@ class PersistentAcp {
 
     this.child = spawn(command, args, {
       cwd: CPB_ROOT,
-      env: { ...env, CPB_ROOT },
+      env: buildChildEnv(env, { CPB_ROOT }),
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
