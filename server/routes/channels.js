@@ -11,7 +11,8 @@ import {
   parseDiscordInteraction,
   verifyDiscordSignature,
 } from "../services/channel-discord.js";
-import { handleChannelCommand } from "../services/channel-queue-actions.js";
+import { channelPolicyDenied, handleChannelCommand } from "../services/channel-queue-actions.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
 import {
   handleSlackInteractiveAction,
   handleSlackSlashCommand,
@@ -127,8 +128,42 @@ function parseReviewCommand(text) {
   return null;
 }
 
-async function handleReviewCommand(cpbRoot, cmd, log) {
+function reviewPolicyAction(action) {
+  if (action === "create") return "run";
+  if (action === "reject") return "cancel";
+  return action;
+}
+
+async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, channel = "channel", actor = null } = {}) {
+  if (!policy) return { allowed: true, reason: "channel policy not configured" };
+  return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
+    channel,
+    action: reviewPolicyAction(cmd.action),
+    project: cmd.project || session?.project || null,
+    job: session?.jobId || null,
+    actor,
+  }));
+}
+
+function reviewPolicyDenied(decision, cmd, session, { channel = "channel", actor = null } = {}) {
+  return {
+    ...channelPolicyDenied(decision),
+    channel,
+    action: reviewPolicyAction(cmd.action),
+    project: cmd.project || session?.project || null,
+    sessionId: cmd.sessionId || session?.sessionId || null,
+    actor: actor ? {
+      userId: actor.userId || actor.id || null,
+      channelId: actor.channelId || null,
+    } : null,
+  };
+}
+
+async function handleReviewCommand(cpbRoot, cmd, log, options = {}) {
   if (cmd.action === "create") {
+    const decision = await authorizeReviewCommand(cpbRoot, cmd, null, options);
+    if (!decision.allowed) return reviewPolicyDenied(decision, cmd, null, options);
+
     const session = await createSession(cpbRoot, { project: cmd.project, intent: cmd.intent });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: session.status, project: cmd.project, session });
 
@@ -146,6 +181,9 @@ async function handleReviewCommand(cpbRoot, cmd, log) {
 
   const session = await getSession(cpbRoot, cmd.sessionId);
   if (!session) return { ok: false, error: "session not found" };
+
+  const decision = await authorizeReviewCommand(cpbRoot, cmd, session, options);
+  if (!decision.allowed) return reviewPolicyDenied(decision, cmd, session, options);
 
   if (cmd.action === "approve") {
     if (session.status !== "user_review") {
@@ -335,7 +373,16 @@ export async function channelRoutes(fastify, opts) {
 
     // Try review command first
     const reviewCmd = parseReviewCommand(text);
-    if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
+    if (reviewCmd) {
+      return handleReviewCommand(cpbRoot, reviewCmd, req.log, {
+        policy: opts.channelPolicy || null,
+        channel: "feishu",
+        actor: {
+          userId: event.sender?.sender_id?.user_id || event.sender?.id || event.message.sender?.id || null,
+          channelId: event.message.chat_id || null,
+        },
+      });
+    }
 
     const commandText = text.trim();
     const command = parseChannelCommand(commandText);
@@ -404,7 +451,16 @@ export async function channelRoutes(fastify, opts) {
 
     // Try review command first
     const reviewCmd = parseReviewCommand(text);
-    if (reviewCmd) return handleReviewCommand(cpbRoot, reviewCmd, req.log);
+    if (reviewCmd) {
+      return handleReviewCommand(cpbRoot, reviewCmd, req.log, {
+        policy: opts.channelPolicy || null,
+        channel: "dingtalk",
+        actor: {
+          userId: body.senderId || null,
+          channelId: body.conversationId || null,
+        },
+      });
+    }
 
     const commandText = text.trim();
     const command = parseChannelCommand(commandText);
