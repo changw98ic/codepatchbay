@@ -72,6 +72,20 @@ describe("agent sandbox launch policy", () => {
     assert.deepEqual(launch.args.slice(-2), ["/bin/echo", "ok"]);
   });
 
+  it("allows non-system executable roots without allowing the whole home directory", () => {
+    const launch = buildAgentSandboxLaunch("/Users/cpb/.local/bin/codex-acp", ["--help"], {
+      env: { CPB_AGENT_SANDBOX: "required", HOME: "/Users/cpb" },
+      cwd: "/tmp/project",
+      platform: "darwin",
+      probe: (command) => command === "sandbox-exec",
+    });
+
+    assert.equal(launch.command, "sandbox-exec");
+    assert.match(launch.args[1], /\/Users\/cpb\/\.local\/bin/);
+    assert.equal(launch.args[1].includes("(subpath \"/Users/cpb\")"), false);
+    assert.deepEqual(launch.args.slice(-2), ["/Users/cpb/.local/bin/codex-acp", "--help"]);
+  });
+
   it("wraps Linux launches with bwrap and optional network namespace denial", () => {
     const launch = buildAgentSandboxLaunch("/bin/echo", ["ok"], {
       env: { CPB_AGENT_SANDBOX: "required", CPB_AGENT_SANDBOX_NETWORK: "deny" },
@@ -93,6 +107,26 @@ describe("agent sandbox launch policy", () => {
       -1,
     );
     assert.deepEqual(launch.args.slice(-2), ["/bin/echo", "ok"]);
+  });
+
+  it("binds non-system executable roots for Linux bwrap without binding the whole home directory", () => {
+    const launch = buildAgentSandboxLaunch("/home/cpb/.local/bin/codex-acp", ["--help"], {
+      env: { CPB_AGENT_SANDBOX: "required", HOME: "/home/cpb" },
+      cwd: "/tmp/project",
+      platform: "linux",
+      probe: (command) => command === "bwrap",
+    });
+
+    assert.equal(launch.command, "bwrap");
+    assert.notEqual(
+      launch.args.findIndex((arg, idx) => arg === "--ro-bind-try" && launch.args[idx + 1] === "/home/cpb/.local/bin"),
+      -1,
+    );
+    assert.equal(
+      launch.args.findIndex((arg, idx) => arg === "--ro-bind-try" && launch.args[idx + 1] === "/home/cpb"),
+      -1,
+    );
+    assert.deepEqual(launch.args.slice(-2), ["/home/cpb/.local/bin/codex-acp", "--help"]);
   });
 
   it("fails closed for strict Linux bwrap because subprocess denial is unsupported", () => {

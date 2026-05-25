@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSetupReadinessChecks, formatReadinessJson } from "../server/services/readiness-checks.js";
+import {
+  buildAgentSandboxReadinessChecks,
+  buildSetupReadinessChecks,
+  formatReadinessJson,
+} from "../server/services/readiness-checks.js";
 
 describe("doctor JSON contract", () => {
   it("emits stable evidence and recommendedAction fields for every check", () => {
@@ -126,5 +130,43 @@ describe("doctor JSON contract", () => {
     assert.equal(parsed.setup.schemaVersion, 1);
     assert.equal(parsed.setup.agents.codex.status, "installed");
     assert.equal(parsed.checks[1].recommendedAction, "Run: cpb agents install opencode --method npm");
+  });
+
+  it("reports agent sandbox posture with machine-readable evidence", () => {
+    const offChecks = buildAgentSandboxReadinessChecks({
+      env: {},
+      cwd: "/repo",
+      platform: "linux",
+      probe: () => false,
+    });
+    const off = offChecks.find((check) => check.id === "agent-sandbox-posture");
+    assert.equal(off.status, "warn");
+    assert.equal(off.category, "sandbox");
+    assert.match(off.remediation, /CPB_AGENT_SANDBOX=required/);
+
+    const strictChecks = buildAgentSandboxReadinessChecks({
+      env: {
+        CPB_AGENT_SANDBOX: "strict",
+        CPB_AGENT_SANDBOX_COMMAND: "/usr/local/bin/cpb-sandbox",
+      },
+      cwd: "/repo",
+      platform: "linux",
+      probe: () => false,
+    });
+    const strict = strictChecks.find((check) => check.id === "agent-sandbox-posture");
+    assert.equal(strict.status, "ok");
+    assert.equal(strict.details.mode, "strict");
+    assert.equal(strict.details.provider, "custom");
+
+    const parsed = JSON.parse(formatReadinessJson({
+      command: "cpb doctor",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      roots: { executorRoot: "/repo", hubRoot: "/hub" },
+      summary: { ok: 1, warn: 0, error: 0, skipped: 0, success: true },
+      checks: [strict],
+    }));
+
+    assert.equal(parsed.checks[0].evidence.mode, "strict");
+    assert.equal(parsed.checks[0].evidence.provider, "custom");
   });
 });
