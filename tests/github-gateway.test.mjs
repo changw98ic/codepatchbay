@@ -287,6 +287,93 @@ describe("GitHub webhook queue glue", () => {
       await rm(sourcePath, { recursive: true, force: true });
     }
   });
+
+  it("posts an actionable approval comment for SDD drafts that require approval", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-webhook-sdd-approval-"));
+    const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-github-source-"));
+    const previousSecret = process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
+    const posted = [];
+    let acpCalls = 0;
+    const app = await buildGithubWebhookApp(hubRoot, {
+      sddDrafterMode: "acp",
+      sddAcpPool: {
+        execute: async (_agent, prompt) => {
+          acpCalls += 1;
+          assert.match(prompt, /CodePatchBay SDD drafter/);
+          return JSON.stringify({
+            spec: "# Spec: Approval-gated checkout\n",
+            design: "# Design: Approval-gated checkout\n",
+            tasks: "- [ ] Implement checkout trace\n- [ ] Verify checkout trace\n",
+            requiresApproval: true,
+          });
+        },
+      },
+      githubPostComment: async (request) => {
+        posted.push(request);
+        return { id: 456, html_url: `https://github.com/${request.repo}/issues/${request.issueNumber}#issuecomment-456` };
+      },
+    });
+    try {
+      process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = "webhook-test-secret";
+      const { registerProject, bindProjectGithub } = await import("../server/services/hub-registry.js");
+      await registerProject(hubRoot, { id: "frontend", sourcePath });
+      await bindProjectGithub(hubRoot, "frontend", "my-org/frontend");
+      await saveGithubAppConfig(hubRoot, {
+        appId: 12345,
+        installationId: 67890,
+        webhookSecretRef: "env:CPB_TEST_GITHUB_WEBHOOK_SECRET",
+      });
+
+      const rawBody = JSON.stringify({
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "sdd" },
+        issue: {
+          number: 43,
+          title: "Draft checkout SDD",
+          body: "Create an SDD before implementation.",
+          html_url: "https://github.com/my-org/frontend/issues/43",
+          labels: [{ name: "sdd" }],
+        },
+        sender: { login: "product-owner" },
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/github/webhook",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "issues",
+          "x-github-delivery": "delivery-sdd-approval-1",
+          "x-hub-signature-256": githubSignature("webhook-test-secret", rawBody),
+        },
+        payload: rawBody,
+      });
+
+      assert.equal(response.statusCode, 202);
+      const body = JSON.parse(response.body);
+      assert.equal(acpCalls, 1);
+      assert.equal(body.queue.status, "created");
+      assert.equal(body.hubQueue.status, "waiting.approval");
+
+      const queued = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0].status, "waiting.approval");
+      assert.equal(queued[0].metadata.sddApproval.requiresApproval, true);
+      assert.equal(queued[0].metadata.sddTasks.length, 2);
+
+      assert.equal(posted.length, 1);
+      assert.match(posted[0].body, /SDD draft requires approval/);
+      assert.match(posted[0].body, new RegExp(`Queue: ${body.queue.queueEntryId}`));
+      assert.match(posted[0].body, new RegExp(`Approve with \`/cpb approve ${body.queue.queueEntryId}\``));
+      assert.match(posted[0].body, /Parsed tasks: 2/);
+    } finally {
+      if (previousSecret === undefined) delete process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
+      else process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = previousSecret;
+      await app.close();
+      await rm(hubRoot, { recursive: true, force: true });
+      await rm(sourcePath, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("GitHub event normalization", () => {
