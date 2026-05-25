@@ -657,7 +657,7 @@ export class AcpPool {
     const client = new AcpClient({
       agent,
       cwd,
-      writeAllowPaths: resolveWriteAllowPaths(cwd),
+      writeAllowPaths: resolveWriteAllowPaths(cwd, this.env),
       terminalPolicy: this.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow",
       toolPolicy: await this.#getToolPolicy(),
       outputSink: () => {},
@@ -685,7 +685,7 @@ export class AcpPool {
   }
 
   #getToolPolicy() {
-    if (!this.toolPolicyPromise) this.toolPolicyPromise = parseToolPolicy();
+    if (!this.toolPolicyPromise) this.toolPolicyPromise = parseToolPolicy(this.env);
     return this.toolPolicyPromise;
   }
 

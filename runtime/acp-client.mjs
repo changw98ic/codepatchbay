@@ -74,10 +74,10 @@ export async function main() {
   const options = await parseCli(process.argv.slice(2));
   const prompt = await readStdin();
 
-  const writeAllowPaths = resolveWriteAllowPaths(options.cwd);
+  const writeAllowPaths = resolveWriteAllowPaths(options.cwd, process.env);
 
   const terminalPolicy = process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow";
-  const toolPolicy = await parseToolPolicy();
+  const toolPolicy = await parseToolPolicy(process.env);
 
   const client = new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy });
   let shuttingDown = false;

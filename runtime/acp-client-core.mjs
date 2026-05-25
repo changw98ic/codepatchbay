@@ -21,33 +21,35 @@ import { buildChildEnv } from "../core/policy/child-env.js";
 let _permCheck = null;
 let _permEvaluate = null;
 let _permRecord = null;
-let _permEnv = null;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory = [];
 
-async function loadPermissionModules() {
-  if (_permCheck !== null) return;
-  const executorRoot = process.env.CPB_EXECUTOR_ROOT;
-  if (!executorRoot) { _permCheck = false; return; }
+function buildPermissionEnv(env = process.env) {
+  const permEnv = {
+    role: env.CPB_ACP_ROLE || null,
+    project: env.CPB_ACP_PROJECT || null,
+    jobId: env.CPB_ACP_JOB_ID || null,
+    phase: env.CPB_ACP_PHASE || null,
+    cpbRoot: env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || null,
+    sourcePath: env.CPB_PROJECT_PATH_OVERRIDE || env.CPB_ACP_CWD || null,
+  };
+  return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
+}
+
+async function loadPermissionModules(env = process.env) {
+  if (_permCheck !== null) return buildPermissionEnv(env);
+  const executorRoot = env.CPB_EXECUTOR_ROOT;
+  if (!executorRoot) return null;
   try {
     const pm = await import(path.join(executorRoot, "server/services/permission-matrix.js"));
     _permCheck = pm.checkPermission;
     _permEvaluate = pm.evaluatePermissionDecision;
     _permRecord = pm.recordPermissionDenial;
-    _permEnv = {
-      role: process.env.CPB_ACP_ROLE || null,
-      project: process.env.CPB_ACP_PROJECT || null,
-      jobId: process.env.CPB_ACP_JOB_ID || null,
-      phase: process.env.CPB_ACP_PHASE || null,
-      cpbRoot: process.env.CPB_ACP_CPB_ROOT || process.env.CPB_ROOT || null,
-      sourcePath: process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || null,
-    };
-    if (!_permEnv.role || !_permEnv.project || !_permEnv.cpbRoot) {
-      _permCheck = false; // not enough context, skip enforcement
-    }
+    return buildPermissionEnv(env);
   } catch {
     _permCheck = false;
   }
+  return null;
 }
 
 function isRepeatedDenial(targetPath, action) {
@@ -59,16 +61,16 @@ function isRepeatedDenial(targetPath, action) {
   return identicalCount >= 3;
 }
 
-async function enforcePermission(action, targetPath) {
-  await loadPermissionModules();
-  if (!_permCheck || !_permEnv) return { allowed: true };
+async function enforcePermission(action, targetPath, env = process.env) {
+  const permEnv = await loadPermissionModules(env);
+  if (!_permCheck || !permEnv) return { allowed: true };
 
   // Use ReAct-style decision envelope when available
   if (_permEvaluate) {
     const decision = _permEvaluate(
-      _permEnv.role, _permEnv.phase, action, targetPath,
-      _permEnv.cpbRoot, _permEnv.project,
-      { sourcePath: _permEnv.sourcePath }
+      permEnv.role, permEnv.phase, action, targetPath,
+      permEnv.cpbRoot, permEnv.project,
+      { sourcePath: permEnv.sourcePath }
     );
 
     if (decision.allowed) return decision;
@@ -77,13 +79,13 @@ async function enforcePermission(action, targetPath) {
     denialHistory.push({ targetPath, action, ts: Date.now(), classification: decision.classification });
     if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
 
-    if (_permRecord && _permEnv.jobId) {
-      await _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
-        role: _permEnv.role,
+    if (_permRecord && permEnv.jobId) {
+      await _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
+        role: permEnv.role,
         action,
         targetPath,
         reason: decision.reason || "action denied by permission matrix",
-        phase: _permEnv.phase,
+        phase: permEnv.phase,
         allowedBoundary: "",
         recoveryGuidance: decision.recoveryGuidance || "",
       }).catch(() => {});
@@ -93,9 +95,9 @@ async function enforcePermission(action, targetPath) {
   }
 
   // Fallback to legacy checkPermission
-  const result = _permCheck(_permEnv.role, action, targetPath, _permEnv.cpbRoot, _permEnv.project, {
-    sourcePath: _permEnv.sourcePath,
-    jobId: _permEnv.jobId,
+  const result = _permCheck(permEnv.role, action, targetPath, permEnv.cpbRoot, permEnv.project, {
+    sourcePath: permEnv.sourcePath,
+    jobId: permEnv.jobId,
   });
 
   if (result.allowed) return result;
@@ -103,13 +105,13 @@ async function enforcePermission(action, targetPath) {
   denialHistory.push({ targetPath, action, ts: Date.now() });
   if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
 
-  if (_permRecord && _permEnv.jobId) {
-    await _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
-      role: _permEnv.role,
+  if (_permRecord && permEnv.jobId) {
+    await _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
+      role: permEnv.role,
       action,
       targetPath,
       reason: result.reason || "write denied by permission matrix",
-      phase: _permEnv.phase,
+      phase: permEnv.phase,
       allowedBoundary: result.allowedBoundary || "",
       recoveryGuidance: result.recoveryGuidance || "",
     }).catch(() => {});
@@ -118,27 +120,28 @@ async function enforcePermission(action, targetPath) {
   return result;
 }
 
-function enforcePermissionSync(action, target) {
-  if (!_permCheck || !_permEnv) return { allowed: true };
+function enforcePermissionSync(action, target, env = process.env) {
+  const permEnv = buildPermissionEnv(env);
+  if (!_permCheck || !permEnv) return { allowed: true };
 
   // Use ReAct-style decision envelope when available
   if (_permEvaluate) {
     const decision = _permEvaluate(
-      _permEnv.role, _permEnv.phase, action, target,
-      _permEnv.cpbRoot, _permEnv.project,
-      { sourcePath: _permEnv.sourcePath }
+      permEnv.role, permEnv.phase, action, target,
+      permEnv.cpbRoot, permEnv.project,
+      { sourcePath: permEnv.sourcePath }
     );
     if (decision.allowed) return decision;
 
     denialHistory.push({ targetPath: target, action, ts: Date.now(), classification: decision.classification });
     if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
-    if (_permRecord && _permEnv.jobId) {
-      _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
-        role: _permEnv.role,
+    if (_permRecord && permEnv.jobId) {
+      _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
+        role: permEnv.role,
         action,
         targetPath: target,
         reason: decision.reason || "action denied by permission matrix",
-        phase: _permEnv.phase,
+        phase: permEnv.phase,
         recoveryGuidance: decision.recoveryGuidance || "",
       }).catch(() => {});
     }
@@ -146,20 +149,20 @@ function enforcePermissionSync(action, target) {
   }
 
   // Legacy path
-  const result = _permCheck(_permEnv.role, action, target, _permEnv.cpbRoot, _permEnv.project, {
-    sourcePath: _permEnv.sourcePath,
-    jobId: _permEnv.jobId,
+  const result = _permCheck(permEnv.role, action, target, permEnv.cpbRoot, permEnv.project, {
+    sourcePath: permEnv.sourcePath,
+    jobId: permEnv.jobId,
   });
   if (result.allowed) return result;
   denialHistory.push({ targetPath: target, action, ts: Date.now() });
   if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
-  if (_permRecord && _permEnv.jobId) {
-    _permRecord(_permEnv.cpbRoot, _permEnv.project, _permEnv.jobId, {
-      role: _permEnv.role,
+  if (_permRecord && permEnv.jobId) {
+    _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
+      role: permEnv.role,
       action,
       targetPath: target,
       reason: result.reason || "action denied by permission matrix",
-      phase: _permEnv.phase,
+      phase: permEnv.phase,
     }).catch(() => {});
   }
   return result;
@@ -167,8 +170,8 @@ function enforcePermissionSync(action, target) {
 
 const PROTOCOL_VERSION = 1;
 
-export async function parseToolPolicy() {
-  const policyFilePath = process.env.CPB_ACP_TOOL_POLICY_FILE;
+export async function parseToolPolicy(env = process.env) {
+  const policyFilePath = env.CPB_ACP_TOOL_POLICY_FILE;
 
   // 1. Highest priority: JSON policy file
   if (policyFilePath) {
@@ -201,8 +204,8 @@ export async function parseToolPolicy() {
   }
 
   // 2. Flat env var format
-  const denyTools = process.env.CPB_ACP_DENY_TOOLS;
-  const allowTools = process.env.CPB_ACP_ALLOW_TOOLS;
+  const denyTools = env.CPB_ACP_DENY_TOOLS;
+  const allowTools = env.CPB_ACP_ALLOW_TOOLS;
 
   if (denyTools || allowTools) {
     const policy = new Map();
@@ -225,7 +228,7 @@ export async function parseToolPolicy() {
   }
 
   // 3. Legacy: CPB_ACP_TERMINAL=deny maps to terminal/create=deny
-  if (process.env.CPB_ACP_TERMINAL === "deny") {
+  if (env.CPB_ACP_TERMINAL === "deny") {
     const policy = new Map();
     policy.set("terminal/create", "deny");
     return policy;
@@ -313,18 +316,19 @@ function defaultAgentCommand(agent) {
 export async function resolveAgentCommand(agent, env = process.env) {
   // Try registry-based resolution first
   try {
-    const { loadRegistry, resolveAgentCommand: registryResolve, hasAgent } = await import("../core/agents/registry.js");
+    const { loadRegistry, getDescriptor, hasAgent } = await import("../core/agents/registry.js");
     await loadRegistry();
     if (hasAgent(agent)) {
-      const resolved = registryResolve(agent);
-      if (resolved) {
-        const upper = agent.toUpperCase();
-        const command = env[`CPB_ACP_${upper}_COMMAND`] || resolved.command;
-        const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...(resolved.args || [])];
+      const descriptor = getDescriptor(agent);
+      if (descriptor) {
+        const prefix = descriptor.envPrefix || `CPB_ACP_${agent.toUpperCase()}`;
+        const envCommand = env[`${prefix}_COMMAND`];
+        const command = envCommand || descriptor.command;
+        const args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
 
         // Fallback: if primary command not found and descriptor has fallback
-        if (resolved.source === "descriptor" && resolved.fallbackCommand && !commandExists(command)) {
-          return { command: resolved.fallbackCommand, args: [...(resolved.fallbackArgs || [])] };
+        if (!envCommand && descriptor.fallbackCommand && !commandExists(command)) {
+          return { command: descriptor.fallbackCommand, args: [...(descriptor.fallbackArgs || [])] };
         }
 
         // Codex headless config
@@ -363,9 +367,9 @@ function jsonRpcError(code, message, data) {
   return err;
 }
 
-export function resolveWriteAllowPaths(cwd = process.cwd()) {
-  return process.env.CPB_ACP_WRITE_ALLOW
-    ? process.env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
+export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
+  return env.CPB_ACP_WRITE_ALLOW
+    ? env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
         p.trim().includes("*") ? path.resolve(cwd, p.trim()) : path.resolve(p.trim())
       )
     : null;
@@ -637,7 +641,7 @@ export class AcpClient {
 
   async handleClientRequest(message) {
     try {
-      await loadPermissionModules();
+      await loadPermissionModules(this.env);
 
       // Headless UI tool denial (issue #62)
       const launchProfile = this.env.CPB_ACP_LAUNCH_PROFILE;
@@ -746,7 +750,7 @@ export class AcpClient {
   }
 
   async readTextFile(params) {
-    const permResult = await enforcePermission("read", params.path);
+    const permResult = await enforcePermission("read", params.path, this.env);
     if (!permResult.allowed) {
       const err = new Error(`read denied: ${params.path} (${permResult.reason})`);
       err.classification = permResult.classification || "deny";
@@ -790,7 +794,7 @@ export class AcpClient {
     const targetPath = params.path;
     this.validateWritePath(targetPath);
 
-    const permResult = await enforcePermission("write", targetPath);
+    const permResult = await enforcePermission("write", targetPath, this.env);
     if (!permResult.allowed) {
       const classification = permResult.classification || "deny";
       const msg = permResult.recoveryGuidance
@@ -839,7 +843,7 @@ export class AcpClient {
   }
 
   permissionResponse(params) {
-    const wantsReject = process.env.CPB_ACP_PERMISSION === "reject";
+    const wantsReject = this.env.CPB_ACP_PERMISSION === "reject";
     const options = params?.options || [];
     const preferred = options.find((option) =>
       wantsReject ? option.kind?.startsWith("reject") : option.kind?.startsWith("allow")
@@ -858,7 +862,7 @@ export class AcpClient {
 
     const terminalCwd = params.cwd || this.cwd;
     const commandLine = [params.command, ...(params.args || [])].join(" ");
-    const permResult = enforcePermissionSync("execute", commandLine);
+    const permResult = enforcePermissionSync("execute", commandLine, this.env);
     if (!permResult.allowed) {
       const classification = permResult.classification || "deny";
       const msg = permResult.recoveryGuidance
