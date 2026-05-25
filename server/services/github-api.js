@@ -139,6 +139,23 @@ export async function createPullRequestWithApi(request, config, { env = process.
   };
 }
 
+// --- Transport: close issue ---
+
+export async function closeGithubIssueWithApi({ repo, number, body }, config, { env = process.env } = {}) {
+  const token = await getInstallationToken(config, { env });
+  const patch = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${number}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ state: "closed", body: body || undefined }),
+  });
+  return {
+    url: patch.html_url || patch.url || null,
+    html_url: patch.html_url || null,
+    number: patch.number || null,
+    state: patch.state || null,
+  };
+}
+
 // --- Composite transport selector ---
 
 export async function resolveGithubTransport(hubRoot, { env = process.env } = {}) {
@@ -151,18 +168,22 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
     return {
       mode: "api",
       config,
+      getToken: () => getInstallationToken(config, { env }),
       postComment: (req) => postGithubCommentWithApi(req, config, { env }),
       createPullRequest: (req) => createPullRequestWithApi(req, config, { env }),
+      closeIssue: (req) => closeGithubIssueWithApi(req, config, { env }),
     };
   }
 
   // Fallback: use gh CLI
   const { postGithubCommentWithGh } = await import("./github-comments.js");
   const { createPullRequestWithGh } = await import("./github-pr.js");
+  const { closeGithubIssueWithGh } = await import("./github-issues.js");
   return {
     mode: "gh",
     config,
     postComment: (req) => postGithubCommentWithGh(req),
     createPullRequest: (req) => createPullRequestWithGh(req),
+    closeIssue: (req) => closeGithubIssueWithGh(req),
   };
 }

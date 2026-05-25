@@ -85,6 +85,13 @@ async function resolveRepo(repo, { cwd, execFile } = {}) {
   return stdout.trim();
 }
 
+export async function closeGithubIssueWithGh({ repo, number, body }, { runCommand = execFileAsync } = {}) {
+  const args = ["issue", "close", String(number), "--repo", repo];
+  if (body) args.push("--comment", body);
+  await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+  return { ok: true };
+}
+
 export async function syncGithubIssuesFromGh(hubRoot, {
   repo,
   projectId = "flow",

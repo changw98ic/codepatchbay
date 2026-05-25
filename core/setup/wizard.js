@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -231,7 +232,7 @@ export async function runSetupWizard({
     }
   }
 
-  // Auth retry loop: if health degraded, show provider command, ask to run, rerun
+  // Auth retry loop: if health degraded, show provider command, ask to run, spawn it, then re-check
   if (runAuthCheck && mode === "interactive" && (input.isTTY || typeof questionFn === "function")) {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -255,6 +256,34 @@ export async function runSetupWizard({
       const retryAnswer = await askQuestion("Run provider auth command now? (y/N) ", questionFn);
       if (!yes(retryAnswer)) break;
 
+      // Spawn each provider-native auth command with stdio inherit
+      for (const agent of degraded) {
+        const auth = result.auth[agent.id];
+        const nativeCommand = auth?.providerNativeCommand;
+        if (nativeCommand) {
+          const [cmd, ...args] = nativeCommand.split(/\s+/);
+          if (stdio === "inherit") {
+            console.log(`\n[setup] Running: ${nativeCommand}\n`);
+          }
+          await new Promise((resolve) => {
+            const child = spawn(cmd, args, { stdio: "inherit", shell: false });
+            child.on("close", (code) => {
+              if (stdio === "inherit") {
+                console.log(`\n[setup] ${agent.displayName} auth command exited with code ${code}\n`);
+              }
+              resolve();
+            });
+            child.on("error", (err) => {
+              if (stdio === "inherit") {
+                console.error(`\n[setup] Failed to run ${agent.displayName} auth command: ${err.message}\n`);
+              }
+              resolve();
+            });
+          });
+        }
+      }
+
+      // Re-check health and auth after commands complete
       for (const agent of degraded) {
         try {
           result.health[agent.id] = await healthCheckFn(agent.id);

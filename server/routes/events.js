@@ -1,6 +1,6 @@
 import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, ciFailureToCandidate } from "../services/event-source.js";
 import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/task-brain.js";
-import { createJob } from "../services/job-store.js";
+import { enqueue } from "../services/hub-queue.js";
 import { getProject } from "../services/hub-registry.js";
 import { buildJobArtifactDetail } from "../services/job-artifact-detail.js";
 
@@ -98,24 +98,24 @@ export function eventRoutes(fastify, opts, done) {
       if (dispatched.length >= budget.remaining) break;
 
       try {
-        const job = await createJob(req.cpbRoot, {
-          project: candidate.projectId || recommendation.candidateId,
-          task: recommendation.taskDescription,
-          workflow: recommendation.recommendedWorkflow,
-          sourceContext: {
-            type: "proactive",
+        const entry = await enqueue(req.cpbHubRoot || req.cpbRoot, {
+          projectId: candidate.projectId || recommendation.candidateId,
+          description: recommendation.taskDescription,
+          metadata: {
+            workflow: recommendation.recommendedWorkflow,
+            source: "proactive",
             candidateId: candidate.id,
-            source: candidate.source,
+            sourceContext: candidate.source,
             category: recommendation.category,
           },
         });
 
         await updateCandidate(req.cpbRoot, candidate.id, {
           status: "dispatched",
-          reason: `job ${job.jobId}`,
+          reason: `queue ${entry.id}`,
         });
 
-        dispatched.push({ candidateId: candidate.id, jobId: job.jobId, category: recommendation.category });
+        dispatched.push({ candidateId: candidate.id, queueEntryId: entry.id, category: recommendation.category });
       } catch (err) {
         dispatched.push({ candidateId: candidate.id, error: err.message });
       }

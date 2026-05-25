@@ -173,6 +173,7 @@ export async function finalizeSuccessfulQueueEntry({
   issueCloser,
   runCommand = execFileAsync,
   createPullRequest,
+  pushToken = null,
   dataRoot,
 } = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
@@ -299,6 +300,7 @@ export async function finalizeSuccessfulQueueEntry({
       branchPushed: false,
       createPullRequest,
       runCommand,
+      pushToken,
     });
     if (pr.status !== "pr.opened") {
       return reject("PR_FINALIZE_FAILED", {

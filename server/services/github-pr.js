@@ -67,6 +67,7 @@ async function runGit(cwd, args, { runCommand = execFileAsync } = {}) {
 export async function preparePullRequestBranchWithGit(request, job, {
   runCommand = execFileAsync,
   remote = "origin",
+  token = null,
 } = {}) {
   if (!job?.worktree) {
     return {
@@ -86,7 +87,12 @@ export async function preparePullRequestBranchWithGit(request, job, {
       const rev = await runGit(job.worktree, ["rev-parse", "HEAD"], { runCommand });
       commit = String(rev.stdout || "").trim() || null;
     }
-    await runGit(job.worktree, ["push", remote, `HEAD:refs/heads/${request.head}`], { runCommand });
+    if (token && request.repo) {
+      const httpsUrl = `https://x-access-token:${token}@github.com/${request.repo}.git`;
+      await runGit(job.worktree, ["push", httpsUrl, `HEAD:refs/heads/${request.head}`], { runCommand });
+    } else {
+      await runGit(job.worktree, ["push", remote, `HEAD:refs/heads/${request.head}`], { runCommand });
+    }
     return {
       ok: true,
       committed: hasChanges,
@@ -147,6 +153,7 @@ export async function openDraftPullRequest({
   dryRun = false,
   createPullRequest,
   runCommand,
+  pushToken = null,
 } = {}) {
   if (!isPass(verdict)) {
     return {
@@ -179,7 +186,7 @@ export async function openDraftPullRequest({
 
   let branchPreparation = null;
   if (!branchPushed) {
-    branchPreparation = await preparePullRequestBranchWithGit(request, job, { runCommand });
+    branchPreparation = await preparePullRequestBranchWithGit(request, job, { runCommand, token: pushToken });
     if (!branchPreparation.ok) {
       return blocked(branchPreparation.reason || "branch has not been pushed", {
         ...evidence,

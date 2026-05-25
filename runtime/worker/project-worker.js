@@ -601,6 +601,21 @@ export class ProjectWorker {
     }
 
     const transport = await this._resolveGithubTransport();
+    const issueCloser = transport?.closeIssue
+      ? async ({ repo, number, jobId, commit }) => {
+          const body = [
+            `Closed by CodePatchbay job ${jobId}.`,
+            commit ? `Commit: ${commit}` : null,
+          ].filter(Boolean).join("\n");
+          await transport.closeIssue({ repo, number, body });
+        }
+      : this._issueCloser;
+    let pushToken = null;
+    if (transport?.mode === "api" && typeof transport.getToken === "function") {
+      try {
+        pushToken = await transport.getToken();
+      } catch {}
+    }
     const finalizer = await this._finalizerFn({
       cpbRoot: this.cpbRoot,
       project: projectId,
@@ -608,8 +623,9 @@ export class ProjectWorker {
       job,
       sourcePath,
       mode: this.autoFinalizerMode,
-      issueCloser: this._issueCloser,
+      issueCloser,
       createPullRequest: transport?.createPullRequest || null,
+      pushToken,
     });
     return {
       ...finalizer,
