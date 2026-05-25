@@ -391,6 +391,8 @@ export function materializeJob(events) {
     phase: null,
     attempt: null,
     workflow: null,
+    planMode: null,
+    planDecision: null,
     executor: null,
     artifacts: {},
     completedPhases: [],
@@ -437,6 +439,7 @@ export function materializeJob(events) {
     indexSnapshotId: null,
     sourceFingerprint: null,
     indexFreshness: null,
+    routingFeedback: null,
     approval: null,
   };
 
@@ -452,6 +455,7 @@ export function materializeJob(events) {
     if (event.project !== undefined) state.project = event.project;
     if (!isPostTerminalEvent && event.attempt !== undefined) state.attempt = event.attempt;
     if (!isPostTerminalEvent && event.workflow !== undefined) state.workflow = event.workflow;
+    if (!isPostTerminalEvent && event.planMode !== undefined) state.planMode = event.planMode;
     if (event.ts !== undefined) state.updatedAt = event.ts;
 
     switch (event.type) {
@@ -468,6 +472,28 @@ export function materializeJob(events) {
         if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
         if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
         terminal = false;
+        break;
+      case "plan_decision":
+        state.planMode = event.planMode ?? state.planMode;
+        state.planDecision = {
+          workflow: event.workflow ?? state.workflow,
+          planMode: event.planMode ?? null,
+          runPlan: event.runPlan ?? null,
+          reason: event.reason ?? null,
+          decidedAt: event.ts ?? null,
+        };
+        break;
+      case "executor_routing_feedback":
+        state.routingFeedback = {
+          phase: event.phase ?? null,
+          requested: event.requested ?? null,
+          reason: event.reason ?? null,
+          confidence: event.confidence ?? null,
+          signals: event.signals ?? [],
+          upgradedQueueEntryId: event.upgradedQueueEntryId ?? null,
+          feedbackPath: event.feedbackPath ?? null,
+          at: event.ts ?? null,
+        };
         break;
       case "agent_routing_decision":
         state.executorSelection = event.executorSelection ?? {

@@ -24,6 +24,7 @@ import {
 } from "../../server/services/worker-dispatch.js";
 import { executorEnv, resolveExecutorRoot } from "../../server/services/executor-root.js";
 import { isWorkflowName, listWorkflows } from "../../core/workflow/definition.js";
+import { ROUTING_FEEDBACK_EXIT_CODE } from "../../core/workflow/dispatch-feedback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -89,6 +90,11 @@ function workflowForEntry(entry, fallback) {
   return isWorkflowName(candidate) ? candidate : fallback || "standard";
 }
 
+function planModeForEntry(entry, fallback = "auto") {
+  const candidate = entry?.metadata?.planMode || fallback || "auto";
+  return ["auto", "none", "light", "full", "parent"].includes(candidate) ? candidate : fallback || "auto";
+}
+
 function sourceContextFromQueueEntry(entry) {
   const metadata = entry?.metadata || {};
   const queueEntryId = entry?.id || null;
@@ -107,6 +113,7 @@ function sourceContextFromQueueEntry(entry) {
       failedQueueId: metadata.originQueueId ?? null,
       failedJobId: metadata.originJobId ?? null,
       failureArtifact: metadata.failureArtifact ?? null,
+      sddTrace: metadata.sddTrace ?? null,
     };
   }
 
@@ -126,6 +133,7 @@ function sourceContextFromQueueEntry(entry) {
       issueNumber: metadata.issueNumber ?? null,
       issueUrl: metadata.issueUrl ?? null,
       repo: metadata.repo ?? null,
+      sddTrace: metadata.sddTrace ?? null,
     };
   }
 
@@ -678,6 +686,7 @@ export class ProjectWorker {
 
     const projectId = overrideProjectId || this.project?.id;
     const workflow = workflowForEntry(entry, this.workflow);
+    const planMode = planModeForEntry(entry, process.env.CPB_WORKER_PLAN_MODE || "auto");
     const sourceContext = sourceContextFromQueueEntry(entry);
     return new Promise((resolve) => {
       const args = [
@@ -685,6 +694,7 @@ export class ProjectWorker {
         "--project", projectId,
         "--task", entry.description || entry.id,
         "--workflow", workflow,
+        "--plan-mode", planMode,
       ];
       if (sourcePath) args.push("--source-path", sourcePath);
       if (dispatchId) args.push("--dispatch-id", dispatchId);
@@ -709,6 +719,7 @@ export class ProjectWorker {
         CPB_FAILED_QUEUE_ID: entry.metadata?.originQueueId ?? "",
         CPB_FAILED_JOB_ID: entry.metadata?.originJobId ?? "",
         CPB_FAILURE_ARTIFACT: entry.metadata?.failureArtifact ?? "",
+        CPB_PLAN_MODE: planMode,
         CPB_INDEX_SNAPSHOT_JSON: entry.metadata?.indexSnapshot
           ? JSON.stringify(entry.metadata.indexSnapshot)
           : "",
@@ -787,6 +798,17 @@ export class ProjectWorker {
         entry,
         preflight: result.preflight,
       };
+    }
+
+    if (result.code === ROUTING_FEEDBACK_EXIT_CODE) {
+      await updateEntry(this.hubRoot, entry.id, {
+        status: "completed",
+        metadata: {
+          finalDisposition: entry.metadata?.finalDisposition || "superseded.routing_feedback",
+          routingFeedbackHandledAt: new Date().toISOString(),
+        },
+      }).catch(() => {});
+      return { entry, result };
     }
 
     const finalStatus = result.ok ? "completed" : "failed";

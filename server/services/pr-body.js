@@ -19,6 +19,21 @@ function testLines(tests) {
   return tests.map((test) => `- ${test}`);
 }
 
+function sddTraceLines(trace) {
+  if (!trace) return [];
+  const artifacts = trace.artifacts || {};
+  return [
+    "",
+    "## SDD Trace",
+    "",
+    `- Trace: ${valueOrUnavailable(trace.traceId)}`,
+    `- Status: ${valueOrUnavailable(trace.status)}`,
+    `- Spec: ${valueOrUnavailable(trace.spec || artifacts.spec)}`,
+    `- Design: ${valueOrUnavailable(trace.design || artifacts.design)}`,
+    `- Tasks: ${valueOrUnavailable(trace.tasks || artifacts.tasks)}`,
+  ];
+}
+
 export function buildCodePatchBayPrBody({
   job = {},
   agents = {},
@@ -26,6 +41,7 @@ export function buildCodePatchBayPrBody({
   tests = [],
   verdict = {},
   audit = {},
+  sddTrace = null,
 } = {}) {
   const issue = job.sourceContext?.issueNumber ? `#${job.sourceContext.issueNumber}` : "unavailable";
   const repo = job.sourceContext?.repo || "unavailable";
@@ -53,6 +69,7 @@ export function buildCodePatchBayPrBody({
     `- Deliverable: ${artifactRef(artifacts.deliverable)}`,
     `- Review: ${artifactRef(artifacts.review)}`,
     `- Diff: ${artifactRef(artifacts.diff)}`,
+    ...sddTraceLines(sddTrace || job.sddTrace || job.sourceContext?.sddTrace),
     "",
     "## Tests",
     "",

@@ -15,6 +15,12 @@ import { maybeOpenDraftPrAfterPass } from "../server/services/github-pr.js";
 import { ensureIndexFresh, parseEnvSnapshot, snapshotForJob } from "../server/services/index-freshness.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
+  ROUTING_FEEDBACK_EXIT_CODE,
+  buildRoutingFeedbackEvent,
+  readDispatchFeedbackFile,
+} from "../core/workflow/dispatch-feedback.js";
+import {
+  blockJob,
   completeJob,
   completePhase,
   createJob,
@@ -25,6 +31,7 @@ import {
   getJob,
   recordWorktreeCreated,
 } from "../server/services/job-store.js";
+import { enqueue as enqueueQueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
 import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "../core/workflow/definition.js";
 import { executeDag } from "../core/workflow/dag-executor.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
@@ -47,6 +54,8 @@ import {
   resolveDeliverableIssue,
   validateIssueMatch,
 } from "../server/services/artifact-integrity.js";
+
+const PLAN_MODES = new Set(["auto", "none", "light", "full", "parent"]);
 
 // ─── CLI arg parsing ───
 
@@ -71,7 +80,7 @@ function parseArgs(argv) {
   const task = options.get("--task");
 
   if (!project || !task) {
-    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|complex|blocked]");
+    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|direct|complex|sdd-standard|blocked] [--plan-mode auto|none|light|full|parent]");
   }
 
   if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
@@ -84,6 +93,10 @@ function parseArgs(argv) {
   if (!isWorkflowName(workflow)) {
     throw new Error(`invalid workflow: ${workflow}`);
   }
+  const planMode = options.get("--plan-mode") || process.env.CPB_PLAN_MODE || "auto";
+  if (!PLAN_MODES.has(planMode)) {
+    throw new Error(`invalid planMode: ${planMode}`);
+  }
 
   const jobIdOverride = options.get("--job-id") || null;
   const dispatchId = options.get("--dispatch-id") || null;
@@ -92,7 +105,7 @@ function parseArgs(argv) {
   const uiLaneReason = options.get("--ui-lane-reason") || "";
   const teamPolicyJson = options.get("--team-policy-json") || null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
+  return { project, task, maxRetries, timeoutMin, workflow, planMode, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -499,12 +512,40 @@ export async function parseVerdict(verdictPath) {
 
 export function buildExecuteScriptArgs({ project, planId, jobId, retryInput } = {}) {
   const args = ["execute", "--project", project];
+  if (jobId) args.push("--job-id", jobId);
   if (planId) args.push("--plan-id", planId);
-  else if (jobId) args.push("--job-id", jobId);
   if (retryInput?.shouldRetry && retryInput.previousVerdictPath) {
     args.push("--verdict-file", retryInput.previousVerdictPath);
   }
   return args;
+}
+
+export function resolvePlanDecision(workflowDef, { planMode = "auto" } = {}) {
+  if (!workflowDef?.phases?.includes("plan")) {
+    return {
+      planMode: "none",
+      runPlan: false,
+      reason: "workflow has no plan phase",
+    };
+  }
+
+  if (!PLAN_MODES.has(planMode)) {
+    throw new Error(`invalid planMode: ${planMode}`);
+  }
+  const normalized = planMode;
+  if (normalized === "none") {
+    return {
+      planMode: "none",
+      runPlan: false,
+      reason: "planMode=none",
+    };
+  }
+
+  return {
+    planMode: normalized === "auto" ? "full" : normalized,
+    runPlan: true,
+    reason: "plan phase enabled",
+  };
 }
 
 function retryInputEventFields(retryInput) {
@@ -668,6 +709,7 @@ export async function runPipeline({
   maxRetries = 3,
   timeoutMin = 0,
   workflow = "standard",
+  planMode = "auto",
   jobIdOverride = null,
   dispatchId: providedDispatchId = null,
   acpProfile = null,
@@ -724,8 +766,56 @@ export async function runPipeline({
     await fn(hubRoot, dispatchId).catch(() => {});
   }
 
-  let pipelineOk = false;
+  async function enqueueRoutingUpgrade(feedback, phaseName) {
+    const sourceQueueEntryId = sourceContext?.queueEntryId || process.env.CPB_QUEUE_ENTRY_ID || null;
+    if (!hubRoot || !sourceQueueEntryId) return null;
+
+    const existingEntries = await listQueue(hubRoot, { projectId: project }).catch(() => []);
+    const sourceEntry = existingEntries.find((entry) => entry.id === sourceQueueEntryId) || null;
+    const metadata = {
+      ...(sourceEntry?.metadata || {}),
+      workflow: feedback.requested.workflow,
+      planMode: feedback.requested.planMode,
+      requestedRoute: feedback.requested,
+      routingFeedback: {
+        jobId,
+        phase: phaseName,
+        reason: feedback.reason,
+        confidence: feedback.confidence,
+        signals: feedback.signals,
+      },
+      originQueueId: sourceQueueEntryId,
+      originJobId: jobId,
+      queueDedupeKey: `${sourceEntry?.metadata?.queueDedupeKey || sourceQueueEntryId}:routing-feedback:${jobId}`,
+      supersedesQueueEntryId: sourceQueueEntryId,
+    };
+    const upgraded = await enqueueQueue(hubRoot, {
+      projectId: sourceEntry?.projectId || project,
+      sourcePath: sourceEntry?.sourcePath || sourcePath,
+      sessionId: sourceEntry?.sessionId || process.env.CPB_SESSION_ID || null,
+      workerId: null,
+      cwd: sourceEntry?.cwd || null,
+      executionBoundary: sourceEntry?.executionBoundary || null,
+      type: "routing_upgrade",
+      priority: sourceEntry?.priority || "P1",
+      description: sourceEntry?.description || task,
+      metadata,
+    });
+
+    await updateEntry(hubRoot, sourceQueueEntryId, {
+      metadata: {
+        finalDisposition: "superseded.routing_feedback",
+        supersededByQueueEntryId: upgraded.id,
+        supersededByJobId: jobId,
+      },
+    }).catch(() => {});
+    return upgraded;
+  }
+
   const workflowDef = getWorkflow(workflow);
+  const planDecision = resolvePlanDecision(workflowDef, { planMode });
+  process.env.CPB_PLAN_MODE = planDecision.planMode;
+  let pipelineOk = false;
   const effectiveTeamPolicy = parseTeamPolicyInput(teamPolicy, teamPolicyJson);
   const phaseTotal = workflowDef.phases.length || 0;
   const phaseIndex = (phase) => {
@@ -799,6 +889,7 @@ export async function runPipeline({
     project,
     task,
     workflow,
+    planMode: planDecision.planMode,
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
     sourceContext,
@@ -808,6 +899,16 @@ export async function runPipeline({
     teamPolicy: effectiveTeamPolicy,
   });
   const jobId = job.jobId;
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "plan_decision",
+    jobId,
+    project,
+    workflow,
+    planMode: planDecision.planMode,
+    runPlan: planDecision.runPlan,
+    reason: planDecision.reason,
+    ts: ts(),
+  });
 
   // Structured line for project-worker to parse and write back jobId to queue entry
   const queueEntryId = process.env.CPB_QUEUE_ENTRY_ID || null;
@@ -880,7 +981,7 @@ export async function runPipeline({
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
   await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath, sourceContext);
-  log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
+  log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow}, planMode: ${planDecision.planMode})`);
 
   // Blocked workflow: record and exit without launching agents
   if (workflow === "blocked") {
@@ -914,96 +1015,106 @@ export async function runPipeline({
   }
 
   try {
-    // ─── Phase 1: Plan ───
-    {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled before plan", { code: FAILURE_CODES.BLOCKED, phase: "plan" }));
+    let planId = null;
+    if (planDecision.runPlan) {
+      // ─── Phase 1: Plan ───
+      {
+        const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
+        if (check.cancelled) {
+          await failJob(cpbRoot, project, jobId, failure("cancelled before plan", { code: FAILURE_CODES.BLOCKED, phase: "plan" }));
+          return 1;
+        }
+      }
+      log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
+      const planResult = await dispatchPhase(cpbRoot, {
+        project, jobId, phase: "plan",
+        script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
+        scriptArgs: ["plan", "--project", project, "--task", task],
+        executorRoot,
+        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        terminalOnFailure: false,
+      });
+
+      if (planResult.error) {
+        fail(`Plan spawn failed: ${planResult.error.message}`);
+        await failJob(cpbRoot, project, jobId, failure(`plan spawn error: ${planResult.error.message}`, {
+          code: FAILURE_CODES.RECOVERABLE,
+          phase: "plan",
+          cause: { message: planResult.error.message },
+        }));
         return 1;
       }
-    }
-    log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
-    const planResult = await dispatchPhase(cpbRoot, {
-      project, jobId, phase: "plan",
-      script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
-      scriptArgs: ["plan", "--project", project, "--task", task],
-      executorRoot,
-      env: executorEnv(process.env, { cpbRoot, executorRoot }),
-      terminalOnFailure: false,
-    });
 
-    if (planResult.error) {
-      fail(`Plan spawn failed: ${planResult.error.message}`);
-      await failJob(cpbRoot, project, jobId, failure(`plan spawn error: ${planResult.error.message}`, {
-        code: FAILURE_CODES.RECOVERABLE,
-        phase: "plan",
-        cause: { message: planResult.error.message },
-      }));
-      return 1;
-    }
-
-    if (checkTimeout()) {
-      await failJob(cpbRoot, project, jobId, failure("timed out after plan phase", {
-        code: FAILURE_CODES.RECOVERABLE,
-        phase: "plan",
-      }));
-      return 1;
-    }
-
-    const planId = extractPlanId(planResult.stdout);
-
-    if (!planId) {
-      fail("Plan not created. Aborting.");
-      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
-      await failJob(cpbRoot, project, jobId, failure("plan not created", {
-        code: FAILURE_CODES.FATAL,
-        phase: "plan",
-      }));
-      return 1;
-    }
-
-    // Validate plan artifact is non-empty before proceeding to execute
-    const planArtifactPath = path.resolve(wikiDir, "inbox", `plan-${planId}.md`);
-    const planValidation = await validateNonEmptyMarkdownArtifact({
-      path: planArtifactPath,
-      kind: "plan",
-      id: planId,
-    });
-
-    if (!planValidation.valid) {
-      fail(`Plan artifact invalid: ${planValidation.reason}`);
-      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
-      const planFailCause = {
-        artifact: `plan-${planId}`,
-        artifactPath: planArtifactPath,
-        artifactReason: planValidation.reason,
-      };
-      if (sourceContext) {
-        planFailCause.queueEntryId = sourceContext.queueEntryId;
-        planFailCause.issueNumber = sourceContext.issueNumber;
-        planFailCause.issueUrl = sourceContext.issueUrl;
-        planFailCause.failedQueueId = sourceContext.failedQueueId;
-        planFailCause.failedJobId = sourceContext.failedJobId;
-      }
-      await failJob(cpbRoot, project, jobId, failure(
-        `plan artifact ${planValidation.reason}: plan-${planId}`,
-        {
-          code: FAILURE_CODES.PLAN_ARTIFACT_INVALID,
+      if (checkTimeout()) {
+        await failJob(cpbRoot, project, jobId, failure("timed out after plan phase", {
+          code: FAILURE_CODES.RECOVERABLE,
           phase: "plan",
-          cause: planFailCause,
-        },
-      ));
-      return 1;
-    }
+        }));
+        return 1;
+      }
 
-    ok(`plan-${planId}`);
-    await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+      planId = extractPlanId(planResult.stdout);
 
-    // Cancel check after plan
-    {
+      if (!planId) {
+        fail("Plan not created. Aborting.");
+        await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
+        await failJob(cpbRoot, project, jobId, failure("plan not created", {
+          code: FAILURE_CODES.FATAL,
+          phase: "plan",
+        }));
+        return 1;
+      }
+
+      // Validate plan artifact is non-empty before proceeding to execute
+      const planArtifactPath = path.resolve(wikiDir, "inbox", `plan-${planId}.md`);
+      const planValidation = await validateNonEmptyMarkdownArtifact({
+        path: planArtifactPath,
+        kind: "plan",
+        id: planId,
+      });
+
+      if (!planValidation.valid) {
+        fail(`Plan artifact invalid: ${planValidation.reason}`);
+        await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+        const planFailCause = {
+          artifact: `plan-${planId}`,
+          artifactPath: planArtifactPath,
+          artifactReason: planValidation.reason,
+        };
+        if (sourceContext) {
+          planFailCause.queueEntryId = sourceContext.queueEntryId;
+          planFailCause.issueNumber = sourceContext.issueNumber;
+          planFailCause.issueUrl = sourceContext.issueUrl;
+          planFailCause.failedQueueId = sourceContext.failedQueueId;
+          planFailCause.failedJobId = sourceContext.failedJobId;
+        }
+        await failJob(cpbRoot, project, jobId, failure(
+          `plan artifact ${planValidation.reason}: plan-${planId}`,
+          {
+            code: FAILURE_CODES.PLAN_ARTIFACT_INVALID,
+            phase: "plan",
+            cause: planFailCause,
+          },
+        ));
+        return 1;
+      }
+
+      ok(`plan-${planId}`);
+      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+
+      // Cancel check after plan
+      {
+        const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
+        if (check.cancelled) {
+          await failJob(cpbRoot, project, jobId, failure("cancelled after plan", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
+          return 1;
+        }
+      }
+    } else {
+      log(project, `Skipping Plan phase (${planDecision.reason}, planMode: ${planDecision.planMode})`);
       const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
       if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after plan", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
+        await failJob(cpbRoot, project, jobId, failure("cancelled before execute", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
         return 1;
       }
     }
@@ -1051,7 +1162,7 @@ export async function runPipeline({
     }
 
     const dagResult = await executeDag(dag, {
-      seedCompleted: ["plan"],
+      seedCompleted: dag.nodes.some((node) => node.id === "plan") ? ["plan"] : [],
       shouldStop: () => timedOut,
       onBeforeNode: async (nodeId, ctx) => {
         const dagNode = ctx?.node ?? dag.nodes.find((n) => n.id === nodeId);
@@ -1108,9 +1219,9 @@ export async function runPipeline({
           }
         }
 
-        if (!result.ok && !result.retryable && !result.reactivate) {
+        if (!result.ok && !result.retryable && !result.reactivate && !result.jobTerminalHandled) {
           const job = await getJob(cpbRoot, project, jobId);
-          if (job && !["completed", "failed", "cancelled"].includes(job.status)) {
+          if (job && !["completed", "failed", "blocked", "cancelled"].includes(job.status)) {
             await failJob(cpbRoot, project, jobId, failure(result.reason, {
               code: result.failCode || FAILURE_CODES.FATAL,
               phase: result.failPhase || nodeId,
@@ -1143,6 +1254,32 @@ export async function runPipeline({
             buildExecuteScriptArgs({ project, planId, jobId, retryInput }),
             retryEnv,
           );
+          if (execResult.exitCode === ROUTING_FEEDBACK_EXIT_CODE) {
+            const feedbackResult = await readDispatchFeedbackFile(cpbRoot, project, jobId, { phase: phaseName });
+            const upgraded = await enqueueRoutingUpgrade(feedbackResult.feedback, phaseName);
+            await appendEvent(cpbRoot, project, jobId, {
+              ...buildRoutingFeedbackEvent(feedbackResult.feedback, {
+                jobId,
+                project,
+                phase: phaseName,
+                upgradedQueueEntryId: upgraded?.id || null,
+              }),
+              feedbackPath: feedbackResult.path,
+              ts: ts(),
+            });
+            await blockJob(cpbRoot, project, jobId, {
+              reason: `routing_feedback_superseded: ${feedbackResult.feedback.reason}`,
+            });
+            warn(`Executor requested routing upgrade${upgraded?.id ? `; queued ${upgraded.id}` : ""}.`);
+            return {
+              ok: false,
+              reason: "executor requested routing upgrade",
+              retryable: false,
+              failPhase: phaseName,
+              exitCode: ROUTING_FEEDBACK_EXIT_CODE,
+              jobTerminalHandled: true,
+            };
+          }
           const did = extractDeliverableId(execResult.stdout);
 
           if (did) {
@@ -1305,8 +1442,11 @@ export async function runPipeline({
       const failedNode = dagResult.failedNode;
       const failInfo = failedNode ? dagResult.results.get(failedNode) : null;
       const reason = dagResult.reason || failInfo?.reason || "unknown";
+      if (failInfo?.exitCode === ROUTING_FEEDBACK_EXIT_CODE) {
+        return ROUTING_FEEDBACK_EXIT_CODE;
+      }
       const job = await getJob(cpbRoot, project, jobId);
-      if (job && !["completed", "failed", "cancelled"].includes(job.status)) {
+      if (job && !["completed", "failed", "blocked", "cancelled"].includes(job.status)) {
         await failJob(cpbRoot, project, jobId, failure(reason, {
           code: failInfo?.failCode || FAILURE_CODES.FATAL,
           phase: failInfo?.failPhase || failedNode,

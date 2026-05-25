@@ -435,7 +435,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
   // These are the commands that should appear in help output
   const publicCommands = [
     "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline",
-    "demo", "research", "evolve-multi", "index", "repair",
+    "demo", "research", "evolve-multi", "index", "sdd", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
     "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "github", "wiki", "release",
     "cancel", "redirect", "merge-preview", "install-bin", "ui", "version", "audit",
@@ -452,7 +452,7 @@ test("all routed CLI command modules import successfully", async () => {
   // Module filenames (values in COMMANDS), deduplicated
   const moduleFiles = [
     "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
-    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
+    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "sdd", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "audit",
   ];
@@ -465,7 +465,7 @@ test("all routed CLI command modules import successfully", async () => {
 test("all routed command modules export run()", async () => {
   const moduleFiles = [
     "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
-    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
+    "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "sdd", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
   ];
@@ -491,7 +491,7 @@ test("cpb help shows correct repair signature", async () => {
 test("cpb help shows correct index signature", async () => {
   const result = await runNode(["./cpb", "help"]);
   const plain = result.stdout.replace(/\x1B\[[0-9;]*m/g, "");
-  assert.match(plain, /index\s+<status\|refresh> <project>/);
+  assert.match(plain, /index\s+<status\|refresh\|graph\|impact\|context-pack> <project>/);
   assert.doesNotMatch(plain, /index\s+<project>\s+.*Rebuild/);
 });
 
@@ -511,7 +511,7 @@ test("cpb repair without args shows correct usage", async () => {
 test("cpb index without args shows correct usage", async () => {
   const result = await runNode(["./cpb", "index"], { env: { CPB_ROOT: "/tmp/cpb-test-fake" } });
   assert.notEqual(result.code, 0);
-  assert.match(result.stdout + result.stderr, /Usage: cpb index <status\|refresh> <project>/);
+  assert.match(result.stdout + result.stderr, /Usage: cpb index <status\|refresh\|graph\|impact\|context-pack> <project>/);
 });
 
 // --- Orphan command files are intentional ---
@@ -531,7 +531,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
   const routedModules = new Set([
     "init.js", "attach.js", "hub.js", "daemon.js", "plan.js", "execute.js", "verify.js",
     "pipeline.js", "demo.js", "research.js", "status.js", "list.js", "jobs.js", "artifacts.js", "verdict.js",
-    "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
+    "evolve-multi.js", "index.js", "sdd.js", "repair.js", "diff.js", "review.js",
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js", "audit.js",
