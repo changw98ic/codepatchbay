@@ -16,6 +16,7 @@ import {
   _resetHookRegistration,
 } from "./phase-hooks.js";
 import { appendEvent } from "./event-store.js";
+import { buildChildEnv } from "./secret-policy.js";
 
 let hooksInitialized = false;
 
@@ -204,7 +205,11 @@ export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, sc
     ...(scriptArgs || []),
   ];
 
-  const result = await runChild("node", runnerArgs, cpbRoot, { env: env || process.env });
+  const runnerEnv = buildChildEnv(env || process.env, {
+    CPB_ROOT: cpbRoot,
+    CPB_EXECUTOR_ROOT: resolvedExecutorRoot,
+  });
+  const result = await runChild("node", runnerArgs, cpbRoot, { env: runnerEnv });
 
   // --- Post-hook or on-failure ---
   const bridgeOk = result.exitCode === 0;
