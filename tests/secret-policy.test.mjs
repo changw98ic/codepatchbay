@@ -3,6 +3,7 @@ import assert from "node:assert";
 import {
   buildAcpPoolEnv,
   buildChildEnv,
+  buildRuntimeEnv,
   redactSecrets,
   detectSecretInput,
   assertNoSecretInput,
@@ -68,6 +69,35 @@ describe("buildAcpPoolEnv", () => {
     assert.strictEqual(env.RANDOM_TOKEN, undefined);
     assert.strictEqual(env.CPB_ACP_POOL_SECRET, undefined);
     assert.strictEqual(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
+  });
+});
+
+describe("buildRuntimeEnv", () => {
+  it("forwards only runtime keys without provider credentials", () => {
+    const env = buildRuntimeEnv({
+      PATH: "/usr/bin",
+      HOME: "/tmp/home",
+      CPB_ROOT: "/tmp/cpb",
+      CPB_PORT: "4567",
+      CPB_HOST: "127.0.0.1",
+      OPENAI_API_KEY: "provider-secret",
+      DATABASE_URL: "postgres://user:pass@example/db",
+      RANDOM_TOKEN: "leak",
+    }, {
+      CPB_EXECUTOR_ROOT: "/tmp/executor",
+      EXTRA_SECRET: "extra-leak",
+    });
+
+    assert.strictEqual(env.PATH, "/usr/bin");
+    assert.strictEqual(env.HOME, "/tmp/home");
+    assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.CPB_PORT, "4567");
+    assert.strictEqual(env.CPB_HOST, "127.0.0.1");
+    assert.strictEqual(env.CPB_EXECUTOR_ROOT, "/tmp/executor");
+    assert.strictEqual(env.OPENAI_API_KEY, undefined);
+    assert.strictEqual(env.DATABASE_URL, undefined);
+    assert.strictEqual(env.RANDOM_TOKEN, undefined);
+    assert.strictEqual(env.EXTRA_SECRET, undefined);
   });
 });
 

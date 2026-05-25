@@ -4,6 +4,7 @@
 export {
   buildAcpPoolEnv,
   buildChildEnv,
+  buildRuntimeEnv,
   isAllowedChildEnvKey,
   RUNTIME_BASICS,
   CPB_RUNTIME_ENV,

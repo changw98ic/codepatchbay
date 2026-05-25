@@ -1,10 +1,24 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { buildChildEnv, buildRuntimeEnv } from "../../core/policy/child-env.js";
 
 const GREEN = "\x1b[0;32m";
 const BOLD = "\x1b[1m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
+
+export function buildUiServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, port, host } = {}) {
+  return buildChildEnv(parentEnv, {
+    CPB_PORT: port,
+    CPB_HOST: host,
+    CPB_ROOT: cpbRoot,
+    CPB_EXECUTOR_ROOT: executorRoot || cpbRoot,
+  });
+}
+
+export function buildUiDevServerEnv(parentEnv = process.env) {
+  return buildRuntimeEnv(parentEnv);
+}
 
 export async function run(args, { cpbRoot, executorRoot }) {
   let port = process.env.CPB_PORT || "3456";
@@ -18,7 +32,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   const serverRoot = executorRoot || cpbRoot;
   const server = spawn("node", [path.join(serverRoot, "server/index.js")], {
-    env: { ...process.env, CPB_PORT: port, CPB_HOST: host, CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: executorRoot || cpbRoot },
+    env: buildUiServerEnv(process.env, { cpbRoot, executorRoot, port, host }),
     stdio: "inherit",
   });
 
@@ -36,6 +50,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   if (hasWebSrc) {
     const vite = spawn("npx", ["vite", "--port", "5173"], {
       cwd: path.join(serverRoot, "web"),
+      env: buildUiDevServerEnv(process.env),
       stdio: "inherit",
     });
     vite.on("error", (err) => {

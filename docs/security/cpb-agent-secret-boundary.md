@@ -6,11 +6,14 @@ CPB enforces secret protection at these boundaries:
 
 ### Child Process Environment
 
-ACP/agent child processes and CPB-brokered terminal commands receive only an
-explicit env allowlist:
+ACP/agent child processes, CPB-brokered terminal commands, and CPB-launched
+Hub/UI backend servers receive only an explicit env allowlist:
 - **Runtime basics**: `PATH`, `HOME`, `SHELL`, `TERM`, `TMPDIR`, `TEMP`, `TMP`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CODEX_HOME`, `XDG_CACHE_HOME`, and CPB runtime vars.
 - **Provider credentials**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`.
 - Arbitrary `*_TOKEN`, `*_KEY`, `*_SECRET`, `DATABASE_URL`, and similar env vars are **not** forwarded.
+
+CPB-launched dependency-install helpers and the local Vite UI dev server use a
+narrower runtime-only allowlist and do not receive provider credentials.
 
 ### ACP Pool Environment Snapshot
 
@@ -65,11 +68,11 @@ These boundaries remain outside CPB enforcement until OS/container sandboxing is
 
 3. **Network exfiltration**: CPB cannot prevent an agent from sending data over the network if the agent has network access.
 
-4. **Trusted CPB host process**: CPB's own Node.js server/CLI process remains inside the trusted computing base and may hold provider credentials in its inherited environment. The ACP pool launch logic uses an allowlisted construction-time snapshot, and adapter child processes receive only allowlisted env, but CPB cannot fully isolate secrets from its own trusted process without moving provider orchestration into a separate OS/container boundary.
+4. **Trusted CPB host process**: The already-running CPB CLI/server process remains inside the trusted computing base. CPB-launched Hub/UI server children and ACP pool launches use allowlisted environments, but CPB cannot fully isolate secrets from a process that was itself started by the user with secrets already in its environment without moving that process into a separate OS/container boundary.
 
 5. **Already-running processes**: Secrets already present in the environment of a running CPB server or ACP adapter process cannot be recalled.
 
-6. **Runtime binary**: The Rust runtime binary (`cpb-runtime`) receives the full parent env because it is a trusted CPB component performing file and state operations directly.
+6. **Future runtime binaries**: This package currently ships the Node runtime path. Any future separate runtime binary must use the same explicit env allowlist before being documented as part of CPB's controlled boundary.
 
 ## Early Access Positioning
 
