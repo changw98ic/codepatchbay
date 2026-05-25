@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import useProjects from '../hooks/useProjects';
 import useHubData from '../hooks/useHubData';
@@ -7,9 +7,6 @@ import TodayBrief from '../components/TodayBrief';
 import AttentionQueue from '../components/AttentionQueue';
 import ProjectGrid from '../components/ProjectGrid';
 import HubHealthPanel from '../components/HubHealthPanel';
-import RecentDispatches from '../components/RecentDispatches';
-import DurableJobs from '../components/DurableJobs';
-import TaskLedger from '../components/TaskLedger';
 
 const PROJECT_ATTENTION_STATUSES = new Set(['failed', 'blocked', 'cancelled']);
 
@@ -22,22 +19,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
-  const selectedTaskId = searchParams.get('taskId') || null;
   const activeTab = searchParams.get('tab') || 'overview';
-
-  const setSelectedTaskId = useCallback((idOrFn) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      const current = next.get('taskId');
-      const nextId = typeof idOrFn === 'function' ? idOrFn(current) : idOrFn;
-      if (nextId) { next.set('taskId', nextId); } else { next.delete('taskId'); }
-      return next;
-    }, { replace: true });
-  }, [setSearchParams]);
-
-  const handleInitialTask = useCallback((id) => {
-    setSelectedTaskId((current) => current || id);
-  }, [setSelectedTaskId]);
 
   const setActiveTab = useCallback((newTab) => {
     setSearchParams((prev) => {
@@ -52,8 +34,34 @@ export default function Dashboard() {
     hubStatus, hubProjects, hubAcp, knowledgePolicy,
     queueStatus, queueEntries, hubDispatches, observability,
     taskLedger,
-  } = useHubData(diagnostics, handleInitialTask);
+  } = useHubData(diagnostics);
   const { durableTasks } = useDurableTasks();
+
+  // Pre-compute health tab data (hooks must be before any early return)
+  const recentDispatchesPre = useMemo(() =>
+    (hubDispatches || [])
+      .filter((d) => d.status && d.status !== 'pending')
+      .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
+      .slice(0, 5),
+    [hubDispatches]
+  );
+
+  const dispatchSummaryRows = useMemo(() =>
+    recentDispatchesPre.map(d => ({
+      project: d.projectId,
+      status: d.status,
+      time: d.updatedAt ? new Date(d.updatedAt).toLocaleTimeString() : '-',
+    })),
+    [recentDispatchesPre]
+  );
+
+  const durableJobsSummary = useMemo(() => {
+    const counts = { running: 0, completed: 0, failed: 0 };
+    (durableTasks || []).forEach(j => {
+      if (counts[j.status] !== undefined) counts[j.status]++;
+    });
+    return counts;
+  }, [durableTasks]);
 
   if (loading) return <div className="loading">Loading projects...</div>;
 
@@ -70,18 +78,13 @@ export default function Dashboard() {
     (observability?.workers?.details || []).map((w) => [w.id, w])
   );
 
-  const recentDispatches = hubDispatches
-    .filter((d) => d.status && d.status !== 'pending')
-    .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
-    .slice(0, 10);
-
   const allProjects = [...primaryProjects, ...secondaryProjects];
   const activeTasksCount = (taskLedger?.tasks || []).filter(t => t.status === 'running' || t.progress?.stage === 'running').length;
   const failedRunsCount = (observability?.dispatchSummary?.failed || 0) + (queueStatus?.failed || 0);
   const blockedProjectsCount = allProjects.filter(projectAttentionStatus).length;
   const completedRunsCount = observability?.dispatchSummary?.completed || 0;
 
-  // Attention items
+  // Attention items — capped at 3, no show-all toggle
   const attentionItems = [];
   allProjects.forEach(p => {
     const status = projectAttentionStatus(p);
@@ -108,18 +111,7 @@ export default function Dashboard() {
       });
     }
   });
-  (taskLedger?.tasks || []).forEach(task => {
-    if (task.status === 'failed' || task.progress?.stage === 'failed') {
-      attentionItems.push({
-        id: `task-${task.id}`,
-        project: task.projectId || 'Global',
-        reason: task.human?.summary || 'Task failed during agent execution',
-        impact: 'Proposed fixes and branch commits were not written back.',
-        action: 'Review Task',
-        link: task.projectId ? `/project/${task.projectId}?tab=tasks` : `/?taskId=${task.id}`
-      });
-    }
-  });
+  const cappedAttentionItems = attentionItems.slice(0, 3);
 
   return (
     <div className="dashboard animate-fade-in">
@@ -166,7 +158,7 @@ export default function Dashboard() {
           blockedProjects={blockedProjectsCount}
           completedRuns={completedRunsCount}
         />
-        <AttentionQueue items={attentionItems} onNavigate={(link) => navigate(link)} />
+        <AttentionQueue items={cappedAttentionItems} onNavigate={(link) => navigate(link)} />
         <ProjectGrid
           primaryProjects={primaryProjects}
           secondaryProjects={secondaryProjects}
@@ -192,17 +184,34 @@ export default function Dashboard() {
           queueStatus={queueStatus}
           queueEntries={queueEntries}
         />
-        <RecentDispatches dispatches={recentDispatches} />
-        <DurableJobs tasks={durableTasks} />
-      </div>
 
-      {/* TASK LEDGER (visible in overview) */}
-      <div className={activeTab === 'overview' ? '' : 'hidden'}>
-        <TaskLedger
-          taskLedger={taskLedger}
-          selectedTaskId={selectedTaskId}
-          onSelectedTaskIdChange={setSelectedTaskId}
-        />
+        {dispatchSummaryRows.length > 0 && (
+          <section className="panel mt-24" aria-label="Recent runs summary">
+            <h4>Recent Runs</h4>
+            <div className="health-summary-list">
+              {dispatchSummaryRows.map((d, i) => (
+                <div key={i} className="health-summary-row">
+                  <span className="health-summary-project">{d.project}</span>
+                  <span className={`badge badge-${d.status}`}>{d.status}</span>
+                  <span className="health-summary-time">{d.time}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {durableTasks.length > 0 && (
+          <section className="panel mt-24" aria-label="Durable jobs summary">
+            <h4>Durable Jobs</h4>
+            <p className="muted">
+              {durableJobsSummary.running > 0 && <>{durableJobsSummary.running} running</>}
+              {durableJobsSummary.running > 0 && durableJobsSummary.completed > 0 && <> · </>}
+              {durableJobsSummary.completed > 0 && <>{durableJobsSummary.completed} completed</>}
+              {(durableJobsSummary.running > 0 || durableJobsSummary.completed > 0) && durableJobsSummary.failed > 0 && <> · </>}
+              {durableJobsSummary.failed > 0 && <>{durableJobsSummary.failed} failed</>}
+            </p>
+          </section>
+        )}
       </div>
     </div>
   );

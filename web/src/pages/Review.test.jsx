@@ -18,6 +18,15 @@ const mockSessions = [
   { sessionId: 'session-00000006', status: 'researching', project: 'proj-f', intent: 'Active research' },
 ];
 
+function createMockSessions(count, baseStatus = 'user_review') {
+  return Array.from({ length: count }, (_, i) => ({
+    sessionId: `session-${String(i + 1).padStart(8, '0')}`,
+    status: baseStatus,
+    project: `proj-${i}`,
+    intent: `Task ${i}`,
+  }));
+}
+
 describe('Review Page', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -86,10 +95,13 @@ describe('Review Page', () => {
 
     fireEvent.click(screen.getByText('proj-a'));
 
+    // Detail panel should appear with action buttons (card already has them too)
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      const approveButtons = screen.getAllByRole('button', { name: 'Approve' });
+      expect(approveButtons.length).toBeGreaterThanOrEqual(2); // card + detail
     });
-    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    const rejectButtons = screen.getAllByRole('button', { name: 'Reject' });
+    expect(rejectButtons.length).toBeGreaterThanOrEqual(2);
   });
 
   it('exposes review lifecycle actions for a dispatched session', async () => {
@@ -164,7 +176,7 @@ describe('Review Page', () => {
     fireEvent.click(screen.getByText('proj-a'));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Approve' }).length).toBeGreaterThanOrEqual(1);
     });
 
     expect(screen.queryByRole('button', { name: 'Accept Changes' })).not.toBeInTheDocument();
@@ -180,5 +192,163 @@ describe('Review Page', () => {
     // No create form or + New button — sessions are created by system triggers
     expect(screen.queryByPlaceholderText(/What should the review accomplish/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '+ New' })).not.toBeInTheDocument();
+  });
+
+  it('paginates sessions with 10 per page', async () => {
+    const manySessions = createMockSessions(15, 'user_review');
+    global.fetch.mockImplementation((url) => {
+      if (url.includes('/api/review')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(manySessions),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+
+    render(<Review />);
+
+    // Wait for first page to load — should show 10 cards
+    await waitFor(() => {
+      expect(screen.getByText('proj-0')).toBeInTheDocument();
+    });
+
+    // First page: proj-0 through proj-9 (10 items)
+    expect(screen.getByText('proj-0')).toBeInTheDocument();
+    expect(screen.getByText('proj-9')).toBeInTheDocument();
+    expect(screen.queryByText('proj-10')).not.toBeInTheDocument();
+    expect(screen.queryByText('proj-14')).not.toBeInTheDocument();
+
+    // Pagination controls should be visible
+    expect(screen.getByText('2')).toBeInTheDocument();
+
+    // Click page 2
+    fireEvent.click(screen.getByText('2'));
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-10')).toBeInTheDocument();
+    });
+
+    // Second page: proj-10 through proj-14 (5 items)
+    expect(screen.queryByText('proj-0')).not.toBeInTheDocument();
+    expect(screen.getByText('proj-14')).toBeInTheDocument();
+  });
+
+  it('shows action buttons on cards for actionable statuses', async () => {
+    global.fetch.mockImplementation((url) => {
+      if (url.includes('/api/review')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockSessions),
+        });
+      }
+      if (url.includes('/api/review/session-')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ sessionId: url.split('/').pop(), status: 'user_review', project: 'proj-a', intent: 'Fix auth bug', history: [] }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
+    });
+
+    // user_review cards should have Approve and Reject buttons on the card
+    const allApproveButtons = screen.getAllByRole('button', { name: 'Approve' });
+    const allRejectButtons = screen.getAllByRole('button', { name: 'Reject' });
+
+    // There should be card-level buttons (at least 2 user_review sessions: proj-a and proj-e)
+    expect(allApproveButtons.length).toBeGreaterThanOrEqual(2);
+    expect(allRejectButtons.length).toBeGreaterThanOrEqual(2);
+
+    // idle card should have Start button on the card
+    const startButtons = screen.getAllByRole('button', { name: 'Start' });
+    expect(startButtons.length).toBeGreaterThanOrEqual(1);
+
+    // dispatched card should have Accept button on the card
+    const acceptButtons = screen.getAllByRole('button', { name: 'Accept' });
+    expect(acceptButtons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('card action buttons trigger API calls', async () => {
+    const calls = [];
+    global.fetch.mockImplementation((url, options = {}) => {
+      calls.push({ url, method: options.method || 'GET' });
+      if (url.includes('/api/review')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(mockSessions),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
+    });
+
+    // Click Approve on card for proj-a (user_review)
+    const allApproveButtons = screen.getAllByRole('button', { name: 'Approve' });
+    fireEvent.click(allApproveButtons[0]);
+
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000001/approve', method: 'POST' });
+    });
+  });
+
+  it('resets page to 1 when search query changes', async () => {
+    const manySessions = createMockSessions(15, 'user_review');
+    global.fetch.mockImplementation((url) => {
+      if (url.includes('/api/review')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(manySessions),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-0')).toBeInTheDocument();
+    });
+
+    // Go to page 2
+    fireEvent.click(screen.getByText('2'));
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-10')).toBeInTheDocument();
+    });
+
+    // Search for a specific project that only matches one session — resets to page 1
+    const searchInput = screen.getByPlaceholderText(/Search sessions/i);
+    fireEvent.change(searchInput, { target: { value: 'proj-3' } });
+
+    await waitFor(() => {
+      // Only proj-3 should remain, page 2 content gone
+      expect(screen.queryByText('proj-14')).not.toBeInTheDocument();
+      expect(screen.queryByText('proj-10')).not.toBeInTheDocument();
+    });
+
+    expect(screen.getByText('proj-3')).toBeInTheDocument();
   });
 });

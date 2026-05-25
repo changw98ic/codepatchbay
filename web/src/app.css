@@ -1709,6 +1709,57 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* Review card action buttons */
+.review-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.review-card-actions .btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 24px;
+  padding: 12px 0;
+}
+
+.pagination-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.pagination-btn:hover {
+  background: var(--accent-tint);
+}
+
+.pagination-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Action buttons */
 .action-buttons {
   display: flex;
@@ -2651,6 +2702,34 @@ input:checked + .toggle-slider:before {
   align-items: start;
 }
 
+/* Health Tab Summary Rows */
+.health-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.health-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.health-summary-project {
+  font-weight: 700;
+  color: var(--accent-light);
+  min-width: 100px;
+}
+
+.health-summary-time {
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  margin-left: auto;
+}
+
 /* Interactive SVG Node States */
 .arch-node circle {
   transition: var(--transition);
@@ -3462,6 +3541,86 @@ input:checked + .toggle-slider:before {
 .job-table .cell-time {
   color: var(--text-muted);
   font-size: 11px;
+}
+
+/* Logs Page */
+.logs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 16px 0;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.logs-filter {
+  display: flex;
+  gap: 6px;
+}
+
+.logs-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logs-autoscroll-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.log-viewer {
+  max-height: min(600px, 70vh);
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--deep-bg);
+}
+
+.log-page-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-page-line:last-child {
+  border-bottom: none;
+}
+
+.log-page-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.log-page-level {
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 48px;
+}
+
+.log-page-level-info { color: var(--accent); }
+.log-page-level-warn { color: var(--warning); }
+.log-page-level-error { color: var(--error); }
+
+.log-page-source {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-page-message {
+  flex: 1;
+  min-width: 0;
 }
 
 /* AgentBoard expanded panel */

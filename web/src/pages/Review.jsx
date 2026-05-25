@@ -18,11 +18,14 @@ function groupLabel(count, name) {
   return `${name} (${count})`;
 }
 
+const PAGE_SIZE = 10;
+
 export default function Review() {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedSession, setSelectedSession] = useState(null);
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
   const [analysis, setAnalysis] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const { subscribe } = useWebSocket();
@@ -36,13 +39,18 @@ export default function Review() {
     ), [sessions, query]
   );
 
-  const groups = useMemo(() =>
-    STATUS_GROUPS.map(g => ({
+  const totalPages = Math.ceil(filteredSessions.length / PAGE_SIZE);
+
+  const pagedGroups = useMemo(() => {
+    const pagedSessions = filteredSessions.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    return STATUS_GROUPS.map(g => ({
       ...g,
-      items: filteredSessions.filter(s => g.statuses.includes(s.status)),
-    })).filter(g => g.items.length > 0),
-    [filteredSessions]
-  );
+      items: pagedSessions.filter(s => g.statuses.includes(s.status)),
+    })).filter(g => g.items.length > 0);
+  }, [filteredSessions, page]);
+
+  useEffect(() => { setPage(1); }, [query, sessions]);
+
 
   const loadSessions = useCallback(() => {
     fetch('/api/review')
@@ -155,17 +163,17 @@ export default function Review() {
             type="text"
             placeholder="Search sessions..."
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); }}
             className="review-search-input"
           />
         </div>
       </div>
 
-      {groups.length === 0 && (
+      {pagedGroups.length === 0 && (
         <div className="empty" style={{ margin: '40px 0' }}>No review sessions</div>
       )}
 
-      {groups.map(group => (
+      {pagedGroups.map(group => (
         <div key={group.name} className="review-group">
           <h3 className="review-group-title">{groupLabel(group.items.length, group.name)}</h3>
           <div className="review-group-list">
@@ -186,11 +194,47 @@ export default function Review() {
                   <span>{session.sessionId.slice(-8)}</span>
                   <span>{session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ''}</span>
                 </div>
+                <div className="review-card-actions">
+                  {CAN_START.has(session.status) && (
+                    <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); startReview(session.sessionId); }}>Start</button>
+                  )}
+                  {CAN_APPROVE.has(session.status) && (
+                    <>
+                      <button className="btn btn-sm btn-approve" onClick={(e) => { e.stopPropagation(); approve(session.sessionId); }}>Approve</button>
+                      <button className="btn btn-sm btn-reject" onClick={(e) => { e.stopPropagation(); reject(session.sessionId); }}>Reject</button>
+                    </>
+                  )}
+                  {session.status === 'dispatched' && (
+                    <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); accept(session.sessionId); }}>Accept</button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
         </div>
       ))}
+
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button
+            className="pagination-btn"
+            disabled={page <= 1}
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+          >&lt;</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+            <button
+              key={p}
+              className={`pagination-btn ${p === page ? 'active' : ''}`}
+              onClick={() => setPage(p)}
+            >{p}</button>
+          ))}
+          <button
+            className="pagination-btn"
+            disabled={page >= totalPages}
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+          >&gt;</button>
+        </div>
+      )}
 
       {s && (
         <div className="review-detail panel mt-24 animate-fade-in">

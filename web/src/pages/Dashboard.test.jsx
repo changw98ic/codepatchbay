@@ -271,6 +271,49 @@ describe('Dashboard attention contracts', () => {
       expect(screen.getByTestId('location')).toHaveTextContent('/project/failed-proj?tab=overview');
     });
   });
+
+  it('caps Attention Queue to 3 items without Show All toggle', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/projects') {
+        return jsonResponse([
+          { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
+          { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
+          { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
+          { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
+        ]);
+      }
+      if (url === '/api/tasks/durable') return jsonResponse([]);
+      if (url.startsWith('/api/hub/dashboard-summary')) {
+        return jsonResponse({
+          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
+          registryProjects: [
+            { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
+            { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
+            { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
+            { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
+          ],
+          acp: null,
+          knowledgePolicy: null,
+          queueStatus: null,
+          queueEntries: [],
+          dispatches: [],
+          observability: null,
+          taskLedger: null,
+        });
+      }
+      return jsonResponse(null);
+    });
+
+    const { container } = render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=overview']}>{children}</MemoryRouter>,
+    });
+
+    await waitFor(() => expect(screen.getByText('Attention Queue')).toBeInTheDocument());
+    expect(container.querySelectorAll('.attention-row').length).toBe(3);
+    // No Show All toggle
+    expect(screen.queryByText(/Show All/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Show Less')).not.toBeInTheDocument();
+  });
 });
 
 describe('Dashboard ACP pool active/queued display', () => {
@@ -324,7 +367,7 @@ describe('Dashboard ACP pool active/queued display', () => {
   });
 });
 
-describe('Dashboard durable jobs summary', () => {
+describe('Dashboard durable jobs summary (health tab)', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('shows summary counts grouped by status when durable jobs exist', async () => {
@@ -338,7 +381,9 @@ describe('Dashboard durable jobs summary', () => {
       ],
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
 
     await waitFor(() => expect(screen.getByText('Durable Jobs')).toBeInTheDocument());
     // Summary line: "2 running · 1 completed · 1 failed"
@@ -350,7 +395,9 @@ describe('Dashboard durable jobs summary', () => {
   it('does not show summary when no durable jobs', async () => {
     global.fetch = mockFetch(baseMap);
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
 
     await waitFor(() => expect(screen.getByText('Loading projects...')).toBeInTheDocument());
     expect(screen.queryByText('Durable Jobs')).not.toBeInTheDocument();
@@ -467,10 +514,10 @@ describe('Dashboard Hub queue status display', () => {
   });
 });
 
-describe('Dashboard Hub dispatches / Recent Runs', () => {
+describe('Dashboard Hub dispatches / Recent Runs (health tab)', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('shows Recent Runs section when dispatches exist', async () => {
+  it('shows Recent Runs summary in health tab when dispatches exist', async () => {
     global.fetch = mockFetch({
       ...baseMap,
       '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
@@ -479,7 +526,7 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
       ],
       '/api/hub/dispatches': [
         {
-          dispatchId: 'dispatch-20260517-080000-abc',
+          dispatchId: 'dispatch-abc',
           projectId: 'proj-a',
           status: 'completed',
           workerId: 'worker-1',
@@ -487,7 +534,7 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
           updatedAt: '2026-05-17T08:05:00Z',
         },
         {
-          dispatchId: 'dispatch-20260517-090000-def',
+          dispatchId: 'dispatch-def',
           projectId: 'proj-b',
           status: 'running',
           workerId: 'worker-2',
@@ -497,24 +544,19 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
       ],
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
 
-    await waitFor(() => expect(screen.getByLabelText('Recent runs')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Recent runs summary')).toBeInTheDocument());
     expect(screen.getByText('Recent Runs')).toBeInTheDocument();
-    expect(screen.getByText('dispatch-20260517-080000-abc')).toBeInTheDocument();
-    expect(screen.getByText('dispatch-20260517-090000-def')).toBeInTheDocument();
-    // proj-a and proj-b appear in both project cards and dispatch rows
+    // Summary rows show project + status + time
     expect(screen.getAllByText('proj-a').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('proj-b').length).toBeGreaterThanOrEqual(1);
-    // Status badges
     expect(screen.getByText('completed')).toBeInTheDocument();
     expect(screen.getByText('running')).toBeInTheDocument();
-    // Worker IDs
-    expect(screen.getByText('worker-1')).toBeInTheDocument();
-    expect(screen.getByText('worker-2')).toBeInTheDocument();
   });
 
-  it('shows failed dispatch with failed badge', async () => {
+  it('hides pending dispatches from Recent Runs summary', async () => {
     global.fetch = mockFetch({
       ...baseMap,
       '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
@@ -522,74 +564,16 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
         { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
       ],
       '/api/hub/dispatches': [
-        {
-          dispatchId: 'dispatch-20260517-100000-xyz',
-          projectId: 'proj-a',
-          status: 'failed',
-          createdAt: '2026-05-17T10:00:00Z',
-          updatedAt: '2026-05-17T10:02:00Z',
-        },
+        { dispatchId: 'd1', projectId: 'proj-a', status: 'pending', createdAt: '2026-05-17T08:00:00Z' },
       ],
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByText('Recent Runs')).toBeInTheDocument());
-    expect(screen.getByText('failed')).toBeInTheDocument();
-    // No worker ID displayed when absent
-    expect(screen.queryByText('worker-')).not.toBeInTheDocument();
-  });
-
-  it('hides pending dispatches from Recent Runs', async () => {
-    global.fetch = mockFetch({
-      ...baseMap,
-      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-      '/api/hub/projects': [
-        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
-      ],
-      '/api/hub/dispatches': [
-        {
-          dispatchId: 'dispatch-20260517-110000-pend',
-          projectId: 'proj-a',
-          status: 'pending',
-          createdAt: '2026-05-17T11:00:00Z',
-          updatedAt: '2026-05-17T11:00:00Z',
-        },
-      ],
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
     });
-
-    render(<Dashboard />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
-    expect(screen.queryByText('dispatch-20260517-110000-pend')).not.toBeInTheDocument();
-  });
-
-  it('caps Recent Runs to 10 entries sorted by updatedAt desc', async () => {
-    const dispatches = Array.from({ length: 12 }, (_, i) => ({
-      dispatchId: `dispatch-20260517-${String(i).padStart(6, '0')}-xx`,
-      projectId: `proj-${i}`,
-      status: 'completed',
-      createdAt: `2026-05-17T${String(i).padStart(2, '0')}:00:00Z`,
-      updatedAt: `2026-05-17T${String(i).padStart(2, '0')}:05:00Z`,
-    }));
-    global.fetch = mockFetch({
-      ...baseMap,
-      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-      '/api/hub/projects': [
-        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
-      ],
-      '/api/hub/dispatches': dispatches,
-    });
-
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByText('Recent Runs')).toBeInTheDocument());
-    // Latest dispatch (index 11, sorted desc by updatedAt) should be present
-    expect(screen.getByText('dispatch-20260517-000011-xx')).toBeInTheDocument();
-    // The earliest (index 0, 1) should be hidden (only 10 shown)
-    expect(screen.queryByText('dispatch-20260517-000000-xx')).not.toBeInTheDocument();
-    expect(screen.queryByText('dispatch-20260517-000001-xx')).not.toBeInTheDocument();
   });
 
   it('hides Recent Runs section when all dispatches are pending', async () => {
@@ -604,7 +588,9 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
       ],
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
 
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
@@ -620,193 +606,37 @@ describe('Dashboard Hub dispatches / Recent Runs', () => {
       '/api/hub/dispatches': null,
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
+    render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
+    });
 
     await waitFor(() => expect(screen.getByText('Global Hub')).toBeInTheDocument());
     expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
   });
-});
 
-describe('Dashboard task ledger display', () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it('renders the task list and human/agent detail views from the ledger endpoint', async () => {
+  it('caps Recent Runs to 5 entries in health tab', async () => {
+    const dispatches = Array.from({ length: 7 }, (_, i) => ({
+      dispatchId: `dispatch-${i}`,
+      projectId: `proj-${i}`,
+      status: 'completed',
+      createdAt: `2026-05-17T${String(i).padStart(2, '0')}:00:00Z`,
+      updatedAt: `2026-05-17T${String(i).padStart(2, '0')}:05:00Z`,
+    }));
     global.fetch = mockFetch({
       ...baseMap,
       '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
       '/api/hub/projects': [
-        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
+        { id: 'proj-a', sourcePath: '/a', worker: { status: 'online' } },
       ],
-      '/api/hub/task-ledger?limit=50': {
-        generatedAt: '2026-05-20T06:40:50.000Z',
-        summary: {
-          total: 2,
-          visible: 2,
-          ready: 1,
-          open: 1,
-          failed: 0,
-          archived: 0,
-        },
-        tasks: [
-          {
-            id: 'github:example/repo#20',
-            title: 'P0.8a: Add CPB version and runtime identity report',
-            status: 'ready',
-            progress: { stage: 'ready', label: 'Ready to run', detail: 'Queued in Hub', percent: 10 },
-            projectId: 'flow',
-            priority: 'P1',
-            source: { kind: 'github', label: 'GitHub issue #20', url: 'https://github.com/example/repo/issues/20', issueNumber: 20 },
-            updatedAt: '2026-05-20T06:40:50.000Z',
-            human: {
-              summary: 'Expose a machine-readable CPB identity report.',
-              progress: 'Ready to run · Queued in Hub',
-              source: 'GitHub issue #20',
-              nextAction: 'Start a CPB worker or let the queue dispatcher pick it up.',
-              description: '## Goal\n\nExpose a machine-readable CPB identity report.',
-            },
-            agent: {
-              objective: '## Goal\n\nExpose a machine-readable CPB identity report.',
-              status: { stage: 'ready', queueStatus: 'pending', githubState: 'OPEN' },
-              execution: { queueEntryId: 'q1', projectId: 'flow', priority: 'P1', executionBoundary: 'worktree' },
-              evidence: [{ kind: 'queue', id: 'q1', status: 'pending' }],
-            },
-          },
-          {
-            id: 'github:example/repo#15',
-            title: 'Add context budget reporting for composed prompt layers',
-            status: 'open',
-            progress: { stage: 'open', label: 'Open, not queued', detail: 'Known from source ledger only', percent: 0 },
-            projectId: 'flow',
-            source: { kind: 'github', label: 'GitHub issue #15', url: 'https://github.com/example/repo/issues/15', issueNumber: 15 },
-            human: {
-              summary: 'Show prompt context budgets to operators.',
-              progress: 'Open, not queued · Known from source ledger only',
-              source: 'GitHub issue #15',
-              nextAction: 'Import or queue this issue before expecting CPB to execute it.',
-              description: '## Goal\n\nShow prompt context budgets.',
-            },
-            agent: {
-              objective: '## Goal\n\nShow prompt context budgets.',
-              status: { stage: 'open', queueStatus: null, githubState: 'OPEN' },
-              execution: { queueEntryId: null },
-              evidence: [],
-            },
-          },
-        ],
-      },
+      '/api/hub/dispatches': dispatches,
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByLabelText('Task ledger')).toBeInTheDocument());
-    expect(screen.getByText('Task Ledger')).toBeInTheDocument();
-    expect(screen.getByText(/2 total/)).toBeInTheDocument();
-    expect(screen.getByText('1 ready')).toBeInTheDocument();
-    expect(screen.getByText('1 source-only')).toBeInTheDocument();
-    expect(screen.getAllByText('P0.8a: Add CPB version and runtime identity report').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('GitHub issue #20').some((el) => el.getAttribute('href') === 'https://github.com/example/repo/issues/20')).toBe(true);
-    expect(screen.getByText('Human View')).toBeInTheDocument();
-    expect(screen.getByText('Agent View')).toBeInTheDocument();
-    expect(screen.getByText(/queueStatus/)).toBeInTheDocument();
-    expect(screen.getByText('Start a CPB worker or let the queue dispatcher pick it up.')).toBeInTheDocument();
-  });
-
-  it('hides task ledger when the projection is empty or unavailable', async () => {
-    global.fetch = mockFetch(baseMap);
-
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByText('Loading projects...')).toBeInTheDocument());
-    expect(screen.queryByText('Task Ledger')).not.toBeInTheDocument();
-  });
-
-  it('renders deterministic updated time in ledger rows', async () => {
-    global.fetch = mockFetch({
-      ...baseMap,
-      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-      '/api/hub/projects': [
-        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
-      ],
-      '/api/hub/task-ledger?limit=50': {
-        generatedAt: '2026-05-21T15:00:00.000Z',
-        summary: { total: 1, visible: 1, ready: 1, open: 0, failed: 0, archived: 0 },
-        tasks: [
-          {
-            id: 'github:example/repo#99',
-            title: 'Timestamp test task',
-            status: 'ready',
-            progress: { stage: 'ready', label: 'Ready', percent: 10 },
-            projectId: 'flow',
-            updatedAt: '2026-05-21T15:00:00.000Z',
-            createdAt: '2026-05-21T14:00:00.000Z',
-            source: { kind: 'github', label: 'GitHub issue #99' },
-            human: { summary: 'Test task', progress: 'Ready', source: 'GitHub', nextAction: 'Run it' },
-            agent: { objective: 'Test', status: { stage: 'ready' }, execution: {} },
-          },
-        ],
-      },
+    const { container } = render(<Dashboard />, {
+      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
     });
 
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByLabelText('Task ledger')).toBeInTheDocument());
-    const timeEl = screen.getByText('2026-05-21 15:00 UTC');
-    expect(timeEl).toBeInTheDocument();
-    expect(timeEl.closest('time')).toHaveAttribute('dateTime', '2026-05-21T15:00:00.000Z');
-  });
-
-  it('renders Execution Detail section when agent.execution has fields', async () => {
-    global.fetch = mockFetch({
-      ...baseMap,
-      '/api/hub/status': { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-      '/api/hub/projects': [
-        { id: 'flow', sourcePath: '/repo', worker: { status: 'online' } },
-      ],
-      '/api/hub/task-ledger?limit=50': {
-        generatedAt: '2026-05-21T15:00:00.000Z',
-        summary: { total: 1, visible: 1, ready: 1, open: 0, failed: 0, archived: 0 },
-        tasks: [
-          {
-            id: 'github:example/repo#88',
-            title: 'Execution detail test task',
-            status: 'running',
-            progress: { stage: 'running', label: 'Running', percent: 50 },
-            projectId: 'flow',
-            source: { kind: 'github', label: 'GitHub issue #88' },
-            human: { summary: 'Test', progress: 'Running', source: 'GitHub', nextAction: 'Wait' },
-            agent: {
-              objective: 'Test execution detail',
-              status: { stage: 'running' },
-              execution: {
-                workerId: 'worker-abc',
-                jobId: 'job-123',
-                dispatchId: 'dispatch-456',
-                executor: 'claude-code',
-                releaseSnapshot: { version: '1.0.0' },
-                indexSnapshot: { files: 42 },
-              },
-            },
-          },
-        ],
-      },
-    });
-
-    render(<Dashboard />, { wrapper: MemoryRouter });
-
-    await waitFor(() => expect(screen.getByText('Execution Detail')).toBeInTheDocument());
-    expect(screen.getByText('Worker')).toBeInTheDocument();
-    expect(screen.getByText('worker-abc')).toBeInTheDocument();
-    expect(screen.getByText('Job')).toBeInTheDocument();
-    expect(screen.getByText('job-123')).toBeInTheDocument();
-    expect(screen.getByText('Dispatch')).toBeInTheDocument();
-    expect(screen.getByText('dispatch-456')).toBeInTheDocument();
-    expect(screen.getByText('Executor')).toBeInTheDocument();
-    expect(screen.getByText('claude-code')).toBeInTheDocument();
-    // Snapshot fields rendered as visible key/value rows
-    expect(screen.getByText('Release version')).toBeInTheDocument();
-    expect(screen.getByText('1.0.0')).toBeInTheDocument();
-    expect(screen.getByText('Index files')).toBeInTheDocument();
-    expect(screen.getByText('42')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Recent Runs')).toBeInTheDocument());
+    expect(container.querySelectorAll('.health-summary-row').length).toBe(5);
   });
 });
 
@@ -1344,184 +1174,3 @@ describe('Dashboard diagnostics mode', () => {
   });
 });
 
-describe('Dashboard List Capping and Toggles', () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it('caps Attention Queue with a Show All / Show Less toggle', async () => {
-    global.fetch = vi.fn((url) => {
-      if (url === '/api/projects') {
-        return jsonResponse([
-          { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
-          { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
-          { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
-          { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
-        ]);
-      }
-      if (url === '/api/tasks/durable') return jsonResponse([]);
-      if (url.startsWith('/api/hub/dashboard-summary')) {
-        return jsonResponse({
-          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-          registryProjects: [
-            { id: 'p1', name: 'proj-1', pipelineState: { status: 'failed', error: 'e1' } },
-            { id: 'p2', name: 'proj-2', pipelineState: { status: 'failed', error: 'e2' } },
-            { id: 'p3', name: 'proj-3', pipelineState: { status: 'failed', error: 'e3' } },
-            { id: 'p4', name: 'proj-4', pipelineState: { status: 'failed', error: 'e4' } },
-          ],
-          acp: null,
-          knowledgePolicy: null,
-          queueStatus: null,
-          queueEntries: [],
-          dispatches: [],
-          observability: null,
-          taskLedger: null,
-        });
-      }
-      return jsonResponse(null);
-    });
-
-    const { container } = render(<Dashboard />, {
-      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=overview']}>{children}</MemoryRouter>,
-    });
-
-    // 1. Verify Attention Queue capping (default limit is 3)
-    await waitFor(() => expect(screen.getByText('Attention Queue')).toBeInTheDocument());
-    expect(container.querySelectorAll('.attention-row').length).toBe(3);
-
-    const attentionBtn = screen.getByText('+ 1 more critical failures (Show All)');
-    expect(attentionBtn).toBeInTheDocument();
-
-    // Toggle to Show All
-    fireEvent.click(attentionBtn);
-    expect(container.querySelectorAll('.attention-row').length).toBe(4);
-    const showLessBtn = screen.getByText('Show Less');
-    expect(showLessBtn).toBeInTheDocument();
-
-    // Toggle back to Show Less
-    fireEvent.click(showLessBtn);
-    expect(container.querySelectorAll('.attention-row').length).toBe(3);
-  });
-
-  it('caps Durable Jobs and Recent Runs in health tab', async () => {
-    global.fetch = vi.fn((url) => {
-      if (url === '/api/projects') return jsonResponse([]);
-      if (url === '/api/tasks/durable') {
-        return jsonResponse([
-          { jobId: 'job-1', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-2', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-3', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-4', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-5', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-6', project: 'proj-1', status: 'running', phase: 'plan' },
-          { jobId: 'job-7', project: 'proj-1', status: 'running', phase: 'plan' },
-        ]);
-      }
-      if (url.startsWith('/api/hub/dashboard-summary')) {
-        return jsonResponse({
-          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-          registryProjects: [],
-          acp: null,
-          knowledgePolicy: null,
-          queueStatus: null,
-          queueEntries: [],
-          dispatches: [
-            { dispatchId: 'd-1', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-2', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-3', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-4', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-5', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-6', projectId: 'p1', status: 'completed' },
-            { dispatchId: 'd-7', projectId: 'p1', status: 'completed' },
-          ],
-          observability: null,
-          taskLedger: null,
-        });
-      }
-      return jsonResponse(null);
-    });
-
-    const user = userEvent.setup();
-    const { container } = render(<Dashboard />, {
-      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
-    });
-
-    // Verify Durable Jobs capping (default limit is 5)
-    await waitFor(() => expect(screen.getByText('Durable Jobs')).toBeInTheDocument());
-    expect(container.querySelectorAll('.job-row').length).toBe(5);
-
-    const durableBtn = screen.getByText('+ 2 more durable jobs (Show All)');
-    expect(durableBtn).toBeInTheDocument();
-
-    // Toggle to Show All Durable Jobs
-    await user.click(durableBtn);
-    await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(7));
-
-    // Toggle back to Show Less
-    const showLessBtnDurable = screen.getAllByText('Show Less')[0];
-    await user.click(showLessBtnDurable);
-    await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(5));
-
-    // Verify Recent Runs capping (default limit is 5)
-    expect(container.querySelectorAll('.dispatch-row').length).toBe(5);
-
-    const recentBtn = screen.getByText('+ 2 more recent runs (Show All)');
-    expect(recentBtn).toBeInTheDocument();
-
-    // Toggle to Show All Recent Runs
-    await user.click(recentBtn);
-    await waitFor(() => expect(container.querySelectorAll('.dispatch-row').length).toBe(7));
-  });
-
-  it('caps Task Ledger to 5 items by default and supports Show All', async () => {
-    global.fetch = vi.fn((url) => {
-      if (url === '/api/projects') return jsonResponse([]);
-      if (url === '/api/tasks/durable') return jsonResponse([]);
-      if (url.startsWith('/api/hub/dashboard-summary')) {
-        return jsonResponse({
-          status: { projectCount: 1, enabledProjectCount: 1, workerCount: 1, hubRoot: '/tmp/hub' },
-          registryProjects: [],
-          acp: null,
-          knowledgePolicy: null,
-          queueStatus: null,
-          queueEntries: [],
-          dispatches: [],
-          observability: null,
-          taskLedger: {
-            summary: { total: 7, running: 2, ready: 5, open: 0, failed: 0, archived: 0 },
-            tasks: [
-              { id: 't-1', title: 'Task 1', status: 'ready' },
-              { id: 't-2', title: 'Task 2', status: 'ready' },
-              { id: 't-3', title: 'Task 3', status: 'ready' },
-              { id: 't-4', title: 'Task 4', status: 'ready' },
-              { id: 't-5', title: 'Task 5', status: 'ready' },
-              { id: 't-6', title: 'Task 6', status: 'ready' },
-              { id: 't-7', title: 'Task 7', status: 'ready' },
-            ]
-          },
-        });
-      }
-      return jsonResponse(null);
-    });
-
-    const { container } = render(<Dashboard />, {
-      wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=overview']}>{children}</MemoryRouter>,
-    });
-
-    // Verify Task Ledger is loaded
-    await waitFor(() => expect(screen.getByText('Task Ledger')).toBeInTheDocument());
-
-    // Verify list is capped at 5 rows
-    expect(container.querySelectorAll('.ledger-row').length).toBe(5);
-
-    const taskBtn = screen.getByText('+ 2 more tasks (Show All)');
-    expect(taskBtn).toBeInTheDocument();
-
-    // Toggle to Show All
-    fireEvent.click(taskBtn);
-    expect(container.querySelectorAll('.ledger-row').length).toBe(7);
-
-    // Toggle back to Show Less
-    const showLessBtn = screen.getByText('Show Less');
-    fireEvent.click(showLessBtn);
-    expect(container.querySelectorAll('.ledger-row').length).toBe(5);
-  });
-});

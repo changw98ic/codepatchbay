@@ -7,6 +7,7 @@ import Project from './pages/Project';
 import NewTask from './pages/NewTask';
 import Review from './pages/Review';
 import AgentBoard from './pages/AgentBoard';
+import Logs from './pages/Logs';
 import ThemeToggle from './components/ThemeToggle';
 
 const navItems = [
@@ -14,6 +15,7 @@ const navItems = [
   { to: '/new-task', label: 'New Task' },
   { to: '/review', label: 'Review' },
   { to: '/agents', label: 'Agents' },
+  { to: '/logs', label: 'Logs' },
 ];
 
 function StatusIndicator() {
@@ -83,6 +85,7 @@ function AppContent() {
           <Route path="/new-task" element={<NewTask />} />
           <Route path="/review" element={<Review />} />
           <Route path="/agents" element={<AgentBoard />} />
+          <Route path="/logs" element={<Logs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
