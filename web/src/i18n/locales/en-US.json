@@ -80,7 +80,14 @@
     "pipelineIdle": "Pipeline is idle",
     "pipelineRunning": "Running {{phase}}",
     "pipelineCompleted": "Last pipeline completed",
-    "pipelineFailed": "Pipeline failed: {{error}}"
+    "pipelineFailed": "Pipeline failed: {{error}}",
+    "initProject": "Init Project",
+    "initName": "Project Name",
+    "initPath": "Project Path",
+    "initSuccess": "Project initialized successfully!",
+    "runPipeline": "Run Pipeline",
+    "planOnly": "Plan Only",
+    "refreshIndex": "Refresh Index"
   },
   "review": {
     "title": "Review Inbox",
@@ -120,6 +127,7 @@
     "notReady": "Not Ready",
     "noAgents": "No agents found",
     "noAgentsDesc": "Register agents via CLI or configuration to start monitoring.",
+    "noAgentsFiltered": "No agents match this filter",
     "successRate": "{{rate}}% success"
   },
   "logs": {

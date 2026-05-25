@@ -80,7 +80,14 @@
     "pipelineIdle": "流水线空闲",
     "pipelineRunning": "正在执行 {{phase}}",
     "pipelineCompleted": "上次流水线已完成",
-    "pipelineFailed": "流水线失败：{{error}}"
+    "pipelineFailed": "流水线失败：{{error}}",
+    "initProject": "初始化项目",
+    "initName": "项目名称",
+    "initPath": "项目路径",
+    "initSuccess": "项目初始化成功！",
+    "runPipeline": "执行流水线",
+    "planOnly": "仅规划",
+    "refreshIndex": "刷新索引"
   },
   "review": {
     "title": "审查收件箱",
@@ -120,6 +127,7 @@
     "notReady": "未就绪",
     "noAgents": "未发现智能体",
     "noAgentsDesc": "请通过 CLI 或配置注册智能体以开始监控。",
+    "noAgentsFiltered": "没有匹配此过滤条件的智能体",
     "successRate": "成功率 {{rate}}%"
   },
   "logs": {

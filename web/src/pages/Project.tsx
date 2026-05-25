@@ -8,6 +8,7 @@ import { Tabs } from '@/components/shared/Tabs';
 import { Toggle } from '@/components/shared/Toggle';
 import { Breadcrumb } from '@/components/shared/Breadcrumb';
 import { useProjectsStore, useWebSocketStore } from '@/app/store';
+import { getStatusInfo } from '@/utils/format';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -228,6 +229,22 @@ const showMoreBtn = style({
   border: 'none',
   cursor: 'pointer',
   padding: `${space[2]} 0`,
+});
+
+const actionBarStyle = style({
+  display: 'flex',
+  gap: space[3],
+  marginBottom: space[4],
+  flexWrap: 'wrap',
+});
+
+const statusLine = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: space[3],
+  fontSize: fontSize.sm,
+  color: theme.textDim,
+  marginBottom: space[4],
 });
 
 // Pipeline node graph styles
@@ -516,16 +533,49 @@ export default function Project() {
       ]} />
       <div className={headerStyle}>
         <h2 className={titleStyle}>{name}</h2>
-        {project.pipelineState && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: space[2] }}>
-            <PipelineGraph state={project.pipelineState} />
-          </div>
-        )}
         {project.projectIndex && (
           <Badge variant={idxState === 'indexed' ? 'success' : idxState === 'error' ? 'error' : 'muted'}>
             idx:{idxState}{idxBranch ? ` (${idxBranch})` : ''}
           </Badge>
         )}
+      </div>
+
+      {project.pipelineState && (
+        <div className={statusLine}>
+          <PipelineGraph state={project.pipelineState} />
+          <span style={{ color: theme.textMuted }}>
+            {getStatusInfo(project.pipelineState.status ?? '').icon}{' '}
+            {getStatusInfo(project.pipelineState.status ?? '').label}
+            {project.pipelineState.phase && ` — ${project.pipelineState.phase}`}
+          </span>
+        </div>
+      )}
+
+      <div className={actionBarStyle}>
+        <Button variant="primary" size="sm" onClick={() => {
+          fetch(`/api/tasks/${name}/pipeline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instruction: `Full pipeline run for ${name}` }),
+          }).then(() => useProjectsStore.getState().fetchProjects());
+        }}>
+          ▶ {t('project.runPipeline')}
+        </Button>
+        <Button variant="default" size="sm" onClick={() => {
+          fetch(`/api/tasks/${name}/plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instruction: `Plan for ${name}` }),
+          }).then(() => useProjectsStore.getState().fetchProjects());
+        }}>
+          📋 {t('project.planOnly')}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => {
+          fetch(`/api/projects/${name}/index`, { method: 'POST' })
+            .then(() => useProjectsStore.getState().fetchProjects());
+        }}>
+          🔄 {t('project.refreshIndex')}
+        </Button>
       </div>
 
       <Tabs items={tabItems} active={tab} onChange={setTab} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback } from 'react';
+import { useEffect, useMemo, useCallback, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '@/components/glass/GlassPanel';
@@ -6,6 +6,7 @@ import { Tabs } from '@/components/shared/Tabs';
 import { Button } from '@/components/shared/Button';
 import { Badge } from '@/components/shared/Badge';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { InitProjectModal } from '@/components/shared/InitProjectModal';
 import { TodayBrief } from '@/components/dashboard/TodayBrief';
 import { AttentionQueue } from '@/components/dashboard/AttentionQueue';
 import { ProjectGrid } from '@/components/dashboard/ProjectGrid';
@@ -28,6 +29,11 @@ const titleStyle = style({
   color: theme.text,
 });
 
+const headerActions = style({
+  display: 'flex',
+  gap: space[3],
+});
+
 const sectionStyle = style({
   marginTop: space[6],
 });
@@ -41,7 +47,7 @@ const summaryList = style({
 const summaryRow = style({
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'space-between',
+  gap: space[3],
   padding: `${space[2]} ${space[3]}`,
   borderRadius: '8px',
   background: theme.surfaceAlt,
@@ -70,6 +76,7 @@ export default function Dashboard() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [initOpen, setInitOpen] = useState(false);
   const diagnostics = searchParams.get('diagnostics') === '1' || searchParams.get('includeTest') === '1';
   const activeTab = searchParams.get('tab') || 'overview';
 
@@ -84,7 +91,6 @@ export default function Dashboard() {
     fetchJobs();
   }, [diagnostics]);
 
-  // Subscribe to WS events for real-time updates
   useEffect(() => {
     const unsub = subscribe('pipeline:update', () => {
       fetchProjects(diagnostics);
@@ -116,7 +122,6 @@ export default function Dashboard() {
   const dispatchObs = observability as DispatchSummary | null;
   const workersObs = observability as ObsWorkers | null;
 
-  // Merge data
   const legacyByName = new Map(projects.map((p) => [p.name, p]));
   const primaryProjects = hubProjects.map((hp) => {
     const legacy = legacyByName.get(hp.id) || legacyByName.get(hp.name);
@@ -136,7 +141,6 @@ export default function Dashboard() {
   const blockedProjectsCount = allProjects.filter(projectAttentionStatus).length;
   const completedRunsCount = dispatchObs?.dispatchSummary?.completed ?? 0;
 
-  // Attention items — failed items first
   const attentionItems = useMemo(() => {
     const items: Array<{ id: string; project: string; reason: string; impact: string; action: string; link: string }> = [];
     allProjects.forEach(p => {
@@ -167,7 +171,6 @@ export default function Dashboard() {
     return items;
   }, [allProjects, jobs]);
 
-  // Recent dispatches — failed ones get visual emphasis
   const recentDispatches = useMemo(() =>
     hubDispatches
       .filter((d) => d.status && d.status !== 'pending')
@@ -176,7 +179,6 @@ export default function Dashboard() {
     [hubDispatches],
   );
 
-  // Durable jobs summary
   const durableSummary = useMemo(() => {
     const counts = { running: 0, completed: 0, failed: 0 };
     jobs.forEach(j => {
@@ -198,9 +200,14 @@ export default function Dashboard() {
     <div>
       <div className={headerStyle}>
         <h2 className={titleStyle}>{t('dashboard.title')}</h2>
-        <Link to="/new-task">
-          <Button variant="primary">+ {t('nav.newTask')}</Button>
-        </Link>
+        <div className={headerActions}>
+          <Button variant="ghost" onClick={() => setInitOpen(true)}>
+            + {t('project.initProject')}
+          </Button>
+          <Link to="/new-task">
+            <Button variant="primary">+ {t('nav.newTask')}</Button>
+          </Link>
+        </div>
       </div>
 
       <Tabs items={tabItems} active={activeTab} onChange={setActiveTab} />
@@ -220,9 +227,14 @@ export default function Dashboard() {
               title={t('dashboard.noProjects')}
               description={t('dashboard.noProjectsDesc')}
               action={
-                <Link to="/new-task">
-                  <Button variant="primary">+ {t('nav.newTask')}</Button>
-                </Link>
+                <div style={{ display: 'flex', gap: space[3] }}>
+                  <Button variant="primary" onClick={() => setInitOpen(true)}>
+                    + {t('project.initProject')}
+                  </Button>
+                  <Link to="/new-task">
+                    <Button variant="default">+ {t('nav.newTask')}</Button>
+                  </Link>
+                </div>
               }
             />
           ) : (
@@ -255,12 +267,12 @@ export default function Dashboard() {
               <div className={summaryList}>
                 {recentDispatches.map((d, i) => (
                   <div key={i} className={`${summaryRow} ${d.status === 'failed' ? summaryRowFailed : ''}`}>
-                    <span>{d.projectId}</span>
+                    <span style={{ flex: 1 }}>{d.projectId}</span>
                     <Badge variant={d.status === 'completed' ? 'success' : d.status === 'failed' ? 'error' : 'muted'}>
                       {d.status}
                     </Badge>
-                    <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                      {d.updatedAt ? new Date(d.updatedAt).toLocaleTimeString() : '-'}
+                    <span style={{ color: theme.textMuted, fontSize: 12, minWidth: 80, textAlign: 'right' }}>
+                      {d.updatedAt ? new Date(d.updatedAt).toLocaleTimeString() : '–'}
                     </span>
                   </div>
                 ))}
@@ -282,6 +294,12 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      <InitProjectModal
+        open={initOpen}
+        onClose={() => setInitOpen(false)}
+        onSuccess={() => { fetchProjects(diagnostics); hubStore.fetchHubData(diagnostics); }}
+      />
     </div>
   );
 }

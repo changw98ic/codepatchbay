@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '@/components/glass/GlassPanel';
 import { Badge } from '@/components/shared/Badge';
@@ -6,6 +6,7 @@ import { SkeletonCard } from '@/components/shared/Skeleton';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Breadcrumb } from '@/components/shared/Breadcrumb';
 import { useAgentsStore, useWebSocketStore } from '@/app/store';
+import { getStatusInfo, formatRelativeTime } from '@/utils/format';
 import { style, keyframes } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -125,10 +126,40 @@ const skeletonGrid = style({
   gap: space[4],
 });
 
+const filterBarStyle = style({
+  display: 'flex',
+  gap: space[2],
+  marginBottom: space[4],
+  flexWrap: 'wrap',
+});
+
+const pillBase = style({
+  padding: `${space[1]} ${space[3]}`,
+  fontSize: fontSize.xs,
+  borderRadius: '9999px',
+  border: `1px solid ${theme.border}`,
+  background: 'transparent',
+  color: theme.textDim,
+  cursor: 'pointer',
+  transition: 'all 0.15s',
+  selectors: {
+    '&:hover': { borderColor: theme.textMuted },
+  },
+});
+
+const pillActive = style({
+  background: theme.accentTint,
+  borderColor: theme.accent,
+  color: theme.accentLight,
+});
+
+type AgentFilter = 'all' | 'available' | 'busy' | 'offline';
+
 export default function AgentBoard() {
   const { t } = useTranslation();
   const { agents, jobs, loading, fetchAgents, fetchJobs } = useAgentsStore();
   const { subscribe } = useWebSocketStore();
+  const [filter, setFilter] = useState<AgentFilter>('all');
 
   useEffect(() => {
     fetchAgents();
@@ -152,6 +183,18 @@ export default function AgentBoard() {
     const totalFailed = agents.reduce((sum, a) => sum + a.jobsFailed, 0);
     return { total, available, busy, offline, totalCompleted, totalFailed };
   }, [agents]);
+
+  const filteredAgents = useMemo(() => {
+    if (filter === 'all') return agents;
+    return agents.filter((a) => a.status === filter);
+  }, [agents, filter]);
+
+  const filters: { key: AgentFilter; label: string }[] = [
+    { key: 'all', label: `${t('dashboard.all')} (${agents.length})` },
+    { key: 'available', label: `${t('status.available')} (${summary.available})` },
+    { key: 'busy', label: `${t('status.busy')} (${summary.busy})` },
+    { key: 'offline', label: `${t('status.offline')} (${summary.offline})` },
+  ];
 
   return (
     <div>
@@ -179,54 +222,67 @@ export default function AgentBoard() {
         </div>
       </div>
 
+      {agents.length > 0 && (
+        <div className={filterBarStyle}>
+          {filters.map((f) => (
+            <button
+              key={f.key}
+              className={`${pillBase} ${filter === f.key ? pillActive : ''}`}
+              onClick={() => setFilter(f.key)}
+              type="button"
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {loading && agents.length === 0 ? (
         <div className={skeletonGrid}>
           <SkeletonCard />
           <SkeletonCard />
           <SkeletonCard />
         </div>
-      ) : agents.length === 0 ? (
+      ) : filteredAgents.length === 0 ? (
         <EmptyState
           icon="🤖"
-          title={t('agents.noAgents')}
+          title={filter === 'all' ? t('agents.noAgents') : t('agents.noAgentsFiltered')}
           description={t('agents.noAgentsDesc')}
         />
       ) : (
         <div className={agentGrid}>
-          {agents.map((agent) => (
-            <GlassPanel key={agent.name} depth="shallow" padding="md" interactive>
-              <div className={agentCard}>
-                <div className={agentHeader}>
-                  <span className={agentName}>
-                    {agent.status === 'available' && <span className={pulseDot} />}
-                    {agent.name}
-                  </span>
-                  <Badge variant={
-                    agent.status === 'available' ? 'success' :
-                    agent.status === 'busy' ? 'accent' : 'muted'
-                  }>
-                    {agent.status}
-                  </Badge>
-                </div>
-                <div className={agentMeta}>
-                  <span>{t('agents.completed')}: {agent.jobsCompleted}</span>
-                  <span>{t('agents.failed')}: {agent.jobsFailed}</span>
-                </div>
-                {agent.pools.length > 0 && (
-                  <div style={{ display: 'flex', gap: space[1], flexWrap: 'wrap' }}>
-                    {agent.pools.map((pool) => (
-                      <Badge key={pool} variant="muted">{pool}</Badge>
-                    ))}
+          {filteredAgents.map((agent) => {
+            const info = getStatusInfo(agent.status);
+            return (
+              <GlassPanel key={agent.name} depth="shallow" padding="md" interactive>
+                <div className={agentCard}>
+                  <div className={agentHeader}>
+                    <span className={agentName}>
+                      {agent.status === 'available' && <span className={pulseDot} />}
+                      {agent.name}
+                    </span>
+                    <Badge variant={info.color}>{info.icon} {info.label}</Badge>
                   </div>
-                )}
-                {agent.lastJobAt && (
-                  <span style={{ fontSize: fontSize.xs, color: theme.textMuted }}>
-                    {t('agents.lastUpdated')}: {new Date(agent.lastJobAt).toLocaleTimeString()}
-                  </span>
-                )}
-              </div>
-            </GlassPanel>
-          ))}
+                  <div className={agentMeta}>
+                    <span>✓ {agent.jobsCompleted} {t('agents.completed')}</span>
+                    <span>✕ {agent.jobsFailed} {t('agents.failed')}</span>
+                  </div>
+                  {agent.pools.length > 0 && (
+                    <div style={{ display: 'flex', gap: space[1], flexWrap: 'wrap' }}>
+                      {agent.pools.map((pool) => (
+                        <Badge key={pool} variant="muted">{pool}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  {agent.lastJobAt && (
+                    <span style={{ fontSize: fontSize.xs, color: theme.textMuted }}>
+                      {t('agents.lastUpdated')}: {formatRelativeTime(agent.lastJobAt)}
+                    </span>
+                  )}
+                </div>
+              </GlassPanel>
+            );
+          })}
         </div>
       )}
 

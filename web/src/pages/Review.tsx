@@ -8,6 +8,7 @@ import { Tabs } from '@/components/shared/Tabs';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import { Breadcrumb } from '@/components/shared/Breadcrumb';
 import { useReviewStore, useWebSocketStore } from '@/app/store';
+import { getStatusInfo, formatRelativeTime, truncateId } from '@/utils/format';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -234,9 +235,11 @@ export default function Review() {
                 <div className={sessionInstruction}>{session.instruction}</div>
               </div>
               <div className={sessionMeta}>
-                <Badge variant={statusVariant(session.status)}>{session.status}</Badge>
+                <Badge variant={statusVariant(session.status)}>
+                  {getStatusInfo(session.status).icon} {getStatusInfo(session.status).label}
+                </Badge>
                 <span style={{ fontSize: fontSize.xs, color: theme.textMuted }}>
-                  {new Date(session.createdAt).toLocaleDateString()}
+                  {formatRelativeTime(session.createdAt)}
                 </span>
               </div>
             </div>
@@ -261,9 +264,13 @@ export default function Review() {
           <div className={detailHeader}>
             <div>
               <h3 className={sectionTitle}>{selectedSession.project}</h3>
-              <p style={{ fontSize: fontSize.xs, color: theme.textMuted }}>{selectedSession.instruction}</p>
+              <p style={{ fontSize: fontSize.xs, color: theme.textMuted }}>
+                {truncateId(selectedSession.id)} · {selectedSession.instruction}
+              </p>
             </div>
-            <Badge variant={statusVariant(selectedSession.status)}>{selectedSession.status}</Badge>
+            <Badge variant={statusVariant(selectedSession.status)}>
+              {getStatusInfo(selectedSession.status).icon} {getStatusInfo(selectedSession.status).label}
+            </Badge>
           </div>
 
           <div className={actionsStyle}>
