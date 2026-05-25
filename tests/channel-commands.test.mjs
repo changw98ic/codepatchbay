@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign as signMessage } from "node:crypto";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +37,31 @@ const DISCORD_TOKEN_VECTOR = {
   body: "{\"type\":2,\"token\":\"discord-token-secret\",\"data\":{\"name\":\"cpb\",\"options\":[{\"name\":\"command\",\"value\":\"run frontend \\\"fix login redirect\\\"\"}]},\"member\":{\"user\":{\"id\":\"U123\",\"username\":\"alice\"}},\"channel_id\":\"C123\",\"guild_id\":\"G123\"}",
   signature: "53114e5fac056b39983e2d5f22c607f152b6ebaee807c32fc5f74773407c0ca4ede78d47bfb17ecfc2e0efa410ad494c8e3c3311c588f2e5d9bf66831eb50d08",
 };
+
+function createDiscordSigner() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const publicKeyHex = Buffer.from(publicDer).subarray(-32).toString("hex");
+  return {
+    publicKey: publicKeyHex,
+    command(commandText, extra = {}) {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const body = JSON.stringify({
+        type: 2,
+        data: {
+          name: "cpb",
+          options: [{ name: "command", value: commandText }],
+        },
+        member: { user: { id: "U456", username: "bob" } },
+        channel_id: "C456",
+        guild_id: "G456",
+        ...extra,
+      });
+      const signature = signMessage(null, Buffer.from(`${timestamp}${body}`, "utf8"), privateKey).toString("hex");
+      return { body, timestamp, signature };
+    },
+  };
+}
 
 function slackSignature(secret, timestamp, rawBody) {
   return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
@@ -857,6 +882,142 @@ describe("Discord channel command skeleton", () => {
       assert.equal(candidates.length, 1);
       assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("supports Discord status, cancel, and retry for queued q-id entries before a job exists", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-discord-queue-actions-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    const signer = createDiscordSigner();
+    const app = await buildChannelApp(cpbRoot, {
+      discordPublicKey: signer.publicKey,
+      hubRoot,
+    });
+    try {
+      async function discordCommand(text) {
+        const signed = signer.command(text);
+        return app.inject({
+          method: "POST",
+          url: "/api/channels/discord/interactions",
+          headers: {
+            "content-type": "application/json",
+            "x-signature-ed25519": signed.signature,
+            "x-signature-timestamp": signed.timestamp,
+          },
+          payload: signed.body,
+        });
+      }
+
+      const queued = JSON.parse((await discordCommand('run frontend "fix login redirect"')).body);
+      const queueId = queued.queueEntry.id;
+
+      const status = await discordCommand(`status ${queueId}`);
+      assert.equal(status.statusCode, 200);
+      const statusBody = JSON.parse(status.body);
+      assert.equal(statusBody.ok, true);
+      assert.equal(statusBody.action, "status");
+      assert.equal(statusBody.status.queueEntryId, queueId);
+      assert.equal(statusBody.status.status, "pending");
+
+      const cancel = await discordCommand(`cancel ${queueId}`);
+      assert.equal(cancel.statusCode, 200);
+      const cancelBody = JSON.parse(cancel.body);
+      assert.equal(cancelBody.ok, true);
+      assert.equal(cancelBody.action, "cancelled");
+      assert.equal(cancelBody.queueEntry.status, "cancelled");
+      assert.match(cancelBody.queueEntry.metadata.cancelReason, /Discord/);
+
+      const retry = await discordCommand(`retry ${queueId}`);
+      assert.equal(retry.statusCode, 200);
+      const retryBody = JSON.parse(retry.body);
+      assert.equal(retryBody.ok, true);
+      assert.equal(retryBody.action, "retried");
+      assert.equal(retryBody.queueEntry.status, "pending");
+      assert.equal(retryBody.queueEntry.metadata.retryReason, "Retried from Discord by U456");
+
+      const entries = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].status, "pending");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("wires Discord approve, cancel, retry, and logs commands for jobs", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-discord-job-actions-"));
+    const signer = createDiscordSigner();
+    const app = await buildChannelApp(cpbRoot, {
+      discordPublicKey: signer.publicKey,
+    });
+    try {
+      const approveJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Approve discord",
+        workflow: "standard",
+        jobId: "job-discord-approve",
+      });
+      const cancelJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Cancel discord",
+        workflow: "standard",
+        jobId: "job-discord-cancel",
+      });
+      const retryJob = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Retry discord",
+        workflow: "standard",
+        jobId: "job-discord-retry",
+      });
+      await failJob(cpbRoot, "frontend", retryJob.jobId, {
+        reason: "recoverable",
+        code: FAILURE_CODES.RECOVERABLE,
+        phase: "execute",
+        retryable: true,
+      });
+
+      async function discordCommand(text) {
+        const signed = signer.command(text);
+        return app.inject({
+          method: "POST",
+          url: "/api/channels/discord/interactions",
+          headers: {
+            "content-type": "application/json",
+            "x-signature-ed25519": signed.signature,
+            "x-signature-timestamp": signed.timestamp,
+          },
+          payload: signed.body,
+        });
+      }
+
+      const approve = await discordCommand(`approve ${approveJob.jobId}`);
+      const cancel = await discordCommand(`cancel ${cancelJob.jobId}`);
+      const retry = await discordCommand(`retry ${retryJob.jobId}`);
+      const logs = await discordCommand(`logs ${approveJob.jobId}`);
+
+      assert.equal(approve.statusCode, 200);
+      assert.equal(JSON.parse(approve.body).action, "approved");
+      const approvalEvents = (await readEvents(cpbRoot, "frontend", approveJob.jobId))
+        .filter((event) => event.type === "job_approved");
+      assert.equal(approvalEvents.length, 1);
+      assert.equal(approvalEvents[0].actor.userId, "U456");
+
+      assert.equal(cancel.statusCode, 200);
+      assert.equal((await getJob(cpbRoot, "frontend", cancelJob.jobId)).status, "cancelled");
+
+      assert.equal(retry.statusCode, 200);
+      const retryBody = JSON.parse(retry.body);
+      assert.equal(retryBody.action, "retried");
+      assert.notEqual(retryBody.job.jobId, retryJob.jobId);
+      assert.equal(retryBody.recoveryOf, retryJob.jobId);
+
+      assert.equal(logs.statusCode, 200);
+      const logsBody = JSON.parse(logs.body);
+      assert.equal(logsBody.action, "logs");
+      assert.equal(logsBody.events[0].type, "job_created");
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });

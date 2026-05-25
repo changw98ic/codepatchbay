@@ -1,12 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
-import { createChannelQueueJob } from "./event-source.js";
 import { cancelJob, listJobsAcrossRuntimeRoots, retryJob } from "./job-store.js";
-import { jobToQueueRow } from "./job-projection.js";
-import { readEvents } from "./event-store.js";
 import { approveGate } from "./approval-gate.js";
-import { listQueue, updateEntry } from "./hub-queue.js";
+import { handleChannelCommand } from "./channel-queue-actions.js";
 
 const DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 300;
 
@@ -108,6 +105,12 @@ export function slackQueueActionMetadata(queueEntryId) {
       command: `/cpb cancel ${queueEntryId}`,
       value: queueEntryId,
     },
+    retry: {
+      type: "command",
+      label: "Retry",
+      command: `/cpb retry ${queueEntryId}`,
+      value: queueEntryId,
+    },
   };
 }
 
@@ -170,36 +173,6 @@ async function findJobById(cpbRoot, jobId) {
   return jobs.find((job) => job.jobId === jobId) || null;
 }
 
-function isQueueEntryId(value) {
-  return /^q-[A-Za-z0-9-]+$/.test(String(value || ""));
-}
-
-async function findQueueEntryById(hubRoot, queueEntryId) {
-  if (!isQueueEntryId(queueEntryId)) return null;
-  const entries = await listQueue(hubRoot);
-  return entries.find((entry) => entry.id === queueEntryId) || null;
-}
-
-function queueEntryStatus(entry) {
-  if (!entry) return null;
-  return {
-    queueEntryId: entry.id,
-    jobId: null,
-    project: entry.projectId,
-    task: entry.description || entry.id,
-    workflow: entry.metadata?.workflow || "standard",
-    status: entry.status,
-    source: {
-      type: entry.metadata?.source || entry.type || "queue",
-      channel: entry.metadata?.channel || null,
-      repo: entry.metadata?.repo || null,
-      issueNumber: entry.metadata?.issueNumber ?? null,
-    },
-    createdAt: entry.createdAt || null,
-    updatedAt: entry.updatedAt || null,
-  };
-}
-
 function policyDenied(decision) {
   return {
     ok: false,
@@ -221,303 +194,13 @@ async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project 
 }
 
 export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot } = {}) {
-  const command = parsed?.command;
-  if (!parsed?.ok || !command?.ok) {
-    return {
-      ok: false,
-      channel: "slack",
-      action: "help",
-      parsed,
-      error: command?.message || "invalid Slack command",
-    };
-  }
-
-  if (command.type === "run" || command.type === "issue") {
-    const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-      action: command.type,
-      project: command.project,
-    });
-    if (!decision.allowed) {
-      return {
-        ...policyDenied(decision),
-        channel: "slack",
-        action: command.type,
-        parsed,
-      };
-    }
-
-    const result = await createChannelQueueJob(cpbRoot, command, {
-      channel: "slack",
-      actor: parsed.actor.userId,
-      actorName: parsed.actor.userName,
-      teamId: parsed.actor.teamId,
-      channelId: parsed.actor.channelId,
-      channelName: parsed.actor.channelName,
-      triggerId: parsed.triggerId,
-      commandText: parsed.commandText,
-    }, {
-      hubRoot,
-    });
-    return {
-      ok: result.status === "created",
-      channel: "slack",
-      action: result.status === "created" ? "queued" : result.status,
-      parsed,
-      queueEntry: result.queueEntry,
-      candidateEntry: result.entry,
-      job: jobSummary(result.job),
-      actions: result.job
-        ? slackActionMetadata(result.job.jobId)
-        : (result.queueEntry ? slackQueueActionMetadata(result.queueEntry.id) : null),
-    };
-  }
-
-  if (command.type === "status") {
-    const job = await findJobById(cpbRoot, command.job);
-    if (!job) {
-      const queueEntry = await findQueueEntryById(hubRoot, command.job);
-      if (queueEntry) {
-        const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-          action: "status",
-          project: queueEntry.projectId,
-          job: queueEntry.id,
-        });
-        if (!decision.allowed) {
-          return {
-            ...policyDenied(decision),
-            channel: "slack",
-            action: "status",
-            parsed,
-          };
-        }
-
-        return {
-          ok: true,
-          channel: "slack",
-          action: "status",
-          parsed,
-          status: queueEntryStatus(queueEntry),
-          actions: slackQueueActionMetadata(queueEntry.id),
-        };
-      }
-    }
-    if (!job) {
-      return {
-        ok: false,
-        channel: "slack",
-        action: "status",
-        parsed,
-        error: `job not found: ${command.job}`,
-      };
-    }
-    const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-      action: "status",
-      project: job.project,
-      job: job.jobId,
-    });
-    if (!decision.allowed) {
-      return {
-        ...policyDenied(decision),
-        channel: "slack",
-        action: "status",
-        parsed,
-      };
-    }
-
-    return {
-      ok: true,
-      channel: "slack",
-      action: "status",
-      parsed,
-      status: jobToQueueRow(job),
-      actions: slackActionMetadata(job.jobId),
-    };
-  }
-
-  if (command.type === "approve" || command.type === "cancel" || command.type === "retry" || command.type === "logs") {
-    const job = await findJobById(cpbRoot, command.job);
-    if (!job && (command.type === "approve" || command.type === "cancel" || command.type === "retry")) {
-      const queueEntry = await findQueueEntryById(hubRoot, command.job);
-      if (queueEntry) {
-        const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-          action: command.type,
-          project: queueEntry.projectId,
-          job: queueEntry.id,
-        });
-        if (!decision.allowed) {
-          return {
-            ...policyDenied(decision),
-            channel: "slack",
-            action: command.type,
-            parsed,
-          };
-        }
-
-        const ts = new Date().toISOString();
-        if (command.type === "approve") {
-          if (queueEntry.status !== "waiting.approval") {
-            return {
-              ok: false,
-              channel: "slack",
-              action: "approve",
-              parsed,
-              error: `queue entry is not waiting for approval: ${queueEntry.id}`,
-            };
-          }
-          const updated = await updateEntry(hubRoot, queueEntry.id, {
-            status: "pending",
-            metadata: {
-              approvedAt: ts,
-              approvedBy: parsed.actor.userId || null,
-            },
-          });
-          return {
-            ok: true,
-            channel: "slack",
-            action: "approved",
-            actor: parsed.actor,
-            approvedAt: ts,
-            queueEntry: updated,
-            status: queueEntryStatus(updated),
-            actions: slackQueueActionMetadata(updated.id),
-          };
-        }
-
-        if (command.type === "retry") {
-          const updated = await updateEntry(hubRoot, queueEntry.id, {
-            status: "pending",
-            claimedBy: null,
-            claimedAt: null,
-            workerId: null,
-            metadata: {
-              retryReason: `Retried from Slack by ${parsed.actor.userId || "unknown user"}`,
-              retriedAt: ts,
-              retriedBy: parsed.actor.userId || null,
-            },
-          });
-          return {
-            ok: true,
-            channel: "slack",
-            action: "retried",
-            actor: parsed.actor,
-            retriedAt: ts,
-            queueEntry: updated,
-            status: queueEntryStatus(updated),
-            actions: slackQueueActionMetadata(updated.id),
-          };
-        }
-
-        const updated = await updateEntry(hubRoot, queueEntry.id, {
-          status: "cancelled",
-          metadata: {
-            cancelReason: `Cancelled from Slack by ${parsed.actor.userId || "unknown user"}`,
-            cancelledAt: ts,
-            cancelledBy: parsed.actor.userId || null,
-          },
-        });
-        return {
-          ok: true,
-          channel: "slack",
-          action: "cancelled",
-          actor: parsed.actor,
-          cancelledAt: ts,
-          queueEntry: updated,
-          status: queueEntryStatus(updated),
-          actions: slackQueueActionMetadata(updated.id),
-        };
-      }
-    }
-    if (!job) {
-      return {
-        ok: false,
-        channel: "slack",
-        action: command.type,
-        parsed,
-        error: `job not found: ${command.job}`,
-      };
-    }
-    const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-      action: command.type,
-      project: job.project,
-      job: job.jobId,
-    });
-    if (!decision.allowed) {
-      return {
-        ...policyDenied(decision),
-        channel: "slack",
-        action: command.type,
-        parsed,
-      };
-    }
-
-    const ts = new Date().toISOString();
-    if (command.type === "approve") {
-      const approved = await approveGate(cpbRoot, job.project, job.jobId, {
-        actor: parsed.actor,
-        action: command,
-        ts,
-      });
-      return {
-        ok: true,
-        channel: "slack",
-        action: "approved",
-        actor: parsed.actor,
-        approvedAt: ts,
-        job: jobSummary(approved),
-      };
-    }
-
-    if (command.type === "cancel") {
-      const cancelled = await cancelJob(cpbRoot, job.project, job.jobId, {
-        reason: `Cancelled from Slack by ${parsed.actor.userId || "unknown user"}`,
-        ts,
-      });
-      return {
-        ok: true,
-        channel: "slack",
-        action: "cancelled",
-        actor: parsed.actor,
-        cancelledAt: ts,
-        job: jobSummary(cancelled),
-      };
-    }
-
-    if (command.type === "retry") {
-      const retry = await retryJob(cpbRoot, job.project, job.jobId, {
-        trigger: "slack",
-        force: true,
-        ts,
-      });
-      return {
-        ok: true,
-        channel: "slack",
-        action: "retried",
-        actor: parsed.actor,
-        retriedAt: ts,
-        job: jobSummary(retry),
-        recoveryOf: job.jobId,
-        actions: slackActionMetadata(retry.jobId),
-      };
-    }
-
-    const events = await readEvents(cpbRoot, job.project, job.jobId);
-    return {
-      ok: true,
-      channel: "slack",
-      action: "logs",
-      parsed,
-      job: jobSummary(job),
-      events: events.slice(-20),
-    };
-  }
-
-  return {
-    ok: false,
+  return handleChannelCommand(cpbRoot, parsed, {
+    policy,
+    hubRoot,
     channel: "slack",
-    action: command.type,
-    parsed,
-    error: `${command.type} is not wired yet`,
-  };
+    jobActionMetadata: slackActionMetadata,
+    queueActionMetadata: slackQueueActionMetadata,
+  });
 }
 
 export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null } = {}) {

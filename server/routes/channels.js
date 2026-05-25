@@ -6,13 +6,12 @@ import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import { parseChannelCommand } from "../services/channel-commands.js";
-import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
 import {
   authorizeDiscordInteraction,
   parseDiscordInteraction,
   verifyDiscordSignature,
 } from "../services/channel-discord.js";
-import { createChannelQueueJob } from "../services/event-source.js";
+import { handleChannelCommand } from "../services/channel-queue-actions.js";
 import {
   handleSlackInteractiveAction,
   handleSlackSlashCommand,
@@ -181,86 +180,14 @@ async function loadChannelConfig(cpbRoot) {
   }
 }
 
-function channelJobSummary(job) {
-  if (!job) return null;
-  return {
-    jobId: job.jobId,
-    project: job.project,
-    task: job.task,
-    workflow: job.workflow || "standard",
-    status: job.status || null,
-  };
-}
-
-async function authorizeChannelCommand(cpbRoot, policy, { channel, command, actor }) {
-  if (!policy) return { allowed: true, reason: "channel policy not configured" };
-  return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
-    channel,
-    action: command?.type || null,
-    project: command?.project || null,
-    job: command?.job || null,
-    actor,
-  }));
-}
-
 async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = null } = {}) {
-  const command = parsed?.command;
   const channel = context.channel || parsed?.channel || "channel";
-  if (!parsed?.ok || !command?.ok) {
-    return {
-      ok: false,
-      channel,
-      action: "help",
-      parsed,
-      error: command?.message || "invalid channel command",
-    };
-  }
-  const decision = await authorizeChannelCommand(cpbRoot, policy, {
-    channel,
-    command,
-    actor: parsed.actor || {},
-  });
-  if (!decision.allowed) {
-    return {
-      ok: false,
-      code: "CHANNEL_POLICY_DENIED",
-      statusCode: 403,
-      channel,
-      action: command.type,
-      reason: decision.reason,
-      parsed,
-    };
-  }
-  if (command.type !== "run" && command.type !== "issue") {
-    return {
-      ok: false,
-      channel,
-      action: command.type,
-      parsed,
-      error: `${command.type} is not wired for ${channel}`,
-    };
-  }
-  const result = await createChannelQueueJob(cpbRoot, command, {
-    channel,
-    actor: parsed.actor?.userId || context.actor || null,
-    actorName: parsed.actor?.userName || context.actorName || null,
-    teamId: parsed.actor?.teamId || parsed.actor?.guildId || context.teamId || null,
-    channelId: parsed.actor?.channelId || context.channelId || null,
-    channelName: parsed.actor?.channelName || context.channelName || null,
-    triggerId: parsed.triggerId || parsed.interactionId || context.triggerId || null,
-    commandText: parsed.commandText || context.commandText || null,
-  }, {
+  return handleChannelCommand(cpbRoot, parsed, {
+    policy,
     hubRoot: context.hubRoot || cpbRoot,
-  });
-  return {
-    ok: result.status === "created",
     channel,
-    action: result.status === "created" ? "queued" : result.status,
-    parsed,
-    queueEntry: result.queueEntry,
-    candidateEntry: result.entry,
-    job: channelJobSummary(result.job),
-  };
+    context,
+  });
 }
 
 export async function channelRoutes(fastify, opts) {
@@ -350,17 +277,16 @@ export async function channelRoutes(fastify, opts) {
 
     const parsed = parseDiscordInteraction(req.body || {});
     const policy = opts.channelPolicy || null;
-    const authorization = await authorizeDiscordInteraction(req.cpbRoot, policy, parsed);
-    if (!authorization.allowed) {
-      return reply.code(403).send({
-        ok: false,
-        code: "CHANNEL_POLICY_DENIED",
-        reason: authorization.reason,
-      });
-    }
-
     const dryRun = opts.discordDryRun === true || req.query?.dryRun === "1" || req.query?.dry_run === "1";
     if (dryRun) {
+      const authorization = await authorizeDiscordInteraction(req.cpbRoot, policy, parsed);
+      if (!authorization.allowed) {
+        return reply.code(403).send({
+          ok: false,
+          code: "CHANNEL_POLICY_DENIED",
+          reason: authorization.reason,
+        });
+      }
       return {
         ok: true,
         channel: "discord",
@@ -373,7 +299,7 @@ export async function channelRoutes(fastify, opts) {
       channel: "discord",
       hubRoot: req.cpbHubRoot || req.cpbRoot,
     }, { policy });
-    return reply.code(result.statusCode || (result.ok ? 202 : 400)).send(result);
+    return reply.code(result.statusCode || (result.ok ? (result.action === "queued" ? 202 : 200) : 400)).send(result);
   });
 
   // Feishu event callback
