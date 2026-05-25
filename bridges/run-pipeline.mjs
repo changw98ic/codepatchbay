@@ -809,6 +809,12 @@ export async function runPipeline({
   });
   const jobId = job.jobId;
 
+  // Structured line for project-worker to parse and write back jobId to queue entry
+  const queueEntryId = process.env.CPB_QUEUE_ENTRY_ID || null;
+  if (queueEntryId) {
+    process.stdout.write(`CPB_JOB_CREATED ${JSON.stringify({ jobId, queueEntryId })}\n`);
+  }
+
   async function waitForApprovalIfRequired({ nodeId, phase }) {
     const operation = approvalOperationForPhase(phase);
     if (!operation || !requiresApproval(effectiveTeamPolicy, operation)) return { ok: true };

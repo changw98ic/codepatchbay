@@ -693,7 +693,22 @@ export class ProjectWorker {
 
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      let jobIdWritten = false;
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        if (!jobIdWritten) {
+          const match = String(stdout).match(/^CPB_JOB_CREATED (\{.*\})$/m);
+          if (match) {
+            jobIdWritten = true;
+            try {
+              const { jobId: parsedJobId, queueEntryId } = JSON.parse(match[1]);
+              if (parsedJobId && queueEntryId === entry.id) {
+                updateEntry(this.hubRoot, entry.id, { metadata: { jobId: parsedJobId } }).catch(() => {});
+              }
+            } catch {}
+          }
+        }
+      });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
       child.on("close", (code) => resolve({ ok: code === 0, code, stdout, stderr }));
       child.on("error", (error) => resolve({ ok: false, code: 1, error: error.message, stdout, stderr }));

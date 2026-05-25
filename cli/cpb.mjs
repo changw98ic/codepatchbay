@@ -59,7 +59,7 @@ function usage() {
   console.log(`  ${CYAN}setup${NC} [--json]                         Run the setup wizard`);
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
   console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
-  console.log(`  ${CYAN}github${NC} [bind|connect]                    GitHub project binding and setup`);
+  console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration: bind, connect, health`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
   console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
   console.log(`  ${CYAN}wiki${NC} [lint|list]                       Wiki operations`);

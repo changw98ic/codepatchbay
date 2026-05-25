@@ -231,6 +231,45 @@ export async function runSetupWizard({
     }
   }
 
+  // Auth retry loop: if health degraded, show provider command, ask to run, rerun
+  if (runAuthCheck && mode === "interactive" && (input.isTTY || typeof questionFn === "function")) {
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const degraded = selectedAgents.filter((agent) => {
+        const health = result.health[agent.id];
+        return health && health.status !== "ok" && health.status !== "skipped";
+      });
+      if (degraded.length === 0) break;
+
+      if (stdio === "inherit") {
+        console.log(`\nHealth degraded for: ${degraded.map((a) => a.displayName || a.id).join(", ")}`);
+      }
+      for (const agent of degraded) {
+        const auth = result.auth[agent.id];
+        const command = auth?.providerNativeCommand || auth?.localSetupUrl;
+        if (command && stdio === "inherit") {
+          console.log(`  ${agent.displayName}: ${command}`);
+        }
+      }
+
+      const retryAnswer = await askQuestion("Run provider auth command now? (y/N) ", questionFn);
+      if (!yes(retryAnswer)) break;
+
+      for (const agent of degraded) {
+        try {
+          result.health[agent.id] = await healthCheckFn(agent.id);
+        } catch (error) {
+          result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: error.message } };
+        }
+        try {
+          result.auth[agent.id] = authConnectFn(agent.id);
+        } catch (error) {
+          result.auth[agent.id] = { provider: { id: agent.id }, error: error.message };
+        }
+      }
+    }
+  }
+
   result.profile = profileFromResult(result);
   await writeAtomicJson(setupProfilePath(cpbRoot), result.profile);
   return result;

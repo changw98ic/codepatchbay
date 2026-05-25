@@ -119,7 +119,7 @@ describe("GitHub App config model", () => {
     const installation = checks.find((check) => check.id === "github-app-installation");
     assert.equal(installation.status, "warn");
     assert.match(installation.message, /installation id/i);
-    assert.match(installation.recommendedAction, /cpb github install-app/);
+    assert.match(installation.recommendedAction, /cpb github connect --installation-id/);
   });
 });
 

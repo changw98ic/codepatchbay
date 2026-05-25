@@ -6,11 +6,21 @@
 
 ```bash
 npm i -g codepatchbay
-cpb setup
+cpb setup --recommended
 cpb demo
 cpb init .
 cpb run "fix failing tests"
 ```
+
+Connect GitHub for unattended issue-driven workflow:
+
+```bash
+cpb github bind myproj owner/repo
+cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET
+cpb daemon start
+```
+
+Then add the label `cpb` to a GitHub issue. CodePatchBay picks it up, plans, executes, verifies, and opens a draft PR.
 
 Fast install from a checkout or release tarball:
 
@@ -18,27 +28,17 @@ Fast install from a checkout or release tarball:
 sh scripts/install.sh
 ```
 
-The install script checks for `node`, `npm`, `git`, and `gh`, installs missing
-tools through a supported local package manager when possible, verifies
-`gh auth status`, prompts for `gh auth login` when needed, installs the `cpb`
-CLI, then runs `cpb setup --recommended`.
+The install script checks for `node`, `npm`, `git`, and `gh`, installs missing tools through a supported local package manager when possible, verifies `gh auth status`, prompts for `gh auth login` when needed, installs the `cpb` CLI, then runs `cpb setup --recommended`.
 
 ## What it does
 
 CodePatchBay orchestrates coding agents on your machine:
 
-1. **`cpb setup`** - run the setup wizard: detect tools, select agents, show install plans, install selected agents, run health checks, show auth connect guidance, and write a setup profile.
-2. **`cpb demo`** - run a mock plan -> execute -> verify pipeline locally, no provider keys needed.
-3. **`cpb init .`** - register the current project (name inferred from `package.json` or directory).
-4. **`cpb run "task"`** - run a task through the full plan -> execute -> verify pipeline, inferring the project from the current directory.
-
-For unattended issue/channel work, bind a project, start the Hub, then start the queue daemon:
-
-```bash
-cpb github bind <project> <owner/repo>
-cpb hub start
-cpb daemon start
-```
+1. **`cpb setup --recommended`** - detect tools, install agents, run health checks, auth loop, write setup profile.
+2. **`cpb init .`** - register the current project (name inferred from `package.json` or directory).
+3. **`cpb github bind`** / **`cpb github connect`** - bind a project to a GitHub repo and configure the GitHub App.
+4. **`cpb run "task"`** - run a task through the full plan -> execute -> verify pipeline.
+5. **`cpb daemon start`** - start the queue worker for unattended issue-driven work.
 
 ## Workflow
 
@@ -66,6 +66,9 @@ cpb demo [--json]                  # Local mock demo (no keys needed)
 cpb setup [--recommended|--interactive|--json]  # Setup wizard
 cpb agents [list|detect|install]   # Agent gateway management
 cpb auth [status]                  # Provider auth checks
+cpb github bind <proj> <owner/repo> # Bind project to GitHub repo
+cpb github connect [options]       # Configure GitHub App credentials
+cpb github doctor [--json]         # Check GitHub integration health
 cpb daemon [start|status|stop]      # Queue worker daemon
 cpb status <project>               # Project status
 cpb list                           # List projects

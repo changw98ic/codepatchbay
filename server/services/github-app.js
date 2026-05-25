@@ -49,6 +49,20 @@ function normalizeWebhookSecretRef(value, errors) {
   return ref;
 }
 
+function normalizePrivateKeyRef(value, errors) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    errors.push("privateKeyRef must be a string");
+    return null;
+  }
+  const ref = value.trim();
+  if (!/^(env|file):.+$/.test(ref)) {
+    errors.push("privateKeyRef must use env: or file: prefix");
+    return null;
+  }
+  return ref;
+}
+
 function normalizePermissions(value, errors) {
   const permissions = {
     ...DEFAULT_GITHUB_APP_PERMISSIONS,
@@ -68,6 +82,7 @@ export function validateGithubAppConfig(raw = {}) {
   const appId = normalizeId(raw.appId, "appId", errors);
   const installationId = normalizeId(raw.installationId, "installationId", errors, { required: false });
   const webhookSecretRef = normalizeWebhookSecretRef(raw.webhookSecretRef, errors);
+  const privateKeyRef = normalizePrivateKeyRef(raw.privateKeyRef, errors);
   const permissions = normalizePermissions(raw.permissions, errors);
 
   const config = {
@@ -75,6 +90,7 @@ export function validateGithubAppConfig(raw = {}) {
     appId,
     installationId,
     webhookSecretRef,
+    privateKeyRef,
     permissions,
     updatedAt: raw.updatedAt || null,
   };
@@ -159,7 +175,17 @@ export function buildGithubAppReadiness(config) {
       message: config.installationId
         ? `GitHub App installation ${config.installationId} configured`
         : "GitHub App installation id missing",
-      recommendedAction: config.installationId ? null : "Run: cpb github install-app",
+      recommendedAction: config.installationId ? null : "Run: cpb github connect --installation-id <id>",
+    },
+    {
+      id: "github-app-private-key",
+      category: "github",
+      status: config.privateKeyRef ? "ok" : "warn",
+      severity: config.privateKeyRef ? "info" : "important",
+      message: config.privateKeyRef
+        ? `Private key configured (${config.privateKeyRef.split(":")[0]}:*)`
+        : "No private key — outbound transport will use gh CLI",
+      recommendedAction: config.privateKeyRef ? null : "Run: cpb github connect --private-key-ref env:CPB_GITHUB_PRIVATE_KEY",
     },
   ];
 }
