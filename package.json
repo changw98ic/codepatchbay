@@ -36,7 +36,8 @@
     "pretest:node": "npm run build:pack --workspace codepatchbay-web",
     "test": "npm run test:node",
     "test:node": "node scripts/run-node-tests.mjs",
-    "build:web": "npm run build --workspace codepatchbay-web"
+    "build:web": "npm run build --workspace codepatchbay-web",
+    "verify:p0p1": "node scripts/verify-p0-p1.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

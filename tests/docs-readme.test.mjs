@@ -30,6 +30,25 @@ test("D42: README quickstart includes npm install command", async () => {
   );
 });
 
+test("README documents the quick install shell script", async () => {
+  const readme = await readReadme();
+  assert.match(
+    readme,
+    /scripts\/install\.sh/,
+    "README quickstart should document scripts/install.sh"
+  );
+  assert.match(
+    readme,
+    /node.+npm.+git.+gh/s,
+    "README quick install docs should list prerequisite detection"
+  );
+  assert.match(
+    readme,
+    /gh auth status/,
+    "README quick install docs should mention GitHub CLI auth verification"
+  );
+});
+
 test("D42: README quickstart includes cpb setup", async () => {
   const readme = await readReadme();
   const quickstartBlock = extractQuickstartBlock(readme);

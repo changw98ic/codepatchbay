@@ -49,7 +49,7 @@ function formatHuman(snapshot, catalog) {
     lines.push(`  ${line}`);
   }
 
-  lines.push("", "Nothing is installed by cpb setup. Run cpb agents install <agent> --yes to execute a shown plan.");
+  lines.push("", "Detection only. Run cpb setup to launch the installer wizard.");
   return `${lines.join("\n")}\n`;
 }
 
@@ -63,16 +63,6 @@ function parseAgents(value) {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
-}
-
-function wantsWizard(args) {
-  return (
-    args.includes("--recommended") ||
-    args.includes("--interactive") ||
-    args.includes("--non-interactive") ||
-    args.includes("--agents") ||
-    args.some((arg) => arg.startsWith("--agents="))
-  );
 }
 
 function wizardMode(args) {
@@ -98,15 +88,16 @@ function formatWizardHuman(result) {
 
 export async function run(args = [], { cpbRoot } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: cpb setup [--recommended|--interactive|--non-interactive --agents codex,claude] [--json]");
+    console.log("Usage: cpb setup [--recommended|--interactive|--non-interactive --agents codex,claude] [--json] [--detect-only]");
     return 0;
   }
 
   const json = args.includes("--json");
+  const detectOnly = args.includes("--detect-only");
   const { detectSetupEnvironment } = await import("../../core/setup/detect.js");
   const { listSetupAgents } = await import("../../core/setup/agent-catalog.js");
 
-  if (wantsWizard(args) || !json) {
+  if (!detectOnly) {
     const agentsFlag = optionValue(args, "--agents")
       || args.find((arg) => arg.startsWith("--agents="))?.slice("--agents=".length)
       || "";
@@ -117,6 +108,8 @@ export async function run(args = [], { cpbRoot } = {}) {
       mode: wizardMode(args),
       agents: parseAgents(agentsFlag),
       runInstallPlanFn: runInstallPlanWithEvents,
+      execute: !json || args.includes("--recommended") || args.includes("--non-interactive") || Boolean(agentsFlag),
+      stdio: json ? "ignore" : "inherit",
     });
     result.profilePath = setupProfilePath(cpbRoot);
     if (json) console.log(JSON.stringify(result, null, 2));

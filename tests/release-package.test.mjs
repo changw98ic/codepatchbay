@@ -61,6 +61,7 @@ const PACK_REQUIRED_FILES = [
   "core/setup/install-plan.js",
   "core/setup/manifest-schema.js",
   "core/setup/health-check.js",
+  "core/setup/wizard.js",
   "core/setup/manifests/codex.json",
   "cli/commands/setup.js",
   "cli/commands/agents.js",
@@ -83,8 +84,10 @@ test("npm pack install smoke can run cpb setup --json from extracted package", a
       timeout: 15000,
     });
     const json = JSON.parse(output);
-    assert.ok(json.system, "setup --json must return system info");
-    assert.ok(json.agents?.codex, "setup --json must include known agent readiness");
+    assert.ok(json.detected?.system, "setup --json must return system info");
+    assert.ok(json.detected?.agents?.codex, "setup --json must include known agent readiness");
+    assert.ok(json.profile, "setup --json must return setup profile data");
+    assert.equal(json.executed, false, "setup --json alone must not silently install");
   } finally {
     await rm(packed.tmpDir, { recursive: true, force: true });
   }

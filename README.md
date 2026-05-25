@@ -12,14 +12,33 @@ cpb init .
 cpb run "fix failing tests"
 ```
 
+Fast install from a checkout or release tarball:
+
+```bash
+sh scripts/install.sh
+```
+
+The install script checks for `node`, `npm`, `git`, and `gh`, installs missing
+tools through a supported local package manager when possible, verifies
+`gh auth status`, prompts for `gh auth login` when needed, installs the `cpb`
+CLI, then runs `cpb setup --recommended`.
+
 ## What it does
 
 CodePatchBay orchestrates coding agents on your machine:
 
-1. **`cpb setup`** - detect installed agents (Codex, Claude Code, OpenCode) and report what's ready.
+1. **`cpb setup`** - run the setup wizard: detect tools, select agents, show install plans, install selected agents, run health checks, show auth connect guidance, and write a setup profile.
 2. **`cpb demo`** - run a mock plan -> execute -> verify pipeline locally, no provider keys needed.
 3. **`cpb init .`** - register the current project (name inferred from `package.json` or directory).
 4. **`cpb run "task"`** - run a task through the full plan -> execute -> verify pipeline, inferring the project from the current directory.
+
+For unattended issue/channel work, bind a project, start the Hub, then start the queue daemon:
+
+```bash
+cpb github bind <project> <owner/repo>
+cpb hub start
+cpb daemon start
+```
 
 ## Workflow
 
@@ -44,9 +63,10 @@ cpb plan <project> "<task>"        # Codex planning only
 cpb execute <project> <plan-id>    # Claude execution only
 cpb verify <project> <id>          # Codex verification only
 cpb demo [--json]                  # Local mock demo (no keys needed)
-cpb setup [--json]                 # Detect agents and prerequisites
+cpb setup [--recommended|--interactive|--json]  # Setup wizard
 cpb agents [list|detect|install]   # Agent gateway management
 cpb auth [status]                  # Provider auth checks
+cpb daemon [start|status|stop]      # Queue worker daemon
 cpb status <project>               # Project status
 cpb list                           # List projects
 cpb jobs [reconcile|cleanup]       # Job management

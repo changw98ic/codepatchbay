@@ -56,7 +56,7 @@ function usage() {
   console.log(`  ${CYAN}review${NC} <project> [id] [--agent]          Review deliverable`);
   console.log(`  ${CYAN}inbox${NC} <project>                        List plans`);
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
-  console.log(`  ${CYAN}setup${NC} [--json]                         Detect prerequisites and recommended agents`);
+  console.log(`  ${CYAN}setup${NC} [--json]                         Run the setup wizard`);
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
   console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect]                    GitHub project binding and setup`);

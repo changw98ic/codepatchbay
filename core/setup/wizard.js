@@ -71,7 +71,7 @@ async function askForAgents(catalog, snapshot) {
 }
 
 async function confirmPlan(plan) {
-  if (!input.isTTY) return true;
+  if (!input.isTTY) return false;
   const rl = createInterface({ input, output });
   try {
     const answer = await rl.question(`Execute ${plan.agent.displayName} install plan: ${plan.displayCommand}? [y/N] `);
@@ -127,6 +127,7 @@ export async function runSetupWizard({
   healthCheckFn = checkSetupAgentHealth,
   authConnectFn = getAuthConnectInstructions,
   confirmFn = confirmPlan,
+  execute = true,
   stdio = "inherit",
 } = {}) {
   const detected = await detectFn();
@@ -156,9 +157,13 @@ export async function runSetupWizard({
 
     const plan = createInstallPlan({ agentId: agent.id, detected });
     result.plans[agent.id] = plan;
-    const approved = mode === "interactive" ? await confirmFn(plan) : true;
+    const approved = execute && (mode === "interactive" ? await confirmFn(plan) : true);
     if (!approved) {
-      result.installations[agent.id] = { agentId: agent.id, method: plan.method, status: "skipped" };
+      result.installations[agent.id] = {
+        agentId: agent.id,
+        method: plan.method,
+        status: execute ? "skipped" : "planned",
+      };
       continue;
     }
     try {

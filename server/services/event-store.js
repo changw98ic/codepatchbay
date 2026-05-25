@@ -344,6 +344,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "merge_index_status",
   "pr_opened",
   "github_comment_posted", "github_comment_failed",
+  "slack_message_posted", "slack_message_failed",
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
   "approval_required", "job_approved", "approval_timed_out",

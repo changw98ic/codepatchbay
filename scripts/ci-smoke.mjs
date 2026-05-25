@@ -47,14 +47,21 @@ function failContext(label, result, detail) {
 // --- validators ---
 
 function validateSetup(data) {
-  if (!data.system || typeof data.system !== "object") return "missing or invalid .system";
-  if (typeof data.system.platform !== "string") return ".system.platform is not a string";
-  if (typeof data.system.arch !== "string") return ".system.arch is not a string";
+  const setup = data.detected || data;
+  if (!setup.system || typeof setup.system !== "object") return "missing or invalid detected .system";
+  if (typeof setup.system.platform !== "string") return ".detected.system.platform is not a string";
+  if (typeof setup.system.arch !== "string") return ".detected.system.arch is not a string";
 
-  if (!data.agents || typeof data.agents !== "object") return "missing or invalid .agents";
+  if (!setup.agents || typeof setup.agents !== "object") return "missing or invalid detected .agents";
   for (const id of ["codex", "claude", "opencode"]) {
-    if (!data.agents[id]) return `.agents.${id} is missing`;
-    if (typeof data.agents[id].installed !== "boolean") return `.agents.${id}.installed is not boolean`;
+    if (!setup.agents[id]) return `.detected.agents.${id} is missing`;
+    if (typeof setup.agents[id].installed !== "boolean") return `.detected.agents.${id}.installed is not boolean`;
+  }
+  if (data.detected) {
+    if (data.schemaVersion !== 1) return ".schemaVersion must be 1";
+    if (!data.profile || typeof data.profile !== "object") return "missing setup wizard .profile";
+    if (data.executed !== false) return "cpb setup --json alone must not execute installs";
+    if (!Array.isArray(data.selectedAgents)) return ".selectedAgents must be an array";
   }
   return null;
 }

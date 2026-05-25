@@ -106,10 +106,12 @@ test("cpb setup --json is routed and reports agents", async () => {
   const result = await runNode(["./cpb", "setup", "--json"]);
   assert.equal(result.code, 0);
   const parsed = JSON.parse(result.stdout);
-  assert.ok(parsed.system);
-  assert.ok(parsed.agents.codex);
-  assert.ok(parsed.agents.claude);
-  assert.ok(parsed.agents.opencode);
+  assert.ok(parsed.detected.system);
+  assert.ok(parsed.detected.agents.codex);
+  assert.ok(parsed.detected.agents.claude);
+  assert.ok(parsed.detected.agents.opencode);
+  assert.ok(parsed.profile);
+  assert.equal(parsed.executed, false);
 });
 
 test("cpb agents list --json is routed", async () => {

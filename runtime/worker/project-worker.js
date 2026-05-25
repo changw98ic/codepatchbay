@@ -11,6 +11,7 @@ import { getProject, heartbeatWorker, resolveHubRoot } from "../../server/servic
 import { claimEligible, listQueue, updateEntry } from "../../server/services/hub-queue.js";
 import { getJob, recordFinalizerResult } from "../../server/services/job-store.js";
 import { postGithubCommentWithGh, postGithubStatusComment } from "../../server/services/github-comments.js";
+import { postSlackStatusComment } from "../../server/services/slack-comments.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import {
   dispatchEnabled,
@@ -296,6 +297,7 @@ export class ProjectWorker {
     this._runPipelineFn = opts.runPipelineFn || null;
     this._finalizerFn = opts.finalizerFn || finalizeSuccessfulQueueEntry;
     this._issueCloser = opts.issueCloser || defaultIssueCloser;
+    this._slackNotifierFn = opts.slackNotifierFn || postSlackStatusComment;
     this._agentHealthFn = opts.agentHealthFn || (opts.runPipelineFn
       ? async () => ({ codex: true, claude: true, checks: {} })
       : defaultAgentHealth);
@@ -558,8 +560,8 @@ export class ProjectWorker {
     const projectId = entry.projectId;
     const resolved = await this.resolveCompletedJob(projectId, result);
     const job = resolved?.job || null;
-    if (!job?.sourceContext || job.sourceContext.type !== "github_issue") return null;
-    return postGithubStatusComment({
+    if (!job?.sourceContext) return null;
+    if (job.sourceContext.type === "github_issue") return postGithubStatusComment({
       cpbRoot: this.cpbRoot,
       project: projectId,
       job,
@@ -569,6 +571,18 @@ export class ProjectWorker {
       posted: false,
       error: { message: error.message },
     }));
+    if (job.sourceContext.type === "slack" || job.sourceContext.channel === "slack") {
+      return this._slackNotifierFn({
+        cpbRoot: this.cpbRoot,
+        project: projectId,
+        job,
+      }).catch((error) => ({
+        status: "failed",
+        posted: false,
+        error: { message: error.message },
+      }));
+    }
+    return null;
   }
 
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
