@@ -15,6 +15,33 @@ Hub/UI backend servers receive only an explicit env allowlist:
 CPB-launched dependency-install helpers and the local Vite UI dev server use a
 narrower runtime-only allowlist and do not receive provider credentials.
 
+### Agent Process Sandbox
+
+ACP provider adapter processes and CPB-brokered terminal commands can be
+launched through an OS/container sandbox before the provider code runs:
+
+- `CPB_AGENT_SANDBOX=off` keeps the legacy unsandboxed launch path.
+- `CPB_AGENT_SANDBOX=best-effort` uses a supported sandbox when available and
+  otherwise keeps running without one.
+- `CPB_AGENT_SANDBOX=required` fails closed if no supported sandbox is
+  available.
+- `CPB_AGENT_SANDBOX=strict` is `required` plus default network and subprocess
+  denial. If the selected sandbox provider cannot enforce a requested
+  restriction, `required`/`strict` fails closed instead of silently downgrading.
+
+Built-in providers are macOS `sandbox-exec` and Linux `bwrap` when present.
+The macOS provider can enforce filesystem, network, and process-exec policy.
+The Linux `bwrap` provider enforces filesystem and network policy, but not
+subprocess denial, so `strict` on Linux requires a site-managed wrapper.
+The default filesystem roots are the job working directory, temporary
+directories, explicit `CODEX_HOME`/XDG roots, and paths listed in
+`CPB_AGENT_SANDBOX_ALLOW_READ` or `CPB_AGENT_SANDBOX_ALLOW_WRITE`; CPB does not
+allow the whole user home directory by default. `CPB_AGENT_SANDBOX_COMMAND` can
+point at a site-managed wrapper; CPB appends the real command and args after any
+optional `CPB_AGENT_SANDBOX_ARGS`. `required` and `strict` modes are the only
+modes that make provider-internal filesystem, subprocess, and network
+restrictions part of the enforced launch contract.
+
 ### ACP Pool Environment Snapshot
 
 The in-process ACP pool does not repeatedly consult the raw parent
@@ -60,13 +87,14 @@ Events with secret-like artifact names or content are blocked:
 
 ## What CPB Does NOT Control
 
-These boundaries remain outside CPB enforcement until OS/container sandboxing is added:
+These boundaries remain outside CPB enforcement unless `CPB_AGENT_SANDBOX` is
+set to `required` or `strict` with an available OS/container sandbox:
 
-1. **Provider-internal filesystem access**: An ACP agent process can read files from the filesystem using its own I/O capabilities, bypassing CPB's broker. CPB only controls file reads that go through its own project-loader and knowledge-compose modules.
+1. **Provider-internal filesystem access**: Without required sandboxing, an ACP agent process can read files from the filesystem using its own I/O capabilities, bypassing CPB's broker. CPB always controls file reads that go through its own project-loader and knowledge-compose modules.
 
-2. **Agent subprocess spawning outside CPB**: If an ACP agent launches its own subprocesses outside CPB's terminal broker, those subprocesses are not subject to CPB's env allowlist or output redaction. Subprocesses launched through CPB's terminal broker receive the same allowlisted environment as ACP adapter processes.
+2. **Agent subprocess spawning outside CPB**: Without required sandboxing, if an ACP agent launches its own subprocesses outside CPB's terminal broker, those subprocesses are not subject to CPB's env allowlist or output redaction. Subprocesses launched through CPB's terminal broker receive the same allowlisted environment as ACP adapter processes and the same sandbox wrapper when sandboxing is enabled.
 
-3. **Network exfiltration**: CPB cannot prevent an agent from sending data over the network if the agent has network access.
+3. **Network exfiltration**: Without `CPB_AGENT_SANDBOX=strict` or `CPB_AGENT_SANDBOX_NETWORK=deny`, CPB cannot prevent an agent from sending data over the network if the agent has network access.
 
 4. **Trusted CPB host process**: The already-running CPB CLI/server process remains inside the trusted computing base. CPB-launched Hub/UI server children and ACP pool launches use allowlisted environments, but CPB cannot fully isolate secrets from a process that was itself started by the user with secrets already in its environment without moving that process into a separate OS/container boundary.
 
@@ -76,7 +104,10 @@ These boundaries remain outside CPB enforcement until OS/container sandboxing is
 
 ## Early Access Positioning
 
-CPB **reduces risk** through worktrees, env scrubbing, output redaction, and CPB-controlled guards. It is **not yet a full sandbox**. Users should:
+CPB **reduces risk** through worktrees, env scrubbing, output redaction,
+CPB-controlled guards, and optional fail-closed process sandboxing. It is **not
+automatically a full sandbox** unless required/strict OS sandboxing is enabled
+and verified on the host. Users should:
 
 - Run only against repositories and machines they control.
 - Avoid storing real production credentials in CPB-accessible paths.

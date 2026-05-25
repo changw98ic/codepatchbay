@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
+import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
 
 let _registryCache = null;
 async function getRegistry() {
@@ -551,9 +552,11 @@ export class AcpPool {
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
+      const env = buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot });
+      const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot });
+      const child = spawn(launch.command, launch.args, {
         cwd: this.cpbRoot,
-        env: buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
+        env,
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });

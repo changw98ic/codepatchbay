@@ -16,6 +16,7 @@ import {
   mergeHeadlessDenyTools,
 } from "../core/acp/policy.js";
 import { buildChildEnv } from "../core/policy/child-env.js";
+import { buildAgentSandboxLaunch } from "../core/policy/agent-sandbox.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;
@@ -430,8 +431,9 @@ export class AcpClient {
         Object.assign(env, homeEnv);
       }
     }
+    const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cwd });
     this.childEnv = env;
-    this.child = spawn(command, args, {
+    this.child = spawn(launch.command, launch.args, {
       cwd: this.cwd,
       env,
       detached: process.platform !== "win32",
@@ -888,7 +890,8 @@ export class AcpClient {
     }
     const env = buildChildEnv(this.childEnv || this.env, extraEnv);
 
-    const child = spawn(params.command, params.args || [], {
+    const launch = buildAgentSandboxLaunch(params.command, params.args || [], { env, cwd: terminalCwd });
+    const child = spawn(launch.command, launch.args, {
       cwd: params.cwd || this.cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
