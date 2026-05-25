@@ -19,11 +19,11 @@ function commandExists(cmd) {
   return spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", cmd]).status === 0;
 }
 
-function resolveAgentCommand(agent) {
+function resolveAgentCommand(agent, env = process.env) {
   const upper = agent.toUpperCase();
-  const envCmd = process.env[`CPB_ACP_${upper}_COMMAND`];
+  const envCmd = env[`CPB_ACP_${upper}_COMMAND`];
   if (envCmd) {
-    const envArgs = process.env[`CPB_ACP_${upper}_ARGS`];
+    const envArgs = env[`CPB_ACP_${upper}_ARGS`];
     return { command: envCmd, args: envArgs ? JSON.parse(envArgs) : [] };
   }
   if (agent === "codex") {
@@ -50,8 +50,8 @@ class PersistentAcp {
   }
 
   async start() {
-    const { command, args } = resolveAgentCommand(this.agent);
-    const env = buildChildEnv(process.env);
+    const env = buildChildEnv(process.env, {}, { agent: this.agent });
+    const { command, args } = resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(cache, { recursive: true });
@@ -60,7 +60,7 @@ class PersistentAcp {
 
     this.child = spawn(command, args, {
       cwd: CPB_ROOT,
-      env: buildChildEnv(env, { CPB_ROOT }),
+      env: buildChildEnv(env, { CPB_ROOT }, { agent: this.agent }),
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });

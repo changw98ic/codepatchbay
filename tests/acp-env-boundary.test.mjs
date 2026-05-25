@@ -45,26 +45,62 @@ cat >/dev/null
 printf ok
 `);
 
-    const saved = { ...process.env };
-    try {
-      process.env.CPB_ACP_CLIENT = clientPath;
-      process.env.OPENAI_API_KEY = "provider-secret";
-      process.env.DATABASE_URL = "postgres://secret";
-      process.env.RANDOM_TOKEN = "leak";
-      process.env.CPB_GITHUB_WEBHOOK_SECRET = "webhook-secret";
+    pool = new AcpPool({
+      cpbRoot: root,
+      hubRoot: root,
+      persistentProcesses: false,
+      env: {
+        PATH: process.env.PATH,
+        CPB_ACP_CLIENT: clientPath,
+        OPENAI_API_KEY: "provider-secret",
+        ANTHROPIC_API_KEY: "anthropic-secret",
+        DATABASE_URL: "postgres://secret",
+        RANDOM_TOKEN: "leak",
+        CPB_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+      },
+    });
+    assert.equal(await pool.execute("codex", "prompt", root, 5000), "ok");
 
-      pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
-      assert.equal(await pool.execute("codex", "prompt", root, 5000), "ok");
+    const envText = await readFile(path.join(root, "env.txt"), "utf8");
+    assert.match(envText, new RegExp(`^CPB_ROOT=${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    assert.match(envText, /^OPENAI_API_KEY=provider-secret$/m);
+    assert.doesNotMatch(envText, /^ANTHROPIC_API_KEY=/m);
+    assert.doesNotMatch(envText, /DATABASE_URL=/);
+    assert.doesNotMatch(envText, /RANDOM_TOKEN=/);
+    assert.doesNotMatch(envText, /CPB_GITHUB_WEBHOOK_SECRET=/);
+  });
 
-      const envText = await readFile(path.join(root, "env.txt"), "utf8");
-      assert.match(envText, new RegExp(`^CPB_ROOT=${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
-      assert.match(envText, /^OPENAI_API_KEY=provider-secret$/m);
-      assert.doesNotMatch(envText, /DATABASE_URL=/);
-      assert.doesNotMatch(envText, /RANDOM_TOKEN=/);
-      assert.doesNotMatch(envText, /CPB_GITHUB_WEBHOOK_SECRET=/);
-    } finally {
-      process.env = saved;
-    }
+  it("scopes one-shot ACP client env to the requested Claude agent", async () => {
+    const root = await tempDir("cpb-acp-env-pool-claude-");
+    const clientPath = path.join(root, "client.sh");
+    await writeExecutable(clientPath, `#!/bin/sh
+env | sort > "$CPB_ROOT/env-claude.txt"
+cat >/dev/null
+printf ok
+`);
+
+    pool = new AcpPool({
+      cpbRoot: root,
+      hubRoot: root,
+      persistentProcesses: false,
+      env: {
+        PATH: process.env.PATH,
+        CPB_ACP_CLIENT: clientPath,
+        OPENAI_API_KEY: "openai-secret",
+        ANTHROPIC_API_KEY: "anthropic-secret",
+        ANTHROPIC_AUTH_TOKEN: "anthropic-token",
+        AWS_REGION: "us-east-1",
+        DATABASE_URL: "postgres://secret",
+      },
+    });
+    assert.equal(await pool.execute("claude", "prompt", root, 5000), "ok");
+
+    const envText = await readFile(path.join(root, "env-claude.txt"), "utf8");
+    assert.match(envText, /^ANTHROPIC_API_KEY=anthropic-secret$/m);
+    assert.match(envText, /^ANTHROPIC_AUTH_TOKEN=anthropic-token$/m);
+    assert.match(envText, /^AWS_REGION=us-east-1$/m);
+    assert.doesNotMatch(envText, /^OPENAI_API_KEY=/m);
+    assert.doesNotMatch(envText, /DATABASE_URL=/);
   });
 
   it("freezes ACP pool launch env at construction time", async () => {
@@ -82,29 +118,26 @@ cat >/dev/null
 printf bad-b
 `);
 
-    const saved = { ...process.env };
-    try {
-      process.env.CPB_ACP_CLIENT = clientA;
-      process.env.OPENAI_API_KEY = "provider-at-construction";
-      process.env.DATABASE_URL = "postgres://construction-secret";
+    const parentEnv = {
+      PATH: process.env.PATH,
+      CPB_ACP_CLIENT: clientA,
+      OPENAI_API_KEY: "provider-at-construction",
+      DATABASE_URL: "postgres://construction-secret",
+    };
+    pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false, env: parentEnv });
 
-      pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
+    parentEnv.CPB_ACP_CLIENT = clientB;
+    parentEnv.OPENAI_API_KEY = "provider-after-mutation";
+    parentEnv.RANDOM_TOKEN = "late-leak";
 
-      process.env.CPB_ACP_CLIENT = clientB;
-      process.env.OPENAI_API_KEY = "provider-after-mutation";
-      process.env.RANDOM_TOKEN = "late-leak";
+    assert.equal(await pool.execute("codex", "prompt", root, 5000), "ok-a");
 
-      assert.equal(await pool.execute("codex", "prompt", root, 5000), "ok-a");
-
-      const envText = await readFile(path.join(root, "env-snapshot.txt"), "utf8");
-      assert.match(envText, /^OPENAI_API_KEY=provider-at-construction$/m);
-      assert.doesNotMatch(envText, /provider-after-mutation/);
-      assert.doesNotMatch(envText, /DATABASE_URL=/);
-      assert.doesNotMatch(envText, /RANDOM_TOKEN=/);
-      await assert.rejects(readFile(path.join(root, "env-mutated.txt"), "utf8"), /ENOENT/);
-    } finally {
-      process.env = saved;
-    }
+    const envText = await readFile(path.join(root, "env-snapshot.txt"), "utf8");
+    assert.match(envText, /^OPENAI_API_KEY=provider-at-construction$/m);
+    assert.doesNotMatch(envText, /provider-after-mutation/);
+    assert.doesNotMatch(envText, /DATABASE_URL=/);
+    assert.doesNotMatch(envText, /RANDOM_TOKEN=/);
+    await assert.rejects(readFile(path.join(root, "env-mutated.txt"), "utf8"), /ENOENT/);
   });
 
   it("scrubs arbitrary env before launching persistent ACP adapter processes", async () => {
@@ -145,6 +178,7 @@ process.stdin.on("end", () => process.exit(0));
         CPB_ACP_CODEX_COMMAND: process.execPath,
         CPB_ACP_CODEX_ARGS: JSON.stringify([agentPath]),
         OPENAI_API_KEY: "provider-secret",
+        ANTHROPIC_API_KEY: "anthropic-secret",
         DATABASE_URL: "postgres://secret",
         RANDOM_TOKEN: "leak",
         CPB_GITHUB_WEBHOOK_SECRET: "webhook-secret",
@@ -159,6 +193,7 @@ process.stdin.on("end", () => process.exit(0));
     const env = await readJson(path.join(root, "adapter-env.json"));
     assert.equal(env.CPB_ROOT, root);
     assert.equal(env.OPENAI_API_KEY, "provider-secret");
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
     assert.equal(env.DATABASE_URL, undefined);
     assert.equal(env.RANDOM_TOKEN, undefined);
     assert.equal(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
@@ -179,6 +214,7 @@ await writeFile(process.env.CPB_ROOT + "/terminal-env.json", JSON.stringify(proc
         PATH: process.env.PATH,
         CPB_ROOT: root,
         OPENAI_API_KEY: "provider-secret",
+        ANTHROPIC_API_KEY: "anthropic-secret",
         DATABASE_URL: "postgres://secret",
         RANDOM_TOKEN: "leak",
       },
@@ -200,9 +236,38 @@ await writeFile(process.env.CPB_ROOT + "/terminal-env.json", JSON.stringify(proc
     const env = await readJson(path.join(root, "terminal-env.json"));
     assert.equal(env.CPB_ROOT, root);
     assert.equal(env.OPENAI_API_KEY, "provider-secret");
-    assert.equal(env.AWS_REGION, "us-east-1");
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(env.AWS_REGION, undefined);
     assert.equal(env.DATABASE_URL, undefined);
     assert.equal(env.RANDOM_TOKEN, undefined);
     assert.equal(env.REQUEST_TOKEN, undefined);
+  });
+
+  it("keeps known non-pool ACP launch surfaces agent scoped", async () => {
+    const repoRoot = path.resolve(import.meta.dirname, "..");
+    const reviewDispatch = await readFile(path.join(repoRoot, "bridges", "review-dispatch.mjs"), "utf8");
+    const dualResearch = await readFile(path.join(repoRoot, "runtime", "evolve", "dual-research.js"), "utf8");
+    const reviewRoute = await readFile(path.join(repoRoot, "server", "routes", "review.js"), "utf8");
+
+    assert.match(
+      reviewDispatch,
+      /buildChildEnv\(process\.env,\s*\{\},\s*\{\s*agent:\s*this\.agent\s*\}\)/s,
+      "review-dispatch must resolve commands from agent-scoped env",
+    );
+    assert.match(
+      reviewDispatch,
+      /buildChildEnv\(env,\s*\{\s*CPB_ROOT\s*\},\s*\{\s*agent:\s*this\.agent\s*\}\)/s,
+      "review-dispatch must launch provider adapters with agent-scoped env",
+    );
+    assert.match(
+      dualResearch,
+      /buildChildEnv\(process\.env,\s*\{[^)]*CPB_EXECUTOR_ROOT:\s*executorRoot[^)]*CPB_ROOT:\s*cpbRoot[^)]*\},\s*\{\s*agent\s*\}\)/s,
+      "dual research must scope each direct ACP client launch by requested agent",
+    );
+    assert.match(
+      reviewRoute,
+      /buildChildEnv\(\s*process\.env,\s*\{[^)]*CPB_ACP_TIMEOUT_MS:\s*"90000"[^)]*\},\s*\{\s*agent:\s*"claude"\s*\}/s,
+      "review analysis route must scope the hardcoded Claude ACP launch",
+    );
   });
 });

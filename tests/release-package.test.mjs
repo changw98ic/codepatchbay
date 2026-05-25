@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, readdir, rm, stat, mkdir, mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -29,10 +30,22 @@ function cpbRelease(args) {
 
 // --- D43: npm pack smoke tests ---
 
-const npmCli = path.resolve(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+function resolveNpmInvoker() {
+  const bundledCli = path.resolve(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const npmExecPath = process.env.npm_execpath || "";
+  for (const candidate of [npmExecPath, bundledCli]) {
+    if (!candidate || !existsSync(candidate)) continue;
+    return candidate.endsWith(".js")
+      ? { command: nodeBin, argsPrefix: [candidate] }
+      : { command: candidate, argsPrefix: [] };
+  }
+  return { command: process.platform === "win32" ? "npm.cmd" : "npm", argsPrefix: [] };
+}
+
+const npmInvoker = resolveNpmInvoker();
 
 function runNpm(args, opts) {
-  return execFileSync(nodeBin, [npmCli, ...args], {
+  return execFileSync(npmInvoker.command, [...npmInvoker.argsPrefix, ...args], {
     encoding: "utf8",
     timeout: 30000,
     ...opts,

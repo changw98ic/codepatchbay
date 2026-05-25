@@ -552,7 +552,11 @@ export class AcpPool {
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
-      const env = buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot });
+      const env = buildChildEnv(
+        this.env,
+        { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
+        { agent },
+      );
       const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot });
       const child = spawn(launch.command, launch.args, {
         cwd: this.cpbRoot,
@@ -665,7 +669,11 @@ export class AcpPool {
       toolPolicy: await this.#getToolPolicy(),
       outputSink: () => {},
       errorSink: () => {},
-      env: buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
+      env: buildChildEnv(
+        this.env,
+        { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
+        { agent },
+      ),
       resumeSessionId,
     });
     const meta = {

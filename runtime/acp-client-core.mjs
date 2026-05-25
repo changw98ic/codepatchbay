@@ -414,7 +414,7 @@ export class AcpClient {
   async start() {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
-    const env = buildChildEnv(this.env);
+    const env = buildChildEnv(this.env, {}, { agent: this.agent });
     const { command, args } = await resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
@@ -888,7 +888,7 @@ export class AcpClient {
     for (const item of params.env || []) {
       if (item?.name) extraEnv[item.name] = item.value;
     }
-    const env = buildChildEnv(this.childEnv || this.env, extraEnv);
+    const env = buildChildEnv(this.childEnv || this.env, extraEnv, { agent: this.agent });
 
     const launch = buildAgentSandboxLaunch(params.command, params.args || [], { env, cwd: terminalCwd });
     const child = spawn(launch.command, launch.args, {

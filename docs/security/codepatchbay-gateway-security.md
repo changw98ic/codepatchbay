@@ -29,11 +29,14 @@ etc.) manages its own login flow and credential storage.
   job state, or any persistent artifact.
 - The child environment for agent processes and CPB-brokered terminal commands
   is built from an explicit allowlist (`core/policy/child-env.js`). Only known
-  runtime variables and provider credential variables are forwarded; everything
-  else is stripped.
-- Provider credentials are passed through to the agent process only when the
-  corresponding `CPB_ACP_*` variant or key variable is set. CPB does not
-  read, log, or persist these values.
+  runtime variables and relevant provider credential variables are forwarded;
+  everything else is stripped.
+- For known ACP agents, provider credentials are narrowed before launch:
+  Codex receives OpenAI/Azure-compatible credentials, Claude receives
+  Anthropic-compatible credentials and configured Claude provider-variant keys,
+  and Gemini receives Gemini/Google credentials. Unknown/custom agents keep the
+  full provider allowlist for compatibility. CPB does not read, log, or persist
+  these values.
 
 ## Secret Handling and Redaction Boundaries
 

@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import { applyVariant } from "../runtime/apply-variant.js";
 import {
   buildAcpPoolEnv,
   buildChildEnv,
   buildRuntimeEnv,
+  providerCredentialKeysForAgent,
   redactSecrets,
   detectSecretInput,
   assertNoSecretInput,
@@ -37,6 +39,122 @@ describe("buildChildEnv", () => {
     assert.strictEqual(env.RANDOM_TOKEN, undefined);
     assert.strictEqual(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
     assert.strictEqual(env.EXTRA_SECRET, undefined);
+  });
+
+  it("scopes provider credentials for Codex ACP children", () => {
+    const env = buildChildEnv({
+      PATH: "/usr/bin",
+      CPB_ROOT: "/tmp/cpb",
+      OPENAI_API_KEY: "openai-secret",
+      AZURE_OPENAI_API_KEY: "azure-secret",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_AUTH_TOKEN: "anthropic-token",
+      GEMINI_API_KEY: "gemini-secret",
+      KIMI_API_KEY: "kimi-secret",
+      AWS_ACCESS_KEY_ID: "aws-key",
+      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      DATABASE_URL: "postgres://secret",
+    }, {}, { agent: "codex" });
+
+    assert.strictEqual(env.PATH, "/usr/bin");
+    assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.OPENAI_API_KEY, "openai-secret");
+    assert.strictEqual(env.AZURE_OPENAI_API_KEY, "azure-secret");
+    assert.strictEqual(env.ANTHROPIC_API_KEY, undefined);
+    assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.strictEqual(env.GEMINI_API_KEY, undefined);
+    assert.strictEqual(env.KIMI_API_KEY, undefined);
+    assert.strictEqual(env.AWS_ACCESS_KEY_ID, undefined);
+    assert.strictEqual(env.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.strictEqual(env.DATABASE_URL, undefined);
+  });
+
+  it("scopes provider credentials for Claude ACP children", () => {
+    const env = buildChildEnv({
+      PATH: "/usr/bin",
+      CPB_ROOT: "/tmp/cpb",
+      OPENAI_API_KEY: "openai-secret",
+      AZURE_OPENAI_API_KEY: "azure-secret",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_AUTH_TOKEN: "anthropic-token",
+      AWS_ACCESS_KEY_ID: "aws-key",
+      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      AWS_SESSION_TOKEN: "aws-session",
+      AWS_REGION: "us-east-1",
+      GEMINI_API_KEY: "gemini-secret",
+      KIMI_API_KEY: "kimi-secret",
+      DATABASE_URL: "postgres://secret",
+    }, {}, { agent: "claude" });
+
+    assert.strictEqual(env.PATH, "/usr/bin");
+    assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.ANTHROPIC_API_KEY, "anthropic-secret");
+    assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, "anthropic-token");
+    assert.strictEqual(env.AWS_ACCESS_KEY_ID, "aws-key");
+    assert.strictEqual(env.AWS_SECRET_ACCESS_KEY, "aws-secret");
+    assert.strictEqual(env.AWS_SESSION_TOKEN, "aws-session");
+    assert.strictEqual(env.AWS_REGION, "us-east-1");
+    assert.strictEqual(env.OPENAI_API_KEY, undefined);
+    assert.strictEqual(env.AZURE_OPENAI_API_KEY, undefined);
+    assert.strictEqual(env.GEMINI_API_KEY, undefined);
+    assert.strictEqual(env.KIMI_API_KEY, "kimi-secret");
+    assert.strictEqual(env.DATABASE_URL, undefined);
+  });
+
+  it("keeps transformed Claude provider variant env while excluding unrelated providers", () => {
+    const saved = { ...process.env };
+    try {
+      process.env = {
+        PATH: "/usr/bin",
+        CPB_ROOT: "/tmp/cpb",
+        OLLAMA_CLOUD_URL: "https://ollama.example",
+        OLLAMA_CLOUD_KEY: "kimi-secret",
+        OLLAMA_CLOUD_MODEL: "kimi-k2.6",
+      };
+      applyVariant({ variant: "kimi-k2.6" });
+
+      const env = buildChildEnv({
+        ...process.env,
+        OPENAI_API_KEY: "openai-secret",
+        GEMINI_API_KEY: "gemini-secret",
+      }, {}, { agent: "claude" });
+
+      assert.strictEqual(env.ANTHROPIC_BASE_URL, "https://ollama.example");
+      assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, "kimi-secret");
+      assert.strictEqual(env.ANTHROPIC_MODEL, "kimi-k2.6");
+      assert.strictEqual(env.ANTHROPIC_CUSTOM_MODEL_OPTION, "kimi-k2.6");
+      assert.strictEqual(env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, "Kimi K2.6");
+      assert.strictEqual(env.ANTHROPIC_DEFAULT_SONNET_MODEL, "kimi-k2.6");
+      assert.strictEqual(env.ANTHROPIC_DEFAULT_OPUS_MODEL, "kimi-k2.6");
+      assert.strictEqual(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "kimi-k2.6");
+      assert.strictEqual(env.CLAUDE_CODE_SUBAGENT_MODEL, "kimi-k2.6");
+      assert.strictEqual(env.CPB_ACTIVE_CLAUDE_VARIANT, "kimi-k2.6");
+      assert.strictEqual(env.OPENAI_API_KEY, undefined);
+      assert.strictEqual(env.GEMINI_API_KEY, undefined);
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  it("keeps all provider credentials for unknown agents for compatibility", () => {
+    const env = buildChildEnv({
+      OPENAI_API_KEY: "openai-secret",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      GEMINI_API_KEY: "gemini-secret",
+      RANDOM_TOKEN: "leak",
+    }, {}, { agent: "custom" });
+
+    assert.strictEqual(env.OPENAI_API_KEY, "openai-secret");
+    assert.strictEqual(env.ANTHROPIC_API_KEY, "anthropic-secret");
+    assert.strictEqual(env.GEMINI_API_KEY, "gemini-secret");
+    assert.strictEqual(env.RANDOM_TOKEN, undefined);
+  });
+
+  it("exposes provider credential groups for auditing", () => {
+    assert.ok(providerCredentialKeysForAgent("codex").has("OPENAI_API_KEY"));
+    assert.equal(providerCredentialKeysForAgent("codex").has("ANTHROPIC_API_KEY"), false);
+    assert.ok(providerCredentialKeysForAgent("claude").has("ANTHROPIC_API_KEY"));
+    assert.equal(providerCredentialKeysForAgent("claude").has("OPENAI_API_KEY"), false);
   });
 });
 
