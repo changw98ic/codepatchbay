@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Dashboard from './Dashboard';
 
@@ -1438,6 +1439,7 @@ describe('Dashboard List Capping and Toggles', () => {
       return jsonResponse(null);
     });
 
+    const user = userEvent.setup();
     const { container } = render(<Dashboard />, {
       wrapper: ({ children }) => <MemoryRouter initialEntries={['/?tab=health']}>{children}</MemoryRouter>,
     });
@@ -1450,12 +1452,12 @@ describe('Dashboard List Capping and Toggles', () => {
     expect(durableBtn).toBeInTheDocument();
 
     // Toggle to Show All Durable Jobs
-    fireEvent.click(durableBtn);
+    await user.click(durableBtn);
     await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(7));
 
     // Toggle back to Show Less
     const showLessBtnDurable = screen.getAllByText('Show Less')[0];
-    fireEvent.click(showLessBtnDurable);
+    await user.click(showLessBtnDurable);
     await waitFor(() => expect(container.querySelectorAll('.job-row').length).toBe(5));
 
     // Verify Recent Runs capping (default limit is 5)
@@ -1465,7 +1467,7 @@ describe('Dashboard List Capping and Toggles', () => {
     expect(recentBtn).toBeInTheDocument();
 
     // Toggle to Show All Recent Runs
-    fireEvent.click(recentBtn);
+    await user.click(recentBtn);
     await waitFor(() => expect(container.querySelectorAll('.dispatch-row').length).toBe(7));
   });
 
