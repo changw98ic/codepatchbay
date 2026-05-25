@@ -91,6 +91,10 @@ export async function githubRoutes(fastify, opts = {}) {
     const queue = await createGithubIssueQueueJob(req.cpbRoot || req.cpbHubRoot, normalized, match, {
       hubRoot: req.cpbHubRoot,
       sourcePath: project.sourcePath || null,
+      sddDrafterMode: opts.sddDrafterMode,
+      sddAcpPool: opts.sddAcpPool,
+      sddDrafterAgent: opts.sddDrafterAgent,
+      sddDrafterTimeoutMs: opts.sddDrafterTimeoutMs,
     });
     const transport = await resolveGithubTransport(req.cpbHubRoot);
     const comment = await postGithubQueuedComment({
