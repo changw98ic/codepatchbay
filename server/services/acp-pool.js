@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
-import { resolveHubRoot } from "./hub-registry.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
-import { buildChildEnv } from "../../core/policy/child-env.js";
+import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 
 let _registryCache = null;
 async function getRegistry() {
@@ -24,6 +24,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = 300_000;
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
+const POOL_LIMIT_CONTROL_ENV = new Set([
+  "CPB_ACP_POOL_MAX_REQUESTS",
+  "CPB_ACP_POOL_MAX_AGE_MS",
+  "CPB_ACP_POOL_IDLE_MS",
+]);
+
+function resolveHubRootFromEnv(cpbRoot, env = {}) {
+  if (env.CPB_HUB_ROOT) return path.resolve(env.CPB_HUB_ROOT);
+  const home = os.homedir();
+  return home ? path.join(home, ".cpb") : path.join(path.resolve(cpbRoot), ".cpb", "hub");
+}
 
 export class RateLimitError extends Error {
   constructor(agent, untilTs, message = "ACP provider is rate limited") {
@@ -62,7 +73,12 @@ export function sanitizeProviderReason(message) {
     .slice(0, 500);
 }
 
-async function normalizeLimitsAsync(limits = {}) {
+function poolLimitForAgentEnv(registry, agent, env = {}) {
+  const desc = registry?.getDescriptor(agent);
+  return Number(env[`CPB_ACP_POOL_${agent.toUpperCase()}`]) || desc?.poolLimit || 2;
+}
+
+async function normalizeLimitsAsync(limits = {}, env = process.env) {
   const registry = await getRegistry();
 
   // Start with explicit limits from opts
@@ -72,17 +88,18 @@ async function normalizeLimitsAsync(limits = {}) {
   if (registry) {
     for (const agent of registry.listAgentNames()) {
       if (!(agent in result)) {
-        result[agent] = registry.poolLimitForAgent(agent);
+        result[agent] = poolLimitForAgentEnv(registry, agent, env);
       }
     }
   }
 
   // Legacy fallback: always ensure codex and claude
-  if (!result.codex) result.codex = Number(process.env.CPB_ACP_POOL_CODEX || 2);
-  if (!result.claude) result.claude = Number(process.env.CPB_ACP_POOL_CLAUDE || 1);
+  if (!result.codex) result.codex = Number(env.CPB_ACP_POOL_CODEX || 2);
+  if (!result.claude) result.claude = Number(env.CPB_ACP_POOL_CLAUDE || 1);
 
   // Env overrides for any agent (CPB_ACP_POOL_<NAME>)
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(env)) {
+    if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
     const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
     if (match) {
       const agentName = match[1].toLowerCase();
@@ -94,12 +111,13 @@ async function normalizeLimitsAsync(limits = {}) {
 }
 
 // Sync fallback for constructor (registry not loaded yet)
-function normalizeLimits(limits = {}) {
+function normalizeLimits(limits = {}, env = process.env) {
   const result = {
-    codex: Number(limits.codex || process.env.CPB_ACP_POOL_CODEX || 2),
-    claude: Number(limits.claude || process.env.CPB_ACP_POOL_CLAUDE || 1),
+    codex: Number(limits.codex || env.CPB_ACP_POOL_CODEX || 2),
+    claude: Number(limits.claude || env.CPB_ACP_POOL_CLAUDE || 1),
   };
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(env)) {
+    if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
     const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
     if (match) {
       const agentName = match[1].toLowerCase();
@@ -163,26 +181,32 @@ function terminateChild(child) {
 
 export class AcpPool {
   constructor(opts = {}) {
-    this.cpbRoot = path.resolve(opts.cpbRoot || process.env.CPB_ROOT || path.join(__dirname, ".."));
-    this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(this.cpbRoot));
-    this.limits = normalizeLimits(opts.limits || opts);
+    const parentEnv = opts.env || process.env;
+    this.cpbRoot = path.resolve(opts.cpbRoot || parentEnv.CPB_ROOT || path.join(__dirname, ".."));
+    this.hubRoot = path.resolve(opts.hubRoot || resolveHubRootFromEnv(this.cpbRoot, parentEnv));
+    this.env = buildAcpPoolEnv(parentEnv, {
+      CPB_ROOT: this.cpbRoot,
+      CPB_ACP_CPB_ROOT: this.cpbRoot,
+      CPB_HUB_ROOT: this.hubRoot,
+    });
+    this.limits = normalizeLimits(opts.limits || opts, this.env);
     this.runner = opts.runner || null;
     this.persistentProcesses = !this.runner && booleanOption(
-      opts.persistentProcesses ?? process.env.CPB_ACP_PERSISTENT_PROCESS,
+      opts.persistentProcesses ?? this.env.CPB_ACP_PERSISTENT_PROCESS,
       false,
     );
-    this.backoffMs = Number(opts.backoffMs || process.env.CPB_ACP_RATE_LIMIT_BACKOFF_MS || 60_000);
+    this.backoffMs = Number(opts.backoffMs || this.env.CPB_ACP_RATE_LIMIT_BACKOFF_MS || 60_000);
     this.maxSessionRequests = Math.max(
       0,
-      numericOption(opts.maxSessionRequests ?? process.env.CPB_ACP_POOL_MAX_REQUESTS, 0),
+      numericOption(opts.maxSessionRequests ?? this.env.CPB_ACP_POOL_MAX_REQUESTS, 0),
     );
     this.maxSessionAgeMs = Math.max(
       0,
-      numericOption(opts.maxSessionAgeMs ?? process.env.CPB_ACP_POOL_MAX_AGE_MS, 0),
+      numericOption(opts.maxSessionAgeMs ?? this.env.CPB_ACP_POOL_MAX_AGE_MS, 0),
     );
     this.sessionIdleMs = Math.max(
       0,
-      numericOption(opts.sessionIdleMs ?? process.env.CPB_ACP_POOL_IDLE_MS, 0),
+      numericOption(opts.sessionIdleMs ?? this.env.CPB_ACP_POOL_IDLE_MS, 0),
     );
     this.active = new Map();
     this.pending = new Map();
@@ -205,7 +229,7 @@ export class AcpPool {
   async init() {
     const registry = await getRegistry();
     if (registry) {
-      this.limits = await normalizeLimitsAsync(this.limits);
+      this.limits = await normalizeLimitsAsync(this.limits, this.env);
     }
     return this;
   }
@@ -298,14 +322,14 @@ export class AcpPool {
         rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
         mode: this.runner
           ? "managed-reusable"
-          : process.env.CPB_ACP_CLIENT
+          : this.env.CPB_ACP_CLIENT
             ? "custom-client-one-shot"
             : providerProcessReuse
               ? "persistent-provider-process"
               : "bounded-one-shot",
         transport: this.runner
           ? "injected-runner-function"
-          : process.env.CPB_ACP_CLIENT
+          : this.env.CPB_ACP_CLIENT
             ? "custom-client-child-process"
             : providerProcessReuse
               ? "persistent-acp-agent-process"
@@ -516,20 +540,20 @@ export class AcpPool {
 
   #run(agent, prompt, cwd, timeoutMs) {
     if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
-    if (process.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs);
+    if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs);
     if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs);
   }
 
   #runOneShot(agent, prompt, cwd, timeoutMs) {
-    const customClient = process.env.CPB_ACP_CLIENT;
+    const customClient = this.env.CPB_ACP_CLIENT;
     const clientPath = customClient || path.join(__dirname, "..", "bridges", "acp-client.mjs");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: this.cpbRoot,
-        env: buildChildEnv(process.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
+        env: buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -634,11 +658,11 @@ export class AcpPool {
       agent,
       cwd,
       writeAllowPaths: resolveWriteAllowPaths(cwd),
-      terminalPolicy: process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow",
+      terminalPolicy: this.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow",
       toolPolicy: await this.#getToolPolicy(),
       outputSink: () => {},
       errorSink: () => {},
-      env: buildChildEnv(process.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
+      env: buildChildEnv(this.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
       resumeSessionId,
     });
     const meta = {
@@ -715,9 +739,9 @@ function managedView(pool) {
   });
 }
 
-function resolvePoolRoots(hubRoot, cpbRoot) {
-  const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || path.join(__dirname, ".."));
-  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
+function resolvePoolRoots(hubRoot, cpbRoot, env = process.env) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || path.join(__dirname, ".."));
+  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRootFromEnv(resolvedCpbRoot, env));
   return {
     cpbRoot: resolvedCpbRoot,
     hubRoot: resolvedHubRoot,
@@ -726,18 +750,19 @@ function resolvePoolRoots(hubRoot, cpbRoot) {
 }
 
 export function getPoolRuntime(hubRoot, cpbRoot, opts = {}) {
-  const roots = resolvePoolRoots(hubRoot, cpbRoot);
+  const env = opts.env || process.env;
+  const roots = resolvePoolRoots(hubRoot, cpbRoot, env);
   if (!runtimes.has(roots.key)) {
     const persistentProcesses = opts.persistentProcesses ?? (
-      opts.runner ? false : process.env.CPB_ACP_PERSISTENT_PROCESS !== "0"
+      opts.runner ? false : env.CPB_ACP_PERSISTENT_PROCESS !== "0"
     );
-    runtimes.set(roots.key, new AcpPool({ ...opts, cpbRoot: roots.cpbRoot, hubRoot: roots.hubRoot, persistentProcesses }));
+    runtimes.set(roots.key, new AcpPool({ ...opts, env, cpbRoot: roots.cpbRoot, hubRoot: roots.hubRoot, persistentProcesses }));
   }
   return runtimes.get(roots.key);
 }
 
 export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
-  const roots = resolvePoolRoots(hubRoot, cpbRoot);
+  const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
   const pool = getPoolRuntime(roots.hubRoot, roots.cpbRoot, opts);
   if (!managedViews.has(roots.key)) {
     managedViews.set(roots.key, managedView(pool));

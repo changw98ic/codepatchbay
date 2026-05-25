@@ -86,8 +86,30 @@ const ALLOWED_ENV = new Set([
   ...PROVIDER_CREDENTIALS,
 ]);
 
+const ACP_POOL_ENV = new Set([
+  "CPB_ACP_RATE_LIMIT_BACKOFF_MS",
+  "CPB_ACP_POOL_MAX_REQUESTS",
+  "CPB_ACP_POOL_MAX_AGE_MS",
+  "CPB_ACP_POOL_IDLE_MS",
+]);
+
 function isDynamicAllowedEnvKey(key) {
   return /^CPB_ACP_[A-Z0-9_]+_(?:COMMAND|ARGS)$/.test(key);
+}
+
+function isDynamicAcpPoolEnvKey(key) {
+  return /^CPB_ACP_POOL_[A-Z0-9_]+$/.test(key);
+}
+
+function isNumericEnvValue(value) {
+  return /^\d+$/.test(String(value ?? "").trim());
+}
+
+function shouldCopyAcpPoolEnvEntry(key, value) {
+  if (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) {
+    return isNumericEnvValue(value);
+  }
+  return isAllowedChildEnvKey(key);
 }
 
 export function isAllowedChildEnvKey(key) {
@@ -105,4 +127,22 @@ export function buildChildEnv(parentEnv = {}, extra = {}) {
   return env;
 }
 
-export { RUNTIME_BASICS, CPB_RUNTIME_ENV, ACP_RUNTIME_ENV, PROVIDER_CREDENTIALS, ALLOWED_ENV };
+export function buildAcpPoolEnv(parentEnv = {}, extra = {}) {
+  const env = {};
+  for (const [key, value] of Object.entries(parentEnv || {})) {
+    if (shouldCopyAcpPoolEnvEntry(key, value)) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (shouldCopyAcpPoolEnvEntry(key, value)) env[key] = value;
+  }
+  return env;
+}
+
+export {
+  RUNTIME_BASICS,
+  CPB_RUNTIME_ENV,
+  ACP_RUNTIME_ENV,
+  ACP_POOL_ENV,
+  PROVIDER_CREDENTIALS,
+  ALLOWED_ENV,
+};
