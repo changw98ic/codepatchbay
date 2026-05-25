@@ -650,6 +650,41 @@ describe("GitHub queued status comment", () => {
     assert.match(body, /Verifier: codex/);
   });
 
+  it("builds an SDD approval comment with generated draft links and approve command", () => {
+    const body = buildQueuedComment({
+      queueEntry: {
+        id: "q-sdd-approval",
+        status: "waiting.approval",
+        metadata: {
+          workflow: "sdd-standard",
+          sddApproval: { requiresApproval: true, status: "waiting_approval" },
+          sddBootstrap: {
+            files: {
+              spec: { path: "/tmp/cpb/wiki/projects/frontend/sdd/spec.md" },
+              design: { path: "/tmp/cpb/wiki/projects/frontend/sdd/design.md" },
+              tasks: { path: "/tmp/cpb/wiki/projects/frontend/sdd/tasks.md" },
+            },
+          },
+          sddTasks: [
+            { id: "task-1", title: "Implement traced checkout task" },
+            { id: "task-2", title: "Verify traced checkout task" },
+          ],
+        },
+      },
+      agents: { planner: "codex", executor: "claude", verifier: "codex" },
+    });
+
+    assert.match(body, /SDD draft requires approval/);
+    assert.match(body, /Queue: q-sdd-approval/);
+    assert.match(body, /Spec: .*spec\.md/);
+    assert.match(body, /Design: .*design\.md/);
+    assert.match(body, /Tasks: .*tasks\.md/);
+    assert.match(body, /Parsed tasks: 2/);
+    assert.match(body, /Approve with `\/cpb approve q-sdd-approval`/);
+    assert.doesNotMatch(body, /I'll post updates here/);
+    assert.doesNotMatch(body, /\/tmp\/cpb/);
+  });
+
   it("supports dry-run and reports network failure without throwing", async () => {
     let called = false;
     const dryRun = await postGithubQueuedComment({
