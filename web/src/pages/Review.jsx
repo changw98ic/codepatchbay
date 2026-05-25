@@ -49,7 +49,11 @@ export default function Review() {
     })).filter(g => g.items.length > 0);
   }, [filteredSessions, page]);
 
-  useEffect(() => { setPage(1); }, [query, sessions]);
+  useEffect(() => { setPage(1); }, [query]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(1, totalPages)));
+  }, [totalPages]);
 
 
   const loadSessions = useCallback(() => {

@@ -2,10 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import Review from './Review';
 
+const socketMock = vi.hoisted(() => ({
+  reviewUpdateHandler: null,
+}));
+
 vi.mock('../hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     connected: true,
-    subscribe: vi.fn(() => vi.fn()),
+    subscribe: vi.fn((topic, handler) => {
+      if (topic === 'review:update') {
+        socketMock.reviewUpdateHandler = handler;
+      }
+      return vi.fn();
+    }),
   }),
 }));
 
@@ -30,6 +39,7 @@ function createMockSessions(count, baseStatus = 'user_review') {
 describe('Review Page', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    socketMock.reviewUpdateHandler = null;
     vi.spyOn(global, 'fetch').mockImplementation((url) => {
       if (url.includes('/api/projects')) {
         return Promise.resolve({
@@ -235,6 +245,47 @@ describe('Review Page', () => {
     // Second page: proj-10 through proj-14 (5 items)
     expect(screen.queryByText('proj-0')).not.toBeInTheDocument();
     expect(screen.getByText('proj-14')).toBeInTheDocument();
+  });
+
+  it('keeps the selected page when review updates refresh sessions', async () => {
+    let reviewFetches = 0;
+    global.fetch.mockImplementation((url) => {
+      if (url === '/api/review') {
+        reviewFetches += 1;
+        const suffix = reviewFetches > 1 ? '-refresh' : '';
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(createMockSessions(15, 'user_review').map((session, index) => ({
+            ...session,
+            project: `proj-${index}${suffix}`,
+          }))),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-0')).toBeInTheDocument();
+      expect(socketMock.reviewUpdateHandler).toBeTypeOf('function');
+    });
+
+    fireEvent.click(screen.getByText('2'));
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-10')).toBeInTheDocument();
+    });
+
+    socketMock.reviewUpdateHandler();
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-10-refresh')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('proj-0-refresh')).not.toBeInTheDocument();
   });
 
   it('shows action buttons on cards for actionable statuses', async () => {
