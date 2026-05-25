@@ -8,12 +8,14 @@ import {
   MERGE_CLASSIFICATION,
   summarizeMergeFiles,
 } from "./merge-steward.js";
+import { appendEvent } from "./event-store.js";
+import { openDraftPullRequest } from "./github-pr.js";
 
 const execFileAsync = promisify(execFile);
 
-async function runGit(cwd, args, { allowFailure = false } = {}) {
+async function runGit(cwd, args, { allowFailure = false, runCommand = execFileAsync } = {}) {
   try {
-    const result = await execFileAsync("git", args, {
+    const result = await runCommand("git", args, {
       cwd,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -41,34 +43,36 @@ async function pathExists(targetPath) {
   }
 }
 
-async function isGitRepo(repoPath) {
+async function isGitRepo(repoPath, { runCommand } = {}) {
   const result = await runGit(repoPath, ["rev-parse", "--is-inside-work-tree"], {
     allowFailure: true,
+    runCommand,
   });
   return result.exitCode === 0 && result.stdout.trim() === "true";
 }
 
-async function assertClean(repoPath) {
-  const status = await runGit(repoPath, ["status", "--porcelain"]);
+async function assertClean(repoPath, { runCommand } = {}) {
+  const status = await runGit(repoPath, ["status", "--porcelain"], { runCommand });
   return status.stdout.trim() === "";
 }
 
-async function currentBranch(repoPath) {
-  return (await runGit(repoPath, ["branch", "--show-current"])).stdout.trim();
+async function currentBranch(repoPath, { runCommand } = {}) {
+  return (await runGit(repoPath, ["branch", "--show-current"], { runCommand })).stdout.trim();
 }
 
-async function revParse(repoPath, ref = "HEAD") {
-  return (await runGit(repoPath, ["rev-parse", "--verify", ref])).stdout.trim();
+async function revParse(repoPath, ref = "HEAD", { runCommand } = {}) {
+  return (await runGit(repoPath, ["rev-parse", "--verify", ref], { runCommand })).stdout.trim();
 }
 
-async function diffFiles(repoPath, fromRef, toRef) {
-  const result = await runGit(repoPath, ["diff", "--name-only", "-z", fromRef, toRef]);
+async function diffFiles(repoPath, fromRef, toRef, { runCommand } = {}) {
+  const result = await runGit(repoPath, ["diff", "--name-only", "-z", fromRef, toRef], { runCommand });
   return splitNul(result.stdout);
 }
 
-async function isAncestor(repoPath, ancestor, descendant) {
+async function isAncestor(repoPath, ancestor, descendant, { runCommand } = {}) {
   const result = await runGit(repoPath, ["merge-base", "--is-ancestor", ancestor, descendant], {
     allowFailure: true,
+    runCommand,
   });
   return result.exitCode === 0;
 }
@@ -122,11 +126,11 @@ function splitNul(value) {
   return String(value || "").split("\0").filter(Boolean);
 }
 
-async function changedWorktreeFiles(worktreePath) {
+async function changedWorktreeFiles(worktreePath, { runCommand } = {}) {
   const [unstaged, staged, untracked] = await Promise.all([
-    runGit(worktreePath, ["diff", "--name-only", "-z"]),
-    runGit(worktreePath, ["diff", "--cached", "--name-only", "-z"]),
-    runGit(worktreePath, ["ls-files", "--others", "--exclude-standard", "-z"]),
+    runGit(worktreePath, ["diff", "--name-only", "-z"], { runCommand }),
+    runGit(worktreePath, ["diff", "--cached", "--name-only", "-z"], { runCommand }),
+    runGit(worktreePath, ["ls-files", "--others", "--exclude-standard", "-z"], { runCommand }),
   ]);
   return [...new Set([
     ...splitNul(unstaged.stdout),
@@ -159,14 +163,20 @@ function commitMessage({ jobId, issueNumber }) {
 }
 
 export async function finalizeSuccessfulQueueEntry({
+  cpbRoot,
+  project,
   entry,
   job,
   sourcePath,
   mode = "local",
   remote = "origin",
   issueCloser,
+  runCommand = execFileAsync,
+  createPullRequest,
+  dataRoot,
 } = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
+  const projectId = project || job?.project || entry?.projectId || null;
 
   if (job?.status !== "completed") {
     return skipped("JOB_NOT_COMPLETED", { jobId });
@@ -188,30 +198,30 @@ export async function finalizeSuccessfulQueueEntry({
   const canonicalSourcePath = await realpath(path.resolve(sourcePath));
   const canonicalWorktreePath = await realpath(path.resolve(job.worktree));
 
-  if (!(await isGitRepo(canonicalSourcePath))) {
+  if (!(await isGitRepo(canonicalSourcePath, { runCommand }))) {
     return reject("SOURCE_NOT_GIT_REPO", { jobId });
   }
 
-  if (!(await assertClean(canonicalSourcePath))) {
+  if (!(await assertClean(canonicalSourcePath, { runCommand }))) {
     return reject("SOURCE_NOT_CLEAN", { jobId });
   }
 
-  if (!(await isGitRepo(canonicalWorktreePath))) {
+  if (!(await isGitRepo(canonicalWorktreePath, { runCommand }))) {
     return reject("WORKTREE_NOT_GIT_REPO", { jobId });
   }
 
-  const sourceBranch = await currentBranch(canonicalSourcePath);
+  const sourceBranch = await currentBranch(canonicalSourcePath, { runCommand });
   if (!sourceBranch) {
     return reject("NO_SOURCE_BRANCH", { issue, jobId });
   }
 
-  const sourceHead = await revParse(canonicalSourcePath);
-  const worktreeBranch = await currentBranch(canonicalWorktreePath);
-  const worktreeHead = await revParse(canonicalWorktreePath);
-  const uncommittedFiles = await changedWorktreeFiles(canonicalWorktreePath);
+  const sourceHead = await revParse(canonicalSourcePath, "HEAD", { runCommand });
+  const worktreeBranch = await currentBranch(canonicalWorktreePath, { runCommand });
+  const worktreeHead = await revParse(canonicalWorktreePath, "HEAD", { runCommand });
+  const uncommittedFiles = await changedWorktreeFiles(canonicalWorktreePath, { runCommand });
   let committedFiles = [];
   if (worktreeHead !== sourceHead) {
-    if (!(await isAncestor(canonicalWorktreePath, sourceHead, worktreeHead))) {
+    if (!(await isAncestor(canonicalWorktreePath, sourceHead, worktreeHead, { runCommand }))) {
       return reject("WORKTREE_NOT_DESCENDANT", {
         issue,
         jobId,
@@ -219,7 +229,7 @@ export async function finalizeSuccessfulQueueEntry({
         worktreeHead,
       });
     }
-    committedFiles = await diffFiles(canonicalWorktreePath, sourceHead, worktreeHead);
+    committedFiles = await diffFiles(canonicalWorktreePath, sourceHead, worktreeHead, { runCommand });
   }
 
   const files = [...new Set([...committedFiles, ...uncommittedFiles])];
@@ -240,8 +250,9 @@ export async function finalizeSuccessfulQueueEntry({
   const planned = {
     commit: uncommittedFiles.length > 0,
     merge: mode === "local" || mode === "remote",
-    push: mode === "remote",
+    push: mode === "remote" || mode === "pr",
     closeIssue: mode === "remote",
+    pullRequest: mode === "pr",
   };
 
   if (mode === "dry-run") {
@@ -261,26 +272,90 @@ export async function finalizeSuccessfulQueueEntry({
     };
   }
 
-  if (mode !== "local" && mode !== "remote") {
+  if (mode !== "local" && mode !== "remote" && mode !== "pr") {
     return reject("UNSUPPORTED_MODE", { mode, jobId });
+  }
+
+  if (mode === "pr") {
+    if (!cpbRoot || !projectId || !job?.jobId) {
+      return reject("PR_FINALIZE_REQUIRES_JOB_STORE", { issue, jobId });
+    }
+    const prJob = {
+      ...job,
+      worktree: canonicalWorktreePath,
+      worktreeBranch: job.worktreeBranch || worktreeBranch,
+      worktreeBaseBranch: job.worktreeBaseBranch || sourceBranch,
+      sourceContext: {
+        ...(job.sourceContext || {}),
+        type: "github_issue",
+        repo: issue.repo,
+        issueNumber: issue.number,
+        issueTitle: job.sourceContext?.issueTitle || entry?.metadata?.issueTitle || job.task || null,
+      },
+    };
+    const pr = await openDraftPullRequest({
+      job: prJob,
+      verdict: "PASS",
+      branchPushed: false,
+      createPullRequest,
+      runCommand,
+    });
+    if (pr.status !== "pr.opened") {
+      return reject("PR_FINALIZE_FAILED", {
+        issue,
+        jobId,
+        pr,
+      }, pr.error || null);
+    }
+
+    await appendEvent(cpbRoot, projectId, job.jobId, {
+      type: "pr_opened",
+      jobId: job.jobId,
+      project: projectId,
+      prUrl: pr.prUrl,
+      prNumber: pr.prNumber,
+      artifact: pr.request?.body ? { type: "github_pr", url: pr.prUrl, number: pr.prNumber } : null,
+      ts: new Date().toISOString(),
+    }, { dataRoot });
+
+    const commit = pr.branchPreparation?.commit || await revParse(canonicalWorktreePath, "HEAD", { runCommand });
+    return {
+      ok: true,
+      status: "pr.opened",
+      mode,
+      issue,
+      jobId,
+      commit,
+      sourcePath: canonicalSourcePath,
+      worktreePath: canonicalWorktreePath,
+      sourceBranch,
+      worktreeBranch: pr.request?.head || prJob.worktreeBranch,
+      sourceHead,
+      files: summary.entries,
+      pushed: true,
+      closed: false,
+      prUrl: pr.prUrl,
+      prNumber: pr.prNumber,
+      pr,
+    };
   }
 
   let commit = worktreeHead;
   if (uncommittedFiles.length > 0) {
-    await runGit(canonicalWorktreePath, ["add", "--all"]);
+    await runGit(canonicalWorktreePath, ["add", "--all"], { runCommand });
     await runGit(canonicalWorktreePath, [
       "commit",
       "-m",
       commitMessage({ jobId, issueNumber: issue.number }),
-    ]);
-    commit = await revParse(canonicalWorktreePath);
+    ], { runCommand });
+    commit = await revParse(canonicalWorktreePath, "HEAD", { runCommand });
   }
 
   let pushed = false;
   let closed = false;
   if (mode === "remote") {
     try {
-      await runGit(canonicalWorktreePath, ["push", remote, `${commit}:refs/heads/${sourceBranch}`]);
+      await runGit(canonicalWorktreePath, ["push", remote, `${commit}:refs/heads/${sourceBranch}`], { runCommand });
       pushed = true;
       if (issueCloser) {
         await issueCloser({
@@ -292,7 +367,7 @@ export async function finalizeSuccessfulQueueEntry({
         });
         closed = true;
       }
-      await runGit(canonicalSourcePath, ["merge", "--ff-only", commit]);
+      await runGit(canonicalSourcePath, ["merge", "--ff-only", commit], { runCommand });
     } catch (err) {
       return reject("REMOTE_FINALIZE_FAILED", {
         issue,
@@ -305,7 +380,7 @@ export async function finalizeSuccessfulQueueEntry({
     }
   } else {
     try {
-      await runGit(canonicalSourcePath, ["merge", "--ff-only", commit]);
+      await runGit(canonicalSourcePath, ["merge", "--ff-only", commit], { runCommand });
     } catch (err) {
       return reject("MERGE_FAILED", {
         issue,

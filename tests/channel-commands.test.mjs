@@ -340,6 +340,60 @@ describe("Slack channel command skeleton", () => {
     }
   });
 
+  it("supports Slack retry for cancelled queued q-id entries before a job exists", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-slack-queue-retry-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    const app = await buildChannelApp(cpbRoot, {
+      slackSigningSecret: "slack-signing-secret",
+      hubRoot,
+    });
+    try {
+      async function slackCommand(text) {
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const rawBody = slackBody({
+          command: "/cpb",
+          text,
+          user_id: "U123",
+          user_name: "alice",
+          channel_id: "C123",
+          team_id: "T123",
+        });
+        return app.inject({
+          method: "POST",
+          url: "/api/channels/slack/commands",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": slackSignature("slack-signing-secret", timestamp, rawBody),
+          },
+          payload: rawBody,
+        });
+      }
+
+      const queued = JSON.parse((await slackCommand('run frontend "fix login redirect"')).body);
+      const queueId = queued.queueEntry.id;
+      await slackCommand(`cancel ${queueId}`);
+
+      const retry = await slackCommand(`retry ${queueId}`);
+      assert.equal(retry.statusCode, 200);
+      const retryBody = JSON.parse(retry.body);
+      assert.equal(retryBody.ok, true);
+      assert.equal(retryBody.action, "retried");
+      assert.equal(retryBody.queueEntry.id, queueId);
+      assert.equal(retryBody.queueEntry.status, "pending");
+      assert.equal(retryBody.status.status, "pending");
+      assert.equal(retryBody.actions.cancel.command, `/cpb cancel ${queueId}`);
+
+      const entries = await listQueue(hubRoot, { projectId: "frontend" });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].status, "pending");
+      assert.equal(entries[0].metadata.retryReason, "Retried from Slack by U123");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
   it("lets the project worker claim channel-created Hub Queue entries before any job exists", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-worker-"));
     const hubRoot = path.join(cpbRoot, "hub");

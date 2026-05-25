@@ -344,6 +344,66 @@ describe("setup gateway catalog", () => {
       await rm(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it("interactive setup asks for Codex, Claude Code, OpenCode, and auth checks individually", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-setup-interactive-"));
+    try {
+      const { runSetupWizard } = await import("../core/setup/wizard.js");
+      const catalog = [
+        { id: "codex", displayName: "Codex", vendor: "OpenAI", binary: "codex", recommended: true, roles: [], capabilities: [], sourceUrl: "https://example.invalid/codex", install: { npm: { label: "npm", command: "npm i -g codex", sourceUrl: "https://example.invalid/codex" } } },
+        { id: "claude", displayName: "Claude Code", vendor: "Anthropic", binary: "claude", recommended: true, roles: [], capabilities: [], sourceUrl: "https://example.invalid/claude", install: { npm: { label: "npm", command: "npm i -g claude", sourceUrl: "https://example.invalid/claude" } } },
+        { id: "opencode", displayName: "OpenCode", vendor: "OpenCode", binary: "opencode", recommended: false, roles: [], capabilities: [], sourceUrl: "https://example.invalid/opencode", install: { npm: { label: "npm", command: "npm i -g opencode", sourceUrl: "https://example.invalid/opencode" } } },
+      ];
+      const asked = [];
+      const installed = [];
+      const result = await runSetupWizard({
+        cpbRoot: tmpRoot,
+        mode: "interactive",
+        detectFn: async () => ({
+          tools: { npm: { installed: true }, brew: { installed: false } },
+          agents: {
+            codex: { installed: false, status: "missing" },
+            claude: { installed: false, status: "missing" },
+            opencode: { installed: false, status: "missing" },
+          },
+        }),
+        catalog,
+        questionFn: async (question) => {
+          asked.push(question);
+          if (/Install Codex\?/i.test(question)) return "y";
+          if (/Install Claude Code\?/i.test(question)) return "n";
+          if (/Install OpenCode\?/i.test(question)) return "y";
+          if (/Run auth check\?/i.test(question)) return "n";
+          return "";
+        },
+        confirmFn: async () => true,
+        runInstallPlanFn: async (plan) => {
+          installed.push(plan.agent.id);
+          return { ok: true, code: 0 };
+        },
+        healthCheckFn: async () => {
+          throw new Error("auth check should be skipped");
+        },
+        authConnectFn: () => {
+          throw new Error("auth connect should be skipped");
+        },
+      });
+
+      assert.deepEqual(asked, [
+        "Install Codex? y/N ",
+        "Install Claude Code? y/N ",
+        "Install OpenCode? y/N ",
+        "Run auth check? y/N ",
+      ]);
+      assert.deepEqual(result.selectedAgents.map((agent) => agent.id), ["codex", "opencode"]);
+      assert.deepEqual(installed, ["codex", "opencode"]);
+      assert.equal(result.health.codex.status, "skipped");
+      assert.equal(result.auth.opencode.status, "skipped");
+      assert.equal(result.profile.agents.codex.healthStatus, "skipped");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("D40 manifest registry layout", () => {

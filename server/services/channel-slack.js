@@ -336,11 +336,11 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
 
   if (command.type === "approve" || command.type === "cancel" || command.type === "retry" || command.type === "logs") {
     const job = await findJobById(cpbRoot, command.job);
-    if (!job && command.type === "cancel") {
+    if (!job && (command.type === "approve" || command.type === "cancel" || command.type === "retry")) {
       const queueEntry = await findQueueEntryById(hubRoot, command.job);
       if (queueEntry) {
         const decision = await authorizeSlackCommand(cpbRoot, policy, parsed, {
-          action: "cancel",
+          action: command.type,
           project: queueEntry.projectId,
           job: queueEntry.id,
         });
@@ -348,12 +348,65 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
           return {
             ...policyDenied(decision),
             channel: "slack",
-            action: "cancel",
+            action: command.type,
             parsed,
           };
         }
 
         const ts = new Date().toISOString();
+        if (command.type === "approve") {
+          if (queueEntry.status !== "waiting.approval") {
+            return {
+              ok: false,
+              channel: "slack",
+              action: "approve",
+              parsed,
+              error: `queue entry is not waiting for approval: ${queueEntry.id}`,
+            };
+          }
+          const updated = await updateEntry(hubRoot, queueEntry.id, {
+            status: "pending",
+            metadata: {
+              approvedAt: ts,
+              approvedBy: parsed.actor.userId || null,
+            },
+          });
+          return {
+            ok: true,
+            channel: "slack",
+            action: "approved",
+            actor: parsed.actor,
+            approvedAt: ts,
+            queueEntry: updated,
+            status: queueEntryStatus(updated),
+            actions: slackQueueActionMetadata(updated.id),
+          };
+        }
+
+        if (command.type === "retry") {
+          const updated = await updateEntry(hubRoot, queueEntry.id, {
+            status: "pending",
+            claimedBy: null,
+            claimedAt: null,
+            workerId: null,
+            metadata: {
+              retryReason: `Retried from Slack by ${parsed.actor.userId || "unknown user"}`,
+              retriedAt: ts,
+              retriedBy: parsed.actor.userId || null,
+            },
+          });
+          return {
+            ok: true,
+            channel: "slack",
+            action: "retried",
+            actor: parsed.actor,
+            retriedAt: ts,
+            queueEntry: updated,
+            status: queueEntryStatus(updated),
+            actions: slackQueueActionMetadata(updated.id),
+          };
+        }
+
         const updated = await updateEntry(hubRoot, queueEntry.id, {
           status: "cancelled",
           metadata: {
@@ -370,6 +423,7 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
           cancelledAt: ts,
           queueEntry: updated,
           status: queueEntryStatus(updated),
+          actions: slackQueueActionMetadata(updated.id),
         };
       }
     }

@@ -1,7 +1,9 @@
 import { createHmac } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
@@ -12,8 +14,9 @@ import { normalizeGithubWebhookEvent } from "../server/services/github-events.js
 import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob, listCandidates } from "../server/services/event-source.js";
 import { listQueue } from "../server/services/hub-queue.js";
-import { completeJob, createJob, getJob } from "../server/services/job-store.js";
+import { completeJob, createJob, getJob, recordWorktreeCreated } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
+import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
 import {
   buildGithubStatusComment,
   buildQueuedComment,
@@ -31,6 +34,8 @@ import {
   saveGithubAppConfig,
   validateGithubAppConfig,
 } from "../server/services/github-app.js";
+
+const execFileAsync = promisify(execFile);
 
 function githubSignature(secret, rawBody) {
   return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
@@ -885,6 +890,92 @@ describe("GitHub draft PR creation", () => {
     const pushCall = calls.find((call) => call.command === "git" && call.args[0] === "push");
     assert.equal(pushCall.options.cwd, "/tmp/cpb-worktree");
     assert.equal(pushCall.args[2], "HEAD:refs/heads/cpb/issue-123-fix-login-redirect");
+  });
+
+  it("uses pr auto-finalizer mode to push the worktree branch, open a draft PR, and append pr_opened", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-finalizer-"));
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const sourcePath = path.join(tmpRoot, "source");
+    const remotePath = path.join(tmpRoot, "remote.git");
+    const worktreePath = path.join(tmpRoot, "worktree");
+    const branch = "cpb/issue-123-fix-login-redirect";
+    const git = (cwd, args) => execFileAsync("git", args, { cwd, maxBuffer: 1024 * 1024 });
+
+    try {
+      await mkdir(sourcePath, { recursive: true });
+      await execFileAsync("git", ["init", "--bare", remotePath]);
+      await git(sourcePath, ["init", "-b", "main"]);
+      await git(sourcePath, ["config", "user.email", "cpb@example.invalid"]);
+      await git(sourcePath, ["config", "user.name", "CodePatchBay Test"]);
+      await writeFile(path.join(sourcePath, "README.md"), "hello\n", "utf8");
+      await git(sourcePath, ["add", "README.md"]);
+      await git(sourcePath, ["commit", "-m", "initial"]);
+      await git(sourcePath, ["remote", "add", "origin", remotePath]);
+      await git(sourcePath, ["push", "-u", "origin", "main"]);
+      await git(sourcePath, ["worktree", "add", "-b", branch, worktreePath]);
+      await writeFile(path.join(worktreePath, "README.md"), "hello from cpb\n", "utf8");
+
+      const created = await createJob(cpbRoot, {
+        project: "frontend",
+        task: "Fix login redirect",
+        workflow: "standard",
+        sourceContext: {
+          type: "github_issue",
+          repo: "my-org/frontend",
+          issueNumber: 123,
+          issueTitle: "Fix login redirect",
+        },
+      });
+      await recordWorktreeCreated(cpbRoot, "frontend", created.jobId, {
+        worktree: worktreePath,
+        branch,
+        baseBranch: "main",
+      });
+      const completed = await completeJob(cpbRoot, "frontend", created.jobId);
+      const calls = [];
+
+      const result = await finalizeSuccessfulQueueEntry({
+        cpbRoot,
+        project: "frontend",
+        entry: {
+          id: "q-pr-finalizer",
+          metadata: {
+            issueNumber: 123,
+            issueUrl: "https://github.com/my-org/frontend/issues/123",
+            repo: "my-org/frontend",
+          },
+        },
+        job: completed,
+        sourcePath,
+        mode: "pr",
+        runCommand: async (command, args, options) => {
+          calls.push({ command, args, options });
+          if (command === "gh") {
+            return { stdout: "https://github.com/my-org/frontend/pull/456\n", stderr: "" };
+          }
+          return execFileAsync(command, args, { ...options, maxBuffer: 1024 * 1024 });
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.status, "pr.opened");
+      assert.equal(result.mode, "pr");
+      assert.equal(result.prUrl, "https://github.com/my-org/frontend/pull/456");
+      assert.equal(result.prNumber, 456);
+      assert.equal(result.pushed, true);
+      assert.match(result.commit, /^[a-f0-9]{40}$/);
+      assert.ok(calls.some((call) => call.command === "git" && call.args[0] === "commit"));
+      assert.ok(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args[2] === `HEAD:refs/heads/${branch}`));
+      assert.ok(calls.some((call) => call.command === "gh" && call.args.slice(0, 3).join(" ") === "pr create --draft"));
+
+      const events = await readEvents(cpbRoot, "frontend", created.jobId);
+      const prEvents = events.filter((event) => event.type === "pr_opened");
+      assert.equal(prEvents.length, 1);
+      assert.equal(prEvents[0].prUrl, "https://github.com/my-org/frontend/pull/456");
+      assert.equal(prEvents[0].prNumber, 456);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

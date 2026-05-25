@@ -52,22 +52,42 @@ function selectNamed(catalog, names = []) {
   });
 }
 
-async function askForAgents(catalog, snapshot) {
-  const recommended = selectRecommended(catalog, snapshot);
-  if (!input.isTTY) return recommended;
+function setupPromptLabel(agent) {
+  if (agent.id === "codex") return "Codex";
+  if (agent.id === "claude") return "Claude Code";
+  if (agent.id === "opencode") return "OpenCode";
+  return agent.displayName || agent.id;
+}
 
+function yes(answer) {
+  return /^y(es)?$/i.test(String(answer || "").trim());
+}
+
+async function askQuestion(question, questionFn) {
+  if (typeof questionFn === "function") return questionFn(question);
+  if (!input.isTTY) return "";
   const rl = createInterface({ input, output });
   try {
-    const defaults = recommended.map((agent) => agent.id).join(",");
-    const answer = await rl.question(`Agents to install [${defaults || "none"}]: `);
-    const selected = (answer.trim() || defaults)
-      .split(",")
-      .map((part) => part.trim())
-      .filter(Boolean);
-    return selectNamed(catalog, selected);
+    return await rl.question(question);
   } finally {
     rl.close();
   }
+}
+
+async function askForAgents(catalog, snapshot, { questionFn } = {}) {
+  const recommended = selectRecommended(catalog, snapshot);
+  if (!input.isTTY && typeof questionFn !== "function") return recommended;
+
+  const installPromptIds = ["codex", "claude", "opencode"];
+  const index = byAgentId(catalog);
+  const selected = [];
+  for (const id of installPromptIds) {
+    const agent = index.get(id);
+    if (!agent || !missing(snapshot, agent)) continue;
+    const answer = await askQuestion(`Install ${setupPromptLabel(agent)}? y/N `, questionFn);
+    if (yes(answer)) selected.push(agent);
+  }
+  return selected;
 }
 
 async function confirmPlan(plan) {
@@ -79,6 +99,12 @@ async function confirmPlan(plan) {
   } finally {
     rl.close();
   }
+}
+
+async function askRunAuthCheck({ mode, questionFn } = {}) {
+  if (mode !== "interactive") return true;
+  if (!input.isTTY && typeof questionFn !== "function") return true;
+  return yes(await askQuestion("Run auth check? y/N ", questionFn));
 }
 
 function installationRecord(plan, result, error = null) {
@@ -127,6 +153,7 @@ export async function runSetupWizard({
   healthCheckFn = checkSetupAgentHealth,
   authConnectFn = getAuthConnectInstructions,
   confirmFn = confirmPlan,
+  questionFn = null,
   execute = true,
   stdio = "inherit",
 } = {}) {
@@ -134,7 +161,8 @@ export async function runSetupWizard({
   let selectedAgents;
   if (agents.length > 0) selectedAgents = selectNamed(catalog, agents);
   else if (mode === "recommended" || mode === "non-interactive") selectedAgents = selectRecommended(catalog, detected);
-  else selectedAgents = await askForAgents(catalog, detected);
+  else selectedAgents = await askForAgents(catalog, detected, { questionFn });
+  const runAuthCheck = await askRunAuthCheck({ mode, questionFn });
 
   const result = {
     schemaVersion: SCHEMA_VERSION,
@@ -145,6 +173,7 @@ export async function runSetupWizard({
     installations: {},
     health: {},
     auth: {},
+    runAuthCheck,
     executed: false,
     profile: null,
   };
@@ -176,6 +205,20 @@ export async function runSetupWizard({
   }
 
   for (const agent of selectedAgents) {
+    if (!runAuthCheck) {
+      result.health[agent.id] = {
+        agent: { id: agent.id },
+        status: "skipped",
+        checks: {},
+        reason: "auth check skipped by user",
+      };
+      result.auth[agent.id] = {
+        provider: { id: agent.id },
+        status: "skipped",
+        reason: "auth check skipped by user",
+      };
+      continue;
+    }
     try {
       result.health[agent.id] = await healthCheckFn(agent.id);
     } catch (error) {

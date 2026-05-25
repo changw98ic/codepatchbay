@@ -47,8 +47,8 @@ function normalizeWorktreeMode(value) {
 
 function normalizeAutoFinalizerMode(value) {
   const mode = value || "off";
-  if (!["off", "dry-run", "local", "remote"].includes(mode)) {
-    throw new Error(`invalid auto-finalizer mode: ${mode} (valid: off, dry-run, local, remote)`);
+  if (!["off", "dry-run", "local", "remote", "pr"].includes(mode)) {
+    throw new Error(`invalid auto-finalizer mode: ${mode} (valid: off, dry-run, local, remote, pr)`);
   }
   return mode;
 }
@@ -66,6 +66,9 @@ function finalizerMetadata(result, mode) {
     code: result.code || null,
     commit: result.commit || null,
     closed: result.closed ?? null,
+    pushed: result.pushed ?? null,
+    prUrl: result.prUrl || null,
+    prNumber: result.prNumber ?? null,
     mode,
   };
   if ("jobId" in result) metadata.jobId = result.jobId ?? null;
@@ -339,7 +342,7 @@ export class ProjectWorker {
     this.autoFinalizerMode = normalizeAutoFinalizerMode(
       opts.autoFinalizerMode
         || process.env.CPB_AUTOFINALIZER_MODE
-        || "remote",
+        || "pr",
     );
     this._getProjectFn = opts.getProjectFn || null;
     this._runPipelineFn = opts.runPipelineFn || null;
@@ -589,6 +592,8 @@ export class ProjectWorker {
     }
 
     const finalizer = await this._finalizerFn({
+      cpbRoot: this.cpbRoot,
+      project: projectId,
       entry,
       job,
       sourcePath,
@@ -806,7 +811,7 @@ Options:
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)
   --workflow <type>          Pipeline workflow: standard|complex|blocked (default: standard)
   --worktree-mode <mode>     Worker source isolation mode: required|off (default: required)
-  --auto-finalizer-mode <mode> Successful queue finalization: off|dry-run|local|remote (default: remote for issue-linked CLI workers)
+  --auto-finalizer-mode <mode> Successful queue finalization: off|dry-run|local|remote|pr (default: pr)
   --cpb-root <path>          CPB root directory
   --executor-root <path>     CPB executor/release root directory
   --hub-root <path>          Hub root directory`;
