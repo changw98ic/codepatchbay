@@ -6,9 +6,10 @@ CPB enforces secret protection at these boundaries:
 
 ### Child Process Environment
 
-ACP/agent child processes receive only an explicit env allowlist:
+ACP/agent child processes and CPB-brokered terminal commands receive only an
+explicit env allowlist:
 - **Runtime basics**: `PATH`, `HOME`, `SHELL`, `TERM`, `TMPDIR`, `TEMP`, `TMP`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CODEX_HOME`, `XDG_CACHE_HOME`, and CPB runtime vars.
-- **Provider credentials**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`.
+- **Provider credentials**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`.
 - Arbitrary `*_TOKEN`, `*_KEY`, `*_SECRET`, `DATABASE_URL`, and similar env vars are **not** forwarded.
 
 ### Output Redaction
@@ -44,11 +45,11 @@ These boundaries remain outside CPB enforcement until OS/container sandboxing is
 
 1. **Provider-internal filesystem access**: An ACP agent process can read files from the filesystem using its own I/O capabilities, bypassing CPB's broker. CPB only controls file reads that go through its own project-loader and knowledge-compose modules.
 
-2. **Agent subprocess spawning**: If an ACP agent launches its own subprocesses outside CPB's terminal broker, those subprocesses are not subject to CPB's env allowlist or output redaction.
+2. **Agent subprocess spawning outside CPB**: If an ACP agent launches its own subprocesses outside CPB's terminal broker, those subprocesses are not subject to CPB's env allowlist or output redaction. Subprocesses launched through CPB's terminal broker receive the same allowlisted environment as ACP adapter processes.
 
 3. **Network exfiltration**: CPB cannot prevent an agent from sending data over the network if the agent has network access.
 
-4. **In-process ACP pool**: The ACP pool (`bridges/acp-pool.mjs`) runs in-process and has access to the full `process.env`. Provider credentials passed to adapter processes are required for API calls and cannot be fully isolated within the same Node.js process.
+4. **In-process ACP pool**: The ACP pool runs in-process and has access to the full `process.env`, but adapter child processes receive only the allowlisted child environment. Provider credentials passed to adapter processes are required for API calls and cannot be fully isolated from the trusted CPB Node.js process itself.
 
 5. **Already-running processes**: Secrets already present in the environment of a running CPB server or ACP adapter process cannot be recalled.
 

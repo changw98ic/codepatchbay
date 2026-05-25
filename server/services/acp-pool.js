@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
 import { resolveHubRoot } from "./hub-registry.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
+import { buildChildEnv } from "../../core/policy/child-env.js";
 
 let _registryCache = null;
 async function getRegistry() {
@@ -528,7 +529,7 @@ export class AcpPool {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: this.cpbRoot,
-        env: { ...process.env, CPB_ROOT: this.cpbRoot },
+        env: buildChildEnv(process.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -637,7 +638,7 @@ export class AcpPool {
       toolPolicy: await this.#getToolPolicy(),
       outputSink: () => {},
       errorSink: () => {},
-      env: { ...process.env, CPB_ROOT: this.cpbRoot },
+      env: buildChildEnv(process.env, { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot }),
       resumeSessionId,
     });
     const meta = {

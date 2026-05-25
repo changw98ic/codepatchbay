@@ -1,12 +1,42 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
+  buildChildEnv,
   redactSecrets,
   detectSecretInput,
   assertNoSecretInput,
   isSecretPath,
   isSecretArtifact,
 } from "../server/services/secret-policy.js";
+
+describe("buildChildEnv", () => {
+  it("forwards only explicit runtime and provider env keys", () => {
+    const env = buildChildEnv({
+      PATH: "/usr/bin",
+      CPB_ROOT: "/tmp/cpb",
+      CPB_ACP_CUSTOM_AGENT_COMMAND: "agent-bin",
+      OPENAI_API_KEY: "provider-secret",
+      DATABASE_URL: "postgres://user:pass@example/db",
+      RANDOM_TOKEN: "leak",
+      CPB_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+    }, {
+      CPB_JOB_ID: "job-1",
+      AWS_REGION: "us-east-1",
+      EXTRA_SECRET: "extra-leak",
+    });
+
+    assert.strictEqual(env.PATH, "/usr/bin");
+    assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.CPB_ACP_CUSTOM_AGENT_COMMAND, "agent-bin");
+    assert.strictEqual(env.CPB_JOB_ID, "job-1");
+    assert.strictEqual(env.OPENAI_API_KEY, "provider-secret");
+    assert.strictEqual(env.AWS_REGION, "us-east-1");
+    assert.strictEqual(env.DATABASE_URL, undefined);
+    assert.strictEqual(env.RANDOM_TOKEN, undefined);
+    assert.strictEqual(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
+    assert.strictEqual(env.EXTRA_SECRET, undefined);
+  });
+});
 
 describe("redactSecrets", () => {
   it("redacts Bearer tokens", () => {

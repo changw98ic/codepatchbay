@@ -27,9 +27,10 @@ etc.) manages its own login flow and credential storage.
   written to disk by CPB.
 - **CPB never stores provider or API tokens** in its event logs, wiki files,
   job state, or any persistent artifact.
-- The child environment for agent processes is built from an explicit allowlist
-  (`secret-policy.js`). Only known runtime variables and provider credential
-  variables are forwarded; everything else is stripped.
+- The child environment for agent processes and CPB-brokered terminal commands
+  is built from an explicit allowlist (`core/policy/child-env.js`). Only known
+  runtime variables and provider credential variables are forwarded; everything
+  else is stripped.
 - Provider credentials are passed through to the agent process only when the
   corresponding `CPB_ACP_*` variant or key variable is set. CPB does not
   read, log, or persist these values.

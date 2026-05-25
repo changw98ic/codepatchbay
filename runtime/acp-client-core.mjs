@@ -15,6 +15,7 @@ import {
   classifyUiToolRequest,
   mergeHeadlessDenyTools,
 } from "../core/acp/policy.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;
@@ -399,6 +400,7 @@ export class AcpClient {
     this.nextTerminalId = 1;
     this.closed = false;
     this.initialized = null;
+    this.childEnv = null;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
     this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
@@ -407,7 +409,7 @@ export class AcpClient {
   async start() {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
-    const env = { ...this.env };
+    const env = buildChildEnv(this.env);
     const { command, args } = await resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
@@ -424,6 +426,7 @@ export class AcpClient {
         Object.assign(env, homeEnv);
       }
     }
+    this.childEnv = env;
     this.child = spawn(command, args, {
       cwd: this.cwd,
       env,
@@ -875,8 +878,11 @@ export class AcpClient {
     }
 
     const terminalId = `term-${this.nextTerminalId++}`;
-    const env = { ...process.env };
-    for (const item of params.env || []) env[item.name] = item.value;
+    const extraEnv = {};
+    for (const item of params.env || []) {
+      if (item?.name) extraEnv[item.name] = item.value;
+    }
+    const env = buildChildEnv(this.childEnv || this.env, extraEnv);
 
     const child = spawn(params.command, params.args || [], {
       cwd: params.cwd || this.cwd,
