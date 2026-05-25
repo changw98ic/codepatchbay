@@ -2,8 +2,8 @@ import { detectSecretInput } from "./secret-policy.js";
 
 export const CHANNEL_COMMAND_HELP = [
   "CodePatchBay channel commands:",
-  "/cpb run <project> <task> [--workflow <name>]",
-  "/cpb issue <project> <number> [--workflow <name>]",
+  "/cpb run <project> <task> [--workflow <name>] [--plan-mode <mode>] [--triage <auto|rules|none>]",
+  "/cpb issue <project> <number> [--workflow <name>] [--plan-mode <mode>] [--triage <auto|rules|none>]",
   "/cpb status <job>",
   "/cpb approve <job>",
   "/cpb cancel <job>",
@@ -20,6 +20,8 @@ function baseFields(extra = {}) {
     issue: null,
     task: null,
     workflow: null,
+    planMode: null,
+    triage: null,
     ...extra,
   };
 }
@@ -88,33 +90,93 @@ function stripInvocation(tokens) {
   return null;
 }
 
-function extractWorkflow(tokens, defaultWorkflow = "standard") {
+function extractRoutingOptions(tokens, defaultWorkflow = "standard") {
   const positional = [];
   let workflow = defaultWorkflow;
+  let planMode = null;
+  let triage = null;
+  let workflowRequested = false;
+  let planModeRequested = false;
+  let triageRequested = false;
 
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (token === "--workflow" || token === "-w") {
       const value = tokens[i + 1];
       if (!value) {
-        return { error: "missing workflow value", positional, workflow };
+        return { error: "missing workflow value", positional, workflow, planMode, triage };
       }
       workflow = value;
+      workflowRequested = true;
       i += 1;
       continue;
     }
     if (token.startsWith("--workflow=")) {
       const value = token.slice("--workflow=".length);
       if (!value) {
-        return { error: "missing workflow value", positional, workflow };
+        return { error: "missing workflow value", positional, workflow, planMode, triage };
       }
       workflow = value;
+      workflowRequested = true;
+      continue;
+    }
+    if (token === "--plan-mode") {
+      const value = tokens[i + 1];
+      if (!value) {
+        return { error: "missing plan-mode value", positional, workflow, planMode, triage };
+      }
+      planMode = value;
+      planModeRequested = true;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("--plan-mode=")) {
+      const value = token.slice("--plan-mode=".length);
+      if (!value) {
+        return { error: "missing plan-mode value", positional, workflow, planMode, triage };
+      }
+      planMode = value;
+      planModeRequested = true;
+      continue;
+    }
+    if (token === "--triage") {
+      const value = tokens[i + 1];
+      if (!value || value.startsWith("--")) {
+        triage = "auto";
+      } else {
+        triage = value;
+        i += 1;
+      }
+      triageRequested = true;
+      continue;
+    }
+    if (token.startsWith("--triage=")) {
+      const value = token.slice("--triage=".length);
+      if (!value) {
+        return { error: "missing triage value", positional, workflow, planMode, triage };
+      }
+      triage = value;
+      triageRequested = true;
+      continue;
+    }
+    if (token === "--no-triage") {
+      triage = "none";
+      triageRequested = true;
       continue;
     }
     positional.push(token);
   }
 
-  return { positional, workflow, error: null };
+  return {
+    positional,
+    workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
+    error: null,
+  };
 }
 
 function validProject(project) {
@@ -137,7 +199,16 @@ function okResult(type, fields) {
 }
 
 function parseRun(command, tokens) {
-  const { positional, workflow, error } = extractWorkflow(tokens, "standard");
+  const {
+    positional,
+    workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
+    error,
+  } = extractRoutingOptions(tokens, "standard");
   if (error) return errorResult("INVALID_COMMAND", error, { command });
 
   const [project, ...taskParts] = positional;
@@ -150,11 +221,25 @@ function parseRun(command, tokens) {
     project,
     task,
     workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
   });
 }
 
 function parseIssue(command, tokens) {
-  const { positional, workflow, error } = extractWorkflow(tokens, "standard");
+  const {
+    positional,
+    workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
+    error,
+  } = extractRoutingOptions(tokens, "standard");
   if (error) return errorResult("INVALID_COMMAND", error, { command });
 
   const [project, issueValue] = positional;
@@ -167,6 +252,11 @@ function parseIssue(command, tokens) {
     project,
     issue,
     workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
   });
 }
 

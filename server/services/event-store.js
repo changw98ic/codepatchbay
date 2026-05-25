@@ -439,6 +439,7 @@ export function materializeJob(events) {
     indexSnapshotId: null,
     sourceFingerprint: null,
     indexFreshness: null,
+    planCache: null,
     routingFeedback: null,
     approval: null,
   };
@@ -471,6 +472,7 @@ export function materializeJob(events) {
         if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
         if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
         if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
+        if (event.planCache !== undefined) state.planCache = event.planCache;
         terminal = false;
         break;
       case "plan_decision":
@@ -481,6 +483,14 @@ export function materializeJob(events) {
           runPlan: event.runPlan ?? null,
           reason: event.reason ?? null,
           decidedAt: event.ts ?? null,
+          parentPlanCache: event.parentPlanCache ?? null,
+        };
+        break;
+      case "plan_cache_decision":
+      case "plan_cache_updated":
+        state.planCache = {
+          ...(state.planCache || {}),
+          ...event,
         };
         break;
       case "executor_routing_feedback":

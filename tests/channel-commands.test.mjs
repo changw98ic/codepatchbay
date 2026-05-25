@@ -84,7 +84,7 @@ async function buildChannelApp(cpbRoot, routeOptions = {}) {
 }
 
 function assertCommandShape(command) {
-  for (const field of ["project", "job", "issue", "task", "workflow"]) {
+  for (const field of ["project", "job", "issue", "task", "workflow", "planMode", "triage"]) {
     assert.ok(Object.hasOwn(command, field), `missing ${field}`);
   }
 }
@@ -100,7 +100,19 @@ describe("channel command parser", () => {
     assert.equal(command.issue, null);
     assert.equal(command.task, "fix login redirect");
     assert.equal(command.workflow, "strict");
+    assert.equal(command.planMode, null);
+    assert.equal(command.triage, null);
     assertCommandShape(command);
+  });
+
+  it("parses requested routing options without making them effective yet", () => {
+    const command = parseChannelCommand('/cpb run frontend --workflow direct --plan-mode none --triage rules "fix auth token docs"');
+
+    assert.equal(command.ok, true);
+    assert.equal(command.workflow, "direct");
+    assert.equal(command.planMode, "none");
+    assert.equal(command.triage, "rules");
+    assert.equal(command.task, "fix auth token docs");
   });
 
   it("parses issue, status, approve, cancel, retry, and logs commands into typed payloads", () => {
@@ -120,6 +132,11 @@ describe("channel command parser", () => {
       issue: 123,
       task: null,
       workflow: "standard",
+      planMode: null,
+      triage: null,
+      workflowRequested: false,
+      planModeRequested: false,
+      triageRequested: false,
     });
     assert.equal(status.type, "status");
     assert.equal(status.job, "job-20260524-153011-a13f9c");
