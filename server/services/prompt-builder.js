@@ -8,6 +8,7 @@ import {
 } from "../../core/workflow/definition.js";
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
 import { resolveHubRoot, getProject } from "./hub-registry.js";
+import { getJob } from "./job-store.js";
 import { readCompactProjectCodeIndexSummary, readFilteredCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
 import { runtimeDataRoot } from "./runtime-root.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../core/workflow/verdict.js";
@@ -80,6 +81,40 @@ async function latestContextPackPath(cpbRoot) {
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
   return candidates[0]?.path || null;
+}
+
+function contextPackPathFromSourceContext(sourceContext = null) {
+  if (!sourceContext || typeof sourceContext !== "object") return null;
+  return sourceContext.contextPackPath || sourceContext.contextPack?.path || null;
+}
+
+async function jobSourceContext(cpbRoot, project, jobId) {
+  try {
+    const job = await getJob(cpbRoot, project, jobId, { dataRoot: dataRoot(cpbRoot) });
+    if (job?.sourceContext) return job.sourceContext;
+  } catch {}
+  try {
+    const job = await getJob(cpbRoot, project, jobId);
+    if (job?.sourceContext) return job.sourceContext;
+  } catch {}
+  return null;
+}
+
+async function resolveContextPackLocator(cpbRoot, project, jobId) {
+  const sourceContext = await jobSourceContext(cpbRoot, project, jobId);
+  const jobPath = contextPackPathFromSourceContext(sourceContext);
+  if (jobPath) return { path: jobPath, source: "job" };
+
+  const envSource = parseJsonEnv("CPB_SOURCE_CONTEXT_JSON");
+  const envSourcePath = contextPackPathFromSourceContext(envSource);
+  if (envSourcePath) return { path: envSourcePath, source: "job" };
+
+  const envPath = process.env.CPB_CONTEXT_PACK_PATH || null;
+  if (envPath) return { path: envPath, source: "job" };
+
+  const latestPath = await latestContextPackPath(cpbRoot);
+  if (latestPath) return { path: latestPath, source: "latest" };
+  return null;
 }
 
 export async function buildProjectCodeIndexSection(cpbRoot, project, taskDescription) {
@@ -361,9 +396,10 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const stateRoot = dataRoot(cpbRoot);
   const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
-  const latestContextPack = await latestContextPackPath(cpbRoot);
-  const contextPackLocator = latestContextPack
-    ? `- Latest context pack: ${latestContextPack}`
+  const contextPack = await resolveContextPackLocator(cpbRoot, project, jobId);
+  const contextPackLabel = contextPack?.source === "job" ? "Job context pack" : "Latest context pack";
+  const contextPackLocator = contextPack?.path
+    ? `- ${contextPackLabel}: ${contextPack.path}`
     : `- Latest context pack: ${path.join(stateRoot, "context-packs")} (none found)`;
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
@@ -421,7 +457,7 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 
 ## Instructions
 1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}
-2. ${latestContextPack ? "Read the latest context pack locator above before selecting files to inspect." : "If a context pack appears under the context-packs directory, read it before selecting files to inspect."}
+2. ${contextPack?.source === "job" ? "Read the job-specific context pack locator above before selecting files to inspect." : (contextPack?.path ? "Read the latest context pack locator above before selecting files to inspect." : "If a context pack appears under the context-packs directory, read it before selecting files to inspect.")}
 3. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
 4. Verify current job/task state from the locators above.
 5. Implement the requested code changes.

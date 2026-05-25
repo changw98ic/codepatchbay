@@ -114,6 +114,8 @@ function sourceContextFromQueueEntry(entry) {
       failedJobId: metadata.originJobId ?? null,
       failureArtifact: metadata.failureArtifact ?? null,
       sddTrace: metadata.sddTrace ?? null,
+      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? null,
+      contextPack: metadata.contextPack ?? null,
     };
   }
 
@@ -134,6 +136,8 @@ function sourceContextFromQueueEntry(entry) {
       issueUrl: metadata.issueUrl ?? null,
       repo: metadata.repo ?? null,
       sddTrace: metadata.sddTrace ?? null,
+      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? null,
+      contextPack: metadata.contextPack ?? null,
     };
   }
 
@@ -720,6 +724,7 @@ export class ProjectWorker {
         CPB_FAILED_JOB_ID: entry.metadata?.originJobId ?? "",
         CPB_FAILURE_ARTIFACT: entry.metadata?.failureArtifact ?? "",
         CPB_PLAN_MODE: planMode,
+        CPB_CONTEXT_PACK_PATH: entry.metadata?.contextPackPath || entry.metadata?.contextPack?.path || "",
         CPB_INDEX_SNAPSHOT_JSON: entry.metadata?.indexSnapshot
           ? JSON.stringify(entry.metadata.indexSnapshot)
           : "",

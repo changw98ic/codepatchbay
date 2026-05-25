@@ -10,6 +10,7 @@ import {
   triageGithubIssueWithAcp,
 } from "./issue-triage.js";
 import { bootstrapSddFromIssue } from "./sdd-automation.js";
+import { generateContextPack } from "./repo-graph.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -192,6 +193,7 @@ function routingMetadata(route) {
     ruleRoute: route.ruleRoute || null,
     acpRoute: route.acpRoute || null,
     acpTriager,
+    triageStrategy: route.triageStrategy || null,
     effective: effectiveRoute(route),
     effectiveRoute: route.effectiveRoute || null,
     protectedUpgrade: route.protectedUpgrade ?? ((route.protectedScopes || []).length > 0 || Boolean(route.actualDiffRisk?.protected)),
@@ -214,6 +216,51 @@ function acpEnabledForAuto() {
   return process.env.CPB_TRIAGE_ACP === "1" || process.env.CPB_TRIAGE_MODE === "acp";
 }
 
+function autoTriageMode(explicitMode, envMode) {
+  if (explicitMode) return normalizeTriageMode(explicitMode, "rules");
+  if (envMode) return normalizeTriageMode(envMode, "rules");
+  return process.env.CPB_TRIAGE_ACP === "1" ? "auto" : "rules";
+}
+
+function routeConflict(decision) {
+  return Boolean(
+    decision?.requestedRoute
+      && decision?.ruleRoute
+      && (
+        decision.requestedRoute.workflow !== decision.ruleRoute.workflow
+        || decision.requestedRoute.planMode !== decision.ruleRoute.planMode
+      ),
+  );
+}
+
+function autoAcpDecision(decision = {}) {
+  if ((decision.protectedScopes || []).length > 0 || decision.actualDiffRisk?.protected) {
+    return { useAcp: false, reason: "protected or changed-file risk is already forced to complex/full" };
+  }
+  if (decision.effectiveRoute?.workflow === "complex" && decision.effectiveRoute?.planMode === "full") {
+    return { useAcp: false, reason: "high-risk rules already selected complex/full" };
+  }
+  if (decision.ruleRoute?.category === "unknown") {
+    return { useAcp: true, reason: "uncertain unknown rule route" };
+  }
+  if (routeConflict(decision)) {
+    return { useAcp: true, reason: "conflicting requested and rule routes" };
+  }
+  return { useAcp: false, reason: "confident deterministic route" };
+}
+
+function withTriageStrategy(decision, mode, strategy) {
+  return {
+    ...decision,
+    triageMode: mode,
+    triageStrategy: {
+      mode,
+      usedAcp: Boolean(strategy?.usedAcp),
+      reason: strategy?.reason || null,
+    },
+  };
+}
+
 async function resolveGithubRoute(cpbRoot, event, {
   hubRoot,
   triageMode,
@@ -222,13 +269,11 @@ async function resolveGithubRoute(cpbRoot, event, {
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
 } = {}) {
-  const requestedMode = normalizeTriageMode(
-    triageMode || process.env.CPB_GITHUB_TRIAGE_MODE || process.env.CPB_TRIAGE_MODE,
-    "rules",
+  const requestedMode = autoTriageMode(
+    triageMode || process.env.CPB_GITHUB_TRIAGE_MODE,
+    process.env.CPB_TRIAGE_MODE,
   );
-  const effectiveMode = requestedMode === "auto"
-    ? (acpEnabledForAuto() ? "acp" : "rules")
-    : requestedMode;
+  const effectiveMode = requestedMode === "auto" ? "auto" : requestedMode;
   if (effectiveMode === "acp") {
     return triageGithubIssueWithAcp(event, {
       cpbRoot,
@@ -239,8 +284,24 @@ async function resolveGithubRoute(cpbRoot, event, {
       acpPool,
     });
   }
+  const rulesDecision = triageGithubIssue(event);
+  if (effectiveMode === "auto") {
+    const strategy = autoAcpDecision(rulesDecision);
+    if (strategy.useAcp) {
+      const acpDecision = await triageGithubIssueWithAcp(event, {
+        cpbRoot,
+        hubRoot,
+        cwd: triageCwd,
+        agent: triageAgent,
+        timeoutMs: triageTimeoutMs,
+        acpPool,
+      });
+      return withTriageStrategy(acpDecision, "auto", { ...strategy, usedAcp: true });
+    }
+    return withTriageStrategy(rulesDecision, "auto", { ...strategy, usedAcp: false });
+  }
   return {
-    ...triageGithubIssue(event),
+    ...rulesDecision,
     triageMode: effectiveMode,
   };
 }
@@ -253,10 +314,11 @@ async function resolveChannelRoute(cpbRoot, command, context, {
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
 } = {}) {
-  const requestedMode = normalizeTriageMode(command.triage || triageMode || process.env.CPB_CHANNEL_TRIAGE_MODE || process.env.CPB_TRIAGE_MODE, "rules");
-  const effectiveMode = requestedMode === "auto"
-    ? (acpEnabledForAuto() ? "acp" : "rules")
-    : requestedMode;
+  const requestedMode = autoTriageMode(
+    command.triage || triageMode || process.env.CPB_CHANNEL_TRIAGE_MODE,
+    process.env.CPB_TRIAGE_MODE,
+  );
+  const effectiveMode = requestedMode === "auto" ? "auto" : requestedMode;
   if (effectiveMode === "acp") {
     return triageChannelCommandWithAcp(command, context, {
       cpbRoot,
@@ -267,8 +329,24 @@ async function resolveChannelRoute(cpbRoot, command, context, {
       acpPool,
     });
   }
+  const rulesDecision = triageChannelCommand(command, context);
+  if (effectiveMode === "auto") {
+    const strategy = autoAcpDecision(rulesDecision);
+    if (strategy.useAcp) {
+      const acpDecision = await triageChannelCommandWithAcp(command, context, {
+        cpbRoot,
+        hubRoot,
+        cwd: triageCwd,
+        agent: triageAgent,
+        timeoutMs: triageTimeoutMs,
+        acpPool,
+      });
+      return withTriageStrategy(acpDecision, "auto", { ...strategy, usedAcp: true });
+    }
+    return withTriageStrategy(rulesDecision, "auto", { ...strategy, usedAcp: false });
+  }
   return {
-    ...triageChannelCommand(command, context),
+    ...rulesDecision,
     triageMode: effectiveMode,
   };
 }
@@ -310,6 +388,16 @@ function sourcePathForQueue(explicitSourcePath, project) {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
+async function maybeGenerateQueueContextPack(project, hubRoot, task) {
+  if (!project?.sourcePath) return null;
+  try {
+    const result = await generateContextPack(project, { hubRoot, task });
+    return { contextPack: result.contextPack, error: null };
+  } catch (error) {
+    return { contextPack: null, error: error.message };
+  }
+}
+
 function isSddRoute(route) {
   const effective = effectiveRoute(route);
   const requested = requestedRoute(route);
@@ -320,9 +408,10 @@ function isSddRoute(route) {
     || route?.ruleRoute?.category === "sdd";
 }
 
-function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null }) {
+function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null, contextPackResult = null }) {
   const route = payload.route;
   const sddMetadata = sddAutomation?.queueMetadata || {};
+  const contextPack = contextPackResult?.contextPack || null;
   return {
     projectId: event.projectId,
     sourcePath,
@@ -344,6 +433,9 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
       workflow: payload.workflow || match.workflow || "standard",
       planMode: payload.planMode || "full",
       ...sddMetadata,
+      contextPackPath: contextPack?.path || null,
+      contextPack,
+      contextPackError: contextPackResult?.error || null,
       requestedRoute: requestedRoute(route),
       routing: routingMetadata(route),
       autoFinalize: true,
@@ -359,6 +451,7 @@ async function enqueueSddTaskEntries({
   sourcePath,
   sddAutomation,
   route,
+  contextPackResult = null,
 }) {
   if (!sddAutomation?.tasks?.length) return [];
   const entries = [];
@@ -382,6 +475,9 @@ async function enqueueSddTaskEntries({
         routing: routingMetadata(route),
         sddTask: task,
         sddTrace: sddAutomation.queueMetadata?.sddTrace || null,
+        contextPackPath: contextPackResult?.contextPack?.path || null,
+        contextPack: contextPackResult?.contextPack || null,
+        contextPackError: contextPackResult?.error || null,
         queueDedupeKey: `${parentQueueEntry.metadata?.queueDedupeKey || parentQueueEntry.id}:sdd-task:${task.id}`,
         autoFinalize: true,
       },
@@ -404,6 +500,10 @@ export async function createGithubIssueQueueJob(
     acpPool = null,
     triageAgent = "claude",
     triageTimeoutMs = 60_000,
+    sddDrafterMode = null,
+    sddAcpPool = null,
+    sddDrafterAgent = "claude",
+    sddDrafterTimeoutMs = 60_000,
   } = {},
 ) {
   if (!event || event.status !== "ok") {
@@ -439,8 +539,20 @@ export async function createGithubIssueQueueJob(
 
   const project = await resolveRegisteredProject(hubRoot, event.projectId, getProjectFn);
   const sourcePathForEntry = sourcePathForQueue(sourcePath, project);
+  const contextPackResult = await maybeGenerateQueueContextPack(
+    project,
+    hubRoot,
+    [payload.title, payload.body].filter(Boolean).join("\n\n"),
+  );
   const sddAutomation = isSddRoute(route)
-    ? await bootstrapSddFromIssue(cpbRoot, event.projectId, event)
+    ? await bootstrapSddFromIssue(cpbRoot, event.projectId, event, {
+        sddDrafterMode: sddDrafterMode || process.env.CPB_SDD_DRAFTER_MODE || "template",
+        acpPool: sddAcpPool,
+        hubRoot,
+        cwd: sourcePathForEntry || process.cwd(),
+        agent: sddDrafterAgent,
+        timeoutMs: sddDrafterTimeoutMs,
+      })
     : null;
   const queueEntry = await enqueueFn(
     hubRoot,
@@ -451,6 +563,7 @@ export async function createGithubIssueQueueJob(
       candidateEntry: entry,
       sourcePath: sourcePathForEntry,
       sddAutomation,
+      contextPackResult,
     }),
   );
   const sddTaskQueueEntries = await enqueueSddTaskEntries({
@@ -461,6 +574,7 @@ export async function createGithubIssueQueueJob(
     sourcePath: sourcePathForEntry,
     sddAutomation,
     route,
+    contextPackResult,
   });
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
@@ -520,9 +634,10 @@ function channelDescription(payload) {
   return payload.task || (payload.issueNumber ? `GitHub issue #${payload.issueNumber}` : "");
 }
 
-function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project }) {
+function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project, contextPackResult = null }) {
   const repo = project?.github?.fullName || project?.github?.repo || null;
   const issueUrl = payload.issueNumber && repo ? `https://github.com/${repo}/issues/${payload.issueNumber}` : null;
+  const contextPack = contextPackResult?.contextPack || null;
   return {
     projectId: command.project,
     sourcePath,
@@ -546,6 +661,9 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
       repo,
       workflow: payload.workflow || "standard",
       planMode: payload.planMode || "light",
+      contextPackPath: contextPack?.path || null,
+      contextPack,
+      contextPackError: contextPackResult?.error || null,
       requestedRoute: requestedRoute(payload.route),
       routing: routingMetadata(payload.route),
       triage: payload.triage,
@@ -598,6 +716,8 @@ export async function createChannelQueueJob(
   }
 
   const project = await resolveRegisteredProject(hubRoot, command.project, getProjectFn);
+  const sourcePathForEntry = sourcePathForQueue(sourcePath, project);
+  const contextPackResult = await maybeGenerateQueueContextPack(project, hubRoot, payload.task || payload.commandText || "");
   const queueEntry = await enqueueFn(
     hubRoot,
     channelHubQueueInput({
@@ -605,8 +725,9 @@ export async function createChannelQueueJob(
       source,
       payload,
       candidateEntry: entry,
-      sourcePath: sourcePathForQueue(sourcePath, project),
+      sourcePath: sourcePathForEntry,
       project,
+      contextPackResult,
     }),
   );
   const updated = await updateCandidate(cpbRoot, entry.id, {

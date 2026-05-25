@@ -105,4 +105,22 @@ describe("direct workflow and planMode routing", () => {
       signals: ["auth", "db"],
     });
   });
+
+  it("rejects executor routing feedback that asks for a weaker no-plan route", () => {
+    assert.throws(
+      () => normalizeDispatchFeedback({
+        requested: { workflow: "direct", planMode: "none" },
+        reason: "executor should never downgrade itself",
+      }),
+      /only request stronger workflows/,
+    );
+
+    assert.throws(
+      () => normalizeDispatchFeedback({
+        requested: { workflow: "standard", planMode: "none" },
+        reason: "no-plan feedback would bypass planner",
+      }),
+      /only request stronger plan modes/,
+    );
+  });
 });

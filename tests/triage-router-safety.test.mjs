@@ -15,7 +15,9 @@ import { DEFAULT_GITHUB_TRIGGERS } from "../server/services/hub-registry.js";
 import { createGithubIssueQueueJob } from "../server/services/event-source.js";
 import { verifySddProject } from "../server/services/sdd.js";
 import { resolveParentPlanCache, writeParentPlanCache } from "../server/services/plan-cache.js";
+import { readParentPlanRecord } from "../server/services/plan-store.js";
 import { buildExecutorJobPrompt, buildPlannerPrompt } from "../server/services/prompt-builder.js";
+import { createJob } from "../server/services/job-store.js";
 
 describe("issue triage safety lattice", () => {
   it("treats deterministic docs/test rules as requested downgrades, not base authority", () => {
@@ -220,6 +222,86 @@ describe("ACP triage entry wiring", () => {
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
+
+  it("uses ACP in auto mode only for uncertain routes, not protected forced upgrades", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-acp-auto-"));
+    let acpCalls = 0;
+    const acpPool = {
+      execute: async () => {
+        acpCalls += 1;
+        return JSON.stringify({
+          requestedRoute: {
+            workflow: "complex",
+            planMode: "full",
+            reviewer: true,
+            reason: "ACP clarified ambiguous feature risk",
+          },
+        });
+      },
+    };
+    try {
+      const ambiguousEvent = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-acp-auto-ambiguous",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 447,
+            title: "Improve report export",
+            body: "Need better output for enterprise customers.",
+            html_url: "https://github.com/my-org/frontend/issues/447",
+            labels: [{ name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+
+      const ambiguous = await createGithubIssueQueueJob(cpbRoot, ambiguousEvent, matchGithubTrigger(ambiguousEvent), {
+        triageMode: "auto",
+        acpPool,
+      });
+
+      assert.equal(acpCalls, 1);
+      assert.equal(ambiguous.queueEntry.metadata.workflow, "complex");
+      assert.equal(ambiguous.queueEntry.metadata.routing.triageStrategy.usedAcp, true);
+      assert.match(ambiguous.queueEntry.metadata.routing.triageStrategy.reason, /uncertain/i);
+
+      const protectedEvent = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-acp-auto-protected",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 448,
+            title: "Fix auth token rotation",
+            body: "Security sensitive login sessions.",
+            html_url: "https://github.com/my-org/frontend/issues/448",
+            labels: [{ name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+
+      const protectedResult = await createGithubIssueQueueJob(cpbRoot, protectedEvent, matchGithubTrigger(protectedEvent), {
+        triageMode: "auto",
+        acpPool,
+      });
+
+      assert.equal(acpCalls, 1);
+      assert.equal(protectedResult.queueEntry.metadata.workflow, "complex");
+      assert.equal(protectedResult.queueEntry.metadata.planMode, "full");
+      assert.equal(protectedResult.queueEntry.metadata.routing.triageStrategy.usedAcp, false);
+      assert.match(protectedResult.queueEntry.metadata.routing.triageStrategy.reason, /protected/i);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("GitHub actor trust", () => {
@@ -305,6 +387,63 @@ describe("SDD automatic GitHub entry", () => {
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
+
+  it("can draft SDD files through ACP and records an auditable generation event", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-sdd-acp-draft-"));
+    let acpCalls = 0;
+    const acpPool = {
+      execute: async (_agent, prompt) => {
+        acpCalls += 1;
+        assert.match(prompt, /CodePatchBay SDD drafter/);
+        return JSON.stringify({
+          spec: "# Spec: ACP checkout\n\n## Problem\nGenerated from issue.\n",
+          design: "# Design: ACP checkout\n\n## Approach\nUse explicit trace.\n",
+          tasks: "# Tasks: ACP checkout\n\n- [ ] Implement traced checkout task\n",
+          requiresApproval: true,
+        });
+      },
+    };
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-sdd-acp-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "sdd" },
+          issue: {
+            number: 449,
+            title: "Checkout ACP draft",
+            body: "Need a generated SDD seed.",
+            html_url: "https://github.com/my-org/frontend/issues/449",
+            labels: [{ name: "sdd" }],
+          },
+          sender: { login: "product-owner" },
+        },
+      });
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, matchGithubTrigger(event), {
+        sddDrafterMode: "acp",
+        sddAcpPool: acpPool,
+      });
+
+      assert.equal(acpCalls, 1);
+      const generation = result.queueEntry.metadata.sddBootstrap.generationEvent;
+      assert.equal(generation.type, "sdd_generation_event");
+      assert.equal(generation.generator, "acp");
+      assert.equal(generation.requiresApproval, true);
+      assert.match(generation.sourceIssueHash, /^[a-f0-9]{16}$/);
+      assert.ok(generation.generatedFiles.spec.path.endsWith("spec.md"));
+
+      const spec = await readFile(path.join(cpbRoot, "wiki", "projects", "frontend", "sdd", "spec.md"), "utf8");
+      assert.match(spec, /ACP checkout/);
+      const audit = await readFile(result.queueEntry.metadata.sddBootstrap.generationEventPath, "utf8");
+      assert.match(audit, /sdd_generation_event/);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parent plan cache", () => {
@@ -337,7 +476,13 @@ describe("parent plan cache", () => {
       });
       assert.equal(second.cacheHit, true);
       assert.equal(second.reusedPlanId, "777");
+      assert.equal(second.parentPlanId, "777");
       assert.deepEqual(second.mergedPlanIds, ["777"]);
+
+      const stored = await readParentPlanRecord(cpbRoot, "frontend", second.planCacheKey);
+      assert.equal(stored.planGroupId, second.planGroupId);
+      assert.equal(stored.parentPlanId, "777");
+      assert.equal(stored.planCacheKey, second.planCacheKey);
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }
@@ -378,25 +523,43 @@ describe("planner and executor context guidance", () => {
     }
   });
 
-  it("surfaces the latest context pack locator in executor job prompts", async () => {
+  it("surfaces a job-specific context pack locator before falling back to latest", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-executor-context-pack-"));
     const executorRoot = path.resolve(import.meta.dirname, "..");
     const runtimeRoot = path.join(cpbRoot, "runtime");
     const wikiDir = path.join(cpbRoot, "wiki", "projects", "frontend");
-    const contextPack = path.join(runtimeRoot, "context-packs", "context-pack-2026.md");
+    const latestContextPack = path.join(runtimeRoot, "context-packs", "context-pack-latest.md");
+    const jobContextPack = path.join(runtimeRoot, "context-packs", "context-pack-job-specific.md");
     const saved = {
       CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
       CPB_PLAN_MODE: process.env.CPB_PLAN_MODE,
+      CPB_CONTEXT_PACK_PATH: process.env.CPB_CONTEXT_PACK_PATH,
+      CPB_SOURCE_CONTEXT_JSON: process.env.CPB_SOURCE_CONTEXT_JSON,
     };
     try {
       await mkdir(wikiDir, { recursive: true });
-      await mkdir(path.dirname(contextPack), { recursive: true });
+      await mkdir(path.dirname(latestContextPack), { recursive: true });
       await writeFile(path.join(wikiDir, "context.md"), "# Context\n", "utf8");
       await writeFile(path.join(wikiDir, "decisions.md"), "# Decisions\n", "utf8");
       await writeFile(path.join(wikiDir, "project.json"), "{}", "utf8");
-      await writeFile(contextPack, "# Context Pack\n", "utf8");
+      await writeFile(latestContextPack, "# Latest Context Pack\n", "utf8");
+      await writeFile(jobContextPack, "# Job Context Pack\n", "utf8");
       process.env.CPB_PROJECT_RUNTIME_ROOT = runtimeRoot;
       process.env.CPB_PLAN_MODE = "light";
+      process.env.CPB_CONTEXT_PACK_PATH = latestContextPack;
+
+      await createJob(cpbRoot, {
+        project: "frontend",
+        task: "use job context pack",
+        workflow: "standard",
+        planMode: "light",
+        jobId: "job-context-pack",
+        sourceContext: {
+          type: "github_issue",
+          issueNumber: 450,
+          contextPackPath: jobContextPack,
+        },
+      });
 
       const prompt = await buildExecutorJobPrompt(
         executorRoot,
@@ -406,15 +569,55 @@ describe("planner and executor context guidance", () => {
         path.join(wikiDir, "outputs", "deliverable-1.md"),
       );
 
-      assert.match(prompt, /Latest context pack/);
-      assert.match(prompt, /context-pack-2026\.md/);
-      assert.match(prompt, /Read the latest context pack/);
+      assert.match(prompt, /Job context pack/);
+      assert.match(prompt, /context-pack-job-specific\.md/);
+      assert.doesNotMatch(prompt, /context-pack-latest\.md/);
+      assert.match(prompt, /Read the job-specific context pack/);
     } finally {
       for (const [key, value] of Object.entries(saved)) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
       await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("stores generated context pack paths in GitHub queue metadata", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-queue-context-pack-"));
+    const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-queue-context-src-"));
+    try {
+      await mkdir(path.join(sourceRoot, "src"), { recursive: true });
+      await writeFile(path.join(sourceRoot, "src", "math.js"), "export const add = (a, b) => a + b;\n", "utf8");
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-context-pack-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 451,
+            title: "Change math utility",
+            body: "Update add behavior.",
+            html_url: "https://github.com/my-org/frontend/issues/451",
+            labels: [{ name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, matchGithubTrigger(event), {
+        getProjectFn: async () => ({ id: "frontend", sourcePath: sourceRoot }),
+      });
+
+      assert.match(result.queueEntry.metadata.contextPackPath, /context-pack-.*\.md$/);
+      assert.equal(result.queueEntry.metadata.contextPack.path, result.queueEntry.metadata.contextPackPath);
+      const pack = await readFile(result.queueEntry.metadata.contextPackPath, "utf8");
+      assert.match(pack, /Change math utility/);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+      await rm(sourceRoot, { recursive: true, force: true });
     }
   });
 });

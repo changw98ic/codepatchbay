@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 export const ROUTING_FEEDBACK_EXIT_CODE = 42;
 export const DISPATCH_FEEDBACK_SCHEMA_VERSION = 1;
 
-const WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard"]);
-const PLAN_MODES = new Set(["none", "light", "full", "parent"]);
+const WORKFLOWS = new Set(["standard", "complex", "sdd-standard"]);
+const PLAN_MODES = new Set(["light", "full", "parent"]);
 
 export function dispatchFeedbackPath(cpbRoot, project, jobId) {
   return path.join(
@@ -28,10 +28,10 @@ export function normalizeDispatchFeedback(input = {}, defaults = {}) {
   const reason = String(input.reason || requested.reason || "").trim();
 
   if (!WORKFLOWS.has(workflow)) {
-    throw new Error(`dispatch feedback requested.workflow is invalid: ${workflow || "missing"}`);
+    throw new Error(`dispatch feedback can only request stronger workflows: ${workflow || "missing"}`);
   }
   if (!PLAN_MODES.has(planMode)) {
-    throw new Error(`dispatch feedback requested.planMode is invalid: ${planMode || "missing"}`);
+    throw new Error(`dispatch feedback can only request stronger plan modes: ${planMode || "missing"}`);
   }
   if (!reason) {
     throw new Error("dispatch feedback reason is required");
