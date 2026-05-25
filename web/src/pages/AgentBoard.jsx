@@ -67,24 +67,36 @@ export default function AgentBoard() {
       <h2>Agent Board</h2>
 
       {timestamp && (
-        <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
+        <div className="muted">
           Last updated: {new Date(timestamp).toLocaleTimeString()}
           {!connected && ' (WS disconnected — polling)'}
         </div>
       )}
 
       {/* Summary bar */}
-      <div style={{ display: 'flex', gap: 24, marginBottom: 16, fontSize: 14 }}>
-        <span>Agents: <strong>{agents.length}</strong></span>
-        <span>Running: <strong style={{ color: '#2196f3' }}>{totals.running}</strong></span>
-        <span>Completed: <strong style={{ color: '#4caf50' }}>{totals.completed}</strong></span>
-        <span>Failed: <strong style={{ color: totals.failed > 0 ? '#f44336' : '#9e9e9e' }}>{totals.failed}</strong></span>
+      <div className="agent-summary-bar">
+        <div className="metric-card">
+          <span className="metric-label">Agents</span>
+          <span className="metric-value">{agents.length}</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">Running</span>
+          <span className="metric-value" style={{ color: 'var(--accent)' }}>{totals.running}</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">Completed</span>
+          <span className="metric-value" style={{ color: 'var(--success)' }}>{totals.completed}</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-label">Failed</span>
+          <span className="metric-value" style={{ color: totals.failed > 0 ? 'var(--error)' : 'var(--text-muted)' }}>{totals.failed}</span>
+        </div>
       </div>
 
       {/* Resource + Quality overview */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-        <div style={{ flex: 1 }}><ResourceMeter agents={agents} /></div>
-        <div style={{ flex: 1 }}><QualityTrend agents={agents} /></div>
+      <div className="agent-overview-row">
+        <div><ResourceMeter agents={agents} /></div>
+        <div><QualityTrend agents={agents} /></div>
       </div>
 
       {/* Agent cards grid */}
@@ -97,16 +109,8 @@ export default function AgentBoard() {
 
       {/* Expanded job list for selected agent */}
       {selectedAgent && (
-        <div style={{
-          marginTop: 16,
-          border: '1px solid #333',
-          borderRadius: 8,
-          background: '#1a1a2e',
-          padding: 12,
-        }}>
-          <h4 style={{ margin: '0 0 8px', color: '#aaa' }}>
-            Recent Jobs — {selectedAgent}
-          </h4>
+        <div className="agent-jobs-panel panel">
+          <h4>Recent Jobs — {selectedAgent}</h4>
           <AgentJobList jobs={agentJobs} />
         </div>
       )}

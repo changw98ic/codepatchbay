@@ -449,4 +449,67 @@ describe("D46 - team-policy schema and enforcement", () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it("approval gates pause a job and resume it after an approve event", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-approval-gate-"));
+    const project = "policy-project";
+    const jobId = "job-approval-gate";
+    try {
+      await createJob(tmp, {
+        project,
+        jobId,
+        task: "approval gate should pause",
+        teamPolicy: {
+          approvals: { write: { required: true, channels: ["slack"] } },
+        },
+      });
+      const { requestApprovalGate, approveGate } = await import("../server/services/approval-gate.js");
+
+      const waiting = await requestApprovalGate(tmp, project, jobId, {
+        operation: "write",
+        phase: "execute",
+        channels: ["slack"],
+        reason: "write approval required",
+      });
+      assert.equal(waiting.status, "waiting.approval");
+      assert.equal(waiting.approval.operation, "write");
+      assert.equal(waiting.approval.phase, "execute");
+
+      const resumed = await approveGate(tmp, project, jobId, {
+        actor: { userId: "U123", userName: "alice" },
+      });
+      assert.equal(resumed.status, "running");
+      assert.equal(resumed.approval, null);
+
+      const events = await readEvents(tmp, project, jobId);
+      assert.equal(events.some((event) => event.type === "approval_required"), true);
+      assert.equal(events.some((event) => event.type === "job_approved"), true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("approval gates can time out into blocked status", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-approval-timeout-"));
+    const project = "policy-project";
+    const jobId = "job-approval-timeout";
+    try {
+      await createJob(tmp, { project, jobId, task: "approval gate timeout" });
+      const { requestApprovalGate, timeoutApprovalGate } = await import("../server/services/approval-gate.js");
+
+      await requestApprovalGate(tmp, project, jobId, {
+        operation: "PR",
+        phase: "verify",
+        reason: "PR approval required",
+      });
+      const blocked = await timeoutApprovalGate(tmp, project, jobId, {
+        reason: "approval timed out",
+      });
+
+      assert.equal(blocked.status, "blocked");
+      assert.match(blocked.blockedReason, /approval timed out/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

@@ -432,7 +432,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
 
   // These are the commands that should appear in help output
   const publicCommands = [
-    "init", "attach", "hub", "plan", "execute", "verify", "pipeline",
+    "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline",
     "demo", "research", "evolve-multi", "index", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
     "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "github", "wiki", "release",
@@ -449,7 +449,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
 test("all routed CLI command modules import successfully", async () => {
   // Module filenames (values in COMMANDS), deduplicated
   const moduleFiles = [
-    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
+    "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "audit",
@@ -462,7 +462,7 @@ test("all routed CLI command modules import successfully", async () => {
 
 test("all routed command modules export run()", async () => {
   const moduleFiles = [
-    "init", "attach", "hub", "plan", "execute", "verify", "pipeline", "demo", "research",
+    "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
     "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
@@ -527,7 +527,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
 
   // All module files that COMMANDS maps to (values, deduplicated)
   const routedModules = new Set([
-    "init.js", "attach.js", "hub.js", "plan.js", "execute.js", "verify.js",
+    "init.js", "attach.js", "hub.js", "daemon.js", "plan.js", "execute.js", "verify.js",
     "pipeline.js", "demo.js", "research.js", "status.js", "list.js", "jobs.js", "artifacts.js", "verdict.js",
     "evolve-multi.js", "index.js", "repair.js", "diff.js", "review.js",
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",

@@ -346,6 +346,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "github_comment_posted", "github_comment_failed",
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
+  "approval_required", "job_approved", "approval_timed_out",
 ]);
 
 const NODE_STATE_DEFAULTS = {
@@ -435,6 +436,7 @@ export function materializeJob(events) {
     indexSnapshotId: null,
     sourceFingerprint: null,
     indexFreshness: null,
+    approval: null,
   };
 
   let terminal = false;
@@ -652,6 +654,40 @@ export function materializeJob(events) {
         state.retryable = event.retryable ?? state.retryable;
         state.retryCount = event.retryCount ?? state.retryCount;
         state.failureCause = event.cause ?? state.failureCause;
+        terminal = true;
+        break;
+      case "approval_required":
+        state.status = "waiting.approval";
+        state.phase = event.phase ?? state.phase;
+        state.blockedReason = event.reason ?? "approval required";
+        state.approval = {
+          operation: event.operation ?? null,
+          phase: event.phase ?? null,
+          channels: Array.isArray(event.channels) ? event.channels : [],
+          reason: event.reason ?? null,
+          requestedAt: event.ts ?? null,
+          timeoutAt: event.timeoutAt ?? null,
+        };
+        if (event.phase) {
+          state.runningNodes = state.runningNodes.filter((node) => node !== event.phase);
+          if (!state.blockedNodes.includes(event.phase)) {
+            state.blockedNodes = [...state.blockedNodes, event.phase];
+          }
+        }
+        break;
+      case "job_approved":
+        state.status = state.approval?.operation === "PR" ? "completed" : "running";
+        state.blockedReason = null;
+        state.approval = null;
+        if (state.phase) {
+          state.blockedNodes = state.blockedNodes.filter((node) => node !== state.phase);
+        }
+        break;
+      case "approval_timed_out":
+        state.status = "blocked";
+        state.leaseId = null;
+        state.blockedReason = event.reason ?? "approval timed out";
+        state.approval = state.approval ? { ...state.approval, timedOutAt: event.ts ?? null } : null;
         terminal = true;
         break;
       case "job_completed":

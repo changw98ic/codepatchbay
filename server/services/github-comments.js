@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { appendEvent, readEvents } from "./event-store.js";
 import { jobToGithubStatusUpdate } from "./job-projection.js";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 function agentLine(label, value) {
   return `- ${label}: ${value || "not selected"}`;
@@ -15,6 +19,24 @@ function responseSummary(response) {
   return {
     id: response.id ?? null,
     url: response.html_url || response.url || null,
+  };
+}
+
+export async function postGithubCommentWithGh({ repo, issueNumber, body }, { runCommand = execFileAsync } = {}) {
+  const result = await runCommand("gh", [
+    "issue",
+    "comment",
+    String(issueNumber),
+    "--repo",
+    repo,
+    "--body",
+    body,
+  ], { maxBuffer: 1024 * 1024 });
+  return {
+    url: null,
+    html_url: null,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
   };
 }
 

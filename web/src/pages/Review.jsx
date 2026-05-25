@@ -1,34 +1,51 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
-import ReviewChat from '../components/ReviewChat';
 import { reviewBadgeClass } from '../utils/badge';
-import useCappedList from '../hooks/useCappedList';
+
+const STATUS_GROUPS = [
+  { name: 'Needs Action', statuses: ['user_review', 'merge_failed'] },
+  { name: 'In Progress', statuses: ['researching', 'planning', 'reviewing', 'revising'] },
+  { name: 'Queued', statuses: ['idle'] },
+  { name: 'Done', statuses: ['completed', 'dispatched', 'expired', 'cancelled'] },
+];
+
+const TERMINAL = new Set(['expired', 'cancelled', 'completed']);
+const CAN_APPROVE = new Set(['user_review']);
+const CAN_START = new Set(['idle']);
+const CAN_CANCEL = (s) => !TERMINAL.has(s) && s !== 'dispatched';
+
+function groupLabel(count, name) {
+  return `${name} (${count})`;
+}
 
 export default function Review() {
   const [sessions, setSessions] = useState([]);
-  const [activeId, setActiveId] = useState(null);
-  const [activeSession, setActiveSession] = useState(null);
-  const [form, setForm] = useState({ project: '', intent: '' });
+  const [selectedId, setSelectedId] = useState(null);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [query, setQuery] = useState('');
   const [projects, setProjects] = useState([]);
-  const [evolveStatus, setEvolveStatus] = useState(null);
-  const [evolveHistory, setEvolveHistory] = useState([]);
-  const [sessionQuery, setSessionQuery] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState({ project: '', intent: '' });
+  const [analysis, setAnalysis] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const { subscribe } = useWebSocket();
-  const terminalStatuses = new Set(['expired', 'cancelled', 'completed']);
 
   const filteredSessions = useMemo(() =>
     sessions.filter(s =>
-      s.sessionId.toLowerCase().includes(sessionQuery.toLowerCase()) ||
-      s.status.toLowerCase().includes(sessionQuery.toLowerCase())
-    ), [sessions, sessionQuery]
+      s.sessionId.toLowerCase().includes(query.toLowerCase()) ||
+      s.status.toLowerCase().includes(query.toLowerCase()) ||
+      (s.project || '').toLowerCase().includes(query.toLowerCase()) ||
+      (s.intent || '').toLowerCase().includes(query.toLowerCase())
+    ), [sessions, query]
   );
 
-  const { displayed: displaySessions, showAll: showAllSessions, toggle: toggleSessions, hasMore: hasMoreSessions } = useCappedList(filteredSessions, {
-    cap: 5,
-    selectedKey: activeId,
-    keyFn: (s) => s.sessionId,
-    deps: [sessionQuery],
-  });
+  const groups = useMemo(() =>
+    STATUS_GROUPS.map(g => ({
+      ...g,
+      items: filteredSessions.filter(s => g.statuses.includes(s.status)),
+    })).filter(g => g.items.length > 0),
+    [filteredSessions]
+  );
 
   useEffect(() => {
     fetch('/api/projects')
@@ -38,71 +55,47 @@ export default function Review() {
   }, []);
 
   const loadSessions = useCallback(() => {
-    return fetch('/api/review')
+    fetch('/api/review')
       .then((r) => r.json())
       .then((data) => {
         setSessions(data);
-        if (activeId) {
-          const cur = data.find((s) => s.sessionId === activeId);
-          if (cur) setActiveSession(cur);
+        if (selectedId) {
+          const cur = data.find(s => s.sessionId === selectedId);
+          if (cur) setSelectedSession(cur);
         }
       })
       .catch(() => {});
-  }, [activeId]);
+  }, [selectedId]);
 
-  const loadActiveSession = useCallback((id = activeId) => {
-    if (!id) return Promise.resolve();
-    return fetch(`/api/review/${id}`)
+  const loadDetail = useCallback((id) => {
+    if (!id) return;
+    fetch(`/api/review/${id}`)
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (data) setActiveSession(data);
-      })
-      .catch(() => {});
-  }, [activeId]);
-
-  const loadEvolve = useCallback(() => {
-    Promise.all([
-      fetch('/api/evolve/status'),
-      fetch('/api/evolve/history'),
-    ])
-      .then(async ([statusRes, historyRes]) => {
-        if (statusRes.ok) setEvolveStatus(await statusRes.json());
-        if (historyRes.ok) setEvolveHistory(await historyRes.json());
-      })
+      .then((data) => { if (data) setSelectedSession(data); })
       .catch(() => {});
   }, []);
 
-  const startEvolve = async () => {
-    await fetch('/api/evolve/start', { method: 'POST' });
-    await loadEvolve();
-  };
-
-  const stopEvolve = async () => {
-    await fetch('/api/evolve/stop', { method: 'POST' });
-    await loadEvolve();
-  };
-
-  const isEvolveRunning = !!evolveStatus?.running;
-  const evolveStatusLabel = isEvolveRunning ? 'running' : 'stopped';
-  const evolveProjectCount = Array.isArray(evolveStatus?.projects) ? evolveStatus.projects.length : 0;
-
   useEffect(() => {
     loadSessions();
-    loadEvolve();
-    const timer = setInterval(loadEvolve, 5000);
-    return () => clearInterval(timer);
-  }, [loadSessions, loadEvolve]);
+    const interval = setInterval(loadSessions, 10000);
+    return () => clearInterval(interval);
+  }, [loadSessions]);
 
   useEffect(() => {
-    const unsub = subscribe('review:update', () => {
-      loadSessions();
-    });
+    const unsub = subscribe('review:update', () => loadSessions());
     return unsub;
-  }, [subscribe, activeId, loadSessions]);
+  }, [subscribe, loadSessions]);
 
-  const selectSession = async (id) => {
-    setActiveId(id);
-    await loadActiveSession(id);
+  const selectSession = (id) => {
+    if (selectedId === id) {
+      setSelectedId(null);
+      setSelectedSession(null);
+      setAnalysis(null);
+      return;
+    }
+    setSelectedId(id);
+    loadDetail(id);
+    setAnalysis(null);
   };
 
   const createSession = async (e) => {
@@ -115,203 +108,313 @@ export default function Review() {
     });
     if (res.ok) {
       const session = await res.json();
-      setActiveId(session.sessionId);
-      setActiveSession(session);
       setForm({ project: '', intent: '' });
+      setShowCreate(false);
+      setSelectedId(session.sessionId);
+      setSelectedSession(session);
       loadSessions();
     }
   };
 
-  const startReview = async () => {
-    if (!activeId) return;
-    await fetch(`/api/review/${activeId}/start`, { method: 'POST' });
+  const startReview = async (id) => {
+    await fetch(`/api/review/${id}/start`, { method: 'POST' });
     loadSessions();
+    loadDetail(id);
   };
 
-  const runReviewAction = async (action) => {
-    if (!activeId) return;
-    await fetch(`/api/review/${activeId}/${action}`, { method: 'POST' });
-    await loadSessions();
-    await loadActiveSession(activeId);
-  };
-
-  const approve = async () => {
-    if (!activeId) return;
-    await fetch(`/api/review/${activeId}/approve`, { method: 'POST' });
+  const approve = async (id) => {
+    await fetch(`/api/review/${id}/approve`, { method: 'POST' });
     loadSessions();
+    loadDetail(id);
   };
 
-  const reject = async () => {
-    if (!activeId) return;
-    await fetch(`/api/review/${activeId}/reject`, { method: 'POST' });
+  const reject = async (id) => {
+    await fetch(`/api/review/${id}/reject`, { method: 'POST' });
     loadSessions();
+    loadDetail(id);
   };
 
-  const canAcceptChanges = activeSession?.status === 'dispatched';
-  const canAutoApprove = activeSession && ['user_review', 'dispatched'].includes(activeSession.status);
-  const canCancel = activeSession && !terminalStatuses.has(activeSession.status);
+  const accept = async (id) => {
+    await fetch(`/api/review/${id}/accept`, { method: 'POST' });
+    loadSessions();
+    loadDetail(id);
+  };
+
+  const cancel = async (id) => {
+    await fetch(`/api/review/${id}/cancel`, { method: 'POST' });
+    loadSessions();
+    loadDetail(id);
+  };
+
+  const autoApprove = async (id) => {
+    await fetch(`/api/review/${id}/auto-approve`, { method: 'POST' });
+    loadSessions();
+    loadDetail(id);
+  };
+
+  const runAnalysis = async () => {
+    if (!selectedId) return;
+    setAnalyzing(true);
+    setAnalysis(null);
+    try {
+      const res = await fetch(`/api/review/${selectedId}/analyze`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalysis(data);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setAnalysis({ error: err.message || 'Analysis failed' });
+      }
+    } catch (e) {
+      setAnalysis({ error: e.message });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const s = selectedSession;
 
   return (
-    <div className="review-page">
-      <div className="review-sidebar">
-        <form className="review-form" onSubmit={createSession}>
-          <h3>New Review</h3>
+    <div className="review-inbox">
+      <div className="review-inbox-header">
+        <h2>Review Inbox</h2>
+        <div className="review-inbox-toolbar">
+          <input
+            type="text"
+            placeholder="Search sessions..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="review-search-input"
+          />
+          <button className="btn btn-secondary" onClick={() => setShowCreate(!showCreate)}>
+            {showCreate ? 'Cancel' : '+ New'}
+          </button>
+        </div>
+      </div>
+
+      {showCreate && (
+        <form className="review-create-form animate-fade-in" onSubmit={createSession}>
           <div className="form-group">
             <label>Project</label>
-            <select
-              value={form.project}
-              onChange={(e) => setForm((f) => ({ ...f, project: e.target.value }))}
-            >
+            <select value={form.project} onChange={(e) => setForm(f => ({ ...f, project: e.target.value }))}>
               <option value="">Select project...</option>
-              {projects.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
+              {projects.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
           <div className="form-group">
             <label>Intent</label>
             <textarea
-              rows={3}
-              placeholder="Describe what you want to accomplish..."
+              rows={2}
+              placeholder="What should the review accomplish?"
               value={form.intent}
-              onChange={(e) => setForm((f) => ({ ...f, intent: e.target.value }))}
+              onChange={(e) => setForm(f => ({ ...f, intent: e.target.value }))}
             />
           </div>
           <button className="btn btn-primary" type="submit" disabled={!form.project || !form.intent.trim()}>
-            Create Session
+            Create & Start
           </button>
         </form>
+      )}
 
-        <div className="session-list">
-          <h3>Self-Evolve</h3>
-          {evolveStatus ? (
-            <>
-              <div className="evolve-status">Status: {evolveStatusLabel}</div>
-              <div className="evolve-status">PID: {evolveStatus?.pid || 'n/a'}</div>
-              <div className="evolve-status">Projects: {evolveProjectCount}</div>
-              <div className="action-buttons">
-                <button className="btn btn-primary" onClick={startEvolve} disabled={isEvolveRunning}>Start</button>
-                <button className="btn btn-reject" onClick={stopEvolve} disabled={!isEvolveRunning}>Stop</button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">Self-Evolve status unavailable</div>
-          )}
-        </div>
+      {groups.length === 0 && (
+        <div className="empty" style={{ margin: '40px 0' }}>No review sessions</div>
+      )}
 
-        <div className="session-list">
-          <h3>Self-Evolve History</h3>
-          {evolveHistory.length > 0 ? (
-            evolveHistory.slice(-5).reverse().map((entry) => (
-              <div key={`${entry.timestamp}-${entry.round}-${entry.action}`} className="session-item">
-                <span className="session-id">{entry.action}</span>
-                <span className="session-id">{entry.result}</span>
-              </div>
-            ))
-          ) : (
-            <div className="empty">No history yet</div>
-          )}
-        </div>
-
-        <div className="session-list">
-          <div className="session-list-header">
-            <h3>Sessions</h3>
-            <span className="session-list-count">{sessions.length} total</span>
-          </div>
-
-          <div className="session-search-wrapper">
-            <input
-              type="text"
-              placeholder="Search sessions..."
-              value={sessionQuery}
-              onChange={(e) => setSessionQuery(e.target.value)}
-              className="session-search-input"
-            />
-            {sessionQuery && (
-              <button
-                onClick={() => setSessionQuery('')}
-                className="session-search-clear"
-                type="button"
+      {groups.map(group => (
+        <div key={group.name} className="review-group">
+          <h3 className="review-group-title">{groupLabel(group.items.length, group.name)}</h3>
+          <div className="review-group-list">
+            {group.items.map(session => (
+              <div
+                key={session.sessionId}
+                className={`review-card ${session.sessionId === selectedId ? 'active' : ''}`}
+                onClick={() => selectSession(session.sessionId)}
               >
-                ✕
-              </button>
-            )}
-          </div>
-
-          <div className="session-list-body">
-            {filteredSessions.length === 0 ? (
-              <div className="empty">No sessions found</div>
-            ) : (
-              <>
-                {displaySessions.map((s) => (
-                  <button
-                    key={s.sessionId}
-                    className={`session-item ${s.sessionId === activeId ? 'active' : ''}`}
-                    onClick={() => selectSession(s.sessionId)}
-                    type="button"
-                  >
-                    <span className="session-id">{s.sessionId.slice(-8)}</span>
-                    <span className={`badge badge-${reviewBadgeClass(s.status)}`}>{s.status}</span>
-                  </button>
-                ))}
-                {hasMoreSessions && (
-                  <div className="show-more-container">
-                    <button
-                      className="show-more-btn show-more-btn-full"
-                      onClick={toggleSessions}
-                      type="button"
-                    >
-                      {showAllSessions ? '▲ Show Less' : `▼ Show All (${filteredSessions.length})`}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
+                <div className="review-card-top">
+                  <span className="review-card-project">{session.project || '—'}</span>
+                  <span className={`badge badge-${reviewBadgeClass(session.status)}`}>{session.status}</span>
+                </div>
+                <div className="review-card-intent">{session.intent || '—'}</div>
+                <div className="review-card-meta">
+                  <span>{session.sessionId.slice(-8)}</span>
+                  <span>{session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ''}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-      </div>
+      ))}
 
-      <div className="review-main">
-        {activeSession ? (
-          <>
-            <div className="review-header">
-              <h2>{activeSession.sessionId}</h2>
-              <span className={`badge badge-${reviewBadgeClass(activeSession.status)}`}>
-                {activeSession.status}
-              </span>
-              <div className="action-buttons">
-                {activeSession.status === 'idle' && (
-                  <button className="btn btn-primary" onClick={startReview}>
-                    Start Review
-                  </button>
-                )}
-                {canAcceptChanges && (
-                  <button className="btn btn-primary" onClick={() => runReviewAction('accept')}>
-                    Accept Changes
-                  </button>
-                )}
-                {canAutoApprove && (
-                  <button className="btn btn-secondary" onClick={() => runReviewAction('auto-approve')}>
-                    Auto-Approve
-                  </button>
-                )}
-                {canCancel && (
-                  <button className="btn btn-reject" onClick={() => runReviewAction('cancel')}>
-                    Cancel Session
-                  </button>
-                )}
+      {s && (
+        <div className="review-detail panel mt-24 animate-fade-in">
+          <div className="review-detail-header">
+            <div>
+              <h3>{s.project} — {s.intent}</h3>
+              <div className="muted" style={{ marginBottom: 0 }}>
+                {s.sessionId} · Created {new Date(s.createdAt).toLocaleString()}
+                {s.updatedAt && ` · Updated ${new Date(s.updatedAt).toLocaleString()}`}
+                {s.round > 0 && ` · Round ${s.round}`}
               </div>
             </div>
-            <ReviewChat
-              session={activeSession}
-              onApprove={approve}
-              onReject={reject}
-            />
-          </>
-        ) : (
-          <div className="empty">Create or select a review session</div>
-        )}
-      </div>
+            <div className="review-detail-actions">
+              {CAN_START.has(s.status) && (
+                <button className="btn btn-primary" onClick={() => startReview(s.sessionId)}>Start Review</button>
+              )}
+              {CAN_APPROVE.has(s.status) && (
+                <>
+                  <button className="btn btn-approve" onClick={() => approve(s.sessionId)}>Approve</button>
+                  <button className="btn btn-reject" onClick={() => reject(s.sessionId)}>Reject</button>
+                </>
+              )}
+              {s.status === 'dispatched' && (
+                <button className="btn btn-primary" onClick={() => accept(s.sessionId)}>Accept Changes</button>
+              )}
+              {['user_review', 'dispatched'].includes(s.status) && (
+                <button className="btn btn-secondary" onClick={() => autoApprove(s.sessionId)}>Auto-Approve</button>
+              )}
+              {CAN_CANCEL(s.status) && (
+                <button className="btn btn-reject" onClick={() => cancel(s.sessionId)}>Cancel</button>
+              )}
+              <span className={`badge badge-${reviewBadgeClass(s.status)}`}>{s.status}</span>
+            </div>
+          </div>
+
+          {/* ACP Analysis */}
+          {(CAN_APPROVE.has(s.status) || s.status === 'dispatched') && (
+            <div className="review-analysis-section">
+              <div className="review-analysis-header">
+                <h4>ACP Analysis</h4>
+                <button
+                  className="btn btn-secondary"
+                  onClick={runAnalysis}
+                  disabled={analyzing}
+                >
+                  {analyzing ? 'Analyzing...' : 'Analyze for Approval'}
+                </button>
+              </div>
+              {analysis && (
+                <div className="review-analysis-result animate-fade-in">
+                  {analysis.error ? (
+                    <div className="review-analysis-error">{analysis.error}</div>
+                  ) : (
+                    <>
+                      {analysis.summary && (
+                        <div className="review-analysis-block">
+                          <h5>Summary</h5>
+                          <p>{analysis.summary}</p>
+                        </div>
+                      )}
+                      {analysis.changes && analysis.changes.length > 0 && (
+                        <div className="review-analysis-block">
+                          <h5>Key Changes</h5>
+                          <ul>{analysis.changes.map((c, i) => <li key={i}>{c}</li>)}</ul>
+                        </div>
+                      )}
+                      {analysis.risks && analysis.risks.length > 0 && (
+                        <div className="review-analysis-block">
+                          <h5>Risks & Concerns</h5>
+                          <ul>{analysis.risks.map((r, i) => <li key={i}>{r}</li>)}</ul>
+                        </div>
+                      )}
+                      {analysis.recommendation && (
+                        <div className="review-analysis-block">
+                          <h5>Recommendation</h5>
+                          <p>{analysis.recommendation}</p>
+                        </div>
+                      )}
+                      {analysis.raw && (
+                        <details>
+                          <summary>Raw Analysis</summary>
+                          <pre className="review-analysis-raw">{analysis.raw}</pre>
+                        </details>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Session Content */}
+          <div className="review-detail-content">
+            {s.research && (s.research.codex || s.research.claude) && (
+              <details open className="review-detail-section">
+                <summary>Research</summary>
+                <div className="review-research-grid">
+                  {s.research.codex && (
+                    <div className="review-research-panel">
+                      <h5>Codex Analysis</h5>
+                      <pre>{s.research.codex}</pre>
+                    </div>
+                  )}
+                  {s.research.claude && (
+                    <div className="review-research-panel">
+                      <h5>Claude Analysis</h5>
+                      <pre>{s.research.claude}</pre>
+                    </div>
+                  )}
+                </div>
+              </details>
+            )}
+
+            {s.plan && (
+              <details open className="review-detail-section">
+                <summary>Implementation Plan</summary>
+                <pre className="review-plan-content">{s.plan}</pre>
+              </details>
+            )}
+
+            {s.reviews && s.reviews.length > 0 && (
+              <details open className="review-detail-section">
+                <summary>Reviews ({s.reviews.length} round{s.reviews.length > 1 ? 's' : ''})</summary>
+                {s.reviews.map(r => (
+                  <div key={r.round} className="review-round">
+                    <h5>Round {r.round}</h5>
+                    <div className="review-research-grid">
+                      {r.codex && (
+                        <div className="review-research-panel">
+                          <div className="review-reviewer">Codex</div>
+                          <pre>{r.codex}</pre>
+                          {r.codexIssues && r.codexIssues.length > 0 && (
+                            <div className="review-issues">
+                              {r.codexIssues.map((iss, i) => (
+                                <span key={i} className={`issue-badge ${iss.severity >= 2 ? 'sev-high' : 'sev-low'}`}>
+                                  P{iss.severity}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {r.claude && (
+                        <div className="review-research-panel">
+                          <div className="review-reviewer">Claude</div>
+                          <pre>{r.claude}</pre>
+                          {r.claudeIssues && r.claudeIssues.length > 0 && (
+                            <div className="review-issues">
+                              {r.claudeIssues.map((iss, i) => (
+                                <span key={i} className={`issue-badge ${iss.severity >= 2 ? 'sev-high' : 'sev-low'}`}>
+                                  P{iss.severity}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </details>
+            )}
+
+            {!s.research && !s.plan && (!s.reviews || s.reviews.length === 0) && (
+              <div className="muted" style={{ textAlign: 'center', padding: 24 }}>
+                Session is in <strong>{s.status}</strong> state. Content will appear here as the review progresses.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

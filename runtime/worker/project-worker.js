@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { getProject, heartbeatWorker, resolveHubRoot } from "../../server/services/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../../server/services/hub-queue.js";
 import { getJob, recordFinalizerResult } from "../../server/services/job-store.js";
+import { postGithubCommentWithGh, postGithubStatusComment } from "../../server/services/github-comments.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import {
   dispatchEnabled,
@@ -553,6 +554,23 @@ export class ProjectWorker {
     };
   }
 
+  async notifyTerminalStatus(entry, result) {
+    const projectId = entry.projectId;
+    const resolved = await this.resolveCompletedJob(projectId, result);
+    const job = resolved?.job || null;
+    if (!job?.sourceContext || job.sourceContext.type !== "github_issue") return null;
+    return postGithubStatusComment({
+      cpbRoot: this.cpbRoot,
+      project: projectId,
+      job,
+      postComment: (request) => postGithubCommentWithGh(request),
+    }).catch((error) => ({
+      status: "failed",
+      posted: false,
+      error: { message: error.message },
+    }));
+  }
+
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
     const useWorktree = Boolean(sourcePath && this.worktreeMode !== "off");
     const worktree = { worktreeMode: this.worktreeMode, useWorktree };
@@ -667,6 +685,9 @@ export class ProjectWorker {
       }
     }
     await updateEntry(this.hubRoot, entry.id, patch).catch(() => {});
+    if (finalStatus === "completed" || finalStatus === "failed") {
+      await this.notifyTerminalStatus(entry, result).catch(() => {});
+    }
 
     return { entry, result };
   }

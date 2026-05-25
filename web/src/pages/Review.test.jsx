@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import Review from './Review';
 
-// Mock useWebSocket hook
 vi.mock('../hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     connected: true,
@@ -11,20 +10,17 @@ vi.mock('../hooks/useWebSocket', () => ({
 }));
 
 const mockSessions = [
-  { sessionId: 'session-00000001', status: 'user_review' },
-  { sessionId: 'session-00000002', status: 'dispatched' },
-  { sessionId: 'session-00000003', status: 'expired' },
-  { sessionId: 'session-00000004', status: 'idle' },
-  { sessionId: 'session-00000005', status: 'user_review' },
-  { sessionId: 'session-00000006', status: 'dispatched' },
-  { sessionId: 'session-00000007', status: 'user_review' },
+  { sessionId: 'session-00000001', status: 'user_review', project: 'proj-a', intent: 'Fix auth bug' },
+  { sessionId: 'session-00000002', status: 'dispatched', project: 'proj-b', intent: 'Ship feature' },
+  { sessionId: 'session-00000003', status: 'expired', project: 'proj-c', intent: 'Old review' },
+  { sessionId: 'session-00000004', status: 'idle', project: 'proj-d', intent: 'Waiting task' },
+  { sessionId: 'session-00000005', status: 'user_review', project: 'proj-e', intent: 'Another review' },
+  { sessionId: 'session-00000006', status: 'researching', project: 'proj-f', intent: 'Active research' },
 ];
 
 describe('Review Page', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-
-    // Setup global fetch mock
     vi.spyOn(global, 'fetch').mockImplementation((url) => {
       if (url.includes('/api/projects')) {
         return Promise.resolve({
@@ -32,16 +28,10 @@ describe('Review Page', () => {
           json: () => Promise.resolve([{ name: 'proj-1' }, { name: 'proj-2' }]),
         });
       }
-      if (url.includes('/api/review/session-00000007')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ sessionId: 'session-00000007', status: 'user_review', history: [] }),
-        });
-      }
       if (url.includes('/api/review/session-')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ sessionId: 'session-00000001', status: 'user_review', history: [] }),
+          json: () => Promise.resolve({ sessionId: url.split('/').pop(), status: 'user_review', project: 'proj-a', intent: 'Fix auth bug', history: [] }),
         });
       }
       if (url.includes('/api/review')) {
@@ -50,111 +40,56 @@ describe('Review Page', () => {
           json: () => Promise.resolve(mockSessions),
         });
       }
-      if (url.includes('/api/evolve/status')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ running: false }),
-        });
-      }
-      if (url.includes('/api/evolve/history')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([]),
-        });
-      }
       return Promise.reject(new Error(`Unhandled mock url: ${url}`));
     });
   });
 
-  it('renders sessions list with capping', async () => {
+  it('renders sessions grouped by status', async () => {
     render(<Review />);
 
-    // Wait for sessions to load
     await waitFor(() => {
-      expect(screen.getByText('00000001')).toBeInTheDocument();
+      expect(screen.getByText(/Needs Action/)).toBeInTheDocument();
     });
 
-    // Defaults to capping to 5 items
-    expect(screen.getByText('00000001')).toBeInTheDocument();
-    expect(screen.getByText('00000005')).toBeInTheDocument();
-    expect(screen.queryByText('00000006')).not.toBeInTheDocument();
+    expect(screen.getByText(/In Progress/)).toBeInTheDocument();
+    expect(screen.getByText(/Done/)).toBeInTheDocument();
+    expect(screen.getByText(/Queued/)).toBeInTheDocument();
 
-    // Show All button should be rendered
-    const showAllBtn = screen.getByRole('button', { name: /Show All \(7\)/ });
-    expect(showAllBtn).toBeInTheDocument();
-
-    // Expand the list
-    fireEvent.click(showAllBtn);
-    await waitFor(() => {
-      expect(screen.getByText('00000006')).toBeInTheDocument();
-    });
-    expect(screen.getByText('00000007')).toBeInTheDocument();
-
-    // Collapse the list
-    const showLessBtn = screen.getByRole('button', { name: /Show Less/ });
-    fireEvent.click(showLessBtn);
-    await waitFor(() => {
-      expect(screen.queryByText('00000006')).not.toBeInTheDocument();
-    });
+    // Cards show project names
+    expect(screen.getByText('proj-a')).toBeInTheDocument();
+    expect(screen.getByText('proj-b')).toBeInTheDocument();
+    expect(screen.getByText('proj-f')).toBeInTheDocument();
   });
 
-  it('filters sessions list by query input and clears query', async () => {
+  it('filters sessions by search query', async () => {
     render(<Review />);
 
     await waitFor(() => {
-      expect(screen.getByText('00000001')).toBeInTheDocument();
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
     });
 
-    const searchInput = screen.getByPlaceholderText(/Search sessions.../i);
-    expect(searchInput).toBeInTheDocument();
-
-    // Filter by 'expired' status
+    const searchInput = screen.getByPlaceholderText(/Search sessions/i);
     fireEvent.change(searchInput, { target: { value: 'expired' } });
-    
-    await waitFor(() => {
-      expect(screen.getByText('00000003')).toBeInTheDocument();
-    });
-    expect(screen.queryByText('00000001')).not.toBeInTheDocument();
-
-    // Clear search using clear button
-    const clearBtn = screen.getByRole('button', { name: '✕' });
-    fireEvent.click(clearBtn);
 
     await waitFor(() => {
-      expect(screen.getByText('00000001')).toBeInTheDocument();
+      expect(screen.getByText('proj-c')).toBeInTheDocument();
     });
+    expect(screen.queryByText('proj-a')).not.toBeInTheDocument();
   });
 
-  it('retains active session in visible list when collapsed', async () => {
+  it('expands session detail on card click', async () => {
     render(<Review />);
 
     await waitFor(() => {
-      expect(screen.getByText('00000001')).toBeInTheDocument();
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
     });
 
-    // Expand the sessions
-    const showAllBtn = screen.getByRole('button', { name: /Show All \(7\)/ });
-    fireEvent.click(showAllBtn);
+    fireEvent.click(screen.getByText('proj-a'));
 
-    const session7Button = await waitFor(() => screen.getByRole('button', { name: /00000007/ }));
-    fireEvent.click(session7Button);
-
-    // Now collapse sessions list
-    const showLessBtn = screen.getByRole('button', { name: /Show Less/ });
-    fireEvent.click(showLessBtn);
-
-    // State retention logic: should show session 1-4, and selected session-00000007
     await waitFor(() => {
-      expect(screen.getByText('00000007')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
-    expect(screen.getByText('00000001')).toBeInTheDocument();
-    expect(screen.getByText('00000002')).toBeInTheDocument();
-    expect(screen.getByText('00000003')).toBeInTheDocument();
-    expect(screen.getByText('00000004')).toBeInTheDocument();
-
-    // Session 5 and 6 are omitted
-    expect(screen.queryByText('00000005')).not.toBeInTheDocument();
-    expect(screen.queryByText('00000006')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
   it('exposes review lifecycle actions for a dispatched session', async () => {
@@ -173,105 +108,22 @@ describe('Review Page', () => {
           json: () => Promise.resolve({
             sessionId: 'session-00000002',
             status: 'dispatched',
-            intent: 'Ship reviewed work',
+            project: 'proj-b',
+            intent: 'Ship feature',
             history: [],
           }),
         });
       }
-      if (url === '/api/review/session-00000002/cancel' || url === '/api/review/session-00000002/accept' || url === '/api/review/session-00000002/auto-approve') {
+      if (url === '/api/review/session-00000002/accept' || url === '/api/review/session-00000002/auto-approve') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ accepted: true, sessionId: 'session-00000002' }),
-        });
-      }
-      if (url === '/api/review') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([{ sessionId: 'session-00000002', status: 'dispatched' }]),
-        });
-      }
-      if (url.includes('/api/evolve/status')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ running: false }),
-        });
-      }
-      if (url.includes('/api/evolve/history')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([]),
-        });
-      }
-      return Promise.reject(new Error(`Unhandled mock url: ${url}`));
-    });
-
-    render(<Review />);
-
-    const sessionButton = await waitFor(() => screen.getByRole('button', { name: /00000002/ }));
-    fireEvent.click(sessionButton);
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { level: 2, name: 'session-00000002' })).toBeInTheDocument();
-    });
-
-    const cancelButton = screen.getByRole('button', { name: 'Cancel Session' });
-    const acceptButton = screen.getByRole('button', { name: 'Accept Changes' });
-    const autoApproveButton = screen.getByRole('button', { name: 'Auto-Approve' });
-
-    fireEvent.click(autoApproveButton);
-    await waitFor(() => {
-      expect(calls).toContainEqual({ url: '/api/review/session-00000002/auto-approve', method: 'POST' });
-    });
-
-    fireEvent.click(acceptButton);
-    await waitFor(() => {
-      expect(calls).toContainEqual({ url: '/api/review/session-00000002/accept', method: 'POST' });
-    });
-
-    fireEvent.click(cancelButton);
-    await waitFor(() => {
-      expect(calls).toContainEqual({ url: '/api/review/session-00000002/cancel', method: 'POST' });
-    });
-  });
-
-  it('does not show Accept Changes before a user_review session is dispatched', async () => {
-    render(<Review />);
-
-    const sessionButton = await waitFor(() => screen.getByRole('button', { name: /00000001/ }));
-    fireEvent.click(sessionButton);
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { level: 2, name: 'session-00000001' })).toBeInTheDocument();
-    });
-
-    expect(screen.queryByRole('button', { name: 'Accept Changes' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve & Dispatch' })).toBeInTheDocument();
-  });
-
-  it('renders self-evolve status using the API response contract', async () => {
-    global.fetch.mockImplementation((url) => {
-      if (url.includes('/api/projects')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([{ name: 'proj-1' }]),
+          json: () => Promise.resolve({ accepted: true }),
         });
       }
       if (url.includes('/api/review')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve([]),
-        });
-      }
-      if (url.includes('/api/evolve/status')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ running: true, pid: 4321, projects: ['proj-1', 'proj-2'] }),
-        });
-      }
-      if (url.includes('/api/evolve/history')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([]),
+          json: () => Promise.resolve([{ sessionId: 'session-00000002', status: 'dispatched', project: 'proj-b', intent: 'Ship feature' }]),
         });
       }
       return Promise.reject(new Error(`Unhandled mock url: ${url}`));
@@ -280,10 +132,60 @@ describe('Review Page', () => {
     render(<Review />);
 
     await waitFor(() => {
-      expect(screen.getByText('Status: running')).toBeInTheDocument();
+      expect(screen.getByText('proj-b')).toBeInTheDocument();
     });
-    expect(screen.getByText('PID: 4321')).toBeInTheDocument();
-    expect(screen.getByText('Projects: 2')).toBeInTheDocument();
-    expect(screen.queryByText(/Round:/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('proj-b'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Accept Changes' })).toBeInTheDocument();
+    });
+
+    const autoApproveButton = screen.getByRole('button', { name: 'Auto-Approve' });
+    fireEvent.click(autoApproveButton);
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000002/auto-approve', method: 'POST' });
+    });
+
+    const acceptButton = screen.getByRole('button', { name: 'Accept Changes' });
+    fireEvent.click(acceptButton);
+    await waitFor(() => {
+      expect(calls).toContainEqual({ url: '/api/review/session-00000002/accept', method: 'POST' });
+    });
+  });
+
+  it('does not show Accept Changes for user_review session', async () => {
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('proj-a'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: 'Accept Changes' })).not.toBeInTheDocument();
+  });
+
+  it('toggles create form with + New button', async () => {
+    render(<Review />);
+
+    await waitFor(() => {
+      expect(screen.getByText('proj-a')).toBeInTheDocument();
+    });
+
+    // Create form hidden initially
+    expect(screen.queryByPlaceholderText(/What should the review accomplish/)).not.toBeInTheDocument();
+
+    // Show form
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(screen.getByPlaceholderText(/What should the review accomplish/)).toBeInTheDocument();
+
+    // Hide form
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByPlaceholderText(/What should the review accomplish/)).not.toBeInTheDocument();
   });
 });

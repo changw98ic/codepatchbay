@@ -13,26 +13,26 @@ export default function ResourceMeter({ agents }) {
   });
 
   return (
-    <div style={{ padding: 12, border: '1px solid #333', borderRadius: 8, background: '#1a1a2e' }}>
-      <h4 style={{ margin: '0 0 8px', color: '#aaa', fontSize: 13 }}>Resource Utilization</h4>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div className="panel">
+      <h4>Resource Utilization</h4>
+      <div className="resource-row">
         {rows.map((r) => (
-          <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <span style={{ width: 60, color: '#bbb', textAlign: 'right' }}>{r.name}</span>
-            <div style={{ flex: 1, height: 8, background: '#2a2a4a', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{
-                width: `${Math.min(r.pct, 100)}%`,
-                height: '100%',
-                background: r.rateLimited ? '#f44336' : r.pct > 80 ? '#ff9800' : '#4caf50',
-                borderRadius: 4,
-                transition: 'width 0.3s ease',
-              }} />
+          <div key={r.name} className="resource-item">
+            <span className="resource-name">{r.name}</span>
+            <div className="resource-track">
+              <div
+                className="resource-fill"
+                style={{
+                  width: `${Math.min(r.pct, 100)}%`,
+                  background: r.rateLimited ? 'var(--error)' : r.pct > 80 ? 'var(--warning)' : 'var(--success)',
+                }}
+              />
             </div>
-            <span style={{ width: 50, color: '#888' }}>
+            <span className="resource-count">
               {r.active}/{r.limit}
             </span>
             {r.rateLimited && (
-              <span style={{ fontSize: 10, color: '#f44336' }}>RATE-LIMITED</span>
+              <span className="resource-flag">RATE-LIMITED</span>
             )}
           </div>
         ))}

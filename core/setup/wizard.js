@@ -1,0 +1,189 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+
+import { listSetupAgents } from "./agent-catalog.js";
+import { detectSetupEnvironment } from "./detect.js";
+import { createInstallPlan, executeInstallPlan } from "./install-plan.js";
+import { checkSetupAgentHealth } from "./health-check.js";
+import { getAuthConnectInstructions } from "../auth/connect.js";
+
+const SCHEMA_VERSION = 1;
+
+export function setupProfilePath(cpbRoot) {
+  return path.join(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd()), "cpb-task", "setup-profile.json");
+}
+
+async function writeAtomicJson(file, data) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await rename(tmp, file);
+}
+
+export async function readSetupProfile(cpbRoot) {
+  try {
+    return JSON.parse(await readFile(setupProfilePath(cpbRoot), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function byAgentId(catalog) {
+  return new Map(catalog.map((agent) => [agent.id, agent]));
+}
+
+function missing(snapshot, agent) {
+  return snapshot.agents?.[agent.id]?.installed !== true;
+}
+
+function selectRecommended(catalog, snapshot) {
+  return catalog.filter((agent) => agent.recommended && missing(snapshot, agent));
+}
+
+function selectNamed(catalog, names = []) {
+  const index = byAgentId(catalog);
+  return names.map((name) => {
+    const agent = index.get(name);
+    if (!agent) throw new Error(`Unknown setup agent: ${name}`);
+    return agent;
+  });
+}
+
+async function askForAgents(catalog, snapshot) {
+  const recommended = selectRecommended(catalog, snapshot);
+  if (!input.isTTY) return recommended;
+
+  const rl = createInterface({ input, output });
+  try {
+    const defaults = recommended.map((agent) => agent.id).join(",");
+    const answer = await rl.question(`Agents to install [${defaults || "none"}]: `);
+    const selected = (answer.trim() || defaults)
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    return selectNamed(catalog, selected);
+  } finally {
+    rl.close();
+  }
+}
+
+async function confirmPlan(plan) {
+  if (!input.isTTY) return true;
+  const rl = createInterface({ input, output });
+  try {
+    const answer = await rl.question(`Execute ${plan.agent.displayName} install plan: ${plan.displayCommand}? [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+function installationRecord(plan, result, error = null) {
+  return {
+    agentId: plan.agent.id,
+    method: plan.method,
+    status: error ? "failed" : "succeeded",
+    exitCode: error ? (Number.isInteger(error.code) ? error.code : null) : result?.code ?? 0,
+    error: error ? { message: error.message, code: error.code || null } : null,
+  };
+}
+
+function profileFromResult(result) {
+  const agents = {};
+  for (const agent of result.selectedAgents) {
+    const install = result.installations[agent.id] || null;
+    const health = result.health[agent.id] || null;
+    const auth = result.auth[agent.id] || null;
+    agents[agent.id] = {
+      displayName: agent.displayName,
+      installed: install?.status === "succeeded" || result.detected.agents?.[agent.id]?.installed === true,
+      installStatus: install?.status || (result.detected.agents?.[agent.id]?.installed ? "already-installed" : "skipped"),
+      healthStatus: health?.status || null,
+      auth: auth ? {
+        localSetupUrl: auth.localSetupUrl || null,
+        providerNativeCommand: auth.providerNativeCommand || null,
+      } : null,
+    };
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    selectedAgents: result.selectedAgents.map((agent) => agent.id),
+    mode: result.mode,
+    agents,
+  };
+}
+
+export async function runSetupWizard({
+  cpbRoot = process.env.CPB_ROOT || process.cwd(),
+  mode = "interactive",
+  agents = [],
+  detectFn = detectSetupEnvironment,
+  catalog = listSetupAgents(),
+  runInstallPlanFn = executeInstallPlan,
+  healthCheckFn = checkSetupAgentHealth,
+  authConnectFn = getAuthConnectInstructions,
+  confirmFn = confirmPlan,
+  stdio = "inherit",
+} = {}) {
+  const detected = await detectFn();
+  let selectedAgents;
+  if (agents.length > 0) selectedAgents = selectNamed(catalog, agents);
+  else if (mode === "recommended" || mode === "non-interactive") selectedAgents = selectRecommended(catalog, detected);
+  else selectedAgents = await askForAgents(catalog, detected);
+
+  const result = {
+    schemaVersion: SCHEMA_VERSION,
+    mode,
+    detected,
+    selectedAgents,
+    plans: {},
+    installations: {},
+    health: {},
+    auth: {},
+    executed: false,
+    profile: null,
+  };
+
+  for (const agent of selectedAgents) {
+    if (!missing(detected, agent)) {
+      result.installations[agent.id] = { agentId: agent.id, status: "already-installed" };
+      continue;
+    }
+
+    const plan = createInstallPlan({ agentId: agent.id, detected });
+    result.plans[agent.id] = plan;
+    const approved = mode === "interactive" ? await confirmFn(plan) : true;
+    if (!approved) {
+      result.installations[agent.id] = { agentId: agent.id, method: plan.method, status: "skipped" };
+      continue;
+    }
+    try {
+      const install = await runInstallPlanFn(plan, { cpbRoot, stdio });
+      result.installations[agent.id] = installationRecord(plan, install);
+      result.executed = true;
+    } catch (error) {
+      result.installations[agent.id] = installationRecord(plan, null, error);
+    }
+  }
+
+  for (const agent of selectedAgents) {
+    try {
+      result.health[agent.id] = await healthCheckFn(agent.id);
+    } catch (error) {
+      result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: error.message } };
+    }
+    try {
+      result.auth[agent.id] = authConnectFn(agent.id);
+    } catch (error) {
+      result.auth[agent.id] = { provider: { id: agent.id }, error: error.message };
+    }
+  }
+
+  result.profile = profileFromResult(result);
+  await writeAtomicJson(setupProfilePath(cpbRoot), result.profile);
+  return result;
+}

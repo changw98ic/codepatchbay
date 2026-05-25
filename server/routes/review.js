@@ -325,6 +325,119 @@ export async function reviewRoutes(fastify, opts) {
     notify({ type: "review:update", sessionId: session.sessionId, status: finalStatus, project: session.project, session: updated });
     return { accepted: true, merged, mergeFailed: !merged && Boolean(mergeError), sessionId: session.sessionId };
   });
+
+  // Analyze session for approval (ACP-triggered summary)
+  fastify.post("/review/:id/analyze", async (req) => {
+    const session = await getSession(req.cpbRoot, req.params.id);
+    if (!session) throw fastify.httpErrors.notFound("session not found");
+
+    // Build context sections from session data
+    const sections = [];
+    if (session.intent) sections.push(`## Intent\n${session.intent}`);
+    if (session.research?.codex) sections.push(`## Codex Research\n${session.research.codex.slice(0, 3000)}`);
+    if (session.research?.claude) sections.push(`## Claude Research\n${session.research.claude.slice(0, 3000)}`);
+    if (session.plan) sections.push(`## Implementation Plan\n${session.plan.slice(0, 4000)}`);
+
+    if (session.reviews && session.reviews.length > 0) {
+      const latest = session.reviews[session.reviews.length - 1];
+      if (latest.codex) sections.push(`## Codex Review (Round ${latest.round})\n${latest.codex.slice(0, 3000)}`);
+      if (latest.claude) sections.push(`## Claude Review (Round ${latest.round})\n${latest.claude.slice(0, 3000)}`);
+      const issues = [
+        ...(latest.codexIssues || []).map(i => `[Codex P${i.severity}] ${i.message || "issue"}`),
+        ...(latest.claudeIssues || []).map(i => `[Claude P${i.severity}] ${i.message || "issue"}`),
+      ];
+      if (issues.length > 0) sections.push(`## Issues Found\n${issues.join("\n")}`);
+    }
+
+    if (sections.length === 0) {
+      return { summary: "No content available yet for analysis.", changes: [], risks: [], recommendation: `Session is in ${session.status} state.` };
+    }
+
+    const prompt = `You are a code review analyst. Analyze the following review session and produce a JSON object.
+
+Project: ${session.project}
+Status: ${session.status}
+
+${sections.join("\n\n")}
+
+Respond with ONLY a JSON object (no markdown fences) with these fields:
+- "summary": one paragraph explaining what this review is about
+- "changes": array of strings describing key changes proposed
+- "risks": array of strings describing risks or concerns found
+- "recommendation": string with clear approve/reject advice and reasoning`;
+
+    // Run ACP agent to analyze
+    const scriptPath = path.join(req.cpbRoot, "runtime", "acp-client.mjs");
+    const env = buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_ACP_TIMEOUT_MS: "90000" });
+
+    const acpResult = await new Promise((resolve) => {
+      const child = spawn("node", [scriptPath, "--agent", "claude", "--cwd", req.cpbRoot], {
+        cwd: req.cpbRoot,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120000,
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+      child.stdin.write(prompt);
+      child.stdin.end();
+
+      const timer = setTimeout(() => { child.kill(); resolve({ error: "Analysis timed out" }); }, 120000);
+
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !stdout) {
+          resolve({ error: stderr.slice(-500) || `ACP exited with code ${code}` });
+        } else {
+          resolve({ output: stdout });
+        }
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({ error: err.message });
+      });
+    });
+
+    // Parse ACP response
+    if (acpResult.error) {
+      return { summary: `Analysis failed: ${acpResult.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
+    }
+
+    // Extract JSON from output (agent may wrap in markdown fences)
+    let parsed = null;
+    const rawOutput = acpResult.output || "";
+    const jsonMatch = rawOutput.match(/```json\s*([\s\S]*?)```/) || rawOutput.match(/\{[\s\S]*"summary"[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+      } catch { /* fall through */ }
+    }
+
+    if (parsed && parsed.summary) {
+      return {
+        summary: parsed.summary,
+        changes: Array.isArray(parsed.changes) ? parsed.changes : [],
+        risks: Array.isArray(parsed.risks) ? parsed.risks : [],
+        recommendation: parsed.recommendation || "",
+        raw: rawOutput,
+      };
+    }
+
+    // Fallback: return raw output as summary if JSON parse fails
+    return {
+      summary: rawOutput.slice(0, 500) || "Analysis produced no output.",
+      changes: [],
+      risks: [],
+      recommendation: "Review the raw analysis output for details.",
+      raw: rawOutput,
+    };
+  });
 }
 
 async function cancelRoute(req, reply, notify) {

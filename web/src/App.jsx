@@ -7,6 +7,7 @@ import Project from './pages/Project';
 import NewTask from './pages/NewTask';
 import Review from './pages/Review';
 import AgentBoard from './pages/AgentBoard';
+import ThemeToggle from './components/ThemeToggle';
 
 const navItems = [
   { to: '/', label: 'Dashboard' },
@@ -60,7 +61,10 @@ function AppContent() {
       <nav className="sidebar">
         <div className="sidebar-header">
           <h1>CodePatchbay</h1>
-          <StatusIndicator />
+          <div className="sidebar-controls">
+            <ThemeToggle />
+            <StatusIndicator />
+          </div>
         </div>
         <ul className="nav-list">
           {navItems.map(({ to, label }) => (

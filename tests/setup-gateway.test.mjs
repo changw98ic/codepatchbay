@@ -225,6 +225,125 @@ describe("setup gateway catalog", () => {
     assert.equal(result.checks.adapter.status, "timeout");
     assert.equal(result.checks.adapter.error.kind, "timeout");
   });
+
+  it("runs setup as an installer wizard and writes a setup profile", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-setup-wizard-"));
+    try {
+      const { runSetupWizard, readSetupProfile } = await import("../core/setup/wizard.js");
+      const catalog = [
+        {
+          id: "codex",
+          displayName: "OpenAI Codex CLI",
+          vendor: "OpenAI",
+          binary: "codex",
+          recommended: true,
+          roles: ["planner"],
+          capabilities: ["repo_inspect"],
+          sourceUrl: "https://example.invalid/codex",
+          install: {
+            npm: {
+              label: "npm",
+              command: `${process.execPath} -e "process.exit(0)"`,
+              sourceUrl: "https://example.invalid/codex",
+            },
+          },
+          auth: { connectCommand: "codex", statusCommand: "codex auth status" },
+        },
+        {
+          id: "claude",
+          displayName: "Claude Code",
+          vendor: "Anthropic",
+          binary: "claude",
+          recommended: true,
+          roles: ["executor"],
+          capabilities: ["file_edit"],
+          sourceUrl: "https://example.invalid/claude",
+          install: {
+            npm: {
+              label: "npm",
+              command: `${process.execPath} -e "process.exit(0)"`,
+              sourceUrl: "https://example.invalid/claude",
+            },
+          },
+          auth: { connectCommand: "claude", statusCommand: "claude doctor" },
+        },
+      ];
+      const detected = {
+        schemaVersion: 1,
+        generatedAt: "2026-05-25T00:00:00.000Z",
+        system: { platform: "darwin", arch: "arm64" },
+        tools: {
+          npm: { installed: true },
+          brew: { installed: false },
+        },
+        agents: {
+          codex: { installed: false, status: "missing" },
+          claude: { installed: false, status: "missing" },
+        },
+      };
+      const installed = [];
+      const result = await runSetupWizard({
+        cpbRoot: tmpRoot,
+        mode: "non-interactive",
+        agents: ["codex", "claude"],
+        detectFn: async () => detected,
+        catalog,
+        runInstallPlanFn: async (plan) => {
+          installed.push(plan.agent.id);
+          return { ok: true, code: 0 };
+        },
+        healthCheckFn: async (agentId) => ({ agent: { id: agentId }, status: "ready", checks: {} }),
+        authConnectFn: (agentId) => ({ provider: { id: agentId }, localSetupUrl: `http://127.0.0.1:3456/setup/auth/${agentId}` }),
+      });
+
+      assert.equal(result.executed, true);
+      assert.deepEqual(result.selectedAgents.map((agent) => agent.id), ["codex", "claude"]);
+      assert.deepEqual(installed, ["codex", "claude"]);
+      assert.equal(result.installations.codex.status, "succeeded");
+      assert.equal(result.health.claude.status, "ready");
+      assert.equal(result.auth.codex.localSetupUrl, "http://127.0.0.1:3456/setup/auth/codex");
+      assert.equal(result.profile.agents.codex.installed, true);
+
+      const profile = await readSetupProfile(tmpRoot);
+      assert.equal(profile.schemaVersion, 1);
+      assert.deepEqual(profile.selectedAgents, ["codex", "claude"]);
+      assert.equal(profile.agents.claude.healthStatus, "ready");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("recommended setup selects only missing recommended agents", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-setup-recommended-"));
+    try {
+      const { runSetupWizard } = await import("../core/setup/wizard.js");
+      const catalog = [
+        { id: "codex", displayName: "Codex", vendor: "OpenAI", binary: "codex", recommended: true, roles: [], capabilities: [], sourceUrl: "https://example.invalid/codex", install: { npm: { label: "npm", command: "npm i -g codex", sourceUrl: "https://example.invalid/codex" } } },
+        { id: "opencode", displayName: "OpenCode", vendor: "OpenCode", binary: "opencode", recommended: false, roles: [], capabilities: [], sourceUrl: "https://example.invalid/opencode", install: { npm: { label: "npm", command: "npm i -g opencode", sourceUrl: "https://example.invalid/opencode" } } },
+      ];
+      const result = await runSetupWizard({
+        cpbRoot: tmpRoot,
+        mode: "recommended",
+        detectFn: async () => ({
+          tools: { npm: { installed: true }, brew: { installed: false } },
+          agents: {
+            codex: { installed: false, status: "missing" },
+            opencode: { installed: false, status: "missing" },
+          },
+        }),
+        catalog,
+        runInstallPlanFn: async () => ({ ok: true, code: 0 }),
+        healthCheckFn: async (agentId) => ({ agent: { id: agentId }, status: "ready", checks: {} }),
+        authConnectFn: (agentId) => ({ provider: { id: agentId }, localSetupUrl: `http://127.0.0.1:3456/setup/auth/${agentId}` }),
+      });
+
+      assert.deepEqual(result.selectedAgents.map((agent) => agent.id), ["codex"]);
+      assert.equal(result.installations.codex.status, "succeeded");
+      assert.equal(result.installations.opencode, undefined);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("D40 manifest registry layout", () => {
