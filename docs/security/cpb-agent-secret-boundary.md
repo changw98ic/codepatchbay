@@ -12,6 +12,21 @@ explicit env allowlist:
 - **Provider credentials**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`.
 - Arbitrary `*_TOKEN`, `*_KEY`, `*_SECRET`, `DATABASE_URL`, and similar env vars are **not** forwarded.
 
+### ACP Pool Environment Snapshot
+
+The in-process ACP pool does not repeatedly consult the raw parent
+`process.env` while launching provider clients. At pool construction time CPB
+builds an allowlisted snapshot containing:
+- child-process runtime/provider keys from the same allowlist above
+- ACP pool controls such as `CPB_ACP_POOL_*`,
+  `CPB_ACP_POOL_MAX_REQUESTS`, `CPB_ACP_POOL_MAX_AGE_MS`,
+  `CPB_ACP_POOL_IDLE_MS`, and `CPB_ACP_RATE_LIMIT_BACKOFF_MS`
+
+Later mutations to the host process environment do not change an existing
+pool's client path, provider credentials, terminal policy, or pool limits.
+Arbitrary parent secrets such as `DATABASE_URL`, webhook secrets, and random
+tokens are excluded from this snapshot.
+
 ### Output Redaction
 
 All CPB output surfaces redact secrets before persistence or emission:
@@ -49,7 +64,7 @@ These boundaries remain outside CPB enforcement until OS/container sandboxing is
 
 3. **Network exfiltration**: CPB cannot prevent an agent from sending data over the network if the agent has network access.
 
-4. **In-process ACP pool**: The ACP pool runs in-process and has access to the full `process.env`, but adapter child processes receive only the allowlisted child environment. Provider credentials passed to adapter processes are required for API calls and cannot be fully isolated from the trusted CPB Node.js process itself.
+4. **Trusted CPB host process**: CPB's own Node.js server/CLI process remains inside the trusted computing base and may hold provider credentials in its inherited environment. The ACP pool launch logic uses an allowlisted construction-time snapshot, and adapter child processes receive only allowlisted env, but CPB cannot fully isolate secrets from its own trusted process without moving provider orchestration into a separate OS/container boundary.
 
 5. **Already-running processes**: Secrets already present in the environment of a running CPB server or ACP adapter process cannot be recalled.
 

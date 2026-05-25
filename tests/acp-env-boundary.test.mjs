@@ -67,6 +67,46 @@ printf ok
     }
   });
 
+  it("freezes ACP pool launch env at construction time", async () => {
+    const root = await tempDir("cpb-acp-env-snapshot-");
+    const clientA = path.join(root, "client-a.sh");
+    const clientB = path.join(root, "client-b.sh");
+    await writeExecutable(clientA, `#!/bin/sh
+env | sort > "$CPB_ROOT/env-snapshot.txt"
+cat >/dev/null
+printf ok-a
+`);
+    await writeExecutable(clientB, `#!/bin/sh
+env | sort > "$CPB_ROOT/env-mutated.txt"
+cat >/dev/null
+printf bad-b
+`);
+
+    const saved = { ...process.env };
+    try {
+      process.env.CPB_ACP_CLIENT = clientA;
+      process.env.OPENAI_API_KEY = "provider-at-construction";
+      process.env.DATABASE_URL = "postgres://construction-secret";
+
+      pool = new AcpPool({ cpbRoot: root, hubRoot: root, persistentProcesses: false });
+
+      process.env.CPB_ACP_CLIENT = clientB;
+      process.env.OPENAI_API_KEY = "provider-after-mutation";
+      process.env.RANDOM_TOKEN = "late-leak";
+
+      assert.equal(await pool.execute("codex", "prompt", root, 5000), "ok-a");
+
+      const envText = await readFile(path.join(root, "env-snapshot.txt"), "utf8");
+      assert.match(envText, /^OPENAI_API_KEY=provider-at-construction$/m);
+      assert.doesNotMatch(envText, /provider-after-mutation/);
+      assert.doesNotMatch(envText, /DATABASE_URL=/);
+      assert.doesNotMatch(envText, /RANDOM_TOKEN=/);
+      await assert.rejects(readFile(path.join(root, "env-mutated.txt"), "utf8"), /ENOENT/);
+    } finally {
+      process.env = saved;
+    }
+  });
+
   it("scrubs arbitrary env before launching persistent ACP adapter processes", async () => {
     const root = await tempDir("cpb-acp-env-adapter-");
     const agentPath = path.join(root, "fake-agent.mjs");

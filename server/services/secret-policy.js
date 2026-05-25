@@ -2,11 +2,13 @@
 // secret-path detection, and secret-artifact classification.
 
 export {
+  buildAcpPoolEnv,
   buildChildEnv,
   isAllowedChildEnvKey,
   RUNTIME_BASICS,
   CPB_RUNTIME_ENV,
   ACP_RUNTIME_ENV,
+  ACP_POOL_ENV,
   PROVIDER_CREDENTIALS,
   ALLOWED_ENV,
 } from "../../core/policy/child-env.js";

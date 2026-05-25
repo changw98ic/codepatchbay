@@ -108,6 +108,19 @@ describe("AcpPool session reuse", () => {
     assert.equal(codex.requestCount, 14, "total requestCount is 14");
   });
 
+  it("does not treat ACP pool control env as agent names", async () => {
+    process.env.CPB_ACP_POOL_MAX_REQUESTS = "3";
+    process.env.CPB_ACP_POOL_IDLE_MS = "5000";
+    const { runner } = fakeRunner(["ok"]);
+    pool = new AcpPool({ runner });
+
+    await pool.execute("codex", "prompt", "/tmp");
+
+    const status = pool.status();
+    assert.equal(status.pools.max_requests, undefined);
+    assert.equal(status.pools.idle_ms, undefined);
+  });
+
   it("exposes liveRequests, spawnCount, requestCount, recycleCount via status()", async () => {
     const { runner } = fakeRunner(["r1", "r2"]);
     pool = new AcpPool({ runner, maxSessionRequests: 0 });

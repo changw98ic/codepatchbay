@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
+  buildAcpPoolEnv,
   buildChildEnv,
   redactSecrets,
   detectSecretInput,
@@ -35,6 +36,38 @@ describe("buildChildEnv", () => {
     assert.strictEqual(env.RANDOM_TOKEN, undefined);
     assert.strictEqual(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
     assert.strictEqual(env.EXTRA_SECRET, undefined);
+  });
+});
+
+describe("buildAcpPoolEnv", () => {
+  it("keeps ACP pool controls without forwarding unrelated secrets", () => {
+    const env = buildAcpPoolEnv({
+      PATH: "/usr/bin",
+      CPB_ROOT: "/tmp/cpb",
+      CPB_ACP_CLIENT: "/tmp/acp-client",
+      CPB_ACP_POOL_CODEX: "3",
+      CPB_ACP_POOL_CUSTOM: "1",
+      CPB_ACP_POOL_MAX_REQUESTS: "10",
+      CPB_ACP_RATE_LIMIT_BACKOFF_MS: "1234",
+      OPENAI_API_KEY: "provider-secret",
+      DATABASE_URL: "postgres://user:pass@example/db",
+      RANDOM_TOKEN: "leak",
+      CPB_ACP_POOL_SECRET: "not-a-number-secret",
+      CPB_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+    });
+
+    assert.strictEqual(env.PATH, "/usr/bin");
+    assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.CPB_ACP_CLIENT, "/tmp/acp-client");
+    assert.strictEqual(env.CPB_ACP_POOL_CODEX, "3");
+    assert.strictEqual(env.CPB_ACP_POOL_CUSTOM, "1");
+    assert.strictEqual(env.CPB_ACP_POOL_MAX_REQUESTS, "10");
+    assert.strictEqual(env.CPB_ACP_RATE_LIMIT_BACKOFF_MS, "1234");
+    assert.strictEqual(env.OPENAI_API_KEY, "provider-secret");
+    assert.strictEqual(env.DATABASE_URL, undefined);
+    assert.strictEqual(env.RANDOM_TOKEN, undefined);
+    assert.strictEqual(env.CPB_ACP_POOL_SECRET, undefined);
+    assert.strictEqual(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
   });
 });
 
