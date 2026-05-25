@@ -3,6 +3,9 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import path from "node:path";
 import { defaultSddTrace, sddDir, sddQueueMetadata, sddTracePath } from "../../core/sdd/trace.js";
 
+const SDD_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
+const SDD_PLAN_MODES = new Set(["none", "light", "full", "parent"]);
+
 async function writeAtomic(filePath, content) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
@@ -107,6 +110,114 @@ function taskFromIssue(project, event) {
     "  - Trace: spec.md -> design.md -> tasks.md",
     "",
   ].join("\n");
+}
+
+function normalizeWorkflow(value, fallback = "sdd-standard") {
+  const workflow = String(value || "").trim();
+  return SDD_WORKFLOWS.has(workflow) ? workflow : fallback;
+}
+
+function normalizePlanMode(value, workflow = "sdd-standard") {
+  const planMode = String(value || "").trim();
+  if (SDD_PLAN_MODES.has(planMode)) return planMode;
+  if (workflow === "direct" || workflow === "blocked") return "none";
+  if (workflow === "complex") return "full";
+  if (workflow === "sdd-standard") return "parent";
+  return "light";
+}
+
+function parseJsonFrontmatter(markdown) {
+  const text = String(markdown || "");
+  const match = text.match(/^---(?:json)?\s*\n([\s\S]*?)\n---\s*(?:\n|$)/i);
+  if (!match) return { frontmatter: null, body: text };
+  try {
+    return {
+      frontmatter: JSON.parse(match[1].trim()),
+      body: text.slice(match[0].length),
+    };
+  } catch {
+    return { frontmatter: null, body: text.slice(match[0].length) };
+  }
+}
+
+function metadataValue(line) {
+  const match = String(line || "").match(/^\s*[-*]?\s*([^:]+):\s*(.+?)\s*$/);
+  if (!match) return null;
+  return {
+    key: match[1].trim().toLowerCase().replace(/\s+/g, ""),
+    value: match[2].trim(),
+  };
+}
+
+function parseChecklistTasks(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const tasks = [];
+  let current = null;
+  for (const line of lines) {
+    const checklist = line.match(/^\s*[-*]\s+\[[ xX]\]\s+(.+?)\s*$/);
+    if (checklist) {
+      current = { title: checklist[1].trim() };
+      tasks.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const meta = metadataValue(line);
+    if (!meta) continue;
+    if (meta.key === "workflow") current.workflow = meta.value;
+    else if (meta.key === "planmode") current.planMode = meta.value;
+    else if (meta.key === "id") current.id = meta.value;
+    else if (meta.key === "parentplan" || meta.key === "parentplanid") current.parentPlanId = meta.value;
+    else if (meta.key === "plangroup" || meta.key === "plangroupid") current.planGroupId = meta.value;
+    else if (meta.key === "cachekey" || meta.key === "plancachekey") current.planCacheKey = meta.value;
+  }
+  return tasks;
+}
+
+function normalizeTaskId(value, fallback) {
+  return String(value || fallback || "")
+    .replace(/[^a-zA-Z0-9_.:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || fallback;
+}
+
+function normalizeSddTask(task, index, project, event = {}, inherited = {}) {
+  const workflow = normalizeWorkflow(task.workflow, inherited.workflow || "sdd-standard");
+  const planMode = normalizePlanMode(task.planMode, workflow);
+  const title = clean(task.title || task.name || task.description, `SDD implementation task ${index + 1}`);
+  return {
+    id: normalizeTaskId(task.id, `sdd-${project}-issue-${event.issueNumber || "unlinked"}-task-${index + 1}`),
+    title,
+    workflow,
+    planMode,
+    status: clean(task.status, "queued"),
+    source: clean(task.source, "github_issue"),
+    issueNumber: event.issueNumber ?? null,
+    planGroupId: task.planGroupId || inherited.planGroupId || null,
+    parentPlanId: task.parentPlanId || inherited.parentPlanId || null,
+    planCacheKey: task.planCacheKey || task.cacheKey || inherited.planCacheKey || inherited.cacheKey || null,
+  };
+}
+
+function parseTasksMarkdown(markdown, project, event = {}) {
+  const { frontmatter, body } = parseJsonFrontmatter(markdown);
+  const inherited = {
+    planGroupId: frontmatter?.planGroupId || null,
+    parentPlanId: frontmatter?.parentPlanId || null,
+    planCacheKey: frontmatter?.planCacheKey || frontmatter?.cacheKey || null,
+  };
+  const rawTasks = Array.isArray(frontmatter?.tasks) && frontmatter.tasks.length > 0
+    ? frontmatter.tasks
+    : parseChecklistTasks(body);
+  const tasks = rawTasks
+    .map((task, index) => normalizeSddTask(task, index, project, event, inherited))
+    .filter((task) => task.title);
+  if (tasks.length > 0) return tasks;
+  return [normalizeSddTask({
+    id: `sdd-${project}-issue-${event.issueNumber || "unlinked"}-task-1`,
+    title: clean(event.title, "SDD implementation task"),
+    workflow: "sdd-standard",
+    planMode: "parent",
+  }, 0, project, event, inherited)];
 }
 
 function buildSddDrafterPrompt(project, event = {}) {
@@ -242,20 +353,14 @@ export async function bootstrapSddFromIssue(cpbRoot, project, event = {}, option
   await mkdir(path.dirname(generationEventPath), { recursive: true });
   await appendFile(generationEventPath, `${JSON.stringify(generationEvent)}\n`, "utf8");
 
-  const tasks = [{
-    id: `sdd-${project}-issue-${event.issueNumber || "unlinked"}-task-1`,
-    title: clean(event.title, "SDD implementation task"),
-    workflow: "sdd-standard",
-    planMode: "parent",
-    status: "queued",
-    source: "github_issue",
-    issueNumber: event.issueNumber ?? null,
-  }];
+  const tasks = parseTasksMarkdown(draft.tasks, project, event);
+  const requiresApproval = Boolean(draft.requiresApproval);
 
   return {
     trace,
     files,
     tasks,
+    requiresApproval,
     queueMetadata: {
       ...sddQueueMetadata(trace),
       sddBootstrap: {
@@ -269,6 +374,12 @@ export async function bootstrapSddFromIssue(cpbRoot, project, event = {}, option
           path: file.path,
           created: file.created,
         }])),
+      },
+      sddApproval: {
+        requiresApproval,
+        status: requiresApproval ? "waiting_approval" : "not_required",
+        source: draft.generator,
+        reason: requiresApproval ? "SDD drafter requested approval before execution" : null,
       },
       sddTasks: tasks,
     },

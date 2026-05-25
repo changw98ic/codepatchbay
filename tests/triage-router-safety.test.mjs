@@ -388,7 +388,134 @@ describe("SDD automatic GitHub entry", () => {
     }
   });
 
-  it("can draft SDD files through ACP and records an auditable generation event", async () => {
+  it("parses ACP checklist tasks into multiple SDD task queue entries", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-sdd-checklist-tasks-"));
+    const acpPool = {
+      execute: async () => JSON.stringify({
+        spec: "# Spec: ACP checkout\n\n## Problem\nGenerated from issue.\n",
+        design: "# Design: ACP checkout\n\n## Approach\nUse explicit trace.\n",
+        tasks: [
+          "# Tasks: ACP checkout",
+          "",
+          "- [ ] Model checkout acceptance",
+          "  - Workflow: sdd-standard",
+          "  - Plan mode: parent",
+          "- [ ] Implement checkout trace validation",
+          "  - Workflow: complex",
+          "  - Plan mode: full",
+          "",
+        ].join("\n"),
+        requiresApproval: false,
+      }),
+    };
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-sdd-checklist-tasks-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "sdd" },
+          issue: {
+            number: 452,
+            title: "Checkout checklist draft",
+            body: "Need a generated SDD task split.",
+            html_url: "https://github.com/my-org/frontend/issues/452",
+            labels: [{ name: "sdd" }],
+          },
+          sender: { login: "product-owner" },
+        },
+      });
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, matchGithubTrigger(event), {
+        sddDrafterMode: "acp",
+        sddAcpPool: acpPool,
+      });
+
+      assert.equal(result.queueEntry.metadata.sddTasks.length, 2);
+      assert.equal(result.sddTaskQueueEntries.length, 2);
+      assert.deepEqual(result.sddTaskQueueEntries.map((entry) => entry.metadata.sddTask.title), [
+        "Model checkout acceptance",
+        "Implement checkout trace validation",
+      ]);
+      assert.equal(result.sddTaskQueueEntries[0].metadata.workflow, "sdd-standard");
+      assert.equal(result.sddTaskQueueEntries[0].metadata.planMode, "parent");
+      assert.equal(result.sddTaskQueueEntries[1].metadata.workflow, "complex");
+      assert.equal(result.sddTaskQueueEntries[1].metadata.planMode, "full");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("parses JSON frontmatter tasks and carries parent plan metadata to children", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-sdd-json-tasks-"));
+    const acpPool = {
+      execute: async () => JSON.stringify({
+        spec: "# Spec: JSON checkout\n\n## Problem\nGenerated from issue.\n",
+        design: "# Design: JSON checkout\n\n## Approach\nUse explicit trace.\n",
+        tasks: [
+          "---json",
+          JSON.stringify({
+            planGroupId: "plan-group-checkout-452",
+            parentPlanId: "parent-plan-452",
+            planCacheKey: "cache-checkout-452",
+            tasks: [
+              { id: "task-model-contract", title: "Model checkout contract", workflow: "sdd-standard", planMode: "parent" },
+              { id: "task-implement-contract", title: "Implement checkout contract", workflow: "sdd-standard", planMode: "parent" },
+            ],
+          }, null, 2),
+          "---",
+          "# Tasks: JSON checkout",
+          "",
+        ].join("\n"),
+        requiresApproval: false,
+      }),
+    };
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-sdd-json-tasks-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "sdd" },
+          issue: {
+            number: 453,
+            title: "Checkout JSON draft",
+            body: "Need structured SDD task split.",
+            html_url: "https://github.com/my-org/frontend/issues/453",
+            labels: [{ name: "sdd" }],
+          },
+          sender: { login: "product-owner" },
+        },
+      });
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, matchGithubTrigger(event), {
+        sddDrafterMode: "acp",
+        sddAcpPool: acpPool,
+      });
+
+      assert.equal(result.queueEntry.metadata.sddTasks.length, 2);
+      assert.deepEqual(result.queueEntry.metadata.sddTasks.map((task) => task.id), [
+        "task-model-contract",
+        "task-implement-contract",
+      ]);
+      for (const taskEntry of result.sddTaskQueueEntries) {
+        assert.equal(taskEntry.metadata.sddTask.planGroupId, "plan-group-checkout-452");
+        assert.equal(taskEntry.metadata.sddTask.parentPlanId, "parent-plan-452");
+        assert.equal(taskEntry.metadata.sddTask.planCacheKey, "cache-checkout-452");
+        assert.equal(taskEntry.metadata.parentPlanId, "parent-plan-452");
+        assert.equal(taskEntry.metadata.planGroupId, "plan-group-checkout-452");
+        assert.equal(taskEntry.metadata.planCacheKey, "cache-checkout-452");
+      }
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("can draft SDD files through ACP and blocks the queue when approval is required", async () => {
     const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-sdd-acp-draft-"));
     let acpCalls = 0;
     const acpPool = {
@@ -429,6 +556,10 @@ describe("SDD automatic GitHub entry", () => {
       });
 
       assert.equal(acpCalls, 1);
+      assert.equal(result.queueEntry.status, "blocked");
+      assert.equal(result.queueEntry.metadata.sddApproval.requiresApproval, true);
+      assert.equal(result.queueEntry.metadata.sddApproval.status, "waiting_approval");
+      assert.equal(result.sddTaskQueueEntries.length, 0);
       const generation = result.queueEntry.metadata.sddBootstrap.generationEvent;
       assert.equal(generation.type, "sdd_generation_event");
       assert.equal(generation.generator, "acp");

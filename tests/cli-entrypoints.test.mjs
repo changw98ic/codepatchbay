@@ -90,6 +90,42 @@ test("cpb unknown command exits non-zero", async () => {
   assert.match(result.stderr + result.stdout, /Unknown command/);
 });
 
+test("cpb run parses plan-mode and triage flags without folding them into the task", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-run-planmode-triage-"));
+  try {
+    const result = await runNode([
+      "./cpb",
+      "run",
+      "blocked approval",
+      "--project",
+      "demo",
+      "--workflow",
+      "blocked",
+      "--plan-mode",
+      "none",
+      "--triage",
+      "none",
+    ], {
+      env: { CPB_ROOT: tmp, CPB_USE_WORKTREE: "0" },
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const eventDir = path.join(tmp, "cpb-task", "events", "demo");
+    const [eventFile] = await readdir(eventDir);
+    const events = (await readFile(path.join(eventDir, eventFile), "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    const jobCreated = events.find((event) => event.type === "job_created");
+    assert.equal(jobCreated.task, "blocked approval");
+    assert.equal(jobCreated.workflow, "blocked");
+    assert.equal(jobCreated.planMode, "none");
+    assert.equal(jobCreated.sourceContext?.triageMode, "none");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("cpb release list is routed", async () => {
   const result = await runNode(["./cpb", "release", "list", "--json"]);
   assert.equal(result.code, 0);

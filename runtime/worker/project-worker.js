@@ -114,6 +114,11 @@ function sourceContextFromQueueEntry(entry) {
       failedJobId: metadata.originJobId ?? null,
       failureArtifact: metadata.failureArtifact ?? null,
       sddTrace: metadata.sddTrace ?? null,
+      sddTask: metadata.sddTask ?? null,
+      taskId: metadata.sddTask?.id ?? metadata.taskId ?? null,
+      planGroupId: metadata.planGroupId ?? metadata.sddTask?.planGroupId ?? null,
+      parentPlanId: metadata.parentPlanId ?? metadata.sddTask?.parentPlanId ?? null,
+      planCacheKey: metadata.planCacheKey ?? metadata.sddTask?.planCacheKey ?? null,
       contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? null,
       contextPack: metadata.contextPack ?? null,
     };
@@ -136,6 +141,11 @@ function sourceContextFromQueueEntry(entry) {
       issueUrl: metadata.issueUrl ?? null,
       repo: metadata.repo ?? null,
       sddTrace: metadata.sddTrace ?? null,
+      sddTask: metadata.sddTask ?? null,
+      taskId: metadata.sddTask?.id ?? metadata.taskId ?? null,
+      planGroupId: metadata.planGroupId ?? metadata.sddTask?.planGroupId ?? null,
+      parentPlanId: metadata.parentPlanId ?? metadata.sddTask?.parentPlanId ?? null,
+      planCacheKey: metadata.planCacheKey ?? metadata.sddTask?.planCacheKey ?? null,
       contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? null,
       contextPack: metadata.contextPack ?? null,
     };
@@ -630,6 +640,7 @@ export class ProjectWorker {
     }
     const finalizer = await this._finalizerFn({
       cpbRoot: this.cpbRoot,
+      hubRoot: this.hubRoot,
       project: projectId,
       entry,
       job,

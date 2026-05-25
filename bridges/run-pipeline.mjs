@@ -58,6 +58,7 @@ import {
 import { resolveParentPlanCache, writeParentPlanCache } from "../server/services/plan-cache.js";
 
 const PLAN_MODES = new Set(["auto", "none", "light", "full", "parent"]);
+const TRIAGE_MODES = new Set(["auto", "rules", "acp", "none"]);
 
 // ─── CLI arg parsing ───
 
@@ -82,7 +83,7 @@ function parseArgs(argv) {
   const task = options.get("--task");
 
   if (!project || !task) {
-    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|direct|complex|sdd-standard|blocked] [--plan-mode auto|none|light|full|parent]");
+    throw new Error("Usage: node bridges/run-pipeline.mjs --project <name> --task \"<desc>\" [--source-path <repo>] [--max-retries N] [--timeout-min M] [--workflow standard|direct|complex|sdd-standard|blocked] [--plan-mode auto|none|light|full|parent] [--triage auto|rules|acp|none]");
   }
 
   if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
@@ -99,6 +100,10 @@ function parseArgs(argv) {
   if (!PLAN_MODES.has(planMode)) {
     throw new Error(`invalid planMode: ${planMode}`);
   }
+  const triageMode = options.get("--triage") || null;
+  if (triageMode && !TRIAGE_MODES.has(triageMode)) {
+    throw new Error(`invalid triage: ${triageMode}`);
+  }
 
   const jobIdOverride = options.get("--job-id") || null;
   const dispatchId = options.get("--dispatch-id") || null;
@@ -107,7 +112,7 @@ function parseArgs(argv) {
   const uiLaneReason = options.get("--ui-lane-reason") || "";
   const teamPolicyJson = options.get("--team-policy-json") || null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, planMode, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
+  return { project, task, maxRetries, timeoutMin, workflow, planMode, triageMode, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -714,6 +719,7 @@ export async function runPipeline({
   timeoutMin = 0,
   workflow = "standard",
   planMode = "auto",
+  triageMode = null,
   jobIdOverride = null,
   dispatchId: providedDispatchId = null,
   acpProfile = null,
@@ -732,6 +738,7 @@ export async function runPipeline({
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
   process.env.CPB_WORKFLOW = workflow;
+  if (triageMode) process.env.CPB_TRIAGE_MODE = triageMode;
 
   // ACP lane resolution (issue #62)
   const lane = resolveAcpLane({ profile: acpProfile || process.env.CPB_ACP_LAUNCH_PROFILE, uiLane: acpProfile === "ui", uiLaneReason });
@@ -909,7 +916,13 @@ export async function runPipeline({
   }
 
   // Create job
-  const sourceContext = buildSourceContext();
+  const baseSourceContext = buildSourceContext();
+  const sourceContext = triageMode
+    ? {
+        ...(baseSourceContext || { type: "cli" }),
+        triageMode,
+      }
+    : baseSourceContext;
   let parentPlanCache = null;
   if (planDecision.planMode === "parent") {
     parentPlanCache = await resolveParentPlanCache(cpbRoot, { project, task, sourceContext });
