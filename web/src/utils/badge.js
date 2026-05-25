@@ -2,6 +2,13 @@ const REVIEW_STATUS_MAP = {
   user_review: 'running',
   dispatched: 'completed',
   expired: 'failed',
+  merge_failed: 'failed',
+  researching: 'running',
+  planning: 'running',
+  reviewing: 'running',
+  revising: 'running',
+  completed: 'completed',
+  cancelled: 'blocked',
 };
 
 export function reviewBadgeClass(status) {
