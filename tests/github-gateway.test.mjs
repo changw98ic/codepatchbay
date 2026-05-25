@@ -1052,7 +1052,7 @@ describe("GitHub draft PR creation", () => {
     }
   });
 
-  it("rejects direct no-plan protected diffs and requeues them as complex/full", async () => {
+  async function finalizeProtectedAuthDiff(route) {
     const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-finalizer-route-guard-"));
     const cpbRoot = path.join(tmpRoot, "cpb");
     const hubRoot = path.join(tmpRoot, "hub");
@@ -1068,7 +1068,8 @@ describe("GitHub draft PR creation", () => {
       await writeFile(path.join(sourcePath, "README.md"), "hello\n", "utf8");
       await git(sourcePath, ["add", "README.md"]);
       await git(sourcePath, ["commit", "-m", "initial"]);
-      await git(sourcePath, ["worktree", "add", "-b", "cpb/direct-docs", worktreePath]);
+      const branch = `cpb/${route.workflow}-${route.planMode}`;
+      await git(sourcePath, ["worktree", "add", "-b", branch, worktreePath]);
       await mkdir(path.join(worktreePath, "server", "auth"), { recursive: true });
       await writeFile(path.join(worktreePath, "server", "auth", "session.js"), "export const rotate = true;\n", "utf8");
       await git(worktreePath, ["add", "server/auth/session.js"]);
@@ -1077,8 +1078,8 @@ describe("GitHub draft PR creation", () => {
       const created = await createJob(cpbRoot, {
         project: "frontend",
         task: "Docs cleanup",
-        workflow: "direct",
-        planMode: "none",
+        workflow: route.workflow,
+        planMode: route.planMode,
         sourceContext: {
           type: "github_issue",
           repo: "my-org/frontend",
@@ -1088,7 +1089,7 @@ describe("GitHub draft PR creation", () => {
       });
       await recordWorktreeCreated(cpbRoot, "frontend", created.jobId, {
         worktree: worktreePath,
-        branch: "cpb/direct-docs",
+        branch,
         baseBranch: "main",
       });
       const completed = await completeJob(cpbRoot, "frontend", created.jobId);
@@ -1101,11 +1102,11 @@ describe("GitHub draft PR creation", () => {
           issueNumber: 502,
           issueUrl: "https://github.com/my-org/frontend/issues/502",
           repo: "my-org/frontend",
-          workflow: "direct",
-          planMode: "none",
+          workflow: route.workflow,
+          planMode: route.planMode,
           routing: {
-            effectiveRoute: { workflow: "direct", planMode: "none", reviewer: false },
-            effective: { workflow: "direct", planMode: "none", reviewer: false },
+            effectiveRoute: route,
+            effective: route,
           },
         },
       });
@@ -1120,6 +1121,21 @@ describe("GitHub draft PR creation", () => {
         mode: "local",
       });
 
+      const entries = await listQueue(hubRoot, { projectId: "frontend" });
+      return { result, entries, queueEntry };
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  }
+
+  for (const route of [
+    { workflow: "direct", planMode: "none", reviewer: false },
+    { workflow: "standard", planMode: "light", reviewer: false },
+    { workflow: "sdd-standard", planMode: "parent", reviewer: false },
+  ]) {
+    it(`rejects ${route.workflow}/${route.planMode} protected diffs and requeues them as complex/full`, async () => {
+      const { result, entries, queueEntry } = await finalizeProtectedAuthDiff(route);
+
       assert.equal(result.ok, false);
       assert.equal(result.status, "rejected");
       assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
@@ -1127,7 +1143,6 @@ describe("GitHub draft PR creation", () => {
       assert.equal(result.requeuedPlanMode, "full");
       assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
 
-      const entries = await listQueue(hubRoot, { projectId: "frontend" });
       const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
       assert.ok(upgraded, "expected a complex/full requeue entry");
       assert.equal(upgraded.status, "pending");
@@ -1138,9 +1153,19 @@ describe("GitHub draft PR creation", () => {
       assert.equal(upgraded.metadata.supersedesQueueEntryId, queueEntry.id);
       assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
       assert.ok(upgraded.metadata.finalDiffGuard.protectedScopes.some((scope) => scope.scope === "auth"));
-    } finally {
-      await rm(tmpRoot, { recursive: true, force: true });
-    }
+    });
+  }
+
+  it("allows complex/full reviewer protected diffs without another routing upgrade", async () => {
+    const { result, entries, queueEntry } = await finalizeProtectedAuthDiff({
+      workflow: "complex",
+      planMode: "full",
+      reviewer: true,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, "finalized");
+    assert.equal(entries.filter((entry) => entry.id !== queueEntry.id).length, 0);
   });
 });
 
