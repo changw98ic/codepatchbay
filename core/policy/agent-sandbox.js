@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 const VALID_MODES = new Set(["off", "best-effort", "required", "strict"]);
@@ -71,6 +72,56 @@ function uniqueExistingRoots(values, cwd) {
     }
   }
   return out;
+}
+
+function uniqueRoots(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    if (!value) continue;
+    const resolved = path.resolve(String(value));
+    if (!seen.has(resolved)) {
+      seen.add(resolved);
+      out.push(resolved);
+    }
+  }
+  return out;
+}
+
+function executableReadRoots(command, env = {}, cwd = process.cwd()) {
+  const commandText = String(command || "");
+  if (!commandText) return [];
+
+  const candidates = [];
+  if (commandText.includes("/") || path.isAbsolute(commandText)) {
+    candidates.push(path.resolve(cwd, commandText));
+  } else {
+    for (const dir of String(env.PATH || "").split(path.delimiter)) {
+      if (!dir) continue;
+      const candidate = path.resolve(cwd, dir, commandText);
+      if (existsSync(candidate)) candidates.push(candidate);
+    }
+  }
+
+  const roots = [];
+  for (const candidate of candidates) {
+    roots.push(path.dirname(candidate));
+    if (existsSync(candidate)) {
+      try {
+        roots.push(path.dirname(realpathSync(candidate)));
+      } catch {}
+    }
+  }
+  return uniqueRoots(roots);
+}
+
+function withExecutableReadRoots(policy, command, env, cwd) {
+  if (!policy.enabled || policy.provider === "custom") return policy;
+  const readRoots = uniqueRoots([
+    ...policy.readRoots,
+    ...executableReadRoots(command, env, cwd),
+  ]);
+  return { ...policy, readRoots };
 }
 
 export function resolveAgentSandboxPolicy(env = {}, { cwd = process.cwd(), platform = process.platform, probe = defaultProbe } = {}) {
@@ -192,7 +243,12 @@ function bwrapArgs(policy, command, args, cwd) {
 export function buildAgentSandboxLaunch(command, args = [], options = {}) {
   const env = options.env || {};
   const cwd = options.cwd || process.cwd();
-  const policy = resolveAgentSandboxPolicy(env, options);
+  const policy = withExecutableReadRoots(
+    resolveAgentSandboxPolicy(env, options),
+    command,
+    env,
+    cwd,
+  );
   if (!policy.enabled) {
     if (policy.mode === "required" || policy.mode === "strict") {
       throw new Error(`CPB_AGENT_SANDBOX_REQUIRED: ${policy.reason || "agent sandbox is required but unavailable"}`);

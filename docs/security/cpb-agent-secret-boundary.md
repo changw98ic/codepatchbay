@@ -36,11 +36,19 @@ subprocess denial, so `strict` on Linux requires a site-managed wrapper.
 The default filesystem roots are the job working directory, temporary
 directories, explicit `CODEX_HOME`/XDG roots, and paths listed in
 `CPB_AGENT_SANDBOX_ALLOW_READ` or `CPB_AGENT_SANDBOX_ALLOW_WRITE`; CPB does not
-allow the whole user home directory by default. `CPB_AGENT_SANDBOX_COMMAND` can
-point at a site-managed wrapper; CPB appends the real command and args after any
-optional `CPB_AGENT_SANDBOX_ARGS`. `required` and `strict` modes are the only
-modes that make provider-internal filesystem, subprocess, and network
-restrictions part of the enforced launch contract.
+allow the whole user home directory by default. For built-in sandbox providers,
+CPB also adds the resolved executable's containing directory as a read root so
+provider CLIs installed outside system paths can start without broad home
+access. `CPB_AGENT_SANDBOX_COMMAND` can point at a site-managed wrapper; CPB
+appends the real command and args after any optional `CPB_AGENT_SANDBOX_ARGS`.
+`required` and `strict` modes are the only modes that make provider-internal
+filesystem, subprocess, and network restrictions part of the enforced launch
+contract.
+
+`cpb doctor` reports the sandbox posture as structured evidence. By default it
+does not launch a live sandbox probe. Set `CPB_AGENT_SANDBOX_SELF_TEST=1` to make
+doctor run a minimal sandboxed Node process and fail the self-test check if the
+configured sandbox cannot execute commands.
 
 ### ACP Pool Environment Snapshot
 

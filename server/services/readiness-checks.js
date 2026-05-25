@@ -23,6 +23,10 @@ import { runtimeDataPath } from "./runtime-root.js";
 import { sanitizeProviderReason } from "./acp-pool.js";
 import { scanHubPollution } from "./project-pollution.js";
 import {
+  buildAgentSandboxLaunch,
+  resolveAgentSandboxPolicy,
+} from "../../core/policy/agent-sandbox.js";
+import {
   resolveReleaseStoreRoot,
   listReleases,
   inspectCurrentRelease,
@@ -519,6 +523,152 @@ async function checkHubProjectPollution(hubRoot) {
   }
 }
 
+export function buildAgentSandboxReadinessChecks({
+  env = process.env,
+  cwd = process.cwd(),
+  platform = process.platform,
+  probe,
+} = {}) {
+  let policy;
+  try {
+    policy = resolveAgentSandboxPolicy(env, { cwd, platform, probe });
+  } catch (e) {
+    return [error("agent-sandbox-posture", "sandbox", `Agent sandbox policy invalid: ${e.message}`, {
+      details: { error: e.message },
+      remediation: "Fix CPB_AGENT_SANDBOX_* environment variables.",
+    })];
+  }
+
+  const details = {
+    mode: policy.mode,
+    enabled: policy.enabled,
+    provider: policy.provider,
+    network: policy.network,
+    subprocess: policy.subprocess,
+    reason: policy.reason || null,
+  };
+
+  if (policy.enabled && (policy.mode === "required" || policy.mode === "strict")) {
+    return [ok("agent-sandbox-posture", "sandbox", `Agent sandbox ${policy.mode} via ${policy.provider}`, { details })];
+  }
+
+  if (policy.mode === "required" || policy.mode === "strict") {
+    return [error("agent-sandbox-posture", "sandbox", `Agent sandbox ${policy.mode} is not enforceable`, {
+      details,
+      remediation: policy.reason || "Install a supported sandbox provider or configure CPB_AGENT_SANDBOX_COMMAND.",
+    })];
+  }
+
+  if (policy.enabled) {
+    return [warn("agent-sandbox-posture", "sandbox", `Agent sandbox ${policy.mode} via ${policy.provider} is not fail-closed`, {
+      details,
+      remediation: "Use CPB_AGENT_SANDBOX=required or CPB_AGENT_SANDBOX=strict for fail-closed enforcement.",
+    })];
+  }
+
+  return [warn("agent-sandbox-posture", "sandbox", "Agent process sandbox is off", {
+    details,
+    remediation: "Set CPB_AGENT_SANDBOX=required or CPB_AGENT_SANDBOX=strict, and configure CPB_AGENT_SANDBOX_COMMAND if no built-in provider fits this host.",
+  })];
+}
+
+export async function runAgentSandboxSelfTestCheck({
+  env = process.env,
+  cwd = process.cwd(),
+  platform = process.platform,
+  probe,
+  timeout = SUBPROCESS_TIMEOUT_MS,
+} = {}) {
+  if (!["1", "true", "yes"].includes(String(env.CPB_AGENT_SANDBOX_SELF_TEST || "").toLowerCase())) {
+    return skipped("agent-sandbox-self-test", "sandbox", "Agent sandbox live self-test not requested", {
+      details: { reason: "set CPB_AGENT_SANDBOX_SELF_TEST=1 to run" },
+      remediation: "Run with CPB_AGENT_SANDBOX_SELF_TEST=1 after configuring CPB_AGENT_SANDBOX=required or strict.",
+    });
+  }
+
+  let policy;
+  try {
+    policy = resolveAgentSandboxPolicy(env, { cwd, platform, probe });
+  } catch (e) {
+    return error("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test cannot resolve policy: ${e.message}`, {
+      details: { error: e.message },
+      remediation: "Fix CPB_AGENT_SANDBOX_* environment variables.",
+    });
+  }
+
+  if (!policy.enabled) {
+    const failClosedRequested = policy.mode === "required" || policy.mode === "strict";
+    const make = failClosedRequested ? error : warn;
+    const message = failClosedRequested
+      ? "Agent sandbox live self-test unavailable because sandbox is not enforceable"
+      : "Agent sandbox live self-test skipped because sandbox is not enabled";
+    return make("agent-sandbox-self-test", "sandbox", message, {
+      details: {
+        mode: policy.mode,
+        reason: policy.reason || null,
+      },
+      remediation: "Set CPB_AGENT_SANDBOX=required or strict and ensure a supported provider is available.",
+    });
+  }
+
+  let launch;
+  try {
+    launch = buildAgentSandboxLaunch(
+      process.execPath,
+      ["-e", "process.stdout.write('cpb-agent-sandbox-self-test')"],
+      { env, cwd, platform, probe },
+    );
+  } catch (e) {
+    return error("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test could not launch: ${e.message}`, {
+      details: {
+        mode: policy.mode,
+        provider: policy.provider,
+        error: e.message,
+      },
+      remediation: "Install/configure a sandbox provider or use CPB_AGENT_SANDBOX_COMMAND.",
+    });
+  }
+
+  try {
+    const result = await execFileAsync(launch.command, launch.args, {
+      cwd,
+      env,
+      timeout,
+    });
+    const stdout = String(result.stdout || "");
+    if (!stdout.includes("cpb-agent-sandbox-self-test")) {
+      return error("agent-sandbox-self-test", "sandbox", "Agent sandbox live self-test produced unexpected output", {
+        details: {
+          mode: launch.sandbox.mode,
+          provider: launch.sandbox.provider,
+          stdout,
+        },
+        remediation: "Inspect the configured sandbox wrapper and provider command execution path.",
+      });
+    }
+    return ok("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test passed via ${launch.sandbox.provider}`, {
+      details: {
+        mode: launch.sandbox.mode,
+        provider: launch.sandbox.provider,
+        command: launch.command,
+        exitCode: 0,
+      },
+    });
+  } catch (e) {
+    return error("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test failed: ${e.message}`, {
+      details: {
+        mode: launch.sandbox?.mode || policy.mode,
+        provider: launch.sandbox?.provider || policy.provider,
+        command: launch.command,
+        exitCode: e.code ?? null,
+        signal: e.signal ?? null,
+        stderr: e.stderr ? String(e.stderr) : undefined,
+      },
+      remediation: "Run cpb doctor with the same CPB_AGENT_SANDBOX_* env and inspect the sandbox provider/wrapper logs.",
+    });
+  }
+}
+
 // --- Orchestrator ---
 
 async function checkServerDeps(cpbRoot) {
@@ -604,8 +754,8 @@ async function checkGithubReadiness(hubRoot) {
   return checks;
 }
 
-export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } = {}) {
-  const resolvedCpbRoot = path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd());
+export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env } = {}) {
+  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
   let setup = null;
   let setupChecks = [];
@@ -646,8 +796,11 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     ];
   }
 
-  const [githubChecks, ...results] = await Promise.all([
+  const sandboxChecks = buildAgentSandboxReadinessChecks({ env, cwd: resolvedCpbRoot });
+
+  const [githubChecks, sandboxSelfTestCheck, ...results] = await Promise.all([
     checkGithubReadiness(resolvedHubRoot),
+    runAgentSandboxSelfTestCheck({ env, cwd: resolvedCpbRoot }),
     checkNode(),
     checkNpm(),
     checkGit(),
@@ -665,7 +818,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides } 
     checkHubProjectPollution(resolvedHubRoot),
   ]);
 
-  const checks = [...results, ...setupChecks, ...githubChecks];
+  const checks = [...results, ...sandboxChecks, sandboxSelfTestCheck, ...setupChecks, ...githubChecks];
   const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots
@@ -939,11 +1092,12 @@ export function formatReleaseDoctorJson(result) {
 
 // --- Output formatters ---
 
-const CATEGORY_ORDER = ["toolchain", "disk", "setup", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
+const CATEGORY_ORDER = ["toolchain", "disk", "setup", "sandbox", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
 const CATEGORY_LABELS = {
   toolchain: "Toolchain",
   disk: "Disk",
   setup: "Setup",
+  sandbox: "Agent Sandbox",
   acp: "ACP Adapters",
   hub: "Hub",
   registry: "Registry",
