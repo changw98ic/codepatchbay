@@ -7,3 +7,6 @@ node_modules/
 omx_wiki/
 providers/
 *.log
+
+!web/dist/
+!web/dist/**
