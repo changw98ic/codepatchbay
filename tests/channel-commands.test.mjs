@@ -11,6 +11,7 @@ import { createChannelQueueJob, listCandidates } from "../server/services/event-
 import { listQueue } from "../server/services/hub-queue.js";
 import { createJob, failJob, FAILURE_CODES, getJob } from "../server/services/job-store.js";
 import { readEvents } from "../server/services/event-store.js";
+import { createSession, getSession, listSessions, updateSession } from "../server/services/review-session.js";
 import { CHANNEL_COMMAND_HELP, parseChannelCommand } from "../server/services/channel-commands.js";
 import {
   parseSlackInteractiveAction,
@@ -1122,6 +1123,114 @@ describe("Feishu and DingTalk unified channel queue", () => {
       assert.equal(candidates.length, 1);
       assert.equal(candidates[0].status, "queued");
       assert.equal(candidates[0].payload.task, "fix login redirect");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("denies Feishu legacy review creation through channel policy", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-feishu-review-policy-"));
+    const app = await buildChannelApp(cpbRoot, {
+      channelPolicy: {
+        default: "deny",
+        rules: [{ effect: "allow", channel: "feishu", project: "frontend", actions: ["status"] }],
+      },
+    });
+    try {
+      await writeFile(path.join(cpbRoot, "channels.json"), JSON.stringify({
+        channels: { feishu: { enabled: true, verificationToken: "feishu-token" } },
+      }), "utf8");
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/feishu",
+        headers: { "content-type": "application/json" },
+        payload: {
+          token: "feishu-token",
+          event: {
+            sender: { sender_id: { user_id: "user-1" } },
+            message: {
+              chat_id: "chat-1",
+              content: JSON.stringify({ text: "review frontend implement login gate" }),
+            },
+          },
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, false);
+      assert.equal(body.code, "CHANNEL_POLICY_DENIED");
+      assert.equal(body.statusCode, 403);
+      assert.match(body.reason, /not allowed/i);
+      assert.deepEqual(body.actor, { userId: "user-1", channelId: "chat-1" });
+      assert.equal((await listSessions(cpbRoot)).length, 0);
+
+      const audit = await readChannelPolicyEvents(cpbRoot);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0].allowed, false);
+      assert.equal(audit[0].request.channel, "feishu");
+      assert.equal(audit[0].request.action, "run");
+      assert.equal(audit[0].request.project, "frontend");
+      assert.equal(audit[0].request.userId, "user-1");
+      assert.equal(audit[0].request.channelId, "chat-1");
+    } finally {
+      await app.close();
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("denies DingTalk legacy review approval through channel policy", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-dingtalk-review-policy-"));
+    const session = await createSession(cpbRoot, {
+      project: "frontend",
+      intent: "implement login gate",
+    });
+    await updateSession(cpbRoot, session.sessionId, { status: "user_review" }, { skipTransitionCheck: true });
+
+    const app = await buildChannelApp(cpbRoot, {
+      channelPolicy: {
+        default: "deny",
+        rules: [{ effect: "allow", channel: "dingtalk", project: "frontend", actions: ["status"] }],
+      },
+    });
+    try {
+      await writeFile(path.join(cpbRoot, "channels.json"), JSON.stringify({
+        channels: { dingtalk: { enabled: true, outgoingToken: "ding-token" } },
+      }), "utf8");
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/channels/dingtalk",
+        headers: {
+          "content-type": "application/json",
+          "x-dingtalk-signature": "ignored,ding-token",
+        },
+        payload: {
+          text: { content: `review approve ${session.sessionId}` },
+          senderId: "user-1",
+          conversationId: "chat-1",
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.ok, false);
+      assert.equal(body.code, "CHANNEL_POLICY_DENIED");
+      assert.equal(body.statusCode, 403);
+      assert.match(body.reason, /not allowed/i);
+      assert.deepEqual(body.actor, { userId: "user-1", channelId: "chat-1" });
+      assert.equal((await getSession(cpbRoot, session.sessionId)).status, "user_review");
+
+      const audit = await readChannelPolicyEvents(cpbRoot);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0].allowed, false);
+      assert.equal(audit[0].request.channel, "dingtalk");
+      assert.equal(audit[0].request.action, "approve");
+      assert.equal(audit[0].request.project, "frontend");
+      assert.equal(audit[0].request.userId, "user-1");
+      assert.equal(audit[0].request.channelId, "chat-1");
     } finally {
       await app.close();
       await rm(cpbRoot, { recursive: true, force: true });
