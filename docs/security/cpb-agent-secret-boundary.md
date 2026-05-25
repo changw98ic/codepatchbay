@@ -23,7 +23,8 @@ builds an allowlisted snapshot containing:
   `CPB_ACP_POOL_IDLE_MS`, and `CPB_ACP_RATE_LIMIT_BACKOFF_MS`
 
 Later mutations to the host process environment do not change an existing
-pool's client path, provider credentials, terminal policy, or pool limits.
+pool's client path, provider credentials, terminal/tool policy, write allow
+paths, permission-request behavior, registry command overrides, or pool limits.
 Arbitrary parent secrets such as `DATABASE_URL`, webhook secrets, and random
 tokens are excluded from this snapshot.
 
