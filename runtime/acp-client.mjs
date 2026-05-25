@@ -27,6 +27,7 @@ Environment:
   CPB_ACP_TOOL_POLICY_FILE   Path to JSON file mapping tool names to "allow"|"deny"
   CPB_ACP_DENY_TOOLS         Comma-separated tool names to deny (e.g. "terminal/create,fs/delete")
   CPB_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
+  CPB_AGENT_SANDBOX          off|best-effort|required|strict for agent/terminal process sandboxing
 
 Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
 `;
