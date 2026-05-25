@@ -32,6 +32,7 @@ const CPB_RUNTIME_ENV = new Set([
   "CPB_MULTI_EVOLVE_PROJECTS", "CPB_MULTI_EVOLVE_AGENT",
   "CPB_MULTI_EVOLVE_TIMEOUT_MS", "CPB_MULTI_EVOLVE_WORKFLOW",
   "CPB_MULTI_EVOLVE_MAX_DURATION_MS", "CPB_MULTI_EVOLVE_SCAN_FIXTURE",
+  "CPB_PORT", "CPB_HOST",
 ]);
 
 const ACP_RUNTIME_ENV = new Set([
@@ -123,6 +124,18 @@ export function buildChildEnv(parentEnv = {}, extra = {}) {
   }
   for (const [key, value] of Object.entries(extra || {})) {
     if (isAllowedChildEnvKey(key)) env[key] = value;
+  }
+  return env;
+}
+
+export function buildRuntimeEnv(parentEnv = {}, extra = {}) {
+  const env = {};
+  const allowed = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
+  for (const [key, value] of Object.entries(parentEnv || {})) {
+    if (allowed.has(key)) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (allowed.has(key)) env[key] = value;
   }
   return env;
 }

@@ -3,12 +3,27 @@ import { mkdir, stat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness, getHubRuntime } from "./hub-runtime.js";
+import { buildChildEnv, buildRuntimeEnv } from "./secret-policy.js";
 
 function resolveRoots() {
   const cpbRoot = path.resolve(process.env.CPB_ROOT || ".");
   const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
   const hubRoot = resolveHubRoot(cpbRoot);
   return { cpbRoot, executorRoot, hubRoot };
+}
+
+export function buildHubServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, hubRoot, port, host } = {}) {
+  return buildChildEnv(parentEnv, {
+    CPB_ROOT: cpbRoot,
+    CPB_EXECUTOR_ROOT: executorRoot,
+    CPB_HUB_ROOT: hubRoot,
+    CPB_PORT: port,
+    CPB_HOST: host,
+  });
+}
+
+export function buildHubInstallEnv(parentEnv = process.env) {
+  return buildRuntimeEnv(parentEnv);
 }
 
 export async function cmdStart() {
@@ -25,7 +40,11 @@ export async function cmdStart() {
   } catch {
     console.log("Installing server deps...");
     const { execSync } = await import("node:child_process");
-    execSync("npm install --silent", { cwd: path.join(executorRoot, "server"), stdio: "pipe" });
+    execSync("npm install --silent", {
+      cwd: path.join(executorRoot, "server"),
+      env: buildHubInstallEnv(process.env),
+      stdio: "pipe",
+    });
   }
 
   const port = process.env.CPB_PORT || "3456";
@@ -36,7 +55,7 @@ export async function cmdStart() {
   const logFd = openSync(path.join(hubRoot, "hub.log"), "a");
   const child = spawn(process.execPath, [path.join(executorRoot, "server", "index.js")], {
     cwd: cpbRoot,
-    env: { ...process.env, CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: executorRoot, CPB_HUB_ROOT: hubRoot, CPB_PORT: port, CPB_HOST: host },
+    env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot, port, host }),
     detached: true,
     stdio: ["ignore", logFd, logFd],
   });
