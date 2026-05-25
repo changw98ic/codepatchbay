@@ -9,7 +9,12 @@ CPB enforces secret protection at these boundaries:
 ACP/agent child processes, CPB-brokered terminal commands, and CPB-launched
 Hub/UI backend servers receive only an explicit env allowlist:
 - **Runtime basics**: `PATH`, `HOME`, `SHELL`, `TERM`, `TMPDIR`, `TEMP`, `TMP`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `CODEX_HOME`, `XDG_CACHE_HOME`, and CPB runtime vars.
-- **Provider credentials**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`.
+- **Provider credentials**: provider/API variables are allowlisted, then scoped
+  again for known ACP agents. Codex receives OpenAI/Azure-compatible keys;
+  Claude receives Anthropic-compatible keys, AWS Bedrock region/session keys,
+  and configured Claude provider-variant keys such as Kimi/Ollama Cloud or
+  Xiaomi/MiMo; Gemini receives Gemini/Google keys. Unknown/custom agents keep
+  the full provider allowlist for compatibility.
 - Arbitrary `*_TOKEN`, `*_KEY`, `*_SECRET`, `DATABASE_URL`, and similar env vars are **not** forwarded.
 
 CPB-launched dependency-install helpers and the local Vite UI dev server use a
@@ -65,6 +70,11 @@ pool's client path, provider credentials, terminal/tool policy, write allow
 paths, permission-request behavior, registry command overrides, or pool limits.
 Arbitrary parent secrets such as `DATABASE_URL`, webhook secrets, and random
 tokens are excluded from this snapshot.
+
+The snapshot can retain provider credentials for multiple agents so one pool can
+serve mixed Codex/Claude/Gemini work. Each ACP adapter launch and CPB-brokered
+terminal command then narrows that snapshot to the requested agent before the
+child process starts.
 
 ### Output Redaction
 

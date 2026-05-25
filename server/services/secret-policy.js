@@ -6,11 +6,16 @@ export {
   buildChildEnv,
   buildRuntimeEnv,
   isAllowedChildEnvKey,
+  providerCredentialKeysForAgent,
   RUNTIME_BASICS,
   CPB_RUNTIME_ENV,
   ACP_RUNTIME_ENV,
   ACP_POOL_ENV,
   PROVIDER_CREDENTIALS,
+  OPENAI_COMPATIBLE_CREDENTIALS,
+  ANTHROPIC_COMPATIBLE_CREDENTIALS,
+  GEMINI_COMPATIBLE_CREDENTIALS,
+  PROVIDER_CREDENTIALS_BY_AGENT,
   ALLOWED_ENV,
 } from "../../core/policy/child-env.js";
 

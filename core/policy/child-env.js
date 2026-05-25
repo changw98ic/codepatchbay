@@ -59,6 +59,15 @@ const PROVIDER_CREDENTIALS = new Set([
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "AZURE_OPENAI_API_KEY",
@@ -82,6 +91,57 @@ const PROVIDER_CREDENTIALS = new Set([
   "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
   "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
   "XIAOMI_MODEL", "MIMO_MODEL",
+]);
+
+const OPENAI_COMPATIBLE_CREDENTIALS = new Set([
+  "OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_ENDPOINT",
+]);
+
+const ANTHROPIC_COMPATIBLE_CREDENTIALS = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  // Kimi / Ollama Cloud and Xiaomi / MiMo are applied as Claude-compatible
+  // provider variants by runtime/apply-variant.js.
+  "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL",
+  "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL",
+  "KIMI_BASE_URL", "MOONSHOT_BASE_URL",
+  "OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY",
+  "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY",
+  "KIMI_API_KEY", "MOONSHOT_API_KEY",
+  "OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL",
+  "KIMI_MODEL", "MOONSHOT_MODEL",
+  "XIAOMI_BASE_URL", "MIMO_BASE_URL",
+  "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
+  "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
+  "XIAOMI_MODEL", "MIMO_MODEL",
+]);
+
+const GEMINI_COMPATIBLE_CREDENTIALS = new Set([
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+]);
+
+const PROVIDER_CREDENTIALS_BY_AGENT = new Map([
+  ["codex", OPENAI_COMPATIBLE_CREDENTIALS],
+  ["claude", ANTHROPIC_COMPATIBLE_CREDENTIALS],
+  ["gemini", GEMINI_COMPATIBLE_CREDENTIALS],
+  ["kimi", ANTHROPIC_COMPATIBLE_CREDENTIALS],
 ]);
 
 const ALLOWED_ENV = new Set([
@@ -110,6 +170,27 @@ function isNumericEnvValue(value) {
   return /^\d+$/.test(String(value ?? "").trim());
 }
 
+function normalizeAgentName(agent) {
+  return String(agent || "").trim().toLowerCase();
+}
+
+function agentNameFromOptions(options = {}) {
+  if (typeof options === "string") return normalizeAgentName(options);
+  return normalizeAgentName(options.agent || options.agentName || options.provider);
+}
+
+export function providerCredentialKeysForAgent(agent) {
+  const normalized = normalizeAgentName(agent);
+  const scoped = PROVIDER_CREDENTIALS_BY_AGENT.get(normalized);
+  return new Set(scoped || PROVIDER_CREDENTIALS);
+}
+
+function allowedProviderCredentialsForOptions(options = {}) {
+  const agent = agentNameFromOptions(options);
+  if (!agent) return PROVIDER_CREDENTIALS;
+  return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;
+}
+
 function shouldCopyAcpPoolEnvEntry(key, value) {
   if (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) {
     return isNumericEnvValue(value);
@@ -117,17 +198,20 @@ function shouldCopyAcpPoolEnvEntry(key, value) {
   return isAllowedChildEnvKey(key);
 }
 
-export function isAllowedChildEnvKey(key) {
+export function isAllowedChildEnvKey(key, options = {}) {
+  if (PROVIDER_CREDENTIALS.has(key)) {
+    return allowedProviderCredentialsForOptions(options).has(key);
+  }
   return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key);
 }
 
-export function buildChildEnv(parentEnv = {}, extra = {}) {
+export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
   const env = {};
   for (const [key, value] of Object.entries(parentEnv || {})) {
-    if (isAllowedChildEnvKey(key)) env[key] = value;
+    if (isAllowedChildEnvKey(key, options)) env[key] = value;
   }
   for (const [key, value] of Object.entries(extra || {})) {
-    if (isAllowedChildEnvKey(key)) env[key] = value;
+    if (isAllowedChildEnvKey(key, options)) env[key] = value;
   }
   return env;
 }
@@ -161,5 +245,9 @@ export {
   ACP_RUNTIME_ENV,
   ACP_POOL_ENV,
   PROVIDER_CREDENTIALS,
+  OPENAI_COMPATIBLE_CREDENTIALS,
+  ANTHROPIC_COMPATIBLE_CREDENTIALS,
+  GEMINI_COMPATIBLE_CREDENTIALS,
+  PROVIDER_CREDENTIALS_BY_AGENT,
   ALLOWED_ENV,
 };

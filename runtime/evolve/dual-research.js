@@ -142,7 +142,7 @@ function acpRun(agent, cwd, executorRoot, cpbRoot, input) {
   const acp = path.join(executorRoot, "bridges", "acp-client.mjs");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
-      env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }),
+      env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }, { agent }),
     });
     let stdout = "";
     let stderr = "";

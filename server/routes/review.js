@@ -368,7 +368,11 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 
     // Run ACP agent to analyze
     const scriptPath = path.join(req.cpbRoot, "runtime", "acp-client.mjs");
-    const env = buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_ACP_TIMEOUT_MS: "90000" });
+    const env = buildChildEnv(
+      process.env,
+      { CPB_ROOT: req.cpbRoot, CPB_ACP_TIMEOUT_MS: "90000" },
+      { agent: "claude" },
+    );
 
     const acpResult = await new Promise((resolve) => {
       const child = spawn("node", [scriptPath, "--agent", "claude", "--cwd", req.cpbRoot], {

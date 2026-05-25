@@ -180,7 +180,7 @@ async function runAcp(agent, prompt, cwd, executorRoot) {
         sourceEnv.ANTHROPIC_API_KEY = sourceEnv.ANTHROPIC_AUTH_TOKEN;
         delete sourceEnv.ANTHROPIC_AUTH_TOKEN;
       }
-      const env = buildChildEnv(sourceEnv);
+      const env = buildChildEnv(sourceEnv, {}, { agent });
 
       child = spawn(command, args, {
         cwd,
