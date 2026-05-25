@@ -549,6 +549,7 @@ describe("GitHub issue queue entry creation", () => {
             title: "Docs: update API examples",
             body: "The README examples are stale.",
             html_url: "https://github.com/my-org/frontend/issues/125",
+            author_association: "MEMBER",
             labels: [{ name: "cpb" }, { name: "docs" }],
           },
           sender: { login: "octocat" },
@@ -563,7 +564,7 @@ describe("GitHub issue queue entry creation", () => {
       assert.equal(result.queueEntry.metadata.requestedRoute.workflow, "direct");
       assert.equal(result.queueEntry.metadata.requestedRoute.planMode, "none");
       assert.equal(result.queueEntry.metadata.routing.category, "docs");
-      assert.equal(result.queueEntry.metadata.routing.actorTrust.level, "unknown");
+      assert.equal(result.queueEntry.metadata.routing.actorTrust.level, "trusted");
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
     }

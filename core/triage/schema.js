@@ -25,6 +25,14 @@ const WORKFLOW_DEFAULT_PLAN_MODE = {
 };
 
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const SAFE_DEFAULT_ROUTE = Object.freeze({
+  category: "unknown",
+  workflow: "standard",
+  planMode: "light",
+  reviewer: false,
+  reason: "safe default route",
+  source: "policy",
+});
 
 function cleanString(value) {
   const text = String(value ?? "").trim();
@@ -129,21 +137,25 @@ export function mergeRoutePolicy({
   actualDiffRisk = null,
   reasons = [],
 } = {}) {
-  const base = normalizeRoute(ruleRoute || { workflow: "standard", planMode: "light" });
-  const requested = normalizeRoute(requestedRoute || base, {
+  const base = normalizeRoute(SAFE_DEFAULT_ROUTE);
+  const rule = normalizeRoute(ruleRoute || base, {
     ...base,
-    source: requestedRoute?.source || base.source || "rules",
+    source: ruleRoute?.source || "rules",
   });
-  const acp = acpRoute ? normalizeRoute(acpRoute, { ...base, source: "acp" }) : null;
+  const requested = normalizeRoute(requestedRoute || rule, {
+    ...rule,
+    source: requestedRoute?.source || rule.source || "rules",
+  });
+  const acp = acpRoute ? normalizeRoute(acpRoute, { ...rule, source: "acp" }) : null;
   const trust = actorTrust || normalizeActorTrust();
   const scopes = normalizeProtectedScopes(protectedScopes);
   const diffRisk = actualDiffRisk || { protected: false, files: [], reason: "no changed-file risk signal" };
   const downgradeAllowed = Boolean(trust.trusted && scopes.length === 0 && !actualDiffProtected(diffRisk));
 
   let effective = base;
-  const policyReasons = [...(reasons || []), base.reason].filter(Boolean);
+  const policyReasons = [base.reason, ...(reasons || [])].filter(Boolean);
 
-  for (const candidate of [requested, acp].filter(Boolean)) {
+  for (const candidate of [rule, requested, acp].filter(Boolean)) {
     if (!isRouteDowngrade(candidate, effective)) {
       effective = strongerRoute(effective, candidate);
       if (candidate.reason) policyReasons.push(candidate.reason);
@@ -171,7 +183,8 @@ export function mergeRoutePolicy({
 
   return {
     schemaVersion: 1,
-    ruleRoute: base,
+    baseRoute: base,
+    ruleRoute: rule,
     requestedRoute: requested,
     acpRoute: acp,
     effectiveRoute: effective,

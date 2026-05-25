@@ -15,9 +15,10 @@ import { DEFAULT_GITHUB_TRIGGERS } from "../server/services/hub-registry.js";
 import { createGithubIssueQueueJob } from "../server/services/event-source.js";
 import { verifySddProject } from "../server/services/sdd.js";
 import { resolveParentPlanCache, writeParentPlanCache } from "../server/services/plan-cache.js";
+import { buildExecutorJobPrompt, buildPlannerPrompt } from "../server/services/prompt-builder.js";
 
 describe("issue triage safety lattice", () => {
-  it("keeps deterministic rule output separate from effective routing", () => {
+  it("treats deterministic docs/test rules as requested downgrades, not base authority", () => {
     const decision = triageIssue({
       labels: ["docs"],
       title: "Docs: update README examples",
@@ -27,9 +28,24 @@ describe("issue triage safety lattice", () => {
     assert.equal(decision.ruleRoute.workflow, "direct");
     assert.equal(decision.ruleRoute.planMode, "none");
     assert.equal(decision.requestedRoute.workflow, "direct");
+    assert.equal(decision.effectiveRoute.workflow, "standard");
+    assert.equal(decision.effectiveRoute.planMode, "light");
+    assert.equal(decision.actorTrust.trusted, false);
+    assert.equal(decision.downgradeAllowed, false);
+  });
+
+  it("allows trusted actors to take low-risk docs/test downgrades", () => {
+    const decision = triageIssue({
+      labels: ["docs"],
+      title: "Docs: update README examples",
+      actor: "maintainer",
+      authorAssociation: "OWNER",
+    });
+
+    assert.equal(decision.ruleRoute.workflow, "direct");
     assert.equal(decision.effectiveRoute.workflow, "direct");
     assert.equal(decision.effectiveRoute.planMode, "none");
-    assert.equal(decision.actorTrust.trusted, false);
+    assert.equal(decision.actorTrust.trusted, true);
   });
 
   it("prevents untrusted downgrade when protected scopes are present", () => {
@@ -125,6 +141,121 @@ describe("channel command triage", () => {
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
+
+  it("keeps --triage none as safety-policy-only, not a policy bypass", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-channel-triage-none-"));
+    const hubRoot = path.join(cpbRoot, "hub");
+    try {
+      const command = parseChannelCommand('/cpb run frontend --workflow direct --plan-mode none --triage none "fix auth token docs"');
+      const result = await createChannelQueueJob(
+        cpbRoot,
+        command,
+        { channel: "slack", actor: "U123", commandText: "/cpb run ..." },
+        { hubRoot },
+      );
+
+      assert.equal(result.queueEntry.metadata.triage, "none");
+      assert.equal(result.queueEntry.metadata.requestedRoute.workflow, "direct");
+      assert.equal(result.queueEntry.metadata.workflow, "complex");
+      assert.equal(result.queueEntry.metadata.planMode, "full");
+      assert.equal(result.queueEntry.metadata.routing.triageMode, "none");
+      assert.equal(result.queueEntry.metadata.routing.effective.workflow, "complex");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ACP triage entry wiring", () => {
+  it("uses the ACP triager at GitHub ingress when requested", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-acp-triage-"));
+    let acpCalls = 0;
+    try {
+      const event = normalizeGithubWebhookEvent({
+        event: "issues",
+        delivery: "delivery-acp-triage-1",
+        projectId: "frontend",
+        payload: {
+          action: "labeled",
+          repository: { full_name: "my-org/frontend" },
+          label: { name: "cpb" },
+          issue: {
+            number: 445,
+            title: "Improve report export",
+            body: "Touches multiple service boundaries.",
+            html_url: "https://github.com/my-org/frontend/issues/445",
+            labels: [{ name: "cpb" }],
+          },
+          sender: { login: "octocat" },
+        },
+      });
+      const match = matchGithubTrigger(event);
+      const acpPool = {
+        execute: async (_agent, prompt) => {
+          acpCalls += 1;
+          assert.match(prompt, /CodePatchBay issue routing triager/);
+          return JSON.stringify({
+            requestedRoute: {
+              workflow: "complex",
+              planMode: "full",
+              reviewer: true,
+              reason: "ACP saw cross-service risk",
+            },
+          });
+        },
+      };
+
+      const result = await createGithubIssueQueueJob(cpbRoot, event, match, {
+        triageMode: "acp",
+        acpPool,
+      });
+
+      assert.equal(acpCalls, 1);
+      assert.equal(result.queueEntry.metadata.workflow, "complex");
+      assert.equal(result.queueEntry.metadata.planMode, "full");
+      assert.equal(result.queueEntry.metadata.routing.triageMode, "acp");
+      assert.equal(result.queueEntry.metadata.routing.acpRoute.workflow, "complex");
+      assert.equal(result.queueEntry.metadata.routing.acpTriager.agent, "claude");
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GitHub actor trust", () => {
+  it("preserves issue author association for routing trust decisions", async () => {
+    const event = normalizeGithubWebhookEvent({
+      event: "issues",
+      delivery: "delivery-trust-1",
+      projectId: "frontend",
+      payload: {
+        action: "labeled",
+        repository: { full_name: "my-org/frontend" },
+        label: { name: "cpb" },
+        issue: {
+          number: 446,
+          title: "Docs: update owner guide",
+          body: "README stale.",
+          html_url: "https://github.com/my-org/frontend/issues/446",
+          author_association: "OWNER",
+          labels: [{ name: "cpb" }, { name: "docs" }],
+        },
+        sender: { login: "maintainer" },
+      },
+    });
+
+    assert.equal(event.authorAssociation, "OWNER");
+
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-trust-"));
+    try {
+      const result = await createGithubIssueQueueJob(cpbRoot, event, matchGithubTrigger(event));
+      assert.equal(result.queueEntry.metadata.workflow, "direct");
+      assert.equal(result.queueEntry.metadata.planMode, "none");
+      assert.equal(result.queueEntry.metadata.routing.actorTrust.trusted, true);
+    } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("SDD automatic GitHub entry", () => {
@@ -208,6 +339,81 @@ describe("parent plan cache", () => {
       assert.equal(second.reusedPlanId, "777");
       assert.deepEqual(second.mergedPlanIds, ["777"]);
     } finally {
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("planner and executor context guidance", () => {
+  it("differentiates light and parent plan modes in planner prompts", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-planmode-prompt-"));
+    const executorRoot = path.resolve(import.meta.dirname, "..");
+    const wikiDir = path.join(cpbRoot, "wiki", "projects", "frontend");
+    const saved = {
+      CPB_PLAN_MODE: process.env.CPB_PLAN_MODE,
+      CPB_PARENT_PLAN_CACHE_JSON: process.env.CPB_PARENT_PLAN_CACHE_JSON,
+    };
+    try {
+      await mkdir(wikiDir, { recursive: true });
+      await writeFile(path.join(wikiDir, "context.md"), "# Context\n", "utf8");
+      await writeFile(path.join(wikiDir, "decisions.md"), "# Decisions\n", "utf8");
+
+      process.env.CPB_PLAN_MODE = "light";
+      let prompt = await buildPlannerPrompt(executorRoot, cpbRoot, "frontend", "update copy", path.join(wikiDir, "inbox", "plan-1.md"));
+      assert.match(prompt, /Light Plan Mode/);
+      assert.match(prompt, /concise/i);
+
+      process.env.CPB_PLAN_MODE = "parent";
+      process.env.CPB_PARENT_PLAN_CACHE_JSON = JSON.stringify({ planGroupId: "plan-group-abc", planCacheKey: "abc123" });
+      prompt = await buildPlannerPrompt(executorRoot, cpbRoot, "frontend", "split SDD tasks", path.join(wikiDir, "inbox", "plan-2.md"));
+      assert.match(prompt, /Parent Plan Mode/);
+      assert.match(prompt, /plan-group-abc/);
+      assert.match(prompt, /abc123/);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(cpbRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces the latest context pack locator in executor job prompts", async () => {
+    const cpbRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-executor-context-pack-"));
+    const executorRoot = path.resolve(import.meta.dirname, "..");
+    const runtimeRoot = path.join(cpbRoot, "runtime");
+    const wikiDir = path.join(cpbRoot, "wiki", "projects", "frontend");
+    const contextPack = path.join(runtimeRoot, "context-packs", "context-pack-2026.md");
+    const saved = {
+      CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
+      CPB_PLAN_MODE: process.env.CPB_PLAN_MODE,
+    };
+    try {
+      await mkdir(wikiDir, { recursive: true });
+      await mkdir(path.dirname(contextPack), { recursive: true });
+      await writeFile(path.join(wikiDir, "context.md"), "# Context\n", "utf8");
+      await writeFile(path.join(wikiDir, "decisions.md"), "# Decisions\n", "utf8");
+      await writeFile(path.join(wikiDir, "project.json"), "{}", "utf8");
+      await writeFile(contextPack, "# Context Pack\n", "utf8");
+      process.env.CPB_PROJECT_RUNTIME_ROOT = runtimeRoot;
+      process.env.CPB_PLAN_MODE = "light";
+
+      const prompt = await buildExecutorJobPrompt(
+        executorRoot,
+        cpbRoot,
+        "frontend",
+        "job-context-pack",
+        path.join(wikiDir, "outputs", "deliverable-1.md"),
+      );
+
+      assert.match(prompt, /Latest context pack/);
+      assert.match(prompt, /context-pack-2026\.md/);
+      assert.match(prompt, /Read the latest context pack/);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await rm(cpbRoot, { recursive: true, force: true });
     }
   });
