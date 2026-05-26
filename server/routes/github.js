@@ -92,7 +92,26 @@ export async function githubRoutes(fastify, opts = {}) {
       if (parsed.ok && parsed.command === "approve" && parsed.job) {
         const queue = await loadQueue(req.cpbHubRoot);
         const entry = queue.entries.find((e) => e.id === parsed.job);
-        if (entry && entry.status === "waiting.approval") {
+
+        const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+        const permissionDenied = (reason) => reply.code(403).send({
+          ...base, normalized, projectId: project.id, commandHandled: "approve", error: reason,
+        });
+
+        if (!entry || entry.status !== "waiting.approval") {
+          return reply.code(202).send({ ...base, normalized, projectId: project.id });
+        }
+        if (!trustedAssociations.has(normalized.authorAssociation)) {
+          return permissionDenied("only repo collaborators can approve");
+        }
+        if (entry.metadata?.repo && entry.metadata.repo !== normalized.repo) {
+          return permissionDenied("queue entry does not belong to this repo");
+        }
+        if (entry.metadata?.issueNumber && String(entry.metadata.issueNumber) !== String(normalized.issueNumber)) {
+          return permissionDenied("queue entry does not belong to this issue");
+        }
+
+        {
           const ts = new Date().toISOString();
           const sddTaskQueueEntries = await enqueueSddTaskEntriesForApprovedParent(req.cpbHubRoot, entry);
           await updateEntry(req.cpbHubRoot, entry.id, {

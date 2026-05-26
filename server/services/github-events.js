@@ -64,7 +64,7 @@ function normalizeIssuesEvent({ event, delivery, projectId, payload }) {
 
 function normalizeIssueCommentEvent({ event, delivery, projectId, payload }) {
   if (!payload.issue) return ignored(event, "issue_comment payload missing issue");
-  return baseEnvelope({
+  const result = baseEnvelope({
     event,
     delivery,
     projectId,
@@ -74,6 +74,13 @@ function normalizeIssueCommentEvent({ event, delivery, projectId, payload }) {
     url: payload.comment?.html_url || payload.issue.html_url || payload.issue.url || null,
     commandText: payload.comment?.body || "",
   });
+  // Use comment author's association (not issue author's) for permission checks
+  const commentAssoc = payload.comment?.author_association || null;
+  if (commentAssoc) {
+    result.authorAssociation = commentAssoc;
+    result.raw.authorAssociation = commentAssoc;
+  }
+  return result;
 }
 
 function normalizeInstallationEvent({ event, delivery, payload }) {
