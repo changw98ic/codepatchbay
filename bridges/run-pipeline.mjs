@@ -52,6 +52,7 @@ import { requiresApproval } from "../core/policy/team-policy.js";
 import { requestApprovalGate, timeoutApprovalGate } from "../server/services/approval-gate.js";
 import {
   validateNonEmptyMarkdownArtifact,
+  validateLightPlanConstraints,
   resolveDeliverableIssue,
   validateIssueMatch,
 } from "../server/services/artifact-integrity.js";
@@ -1197,6 +1198,26 @@ export async function runPipeline({
           },
         ));
         return 1;
+      }
+
+      if (planDecision.planMode === "light" && planValidation.content) {
+        const lightCheck = validateLightPlanConstraints({
+          content: planValidation.content,
+          path: planArtifactPath,
+          id: planId,
+        });
+        if (!lightCheck.valid) {
+          const detail = lightCheck.reasons.join("; ");
+          warn(`Light plan constraint violations: ${detail}`);
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "light_plan_constraint_violation",
+            jobId,
+            project,
+            planId,
+            reasons: lightCheck.reasons,
+            ts: ts(),
+          });
+        }
       }
 
       ok(`plan-${planId}`);

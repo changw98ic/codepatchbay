@@ -75,3 +75,25 @@ export function validateIssueMatch({ expectedIssueNumber, artifactIssueNumber, a
     reason: `issue_mismatch: expected #${expectedIssueNumber}, got #${artifactIssueNumber}`,
   };
 }
+
+const LIGHT_PLAN_MAX_LINES = 80;
+const LIGHT_PLAN_REQUIRED_SECTIONS = ["Affected Files", "Tests", "Risk"];
+
+export function validateLightPlanConstraints({ content, path: filePath, id }) {
+  const reasons = [];
+  if (!content || typeof content !== "string") {
+    return { valid: true, warnings: ["light_plan_content_unavailable"] };
+  }
+  const lines = content.split(/\r?\n/);
+  if (lines.length > LIGHT_PLAN_MAX_LINES) {
+    reasons.push(`line_count_exceeded: ${lines.length} lines (max ${LIGHT_PLAN_MAX_LINES})`);
+  }
+  const upper = content.toUpperCase();
+  for (const section of LIGHT_PLAN_REQUIRED_SECTIONS) {
+    if (!upper.includes(section.toUpperCase())) {
+      reasons.push(`missing_required_section: ${section}`);
+    }
+  }
+  if (reasons.length === 0) return { valid: true, warnings: [] };
+  return { valid: false, reasons, path: filePath, id };
+}
