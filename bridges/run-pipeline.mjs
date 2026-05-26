@@ -36,6 +36,7 @@ import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "
 import { isRouteDowngrade, normalizeRoute } from "../core/triage/schema.js";
 import { executeDag } from "../core/workflow/dag-executor.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
+import { listJobsFromIndex } from "../server/services/jobs-index.js";
 import {
   dispatchEnabled,
   guardSourcePath as guardDispatchSourcePath,
@@ -491,6 +492,82 @@ function extractPlanId(stdout) {
   return match ? match[1] : null;
 }
 
+const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+
+function normalizeWords(text = "") {
+  return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
+}
+
+function wordOverlap(a, b) {
+  const sa = new Set(normalizeWords(a));
+  const sb = new Set(normalizeWords(b));
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let common = 0;
+  for (const w of sa) if (sb.has(w)) common++;
+  return common / Math.min(sa.size, sb.size);
+}
+
+async function planFileExists(cpbRoot, project, planId) {
+  try {
+    const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+    await access(path.join(wikiDir, "inbox", `plan-${planId}.md`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function findParentPlan(cpbRoot, project, { sourceContext, task, dataRoot } = {}) {
+  const allJobs = await listJobsFromIndex(cpbRoot, { dataRoot });
+  const cutoff = Date.now() - PARENT_PLAN_MAX_AGE_MS;
+
+  const candidates = allJobs
+    .filter((j) => j.project === project)
+    .filter((j) => j.completedPhases?.includes("plan"))
+    .filter((j) => j.artifacts?.plan)
+    .filter((j) => j.status !== "cancelled")
+    .filter((j) => {
+      const t = new Date(j.updatedAt || j.createdAt).getTime();
+      return !Number.isNaN(t) && t >= cutoff;
+    })
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+  if (candidates.length === 0) return null;
+
+  const issueNumber = sourceContext?.issueNumber;
+  if (issueNumber) {
+    for (const job of candidates) {
+      const jobIssue = job.sourceContext?.issueNumber;
+      if (jobIssue && String(jobIssue) === String(issueNumber)) {
+        const planId = job.artifacts.plan.replace(/^plan-/, "");
+        if (await planFileExists(cpbRoot, project, planId)) {
+          return {
+            planId,
+            parentJobId: job.jobId,
+            reason: `reused plan from job ${job.jobId} (same issue #${issueNumber})`,
+          };
+        }
+      }
+    }
+  }
+
+  for (const job of candidates) {
+    const overlap = wordOverlap(task || "", job.task || "");
+    if (overlap >= 0.5) {
+      const planId = job.artifacts.plan.replace(/^plan-/, "");
+      if (await planFileExists(cpbRoot, project, planId)) {
+        return {
+          planId,
+          parentJobId: job.jobId,
+          reason: `reused plan from job ${job.jobId} (task overlap ${Math.round(overlap * 100)}%)`,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 function extractDeliverableId(stdout) {
   const match = stdout.match(/^Deliverable: .*\/deliverable-(\d+)\.md$/m);
   return match ? match[1] : null;
@@ -529,7 +606,7 @@ export function buildExecuteScriptArgs({ project, planId, jobId, retryInput } = 
   return args;
 }
 
-export function resolvePlanDecision(workflowDef, { planMode = "auto" } = {}) {
+export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlanResult = null } = {}) {
   if (!workflowDef?.phases?.includes("plan")) {
     return {
       planMode: "none",
@@ -547,6 +624,23 @@ export function resolvePlanDecision(workflowDef, { planMode = "auto" } = {}) {
       planMode: "none",
       runPlan: false,
       reason: "planMode=none",
+    };
+  }
+
+  if (normalized === "parent") {
+    if (parentPlanResult) {
+      return {
+        planMode: "parent",
+        runPlan: false,
+        planId: parentPlanResult.planId,
+        parentJobId: parentPlanResult.parentJobId,
+        reason: parentPlanResult.reason,
+      };
+    }
+    return {
+      planMode: "full",
+      runPlan: true,
+      reason: "parent plan not found, fallback to full",
     };
   }
 
@@ -845,7 +939,11 @@ export async function runPipeline({
   }
 
   const workflowDef = getWorkflow(workflow);
-  const planDecision = resolvePlanDecision(workflowDef, { planMode });
+  let parentPlanResult = null;
+  if (planMode === "parent") {
+    parentPlanResult = await findParentPlan(cpbRoot, project, { sourceContext, task, dataRoot });
+  }
+  const planDecision = resolvePlanDecision(workflowDef, { planMode, parentPlanResult });
   process.env.CPB_PLAN_MODE = planDecision.planMode;
   let pipelineOk = false;
   const effectiveTeamPolicy = parseTeamPolicyInput(teamPolicy, teamPolicyJson);
@@ -1203,6 +1301,18 @@ export async function runPipeline({
       }
     } else if (!planDecision.runPlan) {
       log(project, `Skipping Plan phase (${planDecision.reason}, planMode: ${planDecision.planMode})`);
+      if (planDecision.planId) {
+        planId = planDecision.planId;
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "parent_plan_reused",
+          jobId,
+          project,
+          parentJobId: planDecision.parentJobId || null,
+          planId: planDecision.planId,
+          reason: planDecision.reason,
+          ts: ts(),
+        });
+      }
       const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
       if (check.cancelled) {
         await failJob(cpbRoot, project, jobId, failure("cancelled before execute", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
