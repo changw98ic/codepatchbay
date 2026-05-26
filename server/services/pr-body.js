@@ -114,6 +114,21 @@ function childTaskLines(rc) {
   ];
 }
 
+function planCacheLines(rc) {
+  const cache = rc?.planCache;
+  if (!cache) return [];
+  return [
+    "",
+    "## Plan Cache",
+    "",
+    `- Group: ${valueOrUnavailable(cache.planGroupId)}`,
+    `- Cache Key: ${valueOrUnavailable(cache.planCacheKey)}`,
+    `- Hit: ${cache.cacheHit ? "yes" : "no"}`,
+    `- Source: ${valueOrUnavailable(cache.source)}`,
+    `- Reused Plan: ${cache.reusedPlanId || cache.parentPlanId || "unavailable"}`,
+  ];
+}
+
 function finalDiffGuardLines(rc) {
   if (!rc?.finalDiffGuard) return [];
   const dg = rc.finalDiffGuard;
@@ -176,6 +191,7 @@ export function buildCodePatchBayPrBody({
     ...(routingContext?.sddBootstrap ? sddBootstrapLines(routingContext) : []),
     ...(routingContext?.contextPack?.path ? contextPackLines(routingContext) : []),
     ...(routingContext?.childTaskIds?.length ? childTaskLines(routingContext) : []),
+    ...(routingContext?.planCache ? planCacheLines(routingContext) : []),
     "",
     "## Tests",
     "",

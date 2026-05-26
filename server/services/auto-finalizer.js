@@ -331,6 +331,7 @@ function buildRoutingContext(entry, job, routeGuard = null) {
     sddBootstrap: metadata.sddBootstrap || null,
     childTaskIds: metadata.sddApproval?.childQueueEntryIds || null,
     contextPack: metadata.contextPack || null,
+    planCache: job?.sourceContext?.parentPlan || metadata.planCache || null,
     finalDiffGuard,
   };
 }
