@@ -869,12 +869,6 @@ export async function runPipeline({
   }
 
   const workflowDef = getWorkflow(workflow);
-  let parentPlanResult = null;
-  if (planMode === "parent") {
-    parentPlanResult = await resolveParentPlan(cpbRoot, { project, task, sourceContext, dataRoot });
-  }
-  const planDecision = resolvePlanDecision(workflowDef, { planMode, parentPlanResult });
-  process.env.CPB_PLAN_MODE = planDecision.planMode;
   let pipelineOk = false;
   const effectiveTeamPolicy = parseTeamPolicyInput(teamPolicy, teamPolicyJson);
   const phaseTotal = workflowDef.phases.length || 0;
@@ -951,6 +945,12 @@ export async function runPipeline({
         triageMode,
       }
     : baseSourceContext;
+  let parentPlanResult = null;
+  if (planMode === "parent") {
+    parentPlanResult = await resolveParentPlan(cpbRoot, { project, task, sourceContext, dataRoot });
+  }
+  const planDecision = resolvePlanDecision(workflowDef, { planMode, parentPlanResult });
+  process.env.CPB_PLAN_MODE = planDecision.planMode;
   const parentPlanCache = planDecision.requestedPlanMode === "parent" ? parentPlanResult : null;
   if (parentPlanCache) {
     process.env.CPB_PARENT_PLAN_CACHE_JSON = JSON.stringify(parentPlanCache);
