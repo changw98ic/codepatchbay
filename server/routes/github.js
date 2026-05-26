@@ -5,12 +5,15 @@ import {
 } from "../services/github-app.js";
 import { normalizeGithubWebhookEvent } from "../services/github-events.js";
 import { matchGithubTrigger } from "../services/github-triggers.js";
-import { createGithubIssueQueueJob } from "../services/event-source.js";
+import { createGithubIssueQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../services/event-source.js";
 import { listProjects } from "../services/hub-registry.js";
 import { resolveGithubTransport } from "../services/github-api.js";
 import {
+  buildSddApprovedComment,
   postGithubQueuedComment,
 } from "../services/github-comments.js";
+import { parseChannelCommand } from "../services/channel-commands.js";
+import { loadQueue, updateEntry } from "../services/hub-queue.js";
 
 function rawBodyBuffer(body) {
   if (Buffer.isBuffer(body)) return body;
@@ -81,6 +84,57 @@ export async function githubRoutes(fastify, opts = {}) {
     });
     if (normalized.status !== "ok") {
       return reply.code(202).send({ ...base, normalized });
+    }
+
+    // Handle GitHub issue comment commands (e.g., /cpb approve)
+    if (normalized.type === "github_issue_comment" && normalized.action === "created" && normalized.commandText) {
+      const parsed = parseChannelCommand(normalized.commandText);
+      if (parsed.ok && parsed.command === "approve" && parsed.job) {
+        const queue = await loadQueue(req.cpbHubRoot);
+        const entry = queue.entries.find((e) => e.id === parsed.job);
+        if (entry && entry.status === "waiting.approval") {
+          const ts = new Date().toISOString();
+          const sddTaskQueueEntries = await enqueueSddTaskEntriesForApprovedParent(req.cpbHubRoot, entry);
+          await updateEntry(req.cpbHubRoot, entry.id, {
+            status: entry.metadata?.sddApproval?.requiresApproval ? "completed" : "pending",
+            metadata: {
+              approvedAt: ts,
+              approvedBy: normalized.actor || null,
+              finalDisposition: "approved.children_queued",
+              sddApproval: entry.metadata?.sddApproval ? {
+                ...entry.metadata.sddApproval,
+                status: "approved",
+                approvedAt: ts,
+                approvedBy: normalized.actor || null,
+                childQueueEntryIds: sddTaskQueueEntries.map((e) => e.id),
+              } : undefined,
+            },
+          });
+
+          const transport = await resolveGithubTransport(req.cpbHubRoot);
+          const postComment = opts.githubPostComment || transport.postComment;
+          if (!opts.githubDryRun && typeof postComment === "function") {
+            await postComment({
+              repo: normalized.repo,
+              issueNumber: normalized.issueNumber,
+              body: buildSddApprovedComment({
+                actor: normalized.actor,
+                childCount: sddTaskQueueEntries.length,
+                queueEntryId: entry.id,
+              }),
+            }).catch(() => {});
+          }
+
+          return reply.code(202).send({
+            ...base,
+            normalized,
+            projectId: project.id,
+            commandHandled: "approve",
+            approved: { queueEntryId: entry.id, childCount: sddTaskQueueEntries.length },
+          });
+        }
+      }
+      return reply.code(202).send({ ...base, normalized, projectId: project.id });
     }
 
     const match = matchGithubTrigger(normalized, project.github?.triggers);

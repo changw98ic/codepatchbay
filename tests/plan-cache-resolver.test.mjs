@@ -8,6 +8,7 @@ import {
   writeParentPlanCache,
   parentPlanCacheIdentity,
 } from "../server/services/plan-cache.js";
+import { resolvePlanDecision } from "../bridges/run-pipeline.mjs";
 
 /**
  * Helpers for setting up test fixtures inside a temp cpbRoot.
@@ -217,5 +218,56 @@ describe("resolveParentPlan", () => {
     assert.equal(hit.cacheHit, true);
     assert.equal(hit.source, "cache");
     assert.equal(hit.parentPlanId, planId);
+  });
+
+  // 6. Stale cache → miss ------------------------------------------------------
+  it("returns cacheHit=false with stale=true when cache record exists but plan artifact is deleted", async () => {
+    const planId = "stale-plan-888";
+    await writePlanFile(cpbRoot, PROJECT, planId);
+
+    await writeParentPlanCache(cpbRoot, {
+      project: PROJECT,
+      task: "stale feature",
+      sourceContext: { repo: "org/stale" },
+      planId,
+    });
+
+    // Delete the plan file to simulate staleness
+    const planPath = path.join(cpbRoot, "wiki", "projects", PROJECT, "inbox", `plan-${planId}.md`);
+    await rm(planPath);
+
+    const result = await resolveParentPlan(cpbRoot, {
+      project: PROJECT,
+      task: "stale feature",
+      sourceContext: { repo: "org/stale" },
+    });
+
+    assert.equal(result.cacheHit, false);
+    assert.equal(result.source, null);
+    assert.equal(result.stale, true);
+  });
+
+  // 7. Cache hit → skip plan (resolvePlanDecision integration) ----------------
+  it("skips plan generation when resolvePlanDecision receives a cache hit", async () => {
+    const planId = "skip-plan-999";
+    await writePlanFile(cpbRoot, PROJECT, planId);
+
+    const hit = await resolveParentPlan(cpbRoot, {
+      project: PROJECT,
+      task: "skip plan test",
+      sourceContext: { parentPlanId: planId },
+    });
+
+    assert.equal(hit.cacheHit, true);
+    assert.equal(hit.source, "explicit");
+
+    const decision = resolvePlanDecision(
+      { phases: ["plan", "execute", "verify"] },
+      { planMode: "parent", parentPlanResult: hit },
+    );
+
+    assert.equal(decision.runPlan, false);
+    assert.equal(decision.planMode, "parent");
+    assert.equal(decision.planId, planId);
   });
 });

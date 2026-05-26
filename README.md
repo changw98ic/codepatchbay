@@ -119,6 +119,17 @@ CPB_ACP_CLAUDE_ARGS='["--some-arg"]'
 CPB_ACP_TIMEOUT_MS=1800000   # idle timeout (activity-based), 0 to disable
 ```
 
+## Light Plan Validation
+
+Light plans are constrained to 80 lines and must include `Affected Files`, `Tests`, and `Risk` sections.
+
+- **Default**: violations log a warning and execution continues.
+- **Strict mode** (`CPB_LIGHT_PLAN_STRICT=1`): violations fail the job.
+
+```bash
+CPB_LIGHT_PLAN_STRICT=1   # fail on light plan constraint violations
+```
+
 ## Durable Jobs
 
 The unattended mode uses durable jobs with event logs, lease heartbeats, task worktrees, and supervisor recovery.

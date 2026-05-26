@@ -362,10 +362,10 @@ describe("GitHub webhook queue glue", () => {
       assert.equal(queued[0].metadata.sddTasks.length, 2);
 
       assert.equal(posted.length, 1);
-      assert.match(posted[0].body, /SDD draft requires approval/);
-      assert.match(posted[0].body, new RegExp(`Queue: ${body.queue.queueEntryId}`));
-      assert.match(posted[0].body, new RegExp(`Approve with \`/cpb approve ${body.queue.queueEntryId}\``));
-      assert.match(posted[0].body, /Parsed tasks: 2/);
+      assert.match(posted[0].body, /SDD Draft Requires Approval/);
+      assert.match(posted[0].body, new RegExp(`Queue ID.*${body.queue.queueEntryId}`));
+      assert.match(posted[0].body, new RegExp(`/cpb approve ${body.queue.queueEntryId}`));
+      assert.match(posted[0].body, /\*\*Parsed tasks\*\*: 2/);
     } finally {
       if (previousSecret === undefined) delete process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET;
       else process.env.CPB_TEST_GITHUB_WEBHOOK_SECRET = previousSecret;
@@ -761,13 +761,13 @@ describe("GitHub queued status comment", () => {
       agents: { planner: "codex", executor: "claude", verifier: "codex" },
     });
 
-    assert.match(body, /SDD draft requires approval/);
-    assert.match(body, /Queue: q-sdd-approval/);
-    assert.match(body, /Spec: .*spec\.md/);
-    assert.match(body, /Design: .*design\.md/);
-    assert.match(body, /Tasks: .*tasks\.md/);
-    assert.match(body, /Parsed tasks: 2/);
-    assert.match(body, /Approve with `\/cpb approve q-sdd-approval`/);
+    assert.match(body, /SDD Draft Requires Approval/);
+    assert.match(body, /Queue ID.*q-sdd-approval/);
+    assert.match(body, /\*\*Spec\*\*.*spec\.md/);
+    assert.match(body, /\*\*Design\*\*.*design\.md/);
+    assert.match(body, /\*\*Tasks\*\*.*tasks\.md/);
+    assert.match(body, /\*\*Parsed tasks\*\*: 2/);
+    assert.match(body, /\/cpb approve q-sdd-approval/);
     assert.doesNotMatch(body, /I'll post updates here/);
     assert.doesNotMatch(body, /\/tmp\/cpb/);
   });

@@ -40,22 +40,39 @@ function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
   const metadata = queueEntry?.metadata || {};
   const workflow = metadata.workflow || "sdd-standard";
   const taskCount = Array.isArray(metadata.sddTasks) ? metadata.sddTasks.length : 0;
+  const queueId = queueEntry?.id;
+  const approveCmd = queueId ? `\`/cpb approve ${queueId}\`` : "a connected channel command";
   return [
-    "SDD draft requires approval.",
+    "### SDD Draft Requires Approval",
     "",
-    queueEntry?.id ? `- Queue: ${queueEntry.id}` : null,
-    `- Workflow: ${workflow}`,
-    `- Spec: ${displaySddPath(sddFilePath(metadata, "spec"))}`,
-    `- Design: ${displaySddPath(sddFilePath(metadata, "design"))}`,
-    `- Tasks: ${displaySddPath(sddFilePath(metadata, "tasks"))}`,
-    `- Parsed tasks: ${taskCount}`,
+    "A Spec-Driven Development draft has been generated for this issue. Review the artifacts below, then approve to start execution.",
+    "",
+    `- **Spec**: \`${displaySddPath(sddFilePath(metadata, "spec"))}\``,
+    `- **Design**: \`${displaySddPath(sddFilePath(metadata, "design"))}\``,
+    `- **Tasks**: \`${displaySddPath(sddFilePath(metadata, "tasks"))}\``,
+    `- **Parsed tasks**: ${taskCount}`,
+    queueId ? `- **Queue ID**: \`${queueId}\`` : null,
+    `- **Workflow**: \`${workflow}\``,
+    "",
     agentLine("Planner", agents.planner),
     agentLine("Executor", agents.executor),
     agentLine("Verifier", agents.verifier),
     "",
-    queueEntry?.id ? `Approve with \`/cpb approve ${queueEntry.id}\`.` : "Approve from a connected channel command.",
+    "---",
+    "",
+    `To approve, comment ${approveCmd} on this issue.`,
     "",
   ].filter((line) => line !== null).join("\n");
+}
+
+export function buildSddApprovedComment({ actor, childCount, queueEntryId } = {}) {
+  return [
+    "### SDD Draft Approved",
+    "",
+    `Approved by @${actor || "unknown"}.`,
+    childCount > 0 ? `${childCount} child task(s) queued for execution.` : "No child tasks were queued.",
+    "",
+  ].join("\n");
 }
 
 function hashBody(body) {
