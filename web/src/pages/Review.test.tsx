@@ -58,7 +58,7 @@ describe('Review Page', () => {
     render(<Review />, { wrapper: MemoryRouter });
 
     await waitFor(() => {
-      expect(screen.getByText(/review\.all/)).toBeInTheDocument();
+      expect(screen.getByText(/review\.queued/)).toBeInTheDocument();
     });
     expect(screen.getByText(/review\.needsAction/)).toBeInTheDocument();
     expect(screen.getByText(/review\.inProgress/)).toBeInTheDocument();

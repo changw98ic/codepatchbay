@@ -53,6 +53,7 @@ vi.mock('@vanilla-extract/css', () => {
     assignVars: vi.fn(() => ({})),
     createVar: () => 'var(--mock)',
     fontFace: vi.fn(() => ''),
+    keyframes: (obj: unknown) => `kf_${JSON.stringify(obj)}`,
   };
 });
 
