@@ -34,6 +34,17 @@ async function planFileExists(cpbRoot, project, planId) {
 }
 
 function stablePayload({ project, task, sourceContext = {} } = {}) {
+  const planGroupId = sourceContext?.planGroupId || sourceContext?.sddTask?.planGroupId || null;
+  if (planGroupId) {
+    return {
+      project,
+      planGroupId,
+      source: {
+        repo: sourceContext?.repo || null,
+        issueNumber: sourceContext?.issueNumber ?? null,
+      },
+    };
+  }
   return {
     project,
     task: String(task || "").trim().replace(/\s+/g, " "),

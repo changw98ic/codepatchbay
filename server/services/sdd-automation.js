@@ -198,10 +198,20 @@ function normalizeSddTask(task, index, project, event = {}, inherited = {}) {
   };
 }
 
+function stableSddPlanGroupId(project, event = {}) {
+  const payload = JSON.stringify({
+    project,
+    repo: event.repo || null,
+    issueNumber: event.issueNumber ?? null,
+  });
+  const digest = createHash("sha256").update(payload).digest("hex");
+  return `sdd-plan-group-${digest.slice(0, 12)}`;
+}
+
 function parseTasksMarkdown(markdown, project, event = {}) {
   const { frontmatter, body } = parseJsonFrontmatter(markdown);
   const inherited = {
-    planGroupId: frontmatter?.planGroupId || null,
+    planGroupId: frontmatter?.planGroupId || stableSddPlanGroupId(project, event),
     parentPlanId: frontmatter?.parentPlanId || null,
     planCacheKey: frontmatter?.planCacheKey || frontmatter?.cacheKey || null,
   };

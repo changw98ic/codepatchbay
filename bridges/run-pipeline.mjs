@@ -1208,15 +1208,25 @@ export async function runPipeline({
         });
         if (!lightCheck.valid) {
           const detail = lightCheck.reasons.join("; ");
-          warn(`Light plan constraint violations: ${detail}`);
           await appendEvent(cpbRoot, project, jobId, {
             type: "light_plan_constraint_violation",
             jobId,
             project,
             planId,
             reasons: lightCheck.reasons,
+            strict: process.env.CPB_LIGHT_PLAN_STRICT === "1",
             ts: ts(),
           });
+          if (process.env.CPB_LIGHT_PLAN_STRICT === "1") {
+            fail(`Light plan constraint violations (strict): ${detail}`);
+            await failJob(cpbRoot, project, jobId, failure(`light plan constraints violated: ${detail}`, {
+              code: FAILURE_CODES.RECOVERABLE,
+              phase: "plan",
+              cause: { planId, reasons: lightCheck.reasons },
+            }));
+            return 1;
+          }
+          warn(`Light plan constraint violations: ${detail}`);
         }
       }
 
