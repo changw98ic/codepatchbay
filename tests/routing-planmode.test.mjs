@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { getWorkflow, normalizeWorkflow, listWorkflows } from "../core/workflow/definition.js";
 import { normalizeDispatchFeedback, ROUTING_FEEDBACK_EXIT_CODE } from "../core/workflow/dispatch-feedback.js";
 import { classifyRoute } from "../core/workflow/triage.js";
-import { buildExecuteScriptArgs, findParentPlan, resolvePlanDecision } from "../bridges/run-pipeline.mjs";
+import { buildExecuteScriptArgs, resolvePlanDecision } from "../bridges/run-pipeline.mjs";
 
 describe("direct workflow and planMode routing", () => {
   it("defines direct as execute -> verify without a plan phase", () => {
@@ -45,7 +45,7 @@ describe("direct workflow and planMode routing", () => {
     assert.deepEqual(
       resolvePlanDecision(workflow, {
         planMode: "parent",
-        parentPlanResult: { planId: "007", parentJobId: "job-20260525-120000-aaaaaa", reason: "reused" },
+        parentPlanResult: { cacheHit: true, parentPlanId: "007", parentJobId: "job-20260525-120000-aaaaaa", source: "cache" },
       }),
       {
         requestedPlanMode: "parent",
@@ -53,11 +53,11 @@ describe("direct workflow and planMode routing", () => {
         runPlan: false,
         planId: "007",
         parentJobId: "job-20260525-120000-aaaaaa",
-        reason: "reused",
+        reason: "reused from cache",
       }
     );
 
-    assert.deepEqual(resolvePlanDecision(workflow, { planMode: "parent", parentPlanResult: null }), {
+    assert.deepEqual(resolvePlanDecision(workflow, { planMode: "parent", parentPlanResult: { cacheHit: false } }), {
       requestedPlanMode: "parent",
       planMode: "full",
       runPlan: true,

@@ -36,7 +36,6 @@ import { bridgeForPhase, getWorkflow, isWorkflowName, normalizeWorkflow } from "
 import { isRouteDowngrade, normalizeRoute } from "../core/triage/schema.js";
 import { executeDag } from "../core/workflow/dag-executor.js";
 import { dispatchPhase } from "../server/services/phase-runner.js";
-import { listJobsFromIndex } from "../server/services/jobs-index.js";
 import {
   dispatchEnabled,
   guardSourcePath as guardDispatchSourcePath,
@@ -56,7 +55,7 @@ import {
   resolveDeliverableIssue,
   validateIssueMatch,
 } from "../server/services/artifact-integrity.js";
-import { resolveParentPlanCache, writeParentPlanCache } from "../server/services/plan-cache.js";
+import { resolveParentPlan, writeParentPlanCache } from "../server/services/plan-cache.js";
 
 const PLAN_MODES = new Set(["auto", "none", "light", "full", "parent"]);
 const TRIAGE_MODES = new Set(["auto", "rules", "acp", "none"]);
@@ -492,82 +491,6 @@ function extractPlanId(stdout) {
   return match ? match[1] : null;
 }
 
-const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
-
-function normalizeWords(text = "") {
-  return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-}
-
-function wordOverlap(a, b) {
-  const sa = new Set(normalizeWords(a));
-  const sb = new Set(normalizeWords(b));
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let common = 0;
-  for (const w of sa) if (sb.has(w)) common++;
-  return common / Math.min(sa.size, sb.size);
-}
-
-async function planFileExists(cpbRoot, project, planId) {
-  try {
-    const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-    await access(path.join(wikiDir, "inbox", `plan-${planId}.md`));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function findParentPlan(cpbRoot, project, { sourceContext, task, dataRoot } = {}) {
-  const allJobs = await listJobsFromIndex(cpbRoot, { dataRoot });
-  const cutoff = Date.now() - PARENT_PLAN_MAX_AGE_MS;
-
-  const candidates = allJobs
-    .filter((j) => j.project === project)
-    .filter((j) => j.completedPhases?.includes("plan"))
-    .filter((j) => j.artifacts?.plan)
-    .filter((j) => j.status !== "cancelled")
-    .filter((j) => {
-      const t = new Date(j.updatedAt || j.createdAt).getTime();
-      return !Number.isNaN(t) && t >= cutoff;
-    })
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-
-  if (candidates.length === 0) return null;
-
-  const issueNumber = sourceContext?.issueNumber;
-  if (issueNumber) {
-    for (const job of candidates) {
-      const jobIssue = job.sourceContext?.issueNumber;
-      if (jobIssue && String(jobIssue) === String(issueNumber)) {
-        const planId = job.artifacts.plan.replace(/^plan-/, "");
-        if (await planFileExists(cpbRoot, project, planId)) {
-          return {
-            planId,
-            parentJobId: job.jobId,
-            reason: `reused plan from job ${job.jobId} (same issue #${issueNumber})`,
-          };
-        }
-      }
-    }
-  }
-
-  for (const job of candidates) {
-    const overlap = wordOverlap(task || "", job.task || "");
-    if (overlap >= 0.5) {
-      const planId = job.artifacts.plan.replace(/^plan-/, "");
-      if (await planFileExists(cpbRoot, project, planId)) {
-        return {
-          planId,
-          parentJobId: job.jobId,
-          reason: `reused plan from job ${job.jobId} (task overlap ${Math.round(overlap * 100)}%)`,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
 function extractDeliverableId(stdout) {
   const match = stdout.match(/^Deliverable: .*\/deliverable-(\d+)\.md$/m);
   return match ? match[1] : null;
@@ -630,14 +553,14 @@ export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlan
   }
 
   if (normalized === "parent") {
-    if (parentPlanResult) {
+    if (parentPlanResult?.cacheHit) {
       return {
         requestedPlanMode: "parent",
         planMode: "parent",
         runPlan: false,
-        planId: parentPlanResult.planId,
+        planId: parentPlanResult.parentPlanId || parentPlanResult.planId,
         parentJobId: parentPlanResult.parentJobId,
-        reason: parentPlanResult.reason,
+        reason: parentPlanResult.source ? `reused from ${parentPlanResult.source}` : "parent plan reuse",
       };
     }
     return {
@@ -947,7 +870,7 @@ export async function runPipeline({
   const workflowDef = getWorkflow(workflow);
   let parentPlanResult = null;
   if (planMode === "parent") {
-    parentPlanResult = await findParentPlan(cpbRoot, project, { sourceContext, task, dataRoot });
+    parentPlanResult = await resolveParentPlan(cpbRoot, { project, task, sourceContext, dataRoot });
   }
   const planDecision = resolvePlanDecision(workflowDef, { planMode, parentPlanResult });
   process.env.CPB_PLAN_MODE = planDecision.planMode;
@@ -1027,9 +950,8 @@ export async function runPipeline({
         triageMode,
       }
     : baseSourceContext;
-  let parentPlanCache = null;
-  if (planDecision.requestedPlanMode === "parent") {
-    parentPlanCache = await resolveParentPlanCache(cpbRoot, { project, task, sourceContext });
+  const parentPlanCache = planDecision.requestedPlanMode === "parent" ? parentPlanResult : null;
+  if (parentPlanCache) {
     process.env.CPB_PARENT_PLAN_CACHE_JSON = JSON.stringify(parentPlanCache);
   } else {
     delete process.env.CPB_PARENT_PLAN_CACHE_JSON;
