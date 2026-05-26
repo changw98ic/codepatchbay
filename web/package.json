@@ -6,8 +6,8 @@
   "scripts": {
     "test": "vitest",
     "dev": "vite",
-    "build": "vite build",
-    "build:pack": "vite build --logLevel error",
+    "build": "vite build --config vite.config.ts",
+    "build:pack": "vite build --config vite.config.ts --logLevel error",
     "preview": "vite preview"
   },
   "dependencies": {
