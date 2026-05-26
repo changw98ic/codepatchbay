@@ -39,8 +39,18 @@ function parseJsonEnv(name) {
 function plannerModeSection() {
   const planMode = process.env.CPB_PLAN_MODE || "auto";
   if (planMode === "light") {
-    return `## Light Plan Mode
-Produce a concise plan for low-risk work. Keep the step count small, avoid broad research, and include only acceptance criteria needed to execute safely.`;
+    return `## Light Plan Mode (MANDATORY CONSTRAINTS)
+Produce a concise plan for low-risk work. This mode enforces hard limits:
+
+- MAX 80 LINES total. Plans exceeding this will be rejected.
+- NO broad research or exploration steps.
+- NO full design reasoning or architecture proposals.
+- Required sections (all three must be present):
+  1. **Affected Files** — list every file that will change, with one-line change description.
+  2. **Tests** — describe test changes or new tests needed.
+  3. **Risk** — one-line risk assessment (low/medium/high) with brief justification.
+- Keep step count ≤ 5. Each step must map to a specific file change.
+- Skip context preamble — assume the executor has read this plan file.`;
   }
   if (planMode === "parent") {
     const cache = parseJsonEnv("CPB_PARENT_PLAN_CACHE_JSON");
