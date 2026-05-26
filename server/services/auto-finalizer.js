@@ -183,17 +183,19 @@ function routeAllowsProtectedDiff(route, protectedScopes = []) {
     if (!hasCritical) {
       return { allowed: true, escalation: null, reviewer: true };
     }
+    // Critical scopes: keep SDD workflow, upgrade to full plan + reviewer
     return {
       allowed: false,
-      escalation: { workflow: "complex", planMode: "full", reviewer: true },
+      escalation: { workflow: "sdd-standard", planMode: "full", reviewer: true },
       reviewer: true,
     };
   }
 
   if (wf === "standard" && pm === "light") {
+    // Keep standard workflow, upgrade to full plan + reviewer
     return {
       allowed: false,
-      escalation: { workflow: "complex", planMode: "full", reviewer: true },
+      escalation: { workflow: "standard", planMode: "full", reviewer: true },
       reviewer: true,
     };
   }
@@ -274,7 +276,7 @@ async function requeueProtectedDiffUpgrade({
       reasons: [
         ...new Set([
           ...((entry.metadata?.routing || {}).reasons || []),
-          "final diff guard forced complex/full",
+          `final diff guard forced ${escalation.workflow}/${escalation.planMode}`,
         ]),
       ],
     },

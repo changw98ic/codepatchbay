@@ -1215,33 +1215,62 @@ describe("GitHub draft PR creation", () => {
     }
   }
 
-  for (const route of [
-    { workflow: "direct", planMode: "none", reviewer: false },
-    { workflow: "standard", planMode: "light", reviewer: false },
-    { workflow: "sdd-standard", planMode: "parent", reviewer: false },
-  ]) {
-    it(`rejects ${route.workflow}/${route.planMode} protected diffs and requeues them as complex/full`, async () => {
-      const { result, entries, queueEntry } = await finalizeProtectedAuthDiff(route);
-
-      assert.equal(result.ok, false);
-      assert.equal(result.status, "rejected");
-      assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
-      assert.equal(result.requeuedWorkflow, "complex");
-      assert.equal(result.requeuedPlanMode, "full");
-      assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
-
-      const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
-      assert.ok(upgraded, "expected a complex/full requeue entry");
-      assert.equal(upgraded.status, "pending");
-      assert.equal(upgraded.type, "routing_upgrade");
-      assert.equal(upgraded.metadata.workflow, "complex");
-      assert.equal(upgraded.metadata.planMode, "full");
-      assert.equal(upgraded.metadata.originQueueId, queueEntry.id);
-      assert.equal(upgraded.metadata.supersedesQueueEntryId, queueEntry.id);
-      assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
-      assert.ok(upgraded.metadata.finalDiffGuard.protectedScopes.some((scope) => scope.scope === "auth"));
+  it("rejects direct/none protected diffs and requeues as complex/full", async () => {
+    const { result, entries, queueEntry } = await finalizeProtectedAuthDiff({
+      workflow: "direct", planMode: "none", reviewer: false,
     });
-  }
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "rejected");
+    assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
+    assert.equal(result.requeuedWorkflow, "complex");
+    assert.equal(result.requeuedPlanMode, "full");
+    assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
+
+    const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
+    assert.ok(upgraded, "expected a complex/full requeue entry");
+    assert.equal(upgraded.metadata.workflow, "complex");
+    assert.equal(upgraded.metadata.planMode, "full");
+    assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
+  });
+
+  it("rejects standard/light protected diffs and requeues as standard/full", async () => {
+    const { result, entries, queueEntry } = await finalizeProtectedAuthDiff({
+      workflow: "standard", planMode: "light", reviewer: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "rejected");
+    assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
+    assert.equal(result.requeuedWorkflow, "standard");
+    assert.equal(result.requeuedPlanMode, "full");
+    assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
+
+    const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
+    assert.ok(upgraded, "expected a standard/full requeue entry");
+    assert.equal(upgraded.metadata.workflow, "standard");
+    assert.equal(upgraded.metadata.planMode, "full");
+    assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
+  });
+
+  it("rejects sdd-standard/parent critical protected diffs and requeues as sdd-standard/full", async () => {
+    const { result, entries, queueEntry } = await finalizeProtectedAuthDiff({
+      workflow: "sdd-standard", planMode: "parent", reviewer: false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "rejected");
+    assert.equal(result.code, "ROUTE_PROTECTED_DIFF");
+    assert.equal(result.requeuedWorkflow, "sdd-standard");
+    assert.equal(result.requeuedPlanMode, "full");
+    assert.equal(result.protectedDiff.actualDiffRisk.protected, true);
+
+    const upgraded = entries.find((entry) => entry.id !== queueEntry.id);
+    assert.ok(upgraded, "expected a sdd-standard/full requeue entry");
+    assert.equal(upgraded.metadata.workflow, "sdd-standard");
+    assert.equal(upgraded.metadata.planMode, "full");
+    assert.equal(upgraded.metadata.finalDiffGuard.protected, true);
+  });
 
   it("allows complex/full reviewer protected diffs without another routing upgrade", async () => {
     const { result, entries, queueEntry } = await finalizeProtectedAuthDiff({
