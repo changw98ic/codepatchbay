@@ -43,6 +43,10 @@ export function defaultPlanModeForWorkflow(workflow) {
   return WORKFLOW_DEFAULT_PLAN_MODE[workflow] || "light";
 }
 
+export function scopesContainCritical(protectedScopes = []) {
+  return (protectedScopes || []).some((scope) => scope.severity === "critical");
+}
+
 export function normalizeActorTrust({
   actor = null,
   actorName = null,
@@ -107,9 +111,13 @@ export function normalizeProtectedScopes(scopes = []) {
     if (!name) continue;
     const existing = byScope.get(name) || {
       scope: name,
+      severity: scope?.severity || "standard",
       reason: cleanString(scope?.reason) || "protected scope",
       signals: [],
     };
+    if (scope?.severity === "critical" || existing.severity === "critical") {
+      existing.severity = "critical";
+    }
     const signals = Array.isArray(scope?.signals) ? scope.signals : [];
     for (const signal of signals) {
       const text = cleanString(signal);

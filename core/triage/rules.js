@@ -23,21 +23,25 @@ const TEST_KEYWORDS = [
 const PROTECTED_RULES = [
   {
     scope: "security",
+    severity: "standard",
     patterns: [/\bsecurity\b/i, /\bvulnerab/i, /\bcve-\d+/i, /\bsecrets?\b/i, /\btoken\b/i, /\bpasswords?\b/i],
     filePatterns: [/security/i, /secret/i, /token/i, /password/i],
   },
   {
     scope: "auth",
+    severity: "critical",
     patterns: [/\bauth(?:n|z|entication|orization)?\b/i, /\blogin\b/i, /\boauth\b/i, /\bsession\b/i],
     filePatterns: [/auth/i, /login/i, /oauth/i, /session/i],
   },
   {
     scope: "db",
+    severity: "standard",
     patterns: [/\bdb\b/i, /\bdatabase\b/i, /\bmigrations?\b/i, /\bschema\b/i, /\bsql\b/i],
     filePatterns: [/db/i, /database/i, /migration/i, /schema/i, /\.sql$/i],
   },
   {
     scope: "payment",
+    severity: "critical",
     patterns: [/\bpayments?\b/i, /\bbilling\b/i, /\bstripe\b/i],
     filePatterns: [/payment/i, /billing/i, /stripe/i],
   },
@@ -88,6 +92,7 @@ export function detectProtectedScopes(input = {}) {
     if (!textMatch && !fileMatch) continue;
     scopes.push({
       scope: rule.scope,
+      severity: rule.severity || "standard",
       reason: fileMatch ? `protected file path: ${fileMatch}` : `protected keyword: ${rule.scope}`,
       signals: [textMatch?.source || null, fileMatch || null].filter(Boolean),
     });

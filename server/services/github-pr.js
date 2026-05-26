@@ -19,15 +19,15 @@ function prTitle(job) {
   return `[cpb] ${title}`;
 }
 
-function prBody(job) {
-  return buildCodePatchBayPrBody({ job, verdict: { status: "pass" } });
+function prBody(job, routingContext = null) {
+  return buildCodePatchBayPrBody({ job, verdict: { status: "pass" }, routingContext });
 }
 
-function buildRequest(job) {
+function buildRequest(job, routingContext = null) {
   return {
     repo: job.sourceContext?.repo || null,
     title: prTitle(job),
-    body: prBody(job),
+    body: prBody(job, routingContext),
     head: job.worktreeBranch || null,
     base: job.worktreeBaseBranch || "main",
     draft: true,
@@ -189,6 +189,7 @@ export async function openDraftPullRequest({
   createPullRequest,
   runCommand,
   pushToken = null,
+  routingContext = null,
 } = {}) {
   if (!isPass(verdict)) {
     return {
@@ -198,7 +199,7 @@ export async function openDraftPullRequest({
     };
   }
 
-  const request = buildRequest(job || {});
+  const request = buildRequest(job || {}, routingContext);
   const evidence = {
     repo: request.repo,
     head: request.head,
@@ -262,6 +263,7 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options
     createPullRequest: options.createPullRequest,
     runCommand: options.runCommand,
     pushToken: options.pushToken,
+    routingContext: options.routingContext || null,
   });
 
   if (result.status === "pr.opened") {

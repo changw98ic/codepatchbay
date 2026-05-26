@@ -12,7 +12,7 @@ import { appendEvent } from "./event-store.js";
 import { openDraftPullRequest } from "./github-pr.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { actualDiffRiskGuard } from "../../core/triage/rules.js";
-import { normalizeRoute } from "../../core/triage/schema.js";
+import { normalizeRoute, scopesContainCritical } from "../../core/triage/schema.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -170,17 +170,60 @@ function routingEffectiveRoute(entry = {}, job = {}) {
   );
 }
 
-function routeAllowsProtectedDiff(route) {
-  return route?.workflow === "complex" && route?.planMode === "full";
+function routeAllowsProtectedDiff(route, protectedScopes = []) {
+  if (route?.workflow === "complex" && route?.planMode === "full") {
+    return { allowed: true, escalation: null, reviewer: false };
+  }
+
+  const hasCritical = scopesContainCritical(protectedScopes);
+  const wf = route?.workflow;
+  const pm = route?.planMode;
+
+  if (wf === "sdd-standard" && pm === "parent") {
+    if (!hasCritical) {
+      return { allowed: true, escalation: null, reviewer: true };
+    }
+    return {
+      allowed: false,
+      escalation: { workflow: "complex", planMode: "full", reviewer: true },
+      reviewer: true,
+    };
+  }
+
+  if (wf === "standard" && pm === "light") {
+    return {
+      allowed: false,
+      escalation: { workflow: "complex", planMode: "full", reviewer: true },
+      reviewer: true,
+    };
+  }
+
+  if (wf === "direct" && pm === "none") {
+    return {
+      allowed: false,
+      escalation: { workflow: "complex", planMode: "full", reviewer: false },
+      reviewer: false,
+    };
+  }
+
+  return {
+    allowed: false,
+    escalation: { workflow: "complex", planMode: "full", reviewer: true },
+    reviewer: true,
+  };
 }
 
 function protectedDiffForRoute(files, entry, job) {
   const route = routingEffectiveRoute(entry, job);
   const protectedDiff = actualDiffRiskGuard({ files });
-  if (!protectedDiff.actualDiffRisk.protected || routeAllowsProtectedDiff(route)) {
-    return { blocked: false, route, protectedDiff };
+  if (!protectedDiff.actualDiffRisk.protected) {
+    return { blocked: false, route, protectedDiff, guardResult: { allowed: true } };
   }
-  return { blocked: true, route, protectedDiff };
+  const guardResult = routeAllowsProtectedDiff(route, protectedDiff.protectedScopes);
+  if (guardResult.allowed) {
+    return { blocked: false, route, protectedDiff, guardResult };
+  }
+  return { blocked: true, route, protectedDiff, guardResult };
 }
 
 async function requeueProtectedDiffUpgrade({
@@ -193,15 +236,18 @@ async function requeueProtectedDiffUpgrade({
   jobId,
   route,
   protectedDiff,
+  guardResult,
 } = {}) {
   if (!hubRoot || !entry?.id || !projectId) return null;
+  const escalation = guardResult?.escalation || { workflow: "complex", planMode: "full", reviewer: true };
+  const scopeLevel = scopesContainCritical(protectedDiff.protectedScopes) ? "critical" : "non-critical";
   const upgradeRoute = normalizeRoute({
     category: "protected",
-    workflow: "complex",
-    planMode: "full",
-    reviewer: true,
+    workflow: escalation.workflow,
+    planMode: escalation.planMode,
+    reviewer: escalation.reviewer,
     source: "final_diff_guard",
-    reason: "final diff touched protected scopes before complex/full review",
+    reason: `final diff touched ${scopeLevel} protected scopes; escalated from ${route.workflow}/${route.planMode}`,
   });
   const guardMetadata = {
     protected: true,
@@ -263,6 +309,30 @@ async function requeueProtectedDiffUpgrade({
   }).catch(() => {});
 
   return upgraded;
+}
+
+function buildRoutingContext(entry, job, routeGuard = null) {
+  const metadata = entry?.metadata || {};
+  const routing = metadata.routing || {};
+  let finalDiffGuard = null;
+  if (routeGuard) {
+    finalDiffGuard = {
+      passed: !routeGuard.blocked,
+      protectedScopes: routeGuard.protectedDiff?.protectedScopes || [],
+      guardResult: routeGuard.guardResult,
+      route: routeGuard.route,
+    };
+  } else if (metadata.finalDiffGuard) {
+    finalDiffGuard = { passed: false, ...metadata.finalDiffGuard };
+  }
+  return {
+    routing,
+    planMode: metadata.planMode || job.planMode || null,
+    sddBootstrap: metadata.sddBootstrap || null,
+    childTaskIds: metadata.sddApproval?.childQueueEntryIds || null,
+    contextPack: metadata.contextPack || null,
+    finalDiffGuard,
+  };
 }
 
 function commitMessage({ jobId, issueNumber }) {
@@ -374,6 +444,7 @@ export async function finalizeSuccessfulQueueEntry({
       jobId,
       route: routeGuard.route,
       protectedDiff: routeGuard.protectedDiff,
+      guardResult: routeGuard.guardResult,
     });
     if (cpbRoot && projectId) {
       await appendEvent(cpbRoot, projectId, jobId, {
@@ -383,8 +454,9 @@ export async function finalizeSuccessfulQueueEntry({
         issue,
         originalRoute: routeGuard.route,
         protectedDiff: routeGuard.protectedDiff,
+        guardResult: routeGuard.guardResult,
         requeuedQueueEntryId: upgraded?.id || null,
-        action: upgraded ? "requeued_complex_full" : "rejected_no_requeue",
+        action: upgraded ? `requeued_${routeGuard.guardResult.escalation?.workflow || "complex"}_${routeGuard.guardResult.escalation?.planMode || "full"}` : "rejected_no_requeue",
         ts: new Date().toISOString(),
       }, { dataRoot });
     }
@@ -453,6 +525,7 @@ export async function finalizeSuccessfulQueueEntry({
       createPullRequest,
       runCommand,
       pushToken,
+      routingContext: buildRoutingContext(entry, job, routeGuard),
     });
     if (pr.status !== "pr.opened") {
       return reject("PR_FINALIZE_FAILED", {
