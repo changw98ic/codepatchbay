@@ -609,6 +609,7 @@ export function buildExecuteScriptArgs({ project, planId, jobId, retryInput } = 
 export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlanResult = null } = {}) {
   if (!workflowDef?.phases?.includes("plan")) {
     return {
+      requestedPlanMode: planMode,
       planMode: "none",
       runPlan: false,
       reason: "workflow has no plan phase",
@@ -621,6 +622,7 @@ export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlan
   const normalized = planMode;
   if (normalized === "none") {
     return {
+      requestedPlanMode: "none",
       planMode: "none",
       runPlan: false,
       reason: "planMode=none",
@@ -630,6 +632,7 @@ export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlan
   if (normalized === "parent") {
     if (parentPlanResult) {
       return {
+        requestedPlanMode: "parent",
         planMode: "parent",
         runPlan: false,
         planId: parentPlanResult.planId,
@@ -638,14 +641,17 @@ export function resolvePlanDecision(workflowDef, { planMode = "auto", parentPlan
       };
     }
     return {
+      requestedPlanMode: "parent",
       planMode: "full",
       runPlan: true,
       reason: "parent plan not found, fallback to full",
     };
   }
 
+  const effective = normalized === "auto" ? "full" : normalized;
   return {
-    planMode: normalized === "auto" ? "full" : normalized,
+    requestedPlanMode: normalized,
+    planMode: effective,
     runPlan: true,
     reason: "plan phase enabled",
   };
@@ -1022,7 +1028,7 @@ export async function runPipeline({
       }
     : baseSourceContext;
   let parentPlanCache = null;
-  if (planDecision.planMode === "parent") {
+  if (planDecision.requestedPlanMode === "parent") {
     parentPlanCache = await resolveParentPlanCache(cpbRoot, { project, task, sourceContext });
     process.env.CPB_PARENT_PLAN_CACHE_JSON = JSON.stringify(parentPlanCache);
   } else {

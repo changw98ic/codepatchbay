@@ -21,16 +21,19 @@ describe("direct workflow and planMode routing", () => {
 
   it("skips planning when workflow has no plan or planMode is none", () => {
     assert.deepEqual(resolvePlanDecision(getWorkflow("direct"), { planMode: "auto" }), {
+      requestedPlanMode: "auto",
       planMode: "none",
       runPlan: false,
       reason: "workflow has no plan phase",
     });
     assert.deepEqual(resolvePlanDecision(getWorkflow("standard"), { planMode: "none" }), {
+      requestedPlanMode: "none",
       planMode: "none",
       runPlan: false,
       reason: "planMode=none",
     });
     assert.deepEqual(resolvePlanDecision(getWorkflow("standard"), { planMode: "light" }), {
+      requestedPlanMode: "light",
       planMode: "light",
       runPlan: true,
       reason: "plan phase enabled",
@@ -45,6 +48,7 @@ describe("direct workflow and planMode routing", () => {
         parentPlanResult: { planId: "007", parentJobId: "job-20260525-120000-aaaaaa", reason: "reused" },
       }),
       {
+        requestedPlanMode: "parent",
         planMode: "parent",
         runPlan: false,
         planId: "007",
@@ -54,6 +58,7 @@ describe("direct workflow and planMode routing", () => {
     );
 
     assert.deepEqual(resolvePlanDecision(workflow, { planMode: "parent", parentPlanResult: null }), {
+      requestedPlanMode: "parent",
       planMode: "full",
       runPlan: true,
       reason: "parent plan not found, fallback to full",
