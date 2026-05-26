@@ -180,7 +180,16 @@
     "researching": "研究中",
     "userReview": "用户审查",
     "approved": "已批准",
-    "rejected": "已拒绝"
+    "rejected": "已拒绝",
+    "dispatched": "已派发",
+    "expired": "已过期",
+    "mergeFailed": "合并失败",
+    "done": "已完成",
+    "executing": "执行中",
+    "success": "成功",
+    "error": "错误",
+    "working": "工作中",
+    "stable": "稳定"
   },
   "theme": {
     "light": "浅色",
@@ -204,6 +213,13 @@
     "expand": "展开",
     "collapse": "收起",
     "details": "详情",
-    "actions": "操作"
+    "actions": "操作",
+    "reset": "重置"
+  },
+  "pipeline": {
+    "plan": "规划",
+    "execute": "执行",
+    "verify": "验证",
+    "retry": "重试"
   }
 }

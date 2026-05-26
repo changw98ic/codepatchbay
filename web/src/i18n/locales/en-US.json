@@ -180,7 +180,16 @@
     "researching": "Researching",
     "userReview": "User Review",
     "approved": "Approved",
-    "rejected": "Rejected"
+    "rejected": "Rejected",
+    "dispatched": "Dispatched",
+    "expired": "Expired",
+    "mergeFailed": "Merge Failed",
+    "done": "Done",
+    "executing": "Executing",
+    "success": "Success",
+    "error": "Error",
+    "working": "Working",
+    "stable": "Stable"
   },
   "theme": {
     "light": "Light",
@@ -204,6 +213,13 @@
     "expand": "Expand",
     "collapse": "Collapse",
     "details": "Details",
-    "actions": "Actions"
+    "actions": "Actions",
+    "reset": "Reset"
+  },
+  "pipeline": {
+    "plan": "Plan",
+    "execute": "Execute",
+    "verify": "Verify",
+    "retry": "Retry"
   }
 }

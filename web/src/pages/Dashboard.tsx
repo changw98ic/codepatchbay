@@ -122,13 +122,24 @@ export default function Dashboard() {
   const dispatchObs = observability as DispatchSummary | null;
   const workersObs = observability as ObsWorkers | null;
 
+  // Dedup by sourcePath/path first, then name/id — same directory = same project
   const legacyByName = new Map(projects.map((p) => [p.name, p]));
+  const legacyByPath = new Map(
+    projects.filter((p) => p.path).map((p) => [p.path!, p]),
+  );
   const primaryProjects = hubProjects.map((hp) => {
-    const legacy = legacyByName.get(hp.id) || legacyByName.get(hp.name);
+    const byPath = hp.sourcePath ? legacyByPath.get(hp.sourcePath) : null;
+    const legacy = byPath || legacyByName.get(hp.id) || legacyByName.get(hp.name);
     return { ...hp, ...(legacy || {}), id: hp.id };
   });
+  const hubPaths = new Set(hubProjects.filter((hp) => hp.sourcePath).map((hp) => hp.sourcePath!));
   const hubIds = new Set(hubProjects.map((p) => p.id));
-  const secondaryProjects = projects.filter((p) => !hubIds.has(p.name));
+  const hubNames = new Set(hubProjects.map((p) => p.name));
+  const secondaryProjects = projects.filter((p) => {
+    if (hubIds.has(p.name) || hubNames.has(p.name)) return false;
+    if (p.path && hubPaths.has(p.path)) return false;
+    return true;
+  });
 
   const workerAgeById = new Map(
     (workersObs?.workers?.details ?? []).map((w) => [w.id, { ageMs: w.ageMs }] as [string, { ageMs: number }]),

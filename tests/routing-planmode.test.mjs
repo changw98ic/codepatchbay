@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { getWorkflow, normalizeWorkflow, listWorkflows } from "../core/workflow/definition.js";
 import { normalizeDispatchFeedback, ROUTING_FEEDBACK_EXIT_CODE } from "../core/workflow/dispatch-feedback.js";
 import { classifyRoute } from "../core/workflow/triage.js";
-import { buildExecuteScriptArgs, resolvePlanDecision } from "../bridges/run-pipeline.mjs";
+import { buildExecuteScriptArgs, findParentPlan, resolvePlanDecision } from "../bridges/run-pipeline.mjs";
 
 describe("direct workflow and planMode routing", () => {
   it("defines direct as execute -> verify without a plan phase", () => {
@@ -34,6 +34,29 @@ describe("direct workflow and planMode routing", () => {
       planMode: "light",
       runPlan: true,
       reason: "plan phase enabled",
+    });
+  });
+
+  it("resolves parent planMode to reuse or fallback", () => {
+    const workflow = getWorkflow("standard");
+    assert.deepEqual(
+      resolvePlanDecision(workflow, {
+        planMode: "parent",
+        parentPlanResult: { planId: "007", parentJobId: "job-20260525-120000-aaaaaa", reason: "reused" },
+      }),
+      {
+        planMode: "parent",
+        runPlan: false,
+        planId: "007",
+        parentJobId: "job-20260525-120000-aaaaaa",
+        reason: "reused",
+      }
+    );
+
+    assert.deepEqual(resolvePlanDecision(workflow, { planMode: "parent", parentPlanResult: null }), {
+      planMode: "full",
+      runPlan: true,
+      reason: "parent plan not found, fallback to full",
     });
   });
 
