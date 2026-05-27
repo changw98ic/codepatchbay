@@ -1167,12 +1167,23 @@ export async function runPipeline({
       }
       const planAgentLabel = await agentLabelFor("plan");
       log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (${planAgentLabel})`);
+      const planAgent = await resolvePhaseAgent("plan");
+      const planAgentEnv = planAgent ? { CPB_OVERRIDE_AGENT: planAgent } : {};
+      let planModelEnv = {};
+      const planProfileName = projectAgents?.phaseProfiles?.plan;
+      if (planProfileName) {
+        const { resolveModelProfileEnv } = await import("../cli/commands/model-profile.js");
+        planModelEnv = await resolveModelProfileEnv(cpbRoot, planProfileName);
+        if (Object.keys(planModelEnv).length > 0) {
+          log(project, `Phase plan: using model profile '${planProfileName}'`);
+        }
+      }
       const planResult = await dispatchPhase(cpbRoot, {
         project, jobId, phase: "plan",
         script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
         scriptArgs: ["plan", "--project", project, "--task", task],
         executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...planAgentEnv, ...planModelEnv },
         terminalOnFailure: false,
       });
 
