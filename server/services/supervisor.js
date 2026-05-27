@@ -265,7 +265,9 @@ export function bridgeForPhase(phase, project, job) {
       const planId = artifactId(job.artifacts?.plan, "plan");
       return {
         script: path.join(bridgesDir, "run-phase.mjs"),
-        args: ["execute", "--project", project, "--plan-id", planId],
+        args: planId
+          ? ["execute", "--project", project, "--plan-id", planId]
+          : ["execute", "--project", project, "--job-id", job.jobId],
       };
     }
     case "verify": {
@@ -467,6 +469,23 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
         executorRoot: resolvedExecutorRoot,
       }),
     });
+
+    // Sync job index with actual event-log state after phase run
+    if (result.exitCode === 0) {
+      try {
+        const { completePhase: updateJobPhase } = await import("./job-store.js");
+        await updateJobPhase(cpbRoot, recoveryJob.project, recoveryJob.jobId, { phase, artifact: "" });
+      } catch {}
+    } else {
+      try {
+        const { getJob } = await import("./job-store.js");
+        const { updateJobsIndexEntry } = await import("./jobs-index.js");
+        const fresh = await getJob(cpbRoot, recoveryJob.project, recoveryJob.jobId);
+        if (fresh && TERMINAL_STATUSES.has(fresh.status)) {
+          await updateJobsIndexEntry(cpbRoot, recoveryJob.project, fresh);
+        }
+      } catch {}
+    }
 
     return {
       jobId: recoveryJob.jobId,

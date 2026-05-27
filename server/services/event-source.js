@@ -361,7 +361,7 @@ function githubQueuePayload(event, match, route) {
     url: event.url || null,
     actor: event.actor || null,
     workflow: effective.workflow || match.workflow || "standard",
-    planMode: effective.planMode || match.planMode || "full",
+    planMode: match.planMode || effective.planMode || "full",
     route,
     action: event.action || null,
     commandText: event.commandText || null,
