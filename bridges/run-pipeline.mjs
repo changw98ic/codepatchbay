@@ -495,6 +495,7 @@ function extractPlanId(stdout) {
 }
 
 function extractDeliverableId(stdout) {
+  if (!stdout) return null;
   const match = stdout.match(/^Deliverable: .*\/deliverable-(\d+)\.md$/m);
   return match ? match[1] : null;
 }

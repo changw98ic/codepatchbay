@@ -4,6 +4,9 @@ import path from "node:path";
 // --- Legacy (backward compat) ---
 
 export function runtimeDataRoot(cpbRoot) {
+  if (process.env.CPB_PROJECT_RUNTIME_ROOT) {
+    return path.resolve(process.env.CPB_PROJECT_RUNTIME_ROOT);
+  }
   return path.join(path.resolve(cpbRoot), "cpb-task");
 }
 

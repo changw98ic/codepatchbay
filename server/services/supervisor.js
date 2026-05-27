@@ -3,7 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { isLeaseStale, readLease } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
-import { getProject, resolveHubRoot } from "./hub-registry.js";
+import { getProject, listProjects, resolveHubRoot } from "./hub-registry.js";
 import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase, normalizeWorkflow } from "../../core/workflow/definition.js";
 import { readyNodes as dagReadyNodes, scheduleReadyNodes, isDagComplete } from "../../core/workflow/dag-executor.js";
@@ -339,6 +339,17 @@ function runChild(command, args, cwd, { env = process.env } = {}) {
  * Returns { jobId, project, phase, exitCode, nodes } on success or error.
  */
 export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExecutor = false, now } = {}) {
+  // Resolve per-project runtime root so all internal calls write to the correct data dir
+  const prevRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const registered = await getProject(hubRoot, job.project);
+    if (registered?.projectRuntimeRoot) {
+      process.env.CPB_PROJECT_RUNTIME_ROOT = registered.projectRuntimeRoot;
+    }
+  } catch {}
+
+  try {
   const callerRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const resolvedExecutorRoot = useCurrentExecutor
     ? callerRoot
@@ -489,6 +500,13 @@ export async function recoverOneJob(cpbRoot, job, { executorRoot, useCurrentExec
   }
 
   return nodes[0];
+  } finally {
+    if (prevRuntimeRoot === undefined) {
+      delete process.env.CPB_PROJECT_RUNTIME_ROOT;
+    } else {
+      process.env.CPB_PROJECT_RUNTIME_ROOT = prevRuntimeRoot;
+    }
+  }
 }
 
 /**
@@ -521,7 +539,37 @@ export async function recoverAndRun(cpbRoot, { now, maxConcurrent = 1, executorR
     });
   } catch {}
 
-  const jobs = await recoverJobs(cpbRoot, { now });
+  // Collect recoverable jobs across all registered project runtime roots
+  let jobs = [];
+  try {
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const projects = await listProjects(hubRoot);
+    for (const project of projects) {
+      if (!project.projectRuntimeRoot) continue;
+      const prevRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+      try {
+        process.env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
+        const projectJobs = await recoverJobs(cpbRoot, { now });
+        jobs.push(...projectJobs);
+      } finally {
+        if (prevRuntimeRoot === undefined) delete process.env.CPB_PROJECT_RUNTIME_ROOT;
+        else process.env.CPB_PROJECT_RUNTIME_ROOT = prevRuntimeRoot;
+      }
+    }
+  } catch {}
+  // Also scan the default legacy root
+  const prevRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+  try {
+    delete process.env.CPB_PROJECT_RUNTIME_ROOT;
+    const legacyJobs = await recoverJobs(cpbRoot, { now });
+    const seen = new Set(jobs.map((j) => `${j.project}/${j.jobId}`));
+    for (const j of legacyJobs) {
+      if (!seen.has(`${j.project}/${j.jobId}`)) jobs.push(j);
+    }
+  } finally {
+    if (prevRuntimeRoot !== undefined) process.env.CPB_PROJECT_RUNTIME_ROOT = prevRuntimeRoot;
+  }
+
   const resolvedExecutorRoot = resolveExecutorRoot({ fallbackRoot: executorRoot || cpbRoot });
   const results = [];
 

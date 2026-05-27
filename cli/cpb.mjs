@@ -173,6 +173,29 @@ async function main() {
 
   const mod = cmd in COMMANDS ? await import(path.join(CPB_EXECUTOR_ROOT, "cli", "commands", COMMANDS[cmd])) : null;
 
+  // Resolve per-project runtime root from hub registry for project-scoped commands
+  if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
+    const PROJECT_COMMANDS = new Set(["plan", "execute", "verify", "pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config"]);
+    if (PROJECT_COMMANDS.has(cmd)) {
+      let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
+      // Commands like `run` pass project via --project flag, not positionally
+      const projectFlagIdx = cmdArgs.indexOf("--project");
+      if (projectFlagIdx >= 0 && cmdArgs[projectFlagIdx + 1]) {
+        projectArg = cmdArgs[projectFlagIdx + 1];
+      }
+      if (projectArg) {
+        try {
+          const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub-registry.js"));
+          const hubRoot = resolveHubRoot(CPB_ROOT);
+          const project = await getProject(hubRoot, projectArg);
+          if (project?.projectRuntimeRoot) {
+            process.env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
+          }
+        } catch {}
+      }
+    }
+  }
+
   if (!mod) {
     console.error(`${RED}Unknown command: ${cmd}${NC}`);
     usage();

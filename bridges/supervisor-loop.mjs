@@ -67,6 +67,12 @@ async function tickAutoEnqueue() {
       if (!repo) continue;
 
       try {
+        // Set per-project runtime root so event/lease/job writes go to the right place
+        const prevRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+        if (project.projectRuntimeRoot) {
+          process.env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
+        }
+
         const { syncGithubIssuesFromGh } = await import("../server/services/github-issues.js");
         await syncGithubIssuesFromGh(hubRoot, { repo, projectId: project.id, state: "open", limit: 500, cwd: cpbRoot });
 
@@ -76,6 +82,13 @@ async function tickAutoEnqueue() {
 
         if (result.enqueued > 0) {
           log("auto-enqueue", `${project.id}: ${result.enqueued} issues enqueued, ${result.skipped} skipped, ${result.duplicates} dupes`);
+        }
+
+        // Restore previous env
+        if (prevRuntimeRoot === undefined) {
+          delete process.env.CPB_PROJECT_RUNTIME_ROOT;
+        } else {
+          process.env.CPB_PROJECT_RUNTIME_ROOT = prevRuntimeRoot;
         }
       } catch (err) {
         log("auto-enqueue-error", `${project.id}: ${err.message}`);
