@@ -21,12 +21,24 @@ test("D42: README first heading positions as local gateway for coding agents", a
   );
 });
 
-test("D42: README quickstart includes npm install command", async () => {
+test("D42: README quickstart installs from checkout, not unpublished npm registry package", async () => {
   const readme = await readReadme();
-  assert.match(
+  const quickstartBlock = extractQuickstartBlock(readme);
+  const quickstartCommands = extractFirstFencedCodeBlock(quickstartBlock);
+  assert.doesNotMatch(
     readme,
     /npm\s+i(?:nstall)?\s+-g\s+codepatchbay/,
-    "README quickstart must include 'npm i -g codepatchbay'"
+    "README must not advertise an unpublished public npm package"
+  );
+  assert.match(
+    quickstartCommands,
+    /git\s+clone[\s\S]+cd\s+codepatchbay[\s\S]+sh\s+scripts\/install\.sh/,
+    "README first quickstart command block must install through scripts/install.sh"
+  );
+  assert.match(
+    readme,
+    /npm\s+install\s+-g\s+\./,
+    "README should keep the local npm install command as a manual fallback"
   );
 });
 
@@ -113,4 +125,9 @@ function extractQuickstartBlock(readme) {
     return readme.split("\n").slice(0, 80).join("\n");
   }
   return sectionMatch[1];
+}
+
+function extractFirstFencedCodeBlock(markdown) {
+  const block = markdown.match(/```(?:\w+)?\n([\s\S]*?)```/);
+  return block?.[1] ?? "";
 }

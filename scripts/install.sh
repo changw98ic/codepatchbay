@@ -1,7 +1,13 @@
 #!/bin/sh
 set -eu
 
-PACKAGE="${CPB_NPM_PACKAGE:-codepatchbay}"
+case "$0" in
+  */*) SCRIPT_PATH_DIR=${0%/*} ;;
+  *) SCRIPT_PATH_DIR=. ;;
+esac
+SCRIPT_DIR=$(CDPATH= cd "$SCRIPT_PATH_DIR" && pwd)
+DEFAULT_PACKAGE=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
+PACKAGE="${CPB_NPM_PACKAGE:-$DEFAULT_PACKAGE}"
 NODE="${NODE_BIN:-node}"
 NPM="${NPM_BIN:-npm}"
 GIT="${GIT_BIN:-git}"
@@ -16,20 +22,20 @@ usage() {
   printf '%s\n' \
     "Usage: sh scripts/install.sh [options]" \
     "" \
-    "Install CodePatchBay, prerequisites, and run setup." \
+    "Install CodePatchBay from this checkout, prerequisites, and run setup." \
     "" \
     "Options:" \
     "  --recommended       Run: cpb setup --recommended (default)" \
     "  --interactive       Run: cpb setup --interactive" \
     "  --setup-json        Run: cpb setup --json" \
     "  --skip-setup        Install CodePatchBay only" \
-    "  --package NAME      npm package to install (default: codepatchbay)" \
+    "  --package SPEC      npm package, folder, tarball, or git URL to install (default: this checkout)" \
     "  --gh-auth-login     Run: gh auth login when gh is not authenticated" \
     "  --dry-run           Print commands without running them" \
     "  -h, --help          Show this help" \
     "" \
     "Environment:" \
-    "  CPB_NPM_PACKAGE     npm package name override" \
+    "  CPB_NPM_PACKAGE     npm package, folder, tarball, or git URL override" \
     "  NODE_BIN            node binary override" \
     "  NPM_BIN             npm binary override" \
     "  GIT_BIN             git binary override" \

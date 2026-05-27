@@ -5,12 +5,15 @@
 ## Quick Start
 
 ```bash
-npm i -g codepatchbay
-cpb setup --recommended
+git clone https://github.com/changw98ic/codepatchbay.git
+cd codepatchbay
+sh scripts/install.sh
 cpb demo
 cpb init .
 cpb run "fix failing tests"
 ```
+
+`scripts/install.sh` checks for `node`, `npm`, `git`, and `gh`, installs missing tools through a supported local package manager when possible, installs the current checkout as the global `cpb` CLI, verifies `gh auth status`, prompts for `gh auth login` when needed, then runs `cpb setup --recommended`.
 
 Connect GitHub for unattended issue-driven workflow:
 
@@ -25,13 +28,15 @@ Then add the label `cpb` to a GitHub issue. CodePatchBay picks it up, plans, exe
 
 `cpb github doctor` runs nine layered checks: app config, webhook secret, installation, private key, transport mode, repo bindings, branch-push readiness, PR creation, and gh CLI auth. Use `--json` for machine-readable output.
 
-Fast install from a checkout or release tarball:
+Manual install from a checkout or release tarball:
 
 ```bash
-sh scripts/install.sh
+npm ci
+npm install -g .
+cpb setup --recommended
 ```
 
-The install script checks for `node`, `npm`, `git`, and `gh`, installs missing tools through a supported local package manager when possible, verifies `gh auth status`, prompts for `gh auth login` when needed, installs the `cpb` CLI, then runs `cpb setup --recommended`.
+Use `sh scripts/install.sh --skip-setup` to install only the `cpb` CLI, or `sh scripts/install.sh --setup-json` to inspect the setup plan without executing recommended agent installs.
 
 ## What it does
 

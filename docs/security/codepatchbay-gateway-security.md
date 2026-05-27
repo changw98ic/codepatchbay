@@ -6,11 +6,13 @@ operates a hosted service.
 
 ## Install and Supply Chain Safety
 
-CPB is installed via npm (`npm i -g codepatchbay`). There is no separate
-CodePatchBay-hosted artifact registry for the local CLI package.
+CPB is not currently published as a public npm registry package. Install it
+from a trusted checkout or release tarball with `npm install -g .` or
+`sh scripts/install.sh`. There is no separate CodePatchBay-hosted artifact
+registry for the local CLI package.
 
-- Pin the version in your package.json or use `npm ci` to avoid unexpected
-  upgrades.
+- Pin the source by checking out a specific Git tag or release tarball, and use
+  `npm ci` inside the checkout to avoid unexpected dependency resolution.
 - The CPB CLI does not download or execute remote code at runtime beyond the
   ACP adapter commands you configure (e.g. `codex-acp`, `claude-agent-acp`).
 - ACP adapter commands are resolved from your local PATH or the explicit path

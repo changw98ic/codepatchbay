@@ -9,14 +9,29 @@ import assert from "node:assert/strict";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const installScript = path.join(repoRoot, "scripts", "install.sh");
+const repoRootPattern = escapeRegExp(repoRoot);
 
 test("quick install shell script supports dry-run without side effects", async () => {
   const { stdout } = await execFileAsync("sh", [installScript, "--dry-run", "--skip-setup"], {
     cwd: repoRoot,
   });
 
-  assert.match(stdout, /npm install -g codepatchbay/);
+  assert.match(stdout, new RegExp(`npm install -g ${repoRootPattern}`));
   assert.doesNotMatch(stdout, /cpb setup --recommended/);
+});
+
+test("quick install shell script keeps explicit package override available", async () => {
+  const { stdout } = await execFileAsync("sh", [
+    installScript,
+    "--dry-run",
+    "--skip-setup",
+    "--package",
+    "codepatchbay",
+  ], {
+    cwd: repoRoot,
+  });
+
+  assert.match(stdout, /npm install -g codepatchbay/);
 });
 
 test("quick install shell script dry-runs prerequisite installs for a clean machine", async () => {
@@ -35,7 +50,7 @@ test("quick install shell script dry-runs prerequisite installs for a clean mach
 
     assert.match(stdout, /Missing prerequisites: node npm git gh/);
     assert.match(stdout, /\+ brew install node git gh/);
-    assert.match(stdout, /\+ npm install -g codepatchbay/);
+    assert.match(stdout, new RegExp(`\\+ npm install -g ${repoRootPattern}`));
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -117,7 +132,7 @@ test("quick install shell script can launch gh auth login when requested", async
   }
 });
 
-test("quick install shell script installs package and runs recommended setup", async () => {
+test("quick install shell script installs checkout and runs recommended setup", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-install-sh-"));
   try {
     const log = path.join(tmp, "commands.log");
@@ -146,10 +161,14 @@ test("quick install shell script installs package and runs recommended setup", a
     });
 
     const commands = await readFile(log, "utf8");
-    assert.match(commands, /npm install -g codepatchbay/);
+    assert.match(commands, new RegExp(`npm install -g ${repoRootPattern}`));
     assert.match(commands, /gh auth status/);
     assert.match(commands, /cpb setup --recommended/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

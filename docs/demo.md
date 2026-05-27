@@ -31,8 +31,9 @@ The JSON output includes:
 ## Quick start walkthrough
 
 ```bash
-npm i -g codepatchbay
-cpb setup          # setup wizard
+git clone https://github.com/changw98ic/codepatchbay.git
+cd codepatchbay
+sh scripts/install.sh
 cpb demo           # mock pipeline, no keys needed
 cpb init .         # register current project
 cpb run "add a README section describing the public API"
@@ -44,10 +45,11 @@ From a checkout or release tarball, the quick install shell path is:
 sh scripts/install.sh
 ```
 
-It installs the npm package and then runs `cpb setup --recommended`. Use
+It installs the current checkout or extracted tarball as the global `cpb` CLI
+and then runs `cpb setup --recommended`. Use
 `sh scripts/install.sh --interactive` to choose agents manually, or
 `sh scripts/install.sh --skip-setup` to install only the `cpb` CLI.
-Before installing the package, the script checks for `node`, `npm`, `git`, and
+Before installing the checkout, the script checks for `node`, `npm`, `git`, and
 `gh`, installs missing prerequisites through `brew`, `apt-get`, `dnf`, `yum`, or
 `pacman` when available, and verifies GitHub CLI auth with `gh auth status`. If
 GitHub CLI is not authenticated it prompts for `gh auth login` on an interactive

@@ -731,7 +731,7 @@ Each task below is scoped to one focused developer day:
 
 **Acceptance:**
 - First screen states gateway positioning.
-- Quickstart includes `npm i -g codepatchbay`, `cpb setup`, `cpb demo`, `cpb init .`, `cpb run`.
+- Quickstart installs from a trusted checkout or release tarball, then includes `cpb setup`, `cpb demo`, `cpb init .`, `cpb run`.
 - Unimplemented commands are not presented as ready paths.
 
 **Dependencies:** D16.
