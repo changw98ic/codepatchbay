@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { AcpClient } from "../runtime/acp-client-core.mjs";
@@ -197,6 +197,138 @@ process.stdin.on("end", () => process.exit(0));
     assert.equal(env.DATABASE_URL, undefined);
     assert.equal(env.RANDOM_TOKEN, undefined);
     assert.equal(env.CPB_GITHUB_WEBHOOK_SECRET, undefined);
+  });
+
+  it("launches Codex ACP with inherited auth inside isolated CODEX_HOME", async () => {
+    const root = await tempDir("cpb-acp-codex-auth-");
+    const sourceHome = await tempDir("cpb-acp-codex-source-home-");
+    await mkdir(path.join(sourceHome, ".codex"), { recursive: true });
+    await writeFile(path.join(sourceHome, ".codex", "auth.json"), '{"auth":"test"}\n');
+
+    const agentPath = path.join(root, "fake-codex-agent.mjs");
+    await writeFile(agentPath, `
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+const auth = await readFile(path.join(process.env.CODEX_HOME || "", "auth.json"), "utf8").catch((error) => error.code);
+await writeFile(process.env.CPB_ROOT + "/codex-auth-env.json", JSON.stringify({
+  home: process.env.HOME,
+  codexHome: process.env.CODEX_HOME,
+  auth
+}));
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let idx;
+  while ((idx = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.method === "initialize") {
+      console.log(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { close: true } } }
+      }));
+    }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`);
+
+    const client = new AcpClient({
+      agent: "codex",
+      cwd: root,
+      env: {
+        PATH: process.env.PATH,
+        HOME: sourceHome,
+        CPB_ROOT: root,
+        CPB_ACP_CPB_ROOT: root,
+        CPB_ACP_CODEX_COMMAND: process.execPath,
+        CPB_ACP_CODEX_ARGS: JSON.stringify([agentPath]),
+      },
+      outputSink: () => {},
+      errorSink: () => {},
+    });
+
+    await client.start();
+    await client.close();
+
+    const env = await readJson(path.join(root, "codex-auth-env.json"));
+    assert.ok(env.home.startsWith(root), "Codex HOME should be isolated under the CPB root");
+    assert.equal(env.codexHome, path.join(env.home, ".codex"));
+    assert.equal(env.auth, '{"auth":"test"}\n');
+  });
+
+  it("launches Claude ACP with inherited auth files inside isolated HOME", async () => {
+    const root = await tempDir("cpb-acp-claude-auth-");
+    const sourceHome = await tempDir("cpb-acp-claude-source-home-");
+    await mkdir(path.join(sourceHome, ".claude"), { recursive: true });
+    await writeFile(path.join(sourceHome, ".claude.json"), '{"oauthAccount":"test"}\n');
+    await writeFile(path.join(sourceHome, ".claude", ".credentials.json"), '{"token":"test"}\n');
+    await writeFile(path.join(sourceHome, ".claude", "history.jsonl"), '{"prompt":"do not inherit"}\n');
+
+    const agentPath = path.join(root, "fake-claude-agent.mjs");
+    await writeFile(agentPath, `
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+const rootAuth = await readFile(path.join(process.env.HOME || "", ".claude.json"), "utf8").catch((error) => error.code);
+const credentials = await readFile(path.join(process.env.HOME || "", ".claude", ".credentials.json"), "utf8").catch((error) => error.code);
+const history = await readFile(path.join(process.env.HOME || "", ".claude", "history.jsonl"), "utf8").catch((error) => error.code);
+await writeFile(process.env.CPB_ROOT + "/claude-auth-env.json", JSON.stringify({
+  home: process.env.HOME,
+  claudeHome: process.env.CLAUDE_HOME,
+  rootAuth,
+  credentials,
+  history
+}));
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let idx;
+  while ((idx = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.method === "initialize") {
+      console.log(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { close: true } } }
+      }));
+    }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`);
+
+    const client = new AcpClient({
+      agent: "claude",
+      cwd: root,
+      env: {
+        PATH: process.env.PATH,
+        HOME: sourceHome,
+        CPB_ROOT: root,
+        CPB_ACP_CPB_ROOT: root,
+        CPB_ACP_CLAUDE_COMMAND: process.execPath,
+        CPB_ACP_CLAUDE_ARGS: JSON.stringify([agentPath]),
+      },
+      outputSink: () => {},
+      errorSink: () => {},
+    });
+
+    await client.start();
+    await client.close();
+
+    const env = await readJson(path.join(root, "claude-auth-env.json"));
+    assert.ok(env.home.startsWith(root), "Claude HOME should be isolated under the CPB root");
+    assert.equal(env.claudeHome, undefined);
+    assert.equal(env.rootAuth, '{"oauthAccount":"test"}\n');
+    assert.equal(env.credentials, '{"token":"test"}\n');
+    assert.equal(env.history, "ENOENT");
   });
 
   it("scrubs arbitrary env from CPB-brokered terminal commands", async () => {

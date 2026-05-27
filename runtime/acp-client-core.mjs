@@ -427,7 +427,7 @@ export class AcpClient {
       const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
       if (cpbRoot) {
         const { createAgentHome } = await import("../core/agents/isolation.js");
-        const homeEnv = await createAgentHome(cpbRoot, this.agent, env.CPB_JOB_ID);
+        const homeEnv = await createAgentHome(cpbRoot, this.agent, env.CPB_JOB_ID, { parentEnv: env });
         Object.assign(env, homeEnv);
       }
     }
