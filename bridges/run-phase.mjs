@@ -273,6 +273,17 @@ async function handlePlan(args, agent) {
 
   const prompt = await buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile);
   const result = await runAcp(agent, prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
+  const jobId = process.env.CPB_JOB_ID || process.env.CPB_ACP_JOB_ID || "";
+
+  if (jobId) {
+    const { appendEvent: appendEv } = await import("../server/services/event-store.js");
+    if (result.error) {
+      await appendEv(cpbRoot, project, jobId, { type: "phase_agent_error", phase: "plan", agent, error: result.error.message }).catch(() => {});
+    }
+    const stdoutSnippet = (result.stdout || "").slice(0, 2000);
+    const stderrSnippet = (result.stderr || "").slice(0, 1000);
+    await appendEv(cpbRoot, project, jobId, { type: "phase_agent_output", phase: "plan", agent, outputBytes: (result.stdout || "").length, output: stdoutSnippet, stderr: stderrSnippet }).catch(() => {});
+  }
 
   if (result.error) {
     console.error(`Plan spawn failed: ${result.error.message}`);
@@ -889,4 +900,6 @@ function isDirectRun(metaUrl, argvPath) {
 
 if (isDirectRun(import.meta.url, process.argv[1])) {
   process.exitCode = await main();
+  const { resetAllPoolRuntimes } = await import("../server/services/acp-pool.js");
+  await resetAllPoolRuntimes();
 }
