@@ -60,6 +60,7 @@ export async function startDaemon({
   spawnFn = spawn,
   isProcessAlive = defaultIsProcessAlive,
   extraArgs = [],
+  workers = 1,
 } = {}) {
   const current = await statusDaemon({ cpbRoot, isProcessAlive });
   if (current.running) {
@@ -67,29 +68,39 @@ export async function startDaemon({
   }
 
   const workerScript = path.join(path.resolve(executorRoot), "bridges", "project-worker.mjs");
-  const child = spawnFn(process.execPath, [
-    workerScript,
-    "--pool",
-    "--hub-root", path.resolve(hubRoot),
-    "--cpb-root", path.resolve(cpbRoot),
-    "--executor-root", path.resolve(executorRoot),
-    ...extraArgs,
-  ], {
-    cwd: path.resolve(cpbRoot),
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      CPB_ROOT: path.resolve(cpbRoot),
-      CPB_EXECUTOR_ROOT: path.resolve(executorRoot),
-      CPB_HUB_ROOT: path.resolve(hubRoot),
-    },
-  });
-  child.unref?.();
+  const maxActive = Math.max(1, workers);
+  const pids = [];
+  const workerEnv = {
+    ...process.env,
+    CPB_ROOT: path.resolve(cpbRoot),
+    CPB_EXECUTOR_ROOT: path.resolve(executorRoot),
+    CPB_HUB_ROOT: path.resolve(hubRoot),
+  };
+
+  for (let i = 0; i < workers; i++) {
+    const child = spawnFn(process.execPath, [
+      workerScript,
+      "--pool",
+      "--hub-root", path.resolve(hubRoot),
+      "--cpb-root", path.resolve(cpbRoot),
+      "--executor-root", path.resolve(executorRoot),
+      "--max-active-per-project", String(maxActive),
+      ...extraArgs,
+    ], {
+      cwd: path.resolve(cpbRoot),
+      detached: true,
+      stdio: "ignore",
+      env: workerEnv,
+    });
+    child.unref?.();
+    pids.push(child.pid);
+  }
 
   const state = await writeDaemonState(cpbRoot, {
     schemaVersion: DAEMON_VERSION,
-    pid: child.pid,
+    pid: pids[0],
+    pids,
+    workers,
     hubRoot: path.resolve(hubRoot),
     cpbRoot: path.resolve(cpbRoot),
     executorRoot: path.resolve(executorRoot),
@@ -97,7 +108,7 @@ export async function startDaemon({
     worker: "project-worker",
     mode: "pool",
   });
-  return { status: "started", pid: child.pid, state };
+  return { status: "started", pid: pids[0], state };
 }
 
 function killProcessTree(pid) {
@@ -122,7 +133,11 @@ export async function stopDaemon({
   if (!state?.pid) {
     return { status: "stopped", pid: null };
   }
-  killProcessTree(state.pid);
+  // Kill all worker processes (support multi-worker state)
+  const pids = state.pids || [state.pid];
+  for (const pid of pids) {
+    killProcessTree(pid);
+  }
   await rm(daemonStatePath(cpbRoot), { force: true });
-  return { status: "stopped", pid: state.pid };
+  return { status: "stopped", pid: state.pid, state };
 }
