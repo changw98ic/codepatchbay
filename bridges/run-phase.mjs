@@ -660,7 +660,7 @@ export async function runPhase(phase, {
   // Resolve agent from registry
   const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
   const role = roleMap[phase] || "";
-  let agent = explicitAgent || "";
+  let agent = explicitAgent || process.env.CPB_OVERRIDE_AGENT || "";
   if (!agent) {
     try {
       await loadRegistry();
@@ -784,7 +784,7 @@ async function main() {
 
   // Resolve agent from registry
   const role = roleMap[parsed.phase] || "";
-  let agent = parsed.agent || "";
+  let agent = parsed.agent || process.env.CPB_OVERRIDE_AGENT || "";
   if (!agent) {
     try {
       await loadRegistry();

@@ -26,6 +26,12 @@ async function preRead(filePath) {
   }
 }
 
+async function projectInstructionsSection(wikiDir) {
+  const content = await preRead(path.join(wikiDir, "agent-instructions.md"));
+  if (!content || content.startsWith("[file not found")) return "";
+  return `\n\n## Project Instructions\n${content}`;
+}
+
 function parseJsonEnv(name) {
   const raw = process.env[name];
   if (!raw) return null;
@@ -257,9 +263,8 @@ function headlessEscalationSection() {
 export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
-  const profile = await loadProfile(executorRoot, "planner");
-
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const profile = await loadProfile(executorRoot, "planner", { projectWikiDir: wikiDir });
   const projContext = await preRead(path.join(wikiDir, "context.md"));
   const decisions = await preRead(path.join(wikiDir, "decisions.md"));
   const handshake = await preRead(path.join(executorRoot, "wiki", "system", "handshake-protocol.md"));
@@ -306,14 +311,14 @@ ${planTpl}
 Write the plan to: ${planFile}
 The plan title/heading MUST reference the task: "${task}"
 Follow handshake-protocol (planner->executor, Phase: plan).
-Use scope-matched step count with concrete acceptance criteria.`;
+Use scope-matched step count with concrete acceptance criteria.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
-  const profile = await loadProfile(executorRoot, "executor");
-
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+
+  const profile = await loadProfile(executorRoot, "executor", { projectWikiDir: wikiDir });
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
   const planContent = await preRead(planFile);
   const skillsSection = await buildSkillsSection(executorRoot, "executor", { phase: "execute", artifactText: planContent });
@@ -392,17 +397,16 @@ ${buildSubagentGuidance("execute", profile)}
 3. Run tests and record results.
 4. Write the deliverable to: ${deliverableFile}
 Follow handshake-protocol (executor->verifier, Phase: execute).
-Include plan-ref: ${planId} in the deliverable metadata.`;
+Include plan-ref: ${planId} in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
-  const profile = await loadProfile(executorRoot, "executor");
+  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const profile = await loadProfile(executorRoot, "executor", { projectWikiDir: wikiDir });
   const planMode = process.env.CPB_PLAN_MODE || "auto";
   const noPlan = planMode === "none";
-
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const stateRoot = dataRoot(cpbRoot);
   const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
@@ -474,14 +478,14 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 6. Run tests and record results.
 7. Write the deliverable to: ${deliverableFile}
 Follow handshake-protocol (executor->verifier, Phase: execute).
-Include plan-ref derived from the plan artifact in the deliverable metadata.`;
+Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId } = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
-  const profile = await loadProfile(executorRoot, "verifier");
-
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+
+  const profile = await loadProfile(executorRoot, "verifier", { projectWikiDir: wikiDir });
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const deliverableContent = await preRead(deliverableFile);
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify", artifactText: deliverableContent });
@@ -558,15 +562,15 @@ Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "
 Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
 "blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
 "fix_scope" lists files that need changes for the next repair attempt.
-Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.`;
+Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId } = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
-  const profile = await loadProfile(executorRoot, "verifier");
-
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+
+  const profile = await loadProfile(executorRoot, "verifier", { projectWikiDir: wikiDir });
   const planArtifactPath = planId ? path.join(wikiDir, "inbox", `plan-${planId}.md`) : null;
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
@@ -642,14 +646,14 @@ Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "
 Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
 "blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
 "fix_scope" lists files that need changes for the next repair attempt.
-Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.`;
+Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
   const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
-  const profile = await loadProfile(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const profile = await loadProfile(executorRoot, "repairer", { projectWikiDir: wikiDir });
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -698,7 +702,7 @@ REPAIR: FIXED
 REPAIR: NOOP
 REPAIR: BLOCKED
 
-After the first line, include concise findings, changed files, and verification you ran.`;
+After the first line, include concise findings, changed files, and verification you ran.${await projectInstructionsSection(wikiDir)}`;
 }
 
 export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId) {
@@ -762,5 +766,5 @@ Format:
 
 ## Verdict
 REVIEW: <PASS|FAIL>
-[If FAIL, list must-fix items]`;
+[If FAIL, list must-fix items]${await projectInstructionsSection(wikiDir)}`;
 }

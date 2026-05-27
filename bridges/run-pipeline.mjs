@@ -112,8 +112,10 @@ function parseArgs(argv) {
   const acpProfile = options.get("--acp-profile") || null;
   const uiLaneReason = options.get("--ui-lane-reason") || "";
   const teamPolicyJson = options.get("--team-policy-json") || null;
+  const agent = options.get("--agent") || null;
+  const model = options.get("--model") || null;
 
-  return { project, task, maxRetries, timeoutMin, workflow, planMode, triageMode, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson };
+  return { project, task, maxRetries, timeoutMin, workflow, planMode, triageMode, jobIdOverride, dispatchId, sourcePath, acpProfile, uiLaneReason, teamPolicyJson, agent, model };
 }
 
 // ─── Logging helpers (compatible with bash version format) ───
@@ -753,6 +755,9 @@ export async function runPipeline({
   cpbRoot: providedCpbRoot = null,
   teamPolicy = null,
   teamPolicyJson = null,
+  agent: cliAgent = null,
+  model = null,
+  modelEnv = null,
   approvalPollMs = Number(process.env.CPB_APPROVAL_POLL_MS || 2_000),
   approvalTimeoutMs = Number(process.env.CPB_APPROVAL_TIMEOUT_MS || 30 * 60_000),
 } = {}) {
@@ -1075,6 +1080,40 @@ export async function runPipeline({
   }
 
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
+
+  // ─── Agent resolution: CLI --agent > project.json agents > registry default ───
+  const projectConfig = await readJsonObject(path.join(wikiDir, "project.json"));
+  const projectAgents = projectConfig.agents || null;
+
+  async function resolvePhaseAgent(phase) {
+    if (cliAgent) return cliAgent;
+    if (projectAgents) {
+      const phased = projectAgents.phases?.[phase];
+      if (phased) return phased;
+      if (projectAgents.default) return projectAgents.default;
+    }
+    try {
+      const { loadRegistry, defaultAgentForRole } = await import("../core/agents/registry.js");
+      await loadRegistry();
+      const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+      return defaultAgentForRole(roleMap[phase] || phase);
+    } catch {
+      const { legacyAgentForPhase } = await import("../core/agents/registry.js");
+      return legacyAgentForPhase(phase);
+    }
+  }
+
+  async function agentLabelFor(phase) {
+    const name = await resolvePhaseAgent(phase);
+    try {
+      const { loadRegistry, getDescriptor } = await import("../core/agents/registry.js");
+      await loadRegistry();
+      return getDescriptor(name)?.displayName || name;
+    } catch {
+      return name;
+    }
+  }
+
   await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath, jobSourceContext);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow}, planMode: ${planDecision.planMode})`);
 
@@ -1126,7 +1165,8 @@ export async function runPipeline({
           return 1;
         }
       }
-      log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
+      const planAgentLabel = await agentLabelFor("plan");
+      log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (${planAgentLabel})`);
       const planResult = await dispatchPhase(cpbRoot, {
         project, jobId, phase: "plan",
         script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
@@ -1302,13 +1342,16 @@ export async function runPipeline({
       return mismatch;
     }
 
-    function dispatchRun(scriptPhase, bridgePhase, scriptArgs, envOverrides = {}) {
+    async function dispatchRun(scriptPhase, bridgePhase, scriptArgs, envOverrides = {}) {
+      const resolvedAgent = await resolvePhaseAgent(bridgePhase);
+      const agentEnv = resolvedAgent ? { CPB_OVERRIDE_AGENT: resolvedAgent } : {};
+      const mEnv = modelEnv && typeof modelEnv === "object" ? modelEnv : {};
       return dispatchPhase(cpbRoot, {
         project, jobId, phase: scriptPhase,
         script: `bridges/${bridgeForPhase(workflowDef, bridgePhase)}`,
         scriptArgs,
         executorRoot,
-        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...envOverrides },
+        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...agentEnv, ...mEnv, ...envOverrides },
         terminalOnFailure: false,
       });
     }
@@ -1404,7 +1447,8 @@ export async function runPipeline({
         if (node.phase === "execute") {
           const isFix = pState.fixCount > 0;
           const phaseName = isFix ? `fix-${pState.fixCount}` : (attempt > 1 ? `execute-retry-${attempt}` : "execute");
-          log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude)${isFix ? " fix" : ""} attempt ${isFix ? pState.fixCount : attempt}/${maxAttempts}`);
+          const execAgentLabel = await agentLabelFor("execute");
+          log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (${execAgentLabel})${isFix ? " fix" : ""} attempt ${isFix ? pState.fixCount : attempt}/${maxAttempts}`);
 
           const retryInput = isFix ? pState.retryInput : null;
           const retryEnv = retryInput?.shouldRetry
@@ -1478,7 +1522,8 @@ export async function runPipeline({
           const reviewNum = pState.reviewAttempt;
           const phaseName = reviewNum === 1 ? "review" : `review-retry-${reviewNum}`;
 
-          log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewNum}/${maxRetries}`);
+          const reviewAgentLabel = await agentLabelFor("review");
+          log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (${reviewAgentLabel}) attempt ${reviewNum}/${maxRetries}`);
           const reviewResult = await dispatchRun(phaseName, "review", ["review", "--project", project, "--deliverable-id", pState.deliverableId]);
 
           if (reviewResult.error) {
@@ -1502,7 +1547,7 @@ export async function runPipeline({
           }
 
           pState.fixCount++;
-          log(project, "Re-executing (Claude review fix)...");
+          log(project, `Re-executing (${await agentLabelFor("execute")} review fix)...`);
           return { ok: false, reason: "review failed", retryable: false, reactivate: "execute" };
         }
 
@@ -1512,7 +1557,8 @@ export async function runPipeline({
           const verifyNum = pState.verifyAttempt;
           const phaseName = verifyNum === 1 ? "verify" : `verify-retry-${verifyNum}`;
 
-          log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyNum}/${maxRetries}`);
+          const verifyAgentLabel = await agentLabelFor("verify");
+          log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (${verifyAgentLabel}) attempt ${verifyNum}/${maxRetries}`);
           const verifyArgs = pState.deliverableId
             ? ["verify", "--project", project, "--deliverable-id", pState.deliverableId]
             : ["verify", "--project", project, "--job-id", jobId];
@@ -1580,7 +1626,7 @@ export async function runPipeline({
           });
           pState.fixCount++;
           pState.retryInput = retryInput;
-          log(project, "Re-executing (Claude fix)...");
+          log(project, `Re-executing (${await agentLabelFor("execute")} fix)...`);
           return { ok: false, reason: "verify failed", retryable: false, reactivate: "execute", retryInput };
         }
 

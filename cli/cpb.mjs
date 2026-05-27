@@ -134,6 +134,10 @@ const COMMANDS = {
   redirect: "cancel-redirect.js",
   "merge-preview": "merge-preview.js",
   release: "release-select.js",
+  config: "config.js",
+  provider: "provider.js",
+  quickstart: "quickstart.js",
+  "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",
   audit: "audit.js",
 };

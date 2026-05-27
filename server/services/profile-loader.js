@@ -165,7 +165,7 @@ function defaultProfile(role) {
   };
 }
 
-export async function loadProfile(cpbRoot, role) {
+export async function loadProfile(cpbRoot, role, { projectWikiDir = null } = {}) {
   const profileDir = path.join(cpbRoot, PROFILES_DIR, role);
   const profile = defaultProfile(role);
 
@@ -205,6 +205,17 @@ export async function loadProfile(cpbRoot, role) {
     }
   } catch {
     // config.json is optional
+  }
+
+  // Project-level soul.md override
+  if (projectWikiDir) {
+    const projectSoulPath = path.join(projectWikiDir, "profiles", role, "soul.md");
+    try {
+      const projectSoul = await readFile(projectSoulPath, "utf8");
+      profile.soulMd = projectSoul;
+    } catch {
+      // No project-level override
+    }
   }
 
   return profile;

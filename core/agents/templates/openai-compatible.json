@@ -1,0 +1,18 @@
+{
+  "name": "{{name}}",
+  "displayName": "{{displayName}}",
+  "command": "{{command}}",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "{{command}}"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "repair"],
+  "defaultRoles": ["planner", "executor", "verifier", "reviewer", "repairer"],
+  "envPrefix": "CPB_ACP_{{NAME_UPPER}}",
+  "stability": "experimental",
+  "description": "{{description}}",
+  "provider": {
+    "type": "openai-compatible",
+    "apiKeyEnv": "{{apiKeyEnv}}",
+    "baseUrl": "{{baseUrl}}"
+  }
+}
