@@ -1346,12 +1346,22 @@ export async function runPipeline({
       const resolvedAgent = await resolvePhaseAgent(bridgePhase);
       const agentEnv = resolvedAgent ? { CPB_OVERRIDE_AGENT: resolvedAgent } : {};
       const mEnv = modelEnv && typeof modelEnv === "object" ? modelEnv : {};
+      // Resolve per-phase model profile (overrides global modelEnv)
+      let phaseModelEnv = {};
+      const phaseProfileName = projectAgents?.phaseProfiles?.[bridgePhase];
+      if (phaseProfileName) {
+        const { resolveModelProfileEnv } = await import("../cli/commands/model-profile.js");
+        phaseModelEnv = await resolveModelProfileEnv(cpbRoot, phaseProfileName);
+        if (Object.keys(phaseModelEnv).length > 0) {
+          log(project, `Phase ${bridgePhase}: using model profile '${phaseProfileName}'`);
+        }
+      }
       return dispatchPhase(cpbRoot, {
         project, jobId, phase: scriptPhase,
         script: `bridges/${bridgeForPhase(workflowDef, bridgePhase)}`,
         scriptArgs,
         executorRoot,
-        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...agentEnv, ...mEnv, ...envOverrides },
+        env: { ...executorEnv(process.env, { cpbRoot, executorRoot }), ...agentEnv, ...mEnv, ...phaseModelEnv, ...envOverrides },
         terminalOnFailure: false,
       });
     }

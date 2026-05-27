@@ -16,7 +16,7 @@ test("D42: README first heading positions as local gateway for coding agents", a
   const firstHeading = readme.match(/^#+\s+.+$/m)?.[0] ?? "";
   assert.match(
     firstHeading,
-    /[Ll]ocal\s+gateway|gateway\s+for\s+coding\s+agent/i,
+    /[Ll]ocal\s+gateway|gateway\s+for\s+coding\s+agent|本地网关/i,
     `First heading "${firstHeading}" does not position as gateway for coding agents`
   );
 });

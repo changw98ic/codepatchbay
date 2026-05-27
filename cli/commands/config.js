@@ -70,6 +70,10 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config <project> --verify-agent <name>    Set agent for verify phase
   cpb config <project> --review-agent <name>    Set agent for review phase
   cpb config <project> --agents                 Show current agent configuration
+  cpb config <project> --plan-model <profile>   Set model profile for plan phase
+  cpb config <project> --execute-model <profile> Set model profile for execute phase
+  cpb config <project> --verify-model <profile>  Set model profile for verify phase
+  cpb config <project> --review-model <profile>  Set model profile for review phase
   cpb config <project> --instructions <text>    Set project-level agent instructions
   cpb config <project> --clear-instructions     Remove project-level agent instructions
   cpb config <project> --unset-agent            Remove all agent overrides
@@ -103,7 +107,13 @@ export async function run(args, { cpbRoot } = {}) {
       if (agents.default) console.log(`  default: ${agents.default}`);
       if (agents.phases) {
         for (const [phase, agent] of Object.entries(agents.phases)) {
-          console.log(`  ${phase}: ${agent}`);
+          const profile = agents.phaseProfiles?.[phase];
+          console.log(`  ${phase}: ${agent}${profile ? ` (model: ${profile})` : ""}`);
+        }
+      }
+      if (agents.phaseProfiles && !agents.phases) {
+        for (const [phase, profile] of Object.entries(agents.phaseProfiles)) {
+          console.log(`  ${phase} model: ${profile}`);
         }
       }
     }
@@ -219,8 +229,14 @@ export async function run(args, { cpbRoot } = {}) {
   const verifyAgent = optionValue(args, "--verify-agent");
   const reviewAgent = optionValue(args, "--review-agent");
 
-  if (!defaultAgent && !planAgent && !executeAgent && !verifyAgent && !reviewAgent) {
-    console.error("No configuration option specified. Use --agent, --plan-agent, --execute-agent, --verify-agent, --review-agent, --instructions, or --agents.");
+  // Set per-phase model profiles
+  const planModel = optionValue(args, "--plan-model");
+  const executeModel = optionValue(args, "--execute-model");
+  const verifyModel = optionValue(args, "--verify-model");
+  const reviewModel = optionValue(args, "--review-model");
+
+  if (!defaultAgent && !planAgent && !executeAgent && !verifyAgent && !reviewAgent && !planModel && !executeModel && !verifyModel && !reviewModel) {
+    console.error("No configuration option specified. Use --agent, --plan-agent, --execute-agent, --verify-agent, --review-agent, --*-model, --instructions, or --agents.");
     return 1;
   }
 
@@ -234,6 +250,21 @@ export async function run(args, { cpbRoot } = {}) {
     default: defaultAgent,
     phases: Object.keys(phaseUpdates).length > 0 ? phaseUpdates : undefined,
   });
+
+  // Store per-phase model profiles
+  if (planModel || executeModel || verifyModel || reviewModel) {
+    if (!data.agents) data.agents = {};
+    const profiles = { ...(data.agents.phaseProfiles || {}) };
+    if (planModel) profiles.plan = planModel;
+    if (executeModel) profiles.execute = executeModel;
+    if (verifyModel) profiles.verify = verifyModel;
+    if (reviewModel) profiles.review = reviewModel;
+    // Remove null entries
+    for (const [k, v] of Object.entries(profiles)) {
+      if (!v) delete profiles[k];
+    }
+    data.agents.phaseProfiles = Object.keys(profiles).length > 0 ? profiles : undefined;
+  }
 
   await writeProjectJson(cpbRoot, project, data);
   console.log(`Updated agent config for project '${project}'.`);
