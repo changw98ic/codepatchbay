@@ -400,6 +400,9 @@ export class ProjectWorker {
     }
     this.project = await getProject(this.hubRoot, this.projectId);
     if (!this.project) throw new Error(`project not found: ${this.projectId}`);
+    if (this.project.projectRuntimeRoot) {
+      process.env.CPB_PROJECT_RUNTIME_ROOT = this.project.projectRuntimeRoot;
+    }
     return this.project;
   }
 
@@ -534,6 +537,18 @@ export class ProjectWorker {
     const projectId = this.pool ? entry.projectId : this.project.id;
     const sourcePath = entry.sourcePath || this.project?.sourcePath;
 
+    // Pool mode: resolve per-project runtime root for data path resolution
+    const prevRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+    if (this.pool && projectId) {
+      try {
+        const poolProject = await getProject(this.hubRoot, projectId);
+        if (poolProject?.projectRuntimeRoot) {
+          process.env.CPB_PROJECT_RUNTIME_ROOT = poolProject.projectRuntimeRoot;
+        }
+      } catch {}
+    }
+
+    try {
     let dispatchId = null;
     if (dispatchEnabled() && sourcePath) {
       try {
@@ -588,6 +603,10 @@ export class ProjectWorker {
     }
 
     return result;
+    } finally {
+      if (prevRuntimeRoot === undefined) delete process.env.CPB_PROJECT_RUNTIME_ROOT;
+      else process.env.CPB_PROJECT_RUNTIME_ROOT = prevRuntimeRoot;
+    }
   }
 
   async resolveCompletedJob(projectId, result) {

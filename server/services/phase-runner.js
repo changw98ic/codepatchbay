@@ -150,7 +150,7 @@ async function persistHookEvents(cpbRoot, project, jobId, hookEvents) {
 export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, scriptArgs, executorRoot, env, terminalOnFailure = true } = {}) {
   const validation = await validatePhaseInputs(cpbRoot, project, jobId, phase);
   if (!validation.valid) {
-    return { exitCode: 1, error: new Error(validation.errors.join("; ")), envelope: null };
+    return { exitCode: 1, stdout: "", error: new Error(validation.errors.join("; ")), envelope: null };
   }
 
   const locator = await buildLocator(cpbRoot, project, jobId, { phase, executorRoot });

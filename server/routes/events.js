@@ -2,7 +2,7 @@ import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, c
 import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/task-brain.js";
 import { enqueue } from "../services/hub-queue.js";
 import { getProject } from "../services/hub-registry.js";
-import { buildJobArtifactDetail } from "../services/job-artifact-detail.js";
+import { registerJobArtifactDetailRoute } from "./job-artifacts.js";
 
 async function projectDataRoot(req, project) {
   if (!req.cpbHubRoot) return undefined;
@@ -52,10 +52,9 @@ export function eventRoutes(fastify, opts, done) {
   });
 
   // GET /api/events/:project/jobs/:jobId/artifacts — job artifact index and verdict summary
-  fastify.get("/events/:project/jobs/:jobId/artifacts", async (req, reply) => {
-    const { project, jobId } = req.params;
-    const dataRoot = await projectDataRoot(req, project);
-    return buildJobArtifactDetail(req.cpbRoot, project, jobId, { dataRoot });
+  registerJobArtifactDetailRoute(fastify, "/events/:project/jobs/:jobId/artifacts", {
+    projectParam: "project",
+    resolveDataRoot: projectDataRoot,
   });
 
   // PATCH /api/events/candidates/:id — update candidate status

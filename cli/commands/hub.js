@@ -92,6 +92,12 @@ export async function run(args, { cpbRoot, executorRoot }) {
     else console.log(`GitHub issues synced: ${result.count}`);
   } else if (sub === "enqueue-issues") {
     const eqProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
+    if (eqProject && !process.env.CPB_PROJECT_RUNTIME_ROOT) {
+      try {
+        const proj = await getProject(hubRoot, eqProject);
+        if (proj?.projectRuntimeRoot) process.env.CPB_PROJECT_RUNTIME_ROOT = proj.projectRuntimeRoot;
+      } catch {}
+    }
     if (!eqProject) {
       console.error("Usage: cpb hub enqueue-issues <project> [--dry-run] [--sync-first] [--json]");
       process.exit(1);

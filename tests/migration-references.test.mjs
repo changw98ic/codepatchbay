@@ -39,3 +39,16 @@ test("evolve route does not reference self-evolve", async () => {
   assert.doesNotMatch(routeSource, /self-evolve\.mjs/);
   assert.doesNotMatch(routeSource, /cpb-task["'].["']self-evolve/);
 });
+
+test("job artifact route wiring is centralized", async () => {
+  const routeFiles = [
+    "server/routes/tasks.js",
+    "server/routes/events.js",
+  ];
+  for (const relativePath of routeFiles) {
+    const source = await readFile(path.join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(source, /buildJobArtifactDetail/, `${relativePath} should delegate artifact detail wiring`);
+    assert.match(source, /registerJobArtifactDetailRoute/, `${relativePath} should use the shared artifact route helper`);
+  }
+  assert.equal(await exists("server/routes/job-artifacts.js"), true, "shared artifact route helper should exist");
+});

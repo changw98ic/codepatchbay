@@ -6,7 +6,7 @@ import { requestCancelJob, requestRedirectJob, makeJobId } from '../services/job
 import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
-import { buildJobArtifactDetail } from '../services/job-artifact-detail.js';
+import { registerJobArtifactDetailRoute } from './job-artifacts.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -53,10 +53,9 @@ export async function taskRoutes(fastify, opts) {
     return getDurableTasks(req.cpbRoot);
   });
 
-  fastify.get('/tasks/:name/jobs/:jobId/artifacts', async (req) => {
-    const { name, jobId } = req.params;
-    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
-    return buildJobArtifactDetail(req.cpbRoot, name, jobId, { dataRoot });
+  registerJobArtifactDetailRoute(fastify, '/tasks/:name/jobs/:jobId/artifacts', {
+    projectParam: 'name',
+    resolveDataRoot: (req, name) => projectDataRoot(req.cpbHubRoot, name),
   });
 
   // Trigger planner phase

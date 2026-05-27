@@ -571,7 +571,7 @@ export default function Project() {
           📋 {t('project.planOnly')}
         </Button>
         <Button variant="ghost" size="sm" onClick={() => {
-          fetch(`/api/projects/${name}/index`, { method: 'POST' })
+          fetch(`/api/hub/projects/${name}/index/refresh`, { method: 'POST' })
             .then(() => useProjectsStore.getState().fetchProjects());
         }}>
           🔄 {t('project.refreshIndex')}
