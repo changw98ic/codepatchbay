@@ -3,6 +3,8 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import Project from './Project';
 
+const mockFetchProjects = vi.fn();
+
 const mockProject = {
   name: 'test-project',
   displayName: 'Test Project',
@@ -12,10 +14,12 @@ const mockProject = {
 };
 
 vi.mock('@/app/store', () => ({
-  useProjectsStore: () => ({
+  useProjectsStore: Object.assign(() => ({
     loading: false,
     getProject: () => mockProject,
-    fetchProjects: vi.fn(),
+    fetchProjects: mockFetchProjects,
+  }), {
+    getState: () => ({ fetchProjects: mockFetchProjects }),
   }),
   useWebSocketStore: () => ({
     subscribe: vi.fn(() => vi.fn()),
@@ -25,6 +29,7 @@ vi.mock('@/app/store', () => ({
 
 describe('Project Page', () => {
   beforeEach(() => {
+    mockFetchProjects.mockClear();
     vi.spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
       const u = typeof url === 'string' ? url : url.toString();
       if (u.includes('/inbox')) {
@@ -106,5 +111,19 @@ describe('Project Page', () => {
     });
 
     expect(screen.getByText('project.codebaseIndex')).toBeInTheDocument();
+  });
+
+  it('refreshes the code index through the Hub index endpoint', async () => {
+    renderProject();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'test-project' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /project\.refreshIndex/ }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/hub/projects/test-project/index/refresh', { method: 'POST' });
+    });
   });
 });
