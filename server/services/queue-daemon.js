@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveHubRoot } from "./hub-registry.js";
@@ -100,6 +100,20 @@ export async function startDaemon({
   return { status: "started", pid: child.pid, state };
 }
 
+function killProcessTree(pid) {
+  // Try process group kill first (works when daemon was started with detached: true)
+  try { process.kill(-pid, "SIGTERM"); } catch {}
+  // Also kill the process itself
+  try { process.kill(pid, "SIGTERM"); } catch {}
+  // Kill direct children that may have escaped the group
+  try {
+    const children = execSync(`pgrep -P ${pid}`, { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    for (const childPid of children) {
+      try { process.kill(Number(childPid), "SIGTERM"); } catch {}
+    }
+  } catch {}
+}
+
 export async function stopDaemon({
   cpbRoot = process.env.CPB_ROOT || process.cwd(),
   killFn = process.kill,
@@ -108,11 +122,7 @@ export async function stopDaemon({
   if (!state?.pid) {
     return { status: "stopped", pid: null };
   }
-  try {
-    killFn(state.pid, "SIGTERM");
-  } catch (error) {
-    if (error.code !== "ESRCH") throw error;
-  }
+  killProcessTree(state.pid);
   await rm(daemonStatePath(cpbRoot), { force: true });
   return { status: "stopped", pid: state.pid };
 }
