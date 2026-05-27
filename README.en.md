@@ -1,8 +1,8 @@
-# CodePatchBay - the local gateway for coding agents
+# CodePatchBay - local-first control plane for verified AI code changes
 
 [中文](README.md)
 
-> Route coding tasks to Codex and Claude Code through a single local CLI. No hosted CodePatchBay service required.
+> Route AI coding work through local, inspectable plan → execute → verify handoffs before any code reaches a PR. No hosted CodePatchBay service required.
 
 ## Quick Start
 
@@ -10,12 +10,16 @@
 git clone https://github.com/changw98ic/codepatchbay.git
 cd codepatchbay
 sh scripts/install.sh
-cpb demo
-cpb init .
-cpb run "fix failing tests"
+cpb demo                      # local artifact demo, no provider keys needed
+cpb init .                    # register current project
+cpb run "fix failing tests"   # full plan → execute → verify pipeline
 ```
 
+`cpb demo` runs a local mock that shows the artifact loop (plan artifact, execution deliverable, verifier verdict) without requiring provider API keys. `cpb run` uses configured local ACP adapters to route tasks through Codex for planning and verification, and Claude Code for execution.
+
 `scripts/install.sh` checks for `node`, `npm`, `git`, and `gh`, installs missing tools through a supported local package manager when possible, installs the current checkout as the global `cpb` CLI, verifies `gh auth status`, prompts for `gh auth login` when needed, then runs `cpb setup --recommended`.
+
+### Optional GitHub integration
 
 Connect GitHub for unattended issue-driven workflow:
 
@@ -30,7 +34,7 @@ Then add the label `cpb` to a GitHub issue. CodePatchBay picks it up, plans, exe
 
 `cpb github doctor` runs nine layered checks: app config, webhook secret, installation, private key, transport mode, repo bindings, branch-push readiness, PR creation, and gh CLI auth. Use `--json` for machine-readable output.
 
-Manual install from a checkout or release tarball:
+### Manual install
 
 ```bash
 npm ci
@@ -42,13 +46,23 @@ Use `sh scripts/install.sh --skip-setup` to install only the `cpb` CLI, or `sh s
 
 ## What it does
 
-CodePatchBay orchestrates coding agents on your machine:
+CodePatchBay is a local-first control plane for verified AI code changes:
 
-1. **`cpb setup --recommended`** - detect tools, install agents, run health checks, auth loop, write setup profile.
-2. **`cpb init .`** - register the current project (name inferred from `package.json` or directory).
-3. **`cpb github bind`** / **`cpb github connect`** - bind a project to a GitHub repo and configure the GitHub App.
-4. **`cpb run "task"`** - run a task through the full plan -> execute -> verify pipeline.
-5. **`cpb daemon start`** - start the queue worker for unattended issue-driven work.
+1. **Task intake** — accept tasks from CLI prompt or GitHub issues
+2. **Planning** — Codex writes inspectable plan artifacts to `inbox/`
+3. **Execution** — Claude Code applies changes and writes deliverables to `outputs/`
+4. **Verification** — Codex reviews changes and writes verdict artifacts
+5. **Draft PR** — on PASS verdicts, open draft PRs for human review
+6. **Artifact inspection** — all plans, deliverables, and verdicts are local markdown files
+
+Key commands:
+- `cpb setup --recommended` — detect tools, install agents, run health checks, auth loop
+- `cpb demo` — local artifact demo (no keys needed)
+- `cpb init .` — register current project (name inferred from `package.json` or directory)
+- `cpb run "task"` — full plan → execute → verify pipeline
+- `cpb github bind` / `cpb github connect` — bind project to GitHub repo and configure GitHub App
+- `cpb daemon start` — start queue worker for unattended issue-driven work
+- `cpb ui` — local Web UI for project and task management
 
 ## Workflow
 
@@ -106,7 +120,7 @@ cpb (CLI entry, Node.js)
 `-- wiki/                   # Shared memory filesystem
     `-- projects/{name}/
         |-- inbox/          # Codex writes (plans, reviews)
-        `-- outputs/        # Claude writes (deliverables, verdicts)
+        `-- outputs/        # Claude writes deliverables, Codex writes verdicts
 ```
 
 ## ACP Connection

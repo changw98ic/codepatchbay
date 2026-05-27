@@ -1,8 +1,8 @@
-# CodePatchBay — 编码智能体本地网关
+# CodePatchBay — 本地优先的控制平面，用于经过验证的 AI 代码变更
 
 [English](README.en.md)
 
-> 将编码任务路由到 Codex 和 Claude Code，只需一个本地命令行工具。无需托管服务。
+> 通过本地可检查的规划 → 执行 → 验证交接流程路由 AI 编码工作，任何代码在到达 PR 之前都需经过验证。无需托管服务。
 
 ## 快速开始
 
@@ -10,12 +10,16 @@
 git clone https://github.com/changw98ic/codepatchbay.git
 cd codepatchbay
 sh scripts/install.sh
-cpb demo
-cpb init .
-cpb run "fix failing tests"
+cpb demo                      # 本地产物演示，无需服务提供商密钥
+cpb init .                    # 注册当前项目
+cpb run "fix failing tests"   # 完整规划 → 执行 → 验证流水线
 ```
 
+`cpb demo` 运行本地模拟，展示产物循环（规划产物、执行交付物、验证器判定结果），无需服务提供商 API 密钥。`cpb run` 使用已配置的本地 ACP 适配器，通过 Codex 进行规划和验证，通过 Claude Code 进行执行。
+
 `scripts/install.sh` 会检查 `node`、`npm`、`git`、`gh`，通过本地包管理器安装缺失工具，将当前目录安装为全局 `cpb` 命令行工具，验证 `gh auth status`，按需引导 `gh auth login`，然后执行 `cpb setup --recommended`。
+
+### 可选 GitHub 集成
 
 连接 GitHub 实现无人值守议题驱动工作流：
 
@@ -30,7 +34,7 @@ cpb daemon start
 
 `cpb github doctor` 执行九层检查：应用配置、webhook 密钥、安装实例、私钥、传输模式、仓库绑定、分支推送就绪、PR 创建、gh 命令行认证。使用 `--json` 获取机器可读输出。
 
-手动安装：
+### 手动安装
 
 ```bash
 npm ci
@@ -42,13 +46,23 @@ cpb setup --recommended
 
 ## 功能概览
 
-CodePatchBay 在你的机器上编排编码智能体：
+CodePatchBay 是本地优先的控制平面，用于经过验证的 AI 代码变更：
 
-1. **`cpb setup --recommended`** — 检测工具、安装智能体、运行健康检查、认证循环、写入配置。
-2. **`cpb init .`** — 注册当前项目（名称从 `package.json` 或目录名推断）。
-3. **`cpb github bind`** / **`cpb github connect`** — 绑定项目到 GitHub 仓库并配置 GitHub 应用。
-4. **`cpb run "task"`** — 通过规划 → 执行 → 验证完整流水线运行任务。
-5. **`cpb daemon start`** — 启动队列工作进程，实现无人值守议题驱动工作。
+1. **任务接收** — 从 CLI 提示符或 GitHub 议题接收任务
+2. **规划** — Codex 将可检查的规划产物写入 `inbox/`
+3. **执行** — Claude Code 应用变更并将交付物写入 `outputs/`
+4. **验证** — Codex 审查变更并写入判定产物
+5. **草稿 PR** — 验证通过时，为人工审核创建草稿 PR
+6. **产物检查** — 所有规划、交付物和判定均为本地 Markdown 文件
+
+关键命令：
+- `cpb setup --recommended` — 检测工具、安装智能体、运行健康检查、认证循环
+- `cpb demo` — 本地产物演示（无需密钥）
+- `cpb init .` — 注册当前项目（名称从 `package.json` 或目录名推断）
+- `cpb run "task"` — 完整规划 → 执行 → 验证流水线
+- `cpb github bind` / `cpb github connect` — 绑定项目到 GitHub 仓库并配置 GitHub 应用
+- `cpb daemon start` — 启动队列工作进程，实现无人值守议题驱动工作
+- `cpb ui` — 本地 Web 界面，用于项目和任务管理
 
 ## 工作流
 
@@ -106,7 +120,7 @@ cpb (命令行入口, Node.js)
 `-- wiki/                   # 共享记忆文件系统
     `-- projects/{name}/
         |-- inbox/          # Codex 写入（规划、评审）
-        `-- outputs/        # Claude 写入（交付物、判定结果）
+        `-- outputs/        # Claude 写入交付物，Codex 写入判定结果
 ```
 
 ## ACP 连接
