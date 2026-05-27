@@ -42,3 +42,6 @@ pnpm-debug.log*
 cpb-task/state/
 cpb-task/worktrees/
 marketing/
+
+# Hyperframes video project
+hyperframes-video/
