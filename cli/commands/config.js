@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 
 function optionValue(args, name) {
   const idx = args.indexOf(name);
@@ -38,6 +39,28 @@ async function writeProjectJson(cpbRoot, project, data) {
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function parseRuleString(str) {
+  const parts = {};
+  for (const segment of str.split(";")) {
+    const eq = segment.indexOf("=");
+    if (eq < 0) continue;
+    const key = segment.slice(0, eq).trim();
+    const val = segment.slice(eq + 1).trim();
+    if (key.startsWith("match.")) {
+      if (!parts.match) parts.match = {};
+      const matchKey = key.slice(6);
+      if (matchKey === "labels") parts.match[matchKey] = val.split(",").map(s => s.trim());
+      else parts.match[matchKey] = val;
+    } else if (key.startsWith("action.")) {
+      if (!parts.action) parts.action = {};
+      parts.action[key.slice(7)] = val;
+    } else {
+      parts[key] = val;
+    }
+  }
+  return parts;
+}
+
 export async function run(args, { cpbRoot } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
@@ -49,7 +72,15 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config <project> --agents                 Show current agent configuration
   cpb config <project> --instructions <text>    Set project-level agent instructions
   cpb config <project> --clear-instructions     Remove project-level agent instructions
-  cpb config <project> --unset-agent            Remove all agent overrides`);
+  cpb config <project> --unset-agent            Remove all agent overrides
+
+  Automation:
+  cpb config <project> --automation-enabled <true|false>
+  cpb config <project> --automation-sync-interval <seconds>
+  cpb config <project> --automation-rule '<match.labels=enhancement;action.workflow=standard;action.priority=P2>'
+  cpb config <project> --automation-exclude-labels <label1,label2,...>
+  cpb config <project> --automation-clear-rules
+  cpb config <project> --show-automation`);
     return 0;
   }
 
@@ -92,6 +123,83 @@ export async function run(args, { cpbRoot } = {}) {
     delete data.agents;
     await writeProjectJson(cpbRoot, project, data);
     console.log(`Removed agent overrides for project '${project}'. Using registry defaults.`);
+    return 0;
+  }
+
+  // ─── Automation config (#48) ───
+
+  if (args.includes("--show-automation")) {
+    const { resolveHubRoot, getProject } = await import("../../server/services/hub-registry.js");
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const hubProject = await getProject(hubRoot, project);
+    if (!hubProject?.github?.automation) {
+      console.log(`No automation config for project '${project}'.`);
+      return 0;
+    }
+    const a = hubProject.github.automation;
+    console.log(`Automation for project '${project}':`);
+    console.log(`  enabled: ${a.enabled ?? false}`);
+    console.log(`  syncIntervalSec: ${a.syncIntervalSec || 0}`);
+    if (a.exclude?.labels?.length) console.log(`  exclude labels: ${a.exclude.labels.join(", ")}`);
+    if (a.rules?.length) {
+      console.log(`  rules:`);
+      for (const r of a.rules) {
+        const matchParts = [];
+        if (r.match?.labels) matchParts.push(`labels:${r.match.labels.join("+")}`);
+        if (r.match?.titlePattern) matchParts.push(`title~/${r.match.titlePattern}/`);
+        const actionParts = [];
+        if (r.action?.workflow) actionParts.push(`workflow:${r.action.workflow}`);
+        if (r.action?.priority) actionParts.push(`priority:${r.action.priority}`);
+        if (r.action?.planMode) actionParts.push(`planMode:${r.action.planMode}`);
+        console.log(`    ${r.name || "unnamed"}: match{${matchParts.join(", ")}} → action{${actionParts.join(", ")}}`);
+      }
+    } else {
+      console.log(`  rules: (none)`);
+    }
+    return 0;
+  }
+
+  const automationEnabled = optionValue(args, "--automation-enabled");
+  const syncInterval = optionValue(args, "--automation-sync-interval");
+  const ruleStrings = args.flatMap((a, i) => a === "--automation-rule" && args[i + 1] ? [args[i + 1]] : []);
+  const excludeLabels = optionValue(args, "--automation-exclude-labels");
+  const clearRules = args.includes("--automation-clear-rules");
+
+  if (automationEnabled !== null || syncInterval !== null || ruleStrings.length > 0 || excludeLabels !== null || clearRules) {
+    // Automation config lives in the hub registry (same place as github binding)
+    const { resolveHubRoot, getProject, updateProject } = await import("../../server/services/hub-registry.js");
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const hubProject = await getProject(hubRoot, project);
+    if (!hubProject?.github) {
+      console.error(`Project '${project}' has no GitHub binding. Run: cpb github bind ${project} <owner/repo>`);
+      return 1;
+    }
+    const github = { ...hubProject.github };
+    if (!github.automation) {
+      github.automation = { enabled: false, rules: [], exclude: { labels: [] }, dedupBy: "issueNumber" };
+    }
+    const a = github.automation;
+
+    if (automationEnabled !== null) a.enabled = automationEnabled === "true";
+    if (syncInterval !== null) a.syncIntervalSec = parseInt(syncInterval, 10) || 0;
+    if (excludeLabels !== null) {
+      a.exclude = a.exclude || {};
+      a.exclude.labels = excludeLabels.split(",").map(s => s.trim()).filter(Boolean);
+    }
+    if (clearRules) a.rules = [];
+    for (const rs of ruleStrings) {
+      const rule = parseRuleString(rs);
+      if (!rule.match && !rule.action) {
+        console.error(`Invalid rule: ${rs}`);
+        return 1;
+      }
+      rule.name = rule.name || `rule-${(a.rules?.length || 0) + 1}`;
+      a.rules = a.rules || [];
+      a.rules.push(rule);
+    }
+
+    await updateProject(hubRoot, project, { github });
+    console.log(`Updated automation config for project '${project}'.`);
     return 0;
   }
 

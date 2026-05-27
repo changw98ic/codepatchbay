@@ -17,6 +17,7 @@ import { buildObservabilitySummary } from "../services/observability.js";
 import { buildTaskHistory } from "../services/task-history.js";
 import { buildTaskLedger } from "../services/task-ledger.js";
 import { readGithubIssues, syncGithubIssuesFromGh } from "../services/github-issues.js";
+import { autoEnqueueSyncedIssues } from "../services/auto-enqueue.js";
 import {
   claimEligible,
   dequeue as dequeueEntry,
@@ -298,7 +299,21 @@ export async function hubRoutes(fastify) {
       limit: body.limit,
       cwd: req.cpbRoot,
     });
-    return { synced: true, ...result };
+    const response = { synced: true, ...result };
+    if (body.autoEnqueue && body.projectId) {
+      const eqResult = await autoEnqueueSyncedIssues(hubRoot(req), req.cpbRoot, body.projectId);
+      response.autoEnqueue = eqResult;
+    }
+    return response;
+  });
+
+  fastify.post("/hub/github/issues/auto-enqueue", async (req) => {
+    const body = req.body || {};
+    const projectId = body.projectId;
+    if (!projectId) return { error: "projectId required" };
+    const dryRun = body.dryRun === true;
+    const result = await autoEnqueueSyncedIssues(hubRoot(req), req.cpbRoot, projectId, { dryRun });
+    return { enqueued: true, ...result };
   });
 
   fastify.get("/hub/knowledge/promotion-candidates", async (req) => {

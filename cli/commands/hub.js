@@ -90,6 +90,42 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const result = await syncGithubIssuesFromGh(hubRoot, { repo: null, projectId: "flow", state: "open", limit: 1000, cwd: cpbRoot });
     if (json) console.log(JSON.stringify(result, null, 2));
     else console.log(`GitHub issues synced: ${result.count}`);
+  } else if (sub === "enqueue-issues") {
+    const eqProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
+    if (!eqProject) {
+      console.error("Usage: cpb hub enqueue-issues <project> [--dry-run] [--sync-first] [--json]");
+      process.exit(1);
+    }
+    const dryRun = args.includes("--dry-run");
+    const syncFirst = args.includes("--sync-first");
+
+    if (syncFirst) {
+      const { syncGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
+      const proj = await (await import("../../server/services/hub-registry.js")).getProject(hubRoot, eqProject);
+      const repo = proj?.github?.fullName;
+      if (repo) {
+        const syncResult = await syncGithubIssuesFromGh(hubRoot, { repo, projectId: eqProject, state: "open", limit: 500, cwd: cpbRoot });
+        if (!json) console.log(`Synced ${syncResult.count} issues from ${repo}`);
+      } else {
+        console.error(`Project '${eqProject}' has no GitHub binding. Run: cpb github bind ${eqProject} <owner/repo>`);
+        process.exit(1);
+      }
+    }
+
+    const { autoEnqueueSyncedIssues } = await import("../../server/services/auto-enqueue.js");
+    const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, eqProject, { dryRun });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      const prefix = dryRun ? "[DRY RUN] " : "";
+      console.log(`${prefix}Auto-enqueue for '${eqProject}': ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.duplicates} already queued (of ${result.total} open issues)`);
+      if (dryRun && result.matched?.length) {
+        console.log("\nMatched issues:");
+        for (const m of result.matched) {
+          console.log(`  #${m.number} ${m.title} → ${m.rule} (${m.action?.workflow || "standard"}, ${m.action?.priority || "P2"})`);
+        }
+      }
+    }
   } else if (sub === "diagnostics") {
     const { gatherDiagnostics } = await import("../../server/services/diagnostics-bundle.js");
     const diag = await gatherDiagnostics({ cpbRoot, hubRoot });
