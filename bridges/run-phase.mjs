@@ -40,6 +40,7 @@ import { recordUiEscalations } from "../runtime/record-ui-escalation.js";
 import { validateNonEmptyMarkdownArtifact, resolveDeliverableIssue, validateIssueMatch } from "../server/services/artifact-integrity.js";
 import { loadRegistry, legacyAgentForPhase, defaultAgentForRole } from "../core/agents/registry.js";
 import { buildChildEnv } from "../core/policy/child-env.js";
+import { resolveModelProfileEnv } from "../cli/commands/model-profile.js";
 
 // --- CLI arg parsing ---
 
@@ -631,6 +632,24 @@ async function handleRepair(args, agent) {
   return 0;
 }
 
+async function applyPhaseModelProfile(cpbRoot, project, phase) {
+  try {
+    const metaFile = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+    const meta = JSON.parse(await readFile(metaFile, "utf8"));
+    const profileName = meta.agents?.phaseProfiles?.[phase];
+    if (!profileName) return;
+    const profileEnv = await resolveModelProfileEnv(cpbRoot, profileName);
+    if (Object.keys(profileEnv).length > 0) {
+      Object.assign(process.env, profileEnv);
+      // API key auth bypasses ~/.claude/ OAuth; disable HOME isolation so the
+      // agent process can still read real HOME for toolchains, git config, etc.
+      if (profileEnv.ANTHROPIC_API_KEY) {
+        process.env.CPB_AGENT_ISOLATE_HOME = "0";
+      }
+    }
+  } catch {}
+}
+
 // --- Exported API (for Node.js CLI consumption) ---
 
 export async function runPhase(phase, {
@@ -656,6 +675,9 @@ export async function runPhase(phase, {
   if (workflow && !isWorkflowName(workflow)) {
     throw new Error(`invalid workflow: ${workflow} (valid: ${listWorkflows().join(", ")})`);
   }
+
+  // Apply model profile BEFORE agent resolution (pool singleton captures env at creation)
+  await applyPhaseModelProfile(resolvedCpbRoot, project, phase);
 
   // Resolve agent from registry
   const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
@@ -781,6 +803,9 @@ async function main() {
     || "";
   if (jobId) process.env.CPB_ACP_JOB_ID = jobId;
   process.env.CPB_ACP_CPB_ROOT = parsed.cpbRoot;
+
+  // Apply model profile BEFORE agent resolution (pool singleton captures env at creation)
+  await applyPhaseModelProfile(parsed.cpbRoot, parsed.project, parsed.phase);
 
   // Resolve agent from registry
   const role = roleMap[parsed.phase] || "";
