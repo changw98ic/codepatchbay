@@ -754,6 +754,44 @@ async function checkGithubReadiness(hubRoot) {
   return checks;
 }
 
+async function checkGitReadiness(hubRoot) {
+  const checks = [];
+  try {
+    const { listProjects } = await import("./hub-registry.js");
+
+    // Git bindings
+    const projects = await listProjects(hubRoot, { enabledOnly: true });
+    const bound = projects.filter((p) => p.git?.url);
+    if (bound.length > 0) {
+      checks.push(ok("git-bindings", "git", `${bound.length} project(s) bound to git remotes`));
+
+      // Test remote accessibility
+      for (const project of bound) {
+        const remoteUrl = project.git.url;
+        const checkId = `git-remote-${project.id}`;
+        try {
+          await execFileAsync("git", ["ls-remote", "--heads", remoteUrl], { timeout: 10000, stdio: "pipe" });
+          checks.push(ok(checkId, "git", `${project.id}: remote accessible`, {
+            details: { url: remoteUrl, platform: project.git.platform || "generic" },
+          }));
+        } catch (error) {
+          checks.push(error(checkId, "git", `${project.id}: remote not accessible`, {
+            details: { url: remoteUrl, error: error.message },
+            remediation: "Check git remote URL and authentication",
+          }));
+        }
+      }
+    } else {
+      checks.push(warn("git-bindings", "git", "No projects bound to git remotes", {
+        remediation: "Run: cpb git bind <project> <git-url>",
+      }));
+    }
+  } catch (e) {
+    checks.push(error("git-readiness", "git", `Git readiness check failed: ${e.message}`));
+  }
+  return checks;
+}
+
 export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env } = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
@@ -798,8 +836,9 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
 
   const sandboxChecks = buildAgentSandboxReadinessChecks({ env, cwd: resolvedCpbRoot });
 
-  const [githubChecks, sandboxSelfTestCheck, ...results] = await Promise.all([
+  const [githubChecks, gitChecks, sandboxSelfTestCheck, ...results] = await Promise.all([
     checkGithubReadiness(resolvedHubRoot),
+    checkGitReadiness(resolvedHubRoot),
     runAgentSandboxSelfTestCheck({ env, cwd: resolvedCpbRoot }),
     checkNode(),
     checkNpm(),
@@ -818,7 +857,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     checkHubProjectPollution(resolvedHubRoot),
   ]);
 
-  const checks = [...results, ...sandboxChecks, sandboxSelfTestCheck, ...setupChecks, ...githubChecks];
+  const checks = [...results, ...sandboxChecks, sandboxSelfTestCheck, ...setupChecks, ...githubChecks, ...gitChecks];
   const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots
@@ -1092,7 +1131,7 @@ export function formatReleaseDoctorJson(result) {
 
 // --- Output formatters ---
 
-const CATEGORY_ORDER = ["toolchain", "disk", "setup", "sandbox", "acp", "hub", "registry", "jobs", "workers", "leases", "provider"];
+const CATEGORY_ORDER = ["toolchain", "disk", "setup", "sandbox", "acp", "hub", "registry", "jobs", "workers", "leases", "provider", "github", "git"];
 const CATEGORY_LABELS = {
   toolchain: "Toolchain",
   disk: "Disk",
@@ -1105,6 +1144,8 @@ const CATEGORY_LABELS = {
   workers: "Workers",
   leases: "Leases",
   provider: "Provider",
+  github: "GitHub",
+  git: "Git",
 };
 
 const STATUS_ICON = { ok: "✓", warn: "!", error: "✗", skipped: "-" };

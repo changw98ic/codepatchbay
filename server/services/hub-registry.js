@@ -246,6 +246,29 @@ export async function bindProjectGithub(hubRoot, id, repoFullName, { triggers = 
   });
 }
 
+export async function bindProjectGit(hubRoot, id, remoteInfo) {
+  if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
+  if (!remoteInfo || typeof remoteInfo !== "object") {
+    throw new Error("remoteInfo must be an object with at least a url property");
+  }
+  if (!remoteInfo.url || typeof remoteInfo.url !== "string") {
+    throw new Error("remoteInfo.url is required");
+  }
+  const existing = await getProject(hubRoot, id);
+  if (!existing) return null;
+  return await updateProject(hubRoot, id, {
+    git: {
+      ...(existing.git || {}),
+      url: remoteInfo.url,
+      platform: remoteInfo.platform || null,
+      owner: remoteInfo.owner || null,
+      repo: remoteInfo.repo || null,
+      fullName: remoteInfo.fullName || null,
+      boundAt: nowIso(),
+    },
+  });
+}
+
 export async function updateProject(hubRoot, id, patch = {}) {
   if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
   return await withRegistryLock(hubRoot, async () => {
