@@ -17,6 +17,7 @@ import { agentRoutes } from './routes/agents.js';
 import { eventRoutes } from './routes/events.js';
 import { githubRoutes } from './routes/github.js';
 import { skillRoutes } from './routes/skills.js';
+import { workspaceRoutes } from './routes/workspace.js';
 import { resolveHubRoot } from './services/hub-registry.js';
 import { getHubRuntime } from './services/hub-runtime.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
@@ -117,6 +118,7 @@ app.register(agentRoutes, { prefix: '/api' });
 app.register(eventRoutes, { prefix: '/api' });
 app.register(githubRoutes, { prefix: '/api' });
 app.register(skillRoutes, { prefix: '/api' });
+app.register(workspaceRoutes, { prefix: '/api' });
 
 // Low-frequency agent status broadcast (every 30s)
 const { collectAgentMetrics } = await import('./services/agent-metrics.js');

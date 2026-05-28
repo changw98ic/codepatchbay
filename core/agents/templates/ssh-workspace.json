@@ -1,0 +1,18 @@
+{
+  "name": "ssh-example",
+  "displayName": "SSH Workspace Example",
+  "description": "Example SSH workspace descriptor template",
+  "command": "ssh",
+  "args": ["user@host"],
+  "env": {},
+  "workspace": {
+    "type": "ssh",
+    "host": "example.com",
+    "user": "user",
+    "path": "/path/to/project"
+  },
+  "metadata": {
+    "createdAt": null,
+    "updatedAt": null
+  }
+}

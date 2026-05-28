@@ -1,0 +1,17 @@
+{
+  "name": "devcontainer-example",
+  "displayName": "Devcontainer Workspace Example",
+  "description": "Example devcontainer workspace descriptor template",
+  "command": "devcontainer",
+  "args": ["exec", "--workspace-folder", "/path/to/project"],
+  "env": {},
+  "workspace": {
+    "type": "devcontainer",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+    "path": "/path/to/project"
+  },
+  "metadata": {
+    "createdAt": null,
+    "updatedAt": null
+  }
+}
