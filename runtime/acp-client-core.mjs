@@ -528,6 +528,10 @@ export class AcpClient {
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
     const mcpServers = buildMcpServers(this.agent, this.env);
+    const newSessionParams = { cwd };
+    if (mcpServers.length > 0 && this.agent !== "codex") {
+      newSessionParams.mcpServers = mcpServers;
+    }
 
     // Try to resume a cached session, fall back to new
     let session;
@@ -535,10 +539,10 @@ export class AcpClient {
       try {
         session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
       } catch {
-        session = await this.request("session/new", { cwd, mcpServers });
+        session = await this.request("session/new", newSessionParams);
       }
     } else {
-      session = await this.request("session/new", { cwd, mcpServers });
+      session = await this.request("session/new", newSessionParams);
     }
 
     await this.request("session/prompt", {
