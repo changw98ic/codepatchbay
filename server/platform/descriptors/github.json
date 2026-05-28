@@ -1,0 +1,14 @@
+{
+  "name": "github",
+  "displayName": "GitHub",
+  "protocol": "https",
+  "domains": ["github.com", "*.github.com", "api.github.com"],
+  "gitUrls": ["github.com", "github.com:*"],
+  "adapterPath": "../github-adapter.js",
+  "description": "GitHub platform adapter using gh CLI",
+  "capabilities": ["postComment", "createPullRequest", "getIssue", "listChangedFiles", "closeIssue", "verifyWebhook", "getBranch"],
+  "requirements": {
+    "cli": "gh",
+    "optional": ["GITHUB_TOKEN"]
+  }
+}
