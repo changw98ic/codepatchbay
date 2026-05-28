@@ -1,13 +1,7 @@
-import {
-  loadGithubAppConfig,
-  resolveGithubWebhookSecret,
-  verifyGithubWebhookSignature,
-} from "../services/github-app.js";
-import { normalizeGithubWebhookEvent } from "../services/github-events.js";
+import { createGithubAdapter } from "../adapters/github-adapter.js";
 import { matchGithubTrigger } from "../services/github-triggers.js";
 import { createGithubIssueQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../services/event-source.js";
 import { listProjects } from "../services/hub-registry.js";
-import { resolveGithubTransport } from "../services/github-api.js";
 import {
   buildSddApprovedComment,
   postGithubQueuedComment,
@@ -48,17 +42,15 @@ export async function githubRoutes(fastify, opts = {}) {
 
   fastify.post("/github/webhook", async (req, reply) => {
     const rawBody = rawBodyBuffer(req.body);
-    let config;
-    let secret;
+    const adapter = createGithubAdapter(req.cpbHubRoot);
+
+    const signature = headerValue(req.headers, "x-hub-signature-256");
+    let valid;
     try {
-      config = await loadGithubAppConfig(req.cpbHubRoot);
-      secret = resolveGithubWebhookSecret(config);
+      valid = await adapter.verifyWebhookSignature({ signature, rawBody });
     } catch {
       return reply.code(401).send({ error: "invalid GitHub webhook signature" });
     }
-
-    const signature = headerValue(req.headers, "x-hub-signature-256");
-    const valid = verifyGithubWebhookSignature({ signature, rawBody, secret });
     if (!valid) {
       return reply.code(401).send({ error: "invalid GitHub webhook signature" });
     }
@@ -76,7 +68,7 @@ export async function githubRoutes(fastify, opts = {}) {
     const project = await findProjectByRepo(req.cpbHubRoot, payload.repository?.full_name || null);
     if (!project) return reply.code(202).send(base);
 
-    const normalized = normalizeGithubWebhookEvent({
+    const normalized = adapter.normalizeEvent({
       event,
       delivery,
       payload,
@@ -107,7 +99,7 @@ export async function githubRoutes(fastify, opts = {}) {
         if (entry.metadata?.repo && entry.metadata.repo !== normalized.repo) {
           return permissionDenied("queue entry does not belong to this repo");
         }
-        if (entry.metadata?.issueNumber && String(entry.metadata.issueNumber) !== String(normalized.issueNumber)) {
+        if (entry.metadata?.issueNumber && String(entry.metadata?.issueNumber) !== String(normalized.issueNumber)) {
           return permissionDenied("queue entry does not belong to this issue");
         }
 
@@ -130,7 +122,7 @@ export async function githubRoutes(fastify, opts = {}) {
             },
           });
 
-          const transport = await resolveGithubTransport(req.cpbHubRoot);
+          const transport = await adapter.getTransport();
           const postComment = opts.githubPostComment || transport.postComment;
           if (!opts.githubDryRun && typeof postComment === "function") {
             await postComment({
@@ -169,7 +161,7 @@ export async function githubRoutes(fastify, opts = {}) {
       sddDrafterAgent: opts.sddDrafterAgent,
       sddDrafterTimeoutMs: opts.sddDrafterTimeoutMs,
     });
-    const transport = await resolveGithubTransport(req.cpbHubRoot);
+    const transport = await adapter.getTransport();
     const comment = await postGithubQueuedComment({
       repo: normalized.repo,
       issueNumber: normalized.issueNumber,

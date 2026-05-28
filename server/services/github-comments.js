@@ -1,13 +1,36 @@
-import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
+// DEPRECATED: Use server/adapters/github-adapter.js instead
+// This file re-exports from the GitHub adapter for backward compatibility.
+// Complex functions with external dependencies remain here.
+
 import { appendEvent, readEvents } from "./event-store.js";
 import { jobToGithubStatusUpdate } from "./job-projection.js";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// Re-implement postGithubCommentWithGh here to avoid circular dependency
+export async function postGithubCommentWithGh({ repo, issueNumber, body }, { runCommand = execFileAsync } = {}) {
+  const result = await runCommand("gh", [
+    "issue",
+    "comment",
+    String(issueNumber),
+    "--repo",
+    repo,
+    "--body",
+    body,
+  ], { maxBuffer: 1024 * 1024 });
+  return {
+    url: null,
+    html_url: null,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
 function agentLine(label, value) {
-  return `- ${label}: ${value || "not selected"}`;
+  return "- " + label + ": " + (value || "not selected");
 }
 
 function isSddApprovalQueue(queueEntry) {
@@ -36,23 +59,23 @@ function displaySddPath(filePath) {
   return parts.slice(-2).join("/") || normalized;
 }
 
-function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
+export function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
   const metadata = queueEntry?.metadata || {};
   const workflow = metadata.workflow || "sdd-standard";
   const taskCount = Array.isArray(metadata.sddTasks) ? metadata.sddTasks.length : 0;
   const queueId = queueEntry?.id;
-  const approveCmd = queueId ? `\`/cpb approve ${queueId}\`` : "a connected channel command";
+  const approveCmd = queueId ? "/cpb approve " + queueId : "a connected channel command";
   return [
     "### SDD Draft Requires Approval",
     "",
     "A Spec-Driven Development draft has been generated for this issue. Review the artifacts below, then approve to start execution.",
     "",
-    `- **Spec**: \`${displaySddPath(sddFilePath(metadata, "spec"))}\``,
-    `- **Design**: \`${displaySddPath(sddFilePath(metadata, "design"))}\``,
-    `- **Tasks**: \`${displaySddPath(sddFilePath(metadata, "tasks"))}\``,
-    `- **Parsed tasks**: ${taskCount}`,
-    queueId ? `- **Queue ID**: \`${queueId}\`` : null,
-    `- **Workflow**: \`${workflow}\``,
+    "- **Spec**: `" + displaySddPath(sddFilePath(metadata, "spec")) + "`",
+    "- **Design**: `" + displaySddPath(sddFilePath(metadata, "design")) + "`",
+    "- **Tasks**: `" + displaySddPath(sddFilePath(metadata, "tasks")) + "`",
+    "- **Parsed tasks**: " + taskCount,
+    queueId ? "- **Queue ID**: `" + queueId + "`" : null,
+    "- **Workflow**: `" + workflow + "`",
     "",
     agentLine("Planner", agents.planner),
     agentLine("Executor", agents.executor),
@@ -60,7 +83,7 @@ function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
     "",
     "---",
     "",
-    `To approve, comment ${approveCmd} on this issue.`,
+    "To approve, comment " + approveCmd + " on this issue.",
     "",
   ].filter((line) => line !== null).join("\n");
 }
@@ -69,8 +92,8 @@ export function buildSddApprovedComment({ actor, childCount, queueEntryId } = {}
   return [
     "### SDD Draft Approved",
     "",
-    `Approved by @${actor || "unknown"}.`,
-    childCount > 0 ? `${childCount} child task(s) queued for execution.` : "No child tasks were queued.",
+    "Approved by @" + (actor || "unknown") + ".",
+    childCount > 0 ? (childCount + " child task(s) queued for execution.") : "No child tasks were queued.",
     "",
   ].join("\n");
 }
@@ -87,59 +110,6 @@ function responseSummary(response) {
   };
 }
 
-export async function postGithubCommentWithGh({ repo, issueNumber, body }, { runCommand = execFileAsync } = {}) {
-  const result = await runCommand("gh", [
-    "issue",
-    "comment",
-    String(issueNumber),
-    "--repo",
-    repo,
-    "--body",
-    body,
-  ], { maxBuffer: 1024 * 1024 });
-  return {
-    url: null,
-    html_url: null,
-    stdout: result.stdout || "",
-    stderr: result.stderr || "",
-  };
-}
-
-function statusHeading(status) {
-  if (status === "blocked") return "CodePatchBay blocked this run.";
-  if (status === "failed") return "CodePatchBay failed this run.";
-  if (status === "passed") return "Verified patch ready.";
-  if (status === "pr-opened") return "Draft PR opened.";
-  return "CodePatchBay updated this run.";
-}
-
-function statusDetailLines(projection) {
-  if (projection.status === "blocked") {
-    return [`- Reason: ${projection.reason || "approval or manual review required"}`];
-  }
-  if (projection.status === "failed") {
-    return [
-      `- Phase: ${projection.failurePhase || "unknown"}`,
-      `- Reason: ${projection.reason || "run failed before verification completed"}`,
-    ];
-  }
-  if (projection.status === "passed") {
-    return [
-      `- Workflow: ${projection.workflow || "standard"}`,
-      `- Retries: ${projection.retryCount ?? 0}`,
-    ];
-  }
-  if (projection.status === "pr-opened") {
-    const pr = projection.pr || {};
-    const prLabel = pr.number ? `#${pr.number}` : pr.url || "created";
-    return [
-      `- PR: ${prLabel}`,
-      `- URL: ${pr.url || "unavailable"}`,
-    ];
-  }
-  return [`- Status: ${projection.status || "unknown"}`];
-}
-
 export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } = {}) {
   if (isSddApprovalQueue(queueEntry)) {
     return buildSddApprovalComment({ queueEntry, agents });
@@ -150,9 +120,9 @@ export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } 
   return [
     "CodePatchBay queued this issue.",
     "",
-    `- Job: ${normalizedJob.jobId || "pending"}`,
-    queueEntry?.id ? `- Queue: ${queueEntry.id}` : null,
-    `- Workflow: ${workflow}`,
+    "- Job: " + (normalizedJob.jobId || "pending"),
+    queueEntry?.id ? "- Queue: " + queueEntry.id : null,
+    "- Workflow: " + workflow,
     agentLine("Planner", agents.planner),
     agentLine("Executor", agents.executor),
     agentLine("Verifier", agents.verifier),
@@ -217,6 +187,41 @@ export async function postGithubQueuedComment({
   }
 }
 
+function statusHeading(status) {
+  if (status === "blocked") return "CodePatchBay blocked this run.";
+  if (status === "failed") return "CodePatchBay failed this run.";
+  if (status === "passed") return "Verified patch ready.";
+  if (status === "pr-opened") return "Draft PR opened.";
+  return "CodePatchBay updated this run.";
+}
+
+function statusDetailLines(projection) {
+  if (projection.status === "blocked") {
+    return ["- Reason: " + (projection.reason || "approval or manual review required")];
+  }
+  if (projection.status === "failed") {
+    return [
+      "- Phase: " + (projection.failurePhase || "unknown"),
+      "- Reason: " + (projection.reason || "run failed before verification completed"),
+    ];
+  }
+  if (projection.status === "passed") {
+    return [
+      "- Workflow: " + (projection.workflow || "standard"),
+      "- Retries: " + (projection.retryCount ?? 0),
+    ];
+  }
+  if (projection.status === "pr-opened") {
+    const pr = projection.pr || {};
+    const prLabel = pr.number ? "#" + pr.number : pr.url || "created";
+    return [
+      "- PR: " + prLabel,
+      "- URL: " + (pr.url || "unavailable"),
+    ];
+  }
+  return ["- Status: " + (projection.status || "unknown")];
+}
+
 export function buildGithubStatusComment({ projection, job } = {}) {
   const update = projection || jobToGithubStatusUpdate(job);
   if (!update) {
@@ -226,8 +231,8 @@ export function buildGithubStatusComment({ projection, job } = {}) {
   return [
     statusHeading(update.status),
     "",
-    `- Job: ${update.jobId || "unknown"}`,
-    `- Issue: #${update.issueNumber}`,
+    "- Job: " + (update.jobId || "unknown"),
+    "- Issue: #" + update.issueNumber,
     ...statusDetailLines(update),
     "",
   ].join("\n");

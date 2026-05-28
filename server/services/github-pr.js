@@ -1,3 +1,7 @@
+// DEPRECATED: Use server/adapters/github-adapter.js instead
+// This file re-exports from the GitHub adapter for backward compatibility.
+// Complex functions with external dependencies remain here.
+
 import { appendEvent } from "./event-store.js";
 import { getJob } from "./job-store.js";
 import { buildCodePatchBayPrBody } from "./pr-body.js";
@@ -9,6 +13,35 @@ import { promisify } from "node:util";
 import { redactSecrets } from "./secret-policy.js";
 
 const execFileAsync = promisify(execFile);
+
+// Re-implement createPullRequestWithGh here to avoid circular dependency
+export async function createPullRequestWithGh(request, { runCommand = execFileAsync } = {}) {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-body-"));
+  const bodyFile = path.join(tmpDir, "body.md");
+  try {
+    await writeFile(bodyFile, request.body || "", "utf8");
+    const args = [
+      "pr", "create",
+      "--draft",
+      "--title", request.title,
+      "--body-file", bodyFile,
+      "--repo", request.repo,
+      "--head", request.head,
+      "--base", request.base,
+    ];
+    const result = await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+    const match = String(result.stdout || "").match(/https:\/\/github\.com\/[^\s]+\/pull\/([0-9]+)/);
+    return {
+      url: match ? match[0] : null,
+      html_url: match ? match[0] : null,
+      number: match ? Number.parseInt(match[1], 10) : null,
+      stdout: result.stdout || "",
+      stderr: redactSecrets(result.stderr || ""),
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
 
 function isPass(verdict) {
   return String(verdict || "").toUpperCase() === "PASS";
@@ -150,34 +183,6 @@ export async function preparePullRequestBranchWithGit(request, job, {
     if (tmpDir) {
       await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
-  }
-}
-
-export async function createPullRequestWithGh(request, { runCommand = execFileAsync } = {}) {
-  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-body-"));
-  const bodyFile = path.join(tmpDir, "body.md");
-  try {
-    await writeFile(bodyFile, request.body || "", "utf8");
-    const args = [
-      "pr", "create",
-      "--draft",
-      "--title", request.title,
-      "--body-file", bodyFile,
-      "--repo", request.repo,
-      "--head", request.head,
-      "--base", request.base,
-    ];
-    const result = await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
-    const parsed = parseGhPrUrl(result.stdout);
-    return {
-      url: parsed.url,
-      html_url: parsed.url,
-      number: parsed.number,
-      stdout: result.stdout || "",
-      stderr: redactSecrets(result.stderr || ""),
-    };
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
   }
 }
 
