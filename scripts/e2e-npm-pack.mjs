@@ -88,6 +88,7 @@ function stepClean() {
     path.join(CPB_ROOT, "cpb-task", "daemon"),
     path.join(CPB_ROOT, "cpb-task", "event-sources"),
     path.join(CPB_ROOT, "cpb-task", "coderag-state.json"),
+    path.join(CPB_ROOT, "cpb-task", "worktrees"),
   ];
   const files = [
     path.join(CPB_ROOT, "cpb-task", "jobs-index.json"),
@@ -102,6 +103,19 @@ function stepClean() {
   for (const f of files) {
     if (existsSync(f)) rmSync(f, { force: true });
   }
+
+  // Prune stale git worktrees so branches can be reused
+  run("git worktree prune", { silent: true, allowFail: true });
+  // Remove leftover cpb/ branches from previous pipeline runs
+  try {
+    const branches = execSync("git branch --list 'cpb/*'", { encoding: "utf8", cwd: ROOT }).trim();
+    if (branches) {
+      for (const b of branches.split("\n").map((l) => l.trim().replace("* ", ""))) {
+        if (b) run(`git branch -D "${b}"`, { silent: true, allowFail: true });
+      }
+    }
+  } catch {}
+
   pass("State cleaned");
 }
 
