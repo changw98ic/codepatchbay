@@ -71,6 +71,7 @@ function usage() {
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
+  console.log(`  ${CYAN}workspace${NC} [--json]                      Show workspace metadata`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
@@ -144,6 +145,7 @@ const COMMANDS = {
   "install-bin": "install-bin.js",
   audit: "audit.js",
   coderag: "coderag.js",
+  workspace: "workspace.js",
 };
 
 // --- Main ---

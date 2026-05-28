@@ -62,7 +62,17 @@ const sectionGap = style({
 });
 
 interface HubHealthPanelProps {
-  hubStatus: { projectCount: number } | null;
+  hubStatus: {
+    projectCount: number;
+    hubRoot?: string;
+    registryPath?: string;
+    enabledProjectCount?: number;
+    workersOnline?: number;
+    workersStale?: number;
+    workersOffline?: number;
+    workerCount?: number;
+    updatedAt?: string;
+  } | null;
   hubProjects: Array<{ id: string; name: string; workerDerivedStatus?: string; worker?: { status: string } }>;
   hubAcp?: { pools?: Record<string, { mode?: string; active?: number; limit?: number; queued?: number }>; rateLimits?: Record<string, { untilTs?: number }> } | null;
   knowledgePolicy?: { automaticWrites?: unknown[]; forbiddenMarkdownState?: unknown[] } | null;
@@ -100,6 +110,18 @@ export function HubHealthPanel({ hubStatus, hubProjects, hubAcp, knowledgePolicy
           </span>
         ))}
       </p>
+
+      {hubStatus.hubRoot && (
+        <p className={mutedText}>
+          Hub: {hubStatus.hubRoot}
+        </p>
+      )}
+
+      {hubStatus.registryPath && (
+        <p className={mutedText}>
+          Registry: {hubStatus.registryPath}
+        </p>
+      )}
 
       {projects.length > 0 && (
         <p className={mutedText}>Inbox: {inboxTotal} · Outputs: {outputsTotal}</p>

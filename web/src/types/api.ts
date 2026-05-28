@@ -33,7 +33,17 @@ export interface WorkerStatus {
 }
 
 export interface HubDashboard {
-  status: { projectCount: number };
+  status: {
+    projectCount: number;
+    hubRoot?: string;
+    registryPath?: string;
+    enabledProjectCount?: number;
+    workersOnline?: number;
+    workersStale?: number;
+    workersOffline?: number;
+    workerCount?: number;
+    updatedAt?: string;
+  };
   registryProjects: HubProject[];
   acp: AcpStatus;
   knowledgePolicy: unknown;
