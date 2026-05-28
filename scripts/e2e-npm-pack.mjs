@@ -15,6 +15,12 @@ const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
 const TGZ = `${PKG_NAME}-0.2.0.tgz`;
 const GITHUB_REPO = "changw98ic/codepatchbay";
+const AUTOMATION_LABEL = process.env.CPB_E2E_LABEL || "cpb";
+const TARGET_ISSUE_NUMBER = process.env.CPB_E2E_ISSUE_NUMBER
+  ? String(process.env.CPB_E2E_ISSUE_NUMBER).replace(/^#/, "")
+  : "";
+const AGENT_MODE = (process.env.CPB_E2E_AGENT_MODE || "codex").toLowerCase();
+const FINALIZER_MODE = process.env.CPB_E2E_FINALIZER_MODE || "remote";
 const ACP_PHASE_TIMEOUT_MS = Number(process.env.CPB_E2E_ACP_PHASE_TIMEOUT_MS || 15 * 60 * 1000);
 const DEFAULT_MONITOR_TIMEOUT_MS = Math.max(90 * 60 * 1000, ACP_PHASE_TIMEOUT_MS * 5 + 15 * 60 * 1000);
 const MONITOR_TIMEOUT_MS = Number(process.env.CPB_E2E_MONITOR_TIMEOUT_MS || DEFAULT_MONITOR_TIMEOUT_MS);
@@ -63,6 +69,42 @@ function run(cmd, opts = {}) {
 
 function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function configureAgentRoute() {
+  if (AGENT_MODE === "codex") {
+    log("GITHUB", "Configuring deterministic ACP agent route (codex all phases)...");
+    run(`cpb config ${PROJECT} --agent codex`, { silent: true });
+    return { description: "codex all phases", expected: ["default: codex"] };
+  }
+
+  if (AGENT_MODE === "claude" || AGENT_MODE === "cc") {
+    log("GITHUB", "Configuring deterministic ACP agent route (Claude Code all phases)...");
+    run(`cpb config ${PROJECT} --agent claude`, { silent: true });
+    return { description: "claude all phases", expected: ["default: claude"] };
+  }
+
+  if (AGENT_MODE === "mixed") {
+    log("GITHUB", "Configuring deterministic ACP agent route (Codex plan/verify, Claude Code execute)...");
+    run(`cpb config ${PROJECT} --unset-agent`, { silent: true });
+    run(`cpb config ${PROJECT} --plan-agent codex`, { silent: true });
+    run(`cpb config ${PROJECT} --execute-agent claude`, { silent: true });
+    run(`cpb config ${PROJECT} --verify-agent codex`, { silent: true });
+    run(`cpb config ${PROJECT} --review-agent codex`, { silent: true });
+    return {
+      description: "mixed codex/claude",
+      expected: ["plan: codex", "execute: claude", "verify: codex", "review: codex"],
+    };
+  }
+
+  if (AGENT_MODE === "default") {
+    log("GITHUB", "Clearing project agent overrides (registry defaults)...");
+    run(`cpb config ${PROJECT} --unset-agent`, { silent: true });
+    return { description: "registry defaults", expected: ["No agent overrides"] };
+  }
+
+  fail(`Unsupported CPB_E2E_AGENT_MODE '${AGENT_MODE}'. Use codex, mixed, claude, cc, or default.`);
+  process.exit(1);
 }
 
 // ─── Step 1: Stop everything ───────────────────────────────────────
@@ -180,15 +222,18 @@ function stepGithub() {
   log("GITHUB", `Binding repo ${GITHUB_REPO} to project '${PROJECT}'...`);
   run(`cpb github bind ${PROJECT} ${GITHUB_REPO}`, { silent: true });
 
-  log("GITHUB", "Configuring automation (label: cpb)...");
+  log("GITHUB", `Configuring automation (label: ${AUTOMATION_LABEL})...`);
   run(`cpb config ${PROJECT} --automation-enabled true`, { silent: true });
   run(`cpb config ${PROJECT} --automation-clear-rules`, { silent: true });
-  run(`cpb config ${PROJECT} --automation-rule 'match.labels=cpb;action.workflow=standard;action.priority=P2'`, { silent: true });
-  log("GITHUB", "Configuring deterministic ACP agent route (codex all phases)...");
-  run(`cpb config ${PROJECT} --agent codex`, { silent: true });
+  const rule = `match.labels=${AUTOMATION_LABEL};action.workflow=standard;action.priority=P2`;
+  run(`cpb config ${PROJECT} --automation-rule ${shellQuote(rule)}`, { silent: true });
+
+  const route = configureAgentRoute();
   const agents = run(`cpb config ${PROJECT} --agents`, { silent: true });
-  if (!agents.stdout.includes("default: codex")) {
-    fail("Project agent override was not applied");
+  const missing = route.expected.filter((needle) => !agents.stdout.includes(needle));
+  if (missing.length > 0) {
+    fail(`Project agent route '${route.description}' was not applied; missing ${missing.join(", ")}`);
+    if (agents.stdout) log("GITHUB", agents.stdout);
     process.exit(1);
   }
   pass("GitHub bound and automation configured");
@@ -210,7 +255,7 @@ async function stepHub() {
 
 // ─── Step 7: Sync and enqueue GitHub issues ────────────────────────
 function stepEnqueue() {
-  log("ENQUEUE", `Syncing + enqueueing issues for ${PROJECT}...`);
+  log("ENQUEUE", `Syncing + enqueueing issues for ${PROJECT} (label: ${AUTOMATION_LABEL})...`);
 
   const dry = run(`cpb hub enqueue-issues ${PROJECT} --sync-first --dry-run`, { silent: true, allowFail: true });
   if (dry.ok && dry.stdout) {
@@ -224,6 +269,14 @@ function stepEnqueue() {
     return false;
   }
   pass("Issues enqueued");
+  if (TARGET_ISSUE_NUMBER) {
+    const entry = latestGithubQueueEntry();
+    if (!entry) {
+      fail(`No queue entry found for target issue #${TARGET_ISSUE_NUMBER}`);
+      return false;
+    }
+    pass(`Target issue #${TARGET_ISSUE_NUMBER} queued as ${entry.id}`);
+  }
   return true;
 }
 
@@ -233,7 +286,7 @@ async function stepWorker() {
   run("cpb daemon start --workers 1", {
     timeout: 30_000,
     env: {
-      CPB_AUTOFINALIZER_MODE: "remote",
+      CPB_AUTOFINALIZER_MODE: FINALIZER_MODE,
       CPB_ACP_PHASE_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
       CPB_ACP_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
     },
@@ -263,6 +316,7 @@ function readQueue() {
 function latestGithubQueueEntry() {
   return [...(readQueue().entries || [])]
     .filter((entry) => entry.projectId === PROJECT && (entry.type === "github_issue" || entry.metadata?.source === "github"))
+    .filter((entry) => !TARGET_ISSUE_NUMBER || String(entry.metadata?.issueNumber || "") === TARGET_ISSUE_NUMBER)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] || null;
 }
 
@@ -271,7 +325,7 @@ function remoteFinalizerComplete(entry) {
   return Boolean(
     finalizer?.ok === true
     && finalizer.status === "finalized"
-    && finalizer.mode === "remote"
+    && finalizer.mode === FINALIZER_MODE
     && finalizer.pushed === true
     && finalizer.closed === true
     && finalizer.commit
@@ -368,7 +422,12 @@ async function printSummary() {
   const q = run("cpb hub queue-status", { silent: true, allowFail: true });
   if (q.ok) console.log(q.stdout);
 
-  // Check latest session for MCP usage
+  // Check latest session for MCP usage when Codex participates in the route.
+  if (AGENT_MODE === "claude" || AGENT_MODE === "cc") {
+    log("MCP", "Pure Claude Code mode; skipping Codex MCP usage check.");
+    return;
+  }
+
   log("MCP", "Checking if Codex used MCP tools...");
   try {
     const sessionDir = path.join(homedir(), ".codex", "sessions");
@@ -412,6 +471,9 @@ async function main() {
   console.log(`  Project: ${PROJECT}`);
   console.log(`  Root:    ${ROOT}`);
   console.log(`  Hub:     ${HUB_ROOT}`);
+  console.log(`  Label:   ${AUTOMATION_LABEL}`);
+  console.log(`  Agent:   ${AGENT_MODE}`);
+  if (TARGET_ISSUE_NUMBER) console.log(`  Issue:   #${TARGET_ISSUE_NUMBER}`);
   console.log(`${BOLD}═══════════════════════════════════════════${RESET}\n`);
 
   const t0 = Date.now();
