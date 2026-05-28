@@ -22,7 +22,7 @@ async function getRegistry() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 1_800_000);
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
 const POOL_LIMIT_CONTROL_ENV = new Set([
