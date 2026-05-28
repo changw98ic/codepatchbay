@@ -424,6 +424,13 @@ export class ProjectWorker {
       // Transient heartbeat failure — worker continues, next heartbeat
       // will refresh the registry.
     }
+    // Refresh active queue entry's claimedAt so other workers don't
+    // recover it as stale while this worker is still running the job.
+    if (this._activeEntryId) {
+      await updateEntry(this.hubRoot, this._activeEntryId, {
+        claimedAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
   }
 
   startHeartbeat() {

@@ -81,7 +81,7 @@ test("initProject creates a minimal wiki when executor template is absent", asyn
 test("cpb version exits zero", async () => {
   const result = await runNode(["./cpb", "version"]);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /v0\.2\.0/);
+  assert.match(result.stdout, /v0\.2\.1/);
 });
 
 test("cpb unknown command exits non-zero", async () => {

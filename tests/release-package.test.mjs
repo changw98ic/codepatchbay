@@ -132,7 +132,7 @@ test("release install creates a valid release package", async () => {
   const manifest = JSON.parse(output);
 
   assert.equal(manifest.releaseId, releaseName);
-  assert.equal(manifest.codeVersion, "0.2.0");
+  assert.equal(manifest.codeVersion, "0.2.1");
   assert.ok(await exists(manifest.installedPath));
 
   const entries = await readdir(manifest.installedPath);
@@ -166,7 +166,7 @@ test("installed release runs cpb version", async () => {
     timeout: 5000,
   }).trim();
 
-  assert.equal(version, "cpb v0.2.0");
+  assert.equal(version, "cpb v0.2.1");
 
   await rm(manifest.installedPath, { recursive: true, force: true });
 });

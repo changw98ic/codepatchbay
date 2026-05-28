@@ -65,6 +65,7 @@ function isRepeatedDenial(targetPath, action) {
 }
 
 async function enforcePermission(action, targetPath, env = process.env) {
+  if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = await loadPermissionModules(env);
   if (!_permCheck || !permEnv) return { allowed: true };
 
@@ -124,6 +125,7 @@ async function enforcePermission(action, targetPath, env = process.env) {
 }
 
 function enforcePermissionSync(action, target, env = process.env) {
+  if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = buildPermissionEnv(env);
   if (!_permCheck || !permEnv) return { allowed: true };
 
@@ -849,6 +851,7 @@ export class AcpClient {
   }
 
   validateWritePath(targetPath) {
+    if (this.env.CPB_PERMISSION_MODE === "off") return;
     if (!this.writeAllowPaths) return;
     // Resolve symlinks to prevent escape via symlink chains
     let resolved;

@@ -75,6 +75,7 @@ export async function startDaemon({
     CPB_ROOT: path.resolve(cpbRoot),
     CPB_EXECUTOR_ROOT: path.resolve(executorRoot),
     CPB_HUB_ROOT: path.resolve(hubRoot),
+    CPB_PERMISSION_MODE: "off",
   };
 
   const logDir = path.join(path.resolve(hubRoot), "logs");

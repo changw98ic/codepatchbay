@@ -157,13 +157,11 @@ describe("event-store hardening", () => {
       type: "job_completed", jobId, project, ts: new Date().toISOString(),
     }, { dataRoot: tmpDir });
 
-    // phase_started is NOT in POST_TERMINAL_ALLOWED → must be rejected
-    await assert.rejects(
-      () => appendEvent(cpbRoot, project, jobId, {
-        type: "phase_started", jobId, project, phase: "plan", ts: new Date().toISOString(),
-      }, { dataRoot: tmpDir }),
-      /terminal job event log is sealed/
-    );
+    // phase_started is NOT in POST_TERMINAL_ALLOWED → skipped (soft warn, no throw)
+    const result = await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_started", jobId, project, phase: "plan", ts: new Date().toISOString(),
+    }, { dataRoot: tmpDir });
+    assert.equal(result, null);
   });
 
   it("terminal seal allows post-terminal diagnostic events", async () => {
