@@ -325,19 +325,16 @@ export async function resolveAgentCommand(agent, env = process.env) {
       if (descriptor) {
         const prefix = descriptor.envPrefix || `CPB_ACP_${agent.toUpperCase()}`;
         const envCommand = env[`${prefix}_COMMAND`];
-        const command = envCommand || descriptor.command;
-        const args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
+        let command = envCommand || descriptor.command;
+        let args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
 
         // Fallback: if primary command not found and descriptor has fallback
         if (!envCommand && descriptor.fallbackCommand && !commandExists(command)) {
-          return { command: descriptor.fallbackCommand, args: [...(descriptor.fallbackArgs || [])] };
+          command = descriptor.fallbackCommand;
+          args = [...(descriptor.fallbackArgs || [])];
         }
 
-        // Codex headless config
-        if (agent === "codex" && env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
-          const headlessArgs = headlessCodexConfigArgs(command, args);
-          if (headlessArgs.length > 0) args.push(...headlessArgs);
-        }
+        appendCodexLaunchConfigArgs(agent, command, args, env);
 
         return { command, args };
       }
@@ -355,10 +352,7 @@ export async function resolveAgentCommand(agent, env = process.env) {
   const command = env[`CPB_ACP_${upper}_COMMAND`] || defaults.command;
   const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...defaults.args];
 
-  if (agent === "codex" && env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
-    const headlessArgs = headlessCodexConfigArgs(command, args);
-    if (headlessArgs.length > 0) args.push(...headlessArgs);
-  }
+  appendCodexLaunchConfigArgs(agent, command, args, env);
 
   return { command, args };
 }
@@ -406,7 +400,36 @@ function buildMcpServers(agent, env) {
   }
 
   // Claude and others — use SSE directly
-  return [{ name: "coderag", url: sseUrl }];
+  return [{ name: "coderag", type: "sse", url: sseUrl }];
+}
+
+function isCodexAcpCommand(command, args = []) {
+  const baseCommand = String(command).split("/").pop();
+  if (baseCommand === "codex-acp") return true;
+  return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
+}
+
+function codexMcpConfigArgs(env) {
+  const args = [];
+  for (const server of buildMcpServers("codex", env)) {
+    if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
+    const prefix = `mcp_servers.${server.name}`;
+    args.push("-c", `${prefix}.command=${JSON.stringify(server.command)}`);
+    args.push("-c", `${prefix}.args=${JSON.stringify(server.args)}`);
+  }
+  return args;
+}
+
+function appendCodexLaunchConfigArgs(agent, command, args, env) {
+  if (agent !== "codex" || !isCodexAcpCommand(command, args)) return;
+
+  if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
+    const headlessArgs = headlessCodexConfigArgs(command, args);
+    if (headlessArgs.length > 0) args.push(...headlessArgs);
+  }
+
+  const mcpArgs = codexMcpConfigArgs(env);
+  if (mcpArgs.length > 0) args.push(...mcpArgs);
 }
 
 export class AcpClient {
