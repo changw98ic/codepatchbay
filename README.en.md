@@ -1,8 +1,45 @@
-# CodePatchBay - local-first control plane for verified AI code changes
+# CodePatchBay
 
 [![npm version](https://img.shields.io/npm/v/codepatchbay.svg)](https://www.npmjs.com/package/codepatchbay) [中文](README.md)
 
-> Route AI coding work through local, inspectable plan → execute → verify handoffs before any code reaches a PR. No hosted CodePatchBay service required.
+**Project-manager agent for coding agents.**
+
+Give it a task or GitHub issue. It plans the work, coordinates coding agents, verifies the result, and prepares a reviewable pull request.
+
+```text
+Issue / Task → CodePatchBay PM Agent → Coding Agents → Verified PR
+```
+
+CodePatchBay does not replace Claude Code, Codex, or other coding agents. It manages them.
+
+## Why coding agents need a PM
+
+Coding agents are good at writing code, but real engineering work needs more than code generation. A complete coding workflow also needs:
+
+- **Task intake** — understand requirements, break down work
+- **Planning** — determine scope, affected files, and risks
+- **Delegation** — assign work to the right agent
+- **Tracking** — collect artifacts, record progress
+- **Verification** — review whether changes are correct
+- **Delivery** — prepare a PR for human review
+
+CodePatchBay provides that coordination layer.
+
+## How it works
+
+```text
+Task or GitHub Issue
+        ↓
+CodePatchBay PM Agent
+        ↓
+  Plan → Delegate to coding agent → Collect changes → Verify → Prepare PR
+        ↓
+  Codex · Claude Code · Other coding agents
+        ↓
+  Human review and merge
+```
+
+Each step produces local artifacts (Markdown files) you can inspect before trusting the final change.
 
 ## Quick Start
 
@@ -13,10 +50,10 @@ npm package: [`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # detect tools, install agents, run health checks
-cpb demo                       # local artifact demo, no provider keys needed
+cpb demo                       # local demo, no API keys needed
 cd your-project
-cpb init .                     # register current project
-cpb run "fix failing tests"   # full plan → execute → verify pipeline
+cpb init .                     # register project
+cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
 ```
 
 Try without installing:
@@ -30,223 +67,168 @@ npx codepatchbay demo
 ```bash
 git clone https://github.com/changw98ic/codepatchbay.git
 cd codepatchbay
-sh scripts/install.sh          # one-click: detect deps → global CLI → setup
+sh scripts/install.sh
 ```
 
-`cpb demo` runs a local mock that shows the artifact loop (plan artifact, execution deliverable, verifier verdict) without requiring provider API keys. `cpb run` uses configured local ACP adapters to route tasks through Codex for planning and verification, and Claude Code for execution.
+## Give CodePatchBay a task
 
-`scripts/install.sh` checks for `node`, `npm`, `git`, and `gh`, installs missing tools through a supported local package manager when possible, installs the current checkout as the global `cpb` CLI, verifies `gh auth status`, prompts for `gh auth login` when needed, then runs `cpb setup --recommended`.
+```bash
+# Register your project
+cpb init .
 
-### Typical workflow
-
-```text
-1. cpb init .                        register project
-2. cpb run "add dark mode"           submit task (full pipeline)
-3. cpb status myproj                 check status
-4. cpb artifacts <job-id>            inspect artifacts
-5. cpb verdict <job-id>              check verification result
+# Submit a task
+cpb run "add dark mode toggle to the settings page"
 ```
 
-### Optional GitHub integration
+CodePatchBay will:
 
-Connect GitHub for unattended issue-driven workflow:
+1. Analyze the task and create an implementation plan
+2. Delegate execution to a coding agent
+3. Collect changes and artifacts
+4. Verify the result is correct
+5. Prepare a PR for review
+
+```bash
+# Check progress
+cpb status myproj
+
+# Inspect artifacts
+cpb artifacts <job-id>
+
+# Check verification result
+cpb verdict <job-id>
+```
+
+## GitHub issue to PR
+
+Connect GitHub, label an issue with `cpb`, and CodePatchBay takes over:
 
 ```bash
 cpb github bind myproj owner/repo
 cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET
-cpb github doctor                # verify transport before starting daemon
-cpb daemon start
+cpb github doctor                # verify connectivity
+cpb daemon start                 # start worker
 ```
 
-Then add the label `cpb` to a GitHub issue. CodePatchBay picks it up, plans, executes, verifies, and opens a draft PR.
+Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
 
-`cpb github doctor` runs nine layered checks: app config, webhook secret, installation, private key, transport mode, repo bindings, branch-push readiness, PR creation, and gh CLI auth. Use `--json` for machine-readable output.
+## Supported coding agents
 
-### Manual install from source
+| Agent | Role |
+|-------|------|
+| Claude Code | Execute code changes, fix bugs |
+| Codex | Plan, verify, review |
+| OpenCode | Open-source alternative agent |
+| Custom agent | Any ACP-compatible agent via model profiles |
+
+CodePatchBay organizes these agents into an inspectable engineering workflow. You configure which agent handles which phase:
 
 ```bash
-npm ci
-npm install -g .
-cpb setup --recommended
+# Use mimo model for plan and verify, Claude for execute
+cpb config myproj --plan-agent claude --plan-model mimo
+cpb config myproj --execute-agent claude
+cpb config myproj --verify-agent claude --verify-model mimo
 ```
 
-Use `sh scripts/install.sh --skip-setup` to install only the `cpb` CLI, or `sh scripts/install.sh --setup-json` to inspect the setup plan without executing recommended agent installs.
+## Features
 
-## What it does
-
-CodePatchBay is a local-first control plane for verified AI code changes:
-
-1. **Task intake** — accept tasks from CLI prompt or GitHub issues
-2. **Planning** — Codex writes inspectable plan artifacts to `inbox/`
-3. **Execution** — Claude Code applies changes and writes deliverables to `outputs/`
-4. **Verification** — Codex reviews changes and writes verdict artifacts
-5. **Draft PR** — on PASS verdicts, open draft PRs for human review
-6. **Artifact inspection** — all plans, deliverables, and verdicts are local markdown files
-
-Key commands:
-- `cpb setup --recommended` — detect tools, install agents, run health checks, auth loop
-- `cpb demo` — local artifact demo (no keys needed)
-- `cpb init .` — register current project (name inferred from `package.json` or directory)
-- `cpb run "task"` — full plan → execute → verify pipeline
-- `cpb research` — dual-agent research (Codex + Claude in parallel)
-- `cpb sdd init` — spec-driven development skeleton
-- `cpb index refresh` — project code index and dependency graph
-- `cpb github bind` / `cpb github connect` — bind project to GitHub repo and configure GitHub App
-- `cpb daemon start` — start queue worker for unattended issue-driven work
-- `cpb ui` — local Web UI for project and task management
-
-## Workflow
-
-```text
-Codex plan
-  -> inbox/plan-{id}.md
-  -> Claude Code execute
-  -> outputs/deliverable-{id}.md
-  -> Codex verify
-  -> outputs/verdict-{id}.md
-
-On FAIL, review-{id}.md returns to inbox/ for retry or human review.
-```
+- **Task management** — accept tasks from CLI or GitHub issues, break down work
+- **Smart delegation** — assign planning, execution, and verification to the best agent
+- **Artifact tracking** — each step produces inspectable local artifacts
+- **Result verification** — changes must pass verification before reaching PR
+- **GitHub integration** — issue labels trigger workflow, draft PRs, webhook connectivity
+- **Web UI** — local interface for project and task management
+- **Multi-agent support** — Codex, Claude Code, OpenCode, and custom agents
+- **Dual-agent research** — two agents research in parallel, merge conclusions
+- **Spec-driven development** — SDD skeleton, from spec to code
+- **Code indexing** — project dependency graph and impact analysis
+- **Durable jobs** — checkpoint recovery, lease heartbeats, unattended execution
 
 ## Commands
 
 ```bash
 # Project management
-cpb init <path> [name]             # Initialize project (name inferred if omitted)
+cpb init <path> [name]             # Initialize project
 cpb attach [path] [name]           # Attach project to Hub
 cpb list                           # List projects
 cpb status <project>               # Project status
 
-# Pipeline and single-phase
-cpb run "<task>" [--project <id>]  # Run task through full pipeline
-cpb pipeline <project> "<task>" [retries]  # Full pipeline (explicit project)
-cpb plan <project> "<task>"        # Codex planning only
-cpb execute <project> <plan-id>    # Claude execution only
-cpb verify <project> <id>          # Codex verification only
-cpb research <project> "<task>"    # Dual-agent research (Codex + Claude)
+# Submit tasks
+cpb run "<task>" [--project <id>]  # Submit task (full workflow)
+cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
+cpb plan <project> "<task>"        # Plan only
+cpb execute <project> <plan-id>    # Execute only
+cpb verify <project> <id>          # Verify only
+cpb research <project> "<task>"    # Dual-agent research
 cpb review <project> [id]          # Review deliverable
 
-# Multi-phase evolution & spec-driven
+# Multi-phase & SDD
 cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution
 cpb sdd <init|bootstrap|verify|drift> <project> # Spec-driven development
 
 # Code index
-cpb index <status|refresh|graph|impact|context-pack> <project>  # Code index & dependency graph
+cpb index <status|refresh|graph|impact|context-pack> <project>
 
 # Job management
-cpb jobs [reconcile|cleanup|report]  # Job management
-cpb artifacts <job-id> [--json]      # List job artifacts
-cpb verdict <job-id> [--json]        # Show job verdict
-cpb repair <project> <job-id> [--agent <name>]  # Retry failed phase
-cpb cancel <project> <jobId> [reason]           # Cancel running job
-cpb redirect <project> <jobId> "<msg>" [reason] # Redirect a job
+cpb jobs [reconcile|cleanup|report]
+cpb artifacts <job-id> [--json]
+cpb verdict <job-id> [--json]
+cpb repair <project> <job-id> [--agent <name>]
+cpb cancel <project> <jobId> [reason]
+cpb redirect <project> <jobId> "<msg>" [reason]
 
-# Cleanup & recovery
-cpb gc [--dry-run]                 # Clean stale jobs + orphan leases + pollution
-cpb recover [--dry-run]            # Alias for gc
+# Cleanup
+cpb gc [--dry-run]
+cpb recover [--dry-run]
 
 # Audit & merge
-cpb diff <project>                 # Git diff
-cpb audit <project> <job-id>       # Export audit package
-cpb merge-preview <project> <ref> [--base <branch>]  # Preview merge
+cpb diff <project>
+cpb audit <project> <job-id>
+cpb merge-preview <project> <ref> [--base <branch>]
+
+# GitHub
+cpb github bind <proj> <owner/repo>
+cpb github connect [options]
+cpb github doctor [--json]
 
 # Hub & daemon
-cpb hub [status|start|stop|projects|...]  # Hub management
-cpb daemon [start|status|stop]     # Queue worker daemon
-cpb coderag [status|start|stop]    # CodeRAG MCP server
-
-# GitHub integration
-cpb github bind <proj> <owner/repo>  # Bind project to GitHub repo
-cpb github connect [options]         # Configure GitHub App credentials
-cpb github doctor [--json]           # Check GitHub integration health
+cpb hub [status|start|stop|projects|...]
+cpb daemon [start|status|stop]
+cpb coderag [status|start|stop]
 
 # Setup & diagnostics
-cpb demo [--json]                  # Local mock demo (no keys needed)
-cpb setup [--recommended|--interactive|--json]  # Setup wizard
-cpb agents [list|detect|install|test]  # Agent gateway management
-cpb auth [status]                  # Provider auth checks
-cpb doctor [--json]                # Health check
-cpb health-check                   # HTTP + test + build check
-cpb profile [list|show|use]        # Profile management
-cpb wiki [lint|list]               # Wiki operations
-cpb release <list|use|install|doctor|gc>  # Release management
-cpb install-bin                    # Install cpb to PATH
-cpb ui [--port] [--host]           # Start Web UI
-cpb version                        # Show version
+cpb demo [--json]
+cpb setup [--recommended|--interactive|--json]
+cpb agents [list|detect|install|test]
+cpb config <project> --plan-agent <name> --plan-model <profile>
+cpb auth [status]
+cpb doctor [--json]
+cpb health-check
+cpb profile [list|show|use]
+cpb model-profile add --name <n> --agent <a> --env KEY=VALUE
+cpb wiki [lint|list]
+cpb release <list|use|install|doctor|gc>
+cpb ui [--port] [--host]
+cpb version
 ```
 
-## Architecture
+## Design principles
 
-```text
-cpb (CLI entry, Node.js)
-|-- bridges/                # ACP bridges + runtime
-|   |-- acp-client.mjs      # ACP stdio JSON-RPC client
-|   |-- run-phase.mjs       # Single-phase runner (plan/execute/verify)
-|   |-- run-pipeline.mjs    # Full pipeline orchestrator
-|   |-- job-runner.mjs      # Durable job executor (lease heartbeat)
-|   `-- supervisor-loop.mjs # Unattended supervisor
-|-- cli/commands/           # CLI command modules
-|-- server/                 # Fastify REST + WebSocket backend
-|-- web/                    # React 19 + Vite frontend
-`-- wiki/                   # Shared memory filesystem
-    `-- projects/{name}/
-        |-- inbox/          # Codex writes (plans, reviews)
-        `-- outputs/        # Claude writes deliverables, Codex writes verdicts
-```
-
-## ACP Connection
-
-Agents connect via ACP stdio (JSON-RPC). Default adapters:
-
-- Codex: `codex-acp` or `npx -y @zed-industries/codex-acp`
-- Claude Code: `claude-agent-acp` or `npx -y @agentclientprotocol/claude-agent-acp`
-
-Override with environment variables:
-
-```bash
-CPB_ACP_CODEX_COMMAND=codex-acp
-CPB_ACP_CODEX_ARGS='["--some-arg"]'
-CPB_ACP_CLAUDE_COMMAND=claude-agent-acp
-CPB_ACP_CLAUDE_ARGS='["--some-arg"]'
-CPB_ACP_TIMEOUT_MS=1800000   # idle timeout (activity-based), 0 to disable
-```
-
-## Light Plan Validation
-
-Light plans are constrained to 80 lines and must include `Affected Files`, `Tests`, and `Risk` sections.
-
-- **Default**: violations log a warning and execution continues.
-- **Strict mode** (`CPB_LIGHT_PLAN_STRICT=1`): violations fail the job.
-
-```bash
-CPB_LIGHT_PLAN_STRICT=1   # fail on light plan constraint violations
-```
-
-## Durable Jobs
-
-The unattended mode uses durable jobs with event logs, lease heartbeats, task worktrees, and supervisor recovery.
-
-```bash
-cpb jobs                     # List durable jobs
-cpb jobs reconcile           # Mark stale jobs as failed
-cpb gc                       # Clean stale jobs + orphan leases
-```
-
-## Requirements
-
-- **Node.js 20+**: runtime for CLI and bridges
-- **Codex ACP adapter**: `codex-acp` or `npx -y @zed-industries/codex-acp`
-- **Claude ACP adapter**: `claude-agent-acp` or `npx -y @agentclientprotocol/claude-agent-acp`
-- **Agent login / API key**: handled by each adapter
-
-## Design Principles
-
-1. **Local-first** - everything runs on your machine; provider adapters keep their own auth.
-2. **Role separation** - Codex plans and verifies, Claude executes.
-3. **Wiki isolation** - inbox/outputs boundaries separate unverified from verified content.
-4. **File-based communication** - both sides read and write inspectable local files.
-5. **ACP reuse** - no custom agent runtime, overlay CPB instructions on existing adapters.
+1. **PM role** — CodePatchBay doesn't replace coding agents; it coordinates them through a complete engineering workflow
+2. **Human in the loop** — all changes require human review before merging, even after verification
+3. **Local-first** — everything runs on your machine; no hosted service required
+4. **Inspectable artifacts** — each step produces local files you can inspect at any point
+5. **Composable agents** — any ACP-compatible coding agent can be plugged in
 
 ## Security
 
-CPB uses provider-native auth, never stores provider tokens, and blocks secrets in task input and artifacts. See [docs/security/codepatchbay-gateway-security.md](docs/security/codepatchbay-gateway-security.md) for the full security model covering install safety, secret redaction, IM key prohibition, webhook signature verification, worktree isolation, verifier constraints, and draft PR policy.
+CodePatchBay uses each agent's native auth, never stores provider tokens, and blocks secrets in task input and artifacts. See [docs/security/](docs/security/) for the full security model covering install safety, secret redaction, webhook signature verification, worktree isolation, and draft PR policy.
+
+## Requirements
+
+- **Node.js 20+**
+- At least one coding agent (Claude Code, Codex, or other ACP-compatible agent)
+
+## License
+
+[AGPL-3.0](LICENSE) — free to use and modify, but derivative works must be open-sourced. Commercial licensing available on request.
