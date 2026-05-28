@@ -77,7 +77,14 @@ export async function startDaemon({
     CPB_HUB_ROOT: path.resolve(hubRoot),
   };
 
+  const logDir = path.join(path.resolve(hubRoot), "logs");
+  await mkdir(logDir, { recursive: true });
+
   for (let i = 0; i < workers; i++) {
+    const logFile = path.join(logDir, `worker-${i}.log`);
+    const { openSync } = await import("node:fs");
+    const logFd = openSync(logFile, "a");
+
     const child = spawnFn(process.execPath, [
       workerScript,
       "--pool",
@@ -89,7 +96,7 @@ export async function startDaemon({
     ], {
       cwd: path.resolve(cpbRoot),
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       env: workerEnv,
     });
     child.unref?.();

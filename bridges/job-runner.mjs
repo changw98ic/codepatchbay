@@ -82,13 +82,17 @@ function eventTimestamp() {
 }
 
 async function appendPhaseFailed(cpbRoot, project, jobId, phase, details) {
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "phase_failed",
-    jobId,
-    phase,
-    ts: eventTimestamp(),
-    ...details,
-  });
+  try {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_failed",
+      jobId,
+      phase,
+      ts: eventTimestamp(),
+      ...details,
+    });
+  } catch (err) {
+    console.warn(`[job-runner] failed to append phase_failed for ${jobId}/${phase}: ${err.message}`);
+  }
 }
 
 const ACTIVITY_THROTTLE_MS = 30_000;

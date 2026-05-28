@@ -202,7 +202,8 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
     if (existing.length > 0) {
       const state = materializeJob(existing);
       if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
-        throw new Error(`terminal job event log is sealed: ${state.status}`);
+        console.warn(`[event-store] skipped ${event.type} on terminal job ${jobId} (status: ${state.status})`);
+        return null;
       }
     }
 
