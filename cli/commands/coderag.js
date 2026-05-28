@@ -1,0 +1,76 @@
+import path from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+
+const DEFAULT_PORT = 3100;
+
+function stateFilePath(cpbRoot) {
+  return path.join(cpbRoot, "cpb-task", "coderag-state.json");
+}
+
+function readState(cpbRoot) {
+  const f = stateFilePath(cpbRoot);
+  if (!existsSync(f)) return null;
+  try { return JSON.parse(readFileSync(f, "utf8")); } catch { return null; }
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export async function run(args, { cpbRoot, executorRoot }) {
+  const sub = args[0] || "status";
+  const port = parseInt(process.env.CPB_CODERAG_PORT || String(DEFAULT_PORT), 10);
+  const codebaseRoot = process.env.CPB_CODEBASE_ROOT || process.cwd();
+
+  if (sub === "status") {
+    const state = readState(cpbRoot);
+    if (!state || !isAlive(state.pid)) {
+      console.log("coderag: stopped");
+      if (state) { try { unlinkSync(stateFilePath(cpbRoot)); } catch {} }
+      return;
+    }
+    console.log(`coderag: running (pid=${state.pid}, port=${state.port})`);
+    console.log(`  SSE: ${state.sseUrl}`);
+    console.log(`  Codebase: ${state.codebaseRoot}`);
+  } else if (sub === "start") {
+    const existing = readState(cpbRoot);
+    if (existing && isAlive(existing.pid)) {
+      console.log(`coderag: already running (pid=${existing.pid})`);
+      return;
+    }
+
+    const stateDir = path.dirname(stateFilePath(cpbRoot));
+    mkdirSync(stateDir, { recursive: true });
+    const logDir = path.join(stateDir, "coderag-logs");
+    mkdirSync(logDir, { recursive: true });
+    const logFile = path.join(logDir, "coderag.log");
+
+    const envStr = `CODEBASE_ROOT=${codebaseRoot}`;
+    const cmd = `nohup npx -y supergateway --stdio "npx -y @sylphx/coderag-mcp" --port ${port} --ssePath /sse --messagePath /message >> ${logFile} 2>&1 & echo $!`;
+
+    const { execSync } = await import("node:child_process");
+    const pid = parseInt(execSync(cmd, { cwd: codebaseRoot, env: { ...process.env, CODEBASE_ROOT: codebaseRoot }, shell: "/bin/bash" }).toString().trim(), 10);
+
+    writeFileSync(stateFilePath(cpbRoot), JSON.stringify({
+      pid,
+      port,
+      codebaseRoot,
+      sseUrl: `http://localhost:${port}/sse`,
+      startedAt: new Date().toISOString(),
+    }));
+
+    console.log(`coderag: started (pid=${pid}, port=${port})`);
+    console.log(`  SSE: http://localhost:${port}/sse`);
+  } else if (sub === "stop") {
+    const state = readState(cpbRoot);
+    if (!state) {
+      console.log("coderag: not running");
+      return;
+    }
+    try { process.kill(state.pid, "SIGTERM"); } catch {}
+    try { unlinkSync(stateFilePath(cpbRoot)); } catch {}
+    console.log(`coderag: stopped (pid=${state.pid})`);
+  } else {
+    console.log("Usage: cpb coderag [status|start|stop]");
+  }
+}

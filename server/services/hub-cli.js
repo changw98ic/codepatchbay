@@ -67,6 +67,13 @@ export async function cmdStart() {
     const check = await readHubLiveness(hubRoot);
     if (check.alive) {
       console.log(`Hub started on http://${host}:${port} (pid: ${check.pid})`);
+      // Auto-start CodeRAG MCP server
+      try {
+        const { run: coderagRun } = await import("../../cli/commands/coderag.js");
+        await coderagRun(["start"], { cpbRoot, executorRoot });
+      } catch (e) {
+        console.error(`CodeRAG start failed: ${e.message}`);
+      }
       return;
     }
   }
@@ -90,6 +97,13 @@ export async function cmdStop() {
   }
 
   process.kill(liveness.pid, "SIGTERM");
+
+  // Auto-stop CodeRAG MCP server
+  try {
+    const { cpbRoot: r2, executorRoot: e2 } = resolveRoots();
+    const { run: coderagRun } = await import("../../cli/commands/coderag.js");
+    await coderagRun(["stop"], { cpbRoot: r2, executorRoot: e2 });
+  } catch {}
 
   for (let i = 0; i < 50; i++) {
     await new Promise((r) => setTimeout(r, 100));

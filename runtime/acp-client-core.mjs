@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -376,6 +377,38 @@ export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
     : null;
 }
 
+function buildMcpServers(agent, env) {
+  if (env.CPB_CODERAG_ENABLED === "0") return [];
+
+  const cpbRoot = env.CPB_ROOT || env.CPB_ACP_CPB_ROOT;
+  if (!cpbRoot) return [];
+
+  const stateFile = path.join(cpbRoot, "cpb-task", "coderag-state.json");
+  let sseUrl;
+  if (existsSync(stateFile)) {
+    try {
+      const state = JSON.parse(readFileSync(stateFile, "utf8"));
+      sseUrl = state.sseUrl;
+    } catch {}
+  }
+  if (!sseUrl) {
+    const port = parseInt(env.CPB_CODERAG_PORT || "3100", 10);
+    sseUrl = `http://localhost:${port}/sse`;
+  }
+
+  // Codex only supports stdio MCP — bridge via supergateway
+  if (agent === "codex") {
+    return [{
+      name: "coderag",
+      command: "npx",
+      args: ["-y", "supergateway", "--sse", sseUrl],
+    }];
+  }
+
+  // Claude and others — use SSE directly
+  return [{ name: "coderag", url: sseUrl }];
+}
+
 export class AcpClient {
   constructor({
     agent,
@@ -494,6 +527,7 @@ export class AcpClient {
 
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
+    const mcpServers = buildMcpServers(this.agent, this.env);
 
     // Try to resume a cached session, fall back to new
     let session;
@@ -501,10 +535,10 @@ export class AcpClient {
       try {
         session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
       } catch {
-        session = await this.request("session/new", { cwd, mcpServers: [] });
+        session = await this.request("session/new", { cwd, mcpServers });
       }
     } else {
-      session = await this.request("session/new", { cwd, mcpServers: [] });
+      session = await this.request("session/new", { cwd, mcpServers });
     }
 
     await this.request("session/prompt", {

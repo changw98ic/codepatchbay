@@ -43,8 +43,10 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/sensible": "^6.0.4",
     "@fastify/websocket": "^11.0.0",
+    "@sylphx/coderag-mcp": "^0.3.33",
     "chokidar": "^4.0.0",
     "fastify": "^5.0.0",
-    "glob": "^11.0.0"
+    "glob": "^11.0.0",
+    "supergateway": "^3.4.3"
   }
 }

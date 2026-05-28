@@ -35,6 +35,7 @@ function usage() {
   console.log(`  ${CYAN}attach${NC} [path] [name]                  Attach project to Hub`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
   console.log(`  ${CYAN}daemon${NC} [start|status|stop]             Queue worker daemon`);
+  console.log(`  ${CYAN}coderag${NC} [status|start|stop]           CodeRAG MCP server`);
   console.log(`  ${CYAN}plan${NC} <project> "<task>"               Codex planning`);
   console.log(`  ${CYAN}execute${NC} <project> <plan-id>            Claude execution`);
   console.log(`  ${CYAN}verify${NC} <project> <deliverable-id>      Codex verification`);
@@ -140,6 +141,7 @@ const COMMANDS = {
   "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",
   audit: "audit.js",
+  coderag: "coderag.js",
 };
 
 // --- Main ---
