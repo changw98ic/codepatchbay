@@ -151,7 +151,7 @@ async function runAcpManaged(agent, prompt, cwd, timeoutMs, executorRoot, option
 
 async function runAcp(agent, prompt, cwd, executorRoot) {
   if (process.env.CPB_ACP_USE_MANAGED_POOL !== "0") {
-    return runAcpManaged(agent, prompt, cwd, 300_000, executorRoot);
+    return runAcpManaged(agent, prompt, cwd, Number(process.env.CPB_ACP_PHASE_TIMEOUT_MS || 1_800_000), executorRoot);
   }
   const { spawn } = await import("node:child_process");
   const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.mjs");
