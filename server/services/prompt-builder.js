@@ -759,16 +759,36 @@ Rate each area: Critical / Major / Minor / Suggestion
 Write the review to: ${reviewFile}
 
 Format:
-## Summary
-[Overall assessment]
+## Verdict
+REVIEW: <PASS|FAIL>
 
-## Findings
+## Summary
+[Overall assessment in one short paragraph]
+
+## Blocking Findings
+Blocking findings are must-fix issues: correctness errors, security vulnerabilities, broken tests/builds, data loss risks, or acceptance-criteria failures.
+If any blocking finding exists, REVIEW: FAIL is required.
+If Blocking Findings is empty (write "None."), REVIEW: PASS is required.
+
+Per-finding template:
 ### [Severity] [Title]
 - **File**: path:line
 - **Issue**: description
+- **Evidence**: what proves this is a problem
 - **Fix**: suggested fix
 
-## Verdict
-REVIEW: <PASS|FAIL>
-[If FAIL, list must-fix items]${await projectInstructionsSection(wikiDir)}`;
+## Non-Blocking Findings
+Non-blocking findings are minor readability, maintainability, performance, or follow-up suggestions that do not block approval.
+If there are none, write "None."
+
+Per-finding template:
+### [Severity] [Title]
+- **File**: path:line
+- **Issue**: description
+- **Evidence**: what proves this is a problem
+- **Fix**: suggested fix
+
+Use severity labels: Critical / Major / Minor / Suggestion.
+Critical and Major issues normally belong in Blocking Findings unless you can justify otherwise.
+Minor and Suggestion issues belong in Non-Blocking Findings.${await projectInstructionsSection(wikiDir)}`;
 }

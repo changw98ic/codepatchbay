@@ -62,7 +62,7 @@ if (planFile) {
 } else if (deliverableFile) {
   await writeArtifact(deliverableFile, "# Deliverable: local fake ACP smoke\\n\\nPlan-Ref: 001\\n\\nThe fake ACP provider exercised the pipeline artifact path.\\n");
 } else if (reviewFile) {
-  await writeArtifact(reviewFile, "## Summary\\nFake ACP smoke review passed.\\n\\n## Findings\\nNone.\\n\\n## Verdict\\nREVIEW: PASS\\n");
+  await writeArtifact(reviewFile, "## Verdict\\nREVIEW: PASS\\n\\n## Summary\\nFake ACP smoke review passed.\\n\\n## Blocking Findings\\nNone.\\n\\n## Non-Blocking Findings\\nNone.\\n");
 } else if (verdictFile) {
   await writeArtifact(verdictFile, JSON.stringify({
     status: "pass",

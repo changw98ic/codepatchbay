@@ -45,5 +45,12 @@
 ## Output Style
 
 - 按严重程度分级：Critical / Major / Minor / Suggestion
-- 每个问题附带：文件路径、行号、问题描述、建议修复
-- 总结段给出整体评估和 PASS / FAIL 建议
+- Critical 和 Major 问题通常归入 Blocking Findings，除非审查员能证明其不应阻塞
+- Minor 和 Suggestion 问题归入 Non-Blocking Findings
+- 每个问题必须附带：文件路径、行号、问题描述、证据、建议修复
+- 审查报告结构：
+  1. ## Verdict — REVIEW: PASS 或 REVIEW: FAIL
+  2. ## Summary — 整体评估简短段落
+  3. ## Blocking Findings — 必须修复的问题（Critical / Major），无则写 "None."
+  4. ## Non-Blocking Findings — 建议性改进（Minor / Suggestion），无则写 "None."
+- 只要 Blocking Findings 存在任何真实问题，REVIEW: FAIL 必须给出；仅当 Blocking Findings 为 "None." 时才能给 REVIEW: PASS
