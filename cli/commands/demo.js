@@ -3,7 +3,7 @@ import { runDemo } from "../../server/services/demo-runner.js";
 function usage() {
   return `Usage: cpb demo [--json] [--project <name>] [--task <text>]
 
-Runs a local mock plan -> execute -> verify pipeline in a temporary toy repo.
+Runs a local mock plan -> diff -> tests -> verdict -> risk story in a temporary toy repo.
 No real agent credentials or provider API keys are required.`;
 }
 
@@ -45,12 +45,16 @@ export async function run(args) {
   console.log(`Project: ${result.project}`);
   console.log(`Job: ${result.job.jobId}`);
   console.log(`Status: ${result.job.status}`);
+  console.log(`Temp root: ${result.tempRoot}`);
   console.log(`Toy repo: ${result.sourcePath}`);
   console.log(`CPB root: ${result.cpbRoot}`);
   console.log(`Event log: ${result.eventLog}`);
-  console.log("Artifacts:");
-  console.log(`- Plan: ${result.artifacts.plan.path}`);
-  console.log(`- Deliverable: ${result.artifacts.deliverable.path}`);
-  console.log(`- Verdict: ${result.artifacts.verdict.path}`);
+  console.log("Story:");
+  for (const entry of result.story || []) {
+    console.log("");
+    console.log(entry.label);
+    console.log(`- ${entry.summary}`);
+    console.log(`- Artifact: ${entry.path}`);
+  }
   return 0;
 }

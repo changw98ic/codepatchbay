@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -12,6 +13,7 @@ function run(cmd, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cmd, ...args], {
       cwd: ROOT,
+      env: { ...process.env, CPB_ROOT: ROOT, CPB_EXECUTOR_ROOT: ROOT, CPB_PROJECT_RUNTIME_ROOT: "" },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 60_000,
     });
@@ -82,9 +84,41 @@ function validateDemo(data) {
 
   const artifacts = data.artifacts;
   if (!artifacts || typeof artifacts !== "object") return "missing or invalid .artifacts";
-  for (const key of ["plan", "deliverable", "verdict"]) {
+  for (const key of ["plan", "deliverable", "diff", "tests", "verdict", "risk"]) {
     if (!artifacts[key]) return `.artifacts.${key} is missing`;
     if (typeof artifacts[key].path !== "string") return `.artifacts.${key}.path is not a string`;
+    if (!existsSync(artifacts[key].path)) return `.artifacts.${key}.path does not exist`;
+  }
+
+  const story = data.story;
+  if (!Array.isArray(story)) return ".story is not an array";
+  const names = story.map((entry) => entry?.name);
+  const expected = ["plan", "diff", "tests", "verdict", "risk"];
+  if (names.join(",") !== expected.join(",")) {
+    return `.story order is ${JSON.stringify(names)}, expected ${JSON.stringify(expected)}`;
+  }
+  for (const entry of story) {
+    if (typeof entry.label !== "string" || entry.label !== entry.name.toUpperCase()) {
+      return `.story.${entry.name}.label is invalid`;
+    }
+    if (typeof entry.path !== "string" || !existsSync(entry.path)) {
+      return `.story.${entry.name}.path is missing or does not exist`;
+    }
+  }
+
+  let verdict;
+  try {
+    verdict = JSON.parse(readFileSync(artifacts.verdict.path, "utf8"));
+  } catch (error) {
+    return `.artifacts.verdict.path is not valid JSON: ${error.message}`;
+  }
+  if (verdict.status !== "pass") return `.verdict.status is "${verdict.status}", expected "pass"`;
+  if (!verdict.risk || verdict.risk.level !== "low") return ".verdict.risk.level must be low";
+  if (typeof verdict.risk.summary !== "string" || !verdict.risk.summary.includes("Demo-only")) {
+    return ".verdict.risk.summary is missing the demo-only boundary";
+  }
+  if (!Array.isArray(verdict.risk_story) || verdict.risk_story.length === 0) {
+    return ".verdict.risk_story must be a non-empty array";
   }
   return null;
 }

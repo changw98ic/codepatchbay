@@ -41,7 +41,7 @@ function usage() {
   console.log(`  ${CYAN}verify${NC} <project> <deliverable-id>      Codex verification`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
-  console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/execute/verify demo`);
+  console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
   console.log(`  ${CYAN}index${NC} <status|refresh|graph|impact|context-pack> <project> [args] [--json]  Project code index and graph`);

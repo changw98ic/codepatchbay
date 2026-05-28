@@ -15,7 +15,13 @@ async function runHealthCheck(args) {
       ["cli/cpb.mjs", "health-check", ...args],
       {
         cwd: ROOT,
-        env: { ...process.env, CPB_PORT: "9" },
+        env: {
+          ...process.env,
+          CPB_ROOT: ROOT,
+          CPB_EXECUTOR_ROOT: ROOT,
+          CPB_PROJECT_RUNTIME_ROOT: "",
+          CPB_PORT: "9",
+        },
         timeout: 60_000,
         maxBuffer: 1024 * 1024,
       },
@@ -41,6 +47,9 @@ async function runCpb(args) {
         cwd: ROOT,
         env: {
           ...process.env,
+          CPB_ROOT: ROOT,
+          CPB_EXECUTOR_ROOT: ROOT,
+          CPB_PROJECT_RUNTIME_ROOT: "",
           CPB_PORT: "9",
           OPENAI_API_KEY: "",
           ANTHROPIC_API_KEY: "",
@@ -85,20 +94,55 @@ describe("fake ACP local smoke", () => {
       assert.equal(parsed.job.status, "completed");
       assert.match(parsed.project, /^demo-/);
       assert.match(parsed.sourcePath, /toy-repo/);
+      assert.deepEqual(parsed.story.map((entry) => entry.name), ["plan", "diff", "tests", "verdict", "risk"]);
 
       const eventLog = await readFile(parsed.eventLog, "utf8");
       assert.match(eventLog, /"job_completed"/);
 
       const plan = await readFile(parsed.artifacts.plan.path, "utf8");
       const deliverable = await readFile(parsed.artifacts.deliverable.path, "utf8");
+      const diff = await readFile(parsed.artifacts.diff.path, "utf8");
+      const tests = await readFile(parsed.artifacts.tests.path, "utf8");
       const verdict = JSON.parse(await readFile(parsed.artifacts.verdict.path, "utf8"));
+      const risk = await readFile(parsed.artifacts.risk.path, "utf8");
 
-      assert.match(plan, /Demo Plan/);
+      assert.match(plan, /# PLAN/);
       assert.match(deliverable, /Demo Deliverable/);
+      assert.match(diff, /diff --git a\/src\/sum\.js b\/src\/sum\.js/);
+      assert.match(diff, /-  return a - b;/);
+      assert.match(diff, /\+  return a \+ b;/);
+      assert.match(tests, /Status: pass/);
+      assert.match(tests, /ok - sum handles positive and negative integers/);
       assert.equal(verdict.status, "pass");
+      assert.equal(verdict.risk.level, "low");
+      assert.match(verdict.risk.summary, /Demo-only temporary toy repo/);
+      assert.ok(Array.isArray(verdict.risk_story));
+      assert.match(risk, /Level: low/);
+      assert.equal(parsed.artifactIndex.entries.some((entry) => entry.kind === "diff" && entry.broken === false), true);
+      assert.equal(parsed.artifactIndex.entries.some((entry) => entry.kind === "tests" && entry.broken === false), true);
+      assert.equal(parsed.artifactIndex.entries.some((entry) => entry.kind === "risk" && entry.broken === false), true);
     } finally {
       if (parsed?.tempRoot) {
         await rm(parsed.tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("prints the full demo story in text mode", { timeout: 60_000 }, async () => {
+    const result = await runCpb(["demo"]);
+    const tempRoot = result.stdout.match(/^Temp root: (.+)$/m)?.[1];
+    try {
+      assert.equal(result.code, 0, result.stdout + result.stderr + result.message);
+      assert.match(result.stdout, /Story:/);
+      for (const label of ["PLAN", "DIFF", "TESTS", "VERDICT", "RISK"]) {
+        assert.match(result.stdout, new RegExp(`\\n${label}\\n`));
+      }
+      assert.match(result.stdout, /diff-001\.patch/);
+      assert.match(result.stdout, /tests-001\.txt/);
+      assert.match(result.stdout, /risk-001\.md/);
+    } finally {
+      if (tempRoot) {
+        await rm(tempRoot, { recursive: true, force: true });
       }
     }
   });

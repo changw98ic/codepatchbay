@@ -2,7 +2,7 @@
 
 This document keeps the demo honest: no hosted mock, no real-provider claims without evidence, and no claim of 24-hour unattended operation.
 
-CodePatchBay is the local gateway for coding agents. The minimum credible demo shows a task becoming plan, deliverable, verdict, event log, and eventually a verified PR path. The demo runs locally and does not use provider APIs.
+CodePatchBay is the local gateway for coding agents. The minimum credible demo shows a task becoming a plan, diff, test report, verdict, risk assessment, event log, and eventually a verified PR path. The demo runs locally and does not use provider APIs.
 
 ## Local mock demo
 
@@ -18,7 +18,7 @@ For machine-readable output:
 cpb demo --json
 ```
 
-The demo creates a temporary toy repo, a temporary CodePatchBay root, a real job event log, and mock plan, deliverable, and verifier verdict artifacts. It does not call Codex, Claude, OpenCode, or any provider API.
+The demo creates a temporary toy repo, a temporary CodePatchBay root, a real job event log, and inspectable plan, diff, tests, verifier verdict, and risk artifacts. It makes a one-file toy fix, captures the patch in `diff-001.patch`, runs the toy Node.js test command, and stores the output in `tests-001.txt`. It does not call Codex, Claude, OpenCode, or any provider API.
 
 The JSON output includes:
 
@@ -26,7 +26,10 @@ The JSON output includes:
 - `cpbRoot`: demo CodePatchBay root
 - `sourcePath`: toy repo path
 - `eventLog`: JSONL event log
-- `artifacts`: plan, deliverable, and verdict file paths
+- `artifacts`: plan, deliverable, diff, tests, verdict, and risk file paths
+- `story`: ordered `PLAN`, `DIFF`, `TESTS`, `VERDICT`, and `RISK` entries with artifact paths
+
+The verdict artifact includes a low-risk summary and `risk_story` explaining why the demo is safe to run locally: it only touches the temporary toy repo, uses the local Node.js runtime, and has no provider or package-install step.
 
 ## Quick start walkthrough
 
@@ -122,13 +125,16 @@ The useful demo moment is not just that agents ran. It is that each handoff rema
 
 - `wiki/projects/target-demo/inbox/plan-001.md`
 - `wiki/projects/target-demo/outputs/deliverable-001.md`
+- `wiki/projects/target-demo/outputs/diff-001.patch`
+- `wiki/projects/target-demo/outputs/tests-001.txt`
 - `wiki/projects/target-demo/outputs/verdict-001.md`
+- `wiki/projects/target-demo/outputs/risk-001.md`
 - `cpb-task/events/target-demo/job-*.jsonl`
 
 ## Demo script for a short video
 
 1. Show the target repo before the task.
-2. Run `cpb demo --json` and open the generated event log plus artifacts.
+2. Run `cpb demo --json` and open the generated event log plus the plan, diff, tests, verdict, and risk artifacts.
 3. Run `cpb init .` from the target project.
 4. Run `cpb run "add a contributing guide"` and show the pipeline executing.
 5. Show the event log file and explain that CodePatchBay is local-first and inspectable.

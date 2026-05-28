@@ -4,7 +4,7 @@ import path from "node:path";
 import { readEvents } from "./event-store.js";
 
 const SCHEMA_VERSION = 1;
-const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "diff", "pr"]);
+const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "diff", "tests", "risk", "pr"]);
 
 function wikiProjectDir(cpbRoot, project, wikiDir) {
   if (wikiDir) return path.resolve(wikiDir);
@@ -38,6 +38,8 @@ function inferKind(event, artifact) {
   if (/^review-/i.test(name)) return "review";
   if (/^verdict-/i.test(name)) return "verdict";
   if (/^diff-/i.test(name) || /\.(?:patch|diff)$/i.test(name)) return "diff";
+  if (/^tests-/i.test(name)) return "tests";
+  if (/^risk-/i.test(name)) return "risk";
   if (/^pr-/i.test(name)) return "pr";
 
   if (event.phase === "plan") return "plan";
