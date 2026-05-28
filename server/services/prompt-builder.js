@@ -535,6 +535,7 @@ ${issueContextLines}
 2. Run fast focused tests first. If fast tests pass AND diff is under 50 lines, you may short-circuit to PASS without running broad regression.
 3. Verify the deliverable against the task goal and plan Acceptance-Criteria.
 4. Write the verdict to: ${verdictFile}
+5. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
 Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.
@@ -619,6 +620,7 @@ ${issueContextLines}
 3. Inspect current project state; executor deliverables are optional audit context, not required truth.
 4. If data is missing, return a diagnostic verdict instead of crashing.
 5. Write the verdict to: ${verdictFile}
+6. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
 Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.

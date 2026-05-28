@@ -15,8 +15,9 @@ const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
 const TGZ = `${PKG_NAME}-0.2.0.tgz`;
 const GITHUB_REPO = "changw98ic/codepatchbay";
-const MONITOR_TIMEOUT_MS = Number(process.env.CPB_E2E_MONITOR_TIMEOUT_MS || 45 * 60 * 1000);
-const ACP_PHASE_TIMEOUT_MS = Number(process.env.CPB_E2E_ACP_PHASE_TIMEOUT_MS || 25 * 60 * 1000);
+const ACP_PHASE_TIMEOUT_MS = Number(process.env.CPB_E2E_ACP_PHASE_TIMEOUT_MS || 15 * 60 * 1000);
+const DEFAULT_MONITOR_TIMEOUT_MS = Math.max(90 * 60 * 1000, ACP_PHASE_TIMEOUT_MS * 5 + 15 * 60 * 1000);
+const MONITOR_TIMEOUT_MS = Number(process.env.CPB_E2E_MONITOR_TIMEOUT_MS || DEFAULT_MONITOR_TIMEOUT_MS);
 
 const GREEN = "\x1b[0;32m";
 const RED = "\x1b[0;31m";
@@ -350,6 +351,7 @@ async function stepMonitor() {
   }
 
   fail(`Pipeline still running after ${maxMinutes} minutes (services left running)`);
+  await printSummary();
   return "timeout";
 }
 
