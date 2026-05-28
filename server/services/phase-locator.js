@@ -176,10 +176,15 @@ export async function readProjectDecisions(cpbRoot, project) {
 export async function projectExists(cpbRoot, project) {
   try {
     const info = await stat(wikiProjectDir(cpbRoot, project));
-    return info.isDirectory();
-  } catch {
-    return false;
-  }
+    if (info.isDirectory()) return true;
+  } catch {}
+  try {
+    const { resolveHubRoot, getProject } = await import("./hub-registry.js");
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const p = await getProject(hubRoot, project);
+    return !!p;
+  } catch {}
+  return false;
 }
 
 function resolveArtifactPath(cpbRoot, project, artifact) {
