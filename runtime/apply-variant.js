@@ -8,9 +8,9 @@
 // Shell usage:
 //   eval "$(node bridges/apply-variant.mjs --export)"
 
-function envFirst(...names) {
+function envFirst(env, ...names) {
   for (const name of names) {
-    const val = process.env[name];
+    const val = env[name];
     if (val) return val;
   }
   return undefined;
@@ -20,11 +20,11 @@ function normalizeVariant(requested) {
   return (requested || "").trim().toLowerCase();
 }
 
-function resolveVariant() {
+function resolveVariant(env = process.env) {
   const requested =
-    process.env.CPB_CLAUDE_VARIANT ||
-    process.env.CPB_BUILDER_VARIANT ||
-    process.env.CPB_ACP_CLAUDE_VARIANT ||
+    env.CPB_CLAUDE_VARIANT ||
+    env.CPB_BUILDER_VARIANT ||
+    env.CPB_ACP_CLAUDE_VARIANT ||
     "";
 
   if (requested) return normalizeVariant(requested);
@@ -32,11 +32,11 @@ function resolveVariant() {
   return "none";
 }
 
-function applyKimi() {
+function applyKimi(env = process.env) {
   const variant = "kimi-k2.6";
-  const baseUrl = envFirst("OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL", "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL", "KIMI_BASE_URL", "MOONSHOT_BASE_URL");
-  const authToken = envFirst("OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY", "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY");
-  const model = envFirst("OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL", "KIMI_MODEL", "MOONSHOT_MODEL") || "kimi-k2.6";
+  const baseUrl = envFirst(env, "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL", "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL", "KIMI_BASE_URL", "MOONSHOT_BASE_URL");
+  const authToken = envFirst(env, "OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY", "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY");
+  const model = envFirst(env, "OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL", "KIMI_MODEL", "MOONSHOT_MODEL") || "kimi-k2.6";
 
   if (!baseUrl || !authToken) {
     throw new Error(`Missing base URL or API key for variant '${variant}'. Set OLLAMA_CLOUD_URL + OLLAMA_CLOUD_KEY (or KIMI_BASE_URL + KIMI_API_KEY).`);
@@ -45,11 +45,11 @@ function applyKimi() {
   return { variant, displayName: "Kimi K2.6", baseUrl, authToken, model };
 }
 
-function applyXiaomi() {
+function applyXiaomi(env = process.env) {
   const variant = "mimo-v2.5pro";
-  const baseUrl = envFirst("XIAOMI_BASE_URL", "MIMO_BASE_URL");
-  const authToken = envFirst("XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN");
-  const model = envFirst("XIAOMI_MODEL", "MIMO_MODEL") || "mimo-v2.5pro";
+  const baseUrl = envFirst(env, "XIAOMI_BASE_URL", "MIMO_BASE_URL");
+  const authToken = envFirst(env, "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN");
+  const model = envFirst(env, "XIAOMI_MODEL", "MIMO_MODEL") || "mimo-v2.5pro";
 
   if (!baseUrl || !authToken) {
     throw new Error(`Missing base URL or API key for variant '${variant}'. Set XIAOMI_BASE_URL + XIAOMI_API_KEY (or MIMO_BASE_URL + MIMO_API_KEY).`);
@@ -58,8 +58,8 @@ function applyXiaomi() {
   return { variant, displayName: "MiMo v2.5 Pro", baseUrl, authToken, model };
 }
 
-function resolveConfig() {
-  const normalized = resolveVariant();
+function resolveConfig(env = process.env) {
+  const normalized = resolveVariant(env);
 
   switch (normalized) {
     case "none":
@@ -74,16 +74,20 @@ function resolveConfig() {
     case "ollama":
     case "ollamacloud":
     case "ollama-cloud":
-      return applyKimi();
+      return applyKimi(env);
 
     case "xiaomi":
     case "mimo":
     case "mimo-v2.5pro":
-      return applyXiaomi();
+      return applyXiaomi(env);
 
     default:
       throw new Error(`Unknown Claude variant: '${normalized}'. Use kimi-k2.6, mimo-v2.5pro, or none.`);
   }
+}
+
+export function resolveVariantConfig(env = process.env) {
+  return resolveConfig(env);
 }
 
 /**
@@ -92,32 +96,36 @@ function resolveConfig() {
  * @param {string} [opts.variant] - Override variant name
  * @returns {object} Resolved config
  */
-export function applyVariant(opts = {}) {
+export function applyVariantToEnv(env = process.env, opts = {}) {
   if (opts.variant) {
-    process.env.CPB_CLAUDE_VARIANT = opts.variant;
+    env.CPB_CLAUDE_VARIANT = opts.variant;
   }
-  const config = resolveConfig();
+  const config = resolveConfig(env);
 
   if (config.variant === "none") {
-    process.env.CPB_ACTIVE_CLAUDE_VARIANT = "none";
+    env.CPB_ACTIVE_CLAUDE_VARIANT = "none";
     return config;
   }
 
   const { variant, displayName, baseUrl, authToken, model } = config;
 
-  process.env.ANTHROPIC_BASE_URL = baseUrl;
-  process.env.ANTHROPIC_AUTH_TOKEN = authToken;
-  process.env.ANTHROPIC_MODEL = model;
-  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = model;
-  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = displayName;
-  process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = `CodePatchbay provider variant: ${variant}`;
-  process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
-  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-  process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
-  process.env.CLAUDE_CODE_SUBAGENT_MODEL = model;
-  process.env.CPB_ACTIVE_CLAUDE_VARIANT = variant;
+  env.ANTHROPIC_BASE_URL = baseUrl;
+  env.ANTHROPIC_AUTH_TOKEN = authToken;
+  env.ANTHROPIC_MODEL = model;
+  env.ANTHROPIC_CUSTOM_MODEL_OPTION = model;
+  env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = displayName;
+  env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = `CodePatchbay provider variant: ${variant}`;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+  env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+  env.CPB_ACTIVE_CLAUDE_VARIANT = variant;
 
   return config;
+}
+
+export function applyVariant(opts = {}) {
+  return applyVariantToEnv(process.env, opts);
 }
 
 // --- CLI mode: node bridges/apply-variant.mjs [--export] [--json] [--variant <name>] ---

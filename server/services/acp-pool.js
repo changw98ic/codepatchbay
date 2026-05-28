@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
+import { applyVariantToEnv, resolveVariantConfig } from "../../runtime/apply-variant.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
@@ -49,6 +50,23 @@ export class RateLimitError extends Error {
 function is429(error) {
   const message = error?.message || String(error || "");
   return /\b429\b|rate.?limit|too many requests/i.test(message);
+}
+
+function providerKeyForAgent(agent, env = {}) {
+  if (agent !== "claude") return agent;
+  const config = resolveVariantConfig(env);
+  return config.variant && config.variant !== "none" ? `claude:${config.variant}` : "claude";
+}
+
+function variantNameFromProviderKey(providerKey, agent) {
+  const prefix = `${agent}:`;
+  return providerKey.startsWith(prefix) ? providerKey.slice(prefix.length) : null;
+}
+
+function envForAgent(agent, env = {}) {
+  const next = { ...env };
+  if (agent === "claude") applyVariantToEnv(next);
+  return next;
 }
 
 function parseResetTime(message, fallbackMs) {
@@ -304,6 +322,7 @@ export class AcpPool {
       ];
       if (providerProcessReuse) capabilities.push("provider-process-reuse");
       pools[agent] = {
+        providerKey: this.providerKey(agent),
         limit: this.limits[agent] || 1,
         active: this.active.get(agent) || 0,
         queued: this.pending.get(agent)?.length || 0,
@@ -320,7 +339,7 @@ export class AcpPool {
         recycleReason: session?.recycleReason || null,
         lastRecycleReason: this.lastRecycleReason.get(agent) || null,
         sessionId: session?.sessionId || null,
-        rateLimitedUntil: this.rateLimitState.get(agent)?.untilTs || null,
+        rateLimitedUntil: this.rateLimitState.get(this.providerKey(agent))?.untilTs || null,
         mode: this.runner
           ? "managed-reusable"
           : this.env.CPB_ACP_CLIENT
@@ -391,6 +410,10 @@ export class AcpPool {
     return path.join(this.hubRoot, "providers", "rate-limits.json");
   }
 
+  providerKey(agent) {
+    return providerKeyForAgent(agent, this.env);
+  }
+
   async readDurableRateLimits() {
     try {
       return JSON.parse(await readFile(this.rateLimitFile(), "utf8"));
@@ -402,8 +425,11 @@ export class AcpPool {
   async writeDurableRateLimit(agent, state) {
     const filePath = this.rateLimitFile();
     const current = await this.readDurableRateLimits();
-    current[agent] = {
+    const providerKey = this.providerKey(agent);
+    current[providerKey] = {
       agent,
+      providerKey,
+      variant: variantNameFromProviderKey(providerKey, agent),
       untilTs: new Date(state.untilTs).toISOString(),
       reason: sanitizeProviderReason(state.message),
       updatedAt: new Date().toISOString(),
@@ -416,29 +442,32 @@ export class AcpPool {
 
   async refreshRateLimit(agent) {
     const durable = await this.readDurableRateLimits();
-    const item = durable?.[agent];
+    const providerKey = this.providerKey(agent);
+    const item = durable?.[providerKey];
     if (!item) return;
     const untilTs = Date.parse(item.untilTs);
     if (Number.isFinite(untilTs)) {
-      this.rateLimitState.set(agent, { untilTs, message: item.reason || "durable provider backoff" });
+      this.rateLimitState.set(providerKey, { untilTs, message: item.reason || "durable provider backoff" });
     }
   }
 
   async noteRateLimit(agent, error) {
     const untilTs = parseResetTime(error?.message || String(error || ""), this.backoffMs);
     const state = { untilTs, message: error?.message || String(error || "") };
-    this.rateLimitState.set(agent, state);
+    const providerKey = this.providerKey(agent);
+    this.rateLimitState.set(providerKey, state);
     await this.writeDurableRateLimit(agent, state);
     return untilTs;
   }
 
   async assertNotRateLimited(agent) {
+    const providerKey = this.providerKey(agent);
     await this.refreshRateLimit(agent);
-    const state = this.rateLimitState.get(agent);
+    const state = this.rateLimitState.get(providerKey);
     if (state && Date.now() < state.untilTs) {
-      throw new RateLimitError(agent, state.untilTs);
+      throw new RateLimitError(providerKey, state.untilTs);
     }
-    if (state) this.rateLimitState.delete(agent);
+    if (state) this.rateLimitState.delete(providerKey);
   }
 
   #newSession(agent, recycleReason = null, recycledAt = null) {
@@ -553,7 +582,7 @@ export class AcpPool {
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
       const env = buildChildEnv(
-        this.env,
+        envForAgent(agent, this.env),
         { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
         { agent },
       );
@@ -670,7 +699,7 @@ export class AcpPool {
       outputSink: () => {},
       errorSink: () => {},
       env: buildChildEnv(
-        this.env,
+        envForAgent(agent, this.env),
         { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
         { agent },
       ),

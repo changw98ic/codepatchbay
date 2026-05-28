@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AcpPool, resetManagedAcpPoolsForTests } from "../server/services/acp-pool.js";
@@ -238,5 +238,76 @@ while true; do sleep 1; done
 
     await rm(rootA, { recursive: true, force: true }).catch(() => {});
     await rm(rootB, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("applies Claude provider variant env before launching ACP children", async () => {
+    const root = await tempDir("cpb-acp-variant-env-");
+    const clientPath = path.join(root, "variant-client.sh");
+    await writeFile(clientPath, `#!/bin/sh
+env | sort > "$CPB_ROOT/variant-env.txt"
+cat >/dev/null
+printf ok
+`);
+    await chmod(clientPath, 0o755);
+
+    pool = new AcpPool({
+      cpbRoot: root,
+      hubRoot: root,
+      persistentProcesses: false,
+      env: {
+        PATH: process.env.PATH,
+        CPB_ACP_CLIENT: clientPath,
+        CPB_CLAUDE_VARIANT: "kimi-k2.6",
+        OLLAMA_CLOUD_URL: "https://ollama.example/v1",
+        OLLAMA_CLOUD_KEY: "kimi-secret",
+      },
+    });
+
+    assert.equal(await pool.execute("claude", "prompt", root, 5000), "ok");
+
+    const envText = await readFile(path.join(root, "variant-env.txt"), "utf8");
+    assert.match(envText, /^CPB_ACTIVE_CLAUDE_VARIANT=kimi-k2\.6$/m);
+    assert.match(envText, /^ANTHROPIC_BASE_URL=https:\/\/ollama\.example\/v1$/m);
+    assert.match(envText, /^ANTHROPIC_AUTH_TOKEN=kimi-secret$/m);
+    assert.match(envText, /^ANTHROPIC_MODEL=kimi-k2\.6$/m);
+  });
+
+  it("scopes Claude durable rate limits by provider variant", async () => {
+    const root = await tempDir("cpb-acp-variant-ratelimit-");
+    const clientPath = path.join(root, "variant-client.sh");
+    await writeFile(clientPath, `#!/bin/sh
+cat >/dev/null
+printf ok
+`);
+    await chmod(clientPath, 0o755);
+
+    const rateLimitDir = path.join(root, "providers");
+    await mkdir(rateLimitDir, { recursive: true });
+    const future = new Date(Date.now() + 60_000).toISOString();
+    await writeFile(path.join(rateLimitDir, "rate-limits.json"), `${JSON.stringify({
+      claude: { agent: "claude", untilTs: future, reason: "official Anthropic backoff" },
+    }, null, 2)}\n`);
+
+    pool = new AcpPool({
+      cpbRoot: root,
+      hubRoot: root,
+      persistentProcesses: false,
+      env: {
+        PATH: process.env.PATH,
+        CPB_ACP_CLIENT: clientPath,
+        CPB_CLAUDE_VARIANT: "kimi-k2.6",
+        OLLAMA_CLOUD_URL: "https://ollama.example/v1",
+        OLLAMA_CLOUD_KEY: "kimi-secret",
+      },
+    });
+
+    assert.equal(await pool.execute("claude", "prompt", root, 5000), "ok");
+
+    await pool.noteRateLimit("claude", new Error("429 retry after 1 seconds"));
+    const limits = JSON.parse(await readFile(path.join(rateLimitDir, "rate-limits.json"), "utf8"));
+    assert.ok(limits.claude, "existing default Claude backoff remains present");
+    assert.ok(limits["claude:kimi-k2.6"], "variant backoff is written under provider-specific key");
+    assert.equal(limits["claude:kimi-k2.6"].agent, "claude");
+    assert.equal(limits["claude:kimi-k2.6"].providerKey, "claude:kimi-k2.6");
   });
 });
