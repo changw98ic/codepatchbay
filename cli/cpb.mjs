@@ -72,6 +72,7 @@ function usage() {
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
+  console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
   console.log(`${BOLD}Global flags:${NC}`);
@@ -104,6 +105,7 @@ const COMMANDS = {
   execute: "execute.js",
   verify: "verify.js",
   pipeline: "pipeline.js",
+  profile: "profile.js",
   run: "run.js",
   demo: "demo.js",
   research: "research.js",

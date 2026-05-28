@@ -492,7 +492,7 @@ test("cpb help lists all public COMMANDS keys", async () => {
     "demo", "research", "evolve-multi", "index", "sdd", "repair",
     "status", "list", "jobs", "gc", "recover", "diff", "review",
     "inbox", "outputs", "artifacts", "verdict", "doctor", "health-check", "setup", "agents", "auth", "github", "wiki", "release",
-    "cancel", "redirect", "merge-preview", "install-bin", "ui", "version", "audit",
+    "cancel", "redirect", "merge-preview", "install-bin", "ui", "version", "audit", "profile",
   ];
 
   for (const cmd of publicCommands) {
@@ -508,7 +508,7 @@ test("all routed CLI command modules import successfully", async () => {
     "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "sdd", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
-    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "audit",
+    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "audit", "profile",
   ];
   for (const mod of moduleFiles) {
     const result = await runNode(["-e", `import("./cli/commands/${mod}.js")`]);
@@ -521,7 +521,7 @@ test("all routed command modules export run()", async () => {
     "init", "attach", "hub", "daemon", "plan", "execute", "verify", "pipeline", "demo", "research",
     "status", "list", "jobs", "artifacts", "verdict", "evolve-multi", "index", "sdd", "repair", "diff", "review",
     "inbox", "outputs", "doctor", "health-check", "setup", "agents", "auth", "github", "reconcile", "wiki", "ui",
-    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview",
+    "version", "release-select", "install-bin", "cancel-redirect", "merge-preview", "profile",
   ];
   for (const mod of moduleFiles) {
     const result = await runNode(["-e", `
@@ -589,7 +589,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js", "audit.js", "config.js", "provider.js", "quickstart.js", "model-profile.js",
-    "coderag.js",
+    "coderag.js", "profile.js",
   ]);
 
   for (const file of jsFiles) {
