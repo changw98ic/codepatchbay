@@ -2,7 +2,7 @@
 // e2e-npm-pack.mjs — One-shot E2E: pack → install → doctor → hub → enqueue → worker → verify
 // Usage: node scripts/e2e-npm-pack.mjs [--keep-state] [--project flow]
 import { execSync, spawn } from "node:child_process";
-import { existsSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -236,15 +236,15 @@ async function stepMonitor() {
     // Check for completion
     if (status.includes("completed")) {
       pass("Pipeline completed!");
-      return printSummary();
+      return await printSummary();
     }
     if (status.includes("failed")) {
       fail("Pipeline failed");
-      return printSummary();
+      return await printSummary();
     }
     if (status.includes("blocked")) {
       fail("Pipeline blocked");
-      return printSummary();
+      return await printSummary();
     }
 
     await wait(10000);
@@ -254,7 +254,7 @@ async function stepMonitor() {
 }
 
 // ─── Summary ───────────────────────────────────────────────────────
-function printSummary() {
+async function printSummary() {
   console.log("");
   log("SUMMARY", `${BOLD}E2E Test Results${RESET}`);
 
@@ -270,7 +270,6 @@ function printSummary() {
   log("MCP", "Checking if Codex used MCP tools...");
   try {
     const sessionDir = path.join(homedir(), ".codex", "sessions");
-    const { readdirSync, statSync } = await import("node:fs");
     let latestSession = null;
     let latestTime = 0;
     const today = new Date();
