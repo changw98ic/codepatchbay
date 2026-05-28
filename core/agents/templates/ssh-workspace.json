@@ -1,0 +1,19 @@
+{
+  "name": "{{name}}",
+  "displayName": "{{displayName}}",
+  "command": "ssh",
+  "args": ["-o", "ConnectTimeout=10", "{{host}}", "echo", "workspace-ready"],
+  "capabilities": ["execute"],
+  "defaultRoles": ["executor"],
+  "envPrefix": "CPB_WORKSPACE_{{NAME_UPPER}}",
+  "stability": "experimental",
+  "description": "{{description}}",
+  "workspace": {
+    "type": "ssh",
+    "host": "{{host}}",
+    "port": {{port}},
+    "user": "{{user}}",
+    "path": "{{path}}",
+    "syncStrategy": "{{syncStrategy}}"
+  }
+}

@@ -66,6 +66,7 @@ function usage() {
   console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
   console.log(`  ${CYAN}wiki${NC} [lint|list]                       Wiki operations`);
   console.log(`  ${CYAN}release${NC} <list|use|install|doctor|gc>    Release management`);
+  console.log(`  ${CYAN}workspace${NC} [init|list|status|doctor]       Workspace backends (SSH, devcontainer)`);
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
@@ -139,6 +140,7 @@ const COMMANDS = {
   release: "release-select.js",
   config: "config.js",
   provider: "provider.js",
+  workspace: "workspace.js",
   quickstart: "quickstart.js",
   "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",

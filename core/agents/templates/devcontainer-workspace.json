@@ -1,0 +1,19 @@
+{
+  "name": "{{name}}",
+  "displayName": "{{displayName}}",
+  "command": "docker",
+  "args": ["ps", "--filter", "name={{containerId}}", "--format", "'{{.Names}}'"],
+  "capabilities": ["execute"],
+  "defaultRoles": ["executor"],
+  "envPrefix": "CPB_WORKSPACE_{{NAME_UPPER}}",
+  "stability": "experimental",
+  "description": "{{description}}",
+  "workspace": {
+    "type": "devcontainer",
+    "containerId": "{{containerId}}",
+    "image": "{{image}}",
+    "dockerfilePath": "{{dockerfilePath}}",
+    "contextPath": "{{contextPath}}",
+    "mountPoint": "{{mountPoint}}"
+  }
+}
