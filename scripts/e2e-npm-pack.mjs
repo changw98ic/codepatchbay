@@ -14,6 +14,7 @@ const CPB_ROOT = ROOT;
 const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
 const TGZ = `${PKG_NAME}-0.2.0.tgz`;
+const GITHUB_REPO = "changw98ic/codepatchbay";
 
 const GREEN = "\x1b[0;32m";
 const RED = "\x1b[0;31m";
@@ -143,6 +144,17 @@ function stepProject() {
   log("PROJECT", `Ensuring project '${PROJECT}' is registered...`);
   run(`cpb attach ${ROOT} ${PROJECT}`, { allowFail: true, silent: true });
   pass("Project registered");
+}
+
+// ─── Step 5.5: Bind GitHub + configure automation ──────────────────
+function stepGithub() {
+  log("GITHUB", `Binding repo ${GITHUB_REPO} to project '${PROJECT}'...`);
+  run(`cpb github bind ${PROJECT} ${GITHUB_REPO}`, { silent: true, allowFail: true });
+
+  log("GITHUB", "Configuring automation (label: cpb)...");
+  run(`cpb config ${PROJECT} --automation-enabled true`, { silent: true, allowFail: true });
+  run(`cpb config ${PROJECT} --automation-rule 'match.labels=cpb;action.workflow=standard;action.priority=P2'`, { silent: true, allowFail: true });
+  pass("GitHub bound and automation configured");
 }
 
 // ─── Step 6: Start hub ─────────────────────────────────────────────
@@ -308,6 +320,7 @@ async function main() {
   stepPack();
   stepDoctor();
   stepProject();
+  stepGithub();
   await stepHub();
   const hasIssues = stepEnqueue();
   if (!hasIssues) {
