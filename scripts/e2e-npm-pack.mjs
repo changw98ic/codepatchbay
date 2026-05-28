@@ -175,14 +175,8 @@ async function stepHub() {
 
 // ─── Step 7: Sync and enqueue GitHub issues ────────────────────────
 function stepEnqueue() {
-  log("ENQUEUE", "Syncing GitHub issues...");
-  const sync = run("cpb hub github-sync", { silent: true, allowFail: true });
-  if (!sync.ok) {
-    log("ENQUEUE", "GitHub sync skipped (no gh auth or no repo bound)");
-    return false;
-  }
+  log("ENQUEUE", `Syncing + enqueueing issues for ${PROJECT}...`);
 
-  log("ENQUEUE", `Enqueueing issues for ${PROJECT}...`);
   const dry = run(`cpb hub enqueue-issues ${PROJECT} --sync-first --dry-run`, { silent: true, allowFail: true });
   if (dry.ok && dry.stdout) {
     log("ENQUEUE", `Dry run: ${dry.stdout.substring(0, 200)}`);
@@ -191,6 +185,7 @@ function stepEnqueue() {
   const enq = run(`cpb hub enqueue-issues ${PROJECT} --sync-first`, { silent: true, allowFail: true });
   if (!enq.ok) {
     fail("Enqueue failed");
+    if (enq.stderr) log("ENQUEUE", enq.stderr.substring(0, 300));
     return false;
   }
   pass("Issues enqueued");
