@@ -390,16 +390,9 @@ function buildMcpServers(agent, env) {
     sseUrl = `http://localhost:${port}/sse`;
   }
 
-  // Codex only supports stdio MCP — bridge via supergateway
-  if (agent === "codex") {
-    return [{
-      name: "coderag",
-      command: "npx",
-      args: ["-y", "supergateway", "--sse", sseUrl],
-    }];
-  }
+  // Codex reads MCP servers from its own ~/.codex/config.toml natively
+  if (agent === "codex") return [];
 
-  // Claude and others — use SSE directly
   return [{ name: "coderag", type: "sse", url: sseUrl }];
 }
 
@@ -409,27 +402,9 @@ function isCodexAcpCommand(command, args = []) {
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
 }
 
-function codexMcpConfigArgs(env) {
-  const args = [];
-  for (const server of buildMcpServers("codex", env)) {
-    if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
-    const prefix = `mcp_servers.${server.name}`;
-    args.push("-c", `${prefix}.command=${JSON.stringify(server.command)}`);
-    args.push("-c", `${prefix}.args=${JSON.stringify(server.args)}`);
-  }
-  return args;
-}
-
 function appendCodexLaunchConfigArgs(agent, command, args, env) {
-  if (agent !== "codex" || !isCodexAcpCommand(command, args)) return;
-
-  if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
-    const headlessArgs = headlessCodexConfigArgs(command, args);
-    if (headlessArgs.length > 0) args.push(...headlessArgs);
-  }
-
-  const mcpArgs = codexMcpConfigArgs(env);
-  if (mcpArgs.length > 0) args.push(...mcpArgs);
+  // Headless -c overrides disabled — they prevent codex-acp from loading
+  // MCP servers from config.toml. Plugin disabling is not needed in ACP mode.
 }
 
 export class AcpClient {
@@ -478,15 +453,9 @@ export class AcpClient {
       env.npm_config_cache = instanceCache;
     }
 
-    // Per-agent HOME isolation (default on; disable with CPB_AGENT_ISOLATE_HOME=0)
-    if (env.CPB_AGENT_ISOLATE_HOME !== "0") {
-      const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
-      if (cpbRoot) {
-        const { createAgentHome } = await import("../core/agents/isolation.js");
-        const homeEnv = await createAgentHome(cpbRoot, this.agent, env.CPB_JOB_ID, { parentEnv: env });
-        Object.assign(env, homeEnv);
-      }
-    }
+    // Home isolation disabled for ACP — agents read user's real ~/.codex or ~/.claude
+    // config directly so MCP servers and other native config work as expected.
+    // Worktree-level isolation handles project sandboxing instead.
     const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cwd });
     this.childEnv = env;
     this.child = spawn(launch.command, launch.args, {
@@ -550,7 +519,7 @@ export class AcpClient {
 
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
-    const mcpServers = this.agent === "codex" ? [] : buildMcpServers(this.agent, this.env);
+    const mcpServers = buildMcpServers(this.agent, this.env);
 
     // Try to resume a cached session, fall back to new
     let session;

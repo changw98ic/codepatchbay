@@ -652,10 +652,8 @@ async function applyPhaseModelProfile(cpbRoot, project, phase) {
     const profileEnv = await resolveModelProfileEnv(cpbRoot, profileName);
     if (Object.keys(profileEnv).length > 0) {
       Object.assign(process.env, profileEnv);
-      // API key auth bypasses ~/.claude/ OAuth; disable HOME isolation so the
-      // agent process can still read real HOME for toolchains, git config, etc.
+      // API key auth bypasses ~/.claude/ OAuth
       if (profileEnv.ANTHROPIC_API_KEY) {
-        process.env.CPB_AGENT_ISOLATE_HOME = "0";
         // Remove OAuth token to prevent Claude Code SDK from preferring it
         // over the explicit API key — the OAuth token targets the official
         // Anthropic API and will 401 against third-party base URLs.
