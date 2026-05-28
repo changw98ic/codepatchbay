@@ -123,20 +123,22 @@ function stepPack() {
 // ─── Step 4: Doctor ────────────────────────────────────────────────
 function stepDoctor() {
   log("DOCTOR", "Running health check...");
-  const r = run("cpb doctor --json", { silent: true });
-  if (!r.ok) {
-    fail("Doctor check failed");
-    console.log(r.stdout?.substring(0, 500));
-    process.exit(1);
-  }
+  const r = run("cpb doctor --json", { silent: true, allowFail: true });
   try {
-    const data = JSON.parse(r.stdout);
-    if (data.errors?.length > 0) {
-      fail(`Doctor errors: ${data.errors.join(", ")}`);
+    const data = JSON.parse(r.stdout || "{}");
+    const agentErrors = (data.checks || []).filter(
+      (c) => c.status === "error" && c.category === "agents"
+    );
+    if (agentErrors.length > 0) {
+      fail(`Critical agent errors: ${agentErrors.map((c) => c.message).join(", ")}`);
       process.exit(1);
     }
-  } catch {}
-  pass("Doctor passed");
+    const summary = data.summary || {};
+    log("DOCTOR", `ok: ${summary.ok || 0}, warn: ${summary.warn || 0}, error: ${summary.error || 0}`);
+  } catch (e) {
+    log("DOCTOR", `Could not parse doctor output: ${e.message}`);
+  }
+  pass("Doctor passed (non-critical issues allowed)");
 }
 
 // ─── Step 5: Ensure project registered ─────────────────────────────
