@@ -848,6 +848,16 @@ export class ProjectWorker {
 
     const finalStatus = result.ok ? "completed" : "failed";
     const patch = { status: finalStatus };
+    if (finalStatus === "failed") {
+      const failureInfo = {
+        code: result.code,
+        error: result.error || null,
+        stderrSnippet: (result.stderr || "").substring(0, 500),
+        stdoutSnippet: (result.stdout || "").substring(0, 500),
+        failedAt: new Date().toISOString(),
+      };
+      patch.metadata = { failureReason: `exit=${result.code}`, ...failureInfo };
+    }
     if (result.finalizer) {
       patch.metadata = {
         finalizer: finalizerMetadata(result.finalizer, this.autoFinalizerMode),

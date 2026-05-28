@@ -244,6 +244,14 @@ async function stepMonitor() {
       return await printSummary();
     }
 
+    // Also check queue status for failures (cpb status may not reflect queue state)
+    const q = run("cpb hub queue-status", { silent: true, allowFail: true });
+    if (q.ok && q.stdout.includes("failed:") && !q.stdout.includes("failed:0")) {
+      fail("Queue reports failed entry");
+      log("MONITOR", q.stdout.replace(/\x1b\[[0-9;]*m/g, "").trim());
+      return await printSummary();
+    }
+
     await wait(10000);
   }
 
