@@ -774,9 +774,9 @@ async function checkGitReadiness(hubRoot) {
           checks.push(ok(checkId, "git", `${project.id}: remote accessible`, {
             details: { url: remoteUrl, platform: project.git.platform || "generic" },
           }));
-        } catch (error) {
+        } catch (err) {
           checks.push(error(checkId, "git", `${project.id}: remote not accessible`, {
-            details: { url: remoteUrl, error: error.message },
+            details: { url: remoteUrl, error: err.message },
             remediation: "Check git remote URL and authentication",
           }));
         }
