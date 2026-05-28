@@ -1,0 +1,4 @@
+interface:
+  display_name: "CodePatchBay"
+  short_description: "Use CPB for verified agent workflows"
+  default_prompt: "Use $codepatchbay to run a verified CodePatchBay task from the published npm package."

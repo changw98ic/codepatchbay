@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cpbBin = path.join(repoRoot, "cpb");
 
-const REQUIRED_ASSETS = ["cpb", "cli", "bridges", "core", "runtime", "server"];
+const REQUIRED_ASSETS = ["cpb", "cli", "bridges", "core", "runtime", "server", "skills"];
 const FORBIDDEN_ASSETS = [
   "node_modules", ".git", "cpb-task", ".omx", ".omc", "omx_wiki", "providers",
 ];
@@ -79,6 +79,8 @@ const PACK_REQUIRED_FILES = [
   "cli/commands/setup.js",
   "cli/commands/agents.js",
   "cli/commands/demo.js",
+  "skills/codepatchbay/SKILL.md",
+  "skills/codepatchbay/agents/openai.yaml",
   "web/dist/index.html",
   "README.md",
   "docs/demo.md",

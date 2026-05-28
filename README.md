@@ -1,23 +1,51 @@
 # CodePatchBay — 面向 AI 编码代理的本地网关，用于经过验证的代码变更
 
-[English](README.en.md)
+[![npm version](https://img.shields.io/npm/v/codepatchbay.svg)](https://www.npmjs.com/package/codepatchbay) [English](README.en.md)
 
 > 通过本地可检查的规划 → 执行 → 验证交接流程路由 AI 编码工作，任何代码在到达 PR 之前都需经过验证。无需托管服务。
 
 ## 快速开始
 
+### 从 npm 安装（推荐）
+
+npm 包名：[`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
+
+```bash
+npm install -g codepatchbay
+cpb setup --recommended        # 检测工具、安装智能体、运行健康检查
+cpb demo                       # 本地产物演示，无需服务提供商密钥
+cd your-project
+cpb init .                     # 注册当前项目
+cpb run "fix failing tests"    # 完整规划 → 执行 → 验证流水线
+```
+
+免安装直接试用：
+
+```bash
+npx codepatchbay demo
+```
+
+### 从源码安装
+
 ```bash
 git clone https://github.com/changw98ic/codepatchbay.git
 cd codepatchbay
-sh scripts/install.sh
-cpb demo                      # 本地产物演示，无需服务提供商密钥
-cpb init .                    # 注册当前项目
-cpb run "fix failing tests"   # 完整规划 → 执行 → 验证流水线
+sh scripts/install.sh          # 一键安装：检测依赖 → 全局注册 → setup
 ```
 
 `cpb demo` 运行本地模拟，展示产物循环（规划产物、执行交付物、验证器判定结果），无需服务提供商 API 密钥。`cpb run` 使用已配置的本地 ACP 适配器，通过 Codex 进行规划和验证，通过 Claude Code 进行执行。
 
 `scripts/install.sh` 会检查 `node`、`npm`、`git`、`gh`，通过本地包管理器安装缺失工具，将当前目录安装为全局 `cpb` 命令行工具，验证 `gh auth status`，按需引导 `gh auth login`，然后执行 `cpb setup --recommended`。
+
+### 使用流程
+
+```text
+1. cpb init .                        注册项目
+2. cpb run "add dark mode"           提交任务（完整流水线）
+3. cpb status myproj                 查看状态
+4. cpb artifacts <job-id>            查看产物
+5. cpb verdict <job-id>              查看验证结果
+```
 
 ### 可选 GitHub 集成
 
@@ -34,7 +62,7 @@ cpb daemon start
 
 `cpb github doctor` 执行九层检查：应用配置、webhook 密钥、安装实例、私钥、传输模式、仓库绑定、分支推送就绪、PR 创建、gh 命令行认证。使用 `--json` 获取机器可读输出。
 
-### 手动安装
+### 从源码手动安装
 
 ```bash
 npm ci
@@ -60,6 +88,9 @@ CodePatchBay 是本地优先的控制平面，用于经过验证的 AI 代码变
 - `cpb demo` — 本地产物演示（无需密钥）
 - `cpb init .` — 注册当前项目（名称从 `package.json` 或目录名推断）
 - `cpb run "task"` — 完整规划 → 执行 → 验证流水线
+- `cpb research` — 双智能体研究（Codex + Claude 并行调研）
+- `cpb sdd init` — 规格驱动开发骨架（Spec-Driven Development）
+- `cpb index refresh` — 项目代码索引和依赖图
 - `cpb github bind` / `cpb github connect` — 绑定项目到 GitHub 仓库并配置 GitHub 应用
 - `cpb daemon start` — 启动队列工作进程，实现无人值守议题驱动工作
 - `cpb ui` — 本地 Web 界面，用于项目和任务管理
@@ -80,26 +111,66 @@ Codex 规划
 ## 命令
 
 ```bash
+# 项目管理
 cpb init <path> [name]             # 初始化项目（省略名称时自动推断）
+cpb attach [path] [name]           # 附加项目到 Hub
+cpb list                           # 列出项目
+cpb status <project>               # 项目状态
+
+# 流水线与单阶段
 cpb run "<task>" [--project <id>]  # 通过完整流水线运行任务
-cpb pipeline <project> "<task>"    # 完整流水线（显式指定项目）
+cpb pipeline <project> "<task>" [retries]  # 完整流水线（显式指定项目）
 cpb plan <project> "<task>"        # 仅 Codex 规划
 cpb execute <project> <plan-id>    # 仅 Claude 执行
 cpb verify <project> <id>          # 仅 Codex 验证
+cpb research <project> "<task>"    # 双智能体研究（Codex + Claude 并行调研）
+cpb review <project> [id]          # 审查交付物
+
+# 多阶段进化与规格驱动
+cpb evolve-multi [--once|--scan|--continuous]  # 多阶段进化
+cpb sdd <init|bootstrap|verify|drift> <project> # 规格驱动开发
+
+# 代码索引
+cpb index <status|refresh|graph|impact|context-pack> <project>  # 代码索引与依赖图
+
+# 任务管理
+cpb jobs [reconcile|cleanup|report]  # 任务管理
+cpb artifacts <job-id> [--json]      # 列出任务产物
+cpb verdict <job-id> [--json]        # 显示任务判定结果
+cpb repair <project> <job-id> [--agent <name>]  # 重试失败阶段
+cpb cancel <project> <jobId> [reason]           # 取消运行中任务
+cpb redirect <project> <jobId> "<msg>" [reason] # 重定向任务
+
+# 清理与恢复
+cpb gc [--dry-run]                 # 清理过期任务 + 孤立租约 + 污染文件
+cpb recover [--dry-run]            # gc 别名
+
+# 审计与合并
+cpb diff <project>                 # Git diff
+cpb audit <project> <job-id>       # 导出审计包
+cpb merge-preview <project> <ref> [--base <branch>]  # 预览合并
+
+# Hub 与守护进程
+cpb hub [status|start|stop|projects|...]  # Hub 管理
+cpb daemon [start|status|stop]     # 队列守护进程
+cpb coderag [status|start|stop]    # CodeRAG MCP 服务器
+
+# GitHub 集成
+cpb github bind <proj> <owner/repo>  # 绑定项目到 GitHub 仓库
+cpb github connect [options]         # 配置 GitHub 应用凭据
+cpb github doctor [--json]           # 检查 GitHub 集成健康状态
+
+# 设置与诊断
 cpb demo [--json]                  # 本地模拟演示（无需密钥）
 cpb setup [--recommended|--interactive|--json]  # 安装向导
-cpb agents [list|detect|install]   # 智能体网关管理
+cpb agents [list|detect|install|test]  # 智能体网关管理
 cpb auth [status]                  # 服务提供商认证检查
-cpb github bind <proj> <owner/repo> # 绑定项目到 GitHub 仓库
-cpb github connect [options]       # 配置 GitHub 应用凭据
-cpb github doctor [--json]         # 检查 GitHub 集成健康状态
-cpb daemon [start|status|stop]      # 队列守护进程
-cpb status <project>               # 项目状态
-cpb list                           # 列出项目
-cpb jobs [reconcile|cleanup]       # 任务管理
-cpb artifacts <job-id>             # 列出任务产物
-cpb verdict <job-id>               # 显示任务判定结果
 cpb doctor [--json]                # 健康检查
+cpb health-check                   # HTTP + 测试 + 构建检查
+cpb profile [list|show|use]        # 配置文件管理
+cpb wiki [lint|list]               # Wiki 操作
+cpb release <list|use|install|doctor|gc>  # 版本管理
+cpb install-bin                    # 安装 cpb 到 PATH
 cpb ui [--port] [--host]           # 启动 Web 界面
 cpb version                        # 显示版本
 ```

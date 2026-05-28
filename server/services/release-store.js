@@ -20,6 +20,7 @@ const ALLOWED_ASSETS = [
   "runtime",
   "server",
   "profiles",
+  "skills",
   "templates",
   "package.json",
   "package-lock.json",

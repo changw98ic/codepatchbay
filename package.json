@@ -16,6 +16,7 @@
     "server/services/",
     "server/notification/",
     "profiles/",
+    "skills/",
     "templates/",
     "wiki/schema.md",
     "wiki/system/",
