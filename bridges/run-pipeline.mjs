@@ -1531,8 +1531,15 @@ export async function runPipeline({
 
           if (isFix) return { ok: true };
           if (attempt >= maxAttempts) {
-            warn(`Execute completed without deliverable after ${maxAttempts} attempts. Proceeding to verify by job state.`);
-            return { ok: true };
+            const reason = `execute completed without deliverable after ${maxAttempts} attempts`;
+            warn(`${reason}.`);
+            return {
+              ok: false,
+              reason,
+              retryable: false,
+              failPhase: phaseName,
+              failCode: FAILURE_CODES.FATAL,
+            };
           }
           return { ok: false, reason: "no deliverable", retryable: true };
         }

@@ -43,8 +43,15 @@ resolve to `acpProfile: "headless"` unless explicitly configured as `ui`.
 
 Headless `codex-acp` launches receive process-local config overrides that
 disable Computer Use, Browser, Chrome plugins, and clear notify hooks. Global
-Codex config is never modified. ACP `session/new` always sends `mcpServers: []`
-to prevent inherited MCP side effects.
+Codex config is never modified.
+
+Codex ACP cannot accept non-empty `session/new.mcpServers`, so CPB still sends
+`mcpServers: []` for Codex sessions in both headless and UI lanes. Built-in
+CodeRAG is mounted through process-local Codex config instead: CPB launches
+`codex-acp` with
+`mcp_servers.coderag.*` overrides that bridge the CodeRAG SSE endpoint through
+`supergateway`. Other ACP providers continue to receive CodeRAG through
+`session/new.mcpServers`.
 
 At runtime, headless sessions deny Computer Use, Browser, Chrome, desktop
 automation, and MCP-shaped UI tool calls before side effects occur. Every

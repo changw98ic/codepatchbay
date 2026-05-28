@@ -11,6 +11,7 @@ import {
   formatDeleteBlockedMessage,
   logDeleteBlock,
 } from "./delete-guard.js";
+import { createAgentHome } from "../core/agents/isolation.js";
 import {
   headlessCodexConfigArgs,
   classifyUiToolRequest,
@@ -371,29 +372,35 @@ export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
     : null;
 }
 
-function buildMcpServers(agent, env) {
-  if (env.CPB_CODERAG_ENABLED === "0") return [];
+function resolveCoderagSseUrl(env) {
+  if (env.CPB_CODERAG_ENABLED === "0") return null;
 
   const cpbRoot = env.CPB_ROOT || env.CPB_ACP_CPB_ROOT;
-  if (!cpbRoot) return [];
-
-  const stateFile = path.join(cpbRoot, "cpb-task", "coderag-state.json");
   let sseUrl;
-  if (existsSync(stateFile)) {
-    try {
-      const state = JSON.parse(readFileSync(stateFile, "utf8"));
-      sseUrl = state.sseUrl;
-    } catch {}
+  if (cpbRoot) {
+    const stateFile = path.join(cpbRoot, "cpb-task", "coderag-state.json");
+    if (existsSync(stateFile)) {
+      try {
+        const state = JSON.parse(readFileSync(stateFile, "utf8"));
+        sseUrl = state.sseUrl;
+      } catch {}
+    }
   }
   if (!sseUrl) {
     const port = parseInt(env.CPB_CODERAG_PORT || "3100", 10);
     sseUrl = `http://localhost:${port}/sse`;
   }
+  return sseUrl;
+}
 
-  // Codex reads MCP servers from its own ~/.codex/config.toml natively
-  if (agent === "codex") return [];
-
-  return [{ name: "coderag", type: "sse", url: sseUrl }];
+function codexCoderagMcpServers(env) {
+  const sseUrl = resolveCoderagSseUrl(env);
+  if (!sseUrl) return [];
+  return [{
+    name: "coderag",
+    command: "npx",
+    args: ["-y", "supergateway", "--sse", sseUrl],
+  }];
 }
 
 function isCodexAcpCommand(command, args = []) {
@@ -402,9 +409,38 @@ function isCodexAcpCommand(command, args = []) {
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
 }
 
+function buildMcpServers(agent, env) {
+  const sseUrl = resolveCoderagSseUrl(env);
+  if (!sseUrl) return [];
+
+  // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
+  // CodeRAG through process-local launch config instead.
+  if (agent === "codex") return [];
+
+  return [{ name: "coderag", type: "sse", url: sseUrl }];
+}
+
+function codexMcpConfigArgs(env) {
+  const args = [];
+  for (const server of codexCoderagMcpServers(env)) {
+    if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
+    const prefix = `mcp_servers.${server.name}`;
+    args.push("-c", `${prefix}.command=${JSON.stringify(server.command)}`);
+    args.push("-c", `${prefix}.args=${JSON.stringify(server.args)}`);
+  }
+  return args;
+}
+
 function appendCodexLaunchConfigArgs(agent, command, args, env) {
-  // Headless -c overrides disabled — they prevent codex-acp from loading
-  // MCP servers from config.toml. Plugin disabling is not needed in ACP mode.
+  if (agent !== "codex" || !isCodexAcpCommand(command, args)) return;
+
+  if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
+    const headlessArgs = headlessCodexConfigArgs(command, args);
+    if (headlessArgs.length > 0) args.push(...headlessArgs);
+  }
+
+  const mcpArgs = codexMcpConfigArgs(env);
+  if (mcpArgs.length > 0) args.push(...mcpArgs);
 }
 
 export class AcpClient {
@@ -446,6 +482,16 @@ export class AcpClient {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
     const env = buildChildEnv(this.env, {}, { agent: this.agent });
+    if (env.CPB_AGENT_ISOLATE_HOME !== "0") {
+      const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || this.cwd;
+      const homeEnv = await createAgentHome(
+        cpbRoot,
+        this.agent,
+        env.CPB_ACP_JOB_ID || env.CPB_JOB_ID || null,
+        { parentEnv: env },
+      );
+      Object.assign(env, homeEnv);
+    }
     const { command, args } = await resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
@@ -453,9 +499,8 @@ export class AcpClient {
       env.npm_config_cache = instanceCache;
     }
 
-    // Home isolation disabled for ACP — agents read user's real ~/.codex or ~/.claude
-    // config directly so MCP servers and other native config work as expected.
-    // Worktree-level isolation handles project sandboxing instead.
+    // Agent home isolation keeps provider auth/config available without sharing
+    // mutable session history between concurrent ACP jobs.
     const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cwd });
     this.childEnv = env;
     this.child = spawn(launch.command, launch.args, {
@@ -520,6 +565,16 @@ export class AcpClient {
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
     const mcpServers = buildMcpServers(this.agent, this.env);
+    const newSession = async (servers) => {
+      try {
+        return await this.request("session/new", { cwd, mcpServers: servers });
+      } catch (error) {
+        if (servers?.length > 0 && /invalid params/i.test(error.message || "")) {
+          return this.request("session/new", { cwd, mcpServers: [] });
+        }
+        throw error;
+      }
+    };
 
     // Try to resume a cached session, fall back to new
     let session;
@@ -527,10 +582,10 @@ export class AcpClient {
       try {
         session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
       } catch {
-        session = await this.request("session/new", { cwd, mcpServers });
+        session = await newSession(mcpServers);
       }
     } else {
-      session = await this.request("session/new", { cwd, mcpServers });
+      session = await newSession(mcpServers);
     }
 
     await this.request("session/prompt", {

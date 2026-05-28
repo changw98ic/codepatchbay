@@ -18,6 +18,9 @@ describe("buildChildEnv", () => {
     const env = buildChildEnv({
       PATH: "/usr/bin",
       CPB_ROOT: "/tmp/cpb",
+      CPB_CODERAG_ENABLED: "0",
+      CPB_CODERAG_PORT: "3999",
+      CPB_ACP_PHASE_TIMEOUT_MS: "90000",
       CPB_ACP_CUSTOM_AGENT_COMMAND: "agent-bin",
       OPENAI_API_KEY: "provider-secret",
       DATABASE_URL: "postgres://user:pass@example/db",
@@ -31,6 +34,9 @@ describe("buildChildEnv", () => {
 
     assert.strictEqual(env.PATH, "/usr/bin");
     assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
+    assert.strictEqual(env.CPB_CODERAG_ENABLED, "0");
+    assert.strictEqual(env.CPB_CODERAG_PORT, "3999");
+    assert.strictEqual(env.CPB_ACP_PHASE_TIMEOUT_MS, "90000");
     assert.strictEqual(env.CPB_ACP_CUSTOM_AGENT_COMMAND, "agent-bin");
     assert.strictEqual(env.CPB_JOB_ID, "job-1");
     assert.strictEqual(env.OPENAI_API_KEY, "provider-secret");
@@ -198,6 +204,7 @@ describe("buildRuntimeEnv", () => {
       CPB_ROOT: "/tmp/cpb",
       CPB_PORT: "4567",
       CPB_HOST: "127.0.0.1",
+      CPB_CODERAG_PORT: "3999",
       OPENAI_API_KEY: "provider-secret",
       DATABASE_URL: "postgres://user:pass@example/db",
       RANDOM_TOKEN: "leak",
@@ -211,6 +218,7 @@ describe("buildRuntimeEnv", () => {
     assert.strictEqual(env.CPB_ROOT, "/tmp/cpb");
     assert.strictEqual(env.CPB_PORT, "4567");
     assert.strictEqual(env.CPB_HOST, "127.0.0.1");
+    assert.strictEqual(env.CPB_CODERAG_PORT, "3999");
     assert.strictEqual(env.CPB_EXECUTOR_ROOT, "/tmp/executor");
     assert.strictEqual(env.OPENAI_API_KEY, undefined);
     assert.strictEqual(env.DATABASE_URL, undefined);

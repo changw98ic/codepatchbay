@@ -505,7 +505,7 @@ export class AcpPool {
     if (options.bypass) {
       return this.#run(agent, prompt, cwd, timeoutMs);
     }
-    await this.assertNotRateLimited(agent);
+    if (!this.runner) await this.assertNotRateLimited(agent);
     const session = await this.acquire(agent);
     const lifecycle = await this.#prepareSession(agent);
     if (session.requestId) {

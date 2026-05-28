@@ -1,4 +1,4 @@
-# CodePatchBay — 本地优先的控制平面，用于经过验证的 AI 代码变更
+# CodePatchBay — 面向 AI 编码代理的本地网关，用于经过验证的代码变更
 
 [English](README.en.md)
 

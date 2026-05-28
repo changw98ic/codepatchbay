@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -36,6 +36,7 @@ async function readProjectJson(cpbRoot, project) {
 
 async function writeProjectJson(cpbRoot, project, data) {
   const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+  await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 

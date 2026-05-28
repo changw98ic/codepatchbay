@@ -1203,4 +1203,56 @@ describe("pipeline-contract", () => {
       );
     });
   });
+
+  describe("Execute artifact failures", () => {
+    it("fails the job after execute exhausts retries without a deliverable", async () => {
+      const fakeClient = path.join(tmpDir, "fake-acp-client.mjs");
+      await writeFile(
+        fakeClient,
+        "#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on('end', () => process.exit(0));\n",
+        { mode: 0o755 },
+      );
+
+      const saved = {
+        CPB_ACP_CLIENT: process.env.CPB_ACP_CLIENT,
+        CPB_ACP_USE_MANAGED_POOL: process.env.CPB_ACP_USE_MANAGED_POOL,
+        CPB_USE_WORKTREE: process.env.CPB_USE_WORKTREE,
+        CPB_PROJECT_PATH_OVERRIDE: process.env.CPB_PROJECT_PATH_OVERRIDE,
+        CPB_ACP_CWD: process.env.CPB_ACP_CWD,
+        CPB_ROOT: process.env.CPB_ROOT,
+        CPB_EXECUTOR_ROOT: process.env.CPB_EXECUTOR_ROOT,
+        CPB_WORKFLOW: process.env.CPB_WORKFLOW,
+      };
+
+      try {
+        process.env.CPB_ACP_CLIENT = fakeClient;
+        process.env.CPB_ACP_USE_MANAGED_POOL = "0";
+        process.env.CPB_USE_WORKTREE = "0";
+
+        const { runPipeline } = await import("../bridges/run-pipeline.mjs");
+        const code = await runPipeline({
+          project: "test-proj",
+          task: "executor produces no artifact",
+          workflow: "standard",
+          planMode: "none",
+          maxRetries: 2,
+          jobIdOverride: "job-no-deliverable",
+          sourcePath: tmpDir,
+          executorRoot: repoRoot,
+          cpbRoot: tmpDir,
+        });
+
+        assert.equal(code, 1);
+        const job = await getJob(tmpDir, "test-proj", "job-no-deliverable", { dataRoot: tmpDir });
+        assert.equal(job.status, "failed");
+        assert.equal(job.failurePhase, "execute-retry-2");
+        assert.match(job.blockedReason || job.failureCause?.reason || job.failureCode || "", /FATAL|deliverable/i);
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+  });
 });

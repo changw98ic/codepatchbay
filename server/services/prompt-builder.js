@@ -396,6 +396,7 @@ ${buildSubagentGuidance("execute", profile)}
 2. Implement code changes described in the plan.
 3. Run tests and record results.
 4. Write the deliverable to: ${deliverableFile}
+5. After the deliverable is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
@@ -477,6 +478,7 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 5. Implement the requested code changes.
 6. Run tests and record results.
 7. Write the deliverable to: ${deliverableFile}
+8. After the deliverable is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }

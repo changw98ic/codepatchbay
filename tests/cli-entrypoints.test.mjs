@@ -90,6 +90,23 @@ test("cpb unknown command exits non-zero", async () => {
   assert.match(result.stderr + result.stdout, /Unknown command/);
 });
 
+test("cpb config creates project metadata path for agent overrides", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-config-agent-"));
+  try {
+    const result = await runNode(["./cpb", "config", "flow", "--agent", "codex"], {
+      env: { CPB_ROOT: tmp },
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const projectJson = JSON.parse(
+      await readFile(path.join(tmp, "wiki", "projects", "flow", "project.json"), "utf8"),
+    );
+    assert.equal(projectJson.agents.default, "codex");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("cpb run parses plan-mode and triage flags without folding them into the task", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "cpb-run-planmode-triage-"));
   try {
@@ -572,6 +589,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js", "audit.js", "config.js", "provider.js", "quickstart.js", "model-profile.js",
+    "coderag.js",
   ]);
 
   for (const file of jsFiles) {

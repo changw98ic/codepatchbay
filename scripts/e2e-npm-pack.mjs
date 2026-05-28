@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // e2e-npm-pack.mjs — One-shot E2E: pack → install → doctor → hub → enqueue → worker → verify
 // Usage: node scripts/e2e-npm-pack.mjs [--keep-state] [--project flow]
-import { execSync, spawn } from "node:child_process";
-import { existsSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { execSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 const args = process.argv.slice(2);
@@ -15,6 +15,8 @@ const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
 const TGZ = `${PKG_NAME}-0.2.0.tgz`;
 const GITHUB_REPO = "changw98ic/codepatchbay";
+const MONITOR_TIMEOUT_MS = Number(process.env.CPB_E2E_MONITOR_TIMEOUT_MS || 45 * 60 * 1000);
+const ACP_PHASE_TIMEOUT_MS = Number(process.env.CPB_E2E_ACP_PHASE_TIMEOUT_MS || 25 * 60 * 1000);
 
 const GREEN = "\x1b[0;32m";
 const RED = "\x1b[0;31m";
@@ -33,6 +35,10 @@ function pass(msg) {
 
 function fail(msg) {
   console.log(`${RED}  FAIL${RESET} ${msg}`);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function run(cmd, opts = {}) {
@@ -85,6 +91,9 @@ function stepClean() {
     path.join(projectRuntime, "leases"),
     path.join(projectRuntime, "jobs"),
     path.join(projectRuntime, "agent-homes"),
+    path.join(projectRuntime, "worktrees"),
+    path.join(projectRuntime, "context-packs"),
+    path.join(projectRuntime, "graph"),
     path.join(CPB_ROOT, "cpb-task", "daemon"),
     path.join(CPB_ROOT, "cpb-task", "event-sources"),
     path.join(CPB_ROOT, "cpb-task", "coderag-state.json"),
@@ -92,7 +101,9 @@ function stepClean() {
   ];
   const files = [
     path.join(CPB_ROOT, "cpb-task", "jobs-index.json"),
+    path.join(projectRuntime, "jobs-index.json"),
     path.join(HUB_ROOT, "github", "issues.json"),
+    path.join(ROOT, TGZ),
   ];
 
   for (const d of dirs) {
@@ -122,15 +133,16 @@ function stepClean() {
 // ─── Step 3: npm pack + global install ─────────────────────────────
 function stepPack() {
   log("PACK", "Building and packing...");
-  // Clean old tarball
-  const tgzPath = path.join(ROOT, TGZ);
-  if (existsSync(tgzPath)) rmSync(tgzPath, { force: true });
+  const oldRootTgz = path.join(ROOT, TGZ);
+  if (existsSync(oldRootTgz)) rmSync(oldRootTgz, { force: true });
 
-  run("npm pack --silent", { cwd: ROOT, timeout: 120_000 });
+  const packDir = mkdtempSync(path.join(tmpdir(), "cpb-e2e-pack-"));
+  const tgzPath = path.join(packDir, TGZ);
+  run(`npm pack --silent --pack-destination ${shellQuote(packDir)}`, { cwd: ROOT, timeout: 120_000 });
   if (!existsSync(tgzPath)) { fail("Tarball not found"); process.exit(1); }
 
   log("INSTALL", "Installing globally...");
-  run(`npm install -g ${tgzPath}`, { cwd: ROOT, timeout: 120_000 });
+  run(`npm install -g ${shellQuote(tgzPath)}`, { cwd: ROOT, timeout: 120_000 });
   pass("Packed and installed globally");
 }
 
@@ -165,11 +177,19 @@ function stepProject() {
 // ─── Step 5.5: Bind GitHub + configure automation ──────────────────
 function stepGithub() {
   log("GITHUB", `Binding repo ${GITHUB_REPO} to project '${PROJECT}'...`);
-  run(`cpb github bind ${PROJECT} ${GITHUB_REPO}`, { silent: true, allowFail: true });
+  run(`cpb github bind ${PROJECT} ${GITHUB_REPO}`, { silent: true });
 
   log("GITHUB", "Configuring automation (label: cpb)...");
-  run(`cpb config ${PROJECT} --automation-enabled true`, { silent: true, allowFail: true });
-  run(`cpb config ${PROJECT} --automation-rule 'match.labels=cpb;action.workflow=standard;action.priority=P2'`, { silent: true, allowFail: true });
+  run(`cpb config ${PROJECT} --automation-enabled true`, { silent: true });
+  run(`cpb config ${PROJECT} --automation-clear-rules`, { silent: true });
+  run(`cpb config ${PROJECT} --automation-rule 'match.labels=cpb;action.workflow=standard;action.priority=P2'`, { silent: true });
+  log("GITHUB", "Configuring deterministic ACP agent route (codex all phases)...");
+  run(`cpb config ${PROJECT} --agent codex`, { silent: true });
+  const agents = run(`cpb config ${PROJECT} --agents`, { silent: true });
+  if (!agents.stdout.includes("default: codex")) {
+    fail("Project agent override was not applied");
+    process.exit(1);
+  }
   pass("GitHub bound and automation configured");
 }
 
@@ -209,7 +229,14 @@ function stepEnqueue() {
 // ─── Step 8: Start worker ──────────────────────────────────────────
 async function stepWorker() {
   log("WORKER", "Starting worker daemon...");
-  run("cpb daemon start --workers 1", { timeout: 30_000 });
+  run("cpb daemon start --workers 1", {
+    timeout: 30_000,
+    env: {
+      CPB_AUTOFINALIZER_MODE: "remote",
+      CPB_ACP_PHASE_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
+      CPB_ACP_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
+    },
+  });
   await wait(2000);
 
   const r = run("cpb hub status", { silent: true });
@@ -223,14 +250,69 @@ async function stepWorker() {
   log("WORKER", `${YELLOW}Worker not yet detected, continuing...${RESET}`);
 }
 
+function readQueue() {
+  const file = path.join(HUB_ROOT, "queue", "queue.json");
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return { entries: [] };
+  }
+}
+
+function latestGithubQueueEntry() {
+  return [...(readQueue().entries || [])]
+    .filter((entry) => entry.projectId === PROJECT && (entry.type === "github_issue" || entry.metadata?.source === "github"))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] || null;
+}
+
+function remoteFinalizerComplete(entry) {
+  const finalizer = entry?.metadata?.finalizer;
+  return Boolean(
+    finalizer?.ok === true
+    && finalizer.status === "finalized"
+    && finalizer.mode === "remote"
+    && finalizer.pushed === true
+    && finalizer.closed === true
+    && finalizer.commit
+  );
+}
+
 // ─── Step 9: Monitor pipeline ──────────────────────────────────────
 async function stepMonitor() {
-  log("MONITOR", "Waiting for pipeline to complete (max 15min)...");
+  const maxMinutes = Math.round(MONITOR_TIMEOUT_MS / 60_000);
+  log("MONITOR", `Waiting for pipeline + remote finalizer to complete (max ${maxMinutes}min)...`);
 
-  const deadline = Date.now() + 15 * 60 * 1000;
+  const deadline = Date.now() + MONITOR_TIMEOUT_MS;
   let lastStatus = "";
+  let lastQueueStatus = "";
 
   while (Date.now() < deadline) {
+    const entry = latestGithubQueueEntry();
+    if (entry) {
+      const finalizer = entry.metadata?.finalizer;
+      const queueStatus = `${entry.id}:${entry.status}:${finalizer?.status || "no-finalizer"}:${finalizer?.commit || ""}`;
+      if (queueStatus !== lastQueueStatus) {
+        lastQueueStatus = queueStatus;
+        log("MONITOR", `Queue ${entry.id}: ${entry.status}${finalizer ? ` finalizer=${finalizer.status} pushed=${finalizer.pushed} closed=${finalizer.closed}` : ""}`);
+      }
+
+      if (entry.status === "completed") {
+        if (remoteFinalizerComplete(entry)) {
+          pass(`Pipeline completed, pushed ${entry.metadata.finalizer.commit}, merged, and closed issue`);
+          await printSummary();
+          return "completed";
+        }
+        fail(`Queue completed without remote finalizer success: ${JSON.stringify(finalizer || null)}`);
+        await printSummary();
+        return "failed";
+      }
+      if (entry.status === "failed" || entry.status === "cancelled") {
+        fail(`Queue ${entry.status}`);
+        await printSummary();
+        return entry.status;
+      }
+    }
+
     const r = run(`cpb status ${PROJECT}`, { silent: true, allowFail: true });
     const status = r.stdout || "";
 
@@ -244,18 +326,15 @@ async function stepMonitor() {
       }
     }
 
-    // Check for completion
-    if (status.includes("completed")) {
-      pass("Pipeline completed!");
-      return await printSummary();
-    }
     if (status.includes("failed")) {
       fail("Pipeline failed");
-      return await printSummary();
+      await printSummary();
+      return "failed";
     }
     if (status.includes("blocked")) {
       fail("Pipeline blocked");
-      return await printSummary();
+      await printSummary();
+      return "blocked";
     }
 
     // Also check queue status for failures (cpb status may not reflect queue state)
@@ -263,13 +342,15 @@ async function stepMonitor() {
     if (q.ok && q.stdout.includes("failed:") && !q.stdout.includes("failed:0")) {
       fail("Queue reports failed entry");
       log("MONITOR", q.stdout.replace(/\x1b\[[0-9;]*m/g, "").trim());
-      return await printSummary();
+      await printSummary();
+      return "failed";
     }
 
     await wait(10000);
   }
 
-  fail("Pipeline timed out after 15 minutes");
+  fail(`Pipeline still running after ${maxMinutes} minutes (services left running)`);
+  return "timeout";
 }
 
 // ─── Summary ───────────────────────────────────────────────────────
@@ -348,15 +429,18 @@ async function main() {
     process.exit(0);
   }
   await stepWorker();
-  await stepMonitor();
+  const result = await stepMonitor();
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
   console.log(`\n${BOLD}Total time: ${elapsed}s${RESET}`);
 
-  // Cleanup
-  log("TEARDOWN", "Stopping services...");
-  run("cpb daemon stop", { silent: true, allowFail: true });
-  run("cpb hub stop", { silent: true, allowFail: true });
+  if (result === "timeout") {
+    log("TEARDOWN", "Pipeline still running — leaving services up. Use 'cpb hub stop' when done.");
+  } else {
+    log("TEARDOWN", "Stopping services...");
+    run("cpb daemon stop", { silent: true, allowFail: true });
+    run("cpb hub stop", { silent: true, allowFail: true });
+  }
 }
 
 main().catch((e) => {
