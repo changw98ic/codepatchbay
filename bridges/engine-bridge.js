@@ -22,7 +22,7 @@ const NC = "\x1b[0m";
 /**
  * Build the services object for DI injection.
  */
-function services(cpbRoot) {
+export function buildServices(cpbRoot) {
   return {
     createJob,
     completePhase,
@@ -92,7 +92,7 @@ export async function runPipeline(opts) {
       timeoutMin,
       jobId: attempt === 0 ? jobIdOverride : undefined,
       // Injected services
-      ...services(cpbRoot),
+      ...buildServices(cpbRoot),
     });
 
     if (lastResult.status === "completed") {
@@ -141,6 +141,6 @@ export async function runSinglePhase(phase, opts) {
     ...opts,
     sourcePath: opts.sourcePath || sourcePath,
     // Injected services
-    ...services(cpbRoot),
+    ...buildServices(cpbRoot),
   });
 }

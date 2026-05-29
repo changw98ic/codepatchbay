@@ -10,7 +10,7 @@
 import { readFile, mkdir, writeFile, readdir, unlink, rename } from "node:fs/promises";
 import path from "node:path";
 import chokidar from "chokidar";
-import { writeJsonAtomic } from "../../server/services/fs-utils.js";
+import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.js";
 
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
@@ -59,8 +59,9 @@ async function main() {
   }, HEARTBEAT_MS);
   heartbeatTimer.unref();
 
-  // Load unified engine (P0-5: single entry point, delegates to runPipeline internally)
+  // Load unified engine + service injection bridge (P0: worker must inject server services)
   const { runJob } = await import("../../core/engine/run-job.js");
+  const { buildServices } = await import("../../bridges/engine-bridge.js");
 
   // Process inbox
   async function processInbox() {
@@ -165,10 +166,12 @@ async function main() {
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
           timeoutMin: 60,
+          // Inject server services (job-store, event-store, acp-pool)
+          ...buildServices(cpbRoot),
         });
 
         clearInterval(assignmentHeartbeat);
-        await writeJsonAtomic(path.join(attemptDir, "result.json"), {
+        await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
           attemptToken: assignment.attemptToken,
@@ -178,7 +181,7 @@ async function main() {
         });
       } catch (err) {
         clearInterval(assignmentHeartbeat);
-        await writeJsonAtomic(path.join(attemptDir, "result.json"), {
+        await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
           attemptToken: assignment.attemptToken,

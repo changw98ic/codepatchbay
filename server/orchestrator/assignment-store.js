@@ -17,6 +17,30 @@ export class AssignmentStore {
   async createAssignment({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext }) {
     const id = `a-${entryId}`;
     const dir = path.join(this.baseDir, id);
+
+    // Preserve existing assignment on retry/reroute — don't reset attempt history
+    const existing = await this._readState(id);
+    if (existing) {
+      const updated = {
+        ...existing,
+        // Update mutable fields (may change on reroute)
+        workflow: workflow || existing.workflow,
+        planMode: planMode || existing.planMode,
+        sourceContext: { ...existing.sourceContext, ...(sourceContext || {}) },
+        task: task || existing.task,
+        sourcePath: sourcePath || existing.sourcePath,
+        // Reset scheduling state for new attempt
+        status: "scheduled",
+        resultWrittenAt: null,
+        queueFinalizedAt: null,
+        workerFinalizedAt: null,
+      };
+      await writeJsonAtomic(path.join(dir, "input.json"), updated);
+      await this._writeState(id, updated);
+      return updated;
+    }
+
+    // First creation — full initialization
     await mkdir(dir, { recursive: true });
     await mkdir(path.join(dir, "attempts"), { recursive: true });
 
