@@ -9,6 +9,7 @@ interface AgentsStore {
   fetchAgents: () => Promise<void>;
   fetchSetupReadiness: () => Promise<void>;
   fetchJobs: () => Promise<void>;
+  approveJob: (project: string, jobId: string, actor?: string) => Promise<void>;
 }
 
 function mapApiAgent(a: Record<string, unknown>): Agent {
@@ -80,6 +81,22 @@ export const useAgentsStore = create<AgentsStore>((set) => ({
       set({ jobs: raw.map(mapApiJob) });
     } catch {
       // ignore
+    }
+  },
+
+  approveJob: async (project, jobId, actor = 'ui') => {
+    try {
+      const res = await fetch(`/api/tasks/${project}/gates/${jobId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor, action: 'approve' }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Refresh jobs to get updated status
+      await fetchJobs();
+    } catch (err) {
+      console.error('Failed to approve job:', err);
+      throw err;
     }
   },
 }));

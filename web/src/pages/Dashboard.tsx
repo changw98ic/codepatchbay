@@ -9,6 +9,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { InitProjectModal } from '@/components/shared/InitProjectModal';
 import { TodayBrief } from '@/components/dashboard/TodayBrief';
 import { AttentionQueue } from '@/components/dashboard/AttentionQueue';
+import { GateQueue } from '@/components/dashboard/GateQueue';
 import { ProjectGrid } from '@/components/dashboard/ProjectGrid';
 import { HubHealthPanel } from '@/components/dashboard/HubHealthPanel';
 import { useProjectsStore, useHubStore, useWebSocketStore, useAgentsStore } from '@/app/store';
@@ -84,12 +85,72 @@ export default function Dashboard() {
   const hubStore = useHubStore();
   const { subscribe } = useWebSocketStore();
   const { jobs, fetchJobs } = useAgentsStore();
+  const [gates, setGates] = useState<Array<{
+    jobId: string;
+    project: string;
+    operation: string | null;
+    phase: string | null;
+    channels: string[];
+    reason: string | null;
+    requestedAt: string | null;
+    timeoutAt: string | null;
+    task: string | null;
+  }>>([]);
+  const [gatesLoading, setGatesLoading] = useState(false);
+
+  const fetchGates = useCallback(async () => {
+    setGatesLoading(true);
+    try {
+      const res = await fetch('/api/tasks/gates');
+      if (res.ok) {
+        const data = await res.json();
+        setGates(data.gates || []);
+      }
+    } catch {
+      setGates([]);
+    } finally {
+      setGatesLoading(false);
+    }
+  }, []);
+
+  const handleApproveGate = useCallback(async (jobId: string) => {
+    const gate = gates.find((g) => g.jobId === jobId);
+    if (!gate) return;
+    try {
+      const res = await fetch(`/api/tasks/${gate.project}/gates/${jobId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', actor: 'ui' }),
+      });
+      if (res.ok) {
+        setGates((prev) => prev.filter((g) => g.jobId !== jobId));
+        fetchJobs();
+      }
+    } catch {}
+  }, [gates, fetchJobs]);
+
+  const handleRejectGate = useCallback(async (jobId: string) => {
+    const gate = gates.find((g) => g.jobId === jobId);
+    if (!gate) return;
+    try {
+      const res = await fetch(`/api/tasks/${gate.project}/gates/${jobId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reject', actor: 'ui' }),
+      });
+      if (res.ok) {
+        setGates((prev) => prev.filter((g) => g.jobId !== jobId));
+        fetchJobs();
+      }
+    } catch {}
+  }, [gates, fetchJobs]);
 
   useEffect(() => {
     fetchProjects(diagnostics);
     hubStore.fetchHubData(diagnostics);
     fetchJobs();
-  }, [diagnostics]);
+    fetchGates();
+  }, [diagnostics, fetchGates]);
 
   useEffect(() => {
     const unsub = subscribe('pipeline:update', () => {
@@ -97,8 +158,12 @@ export default function Dashboard() {
       hubStore.fetchHubData(diagnostics);
     });
     const unsubFile = subscribe('file:created', () => fetchProjects(diagnostics));
-    return () => { unsub(); unsubFile(); };
-  }, [subscribe, diagnostics]);
+    const unsubGate = subscribe('gate:approved', () => {
+      fetchGates();
+      fetchJobs();
+    });
+    return () => { unsub(); unsubFile(); unsubGate(); };
+  }, [subscribe, diagnostics, fetchGates, fetchJobs]);
 
   const setActiveTab = useCallback((tab: string) => {
     setSearchParams((prev) => {
@@ -231,6 +296,7 @@ export default function Dashboard() {
             blockedProjects={blockedProjectsCount}
             completedRuns={completedRunsCount}
           />
+          <GateQueue gates={gates} onApprove={handleApproveGate} onReject={handleRejectGate} loading={gatesLoading} />
           <AttentionQueue items={attentionItems} onNavigate={(link) => navigate(link)} />
           {hasNoData ? (
             <EmptyState

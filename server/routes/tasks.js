@@ -7,6 +7,7 @@ import { getProject } from '../services/hub-registry.js';
 import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
+import { listPendingGates, getJobGateStatus, approveGate } from '../services/approval-gate.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -124,6 +125,37 @@ export async function taskRoutes(fastify, opts) {
     const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason, dataRoot });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
+  });
+
+  // List pending approval gates for a project
+  fastify.get('/tasks/:name/gates', async (req) => {
+    const { name } = req.params;
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const gates = await listPendingGates(req.cpbRoot, { project: name, dataRoot });
+    return { project: name, gates };
+  });
+
+  // Get gate status for a specific job
+  fastify.get('/tasks/:name/gates/:jobId', async (req) => {
+    const { name, jobId } = req.params;
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    return getJobGateStatus(req.cpbRoot, name, jobId, { dataRoot });
+  });
+
+  // Approve or reject a pending gate
+  fastify.post('/tasks/:name/gates/:jobId/approve', async (req) => {
+    const { name, jobId } = req.params;
+    const { action = 'approve', actor = 'api' } = req.body || {};
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const job = await approveGate(req.cpbRoot, name, jobId, { actor, action, dataRoot });
+    broadcast({ type: 'gate:approved', project: name, jobId, action, actor });
+    return { jobId, project: name, action, actor, job };
+  });
+
+  // List all pending gates across all projects
+  fastify.get('/tasks/gates', async () => {
+    const gates = await listPendingGates(req.cpbRoot);
+    return { gates };
   });
 }
 

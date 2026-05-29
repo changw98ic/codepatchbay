@@ -95,12 +95,22 @@ export interface DurableJob {
   project: string;
   agent: string;
   instruction: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'waiting.approval';
   phase?: string;
   createdAt: string;
   updatedAt: string;
   leaseId?: string;
   artifacts?: Artifact[];
+  approval?: ApprovalInfo;
+}
+
+export interface ApprovalInfo {
+  operation: string | null;
+  phase: string | null;
+  channels: string[];
+  reason: string | null;
+  requestedAt: string | null;
+  timeoutAt: string | null;
 }
 
 export interface Artifact {

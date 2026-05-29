@@ -69,6 +69,7 @@ function usage() {
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
+  console.log(`  ${CYAN}gates${NC} <list|approve|reject|explain>   Approval gate management`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
@@ -144,6 +145,7 @@ const COMMANDS = {
   "install-bin": "install-bin.js",
   audit: "audit.js",
   coderag: "coderag.js",
+  gates: "gates.js",
 };
 
 // --- Main ---
