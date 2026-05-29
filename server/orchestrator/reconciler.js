@@ -13,6 +13,15 @@ export class Reconciler {
     this.failureRouter = failureRouter;
   }
 
+  /**
+   * Fencing: refuse to mutate orchestrator state if leader lock is lost.
+   */
+  async _guardLeader() {
+    if (!(await this.leaderLock.stillHeld())) {
+      throw new Error("leader lock lost; refusing to mutate orchestrator state");
+    }
+  }
+
   async recoverRuntime() {
     await this.reconcileWorkers();
     await this.reconcileAssignments();
@@ -20,6 +29,7 @@ export class Reconciler {
   }
 
   async reconcileWorkers() {
+    await this._guardLeader();
     const workers = await this.workers.listWorkers();
     const now = Date.now();
 
@@ -41,6 +51,7 @@ export class Reconciler {
   }
 
   async reconcileAssignments() {
+    await this._guardLeader();
     const assignments = await this.assignments.listAssignments();
 
     for (const assignment of assignments) {
@@ -159,6 +170,7 @@ export class Reconciler {
   }
 
   async _finalizeQueue(assignment, attempt, result) {
+    await this._guardLeader();
     const { updateEntry } = await import("../services/hub-queue.js");
 
     if (result && result.status === "completed") {
@@ -252,6 +264,7 @@ export class Reconciler {
   }
 
   async _finalizeWorker(assignment, attempt) {
+    await this._guardLeader();
     const workerId = attempt?.workerId || assignment.workerId;
     if (workerId) {
       await this.workers.updateWorker(workerId, {
@@ -263,6 +276,7 @@ export class Reconciler {
   }
 
   async reconcileQueue() {
+    await this._guardLeader();
     const { listQueue, updateEntry } = await import("../services/hub-queue.js");
     const assignments = await this.assignments.listAssignments();
 

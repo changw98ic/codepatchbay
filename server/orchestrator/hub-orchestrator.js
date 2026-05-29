@@ -55,7 +55,10 @@ export class HubOrchestrator {
 
     // Acquire leader lock
     const leader = await this.leaderLock.acquire();
-    this.leaderLock.startRenewal();
+    this.leaderLock.startRenewal(() => {
+      process.stderr.write("[orchestrator] leader lock renewal failed; stopping hub\n");
+      this.stop().catch(() => {});
+    });
 
     // Init stores
     await this.assignmentStore.init();
@@ -115,6 +118,13 @@ export class HubOrchestrator {
   }
 
   async tick() {
+    // Fencing: stop hub if leader lock is lost
+    if (!(await this.leaderLock.stillHeld())) {
+      process.stderr.write("[orchestrator] leader lock lost; stopping hub\n");
+      await this.stop();
+      return { stopped: true, reason: "leader lock lost" };
+    }
+
     // Reconcile existing assignments (includes finalize for completed attempts)
     await this.reconciler.reconcileAssignments();
 

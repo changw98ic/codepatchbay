@@ -79,12 +79,17 @@ export class LeaderLock {
     return true;
   }
 
-  startRenewal() {
+  /**
+   * Start periodic renewal. Calls onLost() if renewal fails (lock stolen/expired).
+   */
+  startRenewal(onLost) {
+    this._onLost = onLost;
     this._renewTimer = setInterval(async () => {
       const ok = await this.renew();
       if (!ok) {
         clearInterval(this._renewTimer);
         this._renewTimer = null;
+        if (this._onLost) this._onLost();
       }
     }, RENEW_INTERVAL_MS);
     this._renewTimer.unref();
