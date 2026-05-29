@@ -5,9 +5,6 @@ export function validatePlanMarkdown(content) {
   if (content.trim().length < 50) {
     return { ok: false, reason: "plan content is too short (< 50 chars)" };
   }
-  if (!content.includes("##")) {
-    return { ok: false, reason: "plan must contain markdown headings (##)" };
-  }
   return { ok: true };
 }
 

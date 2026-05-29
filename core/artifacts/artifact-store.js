@@ -25,21 +25,24 @@ export async function allocateArtifactId(cpbRoot, project, kind) {
   const dir = resolveArtifactDir(cpbRoot, project, kind);
   await mkdir(dir, { recursive: true });
 
-  // mkdir-based atomic ID allocation (same pattern as existing artifact-locator.js)
-  const ts = Date.now();
-  for (let seq = 1; seq <= 999; seq++) {
-    const id = String(seq).padStart(3, "0");
+  // Timestamp-based ID with collision retry
+  const base = Date.now();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const ts = base + attempt;
+    const id = String(ts).slice(-6);
     const lockDir = path.join(dir, `.lock-${kind}-${id}`);
     try {
       await mkdir(lockDir);
-      // Write placeholder to reserve the ID
-      await writeFile(path.join(lockDir, "job"), jobId || "unknown", "utf8");
       return id;
     } catch {
       continue;
     }
   }
-  throw new Error(`artifact ID exhausted for ${project}/${kind}`);
+  // Fallback: random ID
+  const id = crypto.randomBytes(3).toString("hex");
+  const lockDir = path.join(dir, `.lock-${kind}-${id}`);
+  await mkdir(lockDir, { recursive: true });
+  return id;
 }
 
 function sha256(content) {

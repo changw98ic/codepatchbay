@@ -3,12 +3,32 @@ export function parseAgentJson(output) {
     return { ok: false, reason: "agent output is empty" };
   }
 
-  // Try to extract JSON from markdown code block
+  // Strategy 1: JSON inside a markdown code block
   const codeBlockMatch = output.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : output.trim();
+  if (codeBlockMatch) {
+    const result = tryParseJsonObject(codeBlockMatch[1].trim());
+    if (result.ok) return result;
+  }
 
+  // Strategy 2: entire output is JSON
+  const trimmedResult = tryParseJsonObject(output.trim());
+  if (trimmedResult.ok) return trimmedResult;
+
+  // Strategy 3: find first { to last } — handles mixed text+JSON output
+  const firstBrace = output.indexOf("{");
+  const lastBrace = output.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = output.slice(firstBrace, lastBrace + 1);
+    const result = tryParseJsonObject(candidate);
+    if (result.ok) return result;
+  }
+
+  return { ok: false, reason: `agent output is not valid JSON: unexpected format` };
+}
+
+function tryParseJsonObject(str) {
   try {
-    const parsed = JSON.parse(jsonStr);
+    const parsed = JSON.parse(str);
     if (!parsed || typeof parsed !== "object") {
       return { ok: false, reason: "agent output is not a JSON object" };
     }
@@ -16,8 +36,8 @@ export function parseAgentJson(output) {
       return { ok: false, reason: parsed.reason || parsed.error || "agent reported non-ok status" };
     }
     return { ok: true, data: parsed };
-  } catch (err) {
-    return { ok: false, reason: `agent output is not valid JSON: ${err.message}` };
+  } catch {
+    return { ok: false, reason: "parse failed" };
   }
 }
 
