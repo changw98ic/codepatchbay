@@ -55,6 +55,7 @@ export class Reconciler {
             const { updateEntry } = await import("../services/hub-queue.js");
             await updateEntry(this.hubRoot, assignment.entryId, {
               status: "in_progress",
+              claimedAt: new Date().toISOString(),
             });
           }
           break;
@@ -71,6 +72,7 @@ export class Reconciler {
             const { updateEntry } = await import("../services/hub-queue.js");
             await updateEntry(this.hubRoot, assignment.entryId, {
               status: "in_progress",
+              claimedAt: new Date().toISOString(),
             });
             break;
           }
@@ -132,11 +134,22 @@ export class Reconciler {
    * terminal assignment may still need queue/worker finalization.
    */
   async _compensateFinalization(assignment) {
+    const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
+
     if (!assignment.queueFinalizedAt) {
-      await this._finalizeQueue(assignment);
+      if (!attempt) {
+        // No attempt info — cannot finalize queue, skip
+        return;
+      }
+      const result = await this._readAttemptResult(assignment.assignmentId, attempt.attempt);
+      if (!result) {
+        // No result — cannot finalize queue, skip (worker may still be writing)
+        return;
+      }
+      await this._finalizeQueue(assignment, attempt, result);
     }
     if (!assignment.workerFinalizedAt) {
-      await this._finalizeWorker(assignment);
+      await this._finalizeWorker(assignment, attempt);
     }
   }
 

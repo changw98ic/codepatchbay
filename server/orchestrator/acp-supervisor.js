@@ -6,19 +6,37 @@ export class AcpSupervisor {
   constructor({ cpbRoot, hubRoot, pool }) {
     this.cpbRoot = cpbRoot;
     this.hubRoot = hubRoot;
-    this.pool = pool;
+    this.pool = pool || null;
+    this._poolPromise = null;
     this.decisionsDir = path.join(hubRoot, "supervisor", "decisions");
   }
 
+  async _ensurePool() {
+    if (this.pool) return this.pool;
+    if (this._poolPromise) return this._poolPromise;
+    this._poolPromise = (async () => {
+      try {
+        const { getManagedAcpPool } = await import("../services/acp-pool.js");
+        this.pool = getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true });
+        return this.pool;
+      } catch {
+        this._poolPromise = null;
+        return null;
+      }
+    })();
+    return this._poolPromise;
+  }
+
   async diagnoseFailure({ assignment, attempt, result }) {
-    if (!this.pool) {
-      return { action: "mark_failed", reason: "supervisor agent unavailable", params: {} };
+    const pool = await this._ensurePool();
+    if (!pool) {
+      return null; // Return null so FailureRouter falls through to deterministic routing
     }
 
     const prompt = buildDiagnosisPrompt({ assignment, attempt, result });
 
     try {
-      const output = await this.pool.execute(
+      const output = await pool.execute(
         "supervisor",
         prompt,
         this.cpbRoot,

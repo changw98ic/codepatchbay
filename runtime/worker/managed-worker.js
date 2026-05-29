@@ -7,7 +7,7 @@
  * Can run independently of Hub parent process (file-based communication).
  */
 
-import { readFile, mkdir, writeFile, readdir, unlink } from "node:fs/promises";
+import { readFile, mkdir, writeFile, readdir, unlink, rename } from "node:fs/promises";
 import path from "node:path";
 import chokidar from "chokidar";
 
@@ -68,11 +68,24 @@ async function main() {
 
     for (const file of jsonFiles) {
       const filePath = path.join(inboxDir, file);
+
+      // Atomic claim: rename to processing dir so concurrent calls skip it
+      const processingDir = path.join(inboxDir, "processing");
+      const claimedPath = path.join(processingDir, file);
+      try {
+        await mkdir(processingDir, { recursive: true });
+        await rename(filePath, claimedPath);
+      } catch {
+        // Another invocation already claimed this file
+        continue;
+      }
+
       let assignment;
       try {
-        assignment = JSON.parse(await readFile(filePath, "utf8"));
+        assignment = JSON.parse(await readFile(claimedPath, "utf8"));
       } catch {
         process.stderr.write(`[worker-${workerId}] malformed inbox file: ${file}\n`);
+        await unlink(claimedPath).catch(() => {});
         continue;
       }
 
@@ -159,8 +172,8 @@ async function main() {
         }, null, 2) + "\n", "utf8");
       }
 
-      // Remove inbox entry
-      await unlink(filePath).catch(() => {});
+      // Remove inbox entry (now in processing dir)
+      await unlink(claimedPath).catch(() => {});
 
       // Update registry
       const regAfter = JSON.parse(await readFile(registryFile, "utf8"));
@@ -175,6 +188,17 @@ async function main() {
     }
   }
 
+  let processing = false;
+  async function processInboxGuarded() {
+    if (processing) return;
+    processing = true;
+    try {
+      await processInbox();
+    } finally {
+      processing = false;
+    }
+  }
+
   // Watch inbox with chokidar
   const watcher = chokidar.watch(path.join(inboxDir, "*.json"), {
     persistent: true,
@@ -183,14 +207,14 @@ async function main() {
   });
 
   watcher.on("add", async () => {
-    try { await processInbox(); } catch (err) {
+    try { await processInboxGuarded(); } catch (err) {
       process.stderr.write(`[worker-${workerId}] process error: ${err.message}\n`);
     }
   });
 
   // Fallback poll
   const pollTimer = setInterval(async () => {
-    try { await processInbox(); } catch { /* ignore */ }
+    try { await processInboxGuarded(); } catch { /* ignore */ }
   }, POLL_MS);
   pollTimer.unref();
 

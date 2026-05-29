@@ -742,21 +742,28 @@ export class AcpPool {
     return this.toolPolicyPromise;
   }
 
-  async #closePersistentClient(key) {
-    const persistent = this.persistentClients.get(key);
-    if (!persistent) return;
-    const agent = persistent.agent; // P0-6 fix: read agent from meta
-    // Save sessionId for cached lifecycle before closing
-    const session = this.sessions.get(agent);
-    if (session?.sessionId) {
-      const reg = await getRegistry();
-      const desc = reg?.getDescriptor(agent);
-      if (desc?.lifecycle === "cached") {
-        await saveSessionId(this.cpbRoot, agent, session.sessionId).catch(() => null);
+  async #closePersistentClient(keyOrAgent) {
+    // Support both compound key (agent::role::projectId) and bare agent name
+    const matchingKeys = [...this.persistentClients.keys()].filter(k =>
+      k === keyOrAgent || k.startsWith(`${keyOrAgent}::`)
+    );
+
+    for (const key of matchingKeys) {
+      const persistent = this.persistentClients.get(key);
+      if (!persistent) continue;
+      const agent = persistent.agent;
+      // Save sessionId for cached lifecycle before closing
+      const session = this.sessions.get(agent);
+      if (session?.sessionId) {
+        const reg = await getRegistry();
+        const desc = reg?.getDescriptor(agent);
+        if (desc?.lifecycle === "cached") {
+          await saveSessionId(this.cpbRoot, agent, session.sessionId).catch(() => null);
+        }
       }
+      this.persistentClients.delete(key);
+      await persistent.client.close().catch(() => null);
     }
-    this.persistentClients.delete(key);
-    await persistent.client.close().catch(() => null);
   }
 }
 

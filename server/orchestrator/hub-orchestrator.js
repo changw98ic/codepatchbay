@@ -30,8 +30,8 @@ export class HubOrchestrator {
       workerStore: this.workerStore,
     });
 
-    // P1-2: create AcpSupervisor (pool loaded lazily on first use)
-    const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot, pool: null });
+    // P1-2: supervisor gets lazy pool — only used when pool is actually available
+    const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot });
     const failureRouter = new FailureRouter(acpSupervisor);
 
     this.reconciler = new Reconciler(hubRoot, {
