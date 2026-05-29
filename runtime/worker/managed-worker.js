@@ -93,12 +93,12 @@ async function main() {
       // Validate flattened payload (P0-2 fix)
       if (!Number.isInteger(assignment.attempt) || assignment.attempt < 1) {
         process.stderr.write(`[worker-${workerId}] invalid attempt in assignment: ${JSON.stringify(assignment.attempt)}\n`);
-        await unlink(filePath).catch(() => {});
+        await unlink(claimedPath).catch(() => {});
         continue;
       }
       if (!assignment.attemptToken) {
         process.stderr.write(`[worker-${workerId}] missing attemptToken in assignment\n`);
-        await unlink(filePath).catch(() => {});
+        await unlink(claimedPath).catch(() => {});
         continue;
       }
 
