@@ -59,9 +59,8 @@ async function main() {
   }, HEARTBEAT_MS);
   heartbeatTimer.unref();
 
-  // Load unified engine + service injection bridge (P0: worker must inject server services)
-  const { runJob } = await import("../../core/engine/run-job.js");
-  const { buildServices } = await import("../../bridges/engine-bridge.js");
+  // Bridge: service injection + sourcePath resolution (no direct core import)
+  const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
 
   // Process inbox
   async function processInbox() {
@@ -152,9 +151,9 @@ async function main() {
         } catch { /* ignore */ }
       }, HEARTBEAT_MS);
 
-      // Run job via Engine.runJob (P0-5: unified entry point)
+      // Run job via bridge (service injection + sourcePath resolution)
       try {
-        const result = await runJob({
+        const result = await runJobWithServices({
           cpbRoot,
           hubRoot,
           project: assignment.projectId,
@@ -166,8 +165,6 @@ async function main() {
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
           timeoutMin: 60,
-          // Inject server services (job-store, event-store, acp-pool)
-          ...buildServices(cpbRoot),
         });
 
         clearInterval(assignmentHeartbeat);

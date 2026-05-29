@@ -133,7 +133,14 @@ export class HubOrchestrator {
     if (!candidate) return { idle: true };
 
     // Full dispatch chain: create assignment → ensure worker → create attempt → write inbox
-    const assignment = await this.assignmentStore.createAssignment({
+    // Fence: ensure lock still held before scheduling
+    if (!(await this.leaderLock.stillHeld())) {
+      process.stderr.write("[orchestrator] leader lock lost before schedule\n");
+      await this.stop();
+      return { stopped: true, reason: "leader lock lost" };
+    }
+
+    const assignment = await this.assignmentStore.getOrCreateAssignmentForEntry({
       entryId: candidate.id,
       projectId: candidate.projectId,
       task: candidate.description || candidate.metadata?.task || "",
@@ -154,6 +161,13 @@ export class HubOrchestrator {
       orchestratorEpoch: epoch,
     });
 
+    // Fence: ensure lock still held before writing inbox
+    if (!(await this.leaderLock.stillHeld())) {
+      process.stderr.write("[orchestrator] leader lock lost before write inbox\n");
+      await this.stop();
+      return { stopped: true, reason: "leader lock lost" };
+    }
+
     // Write flattened inbox payload (P0-2 fix: attempt is number, attemptToken is top-level)
     await this.workerStore.writeInbox(worker.workerId, {
       assignmentId: assignment.assignmentId,
@@ -168,6 +182,13 @@ export class HubOrchestrator {
       attemptToken: attempt.attemptToken,
       orchestratorEpoch: attempt.orchestratorEpoch,
     });
+
+    // Fence: ensure lock still held before updating queue
+    if (!(await this.leaderLock.stillHeld())) {
+      process.stderr.write("[orchestrator] leader lock lost before queue update\n");
+      await this.stop();
+      return { stopped: true, reason: "leader lock lost" };
+    }
 
     // Update queue entry
     const { updateEntry } = await import("../services/hub-queue.js");

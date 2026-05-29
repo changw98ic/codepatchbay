@@ -34,6 +34,21 @@ export function buildServices(cpbRoot) {
 }
 
 /**
+ * Run a single job with service injection (no retry loop).
+ * For callers (e.g. managed-worker) that handle retries externally.
+ */
+export async function runJobWithServices(opts) {
+  const { cpbRoot, project, sourcePath: explicitSourcePath, hubRoot: explicitHubRoot } = opts;
+  const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot } = await resolveSourcePath(cpbRoot, project);
+  return runJob({
+    ...opts,
+    hubRoot: explicitHubRoot || resolvedHubRoot,
+    sourcePath: explicitSourcePath || resolvedSourcePath,
+    ...buildServices(cpbRoot),
+  });
+}
+
+/**
  * Resolve sourcePath from hub registry.
  */
 async function resolveSourcePath(cpbRoot, project) {

@@ -14,7 +14,11 @@ export class AssignmentStore {
     await mkdir(this.baseDir, { recursive: true });
   }
 
-  async createAssignment({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext }) {
+  /**
+   * Idempotent: creates assignment on first call, updates mutable fields on retry/reroute.
+   * Preserves attempt history (counter + attempt directories) across retries.
+   */
+  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext }) {
     const id = `a-${entryId}`;
     const dir = path.join(this.baseDir, id);
 
