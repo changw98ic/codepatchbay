@@ -1,7 +1,7 @@
 import { mkdir, rmdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent, checkpointJob, readEvents, materializeJob } from "./event-store.js";
-import { updateJobsIndexEntry } from "./jobs-index.js";
+import { readJobsIndex, updateJobsIndexEntry } from "./jobs-index.js";
 import { resolveHubRoot } from "./hub-registry.js";
 import { enqueue, listQueue } from "./hub-queue.js";
 import { allocateArtifactId } from "./artifact-locator.js";
@@ -131,6 +131,7 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
   });
 
   if (repairStatus === "FIXED") {
+    await markJobSuperseded(cpbRoot, project, jobId);
     await createLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot });
   }
 
@@ -145,11 +146,39 @@ function parseRepairStatus(content) {
   return null;
 }
 
+async function markJobSuperseded(cpbRoot, project, jobId) {
+  await recordEvent(cpbRoot, project, jobId, {
+    type: "job_superseded",
+    jobId,
+    project,
+    reason: "external_repair_fixed",
+    ts: new Date().toISOString(),
+  });
+  const state = materializeJob(await readEvents(cpbRoot, project, jobId));
+  if (state) {
+    state.status = "superseded";
+    await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
+  }
+}
+
 async function createLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot }) {
   const job = materializeJob(await readEvents(cpbRoot, project, jobId));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
   }
+
+  // Skip if a completed job already exists for the same task
+  try {
+    const index = await readJobsIndex(cpbRoot);
+    const jobs = index?.jobs || {};
+    const alreadyCompleted = Object.values(jobs).some(
+      (j) => j && j.task === job.task && j.status === "completed" && j.project === project,
+    );
+    if (alreadyCompleted) {
+      console.log(`Skip lineage task: task already completed — ${job.task.slice(0, 60)}`);
+      return;
+    }
+  } catch {}
 
   const hubRoot = resolveHubRoot(cpbRoot);
   const entries = await listQueue(hubRoot, { projectId: project });

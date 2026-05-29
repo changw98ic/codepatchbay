@@ -137,6 +137,12 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 
 // --- ACP runner ---
 
+function isRateLimitError(error) {
+  if (!error) return false;
+  if (error.name === "RateLimitError") return true;
+  return /\brate.?limit\b|\b429\b/i.test(error.message || "");
+}
+
 async function runAcpManaged(agent, prompt, cwd, timeoutMs, executorRoot, options = {}) {
   const { getManagedAcpPool } = await import("../server/services/acp-pool.js");
   const cpbRoot = process.env.CPB_ROOT || executorRoot;
