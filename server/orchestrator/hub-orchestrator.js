@@ -6,8 +6,8 @@ import { WorkerSupervisor } from "./worker-supervisor.js";
 import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 
-const TICK_MS = 2_000; // Main reconciliation tick
-const JANITOR_MS = 30_000; // Cleanup stale resources
+const TICK_MS = 2_000;
+const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
@@ -16,6 +16,7 @@ export class HubOrchestrator {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.running = false;
+    this._stopped = null;
 
     this.leaderLock = new LeaderLock(hubRoot);
     this.assignmentStore = new AssignmentStore(hubRoot);
@@ -31,8 +32,10 @@ export class HubOrchestrator {
       assignmentStore: this.assignmentStore,
       workerStore: this.workerStore,
       leaderLock: this.leaderLock,
+      failureRouter: new FailureRouter(),
+      hubRoot,
     });
-    this.failureRouter = new FailureRouter();
+    this.failureRouter = this.reconciler.failureRouter;
 
     this._tickTimer = null;
     this._janitorTimer = null;
@@ -42,6 +45,7 @@ export class HubOrchestrator {
 
   async start() {
     this.running = true;
+    this._stopped = new Promise((resolve) => { this._resolveStopped = resolve; });
 
     // Acquire leader lock
     const leader = await this.leaderLock.acquire();
@@ -54,8 +58,9 @@ export class HubOrchestrator {
     // Full reconciliation on startup
     await this.reconciler.recoverRuntime();
 
-    // Start main tick loop
+    // Start main tick loop (NOT unref'd — this keeps the process alive)
     this._scheduleTick();
+    // Janitor can be unref'd — tick loop is the keepalive
     this._scheduleJanitor();
   }
 
@@ -64,6 +69,14 @@ export class HubOrchestrator {
     if (this._tickTimer) { clearTimeout(this._tickTimer); this._tickTimer = null; }
     if (this._janitorTimer) { clearInterval(this._janitorTimer); this._janitorTimer = null; }
     await this.leaderLock.release();
+    if (this._resolveStopped) this._resolveStopped();
+  }
+
+  /**
+   * Block until stop() is called. Used by CLI to keep process alive.
+   */
+  async waitUntilStopped() {
+    if (this._stopped) await this._stopped;
   }
 
   _scheduleTick() {
@@ -80,7 +93,7 @@ export class HubOrchestrator {
       }
       this._scheduleTick();
     }, this._consecutiveErrors > 3 ? this._backoff : TICK_MS);
-    this._tickTimer.unref();
+    // Do NOT unref — this timer is the process keepalive (P0-4 fix)
   }
 
   _scheduleJanitor() {
@@ -96,95 +109,68 @@ export class HubOrchestrator {
   }
 
   async tick() {
-    // Reconcile existing assignments first
+    // Reconcile existing assignments (includes finalize for completed attempts)
     await this.reconciler.reconcileAssignments();
 
     // Try to schedule new work
-    const scheduled = await this.scheduler.nextAssignment();
-    if (!scheduled) return { idle: true };
+    const candidate = await this.scheduler.nextCandidate();
+    if (!candidate) return { idle: true };
 
-    // Start worker for the assignment if needed
-    const { assignment, attempt, worker } = scheduled;
-    await this.workerSupervisor.ensureWorkerFor(assignment, worker);
+    // Full dispatch chain: create assignment → ensure worker → create attempt → write inbox
+    const assignment = await this.assignmentStore.createAssignment({
+      entryId: candidate.id,
+      projectId: candidate.projectId,
+      task: candidate.description || candidate.metadata?.task || "",
+      sourcePath: candidate.sourcePath || candidate.metadata?.sourcePath,
+      workflow: candidate.metadata?.workflow || "standard",
+      planMode: candidate.metadata?.planMode || "full",
+      sourceContext: candidate.metadata?.sourceContext || {},
+    });
+
+    // Find idle worker or start a new one (P0-1 fix: always proceeds even if no idle worker)
+    const existingWorker = await this.scheduler.findIdleWorker(candidate.projectId);
+    const worker = await this.workerSupervisor.ensureWorkerFor(assignment, existingWorker);
+
+    // Create attempt with real epoch
+    const epoch = this.leaderLock.getEpoch();
+    const attempt = await this.assignmentStore.createAttempt(assignment.assignmentId, {
+      workerId: worker.workerId,
+      orchestratorEpoch: epoch,
+    });
+
+    // Write flattened inbox payload (P0-2 fix: attempt is number, attemptToken is top-level)
+    await this.workerStore.writeInbox(worker.workerId, {
+      assignmentId: assignment.assignmentId,
+      entryId: assignment.entryId,
+      projectId: assignment.projectId,
+      task: assignment.task,
+      sourcePath: assignment.sourcePath,
+      workflow: assignment.workflow,
+      planMode: assignment.planMode,
+      sourceContext: assignment.sourceContext,
+      attempt: attempt.attempt,
+      attemptToken: attempt.attemptToken,
+      orchestratorEpoch: attempt.orchestratorEpoch,
+    });
+
+    // Update queue entry
+    const { updateEntry } = await import("../services/hub-queue.js");
+    await updateEntry(this.hubRoot, candidate.id, {
+      status: "scheduled",
+      claimedBy: worker.workerId,
+      claimedAt: new Date().toISOString(),
+    });
+
+    // Update worker
+    await this.workerStore.updateWorker(worker.workerId, {
+      status: "assigned",
+      currentAssignmentId: assignment.assignmentId,
+    });
 
     return { scheduled: true, assignmentId: assignment.assignmentId };
   }
 
-  async handleAssignmentResult(assignment, worker, result) {
-    if (result.status === "completed") {
-      // Idempotent finalize
-      const { updateEntry } = await import("../services/hub-queue.js");
-      await updateEntry(this.hubRoot, assignment.entryId, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-      });
-      await this.workerStore.updateWorker(worker.workerId, {
-        status: "ready",
-        currentAssignmentId: null,
-      });
-      this.failureRouter.resetBudget(assignment.entryId);
-      return;
-    }
-
-    // Failure path
-    const decision = await this.failureRouter.route({ assignment, attempt: {}, result });
-    const { updateEntry } = await import("../services/hub-queue.js");
-
-    switch (decision.action) {
-      case "restart_worker_and_retry":
-      case "retry_same_worker":
-        // Reset queue entry to pending for retry
-        await updateEntry(this.hubRoot, assignment.entryId, {
-          status: "pending",
-          claimedBy: null,
-          claimedAt: null,
-        });
-        await this.workerStore.updateWorker(worker.workerId, {
-          status: "ready",
-          currentAssignmentId: null,
-        });
-        break;
-
-      case "wait_for_rate_limit":
-        // Reset queue entry to pending, will be picked up later
-        await updateEntry(this.hubRoot, assignment.entryId, {
-          status: "pending",
-          claimedBy: null,
-          claimedAt: null,
-        });
-        await this.workerStore.updateWorker(worker.workerId, {
-          status: "ready",
-          currentAssignmentId: null,
-        });
-        break;
-
-      case "mark_blocked":
-        await updateEntry(this.hubRoot, assignment.entryId, {
-          status: "blocked",
-          reason: decision.reason,
-        });
-        await this.workerStore.updateWorker(worker.workerId, {
-          status: "ready",
-          currentAssignmentId: null,
-        });
-        break;
-
-      case "mark_failed":
-      default:
-        await updateEntry(this.hubRoot, assignment.entryId, {
-          status: "failed",
-          reason: decision.reason,
-        });
-        await this.workerStore.updateWorker(worker.workerId, {
-          status: "ready",
-          currentAssignmentId: null,
-        });
-        break;
-    }
-  }
-
   _recordError(err) {
-    // Could log to file, for now stderr
     process.stderr.write(`[orchestrator] error: ${err.message}\n`);
   }
 

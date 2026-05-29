@@ -25,10 +25,23 @@ export async function handleHubOrchCommand(args) {
 
 async function startOrchestrator(cpbRoot, hubRoot) {
   const orchestrator = new HubOrchestrator(hubRoot, cpbRoot);
+
+  // Graceful shutdown on signals
+  const shutdown = async (signal) => {
+    process.stderr.write(`\n[hub-orch] received ${signal}, stopping...\n`);
+    await orchestrator.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
   await orchestrator.start();
   console.log("Hub Orchestrator started");
   const status = await orchestrator.status();
   console.log(JSON.stringify(status, null, 2));
+
+  // Block until stop() is called — keeps process alive (P0-4 fix)
+  await orchestrator.waitUntilStopped();
   return 0;
 }
 

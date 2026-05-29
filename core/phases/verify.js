@@ -10,7 +10,8 @@ const JSON_INSTRUCTION = `
 You MUST respond with a JSON envelope:
 \`\`\`json
 {
-  "status": "pass" | "fail" | "partial",
+  "status": "ok",
+  "verdict": "pass" | "fail" | "partial",
   "reason": "one-line explanation",
   "details": "detailed verification notes",
   "confidence": 0.0-1.0

@@ -9,11 +9,10 @@
 
 import { readFile, mkdir, writeFile, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 import chokidar from "chokidar";
 
-const POLL_MS = 5_000; // Fallback poll interval
-const HEARTBEAT_MS = 10_000; // Heartbeat interval
+const POLL_MS = 5_000;
+const HEARTBEAT_MS = 10_000;
 
 function parseArgs(argv) {
   const opts = {};
@@ -59,17 +58,8 @@ async function main() {
   }, HEARTBEAT_MS);
   heartbeatTimer.unref();
 
-  // Load engine
-  const { runJob } = await import("../../core/engine/run-job.js");
-
-  // Try to load ACP pool
-  let pool = null;
-  try {
-    const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
-    pool = getManagedAcpPool({ cpbRoot, hubRoot });
-  } catch {
-    process.stderr.write(`[worker-${workerId}] ACP pool not available, agent calls will fail\n`);
-  }
+  // Load unified pipeline runner (P0-6+P1-6 fix: single execution path)
+  const { runPipeline } = await import("../../bridges/run-pipeline.mjs");
 
   // Process inbox
   async function processInbox() {
@@ -86,10 +76,22 @@ async function main() {
         continue;
       }
 
+      // Validate flattened payload (P0-2 fix)
+      if (!Number.isInteger(assignment.attempt) || assignment.attempt < 1) {
+        process.stderr.write(`[worker-${workerId}] invalid attempt in assignment: ${JSON.stringify(assignment.attempt)}\n`);
+        await unlink(filePath).catch(() => {});
+        continue;
+      }
+      if (!assignment.attemptToken) {
+        process.stderr.write(`[worker-${workerId}] missing attemptToken in assignment\n`);
+        await unlink(filePath).catch(() => {});
+        continue;
+      }
+
       const assignmentId = assignment.assignmentId;
-      const attempt = assignment.attempt || 1;
+      const attemptNum = assignment.attempt;
       const attemptDir = path.join(
-        hubRoot, "assignments", assignmentId, "attempts", String(attempt).padStart(3, "0"),
+        hubRoot, "assignments", assignmentId, "attempts", String(attemptNum).padStart(3, "0"),
       );
 
       // Update registry
@@ -98,47 +100,62 @@ async function main() {
       reg.currentAssignmentId = assignmentId;
       await writeFile(registryFile, JSON.stringify(reg, null, 2) + "\n", "utf8");
 
+      // Write accepted.json — signals reconciler to transition assignment to "running" (P0-3 fix)
+      await writeFile(path.join(attemptDir, "accepted.json"), JSON.stringify({
+        workerId,
+        assignmentId,
+        attempt: attemptNum,
+        attemptToken: assignment.attemptToken,
+        acceptedAt: new Date().toISOString(),
+        pid: process.pid,
+      }, null, 2) + "\n", "utf8");
+
       // Write heartbeat for this assignment
       await writeFile(path.join(attemptDir, "heartbeat.json"), JSON.stringify({
         workerId,
         assignmentId,
-        attempt,
+        attempt: attemptNum,
         phase: "starting",
         status: "running",
         pid: process.pid,
         updatedAt: new Date().toISOString(),
       }, null, 2) + "\n", "utf8");
 
-      // Run job
+      // Run job via unified pipeline (P0-6+P1-6 fix)
       try {
-        const result = await runJob({
-          cpbRoot,
-          hubRoot,
+        // Set env vars expected by runPipeline
+        process.env.CPB_ROOT = cpbRoot;
+        process.env.CPB_HUB_ROOT = hubRoot;
+        if (assignment.sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = assignment.sourcePath;
+        if (assignment.sourceContext) {
+          process.env.CPB_SOURCE_CONTEXT_JSON = JSON.stringify(assignment.sourceContext);
+        }
+
+        const exitCode = await runPipeline({
           project: assignment.projectId,
           task: assignment.task,
-          jobId: `job-${assignment.entryId}`,
-          workflow: assignment.workflow,
-          planMode: assignment.planMode,
-          sourcePath: assignment.sourcePath,
-          sourceContext: assignment.sourceContext,
-          pool,
-          phase: "all",
-          timeouts: { plan: 600_000, execute: 1_800_000, verify: 600_000 },
+          workflow: assignment.workflow || "standard",
+          planMode: assignment.planMode || "full",
+          sourcePath: assignment.sourcePath || null,
+          cpbRoot,
+          jobIdOverride: `job-${assignment.entryId}`,
+          maxRetries: 3,
+          timeoutMin: 60,
         });
 
-        // Write result
+        const status = exitCode === 0 ? "completed" : "failed";
         await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
           assignmentId,
-          attempt,
+          attempt: attemptNum,
           attemptToken: assignment.attemptToken,
-          status: result.status,
-          jobResult: result,
+          status,
+          jobResult: { status, exitCode },
           writtenAt: new Date().toISOString(),
         }, null, 2) + "\n", "utf8");
       } catch (err) {
         await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
           assignmentId,
-          attempt,
+          attempt: attemptNum,
           attemptToken: assignment.attemptToken,
           status: "failed",
           jobResult: {

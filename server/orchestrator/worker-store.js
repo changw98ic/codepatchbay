@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { writeJsonAtomic } from "../services/fs-utils.js";
 
 const WORKERS_DIR = "workers";
 
@@ -30,7 +31,7 @@ export class WorkerStore {
       restartCount: 0,
       ...meta,
     };
-    await writeFile(file, JSON.stringify(worker, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(file, worker);
     return worker;
   }
 
@@ -38,10 +39,9 @@ export class WorkerStore {
     const worker = await this.getWorker(workerId);
     if (!worker) return null;
     const updated = { ...worker, ...updates, lastHeartbeatAt: new Date().toISOString() };
-    await writeFile(
+    await writeJsonAtomic(
       path.join(this.registryDir, `worker-${workerId}.json`),
-      JSON.stringify(updated, null, 2) + "\n",
-      "utf8",
+      updated,
     );
     return updated;
   }
@@ -80,10 +80,9 @@ export class WorkerStore {
   async writeInbox(workerId, assignment) {
     const dir = path.join(this.inboxDir, workerId);
     await mkdir(dir, { recursive: true });
-    await writeFile(
+    await writeJsonAtomic(
       path.join(dir, `${assignment.assignmentId}.json`),
-      JSON.stringify(assignment, null, 2) + "\n",
-      "utf8",
+      assignment,
     );
   }
 
@@ -104,9 +103,8 @@ export class WorkerStore {
 
   async clearInboxEntry(workerId, assignmentId) {
     try {
-      const file = path.join(this.inboxDir, workerId, `${assignmentId}.json`);
       const { unlink } = await import("node:fs/promises");
-      await unlink(file);
+      await unlink(path.join(this.inboxDir, workerId, `${assignmentId}.json`));
     } catch { /* already cleared */ }
   }
 

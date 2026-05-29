@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { writeJsonAtomic, writeJsonOnce } from "../services/fs-utils.js";
 
 const ASSIGNMENTS_DIR = "assignments";
 
@@ -32,8 +33,8 @@ export class AssignmentStore {
       createdAt: new Date().toISOString(),
     };
 
-    await writeFile(path.join(dir, "input.json"), JSON.stringify(assignment, null, 2) + "\n", "utf8");
-    await writeFile(path.join(dir, "state.json"), JSON.stringify({ ...assignment, attempts: 0 }, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(path.join(dir, "input.json"), assignment);
+    await writeJsonAtomic(path.join(dir, "state.json"), { ...assignment, attempts: 0 });
 
     return assignment;
   }
@@ -58,7 +59,7 @@ export class AssignmentStore {
       createdAt: new Date().toISOString(),
     };
 
-    await writeFile(path.join(attemptDir, "attempt.json"), JSON.stringify(attempt, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(path.join(attemptDir, "attempt.json"), attempt);
 
     // Update assignment state
     state.attempts = attemptNum;
@@ -86,25 +87,35 @@ export class AssignmentStore {
 
   async recordHeartbeat(assignmentId, attemptNum, heartbeat) {
     const dir = path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
-    await writeFile(
+    await writeJsonAtomic(
       path.join(dir, "heartbeat.json"),
-      JSON.stringify({ ...heartbeat, updatedAt: new Date().toISOString() }, null, 2) + "\n",
-      "utf8",
+      { ...heartbeat, updatedAt: new Date().toISOString() },
     );
   }
 
   async completeAttempt(assignmentId, attemptNum, result) {
     const attempt = await this._readAttempt(assignmentId, attemptNum);
-    // Validate attempt token
-    if (result.attemptToken && result.attemptToken !== attempt.attemptToken) {
+    // Validate attempt token (required — P0-2 fix)
+    if (!result.attemptToken) {
+      throw new Error(`missing attempt token for ${assignmentId} attempt ${attemptNum}`);
+    }
+    if (result.attemptToken !== attempt.attemptToken) {
       throw new Error(`attempt token mismatch for ${assignmentId} attempt ${attemptNum}`);
     }
 
     attempt.status = result.status === "completed" ? "completed" : "failed";
     attempt.completedAt = new Date().toISOString();
 
+    // P1-2 fix: write-once result — fail if already exists (prevents overwrite)
     const dir = path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
-    await writeFile(path.join(dir, "result.json"), JSON.stringify(result, null, 2) + "\n", "utf8");
+    const resultPath = path.join(dir, "result.json");
+    const written = await writeJsonOnce(resultPath, result);
+    if (!written) {
+      // Already exists — quarantine duplicate instead of overwriting
+      const quarantinePath = path.join(dir, `result-duplicate-${Date.now()}.json`);
+      await writeJsonAtomic(quarantinePath, { originalResult: result, quarantinedAt: new Date().toISOString() });
+    }
+
     await this._writeAttempt(assignmentId, attemptNum, attempt);
 
     // Update assignment state
@@ -117,11 +128,11 @@ export class AssignmentStore {
   async writeCancel(assignmentId, attemptNum, reason) {
     const dir = path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"), "control");
     await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, "cancel.json"), JSON.stringify({
+    await writeJsonAtomic(path.join(dir, "cancel.json"), {
       reason,
       requestedAt: new Date().toISOString(),
       requestedBy: "hub",
-    }, null, 2) + "\n", "utf8");
+    });
   }
 
   async readCancel(assignmentId, attemptNum) {
@@ -166,7 +177,7 @@ export class AssignmentStore {
   }
 
   async _writeState(assignmentId, state) {
-    await writeFile(path.join(this.baseDir, assignmentId, "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(path.join(this.baseDir, assignmentId, "state.json"), state);
   }
 
   async _readAttempt(assignmentId, attemptNum) {
@@ -176,6 +187,6 @@ export class AssignmentStore {
 
   async _writeAttempt(assignmentId, attemptNum, attempt) {
     const dir = String(attemptNum).padStart(3, "0");
-    await writeFile(path.join(this.baseDir, assignmentId, "attempts", dir, "attempt.json"), JSON.stringify(attempt, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(path.join(this.baseDir, assignmentId, "attempts", dir, "attempt.json"), attempt);
   }
 }

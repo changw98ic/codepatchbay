@@ -44,13 +44,16 @@ export function parseExecutorJson(output) {
 export function parseVerifierJson(output) {
   const result = parseAgentJson(output);
   if (!result.ok) return result;
-  if (!["pass", "fail", "partial"].includes(result.data.status)) {
-    return { ok: false, reason: `invalid verdict status: ${result.data.status}` };
+  // Verifier envelope: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details }
+  const verdict = result.data.verdict;
+  if (!verdict || !["pass", "fail", "partial"].includes(verdict)) {
+    return { ok: false, reason: `invalid verdict: expected pass|fail|partial, got "${verdict}"` };
   }
   return {
     ok: true,
-    status: result.data.status,
+    status: verdict,
     reason: result.data.reason || "",
     details: result.data.details || "",
+    confidence: result.data.confidence,
   };
 }

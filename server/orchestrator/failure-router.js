@@ -6,25 +6,22 @@ const MAX_RETRIES = {
   agent_contract_invalid: 1,
   worker_crashed: 2,
   worker_heartbeat_lost: 2,
-  agent_rate_limited: 0, // Handled by wait
+  agent_rate_limited: 0,
   verification_failed: 2,
 };
 
 export class FailureRouter {
-  constructor() {
-    this._attemptCounts = new Map(); // entryId → { count, lastFailureAt }
-  }
-
+  /**
+   * Route a failure to the appropriate action.
+   * Reads retry budget from assignment.attempts (durable state) instead of in-memory Map.
+   * P1-4 fix: crash/restart safe — budget survives Hub restart.
+   */
   async route({ assignment, attempt, result }) {
     const failure = result.jobResult?.failure || result.failure || {};
     const entryId = assignment.entryId;
 
-    // Track attempts
-    const track = this._attemptCounts.get(entryId) || { count: 0, lastFailureAt: 0 };
-    track.count += 1;
-    track.lastFailureAt = Date.now();
-    this._attemptCounts.set(entryId, track);
-
+    // Read retry count from durable assignment state
+    const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
 
     // Rate limit → wait
@@ -38,10 +35,10 @@ export class FailureRouter {
     }
 
     // Over retry budget → mark failed
-    if (track.count > maxRetries) {
+    if (attemptCount > maxRetries) {
       return {
         action: "mark_failed",
-        reason: `${failure.kind} exceeded retry budget (${track.count}/${maxRetries + 1}): ${failure.reason}`,
+        reason: `${failure.kind} exceeded retry budget (${attemptCount}/${maxRetries + 1}): ${failure.reason}`,
         retryable: false,
       };
     }
@@ -74,8 +71,6 @@ export class FailureRouter {
       case FailureKind.AGENT_CONTRACT_INVALID:
       case FailureKind.AGENT_EXIT_NONZERO:
       case FailureKind.ARTIFACT_INVALID:
-        // Complex failure — for now, route to retry
-        // Milestone 4 will add ACP Supervisor here
         return {
           action: "restart_worker_and_retry",
           reason: `${failure.kind}: ${failure.reason}`,
@@ -99,7 +94,11 @@ export class FailureRouter {
     }
   }
 
-  resetBudget(entryId) {
-    this._attemptCounts.delete(entryId);
+  /**
+   * No-op now — budget is derived from assignment.attempts (durable).
+   * Kept for API compatibility.
+   */
+  resetBudget(_entryId) {
+    // Budget resets automatically when assignment is completed and a new one is created
   }
 }

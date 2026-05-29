@@ -1,9 +1,13 @@
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseExecutorJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { validateDeliverable } from "../artifacts/validators.js";
+
+const execFile = promisify(execFileCb);
 
 const JSON_INSTRUCTION = `
 
@@ -22,6 +26,14 @@ Do NOT write any artifact files yourself. The system will persist the deliverabl
 export async function runExecute(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
+  const cwd = sourcePath || cpbRoot;
+
+  // P1-8 fix: capture git snapshot before agent run
+  let changedFilesBefore = [];
+  try {
+    const { stdout } = await execFile("git", ["status", "--porcelain"], { cwd });
+    changedFilesBefore = stdout.trim().split("\n").filter(Boolean);
+  } catch { /* not a git repo — skip */ }
 
   const prompt = await buildExecutePrompt(ctx, planArtifact) + JSON_INSTRUCTION;
 
@@ -30,7 +42,7 @@ export async function runExecute(ctx) {
     agent: resolveAgent(ctx, "claude"),
     project,
     prompt,
-    cwd: sourcePath || cpbRoot,
+    cwd,
     pool,
     timeoutMs: ctx.timeouts?.execute || 1_800_000,
   });
@@ -66,7 +78,10 @@ export async function runExecute(ctx) {
     });
   }
 
-  const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed);
+  // P1-8 fix: capture git snapshot after agent run, compute changed files
+  const changedFiles = await computeChangedFiles(cwd, changedFilesBefore);
+
+  const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
   const validation = validateDeliverable(deliverable, ctx);
   if (!validation.ok) {
@@ -87,7 +102,7 @@ export async function runExecute(ctx) {
     jobId,
     kind: "deliverable",
     content: deliverable,
-    metadata: { agent: agentResult.agent },
+    metadata: { agent: agentResult.agent, changedFiles },
   });
 
   return phasePassed({
@@ -95,6 +110,18 @@ export async function runExecute(ctx) {
     artifact,
     diagnostics: agentResult.diagnostics,
   });
+}
+
+async function computeChangedFiles(cwd, before) {
+  try {
+    const { stdout } = await execFile("git", ["status", "--porcelain"], { cwd });
+    const after = stdout.trim().split("\n").filter(Boolean);
+    // Files that are new or modified compared to before
+    const beforeSet = new Set(before);
+    return after.filter(line => !beforeSet.has(line));
+  } catch {
+    return [];
+  }
 }
 
 function getRequiredArtifact(previousResults, kind) {
@@ -106,7 +133,10 @@ function getRequiredArtifact(previousResults, kind) {
   return null;
 }
 
-function renderDeliverableMarkdown(ctx, planArtifact, parsed) {
+function renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles) {
+  const changedSection = changedFiles.length > 0
+    ? changedFiles.map((f) => `- ${f}`).join("\n")
+    : "- No file changes detected";
   return `# Deliverable
 
 ## Task
@@ -117,6 +147,9 @@ ${planArtifact ? `See ${planArtifact.name}` : "No plan artifact"}
 
 ## Summary
 ${parsed.summary}
+
+## Changed Files
+${changedSection}
 
 ## Tests
 ${parsed.tests.map((t) => `- ${t}`).join("\n") || "- No test descriptions provided"}

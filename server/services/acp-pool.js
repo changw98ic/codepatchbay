@@ -10,6 +10,17 @@ import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
 
 let _registryCache = null;
+
+/**
+ * P1-5 fix: Compound key for persistent client isolation.
+ * Prevents cross-project/cross-role client reuse.
+ */
+export function poolClientKey(agent, options = {}) {
+  const role = options.role || options.phase || "";
+  const projectId = options.projectId || "";
+  return `${agent}::${role}::${projectId}`;
+}
+
 async function getRegistry() {
   if (_registryCache) return _registryCache;
   try {
@@ -548,7 +559,7 @@ export class AcpPool {
     }
     try {
       if (this.runner || !this.persistentProcesses) this.#noteSpawn(agent);
-      const output = await this.#run(agent, prompt, cwd, timeoutMs);
+      const output = await this.#run(agent, prompt, cwd, timeoutMs, options);
       this.requestCount.set(agent, (this.requestCount.get(agent) || 0) + 1);
       lifecycle.requestCount += 1;
       lifecycle.lastUsedAt = Date.now();
@@ -568,10 +579,10 @@ export class AcpPool {
     }
   }
 
-  #run(agent, prompt, cwd, timeoutMs) {
+  #run(agent, prompt, cwd, timeoutMs, options = {}) {
     if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
     if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs);
-    if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs);
+    if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs);
   }
 
@@ -624,17 +635,18 @@ export class AcpPool {
     });
   }
 
-  #runPersistent(agent, prompt, cwd, timeoutMs) {
-    const prior = this.persistentChains.get(agent) || Promise.resolve();
+  #runPersistent(agent, prompt, cwd, timeoutMs, options = {}) {
+    const key = poolClientKey(agent, options);
+    const prior = this.persistentChains.get(key) || Promise.resolve();
     const run = prior
       .catch(() => null)
-      .then(() => this.#runPersistentNow(agent, prompt, cwd, timeoutMs));
-    this.persistentChains.set(agent, run.catch(() => null));
+      .then(() => this.#runPersistentNow(key, agent, prompt, cwd, timeoutMs));
+    this.persistentChains.set(key, run.catch(() => null));
     return run;
   }
 
-  async #runPersistentNow(agent, prompt, cwd, timeoutMs) {
-    const persistent = await this.#getPersistentClient(agent, cwd);
+  async #runPersistentNow(key, agent, prompt, cwd, timeoutMs) {
+    const persistent = await this.#getPersistentClient(key, agent, cwd);
     const client = persistent.client;
     const previousOutputSink = client.outputSink;
     const previousErrorSink = client.errorSink;
@@ -644,7 +656,7 @@ export class AcpPool {
 
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
-        void this.#closePersistentClient(agent);
+        void this.#closePersistentClient(key);
         reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       timer.unref();
@@ -664,7 +676,7 @@ export class AcpPool {
       }
       return stdout.trim();
     } catch (error) {
-      await this.#closePersistentClient(agent);
+      await this.#closePersistentClient(key);
       if (stderr && !String(error.message || "").includes(stderr.slice(-120))) {
         throw new Error(`${error.message}: ${stderr.slice(-1000)}`);
       }
@@ -676,10 +688,10 @@ export class AcpPool {
     }
   }
 
-  async #getPersistentClient(agent, cwd) {
-    const existing = this.persistentClients.get(agent);
+  async #getPersistentClient(key, agent, cwd) {
+    const existing = this.persistentClients.get(key);
     if (existing && !existing.client.closed) return existing;
-    if (existing) this.persistentClients.delete(agent);
+    if (existing) this.persistentClients.delete(key);
 
     // Load cached sessionId for cached lifecycle agents
     let resumeSessionId = null;
@@ -711,14 +723,14 @@ export class AcpPool {
       requestCount: 0,
       lastUsedAt: null,
     };
-    this.persistentClients.set(agent, meta);
+    this.persistentClients.set(key, meta);
     this.#noteSpawn(agent);
 
     try {
       await client.start();
       return meta;
     } catch (error) {
-      this.persistentClients.delete(agent);
+      this.persistentClients.delete(key);
       await client.close().catch(() => null);
       throw error;
     }
@@ -729,8 +741,8 @@ export class AcpPool {
     return this.toolPolicyPromise;
   }
 
-  async #closePersistentClient(agent) {
-    const persistent = this.persistentClients.get(agent);
+  async #closePersistentClient(key) {
+    const persistent = this.persistentClients.get(key);
     if (!persistent) return;
     // Save sessionId for cached lifecycle before closing
     const session = this.sessions.get(agent);
@@ -741,7 +753,7 @@ export class AcpPool {
         await saveSessionId(this.cpbRoot, agent, session.sessionId).catch(() => null);
       }
     }
-    this.persistentClients.delete(agent);
+    this.persistentClients.delete(key);
     await persistent.client.close().catch(() => null);
   }
 }

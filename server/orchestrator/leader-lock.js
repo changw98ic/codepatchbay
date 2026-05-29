@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile, rmdir, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { writeJsonAtomic } from "../services/fs-utils.js";
 
 const DEFAULT_TTL_MS = 60_000;
 const RENEW_INTERVAL_MS = 20_000;
@@ -10,6 +11,7 @@ export class LeaderLock {
     this.lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
     this.leaderFile = path.join(this.lockDir, "leader.json");
     this.epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
+    this.quarantineDir = path.join(hubRoot, "orchestrator", "leader.quarantine");
     this.hubId = `${os.hostname()}-${process.pid}`;
     this.epoch = 0;
     this._renewTimer = null;
@@ -17,18 +19,40 @@ export class LeaderLock {
 
   async acquire() {
     const existing = await this._readLeader();
+
     if (existing && !this._isExpired(existing)) {
       throw new Error(`leader lock held by ${existing.hubId} (expires ${existing.expiresAt})`);
     }
 
-    // Steal or create lock
+    // Steal stale lock atomically: rename to quarantine first
     if (existing) {
-      await rm(this.lockDir, { recursive: true, force: true });
+      await mkdir(this.quarantineDir, { recursive: true });
+      const quarantineName = `stale-${existing.hubId}-${Date.now()}`;
+      try {
+        await rename(this.lockDir, path.join(this.quarantineDir, quarantineName));
+      } catch {
+        // Lock disappeared between read and rename — race lost, another Hub stole it
+        const recheck = await this._readLeader();
+        if (recheck && !this._isExpired(recheck)) {
+          throw new Error(`leader lock stolen by ${recheck.hubId}`);
+        }
+        // If rename failed but lock is still stale, force cleanup
+        await rm(this.lockDir, { recursive: true, force: true });
+      }
     }
-    await mkdir(path.dirname(this.lockDir), { recursive: true });
-    await mkdir(this.lockDir);
 
-    // Increment epoch
+    // mkdir as sole atomic acquire primitive
+    await mkdir(path.dirname(this.lockDir), { recursive: true });
+    try {
+      await mkdir(this.lockDir);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        throw new Error(`leader lock contention: another Hub acquired the lock`);
+      }
+      throw err;
+    }
+
+    // Lock acquired — now safe to increment epoch (P1-3 fix: epoch only after lock held)
     this.epoch = await this._incrementEpoch();
 
     const leader = {
@@ -40,7 +64,7 @@ export class LeaderLock {
       heartbeatAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + DEFAULT_TTL_MS).toISOString(),
     };
-    await writeFile(this.leaderFile, JSON.stringify(leader, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(this.leaderFile, leader);
     return leader;
   }
 
@@ -51,7 +75,7 @@ export class LeaderLock {
     }
     current.heartbeatAt = new Date().toISOString();
     current.expiresAt = new Date(Date.now() + DEFAULT_TTL_MS).toISOString();
-    await writeFile(this.leaderFile, JSON.stringify(current, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(this.leaderFile, current);
     return true;
   }
 
@@ -83,6 +107,14 @@ export class LeaderLock {
     } catch { /* already released */ }
   }
 
+  /**
+   * Check if this Hub still holds the leader lock (for epoch fencing).
+   */
+  async stillHeld() {
+    const current = await this._readLeader();
+    return current?.hubId === this.hubId;
+  }
+
   async _readLeader() {
     try {
       return JSON.parse(await readFile(this.leaderFile, "utf8"));
@@ -103,7 +135,7 @@ export class LeaderLock {
     } catch { /* first time */ }
     const next = current + 1;
     await mkdir(path.dirname(this.epochFile), { recursive: true });
-    await writeFile(this.epochFile, JSON.stringify({ epoch: next, updatedAt: new Date().toISOString() }) + "\n", "utf8");
+    await writeJsonAtomic(this.epochFile, { epoch: next, updatedAt: new Date().toISOString() });
     return next;
   }
 
