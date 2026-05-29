@@ -14,18 +14,15 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.error("Usage: cpb verify <project> <deliverable-id-or-job-id> [--agent <name>]");
     process.exit(1);
   }
-  const { runPhase } = await import("../../bridges/run-phase.mjs");
 
-  // When --job-id is set in pipeline context, pass it through for locator-first dispatch
-  const jobId = process.env.CPB_JOB_ID || process.env.CPB_ACP_JOB_ID || null;
+  // Strip prefix if user passes deliverable-XXX or just XXX
+  const cleanDeliverableId = deliverableId.replace(/^deliverable-/, "");
 
-  const code = await runPhase("verify", {
-    executorRoot,
+  const { runSinglePhase } = await import("../../bridges/engine-bridge.js");
+  return runSinglePhase("verify", {
     cpbRoot,
     project,
-    deliverableId,
-    jobId,
+    deliverableId: cleanDeliverableId,
     agent: agent || undefined,
   });
-  return Number.isInteger(code) ? code : 0;
 }

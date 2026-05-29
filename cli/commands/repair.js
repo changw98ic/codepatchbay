@@ -14,7 +14,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.error("Usage: cpb repair <project> <job-id> [--agent <name>]");
     process.exit(1);
   }
-  const { runPhase } = await import("../../bridges/run-phase.mjs");
-  const code = await runPhase("repair", { executorRoot, cpbRoot, project, jobId, agent: agent || undefined });
-  return Number.isInteger(code) ? code : 0;
+  const { runSinglePhase } = await import("../../bridges/engine-bridge.js");
+  return runSinglePhase("repair", { cpbRoot, project, jobId, agent: agent || undefined });
 }

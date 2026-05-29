@@ -113,7 +113,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     }
   }
 
-  const { runPipeline } = await import("../../bridges/run-pipeline.mjs");
+  const { runPipeline } = await import("../../bridges/engine-bridge.js");
   return runPipeline({
     project: projectId,
     task,

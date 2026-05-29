@@ -1,53 +1,193 @@
 /**
- * Engine.runJob — single entry point for job execution.
+ * Engine.runJob — native phase state machine.
  *
- * P0-5 fix: delegates to runPipeline internally so both Hub worker and CLI
- * share one execution path. When the Engine is fully implemented, this
- * delegation can be replaced with the native phase-based state machine.
+ * Creates a job, resolves phases from workflow, runs each phase via
+ * native adapters (core/phases/*.js).  Returns structured JobResult.
+ *
+ * All infrastructure services (createJob, appendEvent, etc.) are
+ * injected via ctx — no server/ imports in core/.
  */
+
+import { runPhase } from "./run-phase.js";
+import { resolvePhases } from "./workflow-runner.js";
+import { isPhasePassed } from "../contracts/phase-result.js";
+
+function ts() {
+  return new Date().toISOString();
+}
+
+function extractArtifactId(artifact) {
+  if (!artifact?.name) return null;
+  const parts = artifact.name.split("-");
+  return parts.length > 1 ? parts[parts.length - 1] : artifact.id || null;
+}
 
 /**
  * @param {object} ctx
  * @param {string} ctx.cpbRoot
- * @param {string} ctx.hubRoot
+ * @param {string} [ctx.hubRoot]
  * @param {string} ctx.project
  * @param {string} ctx.task
- * @param {string} ctx.jobId
- * @param {string} ctx.workflow
- * @param {string} ctx.planMode
+ * @param {string} [ctx.workflow="standard"]
+ * @param {string} [ctx.planMode="full"]
  * @param {string} [ctx.sourcePath]
  * @param {object} [ctx.sourceContext]
- * @param {object} [ctx.pool]
  * @param {number} [ctx.maxRetries]
  * @param {number} [ctx.timeoutMin]
- * @returns {Promise<{status: string, jobId: string, exitCode: number}>}
+ * @param {Function} ctx.createJob
+ * @param {Function} ctx.completePhase
+ * @param {Function} ctx.completeJob
+ * @param {Function} ctx.failJob
+ * @param {Function} ctx.appendEvent
+ * @param {Function} ctx.getPool
+ * @returns {Promise<{status: string, jobId: string, exitCode: number, failure?: object}>}
  */
 export async function runJob(ctx) {
-  const { runPipeline } = await import("../../bridges/run-pipeline.mjs");
+  const {
+    cpbRoot,
+    hubRoot,
+    project,
+    task,
+    workflow = "standard",
+    planMode = "full",
+    sourcePath,
+    sourceContext,
+    maxRetries,
+    timeoutMin,
+    // Injected services
+    createJob,
+    completePhase,
+    completeJob,
+    failJob,
+    appendEvent,
+    getPool,
+  } = ctx;
 
-  // Set env vars expected by runPipeline
-  process.env.CPB_ROOT = ctx.cpbRoot;
-  if (ctx.hubRoot) process.env.CPB_HUB_ROOT = ctx.hubRoot;
-  if (ctx.sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = ctx.sourcePath;
-  if (ctx.sourceContext) {
-    process.env.CPB_SOURCE_CONTEXT_JSON = JSON.stringify(ctx.sourceContext);
-  }
+  process.env.CPB_ROOT = cpbRoot;
+  if (hubRoot) process.env.CPB_HUB_ROOT = hubRoot;
+  if (sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
 
-  const exitCode = await runPipeline({
-    project: ctx.project,
-    task: ctx.task,
-    workflow: ctx.workflow || "standard",
-    planMode: ctx.planMode || "full",
-    sourcePath: ctx.sourcePath || null,
-    cpbRoot: ctx.cpbRoot,
-    jobIdOverride: ctx.jobId,
-    maxRetries: ctx.maxRetries || 3,
-    timeoutMin: ctx.timeoutMin || 60,
+  // 1. Create job
+  const job = await createJob(cpbRoot, {
+    project,
+    task,
+    workflow,
+    planMode,
+    jobId: ctx.jobId,
+    sourceContext: sourceContext || {},
+  });
+  const jobId = job.jobId;
+
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "job_started",
+    jobId,
+    project,
+    task,
+    workflow,
+    planMode,
+    ts: ts(),
   });
 
+  // 2. Resolve phases
+  const phases = resolvePhases(workflow, planMode);
+
+  // 3. Get ACP pool
+  const pool = getPool();
+
+  // 4. Execute phases sequentially
+  const phaseResults = [];
+  const state = { planId: null, deliverableId: null };
+
+  const timeoutMs = (timeoutMin || 60) * 60_000;
+
+  for (const phase of phases) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_started",
+      jobId,
+      project,
+      phase,
+      ts: ts(),
+    });
+
+    const result = await runPhase({
+      phase,
+      project,
+      task,
+      jobId,
+      job,
+      cpbRoot,
+      sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+      sourceContext,
+      pool,
+      state,
+      previousResults: phaseResults,
+      agent: ctx.agent,
+      timeouts: {
+        plan: Math.min(timeoutMs, 600_000),
+        execute: timeoutMs,
+        verify: Math.min(timeoutMs, 600_000),
+      },
+    });
+
+    phaseResults.push(result);
+
+    // Track artifacts for subsequent phases
+    if (isPhasePassed(result) && result.artifact) {
+      const artifactId = extractArtifactId(result.artifact);
+      if (phase === "plan") state.planId = artifactId;
+      if (phase === "execute") state.deliverableId = artifactId;
+
+      await completePhase(cpbRoot, project, jobId, {
+        phase,
+        artifact: result.artifact.name,
+      });
+    }
+
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_result",
+      jobId,
+      project,
+      phase,
+      status: result.status,
+      artifact: result.artifact?.name || null,
+      failure: result.failure
+        ? { kind: result.failure.kind, reason: result.failure.reason }
+        : null,
+      ts: ts(),
+    });
+
+    if (!isPhasePassed(result)) {
+      const fail = result.failure || {};
+      await failJob(cpbRoot, project, jobId, {
+        reason: fail.reason || `${phase} phase failed`,
+        code: fail.kind || "fatal",
+        phase,
+        cause: fail,
+      });
+
+      return {
+        status: "failed",
+        jobId,
+        exitCode: 1,
+        failure: {
+          kind: fail.kind,
+          phase,
+          reason: fail.reason,
+          retryable: fail.retryable,
+        },
+        phaseResults,
+      };
+    }
+  }
+
+  // 5. Complete job
+  await completeJob(cpbRoot, project, jobId);
+
   return {
-    status: exitCode === 0 ? "completed" : "failed",
-    jobId: ctx.jobId,
-    exitCode,
+    status: "completed",
+    jobId,
+    exitCode: 0,
+    failure: null,
+    phaseResults,
   };
 }

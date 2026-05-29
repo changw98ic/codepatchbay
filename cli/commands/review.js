@@ -57,9 +57,13 @@ export async function run(args, { cpbRoot, executorRoot }) {
   }
 
   if (mode === "--agent" || mode === "--ai") {
-    const { runPhase } = await import("../../bridges/run-phase.mjs");
-    await runPhase("review", { executorRoot, cpbRoot, project, deliverableId: did, agent: agentName || undefined });
-    return;
+    const { runSinglePhase } = await import("../../bridges/engine-bridge.js");
+    return runSinglePhase("review", {
+      cpbRoot,
+      project,
+      deliverableId: did,
+      agent: agentName || undefined,
+    });
   }
 
   const deliverable = path.join(wdir, "outputs", `deliverable-${did}.md`);
