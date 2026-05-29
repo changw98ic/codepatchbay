@@ -188,6 +188,56 @@ export class Reconciler {
           });
           break;
 
+        case "reroute":
+          await updateEntry(this.hubRoot, assignment.entryId, {
+            status: "pending",
+            claimedBy: null,
+            claimedAt: null,
+            metadata: {
+              ...(assignment.sourceContext || {}),
+              workflow: decision.params?.workflow || assignment.workflow,
+              planMode: decision.params?.planMode || assignment.planMode,
+              supervisorDecision: {
+                action: decision.action,
+                reason: decision.reason,
+                reroutedAt: new Date().toISOString(),
+              },
+            },
+          });
+          break;
+
+        case "switch_agent":
+          await updateEntry(this.hubRoot, assignment.entryId, {
+            status: "pending",
+            claimedBy: null,
+            claimedAt: null,
+            metadata: {
+              ...(assignment.sourceContext || {}),
+              agentsOverride: decision.params || {},
+              supervisorDecision: {
+                action: decision.action,
+                reason: decision.reason,
+                switchedAt: new Date().toISOString(),
+              },
+            },
+          });
+          break;
+
+        case "request_human_approval":
+          await updateEntry(this.hubRoot, assignment.entryId, {
+            status: "blocked",
+            reason: decision.reason || "human approval requested by supervisor",
+            metadata: {
+              ...(assignment.sourceContext || {}),
+              supervisorDecision: {
+                action: decision.action,
+                reason: decision.reason,
+                blockedAt: new Date().toISOString(),
+              },
+            },
+          });
+          break;
+
         case "mark_failed":
         default:
           await updateEntry(this.hubRoot, assignment.entryId, {

@@ -18,7 +18,10 @@ let _registryCache = null;
 export function poolClientKey(agent, options = {}) {
   const role = options.role || options.phase || "";
   const projectId = options.projectId || "";
-  return `${agent}::${role}::${projectId}`;
+  const workspaceId = options.workspaceId || "";
+  const cwd = options.cwd || "";
+  const policyHash = options.policyHash || "";
+  return [agent, role, projectId, workspaceId, cwd, policyHash].join("::");
 }
 
 async function getRegistry() {

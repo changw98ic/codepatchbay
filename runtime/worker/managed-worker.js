@@ -10,6 +10,7 @@
 import { readFile, mkdir, writeFile, readdir, unlink, rename } from "node:fs/promises";
 import path from "node:path";
 import chokidar from "chokidar";
+import { writeJsonAtomic } from "../../server/services/fs-utils.js";
 
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
@@ -123,7 +124,7 @@ async function main() {
         pid: process.pid,
       }, null, 2) + "\n", "utf8");
 
-      // Write heartbeat for this assignment
+      // Write initial heartbeat for this assignment
       await writeFile(path.join(attemptDir, "heartbeat.json"), JSON.stringify({
         workerId,
         assignmentId,
@@ -133,6 +134,22 @@ async function main() {
         pid: process.pid,
         updatedAt: new Date().toISOString(),
       }, null, 2) + "\n", "utf8");
+
+      // Start assignment heartbeat timer — refreshes heartbeat.json during execution
+      // so the Reconciler does not mark long-running tasks as heartbeat-lost
+      const assignmentHeartbeat = setInterval(async () => {
+        try {
+          await writeFile(path.join(attemptDir, "heartbeat.json"), JSON.stringify({
+            workerId,
+            assignmentId,
+            attempt: attemptNum,
+            phase: "running",
+            status: "running",
+            pid: process.pid,
+            updatedAt: new Date().toISOString(),
+          }, null, 2) + "\n", "utf8");
+        } catch { /* ignore */ }
+      }, HEARTBEAT_MS);
 
       // Run job via Engine.runJob (P0-5: unified entry point)
       try {
@@ -150,16 +167,18 @@ async function main() {
           timeoutMin: 60,
         });
 
-        await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
+        clearInterval(assignmentHeartbeat);
+        await writeJsonAtomic(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
           attemptToken: assignment.attemptToken,
           status: result.status,
           jobResult: result,
           writtenAt: new Date().toISOString(),
-        }, null, 2) + "\n", "utf8");
+        });
       } catch (err) {
-        await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
+        clearInterval(assignmentHeartbeat);
+        await writeJsonAtomic(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
           attemptToken: assignment.attemptToken,
@@ -169,7 +188,7 @@ async function main() {
             failure: { kind: "worker_crashed", reason: err.message, retryable: true },
           },
           writtenAt: new Date().toISOString(),
-        }, null, 2) + "\n", "utf8");
+        });
       }
 
       // Remove inbox entry (now in processing dir)
@@ -183,6 +202,7 @@ async function main() {
 
       if (once) {
         clearInterval(heartbeatTimer);
+        clearInterval(assignmentHeartbeat);
         process.exit(0);
       }
     }
