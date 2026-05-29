@@ -1,26 +1,12 @@
-import path from 'path';
-import { spawn } from 'child_process';
 import { broadcast } from '../services/ws-broadcast.js';
-import { getRunningTasks, getDurableTasks, registerTask, unregisterTask } from '../services/executor.js';
-import { requestCancelJob, requestRedirectJob, makeJobId } from '../services/job-store.js';
+import { getRunningTasks, getDurableTasks } from '../services/executor.js';
+import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
+import { enqueue } from '../services/hub-queue.js';
 import { getProject } from '../services/hub-registry.js';
-import { buildChildEnv, redactSecrets } from '../services/secret-policy.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
-
-async function projectRuntimeEnv(hubRoot, name) {
-  if (!hubRoot) return {};
-  try {
-    const project = await getProject(hubRoot, name);
-    const env = {};
-    if (project?.projectRuntimeRoot) env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
-    return env;
-  } catch {
-    return {};
-  }
-}
 
 async function projectDataRoot(hubRoot, name) {
   if (!hubRoot) return undefined;
@@ -58,49 +44,60 @@ export async function taskRoutes(fastify, opts) {
     resolveDataRoot: (req, name) => projectDataRoot(req.cpbHubRoot, name),
   });
 
-  // Trigger planner phase
-  fastify.post('/tasks/:name/plan', async (req) => {
-    const { name } = req.params;
-    const { task } = req.body || {};
-    if (!task) throw fastify.httpErrors.badRequest('task required');
-    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['plan', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--task', task], req.log, '', extraEnv);
-  });
-
-  // Trigger executor phase
-  fastify.post('/tasks/:name/execute', async (req) => {
-    const { name } = req.params;
-    const { planId } = req.body || {};
-    if (!planId) throw fastify.httpErrors.badRequest('planId required');
-    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['execute', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--plan-id', planId], req.log, '', extraEnv);
-  });
-
-  // Trigger verifier phase
-  fastify.post('/tasks/:name/verify', async (req) => {
-    const { name } = req.params;
-    const { deliverableId } = req.body || {};
-    if (!deliverableId) throw fastify.httpErrors.badRequest('deliverableId required');
-    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    return spawnBridge(req.cpbRoot, name, 'run-phase.mjs', ['verify', '--executor-root', req.cpbRoot, '--cpb-root', req.cpbRoot, '--project', name, '--deliverable-id', deliverableId], req.log, '', extraEnv);
-  });
-
-  // Trigger full pipeline
+  // Enqueue pipeline task
   fastify.post('/tasks/:name/pipeline', async (req) => {
     const { name } = req.params;
-    const { task, maxRetries = '3', timeout = '0', workflow = 'standard', planMode = 'auto', acpProfile, uiLaneReason } = req.body || {};
+    const body = req.body || {};
+    const {
+      task, workflow = 'standard', planMode = 'auto',
+      acpProfile = 'headless', uiLaneReason = '',
+      priority = 'P2', issueNumber, issueUrl, repo, issueTitle,
+      actor = 'api',
+    } = body;
+
     if (!task) throw fastify.httpErrors.badRequest('task required');
-    if (acpProfile !== undefined) {
-      const lane = resolveAcpLane({ profile: acpProfile, uiLaneReason });
-      if (lane.error) throw fastify.httpErrors.badRequest(lane.error);
+
+    const lane = resolveAcpLane({ profile: acpProfile, uiLaneReason });
+    if (lane.error) throw fastify.httpErrors.badRequest(lane.error);
+
+    const project = await getProject(req.cpbHubRoot, name);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+    if (!project.sourcePath) {
+      throw fastify.httpErrors.badRequest(`Project '${name}' has no sourcePath`);
     }
-    const extraEnv = await projectRuntimeEnv(req.cpbHubRoot, name);
-    const jobId = makeJobId();
-    // Preserve ACP lane fields from API request (issue #62)
-    const pipelineArgs = ['--project', name, '--task', task, '--max-retries', maxRetries, '--timeout-min', timeout, '--workflow', workflow, '--plan-mode', planMode, '--job-id', jobId];
-    if (acpProfile) pipelineArgs.push('--acp-profile', acpProfile);
-    if (uiLaneReason) pipelineArgs.push('--ui-lane-reason', uiLaneReason);
-    return spawnBridge(req.cpbRoot, name, 'run-pipeline.mjs', pipelineArgs, req.log, jobId, extraEnv);
+
+    const resolvedRepo = repo || project.github?.fullName || null;
+    const numericIssue = Number(issueNumber);
+    const hasIssueLink = issueUrl || (resolvedRepo && Number.isInteger(numericIssue) && numericIssue > 0);
+
+    if (!hasIssueLink) {
+      throw fastify.httpErrors.badRequest(
+        'pipeline requires issueUrl or repo+issueNumber for PR finalization'
+      );
+    }
+
+    const entry = await enqueue(req.cpbHubRoot, {
+      projectId: name,
+      sourcePath: project.sourcePath,
+      priority,
+      description: task,
+      type: 'api_pipeline',
+      metadata: {
+        source: 'api',
+        workflow, planMode, acpProfile,
+        uiLane: acpProfile === 'ui',
+        uiLaneReason,
+        autoFinalize: true,
+        issueNumber: Number.isInteger(numericIssue) ? numericIssue : null,
+        issueUrl: issueUrl || null,
+        repo: resolvedRepo,
+        issueTitle: issueTitle || task,
+        actor,
+        requestedAt: new Date().toISOString(),
+      },
+    });
+
+    return { queued: true, entry };
   });
 
   // Cancel a running job
@@ -124,80 +121,5 @@ export async function taskRoutes(fastify, opts) {
     const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason, dataRoot });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
-  });
-}
-
-const MAX_TAIL_BYTES = 65536; // 64KB tail buffer
-
-export function spawnBridge(cpbRoot, project, script, args, log, providedTaskId = '', extraEnv = {}) {
-  const scriptPath = path.join(cpbRoot, 'bridges', script);
-  const taskId = providedTaskId || `${project}:${script}:${Date.now()}`;
-  const isMjs = script.endsWith('.mjs');
-  const command = isMjs ? 'node' : 'bash';
-
-  let child;
-  try {
-    child = spawn(command, [scriptPath, ...args], {
-      cwd: cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || '0', ...extraEnv }),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    log?.error(`spawnBridge sync error for ${taskId}: ${err.message}`);
-    return { accepted: false, taskId, error: err.message };
-  }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let registered = false;
-    let totalBytes = 0;
-    let tailBuffer = '';
-    let outputTruncated = false;
-
-    function appendOutput(text) {
-      totalBytes += Buffer.byteLength(text, 'utf8');
-      tailBuffer += text;
-      if (tailBuffer.length > MAX_TAIL_BYTES) {
-        tailBuffer = tailBuffer.slice(-MAX_TAIL_BYTES);
-        outputTruncated = true;
-      }
-    }
-
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      appendOutput(text);
-      broadcast({ type: 'task:output', taskId, project, output: redactSecrets(text), stream: 'stdout' });
-    });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      appendOutput(text);
-      broadcast({ type: 'task:output', taskId, project, output: redactSecrets(text), stream: 'stderr' });
-    });
-
-    child.on('spawn', () => {
-      if (settled) return;
-      settled = true;
-      registered = true;
-      registerTask(taskId, project, script, child.pid);
-      resolve({ accepted: true, taskId, pid: child.pid });
-    });
-
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      log?.error(`spawnBridge async error for ${taskId}: ${err.message}`);
-      resolve({ accepted: false, taskId, error: err.message });
-    });
-
-    child.on('exit', (code) => {
-      if (registered) unregisterTask(taskId);
-      broadcast({
-        type: 'task:complete', taskId, project, script, exitCode: code,
-        outputTail: redactSecrets(tailBuffer),
-        outputBytes: totalBytes,
-        outputTruncated,
-      });
-      log?.info(`Task ${taskId} exited with code ${code}`);
-    });
   });
 }

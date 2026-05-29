@@ -189,19 +189,18 @@ export async function runFakeAcpSmoke({
       cwd: root,
       env,
     });
-    await runCommand(
-      process.execPath,
-      [
-        path.join(root, "bridges", "run-pipeline.mjs"),
-        "--project", project,
-        "--task", "local fake ACP smoke",
-        "--source-path", sourcePath,
-        "--max-retries", "1",
-        "--timeout-min", "0",
-        "--workflow", "complex",
-      ],
-      { cwd: root, env, timeoutMs: 60_000 },
-    );
+    const { runJobWithServices } = await import("../bridges/engine-bridge.js");
+    await runJobWithServices({
+      cpbRoot,
+      hubRoot,
+      project,
+      task: "local fake ACP smoke",
+      jobId: "job-local-smoke-001",
+      workflow: "complex",
+      sourcePath,
+      maxRetries: 1,
+      timeoutMin: 0,
+    });
 
     const artifacts = await collectArtifacts(cpbRoot, project);
     assertArtifacts(artifacts);

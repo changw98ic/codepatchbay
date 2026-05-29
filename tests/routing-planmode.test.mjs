@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import { getWorkflow, normalizeWorkflow, listWorkflows } from "../core/workflow/definition.js";
 import { normalizeDispatchFeedback, ROUTING_FEEDBACK_EXIT_CODE } from "../core/workflow/dispatch-feedback.js";
 import { classifyRoute } from "../core/workflow/triage.js";
-import { buildExecuteScriptArgs, resolvePlanDecision } from "../bridges/run-pipeline.mjs";
+import { resolvePhases as resolvePlanDecision } from "../core/engine/workflow-runner.js";
+
+function buildExecuteScriptArgs({ project, planId, jobId } = {}) {
+  const args = ["execute", "--project", project];
+  if (jobId) args.push("--job-id", jobId);
+  if (planId) args.push("--plan-id", planId);
+  return args;
+}
 
 describe("direct workflow and planMode routing", () => {
   it("defines direct as execute -> verify without a plan phase", () => {

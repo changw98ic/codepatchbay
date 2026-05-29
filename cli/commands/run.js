@@ -4,10 +4,8 @@ import path from "node:path";
 function usage() {
   return `Usage: cpb run "<task>" [--project <id>] [--workflow <name>] [--plan-mode <mode>] [--triage <mode>]
 
-Run a task through the plan -> execute -> verify pipeline.
-
-If --project is omitted, infers the project from the current working
-directory (Hub registry match or package.json name).
+Enqueue a task through the plan -> execute -> verify pipeline.
+The Hub worker will claim and execute it.
 
 Options:
   --project <id>       Target project ID
@@ -21,10 +19,10 @@ Options:
 export async function run(args, { cpbRoot, executorRoot }) {
   const positional = [];
   let projectId;
-  let retries = 3;
   let workflow = "standard";
   let planMode = "auto";
   let triageMode = null;
+  let retries = 3;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -40,36 +38,16 @@ export async function run(args, { cpbRoot, executorRoot }) {
       }
     } else if (arg === "--workflow") {
       workflow = args[++i];
-      if (!workflow) {
-        console.error("Error: --workflow requires a value");
-        return 1;
-      }
     } else if (arg === "--plan-mode") {
       planMode = args[++i];
-      if (!planMode) {
-        console.error("Error: --plan-mode requires a value");
-        return 1;
-      }
-      if (!["auto", "none", "light", "full", "parent"].includes(planMode)) {
+      if (planMode && !["auto", "none", "light", "full", "parent"].includes(planMode)) {
         console.error(`Error: invalid --plan-mode '${planMode}'`);
         return 1;
       }
     } else if (arg === "--triage") {
       triageMode = args[++i];
-      if (!triageMode) {
-        console.error("Error: --triage requires a value");
-        return 1;
-      }
-      if (!["auto", "rules", "acp", "none"].includes(triageMode)) {
-        console.error(`Error: invalid --triage '${triageMode}'`);
-        return 1;
-      }
     } else if (arg === "--retries") {
       retries = args[++i];
-      if (!retries) {
-        console.error("Error: --retries requires a value");
-        return 1;
-      }
     } else {
       positional.push(arg);
     }
@@ -82,7 +60,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
   }
 
   if (!projectId) {
-    // Try Hub registry match on cwd
     try {
       const { resolveHubRoot, loadRegistry } = await import("../../server/services/hub-registry.js");
       const hubRoot = resolveHubRoot(cpbRoot);
@@ -97,31 +74,45 @@ export async function run(args, { cpbRoot, executorRoot }) {
       }
     } catch {}
 
-    // Fallback: package.json name from cwd
     if (!projectId) {
       try {
         const pkg = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"));
-        if (pkg.name) {
-          projectId = pkg.name.replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "");
-        }
+        if (pkg.name) projectId = pkg.name.replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "");
       } catch {}
     }
 
-    // Fallback: directory basename
     if (!projectId) {
       projectId = path.basename(process.cwd()).replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "");
     }
   }
 
-  const { runPipeline } = await import("../../bridges/engine-bridge.js");
-  return runPipeline({
-    project: projectId,
-    task,
-    workflow,
-    planMode,
-    triageMode,
-    maxRetries: Number.parseInt(String(retries), 10) || 3,
-    cpbRoot,
-    executorRoot,
+  const resolvedCpbRoot = cpbRoot || process.env.CPB_ROOT || process.cwd();
+  const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
+
+  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
+  const { getProject } = await import(path.join(executorRoot, "server", "services", "hub-registry.js"));
+
+  let registered;
+  try { registered = await getProject(hubRoot, projectId); } catch { registered = null; }
+
+  const entry = await enqueue(hubRoot, {
+    projectId,
+    sourcePath: registered?.sourcePath || null,
+    priority: "P2",
+    description: task,
+    type: "cli_pipeline",
+    metadata: {
+      source: "cli",
+      workflow,
+      planMode,
+      triageMode,
+      maxRetries: Number.parseInt(String(retries), 10) || 3,
+      actor: "cli",
+      autoFinalize: true,
+      requestedAt: new Date().toISOString(),
+    },
   });
+
+  console.log(`Enqueued ${entry.id} (project=${projectId})`);
+  return 0;
 }

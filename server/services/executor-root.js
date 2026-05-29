@@ -5,12 +5,12 @@ import { buildChildEnv } from "../../core/policy/child-env.js";
 export const REQUIRED_EXECUTOR_FILES = [
   "cpb",
   "cli/cpb.mjs",
-  "bridges/run-phase.mjs",
-  "bridges/run-pipeline.mjs",
+  "bridges/engine-bridge.js",
   "bridges/project-worker.mjs",
   "bridges/job-runner.mjs",
   "core/workflow/definition.js",
   "runtime/evolve/multi-evolve.js",
+  "runtime/worker/managed-worker.js",
   "server/services/job-store.js",
 ];
 

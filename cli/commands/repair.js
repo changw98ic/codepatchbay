@@ -1,6 +1,8 @@
+import path from "node:path";
+
 export async function run(args, { cpbRoot, executorRoot }) {
-  const filtered = [];
   let agent = "";
+  const filtered = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--agent" && args[i + 1]) {
       agent = args[++i];
@@ -14,6 +16,24 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.error("Usage: cpb repair <project> <job-id> [--agent <name>]");
     process.exit(1);
   }
-  const { runSinglePhase } = await import("../../bridges/engine-bridge.js");
-  return runSinglePhase("repair", { cpbRoot, project, jobId, agent: agent || undefined });
+
+  const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
+  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
+
+  const entry = await enqueue(hubRoot, {
+    projectId: project,
+    priority: "P1",
+    description: `Repair job ${jobId}`,
+    type: "cli_repair",
+    metadata: {
+      source: "cli",
+      repairJobId: jobId,
+      repairAgent: agent || undefined,
+      actor: "cli",
+      requestedAt: new Date().toISOString(),
+    },
+  });
+
+  console.log(`Enqueued repair ${entry.id} for job ${jobId} (project=${project})`);
+  return 0;
 }

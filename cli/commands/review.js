@@ -16,13 +16,11 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const { readdir, readFile, access, constants } = await import("node:fs/promises");
   const wdir = path.join(cpbRoot, "wiki/projects", project);
 
-  // Extract --agent <name> (with value) vs --agent / --ai (AI mode, no value)
   let agentName = "";
   let mode = "";
   const filtered = [];
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--agent") {
-      // Peek ahead: if next arg exists and doesn't start with --, it's an agent name
       if (args[i + 1] && !args[i + 1].startsWith("--")) {
         agentName = args[++i];
       } else {
@@ -56,16 +54,30 @@ export async function run(args, { cpbRoot, executorRoot }) {
     did = did.replace(/^deliverable-/, "");
   }
 
+  // Agent/AI mode: enqueue review through hub queue
   if (mode === "--agent" || mode === "--ai") {
-    const { runSinglePhase } = await import("../../bridges/engine-bridge.js");
-    return runSinglePhase("review", {
-      cpbRoot,
-      project,
-      deliverableId: did,
-      agent: agentName || undefined,
+    const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
+    const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
+
+    const entry = await enqueue(hubRoot, {
+      projectId: project,
+      priority: "P1",
+      description: `Review deliverable-${did}`,
+      type: "cli_review",
+      metadata: {
+        source: "cli",
+        deliverableId: did,
+        reviewAgent: agentName || undefined,
+        actor: "cli",
+        requestedAt: new Date().toISOString(),
+      },
     });
+
+    console.log(`Enqueued review ${entry.id} for deliverable-${did} (project=${project})`);
+    return 0;
   }
 
+  // Interactive review (read-only)
   const deliverable = path.join(wdir, "outputs", `deliverable-${did}.md`);
   const verdict = path.join(wdir, "outputs", `verdict-${did}.md`);
 
@@ -79,7 +91,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
   console.log(`${BOLD}Review: ${project} / deliverable-${did}${NC}`);
   console.log("");
 
-  // Verdict
   try {
     const vContent = await readFile(verdict, "utf8");
     const vMatch = vContent.match(/^VERDICT:\s*(\w+)/m);
@@ -98,13 +109,11 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.log("");
   }
 
-  // Deliverable summary
   console.log(`${CYAN}Deliverable summary:${NC}`);
   const dContent = await readFile(deliverable, "utf8");
   console.log(dContent.split("\n").slice(0, 20).join("\n"));
   console.log("");
 
-  // Git diff
   const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const registered = await getProject(hubRoot, project);
@@ -132,7 +141,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
     } catch {}
   }
 
-  // Actions
   console.log("");
   console.log(`${BOLD}Actions:${NC}`);
   console.log("  a/accept   — keep changes");

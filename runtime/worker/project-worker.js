@@ -733,75 +733,26 @@ export class ProjectWorker {
     const workflow = workflowForEntry(entry, this.workflow);
     const planMode = planModeForEntry(entry, process.env.CPB_WORKER_PLAN_MODE || "auto");
     const sourceContext = sourceContextFromQueueEntry(entry);
-    return new Promise((resolve) => {
-      const args = [
-        path.join(this.executorRoot, "bridges", "run-pipeline.mjs"),
-        "--project", projectId,
-        "--task", entry.description || entry.id,
-        "--workflow", workflow,
-        "--plan-mode", planMode,
-      ];
-      if (sourcePath) args.push("--source-path", sourcePath);
-      if (dispatchId) args.push("--dispatch-id", dispatchId);
-      const metadata = entry.metadata || {};
-      if (metadata.acpProfile) args.push("--acp-profile", metadata.acpProfile);
-      if (metadata.uiLaneReason) args.push("--ui-lane-reason", metadata.uiLaneReason);
 
-      const env = {
-        ...executorEnv(process.env, {
-          cpbRoot: this.cpbRoot,
-          executorRoot: this.executorRoot,
-        }),
-        CPB_PROJECT_PATH_OVERRIDE: sourcePath || "",
-        CPB_ACP_CWD: sourcePath || "",
-        CPB_SESSION_ID: entry.sessionId || "",
-        CPB_WORKER_ID: this.workerId,
-        CPB_QUEUE_ENTRY_ID: entry.id || "",
-        CPB_ISSUE_NUMBER: String(entry.metadata?.issueNumber ?? ""),
-        CPB_ISSUE_URL: entry.metadata?.issueUrl ?? "",
-        CPB_ISSUE_REPO: entry.metadata?.repo ?? "",
-        CPB_ISSUE_TITLE: (entry.metadata?.issueTitle ?? "").slice(0, 200),
-        CPB_FAILED_QUEUE_ID: entry.metadata?.originQueueId ?? "",
-        CPB_FAILED_JOB_ID: entry.metadata?.originJobId ?? "",
-        CPB_FAILURE_ARTIFACT: entry.metadata?.failureArtifact ?? "",
-        CPB_PLAN_MODE: planMode,
-        CPB_CONTEXT_PACK_PATH: entry.metadata?.contextPackPath || entry.metadata?.contextPack?.path || "",
-        CPB_INDEX_SNAPSHOT_JSON: entry.metadata?.indexSnapshot
-          ? JSON.stringify(entry.metadata.indexSnapshot)
-          : "",
-        CPB_SOURCE_CONTEXT_JSON: sourceContext ? JSON.stringify(sourceContext) : "",
-      };
-      if (useWorktree) env.CPB_USE_WORKTREE = "1";
-      else delete env.CPB_USE_WORKTREE;
+    const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
+    const jobId = `job-${entry.id}`;
 
-      const child = spawn(process.execPath, args, {
-        cwd: this.cpbRoot,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let jobIdWritten = false;
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        if (!jobIdWritten) {
-          const match = String(stdout).match(/^CPB_JOB_CREATED (\{.*\})$/m);
-          if (match) {
-            jobIdWritten = true;
-            try {
-              const { jobId: parsedJobId, queueEntryId } = JSON.parse(match[1]);
-              if (parsedJobId && queueEntryId === entry.id) {
-                updateEntry(this.hubRoot, entry.id, { metadata: { jobId: parsedJobId } }).catch(() => {});
-              }
-            } catch {}
-          }
-        }
-      });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
-      child.on("close", (code) => resolve({ ok: code === 0, code, stdout, stderr }));
-      child.on("error", (error) => resolve({ ok: false, code: 1, error: error.message, stdout, stderr }));
+    const result = await runJobWithServices({
+      cpbRoot: this.cpbRoot,
+      hubRoot: this.hubRoot,
+      project: projectId,
+      task: entry.description || entry.id,
+      jobId,
+      workflow,
+      planMode,
+      sourcePath,
+      sourceContext,
+      maxRetries: 3,
+      timeoutMin: 60,
     });
+
+    const ok = result.status === "completed";
+    return { ok, code: ok ? 0 : 1, stdout: "", stderr: "", job: result, jobId };
   }
 
   async poll() {

@@ -36,9 +36,6 @@ function usage() {
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
   console.log(`  ${CYAN}daemon${NC} [start|status|stop]             Queue worker daemon`);
   console.log(`  ${CYAN}coderag${NC} [status|start|stop]           CodeRAG MCP server`);
-  console.log(`  ${CYAN}plan${NC} <project> "<task>"               Codex planning`);
-  console.log(`  ${CYAN}execute${NC} <project> <plan-id>            Claude execution`);
-  console.log(`  ${CYAN}verify${NC} <project> <deliverable-id>      Codex verification`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
   console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
@@ -101,9 +98,6 @@ const COMMANDS = {
   attach: "attach.js",
   hub: "hub.js",
   daemon: "daemon.js",
-  plan: "plan.js",
-  execute: "execute.js",
-  verify: "verify.js",
   pipeline: "pipeline.js",
   profile: "profile.js",
   run: "run.js",
@@ -180,7 +174,7 @@ async function main() {
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["plan", "execute", "verify", "pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally

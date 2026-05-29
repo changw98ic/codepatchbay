@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { resolvePlanDecision } from "../bridges/run-pipeline.mjs";
+import { resolvePhases as resolvePlanDecision } from "../core/engine/workflow-runner.js";
 import { resolveParentPlan, writeParentPlanCache } from "../server/services/plan-cache.js";
 
 describe("parent plan pipeline smoke", () => {

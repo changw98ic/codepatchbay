@@ -8,7 +8,7 @@ import {
   writeParentPlanCache,
   parentPlanCacheIdentity,
 } from "../server/services/plan-cache.js";
-import { resolvePlanDecision } from "../bridges/run-pipeline.mjs";
+import { resolvePhases as resolvePlanDecision } from "../core/engine/workflow-runner.js";
 
 /**
  * Helpers for setting up test fixtures inside a temp cpbRoot.

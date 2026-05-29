@@ -37,12 +37,17 @@ test("core stays pure", async () => {
   }
 });
 
-test("runtime does not import from bridges", async () => {
+test("runtime does not import from bridges (except engine-bridge DI)", async () => {
   const offenders = [];
   for (const file of await listFiles("runtime")) {
     const source = await readFile(file, "utf8");
-    if (source.includes("../bridges/")) {
-      offenders.push(path.relative(repoRoot, file));
+    // engine-bridge.js is a DI service builder, not a legacy bridge script
+    const lines = source.split("\n");
+    for (const line of lines) {
+      if (line.includes("../bridges/") && !line.includes("engine-bridge")) {
+        offenders.push(path.relative(repoRoot, file));
+        break;
+      }
     }
   }
   assert.deepEqual(offenders, []);
@@ -75,9 +80,8 @@ test("server ACP pool imports without CLI argv side effects", () => {
 
 test("CLI-style executable modules are import safe", async () => {
   const modules = [
-    "./runtime/acp-client.mjs",
-    "./bridges/run-phase.mjs",
-    "./bridges/run-pipeline.mjs",
+    "./bridges/engine-bridge.js",
+    "./bridges/project-worker.mjs",
   ];
 
   for (const mod of modules) {
