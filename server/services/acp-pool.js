@@ -719,6 +719,7 @@ export class AcpPool {
     });
     const meta = {
       client,
+      agent,
       startedAt: Date.now(),
       requestCount: 0,
       lastUsedAt: null,
@@ -744,6 +745,7 @@ export class AcpPool {
   async #closePersistentClient(key) {
     const persistent = this.persistentClients.get(key);
     if (!persistent) return;
+    const agent = persistent.agent; // P0-6 fix: read agent from meta
     // Save sessionId for cached lifecycle before closing
     const session = this.sessions.get(agent);
     if (session?.sessionId) {

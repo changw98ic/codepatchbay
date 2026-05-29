@@ -38,6 +38,9 @@ export async function runAgent({
       phase: role,
       role,
       bypass: false,
+      projectId: project,
+      workspaceId: scope?.workspaceId,
+      policyHash: scope?.policyHash,
     });
 
     return {

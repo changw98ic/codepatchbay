@@ -58,8 +58,8 @@ async function main() {
   }, HEARTBEAT_MS);
   heartbeatTimer.unref();
 
-  // Load unified pipeline runner (P0-6+P1-6 fix: single execution path)
-  const { runPipeline } = await import("../../bridges/run-pipeline.mjs");
+  // Load unified engine (P0-5: single entry point, delegates to runPipeline internally)
+  const { runJob } = await import("../../core/engine/run-job.js");
 
   // Process inbox
   async function processInbox() {
@@ -121,35 +121,28 @@ async function main() {
         updatedAt: new Date().toISOString(),
       }, null, 2) + "\n", "utf8");
 
-      // Run job via unified pipeline (P0-6+P1-6 fix)
+      // Run job via Engine.runJob (P0-5: unified entry point)
       try {
-        // Set env vars expected by runPipeline
-        process.env.CPB_ROOT = cpbRoot;
-        process.env.CPB_HUB_ROOT = hubRoot;
-        if (assignment.sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = assignment.sourcePath;
-        if (assignment.sourceContext) {
-          process.env.CPB_SOURCE_CONTEXT_JSON = JSON.stringify(assignment.sourceContext);
-        }
-
-        const exitCode = await runPipeline({
+        const result = await runJob({
+          cpbRoot,
+          hubRoot,
           project: assignment.projectId,
           task: assignment.task,
+          jobId: `job-${assignment.entryId}`,
           workflow: assignment.workflow || "standard",
           planMode: assignment.planMode || "full",
-          sourcePath: assignment.sourcePath || null,
-          cpbRoot,
-          jobIdOverride: `job-${assignment.entryId}`,
+          sourcePath: assignment.sourcePath,
+          sourceContext: assignment.sourceContext,
           maxRetries: 3,
           timeoutMin: 60,
         });
 
-        const status = exitCode === 0 ? "completed" : "failed";
         await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
           assignmentId,
           attempt: attemptNum,
           attemptToken: assignment.attemptToken,
-          status,
-          jobResult: { status, exitCode },
+          status: result.status,
+          jobResult: result,
           writtenAt: new Date().toISOString(),
         }, null, 2) + "\n", "utf8");
       } catch (err) {

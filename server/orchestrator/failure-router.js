@@ -10,17 +10,27 @@ const MAX_RETRIES = {
   verification_failed: 2,
 };
 
+// Complex failures that benefit from supervisor diagnosis (P1-2)
+const SUPERVISOR_ELIGIBLE_KINDS = new Set([
+  FailureKind.AGENT_CONTRACT_INVALID,
+  FailureKind.AGENT_EXIT_NONZERO,
+  FailureKind.ARTIFACT_INVALID,
+]);
+
 export class FailureRouter {
   /**
-   * Route a failure to the appropriate action.
-   * Reads retry budget from assignment.attempts (durable state) instead of in-memory Map.
-   * P1-4 fix: crash/restart safe — budget survives Hub restart.
+   * @param {object} [supervisor] - AcpSupervisor instance (optional, P1-2)
+   */
+  constructor(supervisor = null) {
+    this.supervisor = supervisor;
+  }
+
+  /**
+   * Route a failure. For complex failures, consult AcpSupervisor if available.
+   * Reads retry budget from assignment.attempts (durable, P1-4).
    */
   async route({ assignment, attempt, result }) {
     const failure = result.jobResult?.failure || result.failure || {};
-    const entryId = assignment.entryId;
-
-    // Read retry count from durable assignment state
     const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
 
@@ -41,6 +51,18 @@ export class FailureRouter {
         reason: `${failure.kind} exceeded retry budget (${attemptCount}/${maxRetries + 1}): ${failure.reason}`,
         retryable: false,
       };
+    }
+
+    // P1-2: Complex failures → consult supervisor if available
+    if (this.supervisor && SUPERVISOR_ELIGIBLE_KINDS.has(failure.kind)) {
+      try {
+        const decision = await this.supervisor.diagnoseFailure({ assignment, attempt, result });
+        if (decision && typeof decision.action === "string") {
+          return decision;
+        }
+      } catch {
+        // Supervisor failed — fall through to deterministic routing
+      }
     }
 
     // Deterministic routing by failure kind
@@ -94,11 +116,7 @@ export class FailureRouter {
     }
   }
 
-  /**
-   * No-op now — budget is derived from assignment.attempts (durable).
-   * Kept for API compatibility.
-   */
   resetBudget(_entryId) {
-    // Budget resets automatically when assignment is completed and a new one is created
+    // Budget derived from assignment.attempts — auto-resets on new assignment
   }
 }

@@ -1,7 +1,11 @@
 import { HubOrchestrator } from "../../server/orchestrator/hub-orchestrator.js";
 import { resolveHubRoot } from "../../server/services/hub-registry.js";
 
-export async function handleHubOrchCommand(args) {
+export async function run(args, ctx) {
+  return handleHubOrchCommand(args, ctx);
+}
+
+async function handleHubOrchCommand(args) {
   const subcommand = args[0];
   const cpbRoot = process.env.CPB_ROOT || process.cwd();
   const hubRoot = resolveHubRoot(cpbRoot);

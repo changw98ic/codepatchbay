@@ -26,7 +26,6 @@ export class Reconciler {
     for (const worker of workers) {
       if (worker.status === "exited") continue;
 
-      // Check if pid alive
       if (worker.pid) {
         try { process.kill(worker.pid, 0); } catch {
           await this.workers.updateWorker(worker.workerId, { status: "exited" });
@@ -34,7 +33,6 @@ export class Reconciler {
         }
       }
 
-      // Check heartbeat stale
       const lastHb = worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).getTime() : 0;
       if (now - lastHb > HEARTBEAT_STALE_MS * 2) {
         await this.workers.updateWorker(worker.workerId, { status: "unhealthy" });
@@ -48,12 +46,16 @@ export class Reconciler {
     for (const assignment of assignments) {
       switch (assignment.status) {
         case "scheduled": {
-          // Check if worker wrote accepted.json → transition to running (P0-3 fix)
           const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
           if (!attempt) break;
           const accepted = await this._readAccepted(assignment.assignmentId, attempt.attempt);
           if (accepted) {
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
+            // Update queue to in_progress so scheduler doesn't reset it
+            const { updateEntry } = await import("../services/hub-queue.js");
+            await updateEntry(this.hubRoot, assignment.entryId, {
+              status: "in_progress",
+            });
           }
           break;
         }
@@ -62,22 +64,26 @@ export class Reconciler {
           const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
           if (!attempt) break;
 
-          // Check accepted.json first (P0-3 fix)
+          // Check accepted.json first
           const accepted = await this._readAccepted(assignment.assignmentId, attempt.attempt);
           if (accepted) {
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
+            const { updateEntry } = await import("../services/hub-queue.js");
+            await updateEntry(this.hubRoot, assignment.entryId, {
+              status: "in_progress",
+            });
             break;
           }
 
           const assignedAt = attempt.createdAt ? new Date(attempt.createdAt).getTime() : 0;
           if (Date.now() - assignedAt > ASSIGN_ACCEPT_TTL_MS) {
-            // Worker didn't accept within TTL — fail and finalize
+            // P0-4 fix: use writeSyntheticFailure for reconciler-created failures
             const result = {
               status: "failed",
               jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: "assignment not accepted within TTL" } },
               attemptToken: attempt.attemptToken,
             };
-            await this.assignments.completeAttempt(assignment.assignmentId, attempt.attempt, result);
+            await this.assignments.writeSyntheticFailure(assignment.assignmentId, attempt.attempt, result);
             await this._finalizeAssignment(assignment, attempt, result);
           }
           break;
@@ -87,10 +93,10 @@ export class Reconciler {
           const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
           if (!attempt) break;
 
-          // Check if result.json exists → finalize (P0-5 fix)
+          // Check result.json → validate + finalize (P0-4: worker wrote, store validates)
           const result = await this._readAttemptResult(assignment.assignmentId, attempt.attempt);
           if (result) {
-            await this.assignments.completeAttempt(assignment.assignmentId, attempt.attempt, result);
+            await this.assignments.completeAttemptFromExistingResult(assignment.assignmentId, attempt.attempt, result);
             await this._finalizeAssignment(assignment, attempt, result);
             break;
           }
@@ -105,7 +111,7 @@ export class Reconciler {
                 jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: `heartbeat stale for ${Math.round((Date.now() - lastHb) / 1000)}s` } },
                 attemptToken: attempt.attemptToken,
               };
-              await this.assignments.completeAttempt(assignment.assignmentId, attempt.attempt, result);
+              await this.assignments.writeSyntheticFailure(assignment.assignmentId, attempt.attempt, result);
               await this._finalizeAssignment(assignment, attempt, result);
             }
           }
@@ -114,40 +120,46 @@ export class Reconciler {
 
         case "completed":
         case "failed":
-          // Terminal — nothing to reconcile
+          // P0-3 fix: terminal != finalized — compensate incomplete finalization
+          await this._compensateFinalization(assignment);
           break;
       }
     }
   }
 
   /**
-   * Finalize an assignment: update queue entry, route failures, reset worker.
-   * (P0-5 fix: this was dead code in handleAssignmentResult, now wired into reconciler)
+   * P0-3 fix: compensate incomplete finalization steps.
+   * terminal assignment may still need queue/worker finalization.
    */
-  async _finalizeAssignment(assignment, attempt, result) {
-    const { updateEntry } = await import("../services/hub-queue.js");
-    const workerId = attempt.workerId || assignment.workerId;
+  async _compensateFinalization(assignment) {
+    if (!assignment.queueFinalizedAt) {
+      await this._finalizeQueue(assignment);
+    }
+    if (!assignment.workerFinalizedAt) {
+      await this._finalizeWorker(assignment);
+    }
+  }
 
-    if (result.status === "completed") {
+  async _finalizeAssignment(assignment, attempt, result) {
+    await this._finalizeQueue(assignment, attempt, result);
+    await this._finalizeWorker(assignment, attempt);
+  }
+
+  async _finalizeQueue(assignment, attempt, result) {
+    const { updateEntry } = await import("../services/hub-queue.js");
+
+    if (result && result.status === "completed") {
       await updateEntry(this.hubRoot, assignment.entryId, {
         status: "completed",
         completedAt: new Date().toISOString(),
       });
       this.failureRouter.resetBudget(assignment.entryId);
-    } else {
-      // Route failure
+    } else if (result) {
       const decision = await this.failureRouter.route({ assignment, attempt, result });
 
       switch (decision.action) {
         case "restart_worker_and_retry":
         case "retry_same_worker":
-          await updateEntry(this.hubRoot, assignment.entryId, {
-            status: "pending",
-            claimedBy: null,
-            claimedAt: null,
-          });
-          break;
-
         case "wait_for_rate_limit":
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
@@ -173,26 +185,29 @@ export class Reconciler {
       }
     }
 
-    // Reset worker to ready
+    await this.assignments.markFinalized(assignment.assignmentId, "queue");
+  }
+
+  async _finalizeWorker(assignment, attempt) {
+    const workerId = attempt?.workerId || assignment.workerId;
     if (workerId) {
       await this.workers.updateWorker(workerId, {
         status: "ready",
         currentAssignmentId: null,
       });
     }
+    await this.assignments.markFinalized(assignment.assignmentId, "worker");
   }
 
   async reconcileQueue() {
     const { listQueue, updateEntry } = await import("../services/hub-queue.js");
     const assignments = await this.assignments.listAssignments();
 
-    // Build assignment lookup by entryId
     const byEntry = new Map();
     for (const a of assignments) {
       byEntry.set(a.entryId, a);
     }
 
-    // Check scheduled queue entries whose assignments are terminal
     const scheduled = await listQueue(this.hubRoot, { status: "scheduled" });
     for (const entry of scheduled) {
       const assignment = byEntry.get(entry.id);

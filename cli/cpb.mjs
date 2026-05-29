@@ -144,6 +144,7 @@ const COMMANDS = {
   "install-bin": "install-bin.js",
   audit: "audit.js",
   coderag: "coderag.js",
+  "hub-orch": "hub-orch.js",
 };
 
 // --- Main ---

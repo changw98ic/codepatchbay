@@ -31,6 +31,10 @@ export class AssignmentStore {
       sourceContext: sourceContext || {},
       status: "scheduled",
       createdAt: new Date().toISOString(),
+      // P0-3 fix: finalization tracking
+      resultWrittenAt: null,
+      queueFinalizedAt: null,
+      workerFinalizedAt: null,
     };
 
     await writeJsonAtomic(path.join(dir, "input.json"), assignment);
@@ -61,7 +65,6 @@ export class AssignmentStore {
 
     await writeJsonAtomic(path.join(attemptDir, "attempt.json"), attempt);
 
-    // Update assignment state
     state.attempts = attemptNum;
     state.activeAttempt = attemptNum;
     state.status = "assigned";
@@ -93,9 +96,12 @@ export class AssignmentStore {
     );
   }
 
-  async completeAttempt(assignmentId, attemptNum, result) {
+  /**
+   * P0-4 fix: Validate a worker-written result and update assignment/attempt state.
+   * Does NOT write result.json — worker already wrote it.
+   */
+  async completeAttemptFromExistingResult(assignmentId, attemptNum, result) {
     const attempt = await this._readAttempt(assignmentId, attemptNum);
-    // Validate attempt token (required — P0-2 fix)
     if (!result.attemptToken) {
       throw new Error(`missing attempt token for ${assignmentId} attempt ${attemptNum}`);
     }
@@ -105,24 +111,61 @@ export class AssignmentStore {
 
     attempt.status = result.status === "completed" ? "completed" : "failed";
     attempt.completedAt = new Date().toISOString();
+    await this._writeAttempt(assignmentId, attemptNum, attempt);
 
-    // P1-2 fix: write-once result — fail if already exists (prevents overwrite)
+    const state = await this._readState(assignmentId);
+    state.status = result.status === "completed" ? "completed" : "failed";
+    state.completedAt = new Date().toISOString();
+    state.resultWrittenAt = new Date().toISOString();
+    // P0-3: reset finalization tracking — reconciler will finalize
+    state.queueFinalizedAt = null;
+    state.workerFinalizedAt = null;
+    await this._writeState(assignmentId, state);
+  }
+
+  /**
+   * Write a synthetic failure result (for reconciler-created failures like heartbeat lost).
+   * Uses writeJsonOnce to prevent overwriting worker results.
+   */
+  async writeSyntheticFailure(assignmentId, attemptNum, result) {
+    const attempt = await this._readAttempt(assignmentId, attemptNum);
+    if (result.attemptToken && result.attemptToken !== attempt.attemptToken) {
+      throw new Error(`attempt token mismatch for ${assignmentId} attempt ${attemptNum}`);
+    }
+
     const dir = path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
     const resultPath = path.join(dir, "result.json");
     const written = await writeJsonOnce(resultPath, result);
     if (!written) {
-      // Already exists — quarantine duplicate instead of overwriting
-      const quarantinePath = path.join(dir, `result-duplicate-${Date.now()}.json`);
-      await writeJsonAtomic(quarantinePath, { originalResult: result, quarantinedAt: new Date().toISOString() });
+      // Worker already wrote result — use that instead
+      return false;
     }
 
+    attempt.status = "failed";
+    attempt.completedAt = new Date().toISOString();
     await this._writeAttempt(assignmentId, attemptNum, attempt);
 
-    // Update assignment state
     const state = await this._readState(assignmentId);
-    state.status = result.status === "completed" ? "completed" : "failed";
+    state.status = "failed";
     state.completedAt = new Date().toISOString();
+    state.resultWrittenAt = new Date().toISOString();
+    state.queueFinalizedAt = null;
+    state.workerFinalizedAt = null;
     await this._writeState(assignmentId, state);
+    return true;
+  }
+
+  /**
+   * P0-3 fix: Mark finalization steps complete. Idempotent.
+   */
+  async markFinalized(assignmentId, step) {
+    const state = await this._readState(assignmentId);
+    if (!state) return;
+    const key = `${step}FinalizedAt`;
+    if (!state[key]) {
+      state[key] = new Date().toISOString();
+      await this._writeState(assignmentId, state);
+    }
   }
 
   async writeCancel(assignmentId, attemptNum, reason) {

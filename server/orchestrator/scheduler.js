@@ -12,21 +12,29 @@ export class Scheduler {
 
   /**
    * Find the next eligible pending queue entry.
-   * Ports key gates from claimEligible (P1-9 fix):
-   *  - Concurrency: max active mutating tasks per project
-   *  - Stale recovery: reset in_progress entries past claim timeout
-   *  - Priority sorting: P0 > P1 > P2 > P3, then by creation time
+   * P0-2 fix: stale recovery checks assignment state before resetting queue.
+   * P1-9: concurrency gating, priority sorting.
    */
   async nextCandidate() {
     const { listQueue, updateEntry } = await import("../services/hub-queue.js");
     const allEntries = await listQueue(this.hubRoot);
 
-    // Recover stale in_progress entries
+    // Recover stale in_progress entries — but only if no active assignment exists
     const now = Date.now();
     for (const entry of allEntries) {
       if (entry.status !== "in_progress" && entry.status !== "scheduled") continue;
       const claimedAt = entry.claimedAt ? new Date(entry.claimedAt).getTime() : 0;
       if (claimedAt > 0 && now - claimedAt > CLAIM_TIMEOUT_MS) {
+        // P0-2 fix: check if assignment is actually running before resetting
+        const assignment = await this.assignments.getAssignment(`a-${entry.id}`);
+        if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
+          // Assignment is active — refresh claimedAt instead of resetting to pending
+          await updateEntry(this.hubRoot, entry.id, {
+            claimedAt: new Date().toISOString(),
+          });
+          continue;
+        }
+        // No active assignment — safe to reset
         await updateEntry(this.hubRoot, entry.id, {
           status: "pending",
           claimedBy: null,
@@ -48,7 +56,6 @@ export class Scheduler {
     const pending = allEntries
       .filter(e => e.status === "pending")
       .filter(e => {
-        // Concurrency gate: skip if project already at capacity
         if (isMutatingEntry(e) && (activeMutatingByProject[e.projectId] || 0) >= DEFAULT_MAX_ACTIVE_PER_PROJECT) {
           return false;
         }
@@ -68,9 +75,6 @@ export class Scheduler {
     return pending[0];
   }
 
-  /**
-   * Check if an idle worker exists for the given project.
-   */
   async findIdleWorker(projectId) {
     return this.workers.findIdleWorker(projectId);
   }

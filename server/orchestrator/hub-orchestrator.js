@@ -5,6 +5,7 @@ import { Scheduler } from "./scheduler.js";
 import { WorkerSupervisor } from "./worker-supervisor.js";
 import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
+import { AcpSupervisor } from "./acp-supervisor.js";
 
 const TICK_MS = 2_000;
 const JANITOR_MS = 30_000;
@@ -28,14 +29,19 @@ export class HubOrchestrator {
     this.workerSupervisor = new WorkerSupervisor(hubRoot, cpbRoot, {
       workerStore: this.workerStore,
     });
+
+    // P1-2: create AcpSupervisor (pool loaded lazily on first use)
+    const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot, pool: null });
+    const failureRouter = new FailureRouter(acpSupervisor);
+
     this.reconciler = new Reconciler(hubRoot, {
       assignmentStore: this.assignmentStore,
       workerStore: this.workerStore,
       leaderLock: this.leaderLock,
-      failureRouter: new FailureRouter(),
+      failureRouter,
       hubRoot,
     });
-    this.failureRouter = this.reconciler.failureRouter;
+    this.failureRouter = failureRouter;
 
     this._tickTimer = null;
     this._janitorTimer = null;
