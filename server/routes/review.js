@@ -3,7 +3,7 @@ import path from "path";
 import { readFile, rm } from "fs/promises";
 import { runtimeDataPath } from "../services/runtime-root.js";
 import { broadcast } from "../services/ws-broadcast.js";
-import { spawnBridge } from "./tasks.js";
+import { enqueue } from "../services/hub-queue.js";
 import { makeJobId } from "../services/job-store.js";
 import {
   createSession,
@@ -14,7 +14,7 @@ import {
 } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import { writeProjectIndex } from "../services/project-index.js";
-import { resolveHubRoot } from "../services/hub-registry.js";
+import { resolveHubRoot, getProject } from "../services/hub-registry.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
@@ -103,7 +103,7 @@ export async function reviewRoutes(fastify, opts) {
     return { accepted: true, sessionId: session.sessionId };
   });
 
-  // User approves → dispatch pipeline
+  // User approves → dispatch pipeline via hub queue
   fastify.post("/review/:id/approve", async (req) => {
     const session = await getSession(req.cpbRoot, req.params.id);
     if (!session) throw fastify.httpErrors.notFound("session not found");
@@ -113,19 +113,26 @@ export async function reviewRoutes(fastify, opts) {
 
     const jobId = makeJobId();
     const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const result = await spawnBridge(
-      req.cpbRoot,
-      session.project,
-      "run-pipeline.mjs",
-      ["--project", session.project, "--task", session.intent, "--max-retries", "3", "--timeout-min", "0", "--workflow", "standard", "--job-id", jobId],
-      req.log,
-      jobId,
-      { CPB_USE_WORKTREE: "1" },
-    );
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
 
-    if (!result.accepted) {
-      throw fastify.httpErrors.internal(`pipeline spawn failed: ${result.error || "unknown"}`);
-    }
+    let registered;
+    try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
+
+    const entry = await enqueue(hubRoot, {
+      projectId: session.project,
+      sourcePath: registered?.sourcePath || null,
+      priority: "P1",
+      description: session.intent,
+      type: "review_dispatch",
+      metadata: {
+        source: "review",
+        reviewSessionId: session.sessionId,
+        jobId,
+        workflow: "standard",
+        autoFinalize: true,
+        requestedAt: new Date().toISOString(),
+      },
+    });
 
     await updateSession(req.cpbRoot, session.sessionId, {
       status: "dispatched",
@@ -138,12 +145,12 @@ export async function reviewRoutes(fastify, opts) {
       type: "review:update",
       sessionId: session.sessionId,
       status: "dispatched",
-      jobId: result.taskId,
+      jobId: entry.id,
       project: session.project,
       session: await getSession(req.cpbRoot, session.sessionId),
     });
 
-    return { dispatched: true, sessionId: session.sessionId, taskId: result.taskId };
+    return { dispatched: true, sessionId: session.sessionId, taskId: entry.id };
   });
 
   // Internal auto-approve path (used by self-evolve)
@@ -181,19 +188,26 @@ export async function reviewRoutes(fastify, opts) {
 
     const jobId = makeJobId();
     const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const spawnResult = await spawnBridge(
-      req.cpbRoot,
-      session.project,
-      "run-pipeline.mjs",
-      ["--project", session.project, "--task", session.intent, "--max-retries", "3", "--timeout-min", "0", "--workflow", "standard", "--job-id", jobId],
-      req.log,
-      jobId,
-      { CPB_USE_WORKTREE: "1" },
-    );
+    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
 
-    if (!spawnResult.accepted) {
-      throw fastify.httpErrors.internal(`pipeline spawn failed: ${spawnResult.error || "unknown"}`);
-    }
+    let registered;
+    try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
+
+    const spawnResult = await enqueue(hubRoot, {
+      projectId: session.project,
+      sourcePath: registered?.sourcePath || null,
+      priority: "P1",
+      description: session.intent,
+      type: "review_dispatch",
+      metadata: {
+        source: "review",
+        reviewSessionId: session.sessionId,
+        jobId,
+        workflow: "standard",
+        autoFinalize: true,
+        requestedAt: new Date().toISOString(),
+      },
+    });
 
     const refreshed = await updateSession(req.cpbRoot, session.sessionId, {
       ...result,
@@ -215,7 +229,7 @@ export async function reviewRoutes(fastify, opts) {
     return {
       dispatched: true,
       sessionId: session.sessionId,
-      taskId: spawnResult.taskId,
+      taskId: spawnResult.id,
     };
   });
 
