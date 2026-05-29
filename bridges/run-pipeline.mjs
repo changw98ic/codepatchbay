@@ -727,6 +727,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const TRANSIENT_ERROR_PATTERNS = ["rate limit", "429", "too many requests", "capacity", "overloaded"];
+
+async function classifyTransientFailure(cpbRoot, project, jobId, phase) {
+  try {
+    const events = await readEvents(cpbRoot, project, jobId);
+    const errorEvent = events.find(e => e.type === "phase_agent_error" && e.phase === phase);
+    if (errorEvent) {
+      const msg = (errorEvent.error || "").toLowerCase();
+      if (TRANSIENT_ERROR_PATTERNS.some(p => msg.includes(p))) {
+        return { code: FAILURE_CODES.RECOVERABLE, cause: { message: errorEvent.error } };
+      }
+    }
+  } catch { /* fall through to FATAL */ }
+  return { code: FAILURE_CODES.FATAL };
+}
+
 async function hasApprovalAfter(cpbRoot, project, jobId, requestedAt) {
   const requestedMs = new Date(requestedAt).getTime();
   const events = await readEvents(cpbRoot, project, jobId);
@@ -1211,9 +1227,11 @@ export async function runPipeline({
       if (!planId) {
         fail("Plan not created. Aborting.");
         await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
+        const planClass = await classifyTransientFailure(cpbRoot, project, jobId, "plan");
         await failJob(cpbRoot, project, jobId, failure("plan not created", {
-          code: FAILURE_CODES.FATAL,
+          code: planClass.code,
           phase: "plan",
+          ...(planClass.cause ? { cause: planClass.cause } : {}),
         }));
         return 1;
       }

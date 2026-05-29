@@ -350,6 +350,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
   "approval_required", "job_approved", "approval_timed_out",
+  "job_superseded",
 ]);
 
 const NODE_STATE_DEFAULTS = {
@@ -695,6 +696,11 @@ export function materializeJob(events) {
         state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
+      case "job_superseded":
+        state.status = "superseded";
+        state.blockedReason = event.reason ?? "superseded by repair lineage";
+        terminal = true;
+        break;
       case "approval_required":
         state.status = "waiting.approval";
         state.phase = event.phase ?? state.phase;
@@ -876,7 +882,7 @@ export function materializeJob(events) {
   return state;
 }
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
 
 function checkpointFileFor(cpbRoot, project, jobId, opts = {}) {
   validatePathComponent("project", project);
