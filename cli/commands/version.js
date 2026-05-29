@@ -1,6 +1,6 @@
 import path from "node:path";
 
-const CPB_VERSION = "0.2.1";
+const CPB_VERSION = "0.3.0";
 
 export { CPB_VERSION };
 
