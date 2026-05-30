@@ -203,6 +203,16 @@ async function main() {
 
         // Finalize: create PR + close issue if autoFinalize and job succeeded
         if (autoFinalize && result.status === "completed" && worktreeInfo) {
+          // Commit any uncommitted changes in the worktree before finalizing
+          try {
+            const { stdout: wtStatus } = await execFileAsync("git", ["status", "--porcelain"], { cwd: worktreeInfo.path });
+            if (wtStatus.trim()) {
+              await execFileAsync("git", ["add", "-A"], { cwd: worktreeInfo.path });
+              await execFileAsync("git", ["commit", "-m", assignment.task || "automated change"], { cwd: worktreeInfo.path });
+            }
+          } catch (commitErr) {
+            process.stderr.write(`[worker-${workerId}] worktree commit failed: ${commitErr.message}\n`);
+          }
           try {
             const transport = await resolveGithubTransport(hubRoot);
             const entry = {

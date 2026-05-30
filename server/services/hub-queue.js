@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildMeta } from "../../core/job/meta.js";
 import { ensureIndexFresh } from "./index-freshness.js";
+import { resolveAgentsForEntry } from "./agent-config.js";
 
 
 export const QUEUE_VERSION = 1;
@@ -169,6 +170,11 @@ export async function enqueue(hubRoot, input = {}) {
   if (normalizedInput.metadata.acpProfile === "ui" && !normalizedInput.metadata.uiLaneReason) {
     throw new Error("ui profile requires a non-empty uiLaneReason in queue metadata");
   }
+
+  // Resolve agent config from hub + project + metadata overrides
+  const cpbRoot = normalizedInput.cwd || process.cwd();
+  const resolvedMeta = await resolveAgentsForEntry(hubRoot, cpbRoot, normalizedInput.projectId, normalizedInput.metadata);
+  normalizedInput.metadata = resolvedMeta;
 
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);

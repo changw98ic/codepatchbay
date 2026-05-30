@@ -1,43 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
+import { readHubConfig, writeHubConfig, readProjectConfig, writeProjectAgents, mergeAgentConfig } from "../../server/services/agent-config.js";
 
 function optionValue(args, name) {
   const idx = args.indexOf(name);
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
-}
-
-function parseAgents(agents, updates) {
-  const result = { ...agents };
-  if (updates.default !== undefined) result.default = updates.default || undefined;
-  if (updates.phases) {
-    result.phases = { ...result.phases, ...updates.phases };
-    // Remove null entries
-    for (const [k, v] of Object.entries(result.phases)) {
-      if (!v) delete result.phases[k];
-    }
-  }
-  // Clean up empty
-  if (!result.default) delete result.default;
-  if (!result.phases || Object.keys(result.phases).length === 0) delete result.phases;
-  return Object.keys(result).length > 0 ? result : null;
-}
-
-async function readProjectJson(cpbRoot, project) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-async function writeProjectJson(cpbRoot, project, data) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
 function parseRuleString(str) {
@@ -62,86 +29,192 @@ function parseRuleString(str) {
   return parts;
 }
 
+async function readProjectJson(cpbRoot, project) {
+  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeProjectJson(cpbRoot, project, data) {
+  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function displayAgents(config, label) {
+  if (!config || Object.keys(config).length === 0) {
+    console.log(`${label}: (no overrides)`);
+    return;
+  }
+  console.log(`${label}:`);
+  if (config.default) console.log(`  default: ${config.default}`);
+  if (config.phases) {
+    for (const [phase, agent] of Object.entries(config.phases)) {
+      const variant = config.variants?.[phase];
+      const tag = variant ? ` variant:${variant}` : "";
+      console.log(`  ${phase}: ${agent}${tag}`);
+    }
+  }
+}
+
+async function applyAgentUpdates(args, container, field, onSave) {
+  const defaultAgent = optionValue(args, "--agent");
+  const planAgent = optionValue(args, "--plan-agent");
+  const executeAgent = optionValue(args, "--execute-agent");
+  const verifyAgent = optionValue(args, "--verify-agent");
+  const reviewAgent = optionValue(args, "--review-agent");
+  const planVariant = optionValue(args, "--plan-variant");
+  const executeVariant = optionValue(args, "--execute-variant");
+  const verifyVariant = optionValue(args, "--verify-variant");
+  const reviewVariant = optionValue(args, "--review-variant");
+
+  const hasAgent = defaultAgent || planAgent || executeAgent || verifyAgent || reviewAgent;
+  const hasVariant = planVariant !== null || executeVariant !== null || verifyVariant !== null || reviewVariant !== null;
+  if (!hasAgent && !hasVariant) return false;
+
+  const agents = { ...(container[field] || {}) };
+
+  if (defaultAgent) agents.default = defaultAgent;
+  if (!agents.phases) agents.phases = {};
+  if (planAgent) agents.phases.plan = planAgent;
+  if (executeAgent) agents.phases.execute = executeAgent;
+  if (verifyAgent) agents.phases.verify = verifyAgent;
+  if (reviewAgent) agents.phases.review = reviewAgent;
+
+  // Clean empty phases
+  for (const [k, v] of Object.entries(agents.phases)) {
+    if (!v) delete agents.phases[k];
+  }
+  if (Object.keys(agents.phases).length === 0) delete agents.phases;
+
+  // Variants
+  if (hasVariant) {
+    if (!agents.variants) agents.variants = {};
+    if (planVariant !== null) {
+      if (planVariant) agents.variants.plan = planVariant;
+      else delete agents.variants.plan;
+    }
+    if (executeVariant !== null) {
+      if (executeVariant) agents.variants.execute = executeVariant;
+      else delete agents.variants.execute;
+    }
+    if (verifyVariant !== null) {
+      if (verifyVariant) agents.variants.verify = verifyVariant;
+      else delete agents.variants.verify;
+    }
+    if (reviewVariant !== null) {
+      if (reviewVariant) agents.variants.review = reviewVariant;
+      else delete agents.variants.review;
+    }
+    if (Object.keys(agents.variants).length === 0) delete agents.variants;
+  }
+
+  // Remove default if empty
+  if (!agents.default) delete agents.default;
+
+  container[field] = Object.keys(agents).length > 0 ? agents : undefined;
+  await onSave(container);
+  return true;
+}
+
 export async function run(args, { cpbRoot } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
-  cpb config <project> --agent <name>           Set default agent for all phases
-  cpb config <project> --plan-agent <name>      Set agent for plan phase
-  cpb config <project> --execute-agent <name>   Set agent for execute phase
-  cpb config <project> --verify-agent <name>    Set agent for verify phase
-  cpb config <project> --review-agent <name>    Set agent for review phase
-  cpb config <project> --agents                 Show current agent configuration
-  cpb config <project> --plan-model <profile>   Set model profile for plan phase
-  cpb config <project> --execute-model <profile> Set model profile for execute phase
-  cpb config <project> --verify-model <profile>  Set model profile for verify phase
-  cpb config <project> --review-model <profile>  Set model profile for review phase
-  cpb config <project> --instructions <text>    Set project-level agent instructions
-  cpb config <project> --clear-instructions     Remove project-level agent instructions
-  cpb config <project> --unset-agent            Remove all agent overrides
+  cpb config --hub --agent <name>                Set global default agent
+  cpb config --hub --plan-agent <name>           Set global agent for plan phase
+  cpb config --hub --execute-agent <name>        Set global agent for execute phase
+  cpb config --hub --verify-agent <name>         Set global agent for verify phase
+  cpb config --hub --plan-variant <variant>      Set global variant for plan phase
+  cpb config --hub --execute-variant <variant>   Set global variant for execute phase
+  cpb config --hub --verify-variant <variant>    Set global variant for verify phase
+  cpb config --hub --agents                      Show global agent config
+  cpb config --hub --unset-agent                 Remove global agent overrides
 
-  Automation:
-  cpb config <project> --automation-enabled <true|false>
-  cpb config <project> --automation-sync-interval <seconds>
-  cpb config <project> --automation-rule '<match.labels=enhancement;action.workflow=standard;action.priority=P2>'
-  cpb config <project> --automation-exclude-labels <label1,label2,...>
-  cpb config <project> --automation-clear-rules
-  cpb config <project> --show-automation`);
+  cpb config <project> --agent <name>            Set project default agent
+  cpb config <project> --plan-agent <name>       Set agent for plan phase
+  cpb config <project> --execute-agent <name>    Set agent for execute phase
+  cpb config <project> --verify-agent <name>     Set agent for verify phase
+  cpb config <project> --review-agent <name>     Set agent for review phase
+  cpb config <project> --plan-variant <variant>  Set variant for plan phase
+  cpb config <project> --execute-variant <v>     Set variant for execute phase
+  cpb config <project> --verify-variant <v>      Set variant for verify phase
+  cpb config <project> --review-variant <v>      Set variant for review phase
+  cpb config <project> --agents                  Show effective agent config (merged)
+  cpb config <project> --unset-agent             Remove project agent overrides
+
+  Variants: none (env default), mimo (Xiaomi MiMo), kimi (Moonshot Kimi)
+
+  Other:
+  cpb config <project> --plan-model <profile>    Set model profile for plan phase
+  cpb config <project> --instructions <text>      Set project-level agent instructions
+  cpb config <project> --clear-instructions       Remove project-level agent instructions
+  cpb config <project> --show-automation           Show automation config
+  cpb config <project> --automation-enabled <t|f>  Enable/disable automation
+  cpb config <project> --automation-rule '<...>'   Add automation rule`);
     return 0;
   }
 
-  const project = args.find((a) => !a.startsWith("-"));
-  if (!project) {
-    console.error("Usage: cpb config <project> [options]");
+  const isHub = args.includes("--hub");
+  if (!cpbRoot) cpbRoot = process.env.CPB_ROOT || process.cwd();
+  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+
+  // ── Hub-level config ──
+  if (isHub) {
+    const hubConfig = await readHubConfig(hubRoot);
+
+    if (args.includes("--agents")) {
+      displayAgents(hubConfig.agents, "Hub (global)");
+      return 0;
+    }
+
+    if (args.includes("--unset-agent")) {
+      delete hubConfig.agents;
+      await writeHubConfig(hubRoot, hubConfig);
+      console.log("Removed global agent overrides.");
+      return 0;
+    }
+
+    const applied = await applyAgentUpdates(args, hubConfig, "agents", async (data) => {
+      await writeHubConfig(hubRoot, data);
+      console.log("Updated global agent config.");
+    });
+    if (applied) return 0;
+
+    console.error("No configuration option specified. Use --agent, --*-variant, --agents, or --unset-agent.");
     return 1;
   }
 
-  if (!cpbRoot) cpbRoot = process.env.CPB_ROOT || process.cwd();
-  const data = await readProjectJson(cpbRoot, project);
+  // ── Project-level config ──
+  const project = args.find((a) => !a.startsWith("-"));
+  if (!project) {
+    console.error("Usage: cpb config --hub [options]  OR  cpb config <project> [options]");
+    return 1;
+  }
 
-  // Show current config
+  // Show merged agent config
   if (args.includes("--agents")) {
-    const agents = data.agents || {};
-    if (!agents.default && !agents.phases) {
-      console.log(`No agent overrides for project '${project}'. Using registry defaults.`);
-    } else {
-      console.log(`Agent config for project '${project}':`);
-      if (agents.default) console.log(`  default: ${agents.default}`);
-      if (agents.phases) {
-        for (const [phase, agent] of Object.entries(agents.phases)) {
-          const profile = agents.phaseProfiles?.[phase];
-          console.log(`  ${phase}: ${agent}${profile ? ` (model: ${profile})` : ""}`);
-        }
-      }
-      if (agents.phaseProfiles && !agents.phases) {
-        for (const [phase, profile] of Object.entries(agents.phaseProfiles)) {
-          console.log(`  ${phase} model: ${profile}`);
-        }
-      }
+    const hubConfig = await readHubConfig(hubRoot);
+    const projectAgents = await readProjectConfig(cpbRoot, project);
+    const merged = mergeAgentConfig(hubConfig.agents, projectAgents, null);
+    console.log(`Agent config for project '${project}' (merged):`);
+    for (const [role, spec] of Object.entries(merged)) {
+      const variantTag = spec.variant ? ` variant:${spec.variant}` : "";
+      console.log(`  ${role}: ${spec.agent}${variantTag}`);
     }
+    console.log(`\nSource: hub config + project config`);
     return 0;
   }
 
-  // Clear instructions
-  if (args.includes("--clear-instructions")) {
-    delete data.agentInstructions;
-    await writeProjectJson(cpbRoot, project, data);
-    console.log(`Cleared agent instructions for project '${project}'.`);
-    return 0;
-  }
-
-  // Unset agent overrides
-  if (args.includes("--unset-agent")) {
-    delete data.agents;
-    await writeProjectJson(cpbRoot, project, data);
-    console.log(`Removed agent overrides for project '${project}'. Using registry defaults.`);
-    return 0;
-  }
-
-  // ─── Automation config (#48) ───
+  // ─── Automation config ───
 
   if (args.includes("--show-automation")) {
-    const { resolveHubRoot, getProject } = await import("../../server/services/hub-registry.js");
-    const hubRoot = resolveHubRoot(cpbRoot);
+    const { getProject } = await import("../../server/services/hub-registry.js");
     const hubProject = await getProject(hubRoot, project);
     if (!hubProject?.github?.automation) {
       console.log(`No automation config for project '${project}'.`);
@@ -177,9 +250,7 @@ export async function run(args, { cpbRoot } = {}) {
   const clearRules = args.includes("--automation-clear-rules");
 
   if (automationEnabled !== null || syncInterval !== null || ruleStrings.length > 0 || excludeLabels !== null || clearRules) {
-    // Automation config lives in the hub registry (same place as github binding)
-    const { resolveHubRoot, getProject, updateProject } = await import("../../server/services/hub-registry.js");
-    const hubRoot = resolveHubRoot(cpbRoot);
+    const { getProject, updateProject } = await import("../../server/services/hub-registry.js");
     const hubProject = await getProject(hubRoot, project);
     if (!hubProject?.github) {
       console.error(`Project '${project}' has no GitHub binding. Run: cpb github bind ${project} <owner/repo>`);
@@ -214,6 +285,25 @@ export async function run(args, { cpbRoot } = {}) {
     return 0;
   }
 
+  // ─── Project-level agent + instructions config ───
+  const data = await readProjectJson(cpbRoot, project);
+
+  // Clear instructions
+  if (args.includes("--clear-instructions")) {
+    delete data.agentInstructions;
+    await writeProjectJson(cpbRoot, project, data);
+    console.log(`Cleared agent instructions for project '${project}'.`);
+    return 0;
+  }
+
+  // Unset agent overrides
+  if (args.includes("--unset-agent")) {
+    delete data.agents;
+    await writeProjectJson(cpbRoot, project, data);
+    console.log(`Removed agent overrides for project '${project}'. Using registry defaults.`);
+    return 0;
+  }
+
   // Set instructions
   const instructions = optionValue(args, "--instructions");
   if (instructions) {
@@ -223,12 +313,12 @@ export async function run(args, { cpbRoot } = {}) {
     return 0;
   }
 
-  // Set agent overrides
-  const defaultAgent = optionValue(args, "--agent");
-  const planAgent = optionValue(args, "--plan-agent");
-  const executeAgent = optionValue(args, "--execute-agent");
-  const verifyAgent = optionValue(args, "--verify-agent");
-  const reviewAgent = optionValue(args, "--review-agent");
+  // Set agent + variant overrides
+  const applied = await applyAgentUpdates(args, data, "agents", async (d) => {
+    await writeProjectJson(cpbRoot, project, d);
+    console.log(`Updated agent config for project '${project}'.`);
+  });
+  if (applied) return 0;
 
   // Set per-phase model profiles
   const planModel = optionValue(args, "--plan-model");
@@ -236,23 +326,6 @@ export async function run(args, { cpbRoot } = {}) {
   const verifyModel = optionValue(args, "--verify-model");
   const reviewModel = optionValue(args, "--review-model");
 
-  if (!defaultAgent && !planAgent && !executeAgent && !verifyAgent && !reviewAgent && !planModel && !executeModel && !verifyModel && !reviewModel) {
-    console.error("No configuration option specified. Use --agent, --plan-agent, --execute-agent, --verify-agent, --review-agent, --*-model, --instructions, or --agents.");
-    return 1;
-  }
-
-  const phaseUpdates = {};
-  if (planAgent) phaseUpdates.plan = planAgent;
-  if (executeAgent) phaseUpdates.execute = executeAgent;
-  if (verifyAgent) phaseUpdates.verify = verifyAgent;
-  if (reviewAgent) phaseUpdates.review = reviewAgent;
-
-  data.agents = parseAgents(data.agents || {}, {
-    default: defaultAgent,
-    phases: Object.keys(phaseUpdates).length > 0 ? phaseUpdates : undefined,
-  });
-
-  // Store per-phase model profiles
   if (planModel || executeModel || verifyModel || reviewModel) {
     if (!data.agents) data.agents = {};
     const profiles = { ...(data.agents.phaseProfiles || {}) };
@@ -260,14 +333,15 @@ export async function run(args, { cpbRoot } = {}) {
     if (executeModel) profiles.execute = executeModel;
     if (verifyModel) profiles.verify = verifyModel;
     if (reviewModel) profiles.review = reviewModel;
-    // Remove null entries
     for (const [k, v] of Object.entries(profiles)) {
       if (!v) delete profiles[k];
     }
     data.agents.phaseProfiles = Object.keys(profiles).length > 0 ? profiles : undefined;
+    await writeProjectJson(cpbRoot, project, data);
+    console.log(`Updated agent config for project '${project}'.`);
+    return 0;
   }
 
-  await writeProjectJson(cpbRoot, project, data);
-  console.log(`Updated agent config for project '${project}'.`);
-  return 0;
+  console.error("No configuration option specified. Use --agent, --*-agent, --*-variant, --*-model, --instructions, --agents, or --unset-agent.");
+  return 1;
 }
