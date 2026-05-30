@@ -30,7 +30,7 @@ function buildRequest(job, routingContext = null) {
     body: prBody(job, routingContext),
     head: job.worktreeBranch || null,
     base: job.worktreeBaseBranch || "main",
-    draft: false,
+    draft: true,
   };
 }
 
