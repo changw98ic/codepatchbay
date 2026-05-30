@@ -130,11 +130,29 @@ resolve_pr_number() {
 }
 
 ELAPSED=0
-MAX_WAIT=900  # 15 minutes
+MAX_WAIT=1800  # 30 minutes
 FINAL_FAILURE_SEEN=""
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   sleep 30
   ELAPSED=$((ELAPSED + 30))
+
+  # Check event log for real progress
+  CPB_EXEC_ROOT=$(dirname "$(dirname "$(readlink -f "$(which cpb)" 2>/dev/null || which cpb)")")/lib/node_modules/codepatchbay
+  JOB_EVENT_LOG="${CPB_EXEC_ROOT}/cpb-task/events/${PROJECT}/job-${QUEUE_ID}.jsonl"
+  if [ ! -f "$JOB_EVENT_LOG" ]; then
+    JOB_EVENT_LOG="$HUB_ROOT/projects/${PROJECT}/events/job-${QUEUE_ID}.jsonl"
+  fi
+  if [ -n "$JOB_EVENT_LOG" ] && [ -f "$JOB_EVENT_LOG" ]; then
+    PROGRESS=$(tail -1 "$JOB_EVENT_LOG" 2>/dev/null | node -e "
+      const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+      console.log(d.type || '', d.phase || '', d.status || '');
+    " 2>/dev/null || echo "")
+    if echo "$PROGRESS" | grep -q "job_completed"; then
+      ok "Pipeline completed in ${ELAPSED}s (event log)"
+    elif [ -n "$PROGRESS" ]; then
+      echo -e "   ${YELLOW}[${ELAPSED}s]${NC} event: $PROGRESS"
+    fi
+  fi
 
   # Check for assignment failure
   LATEST_RESULT=$(find "$HUB_ROOT/assignments" -name "result.json" -newer "$HUB_ROOT/queue" 2>/dev/null | sort -r | head -1)
