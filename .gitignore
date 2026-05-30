@@ -45,3 +45,6 @@ marketing/
 
 # Hyperframes video project
 hyperframes-video/
+
+.codegraph/
+CPB.md
