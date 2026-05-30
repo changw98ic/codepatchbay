@@ -3,6 +3,7 @@ import path from "node:path";
 import { buildMeta } from "../../core/job/meta.js";
 import { ensureIndexFresh } from "./index-freshness.js";
 import { resolveAgentsForEntry } from "./agent-config.js";
+import { getProject } from "./hub-registry.js";
 
 
 export const QUEUE_VERSION = 1;
@@ -175,6 +176,18 @@ export async function enqueue(hubRoot, input = {}) {
   const cpbRoot = normalizedInput.cwd || process.cwd();
   const resolvedMeta = await resolveAgentsForEntry(hubRoot, cpbRoot, normalizedInput.projectId, normalizedInput.metadata);
   normalizedInput.metadata = resolvedMeta;
+
+  // Resolve sourcePath from hub registry when not provided
+  if (!meta.sourcePath && normalizedInput.projectId) {
+    try {
+      const project = await getProject(hubRoot, normalizedInput.projectId);
+      if (project?.sourcePath) {
+        meta.sourcePath = project.sourcePath;
+        normalizedInput.sourcePath = project.sourcePath;
+        if (!normalizedInput.cwd) normalizedInput.cwd = project.sourcePath;
+      }
+    } catch { /* project not found in registry — keep null */ }
+  }
 
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);

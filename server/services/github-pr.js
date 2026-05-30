@@ -30,7 +30,7 @@ function buildRequest(job, routingContext = null) {
     body: prBody(job, routingContext),
     head: job.worktreeBranch || null,
     base: job.worktreeBaseBranch || "main",
-    draft: true,
+    draft: false,
   };
 }
 
@@ -160,7 +160,6 @@ export async function createPullRequestWithGh(request, { runCommand = execFileAs
     await writeFile(bodyFile, request.body || "", "utf8");
     const args = [
       "pr", "create",
-      "--draft",
       "--title", request.title,
       "--body-file", bodyFile,
       "--repo", request.repo,

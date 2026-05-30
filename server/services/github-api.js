@@ -129,7 +129,7 @@ export async function createPullRequestWithApi(request, config, { env = process.
       body: request.body,
       head: request.head,
       base: request.base,
-      draft: request.draft ?? true,
+      draft: request.draft ?? false,
     }),
   });
   return {

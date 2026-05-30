@@ -166,6 +166,8 @@ export function buildCodePatchBayPrBody({
   const reason = verdict.reason || "unavailable";
   const blocking = verdict.blockingCount ?? verdict.blocking?.length ?? "unavailable";
 
+  const closes = job.sourceContext?.issueNumber ? `\n\nCloses #${job.sourceContext.issueNumber}` : "";
+
   return [
     "## CodePatchBay Run",
     "",
@@ -211,5 +213,5 @@ export function buildCodePatchBayPrBody({
     `- Event log: ${valueOrUnavailable(audit.eventLog)}`,
     `- Artifact index: ${valueOrUnavailable(audit.artifactIndex)}`,
     "",
-  ].join("\n");
+  ].join("\n") + closes;
 }
