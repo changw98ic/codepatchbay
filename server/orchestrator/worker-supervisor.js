@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { mkdir } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { WorkerStore } from "./worker-store.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
@@ -26,6 +28,9 @@ export class WorkerSupervisor {
     const workerId = WorkerStore.makeWorkerId();
     const executorRoot = this.cpbRoot;
 
+    const logDir = path.join(this.hubRoot, "logs");
+    await mkdir(logDir, { recursive: true });
+    const logFd = await open(path.join(logDir, `worker-${workerId}.log`), "a");
     const child = spawn(process.execPath, [
       path.join(executorRoot, "runtime/worker/managed-worker.js"),
       "--worker-id", workerId,
@@ -35,7 +40,7 @@ export class WorkerSupervisor {
       cwd: this.cpbRoot,
       env: { ...process.env, CPB_ROOT: this.cpbRoot, CPB_HUB_ROOT: this.hubRoot },
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
     });
     child.unref();
 
