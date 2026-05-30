@@ -202,6 +202,7 @@ async function main() {
         clearInterval(assignmentHeartbeat);
 
         // Finalize: create PR + close issue if autoFinalize and job succeeded
+        let finalizeResult = null;
         if (autoFinalize && result.status === "completed" && worktreeInfo) {
           // Commit any uncommitted changes in the worktree before finalizing
           try {
@@ -262,6 +263,7 @@ async function main() {
           attemptToken: assignment.attemptToken,
           status: result.status,
           jobResult: result,
+          finalizeResult: finalizeResult || null,
           writtenAt: new Date().toISOString(),
         });
       } catch (err) {
