@@ -23,6 +23,7 @@ const DEFAULT_TIMEOUT_MS = 1_800_000;
 export async function runAgent({
   role,
   agent,
+  variant,
   project,
   prompt,
   cwd,
@@ -39,6 +40,7 @@ export async function runAgent({
       role,
       bypass: false,
       projectId: project,
+      variant,
       workspaceId: scope?.workspaceId,
       policyHash: scope?.policyHash,
     });

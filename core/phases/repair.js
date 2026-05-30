@@ -25,7 +25,7 @@ export async function runRepair(ctx) {
 
   const agentResult = await runAgent({
     role: "repairer",
-    agent: resolveAgent(ctx, "claude"),
+    ...resolveAgent(ctx, "claude"),
     project,
     prompt,
     cwd: sourcePath || cpbRoot,
@@ -121,5 +121,7 @@ Analyze the failure and apply fixes.`;
 }
 
 function resolveAgent(ctx, fallback) {
-  return ctx.agents?.repairer || ctx.agent || fallback;
+  const raw = ctx.agents?.repairer || ctx.agent || fallback;
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
+  return { agent: raw, variant: null };
 }

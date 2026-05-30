@@ -28,7 +28,7 @@ export async function runReview(ctx) {
 
   const agentResult = await runAgent({
     role: "reviewer",
-    agent: resolveAgent(ctx, "codex"),
+    ...resolveAgent(ctx, "codex"),
     project,
     prompt,
     cwd: sourcePath || cpbRoot,
@@ -113,5 +113,7 @@ ${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}`;
 }
 
 function resolveAgent(ctx, fallback) {
-  return ctx.agents?.reviewer || ctx.agent || fallback;
+  const raw = ctx.agents?.reviewer || ctx.agent || fallback;
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
+  return { agent: raw, variant: null };
 }

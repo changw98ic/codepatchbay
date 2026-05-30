@@ -28,7 +28,7 @@ export async function runVerify(ctx) {
 
   const agentResult = await runAgent({
     role: "verifier",
-    agent: resolveAgent(ctx, "codex"),
+    ...resolveAgent(ctx, "codex"),
     project,
     prompt,
     cwd: sourcePath || cpbRoot,
@@ -136,5 +136,7 @@ Check that the implementation correctly addresses the task requirements.`;
 }
 
 function resolveAgent(ctx, fallback) {
-  return ctx.agents?.verifier || ctx.agent || fallback;
+  const raw = ctx.agents?.verifier || ctx.agent || fallback;
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
+  return { agent: raw, variant: null };
 }

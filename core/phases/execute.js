@@ -39,7 +39,7 @@ export async function runExecute(ctx) {
 
   const agentResult = await runAgent({
     role: "executor",
-    agent: resolveAgent(ctx, "claude"),
+    ...resolveAgent(ctx, "claude"),
     project,
     prompt,
     cwd,
@@ -172,7 +172,9 @@ Execute the implementation. Make code changes as needed.`;
 }
 
 function resolveAgent(ctx, fallback) {
-  return ctx.agents?.executor || ctx.agent || fallback;
+  const raw = ctx.agents?.executor || ctx.agent || fallback;
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
+  return { agent: raw, variant: null };
 }
 
 export { getRequiredArtifact };

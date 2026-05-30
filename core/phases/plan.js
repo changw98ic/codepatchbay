@@ -26,7 +26,7 @@ export async function runPlan(ctx) {
 
   const agentResult = await runAgent({
     role: "planner",
-    agent: resolveAgent(ctx, "codex"),
+    ...resolveAgent(ctx, "codex"),
     project,
     prompt,
     cwd: sourcePath || cpbRoot,
@@ -112,5 +112,7 @@ The plan should include:
 }
 
 function resolveAgent(ctx, fallback) {
-  return ctx.agents?.planner || ctx.agent || fallback;
+  const raw = ctx.agents?.planner || ctx.agent || fallback;
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
+  return { agent: raw, variant: null };
 }

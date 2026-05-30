@@ -77,9 +77,12 @@ function variantNameFromProviderKey(providerKey, agent) {
   return providerKey.startsWith(prefix) ? providerKey.slice(prefix.length) : null;
 }
 
-function envForAgent(agent, env = {}) {
+function envForAgent(agent, env = {}, variant = null) {
   const next = { ...env };
-  if (agent === "claude") applyVariantToEnv(next);
+  if (agent === "claude") {
+    if (variant) next.CPB_CLAUDE_VARIANT = variant;
+    applyVariantToEnv(next);
+  }
   return next;
 }
 
@@ -584,19 +587,19 @@ export class AcpPool {
 
   #run(agent, prompt, cwd, timeoutMs, options = {}) {
     if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
-    if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs);
+    if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
     if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
-    return this.#runOneShot(agent, prompt, cwd, timeoutMs);
+    return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
   }
 
-  #runOneShot(agent, prompt, cwd, timeoutMs) {
+  #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
     const customClient = this.env.CPB_ACP_CLIENT;
     const clientPath = customClient || path.join(__dirname, "..", "bridges", "acp-client.mjs");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     return new Promise((resolve, reject) => {
       const env = buildChildEnv(
-        envForAgent(agent, this.env),
+        envForAgent(agent, this.env, options.variant),
         { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
         { agent },
       );
