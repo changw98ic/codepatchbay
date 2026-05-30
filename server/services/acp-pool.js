@@ -427,7 +427,8 @@ export class AcpPool {
     return path.join(this.hubRoot, "providers", "rate-limits.json");
   }
 
-  providerKey(agent) {
+  providerKey(agent, variant = null) {
+    if (variant && agent === "claude") return `claude:${variant}`;
     return providerKeyForAgent(agent, this.env);
   }
 
@@ -439,10 +440,10 @@ export class AcpPool {
     }
   }
 
-  async writeDurableRateLimit(agent, state) {
+  async writeDurableRateLimit(agent, state, variant = null) {
     const filePath = this.rateLimitFile();
     const current = await this.readDurableRateLimits();
-    const providerKey = this.providerKey(agent);
+    const providerKey = this.providerKey(agent, variant);
     current[providerKey] = {
       agent,
       providerKey,
@@ -457,9 +458,9 @@ export class AcpPool {
     await rename(tmp, filePath);
   }
 
-  async refreshRateLimit(agent) {
+  async refreshRateLimit(agent, variant = null) {
     const durable = await this.readDurableRateLimits();
-    const providerKey = this.providerKey(agent);
+    const providerKey = this.providerKey(agent, variant);
     const item = durable?.[providerKey];
     if (!item) return;
     const untilTs = Date.parse(item.untilTs);
@@ -468,18 +469,18 @@ export class AcpPool {
     }
   }
 
-  async noteRateLimit(agent, error) {
+  async noteRateLimit(agent, error, variant = null) {
     const untilTs = parseResetTime(error?.message || String(error || ""), this.backoffMs);
     const state = { untilTs, message: error?.message || String(error || "") };
-    const providerKey = this.providerKey(agent);
+    const providerKey = this.providerKey(agent, variant);
     this.rateLimitState.set(providerKey, state);
-    await this.writeDurableRateLimit(agent, state);
+    await this.writeDurableRateLimit(agent, state, variant);
     return untilTs;
   }
 
-  async assertNotRateLimited(agent) {
-    const providerKey = this.providerKey(agent);
-    await this.refreshRateLimit(agent);
+  async assertNotRateLimited(agent, variant = null) {
+    const providerKey = this.providerKey(agent, variant);
+    await this.refreshRateLimit(agent, variant);
     const state = this.rateLimitState.get(providerKey);
     if (state && Date.now() < state.untilTs) {
       throw new RateLimitError(providerKey, state.untilTs);
@@ -551,7 +552,7 @@ export class AcpPool {
     if (options.bypass) {
       return this.#run(agent, prompt, cwd, timeoutMs);
     }
-    if (!this.runner) await this.assertNotRateLimited(agent);
+    if (!this.runner) await this.assertNotRateLimited(agent, options.variant);
     const session = await this.acquire(agent);
     const lifecycle = await this.#prepareSession(agent);
     if (session.requestId) {
@@ -575,8 +576,8 @@ export class AcpPool {
       this.errorCount.set(agent, (this.errorCount.get(agent) || 0) + 1);
       if (is429(error)) {
         await this.#recycleSession(agent, "rate_limit");
-        const untilTs = await this.noteRateLimit(agent, error);
-        throw new RateLimitError(agent, untilTs, error.message);
+        const untilTs = await this.noteRateLimit(agent, error, options.variant);
+        throw new RateLimitError(this.providerKey(agent, options.variant), untilTs, error.message);
       }
       await this.#recycleSession(agent, "error");
       throw error;

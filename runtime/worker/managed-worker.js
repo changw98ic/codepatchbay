@@ -164,13 +164,15 @@ async function main() {
       let worktreeInfo = null;
       let effectiveSourcePath = assignment.sourcePath;
       const jobId = `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
+      // Use stable worktree ID (without attempt suffix) so retries reuse the same worktree
+      const worktreeJobId = `job-${assignment.entryId}`;
 
       if (autoFinalize) {
         try {
           const worktreesRoot = path.join(hubRoot, "worktrees");
           worktreeInfo = await createWorktree({
             project: assignment.sourcePath,
-            jobId,
+            jobId: worktreeJobId,
             slug: "pipeline",
             worktreesRoot,
           });
