@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import {
   MERGE_CLASSIFICATION,
+  normalizeMergePath,
   summarizeMergeFiles,
 } from "./merge-steward.js";
 import { appendEvent } from "./event-store.js";
@@ -347,6 +348,39 @@ function commitMessage({ jobId, issueNumber }) {
   ].join("\n");
 }
 
+/**
+ * Detect file-level conflicts when parallel finalizes race on the same source.
+ * Re-reads the source HEAD; if it advanced since `originalSourceHead`, computes
+ * the intersection of intervening changes with the worktree's changed files.
+ */
+export async function detectParallelConflict(
+  sourcePath,
+  originalSourceHead,
+  worktreeChangedFiles,
+  { runCommand = execFileAsync } = {},
+) {
+  const currentHead = await revParse(sourcePath, "HEAD", { runCommand });
+  if (currentHead === originalSourceHead) {
+    return { conflict: false, sourceAdvanced: false };
+  }
+
+  const interveningRaw = await diffFiles(sourcePath, originalSourceHead, currentHead, { runCommand });
+  const intervening = new Set(interveningRaw.map(normalizeMergePath));
+  const worktree = new Set(worktreeChangedFiles.map(normalizeMergePath));
+
+  const overlapping = [...worktree].filter((f) => intervening.has(f)).sort();
+
+  return {
+    conflict: overlapping.length > 0,
+    sourceAdvanced: true,
+    currentHead,
+    originalSourceHead,
+    interveningFiles: interveningRaw,
+    worktreeFiles: worktreeChangedFiles,
+    overlappingFiles: overlapping,
+  };
+}
+
 export async function finalizeSuccessfulQueueEntry({
   cpbRoot,
   project,
@@ -410,6 +444,49 @@ export async function finalizeSuccessfulQueueEntry({
   let committedFiles = [];
   if (worktreeHead !== sourceHead) {
     if (!(await isAncestor(canonicalWorktreePath, sourceHead, worktreeHead, { runCommand }))) {
+      // Source HEAD advanced since the worktree branched — likely a parallel finalize.
+      // Find the merge-base (= the commit the worktree was branched from) and
+      // run file-level conflict detection for actionable diagnostics.
+      const mbResult = await runGit(canonicalSourcePath, ["merge-base", sourceHead, worktreeHead], { allowFailure: true, runCommand });
+      if (mbResult.exitCode === 0) {
+        const baseCommit = mbResult.stdout.trim();
+        const worktreeFiles = [
+          ...uncommittedFiles,
+          ...(await diffFiles(canonicalWorktreePath, baseCommit, worktreeHead, { runCommand }).catch(() => [])),
+        ];
+        const conflictInfo = await detectParallelConflict(
+          canonicalSourcePath,
+          baseCommit,
+          worktreeFiles,
+          { runCommand },
+        ).catch(() => null);
+
+        if (conflictInfo?.sourceAdvanced) {
+          if (cpbRoot && projectId) {
+            await appendEvent(cpbRoot, projectId, jobId, {
+              type: "parallel_finalize_conflict",
+              jobId,
+              project: projectId,
+              conflict: conflictInfo.conflict,
+              originalSourceHead: baseCommit,
+              currentSourceHead: conflictInfo.currentHead,
+              overlappingFiles: conflictInfo.overlappingFiles,
+              interveningFiles: conflictInfo.interveningFiles,
+              ts: new Date().toISOString(),
+            }, { dataRoot }).catch(() => {});
+          }
+          return reject(conflictInfo.conflict ? "PARALLEL_FILE_CONFLICT" : "SOURCE_ADVANCED_NO_CONFLICT", {
+            issue,
+            jobId,
+            originalSourceHead: baseCommit,
+            currentSourceHead: conflictInfo.currentHead,
+            overlappingFiles: conflictInfo.overlappingFiles,
+            interveningFiles: conflictInfo.interveningFiles,
+            retryable: true,
+          });
+        }
+      }
+
       return reject("WORKTREE_NOT_DESCENDANT", {
         issue,
         jobId,
