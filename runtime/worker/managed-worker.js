@@ -163,7 +163,7 @@ async function main() {
       const autoFinalize = Boolean(metadata.autoFinalize && assignment.sourcePath);
       let worktreeInfo = null;
       let effectiveSourcePath = assignment.sourcePath;
-      const jobId = `job-${assignment.entryId}`;
+      const jobId = `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
 
       if (autoFinalize) {
         try {
