@@ -324,6 +324,12 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
     throw new Error(`branch already has a different worktree: ${branch}`);
   }
 
+  // If branch exists but worktree was removed (stale branch), clean it up first
+  const branchCheck = await git(path.resolve(project), ["rev-parse", "--verify", `refs/heads/${branch}`]);
+  if (branchCheck.code === 0) {
+    await mustGit(path.resolve(project), ["branch", "-D", branch]);
+  }
+
   await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
 
   return { branch, path: worktreePath };
