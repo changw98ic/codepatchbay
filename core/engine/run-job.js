@@ -122,6 +122,7 @@ export async function runJob(ctx) {
       state,
       previousResults: phaseResults,
       agent: ctx.agent,
+      agents: ctx.agents,
       timeouts: {
         plan: Math.min(timeoutMs, 600_000),
         execute: timeoutMs,

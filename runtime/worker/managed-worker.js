@@ -195,6 +195,8 @@ async function main() {
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
           timeoutMin: 60,
+          agent: metadata.agent || null,
+          agents: metadata.agents || null,
         });
 
         clearInterval(assignmentHeartbeat);
