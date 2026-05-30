@@ -1,6 +1,7 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 
-const CPB_VERSION = "0.3.0";
+const CPB_VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 export { CPB_VERSION };
 
