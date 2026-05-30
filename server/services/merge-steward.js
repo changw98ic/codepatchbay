@@ -72,7 +72,7 @@ async function pathExists(targetPath) {
   }
 }
 
-function normalizeMergePath(filePath) {
+export function normalizeMergePath(filePath) {
   return String(filePath || "")
     .replaceAll("\\", "/")
     .replace(/^\.\/+/, "")
