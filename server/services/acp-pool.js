@@ -21,7 +21,8 @@ export function poolClientKey(agent, options = {}) {
   const workspaceId = options.workspaceId || "";
   const cwd = options.cwd || "";
   const policyHash = options.policyHash || "";
-  return [agent, role, projectId, workspaceId, cwd, policyHash].join("::");
+  const variant = options.variant || "";
+  return [agent, role, projectId, workspaceId, cwd, policyHash, variant].join("::");
 }
 
 async function getRegistry() {
@@ -647,13 +648,13 @@ export class AcpPool {
     const prior = this.persistentChains.get(key) || Promise.resolve();
     const run = prior
       .catch(() => null)
-      .then(() => this.#runPersistentNow(key, agent, prompt, cwd, timeoutMs));
+      .then(() => this.#runPersistentNow(key, agent, prompt, cwd, timeoutMs, options));
     this.persistentChains.set(key, run.catch(() => null));
     return run;
   }
 
-  async #runPersistentNow(key, agent, prompt, cwd, timeoutMs) {
-    const persistent = await this.#getPersistentClient(key, agent, cwd);
+  async #runPersistentNow(key, agent, prompt, cwd, timeoutMs, options = {}) {
+    const persistent = await this.#getPersistentClient(key, agent, cwd, options.variant);
     const client = persistent.client;
     const previousOutputSink = client.outputSink;
     const previousErrorSink = client.errorSink;
@@ -695,7 +696,7 @@ export class AcpPool {
     }
   }
 
-  async #getPersistentClient(key, agent, cwd) {
+  async #getPersistentClient(key, agent, cwd, variant = null) {
     const existing = this.persistentClients.get(key);
     if (existing && !existing.client.closed) return existing;
     if (existing) this.persistentClients.delete(key);
@@ -718,7 +719,7 @@ export class AcpPool {
       outputSink: () => {},
       errorSink: () => {},
       env: buildChildEnv(
-        envForAgent(agent, this.env),
+        envForAgent(agent, this.env, variant),
         { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
         { agent },
       ),
