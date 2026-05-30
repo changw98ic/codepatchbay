@@ -67,6 +67,22 @@ export async function cmdStart() {
     const check = await readHubLiveness(hubRoot);
     if (check.alive) {
       console.log(`Hub started on http://${host}:${port} (pid: ${check.pid})`);
+      // Auto-start Hub Orchestrator
+      try {
+        const orchLogFd = openSync(path.join(hubRoot, "orchestrator.log"), "a");
+        const orchChild = spawn(process.execPath, [
+          path.join(executorRoot, "cli", "cpb.mjs"), "hub-orch", "start",
+        ], {
+          cwd: cpbRoot,
+          env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot, port, host }),
+          detached: true,
+          stdio: ["ignore", orchLogFd, orchLogFd],
+        });
+        orchChild.unref();
+        console.log(`Orchestrator started (pid: ${orchChild.pid})`);
+      } catch (e) {
+        console.error(`Orchestrator start failed: ${e.message}`);
+      }
       // Auto-start CodeRAG MCP server
       try {
         const { run: coderagRun } = await import("../../cli/commands/coderag.js");
@@ -97,6 +113,15 @@ export async function cmdStop() {
   }
 
   process.kill(liveness.pid, "SIGTERM");
+
+  // Auto-stop Hub Orchestrator
+  try {
+    const { cpbRoot: r1, hubRoot: h1 } = resolveRoots();
+    const { HubOrchestrator } = await import("../orchestrator/hub-orchestrator.js");
+    const orch = new HubOrchestrator(h1, r1);
+    await orch.stop();
+    console.log("Orchestrator stopped");
+  } catch {}
 
   // Auto-stop CodeRAG MCP server
   try {
