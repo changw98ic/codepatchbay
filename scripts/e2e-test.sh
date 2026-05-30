@@ -131,9 +131,32 @@ resolve_pr_number() {
 
 ELAPSED=0
 MAX_WAIT=900  # 15 minutes
+FINAL_FAILURE_SEEN=""
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
   sleep 30
   ELAPSED=$((ELAPSED + 30))
+
+  # Check for assignment failure
+  LATEST_RESULT=$(find "$HUB_ROOT/assignments" -name "result.json" -newer "$HUB_ROOT/queue" 2>/dev/null | sort -r | head -1)
+  if [ -n "$LATEST_RESULT" ]; then
+    RESULT_STATUS=$(node -e "const d=JSON.parse(require('fs').readFileSync('$LATEST_RESULT','utf8')); console.log(d.status)" 2>/dev/null || echo "unknown")
+    if [ "$RESULT_STATUS" = "failed" ]; then
+      FAIL_REASON=$(node -e "
+        const d=JSON.parse(require('fs').readFileSync('$LATEST_RESULT','utf8'));
+        const f = d.jobResult?.failure || {};
+        console.log(f.kind || 'unknown', f.phase || '', f.reason || '');
+      " 2>/dev/null || echo "unknown failure")
+      echo -e "   ${YELLOW}[${ELAPSED}s]${NC} attempt failed: $FAIL_REASON"
+      # Check if all attempts exhausted (3 attempts = final failure)
+      ATTEMPT_COUNT=$(find "$HUB_ROOT/assignments" -name "result.json" -newer "$HUB_ROOT/queue" 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$ATTEMPT_COUNT" -ge 3 ]; then
+        FINAL_FAILURE_SEEN="$FAIL_REASON (all $ATTEMPT_COUNT attempts failed)"
+        break
+      fi
+      # Otherwise keep waiting — orchestrator may retry
+      continue
+    fi
+  fi
 
   # Check if worker log shows finalize
   WORKER_LOG=$(ls -t "$HUB_ROOT/logs"/worker-*.log 2>/dev/null | head -1)
@@ -160,6 +183,14 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     fail "Pipeline did not complete within ${MAX_WAIT}s"
   fi
 done
+
+# Handle early exit on failure
+if [ -n "$FINAL_FAILURE_SEEN" ]; then
+  fail "Pipeline failed: $FINAL_FAILURE_SEEN"
+fi
+if [ -z "$PR_NUMBER" ] || [ -z "$PR_URL" ]; then
+  fail "Pipeline completed but no PR was created"
+fi
 
 # ── 5. Verify PR ────────────────────────────────────────────────────────
 step "5/7 Verifying PR #$PR_NUMBER..."
