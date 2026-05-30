@@ -18,7 +18,7 @@ export class AssignmentStore {
    * Idempotent: creates assignment on first call, updates mutable fields on retry/reroute.
    * Preserves attempt history (counter + attempt directories) across retries.
    */
-  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext }) {
+  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext, metadata }) {
     const id = `a-${entryId}`;
     const dir = path.join(this.baseDir, id);
 
@@ -33,6 +33,7 @@ export class AssignmentStore {
         sourceContext: { ...existing.sourceContext, ...(sourceContext || {}) },
         task: task || existing.task,
         sourcePath: sourcePath || existing.sourcePath,
+        metadata: { ...existing.metadata, ...(metadata || {}) },
         // Reset scheduling state for new attempt
         status: "scheduled",
         resultWrittenAt: null,
@@ -57,6 +58,7 @@ export class AssignmentStore {
       workflow: workflow || "standard",
       planMode: planMode || "full",
       sourceContext: sourceContext || {},
+      metadata: metadata || {},
       status: "scheduled",
       createdAt: new Date().toISOString(),
       // P0-3 fix: finalization tracking

@@ -148,6 +148,7 @@ export class HubOrchestrator {
       workflow: candidate.metadata?.workflow || "standard",
       planMode: candidate.metadata?.planMode || "full",
       sourceContext: candidate.metadata?.sourceContext || {},
+      metadata: candidate.metadata || {},
     });
 
     // Find idle worker or start a new one (P0-1 fix: always proceeds even if no idle worker)
@@ -178,6 +179,7 @@ export class HubOrchestrator {
       workflow: assignment.workflow,
       planMode: assignment.planMode,
       sourceContext: assignment.sourceContext,
+      metadata: assignment.metadata || {},
       attempt: attempt.attempt,
       attemptToken: attempt.attemptToken,
       orchestratorEpoch: attempt.orchestratorEpoch,

@@ -7,10 +7,17 @@
  * Can run independently of Hub parent process (file-based communication).
  */
 
-import { readFile, mkdir, writeFile, readdir, unlink, rename } from "node:fs/promises";
+import { readFile, mkdir, writeFile, readdir, unlink, rename, rm } from "node:fs/promises";
+import { execFile as _execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import chokidar from "chokidar";
 import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.js";
+import { createWorktree } from "../git/worktree.js";
+import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
+import { resolveGithubTransport } from "../../server/services/github-api.js";
+
+const execFileAsync = promisify(_execFile);
 
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
@@ -151,6 +158,29 @@ async function main() {
         } catch { /* ignore */ }
       }, HEARTBEAT_MS);
 
+      // Create worktree for isolation when autoFinalize is requested
+      const metadata = assignment.metadata || {};
+      const autoFinalize = Boolean(metadata.autoFinalize && assignment.sourcePath);
+      let worktreeInfo = null;
+      let effectiveSourcePath = assignment.sourcePath;
+      const jobId = `job-${assignment.entryId}`;
+
+      if (autoFinalize) {
+        try {
+          const worktreesRoot = path.join(hubRoot, "worktrees");
+          worktreeInfo = await createWorktree({
+            project: assignment.sourcePath,
+            jobId,
+            slug: "pipeline",
+            worktreesRoot,
+          });
+          effectiveSourcePath = worktreeInfo.path;
+          process.stderr.write(`[worker-${workerId}] worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}\n`);
+        } catch (err) {
+          process.stderr.write(`[worker-${workerId}] worktree creation failed: ${err.message}, using source path directly\n`);
+        }
+      }
+
       // Run job via bridge (service injection + sourcePath resolution)
       try {
         const result = await runJobWithServices({
@@ -158,16 +188,62 @@ async function main() {
           hubRoot,
           project: assignment.projectId,
           task: assignment.task,
-          jobId: `job-${assignment.entryId}`,
+          jobId,
           workflow: assignment.workflow || "standard",
           planMode: assignment.planMode || "full",
-          sourcePath: assignment.sourcePath,
+          sourcePath: effectiveSourcePath,
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
           timeoutMin: 60,
         });
 
         clearInterval(assignmentHeartbeat);
+
+        // Finalize: create PR + close issue if autoFinalize and job succeeded
+        if (autoFinalize && result.status === "completed" && worktreeInfo) {
+          try {
+            const transport = await resolveGithubTransport(hubRoot);
+            const entry = {
+              id: assignment.entryId,
+              projectId: assignment.projectId,
+              description: assignment.task,
+              metadata,
+            };
+            const job = {
+              status: "completed",
+              worktree: worktreeInfo.path,
+              jobId,
+              project: assignment.projectId,
+              sourceContext: assignment.sourceContext || {},
+              worktreeBranch: worktreeInfo.branch,
+              task: assignment.task,
+              planMode: assignment.planMode,
+            };
+
+            const finalizeResult = await finalizeSuccessfulQueueEntry({
+              cpbRoot,
+              hubRoot,
+              project: assignment.projectId,
+              entry,
+              job,
+              sourcePath: assignment.sourcePath,
+              mode: "pr",
+              issueCloser: transport?.closeIssue || null,
+              createPullRequest: transport?.createPullRequest || null,
+              pushToken: transport?.getToken ? await transport.getToken().catch(() => null) : null,
+              transportMode: transport?.mode || null,
+            });
+
+            if (finalizeResult.ok) {
+              process.stderr.write(`[worker-${workerId}] finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}\n`);
+            } else {
+              process.stderr.write(`[worker-${workerId}] finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}\n`);
+            }
+          } catch (err) {
+            process.stderr.write(`[worker-${workerId}] finalize failed: ${err.message}\n`);
+          }
+        }
+
         await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
@@ -189,6 +265,17 @@ async function main() {
           },
           writtenAt: new Date().toISOString(),
         });
+      } finally {
+        // Cleanup worktree regardless of outcome
+        if (worktreeInfo && assignment.sourcePath) {
+          try {
+            await execFileAsync("git", ["worktree", "remove", "--force", worktreeInfo.path], {
+              cwd: assignment.sourcePath,
+              maxBuffer: 10 * 1024 * 1024,
+            });
+          } catch {}
+          try { await rm(worktreeInfo.path, { recursive: true, force: true }); } catch {}
+        }
       }
 
       // Remove inbox entry (now in processing dir)
