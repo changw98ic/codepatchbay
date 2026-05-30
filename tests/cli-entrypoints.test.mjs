@@ -589,7 +589,7 @@ test("all cli/commands/*.js files are either routed or intentionally internal", 
     "inbox.js", "outputs.js", "doctor.js", "health-check.js", "setup.js", "agents.js", "auth.js", "github.js", "reconcile.js",
     "run.js", "wiki.js", "ui.js", "version.js", "release-select.js", "install-bin.js",
     "cancel-redirect.js", "merge-preview.js", "audit.js", "config.js", "provider.js", "quickstart.js", "model-profile.js",
-    "coderag.js", "profile.js", "hub-orch.js",
+    "codegraph.js", "profile.js", "hub-orch.js",
   ]);
 
   for (const file of jsFiles) {

@@ -109,10 +109,10 @@ function configureAgentRoute() {
 
 // ─── Step 1: Stop everything ───────────────────────────────────────
 function stepStop() {
-  log("STOP", "Stopping hub, daemon, and coderag...");
+  log("STOP", "Stopping hub, daemon, and codegraph...");
   run("cpb hub stop", { allowFail: true, silent: true });
   run("cpb daemon stop", { allowFail: true, silent: true });
-  run("cpb coderag stop", { allowFail: true, silent: true });
+  run("cpb codegraph stop", { allowFail: true, silent: true });
   // Kill leftover codex-acp processes from previous sessions
   try { execSync(`pkill -f "codex-acp.*plugins" 2>/dev/null || true`, { stdio: "pipe" }); } catch {}
   pass("Stopped all services");
@@ -139,7 +139,7 @@ function stepClean() {
     path.join(projectRuntime, "graph"),
     path.join(CPB_ROOT, "cpb-task", "daemon"),
     path.join(CPB_ROOT, "cpb-task", "event-sources"),
-    path.join(CPB_ROOT, "cpb-task", "coderag-state.json"),
+    path.join(CPB_ROOT, "cpb-task", "codegraph-state.json"),
     path.join(CPB_ROOT, "cpb-task", "worktrees"),
   ];
   const files = [

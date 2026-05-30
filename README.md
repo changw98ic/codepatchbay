@@ -194,7 +194,7 @@ cpb github doctor [--json]
 # Hub 与守护进程
 cpb hub [status|start|stop|projects|...]
 cpb daemon [start|status|stop]
-cpb coderag [status|start|stop]
+cpb codegraph [status|start|stop]
 
 # 设置与诊断
 cpb demo [--json]

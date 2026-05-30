@@ -35,7 +35,7 @@ function usage() {
   console.log(`  ${CYAN}attach${NC} [path] [name]                  Attach project to Hub`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
   console.log(`  ${CYAN}daemon${NC} [start|status|stop]             Queue worker daemon`);
-  console.log(`  ${CYAN}coderag${NC} [status|start|stop]           CodeRAG MCP server`);
+  console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
   console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
@@ -137,7 +137,8 @@ const COMMANDS = {
   "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",
   audit: "audit.js",
-  coderag: "coderag.js",
+  coderag: "codegraph.js",
+  codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
 };
 

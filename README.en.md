@@ -194,7 +194,7 @@ cpb github doctor [--json]
 # Hub & daemon
 cpb hub [status|start|stop|projects|...]
 cpb daemon [start|status|stop]
-cpb coderag [status|start|stop]
+cpb codegraph [status|start|stop]
 
 # Setup & diagnostics
 cpb demo [--json]

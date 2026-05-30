@@ -2,27 +2,34 @@ import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { resolve, dirname } from "path";
 
-const PORT = parseInt(process.env.CPB_CODERAG_PORT || "3100", 10);
+const PORT = parseInt(process.env.CPB_CODEGRAPH_PORT || "3100", 10);
 const CODEBASE_ROOT = process.env.CPB_CODEBASE_ROOT || process.cwd();
 
 const STATE_FILE = resolve(
   process.env.CPB_ROOT || resolve(dirname(import.meta.url.replace("file://", "")), "../.."),
   "cpb-task",
-  "coderag-state.json"
+  "codegraph-state.json"
 );
 
 let proc = null;
 
+function resolveMcpStdioCommand() {
+  if (process.env.CPB_CODEGRAPH_MCP_STDIO) return process.env.CPB_CODEGRAPH_MCP_STDIO;
+  return "codegraph mcp";
+}
+
 export async function start() {
   if (proc) {
-    console.error("[coderag] already running");
+    console.error("[codegraph] already running");
     return;
   }
 
-  // supergateway wraps coderag-mcp stdio -> SSE in one process
+  const mcpStdio = resolveMcpStdioCommand();
+
+  // supergateway wraps codegraph MCP stdio -> SSE in one process
   proc = spawn("npx", [
     "-y", "supergateway",
-    "--stdio", "npx -y @sylphx/coderag-mcp",
+    "--stdio", mcpStdio,
     "--port", String(PORT),
     "--ssePath", "/sse",
     "--messagePath", "/message",
@@ -35,11 +42,11 @@ export async function start() {
   proc.stdout?.on("data", () => {}); // drain
   proc.stderr?.on("data", (d) => {
     const msg = d.toString().trim();
-    if (msg) console.error(`[coderag] ${msg}`);
+    if (msg) console.error(`[codegraph] ${msg}`);
   });
 
   proc.on("exit", (code) => {
-    console.error(`[coderag] exited code=${code}`);
+    console.error(`[codegraph] exited code=${code}`);
     proc = null;
   });
 
@@ -51,10 +58,11 @@ export async function start() {
     port: PORT,
     codebaseRoot: CODEBASE_ROOT,
     sseUrl: `http://localhost:${PORT}/sse`,
+    mcpStdio,
     startedAt: new Date().toISOString(),
   }));
 
-  console.error(`[coderag-launcher] SSE on http://localhost:${PORT}/sse (pid=${proc.pid})`);
+  console.error(`[codegraph-launcher] SSE on http://localhost:${PORT}/sse (pid=${proc.pid})`);
 }
 
 export async function stop() {
@@ -64,7 +72,7 @@ export async function stop() {
       const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
       if (state.pid) {
         try { process.kill(state.pid, "SIGTERM"); } catch {}
-        console.error(`[coderag] killed pid=${state.pid}`);
+        console.error(`[codegraph] killed pid=${state.pid}`);
       }
     } catch {}
     try { unlinkSync(STATE_FILE); } catch {}
@@ -78,7 +86,7 @@ export async function stop() {
   if (existsSync(STATE_FILE)) {
     try { unlinkSync(STATE_FILE); } catch {}
   }
-  console.error("[coderag-launcher] stopped");
+  console.error("[codegraph-launcher] stopped");
 }
 
 export function status() {
@@ -92,6 +100,7 @@ export function status() {
     codebaseRoot: CODEBASE_ROOT,
     sseUrl: `http://localhost:${PORT}/sse`,
     pid: proc?.pid || stateFile?.pid,
+    mcpStdio: resolveMcpStdioCommand(),
     stateFile: STATE_FILE,
   };
 }

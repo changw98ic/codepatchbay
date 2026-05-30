@@ -195,7 +195,7 @@ async function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }) {
     ...executorEnv(process.env, { cpbRoot, executorRoot }),
     CPB_ACP_CWD: cwd || cpbRoot,
     CPB_ACP_TIMEOUT_MS: String(timeoutMs),
-    CPB_CODERAG_ENABLED: "0",
+    CPB_CODEGRAPH_ENABLED: "0",
   };
   // CPB_PROJECT_RUNTIME_ROOT leaks per-project runtime state into the
   // preflight child process and can crash the Claude ACP adapter.

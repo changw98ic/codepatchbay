@@ -374,13 +374,13 @@ export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
     : null;
 }
 
-function resolveCoderagSseUrl(env) {
-  if (env.CPB_CODERAG_ENABLED === "0") return null;
+function resolveCodegraphSseUrl(env) {
+  if (env.CPB_CODEGRAPH_ENABLED === "0") return null;
 
   const cpbRoot = env.CPB_ROOT || env.CPB_ACP_CPB_ROOT;
   let sseUrl;
   if (cpbRoot) {
-    const stateFile = path.join(cpbRoot, "cpb-task", "coderag-state.json");
+    const stateFile = path.join(cpbRoot, "cpb-task", "codegraph-state.json");
     if (existsSync(stateFile)) {
       try {
         const state = JSON.parse(readFileSync(stateFile, "utf8"));
@@ -389,17 +389,17 @@ function resolveCoderagSseUrl(env) {
     }
   }
   if (!sseUrl) {
-    const port = parseInt(env.CPB_CODERAG_PORT || "3100", 10);
+    const port = parseInt(env.CPB_CODEGRAPH_PORT || "3100", 10);
     sseUrl = `http://localhost:${port}/sse`;
   }
   return sseUrl;
 }
 
-function codexCoderagMcpServers(env) {
-  const sseUrl = resolveCoderagSseUrl(env);
+function codexCodegraphMcpServers(env) {
+  const sseUrl = resolveCodegraphSseUrl(env);
   if (!sseUrl) return [];
   return [{
-    name: "coderag",
+    name: "codegraph",
     command: "npx",
     args: ["-y", "supergateway", "--sse", sseUrl],
   }];
@@ -412,19 +412,19 @@ function isCodexAcpCommand(command, args = []) {
 }
 
 function buildMcpServers(agent, env) {
-  const sseUrl = resolveCoderagSseUrl(env);
+  const sseUrl = resolveCodegraphSseUrl(env);
   if (!sseUrl) return [];
 
   // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
-  // CodeRAG through process-local launch config instead.
+  // CodeGraph through process-local launch config instead.
   if (agent === "codex") return [];
 
-  return [{ name: "coderag", type: "sse", url: sseUrl }];
+  return [{ name: "codegraph", type: "sse", url: sseUrl }];
 }
 
 function codexMcpConfigArgs(env) {
   const args = [];
-  for (const server of codexCoderagMcpServers(env)) {
+  for (const server of codexCodegraphMcpServers(env)) {
     if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
     const prefix = `mcp_servers.${server.name}`;
     args.push("-c", `${prefix}.command=${JSON.stringify(server.command)}`);

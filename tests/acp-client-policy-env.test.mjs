@@ -115,7 +115,7 @@ describe("ACP client policy env snapshot", () => {
     }
   });
 
-  it("injects built-in CodeRAG as Codex config instead of ACP session mcpServers", async () => {
+  it("injects built-in CodeGraph as Codex config instead of ACP session mcpServers", async () => {
     await withTempCpbRoot(async (root) => {
       const resolved = await resolveAgentCommand("codex", {
         PATH: process.env.PATH || "",
@@ -123,20 +123,20 @@ describe("ACP client policy env snapshot", () => {
         CPB_ACP_CODEX_COMMAND: "codex-acp",
       });
 
-      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.coderag.command"), '"npx"');
-      const coderagArgs = codexConfigArgs(resolved.args, "mcp_servers.coderag.args");
-      assert.ok(coderagArgs);
-      assert.match(coderagArgs, /"supergateway"/);
-      assert.match(coderagArgs, /"--sse"/);
-      assert.match(coderagArgs, /"http:\/\/localhost:3100\/sse"/);
+      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.codegraph.command"), '"npx"');
+      const codegraphArgs = codexConfigArgs(resolved.args, "mcp_servers.codegraph.args");
+      assert.ok(codegraphArgs);
+      assert.match(codegraphArgs, /"supergateway"/);
+      assert.match(codegraphArgs, /"--sse"/);
+      assert.match(codegraphArgs, /"http:\/\/localhost:3100\/sse"/);
     });
   });
 
-  it("uses the CodeRAG launcher state URL for Codex MCP config", async () => {
+  it("uses the CodeGraph launcher state URL for Codex MCP config", async () => {
     await withTempCpbRoot(async (root) => {
       await mkdir(path.join(root, "cpb-task"), { recursive: true });
       await writeFile(
-        path.join(root, "cpb-task", "coderag-state.json"),
+        path.join(root, "cpb-task", "codegraph-state.json"),
         JSON.stringify({ sseUrl: "http://127.0.0.1:4321/sse" }),
       );
 
@@ -146,27 +146,27 @@ describe("ACP client policy env snapshot", () => {
         CPB_ACP_CODEX_COMMAND: "codex-acp",
       });
 
-      const coderagArgs = codexConfigArgs(resolved.args, "mcp_servers.coderag.args");
-      assert.ok(coderagArgs);
-      assert.match(coderagArgs, /"http:\/\/127.0.0.1:4321\/sse"/);
+      const codegraphArgs = codexConfigArgs(resolved.args, "mcp_servers.codegraph.args");
+      assert.ok(codegraphArgs);
+      assert.match(codegraphArgs, /"http:\/\/127.0.0.1:4321\/sse"/);
     });
   });
 
-  it("honors CPB_CODERAG_ENABLED=0 for Codex MCP config injection", async () => {
+  it("honors CPB_CODEGRAPH_ENABLED=0 for Codex MCP config injection", async () => {
     await withTempCpbRoot(async (root) => {
       const resolved = await resolveAgentCommand("codex", {
         PATH: process.env.PATH || "",
         CPB_ROOT: root,
-        CPB_CODERAG_ENABLED: "0",
+        CPB_CODEGRAPH_ENABLED: "0",
         CPB_ACP_CODEX_COMMAND: "codex-acp",
       });
 
-      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.coderag.command"), null);
-      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.coderag.args"), null);
+      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.codegraph.command"), null);
+      assert.equal(codexConfigArgs(resolved.args, "mcp_servers.codegraph.args"), null);
     });
   });
 
-  it("keeps Codex ACP session/new mcpServers empty while CodeRAG is enabled", async () => {
+  it("keeps Codex ACP session/new mcpServers empty while CodeGraph is enabled", async () => {
     await withTempCpbRoot(async (root) => {
       const agentPath = path.join(root, "fake-codex-agent.mjs");
       const paramsPath = path.join(root, "session-new.json");

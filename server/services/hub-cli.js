@@ -83,12 +83,12 @@ export async function cmdStart() {
       } catch (e) {
         console.error(`Orchestrator start failed: ${e.message}`);
       }
-      // Auto-start CodeRAG MCP server
+      // Auto-start CodeGraph MCP server
       try {
-        const { run: coderagRun } = await import("../../cli/commands/coderag.js");
-        await coderagRun(["start"], { cpbRoot, executorRoot });
+        const { run: codegraphRun } = await import("../../cli/commands/codegraph.js");
+        await codegraphRun(["start"], { cpbRoot, executorRoot });
       } catch (e) {
-        console.error(`CodeRAG start failed: ${e.message}`);
+        console.error(`CodeGraph start failed: ${e.message}`);
       }
       return;
     }
@@ -123,11 +123,11 @@ export async function cmdStop() {
     console.log("Orchestrator stopped");
   } catch {}
 
-  // Auto-stop CodeRAG MCP server
+  // Auto-stop CodeGraph MCP server
   try {
     const { cpbRoot: r2, executorRoot: e2 } = resolveRoots();
-    const { run: coderagRun } = await import("../../cli/commands/coderag.js");
-    await coderagRun(["stop"], { cpbRoot: r2, executorRoot: e2 });
+    const { run: codegraphRun } = await import("../../cli/commands/codegraph.js");
+    await codegraphRun(["stop"], { cpbRoot: r2, executorRoot: e2 });
   } catch {}
 
   for (let i = 0; i < 50; i++) {
