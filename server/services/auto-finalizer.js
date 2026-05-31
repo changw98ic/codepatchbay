@@ -60,6 +60,21 @@ async function assertClean(repoPath, { runCommand } = {}) {
   return status.stdout.trim() === "";
 }
 
+async function autoStash(repoPath, { runCommand } = {}) {
+  try {
+    await runGit(repoPath, ["stash", "push", "--include-untracked", "-m", "cpb-auto-stash"], { runCommand });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stashPop(repoPath, { runCommand } = {}) {
+  try {
+    await runGit(repoPath, ["stash", "pop"], { runCommand, allowFailure: true });
+  } catch { /* ignore */ }
+}
+
 async function currentBranch(repoPath, { runCommand } = {}) {
   return (await runGit(repoPath, ["branch", "--show-current"], { runCommand })).stdout.trim();
 }
@@ -424,9 +439,15 @@ export async function finalizeSuccessfulQueueEntry({
     return reject("SOURCE_NOT_GIT_REPO", { jobId });
   }
 
+  let stashedBeforeFinalize = false;
   if (!(await assertClean(canonicalSourcePath, { runCommand }))) {
-    return reject("SOURCE_NOT_CLEAN", { jobId });
+    stashedBeforeFinalize = await autoStash(canonicalSourcePath, { runCommand });
+    if (!stashedBeforeFinalize) {
+      return reject("SOURCE_NOT_CLEAN", { jobId });
+    }
   }
+
+  try {
 
   if (!(await isGitRepo(canonicalWorktreePath, { runCommand }))) {
     return reject("WORKTREE_NOT_GIT_REPO", { jobId });
@@ -716,4 +737,10 @@ export async function finalizeSuccessfulQueueEntry({
     pushed,
     closed,
   };
+
+  } finally {
+    if (stashedBeforeFinalize) {
+      await stashPop(canonicalSourcePath, { runCommand });
+    }
+  }
 }

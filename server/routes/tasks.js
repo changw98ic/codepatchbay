@@ -1,6 +1,6 @@
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks } from '../services/executor.js';
-import { requestCancelJob, requestRedirectJob } from '../services/job-store.js';
+import { requestCancelJob, requestRedirectJob, retryJob } from '../services/job-store.js';
 import { enqueue } from '../services/hub-queue.js';
 import { getProject } from '../services/hub-registry.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
@@ -121,5 +121,15 @@ export async function taskRoutes(fastify, opts) {
     const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason, dataRoot });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
+  });
+
+  // Retry a failed/cancelled job
+  fastify.post('/tasks/:name/retry/:jobId', async (req) => {
+    const { name, jobId } = req.params;
+    const { force = false } = req.body || {};
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const result = await retryJob(dataRoot, jobId, { force });
+    broadcast({ type: 'job:retried', project: name, jobId, recoveryJobId: result?.jobId });
+    return result;
   });
 }

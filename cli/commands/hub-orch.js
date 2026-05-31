@@ -21,8 +21,10 @@ async function handleHubOrchCommand(args) {
       return listWorkers(hubRoot);
     case "assignments":
       return listAssignments(hubRoot);
+    case "retry":
+      return retryJob(args.slice(1));
     default:
-      console.log(`Usage: cpb hub-orch <start|status|stop|workers|assignments>`);
+      console.log(`Usage: cpb hub-orch <start|status|stop|workers|assignments|retry>`);
       return 1;
   }
 }
@@ -93,4 +95,26 @@ async function listAssignments(hubRoot) {
     console.log(`${a.assignmentId}  ${a.status}  project=${a.projectId}  entry=${a.entryId}`);
   }
   return 0;
+}
+
+async function retryJob([project, jobId, ...flags]) {
+  if (!project || !jobId) {
+    console.error("Usage: cpb hub-orch retry <project> <jobId> [--force]");
+    return 1;
+  }
+  const hubRoot = resolveHubRoot(process.env.CPB_ROOT || process.cwd());
+  const force = flags.includes("--force");
+
+  try {
+    const { retryJob: doRetry } = await import("../../server/services/job-store.js");
+    const { getProject } = await import("../../server/services/hub-registry.js");
+    const proj = await getProject(hubRoot, project);
+    const dataRoot = proj?.projectRuntimeRoot || undefined;
+    const result = await doRetry(dataRoot, jobId, { force });
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  } catch (err) {
+    console.error(`Retry failed: ${err.message}`);
+    return 1;
+  }
 }
