@@ -1,12 +1,5 @@
 import { execSync } from "node:child_process";
-
-const HIGH_RISK_PATTERNS = [
-  { pattern: /\b(?:secret|api[_-]?key|password|token|credential)\b/i, reason: "involves secrets or credentials" },
-  { pattern: /\b(?:auth(?:entication|orization)?)\b/i, reason: "modifies authentication or authorization" },
-  { pattern: /\b(?:drop[_\s-]?table|delete\s+from|truncate\b|\bdestroy\b)/i, reason: "potentially destructive database operation" },
-  { pattern: /\b(?:migration|schema\s+change)\b/i, reason: "database schema migration" },
-  { pattern: /\b(?:public\s+api|breaking\s+change|deprecat)/i, reason: "affects public API surface" },
-];
+import { HIGH_RISK_PATTERNS } from "../../core/policy/high-risk-approval.js";
 
 /**
  * Check whether an issue passes all guarded-repair policy checks.

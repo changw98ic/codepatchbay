@@ -20,6 +20,8 @@ import {
   markExited as markProcessExited,
   addChildPid,
 } from "../server/services/process-registry.js";
+import { classifyRisk, requiresApproval } from "../core/policy/high-risk-approval.js";
+import { requestApprovalGate, approveGate } from "../server/services/approval-gate.js";
 
 const rawArgs = process.argv.slice(2);
 
@@ -273,6 +275,60 @@ async function main() {
     await cancelJob(cpbRoot, project, jobId, { reason: jobBefore.cancelReason ?? "cancelled before phase start" });
     console.error(`cancelled before phase ${phase}`);
     return 1;
+  }
+
+  // High-risk approval gate: classify risk and wait for approval if needed
+  const risk = classifyRisk(jobBefore.task || "", {
+    workflow: jobBefore.workflow,
+    planMode: jobBefore.planMode,
+  });
+  const approval = requiresApproval(risk, null, phase);
+  if (approval.required) {
+    // If job is already in waiting.approval and not yet approved, poll
+    if (jobBefore.status === "waiting.approval") {
+      const pollMs = positiveIntegerFromEnv("CPB_APPROVAL_POLL_MS", 5_000);
+      const timeoutMs = positiveIntegerFromEnv("CPB_APPROVAL_TIMEOUT_MS", approval.timeoutMinutes * 60_000);
+      const deadline = Date.now() + timeoutMs;
+      console.error(`[job-runner] waiting for approval on high-risk ${phase} (${risk.level}): ${approval.reason}`);
+
+      let approved = false;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, Math.min(pollMs, deadline - Date.now())));
+        const current = await getJob(cpbRoot, project, jobId);
+        if (current.cancelRequested) {
+          await cancelJob(cpbRoot, project, jobId, { reason: current.cancelReason ?? "cancelled while waiting for approval" });
+          console.error(`cancelled while waiting for approval on ${phase}`);
+          return 1;
+        }
+        if (current.status !== "waiting.approval") {
+          approved = true;
+          break;
+        }
+      }
+
+      if (!approved) {
+        console.error(`[job-runner] approval timed out for ${jobId}/${phase}`);
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "approval_timed_out",
+          jobId,
+          project,
+          phase,
+          reason: `approval timed out after ${Math.round(timeoutMs / 60_000)} minutes`,
+          ts: eventTimestamp(),
+        });
+        return 1;
+      }
+    } else if (jobBefore.status !== "running" && jobBefore.status !== "waiting.approval") {
+      // Request approval for a job that hasn't been gated yet
+      await requestApprovalGate(cpbRoot, project, jobId, {
+        operation: phase,
+        phase,
+        reason: approval.reason,
+        timeoutAt: new Date(Date.now() + approval.timeoutMinutes * 60_000).toISOString(),
+      });
+      console.error(`[job-runner] approval required for high-risk ${phase}: ${approval.reason}`);
+      return 1; // Exit so the supervisor loop re-dispatches after approval
+    }
   }
 
   async function ensureMarkedExited(exitCode) {

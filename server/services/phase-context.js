@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event-store.js";
 import { readFilteredCodeIndexSummary } from "./project-code-index.js";
+import { classifyRisk, riskSummary } from "../../core/policy/high-risk-approval.js";
 
 const DEFAULT_MAX_BYTES = 8192;
 
@@ -52,6 +53,12 @@ export async function buildPhaseContextPacket(
   // 6. Build readInstructions based on phase and available paths
   const readInstructions = buildReadInstructions(locator, job, phase);
 
+  // 7. Risk classification for supervisor context policy
+  const risk = classifyRisk(job.task || "", {
+    workflow: job.workflow,
+    planMode: job.planMode,
+  });
+
   // --- Assemble the mandatory (never-clipped) skeleton ---
   const packet = {
     schemaVersion: 1,
@@ -65,6 +72,12 @@ export async function buildPhaseContextPacket(
     completedPhases,
     sourceContext,
     readInstructions,
+    highRisk: {
+      level: risk.level,
+      summary: riskSummary(risk),
+      reasons: risk.reasons,
+      matchedPatterns: risk.matchedPatterns,
+    },
     budget: { maxBytes, actualBytes: 0, clipped: false },
   };
 

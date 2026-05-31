@@ -1,4 +1,5 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
+import { classifyRisk, buildSupervisorContext } from "../../core/policy/high-risk-approval.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -33,7 +34,15 @@ export class AcpSupervisor {
       return null; // Return null so FailureRouter falls through to deterministic routing
     }
 
-    const prompt = buildDiagnosisPrompt({ assignment, attempt, result });
+    // Build supervisor context from risk classification
+    const task = assignment.task || "";
+    const risk = classifyRisk(task, {
+      workflow: assignment.workflow,
+      planMode: assignment.planMode,
+    });
+    const supervisorCtx = buildSupervisorContext(risk, { failurePhase: result?.jobResult?.failure?.phase });
+
+    const prompt = buildDiagnosisPrompt({ assignment, attempt, result, supervisorCtx });
 
     try {
       const output = await pool.execute(
@@ -74,15 +83,28 @@ export class AcpSupervisor {
   }
 }
 
-function buildDiagnosisPrompt({ assignment, attempt, result }) {
+function buildDiagnosisPrompt({ assignment, attempt, result, supervisorCtx }) {
   const failure = result.jobResult?.failure || result.failure || {};
+
+  // Build supervisor context section if risk is elevated
+  let supervisorCtxSection = "";
+  if (supervisorCtx && supervisorCtx.riskLevel !== "low") {
+    const hints = supervisorCtx.supervisorHints.map((h) => `- ${h}`).join("\n");
+    supervisorCtxSection = `
+## Supervisor Context Policy (MANDATORY — this is a ${supervisorCtx.riskLevel}-risk task)
+Risk reasons: ${supervisorCtx.riskReasons.join("; ")}
+Matched patterns: ${supervisorCtx.matchedPatterns.join(", ")}
+${hints}
+`;
+  }
+
   return `You are the CPB Supervisor Agent. Diagnose this failure and recommend an action.
 
 ## Assignment
 - Project: ${assignment.projectId}
 - Task: ${(assignment.task || "").slice(0, 200)}
 - Workflow: ${assignment.workflow} / ${assignment.planMode}
-
+${supervisorCtxSection}
 ## Failure
 - Kind: ${failure.kind}
 - Phase: ${failure.phase || "unknown"}
