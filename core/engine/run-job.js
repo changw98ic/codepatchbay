@@ -98,7 +98,7 @@ export async function runJob(ctx) {
   const phaseResults = [];
   const state = { planId: null, deliverableId: null };
 
-  const timeoutMs = (timeoutMin || 60) * 60_000;
+  const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
 
   for (const phase of phases) {
     await appendEvent(cpbRoot, project, jobId, {
@@ -124,9 +124,11 @@ export async function runJob(ctx) {
       agent: ctx.agent,
       agents: ctx.agents,
       timeouts: {
-        plan: 0,
-        execute: 0,
-        verify: 0,
+        plan: envTimeout,
+        execute: envTimeout,
+        verify: envTimeout,
+        review: envTimeout,
+        repair: envTimeout,
       },
     });
 

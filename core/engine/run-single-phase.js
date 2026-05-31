@@ -169,6 +169,8 @@ export async function runSinglePhase(phase, opts) {
   });
 
   // Run the phase
+  const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
+
   const result = await runPhase({
     phase,
     project,
@@ -182,11 +184,11 @@ export async function runSinglePhase(phase, opts) {
     previousResults,
     agent,
     timeouts: {
-      plan: 0,
-      execute: 0,
-      verify: 0,
-      review: 0,
-      repair: 0,
+      plan: envTimeout,
+      execute: envTimeout,
+      verify: envTimeout,
+      review: envTimeout,
+      repair: envTimeout,
     },
   });
 
