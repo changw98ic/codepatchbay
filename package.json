@@ -25,7 +25,7 @@
     "web/dist/",
     "scripts/",
     "README.md",
-    "docs/demo.md"
+    "docs/"
   ],
   "engines": {
     "node": ">=20.0.0"

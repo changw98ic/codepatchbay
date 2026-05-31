@@ -1,9 +1,10 @@
-import { readdir, access, constants, mkdir, rm } from "node:fs/promises";
+import { readdir, access, constants, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { listProviders, loadProvider } from "../../core/agents/drivers/browser/provider-loader.mjs";
 import { LoginRequiredError } from "../../core/agents/drivers/browser/profile-schema.mjs";
+import { BrowserAgentLoginRequiredError } from "../../core/agents/drivers/browser/errors.mjs";
 
 const CYAN = "\x1b[0;36m";
 const GREEN = "\x1b[0;32m";
@@ -20,11 +21,18 @@ function isJson(args) {
 
 async function profileExists(providerName) {
   try {
-    await access(path.join(PROFILE_ROOT, providerName, "profile-0"), constants.F_OK);
-    return true;
+    const statePath = path.join(PROFILE_ROOT, providerName, "profile-0", "state.json");
+    await access(statePath, constants.F_OK);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    return state.status === "ready";
   } catch {
     return false;
   }
+}
+
+async function writeProfileState(providerName) {
+  const statePath = path.join(PROFILE_ROOT, providerName, "profile-0", "state.json");
+  await writeFile(statePath, JSON.stringify({ status: "ready", readyAt: new Date().toISOString() }, null, 2));
 }
 
 function formatMinutes(ms) {
@@ -125,6 +133,7 @@ async function cmdLogin(args) {
 
     try {
       await page.waitForSelector(provider.auth.readyCheck.selector, { timeout: 60000 });
+      await writeProfileState(providerName);
       console.log(`Login detected for ${providerName}!`);
     } catch {
       console.log(`Timeout waiting for login. You can retry with: cpb browser login ${providerName}`);
@@ -167,7 +176,7 @@ async function cmdTest(args) {
       timeoutMs: 120000,
     });
   } catch (err) {
-    if (err instanceof LoginRequiredError) {
+    if (err instanceof LoginRequiredError || err instanceof BrowserAgentLoginRequiredError) {
       console.error(JSON.stringify({ ok: false, provider: providerName, error: "login required" }));
       return 1;
     }

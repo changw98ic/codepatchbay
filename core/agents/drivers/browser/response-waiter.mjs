@@ -1,4 +1,6 @@
-async function checkSelectorVisible(page, selector, timeoutMs = 5000) {
+import { BrowserAgentTimeoutError } from "./errors.mjs"
+
+export async function checkSelectorVisible(page, selector, timeoutMs = 5000) {
   try {
     await page.waitForSelector(selector, { state: "visible", timeout: timeoutMs })
     return true
@@ -7,7 +9,7 @@ async function checkSelectorVisible(page, selector, timeoutMs = 5000) {
   }
 }
 
-async function checkSelectorHidden(page, selector, timeoutMs = 5000) {
+export async function checkSelectorHidden(page, selector, timeoutMs = 5000) {
   try {
     await page.waitForSelector(selector, { state: "hidden", timeout: timeoutMs })
     return true
@@ -94,12 +96,10 @@ export async function waitForFinalResponse(page, provider, options = {}) {
   const deadline = startTime + maxWait
   let resultText = ""
   let continueClicks = 0
-  let stopObserved = false
 
   while (Date.now() < deadline) {
     if (signal?.aborted) {
-      stopObserved = true
-      break
+      throw new Error("Aborted")
     }
 
     await page.waitForTimeout(pollInterval)
@@ -125,7 +125,7 @@ export async function waitForFinalResponse(page, provider, options = {}) {
   }
 
   if (!resultText) {
-    resultText = await getLastMessageText(page, provider)
+    throw new BrowserAgentTimeoutError(maxWait, `Response did not stabilize within ${maxWait}ms`)
   }
 
   const elapsedMs = Date.now() - startTime
@@ -136,6 +136,5 @@ export async function waitForFinalResponse(page, provider, options = {}) {
     elapsedMs,
     stableRounds,
     continueClicks,
-    stopObserved,
   }
 }

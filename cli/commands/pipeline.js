@@ -1,4 +1,5 @@
 import path from "node:path";
+import { buildAgentMetadata } from "./run.js";
 
 export async function run(args, { cpbRoot, executorRoot }) {
   const interactive = args[0] === "--interactive";
@@ -113,12 +114,17 @@ export async function run(args, { cpbRoot, executorRoot }) {
       repo: repo || registered?.github?.fullName || null,
       issueTitle: task,
       requestedAt: new Date().toISOString(),
-      agents: {
-        planner: { agent: planAgent || agent, variant: planVariant },
-        executor: { agent: executeAgent || agent, variant: executeVariant },
-        verifier: { agent: verifyAgent || agent, variant: verifyVariant },
-        reviewer: { agent: reviewAgent || agent, variant: reviewVariant },
-      },
+      agents: buildAgentMetadata({
+        agent,
+        planAgent,
+        executeAgent,
+        verifyAgent,
+        reviewAgent,
+        planVariant,
+        executeVariant,
+        verifyVariant,
+        reviewVariant,
+      }),
     },
   });
 

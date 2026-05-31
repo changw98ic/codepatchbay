@@ -53,10 +53,15 @@ export async function writeProjectAgents(cpbRoot, project, agents) {
 
 // ── Merge: resolve effective agents config ──
 
-function normalizeAgentSpec(raw) {
+export function normalizeAgentSpec(raw) {
   if (!raw) return null;
   if (typeof raw === "object" && raw !== null) {
-    return { agent: raw.agent || "claude", variant: raw.variant || null };
+    const agentStr = raw.agent || "";
+    if (agentStr.includes(":")) {
+      const [agent, variant] = agentStr.split(":", 2);
+      return { agent, variant: variant || raw.variant || null };
+    }
+    return { agent: agentStr || "claude", variant: raw.variant || null };
   }
   // String: "claude", "claude:mimo", "codex"
   const colonIdx = String(raw).indexOf(":");
@@ -147,18 +152,22 @@ export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
 
   // 3. Queue metadata overrides (highest priority)
   if (metadataAgents) {
-    const metaSpec = normalizeAgentSpec(metadataAgents);
-    if (metaSpec) {
-      for (const role of ["planner", "executor", "verifier", "reviewer"]) {
-        merged[role] = { ...metaSpec };
-      }
-    } else if (typeof metadataAgents === "object") {
+    if (typeof metadataAgents === "object" && !metadataAgents.agent) {
+      // Per-role object: { planner: { agent: "...", variant: "..." }, ... }
       for (const [key, raw] of Object.entries(metadataAgents)) {
         if (key === "default") continue;
         const spec = normalizeAgentSpec(raw);
         if (spec) {
           const role = PHASE_TO_ROLE[key] || key;
           merged[role] = spec;
+        }
+      }
+    } else {
+      // Single spec (string or object with .agent)
+      const metaSpec = normalizeAgentSpec(metadataAgents);
+      if (metaSpec) {
+        for (const role of ["planner", "executor", "verifier", "reviewer"]) {
+          merged[role] = { ...metaSpec };
         }
       }
     }

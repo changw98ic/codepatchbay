@@ -55,13 +55,13 @@ function resolveProviderName(env = process.env) {
 
 async function mapErrorToJsonRpc(error) {
   const { LoginRequiredError, ProviderProfileError } = await getSchema();
-  if (error instanceof LoginRequiredError) {
+  if (error instanceof LoginRequiredError || error.name === "BrowserAgentLoginRequiredError") {
     return { code: -32001, message: `login required: ${error.message}` };
   }
   if (error instanceof ProviderProfileError) {
     return { code: -32002, message: `provider profile error: ${error.message}` };
   }
-  if (error instanceof TimeoutError) {
+  if (error instanceof TimeoutError || error.name === "BrowserAgentTimeoutError") {
     return { code: -32003, message: `timeout: ${error.message}` };
   }
   return { code: -32000, message: error.message || "internal error" };

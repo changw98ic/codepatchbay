@@ -83,7 +83,6 @@ describe("response-waiter: waitForFinalResponse", () => {
     const provider = makeProvider();
     const result = await waitForFinalResponse(page, provider, { timeoutMs: 30000 });
     assert.equal(result.text, "final answer");
-    assert.equal(result.stopObserved, false);
     assert.ok(result.elapsedMs >= 0);
   });
 
@@ -133,7 +132,7 @@ describe("response-waiter: waitForFinalResponse", () => {
     assert.equal(result.text, "send enabled result");
   });
 
-  it("times out and returns last text", async () => {
+  it("times out and throws BrowserAgentTimeoutError when text does not stabilize", async () => {
     const page = makeMockPage({
       locatorResults: {
         ".message": makeMockLocator({ count: 1, innerText: "partial" }),
@@ -147,12 +146,13 @@ describe("response-waiter: waitForFinalResponse", () => {
         doneWhen: [{ type: "text-stable", rounds: 99 }], // Never stable
       },
     });
-    const result = await waitForFinalResponse(page, provider, { timeoutMs: 100 });
-    assert.equal(result.text, "partial");
-    assert.ok(result.elapsedMs < 500);
+    await assert.rejects(
+      async () => waitForFinalResponse(page, provider, { timeoutMs: 100 }),
+      (err) => err.name === "BrowserAgentTimeoutError" && err.code === "TIMEOUT"
+    );
   });
 
-  it("observes stopObserved=true when signal is aborted", async () => {
+  it("throws Aborted when signal is aborted", async () => {
     const page = makeMockPage({
       locatorResults: {
         ".message": makeMockLocator({ count: 1, innerText: "aborted" }),
@@ -169,9 +169,7 @@ describe("response-waiter: waitForFinalResponse", () => {
     const controller = new AbortController();
     const promise = waitForFinalResponse(page, provider, { signal: controller.signal, timeoutMs: 5000 });
     controller.abort();
-    const result = await promise;
-    assert.equal(result.text, "aborted");
-    assert.equal(result.stopObserved, true);
+    await assert.rejects(async () => promise, (err) => err.message === "Aborted");
   });
 
   it("counts continue clicks when continue is enabled", async () => {

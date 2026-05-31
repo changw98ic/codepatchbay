@@ -16,6 +16,38 @@ Options:
   --help               Show this help`;
 }
 
+export function buildAgentMetadata({
+  agent,
+  planAgent,
+  executeAgent,
+  verifyAgent,
+  reviewAgent,
+  planVariant,
+  executeVariant,
+  verifyVariant,
+  reviewVariant,
+}) {
+  const result = {};
+  const roles = [
+    ["planner", planAgent, planVariant],
+    ["executor", executeAgent, executeVariant],
+    ["verifier", verifyAgent, verifyVariant],
+    ["reviewer", reviewAgent, reviewVariant],
+  ];
+  let hasAny = false;
+  for (const [role, roleAgent, roleVariant] of roles) {
+    const effectiveAgent = roleAgent || agent;
+    if (effectiveAgent || roleVariant) {
+      hasAny = true;
+      result[role] = {
+        agent: effectiveAgent || undefined,
+        variant: roleVariant || undefined,
+      };
+    }
+  }
+  return hasAny ? result : undefined;
+}
+
 export async function run(args, { cpbRoot, executorRoot }) {
   const positional = [];
   let projectId;
@@ -142,12 +174,17 @@ export async function run(args, { cpbRoot, executorRoot }) {
       agent: agent || undefined,
       model: model || undefined,
       requestedAt: new Date().toISOString(),
-      agents: {
-        planner: { agent: planAgent || agent, variant: planVariant },
-        executor: { agent: executeAgent || agent, variant: executeVariant },
-        verifier: { agent: verifyAgent || agent, variant: verifyVariant },
-        reviewer: { agent: reviewAgent || agent, variant: reviewVariant },
-      },
+      agents: buildAgentMetadata({
+        agent,
+        planAgent,
+        executeAgent,
+        verifyAgent,
+        reviewAgent,
+        planVariant,
+        executeVariant,
+        verifyVariant,
+        reviewVariant,
+      }),
     },
   });
 
