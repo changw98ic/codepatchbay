@@ -18,6 +18,19 @@ export function validateDeliverable(content, ctx) {
   return { ok: true };
 }
 
+export function validateContextPack(artifact) {
+  if (!artifact || typeof artifact !== "object") {
+    return { ok: false, reason: "context pack is not an object" };
+  }
+  if (!Array.isArray(artifact.files)) {
+    return { ok: false, reason: "context pack must have a files array" };
+  }
+  if (!artifact.graphStats || typeof artifact.graphStats !== "object") {
+    return { ok: false, reason: "context pack must have graphStats" };
+  }
+  return { ok: true };
+}
+
 export function validateVerdict(verdict) {
   if (!verdict || typeof verdict !== "object") {
     return { ok: false, reason: "verdict is not an object" };

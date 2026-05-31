@@ -108,6 +108,35 @@ export interface Artifact {
   type: string;
   path: string;
   verdict?: 'PASS' | 'FAIL' | 'PARTIAL';
+  schemaVersion?: number;
+  id?: string;
+  bytes?: number;
+  sha256?: string;
+  project?: string;
+  jobId?: string;
+  phase?: string | null;
+  producerAgent?: string | null;
+  createdAt?: string;
+}
+
+export interface ContextPack {
+  schemaVersion: number;
+  kind: 'context-pack';
+  id: string;
+  name: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  project: string;
+  jobId?: string | null;
+  phase?: string | null;
+  producerAgent?: string | null;
+  createdAt: string;
+  task?: string | null;
+  target?: string | null;
+  files: string[];
+  edges: { from: string; to: string; kind: string }[];
+  graphStats: { nodeCount: number; edgeCount: number; symbolCount?: number } | null;
 }
 
 export interface Agent {

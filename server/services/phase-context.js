@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event-store.js";
 import { readFilteredCodeIndexSummary } from "./project-code-index.js";
+import { getLatestContextPack } from "./context-pack-service.js";
 
 const DEFAULT_MAX_BYTES = 8192;
 
@@ -51,6 +52,23 @@ export async function buildPhaseContextPacket(
 
   // 6. Build readInstructions based on phase and available paths
   const readInstructions = buildReadInstructions(locator, job, phase);
+
+  // 6b. Optional: context-pack reference (budget-gated, locator only ~100 bytes)
+  let contextPackPath = null;
+  try {
+    const sourceProject = sourceContext ? { id: project, sourcePath: sourceContext } : null;
+    if (sourceProject) {
+      const pack = await getLatestContextPack(sourceProject, { hubRoot: options.hubRoot });
+      if (pack?.path) {
+        contextPackPath = pack.path;
+      }
+    }
+  } catch {
+    // Context pack not available — skip silently
+  }
+  if (contextPackPath) {
+    readInstructions.push(`Read context pack: ${contextPackPath}`);
+  }
 
   // --- Assemble the mandatory (never-clipped) skeleton ---
   const packet = {

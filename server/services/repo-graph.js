@@ -358,23 +358,41 @@ function renderContextPack({ project, graph, task, target, files }) {
   return `${lines.join("\n")}\n`;
 }
 
-export async function generateContextPack(project, { hubRoot, task = "", target = null, limit = DEFAULT_CONTEXT_FILE_LIMIT } = {}) {
+export async function generateContextPack(project, { hubRoot, task = "", target = null, limit = DEFAULT_CONTEXT_FILE_LIMIT, jobId = null, producerAgent = null } = {}) {
   const graph = await ensureRepoGraph(project, { hubRoot, refresh: true });
   const files = selectContextFiles(graph, project, { task, target, limit });
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const contextDir = contextPackDirForProject(project, hubRoot);
   const contextPath = path.join(contextDir, `context-pack-${ts}.md`);
-  await writeAtomic(contextPath, renderContextPack({ project, graph, task, target, files }));
+  const content = renderContextPack({ project, graph, task, target, files });
+  await writeAtomic(contextPath, content);
+
+  const fileSet = new Set(files);
+  const relevantEdges = (graph.edges || []).filter((edge) => fileSet.has(edge.from) || fileSet.has(edge.to));
+
   return {
     status: "ready",
     projectId: project.id,
     graphPath: graph.graphPath,
     stats: graph.stats,
     contextPack: {
+      schemaVersion: 2,
+      kind: "context-pack",
+      id: ts,
+      name: `context-pack-${ts}`,
       path: contextPath,
+      bytes: Buffer.byteLength(content, "utf8"),
+      sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+      project: project.id,
+      jobId,
+      phase: null,
+      producerAgent,
+      createdAt: new Date().toISOString(),
       task,
       target,
       files,
+      edges: relevantEdges.slice(0, 30).map((e) => ({ from: e.from, to: e.to, kind: e.kind })),
+      graphStats: graph.stats || null,
       graphPath: graph.graphPath,
     },
   };

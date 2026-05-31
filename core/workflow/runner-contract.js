@@ -1,4 +1,4 @@
-export const BOUNDARY_VERSION = "1.0.0";
+export const BOUNDARY_VERSION = "1.1.0";
 
 export const CONTRACT = {
   jobInput: {
@@ -7,6 +7,7 @@ export const CONTRACT = {
   artifactOutput: {
     description: "Runner produces artifacts written to the project output directory",
     required: ["kind", "path", "sha256", "createdAt", "producerAgent"],
+    recommended: ["schemaVersion", "id", "name", "bytes", "project", "jobId"],
   },
   eventStream: {
     description: "Runner emits structured events to the job event log",

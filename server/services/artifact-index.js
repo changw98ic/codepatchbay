@@ -3,8 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { readEvents } from "./event-store.js";
 
-const SCHEMA_VERSION = 1;
-const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "diff", "tests", "risk", "pr"]);
+const SCHEMA_VERSION = 2;
+const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "diff", "tests", "risk", "pr", "context-pack"]);
 
 function wikiProjectDir(cpbRoot, project, wikiDir) {
   if (wikiDir) return path.resolve(wikiDir);
@@ -41,6 +41,7 @@ function inferKind(event, artifact) {
   if (/^tests-/i.test(name)) return "tests";
   if (/^risk-/i.test(name)) return "risk";
   if (/^pr-/i.test(name)) return "pr";
+  if (/^context-pack-/i.test(name)) return "context-pack";
 
   if (event.phase === "plan") return "plan";
   if (event.phase === "execute") return "deliverable";
@@ -53,10 +54,15 @@ function artifactIdFor(artifact) {
   return withoutKnownExtension(basename(artifact));
 }
 
+function contextPackDir(cpbRoot, project, wikiDir) {
+  return path.join(wikiProjectDir(cpbRoot, project, wikiDir), "context-packs");
+}
+
 function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
   if (path.isAbsolute(artifact)) return artifact;
-  const dir = kind === "plan" ? inboxDir(cpbRoot, project, wikiDir) : outputsDir(cpbRoot, project, wikiDir);
-  return path.join(dir, artifact);
+  if (kind === "plan") return path.join(inboxDir(cpbRoot, project, wikiDir), artifact);
+  if (kind === "context-pack") return path.join(contextPackDir(cpbRoot, project, wikiDir), artifact);
+  return path.join(outputsDir(cpbRoot, project, wikiDir), artifact);
 }
 
 async function inspectArtifact(filePath) {

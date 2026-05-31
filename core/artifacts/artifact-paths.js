@@ -1,6 +1,6 @@
 import path from "node:path";
 
-const KIND_DIR = { plan: "inbox", deliverable: "outputs", verdict: "outputs", review: "outputs", repair: "outputs" };
+const KIND_DIR = { plan: "inbox", deliverable: "outputs", verdict: "outputs", review: "outputs", repair: "outputs", "context-pack": "context-packs" };
 
 export function resolveArtifactDir(cpbRoot, project, kind) {
   const sub = KIND_DIR[kind] || "outputs";

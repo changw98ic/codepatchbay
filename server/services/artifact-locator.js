@@ -1,54 +1,15 @@
-import { mkdir, readdir, writeFile, access, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import { projectRuntimePath } from "./runtime-root.js";
 
 export { buildArtifactIndex } from "./artifact-index.js";
+export { allocateArtifactId } from "../../core/artifacts/canonical-artifact.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 function validateName(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${label}: ${value}`);
-  }
-}
-
-export async function allocateArtifactId(dir, prefix) {
-  validateName(prefix, "prefix");
-  await mkdir(dir, { recursive: true });
-
-  const lockDir = path.join(dir, ".cpb-id.lock");
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  if (!acquired) {
-    try { await mkdir(lockDir); } catch { /* force through stale lock */ }
-  }
-
-  try {
-    const entries = await readdir(dir);
-    const pattern = new RegExp(`^${prefix}-(\\d+)\\.md$`);
-    let last = 0;
-    for (const entry of entries) {
-      const match = entry.match(pattern);
-      if (match) last = Math.max(last, parseInt(match[1], 10));
-    }
-    const newId = String(last + 1).padStart(3, "0");
-    // Placeholder to prevent collision while holding lock
-    await writeFile(path.join(dir, `${prefix}-${newId}.md`), "", "utf8");
-    return newId;
-  } finally {
-    try {
-      const { rmdir } = await import("node:fs/promises");
-      await rmdir(lockDir);
-    } catch {}
   }
 }
 
