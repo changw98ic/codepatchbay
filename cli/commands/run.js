@@ -16,6 +16,38 @@ Options:
   --help               Show this help`;
 }
 
+export function buildAgentMetadata({
+  agent,
+  planAgent,
+  executeAgent,
+  verifyAgent,
+  reviewAgent,
+  planVariant,
+  executeVariant,
+  verifyVariant,
+  reviewVariant,
+}) {
+  const result = {};
+  const roles = [
+    ["planner", planAgent, planVariant],
+    ["executor", executeAgent, executeVariant],
+    ["verifier", verifyAgent, verifyVariant],
+    ["reviewer", reviewAgent, reviewVariant],
+  ];
+  let hasAny = false;
+  for (const [role, roleAgent, roleVariant] of roles) {
+    const effectiveAgent = roleAgent || agent;
+    if (effectiveAgent || roleVariant) {
+      hasAny = true;
+      result[role] = {
+        agent: effectiveAgent || null,
+        variant: roleVariant || undefined,
+      };
+    }
+  }
+  return hasAny ? result : undefined;
+}
+
 export async function run(args, { cpbRoot, executorRoot }) {
   const positional = [];
   let projectId;
@@ -23,6 +55,16 @@ export async function run(args, { cpbRoot, executorRoot }) {
   let planMode = "auto";
   let triageMode = null;
   let retries = 3;
+  let agent = "";
+  let model = "";
+  let planAgent = "";
+  let executeAgent = "";
+  let verifyAgent = "";
+  let reviewAgent = "";
+  let planVariant = "";
+  let executeVariant = "";
+  let verifyVariant = "";
+  let reviewVariant = "";
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -48,6 +90,26 @@ export async function run(args, { cpbRoot, executorRoot }) {
       triageMode = args[++i];
     } else if (arg === "--retries") {
       retries = args[++i];
+    } else if (arg === "--agent") {
+      agent = args[++i];
+    } else if (arg === "--model") {
+      model = args[++i];
+    } else if (arg === "--plan-agent") {
+      planAgent = args[++i];
+    } else if (arg === "--execute-agent") {
+      executeAgent = args[++i];
+    } else if (arg === "--verify-agent") {
+      verifyAgent = args[++i];
+    } else if (arg === "--review-agent") {
+      reviewAgent = args[++i];
+    } else if (arg === "--plan-variant") {
+      planVariant = args[++i];
+    } else if (arg === "--execute-variant") {
+      executeVariant = args[++i];
+    } else if (arg === "--verify-variant") {
+      verifyVariant = args[++i];
+    } else if (arg === "--review-variant") {
+      reviewVariant = args[++i];
     } else {
       positional.push(arg);
     }
@@ -109,7 +171,20 @@ export async function run(args, { cpbRoot, executorRoot }) {
       maxRetries: Number.parseInt(String(retries), 10) || 3,
       actor: "cli",
       autoFinalize: true,
+      agent: agent || undefined,
+      model: model || undefined,
       requestedAt: new Date().toISOString(),
+      agents: buildAgentMetadata({
+        agent,
+        planAgent,
+        executeAgent,
+        verifyAgent,
+        reviewAgent,
+        planVariant,
+        executeVariant,
+        verifyVariant,
+        reviewVariant,
+      }),
     },
   });
 

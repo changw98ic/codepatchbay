@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "chatgpt",
+  "displayName": "ChatGPT",
+  "support": {
+    "tier": "official",
+    "requiresManualLogin": true,
+    "lastVerified": null
+  },
+  "startUrl": "https://chat.openai.com",
+  "auth": {
+    "type": "persistent-profile",
+    "loginUrl": "https://chat.openai.com",
+    "loginCheck": {
+      "mode": "selector-visible",
+      "selector": "button:has-text('Log in'), a:has-text('Log in')"
+    },
+    "readyCheck": {
+      "mode": "selector-visible",
+      "selector": "#prompt-textarea, textarea"
+    }
+  },
+  "input": {
+    "selector": "#prompt-textarea, textarea",
+    "kind": "textarea",
+    "method": "fill",
+    "clearBeforeInput": true,
+    "submit": {
+      "mode": "button",
+      "selector": "button[data-testid='send-button']"
+    }
+  },
+  "response": {
+    "messageSelector": "[data-message-author-role='assistant']",
+    "textSelector": ".markdown, .prose",
+    "mode": "last-message",
+    "stableRounds": 3,
+    "minChars": 10,
+    "pollIntervalMs": 2000,
+    "maxWaitMs": 900000,
+    "doneWhen": [
+      { "type": "text-stable", "rounds": 3 }
+    ]
+  },
+  "continue": {
+    "enabled": true,
+    "selector": "button:has-text('Continue generating')",
+    "maxClicks": 5,
+    "cooldownMs": 1000
+  },
+  "diagnostics": {
+    "screenshotOnFailure": true,
+    "traceOnFailure": false
+  }
+}

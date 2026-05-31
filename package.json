@@ -3,7 +3,8 @@
   "version": "0.3.2",
   "type": "module",
   "bin": {
-    "cpb": "cpb"
+    "cpb": "cpb",
+    "cpb-browser-agent-acp": "bridges/browser-agent-acp.mjs"
   },
   "files": [
     "cpb",
@@ -24,7 +25,7 @@
     "web/dist/",
     "scripts/",
     "README.md",
-    "docs/demo.md"
+    "docs/"
   ],
   "engines": {
     "node": ">=20.0.0"
@@ -48,6 +49,7 @@
     "chokidar": "^4.0.0",
     "fastify": "^5.0.0",
     "glob": "^11.0.0",
+    "playwright": "^1.50.0",
     "supergateway": "^3.4.3"
   }
 }

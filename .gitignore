@@ -18,8 +18,9 @@ cpb-task/
 .omc/
 .omx/
 web/.omc/
-providers/
-wiki/
+/providers/
+/wiki/
+!/core/agents/drivers/browser/providers/
 
 # Local configuration and secrets
 .env

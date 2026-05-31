@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "name": "perplexity",
+  "displayName": "Perplexity",
+  "support": { "tier": "experimental", "requiresManualLogin": true, "lastVerified": null },
+  "startUrl": "https://perplexity.ai",
+  "auth": {
+    "type": "persistent-profile",
+    "loginUrl": "https://perplexity.ai",
+    "loginCheck": { "mode": "selector-visible", "selector": "button:has-text('Log in')" },
+    "readyCheck": { "mode": "selector-visible", "selector": "textarea" }
+  },
+  "input": {
+    "selector": "textarea",
+    "kind": "textarea",
+    "method": "fill",
+    "clearBeforeInput": true,
+    "submit": { "mode": "enter" }
+  },
+  "response": {
+    "messageSelector": ".assistant-message",
+    "textSelector": null,
+    "mode": "last-message",
+    "stableRounds": 2,
+    "minChars": 10,
+    "pollIntervalMs": 2000,
+    "maxWaitMs": 600000,
+    "doneWhen": [{ "type": "text-stable", "rounds": 2 }]
+  },
+  "continue": { "enabled": false },
+  "diagnostics": { "screenshotOnFailure": true, "traceOnFailure": false }
+}

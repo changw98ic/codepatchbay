@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "deepseek-web",
+  "aliases": ["deepseek"],
+  "displayName": "DeepSeek Web",
+  "support": { "tier": "official", "requiresManualLogin": true, "lastVerified": null },
+  "startUrl": "https://chat.deepseek.com",
+  "auth": {
+    "type": "persistent-profile",
+    "loginUrl": "https://chat.deepseek.com",
+    "loginCheck": { "mode": "selector-visible", "selector": ".ds-login, button:has-text('Log in')" },
+    "readyCheck": { "mode": "selector-visible", "selector": "textarea" }
+  },
+  "input": {
+    "selector": "textarea",
+    "kind": "textarea",
+    "method": "fill",
+    "clearBeforeInput": true,
+    "submit": { "mode": "button", "selector": "button[type='submit']" }
+  },
+  "response": {
+    "messageSelector": ".ds-chat-message-assistant",
+    "textSelector": ".ds-markdown",
+    "mode": "last-message",
+    "stableRounds": 2,
+    "minChars": 10,
+    "pollIntervalMs": 1500,
+    "maxWaitMs": 600000,
+    "doneWhen": [{ "type": "text-stable", "rounds": 2 }]
+  },
+  "continue": { "enabled": false },
+  "diagnostics": { "screenshotOnFailure": true, "traceOnFailure": false }
+}

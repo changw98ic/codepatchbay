@@ -161,7 +161,10 @@ const ACP_POOL_ENV = new Set([
 ]);
 
 function isDynamicAllowedEnvKey(key) {
-  return /^CPB_ACP_[A-Z0-9_]+_(?:COMMAND|ARGS)$/.test(key);
+  return (
+    key === "CPB_ACP_AGENT_VARIANT" ||
+    /^CPB_ACP_[A-Z0-9_]+_(?:COMMAND|ARGS|VARIANT|PROVIDER|PROFILE_ROOT|HEADLESS|RECORD|TRACE|SLOW_MO|TIMEOUT_MS)$/.test(key)
+  );
 }
 
 function isDynamicAcpPoolEnvKey(key) {

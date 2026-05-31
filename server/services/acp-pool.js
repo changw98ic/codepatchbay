@@ -67,10 +67,21 @@ function is429(error) {
   return /\b429\b|rate.?limit|too many requests/i.test(message);
 }
 
-function providerKeyForAgent(agent, env = {}) {
-  if (agent !== "claude") return agent;
-  const config = resolveVariantConfig(env);
-  return config.variant && config.variant !== "none" ? `claude:${config.variant}` : "claude";
+function agentEnvName(agent) {
+  return String(agent || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
+export function providerKeyForAgent(agent, env = {}, variant = null) {
+  if (variant) return `${agent}:${variant}`;
+
+  if (agent === "claude") {
+    const config = resolveVariantConfig(env);
+    return config.variant && config.variant !== "none"
+      ? `claude:${config.variant}`
+      : "claude";
+  }
+
+  return agent;
 }
 
 function variantNameFromProviderKey(providerKey, agent) {
@@ -78,12 +89,19 @@ function variantNameFromProviderKey(providerKey, agent) {
   return providerKey.startsWith(prefix) ? providerKey.slice(prefix.length) : null;
 }
 
-function envForAgent(agent, env = {}, variant = null) {
+export function envForAgent(agent, env = {}, variant = null) {
   const next = { ...env };
+
+  if (variant) {
+    next.CPB_ACP_AGENT_VARIANT = variant;
+    next[`CPB_ACP_${agentEnvName(agent)}_VARIANT`] = variant;
+  }
+
   if (agent === "claude") {
     if (variant) next.CPB_CLAUDE_VARIANT = variant;
     applyVariantToEnv(next);
   }
+
   return next;
 }
 
@@ -429,8 +447,7 @@ export class AcpPool {
   }
 
   providerKey(agent, variant = null) {
-    if (variant && agent === "claude") return `claude:${variant}`;
-    return providerKeyForAgent(agent, this.env);
+    return providerKeyForAgent(agent, this.env, variant);
   }
 
   async readDurableRateLimits() {
