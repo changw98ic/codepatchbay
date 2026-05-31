@@ -6,17 +6,23 @@ import { parseAgentJson } from "../agents/response-parser.js";
 
 const JSON_INSTRUCTION = `
 
-You MUST respond with a JSON envelope:
+You MUST respond with ONLY a JSON envelope inside a code block. No text before or after.
+
+Example response:
 \`\`\`json
 {
   "status": "ok",
-  "repairStatus": "FIXED" | "UNFIXABLE" | "NEEDS_RETRY",
-  "summary": "what was repaired",
-  "changes": ["list of files changed"]
+  "repairStatus": "FIXED",
+  "summary": "Added try-catch around database query and proper error response",
+  "changes": ["src/routes/api.js", "src/models/user.js"]
 }
 \`\`\`
 
-Do NOT write any artifact files yourself. The system will persist the repair report.`;
+Rules:
+- The response MUST be valid JSON inside a \`\`\`json code block
+- Do NOT include any text outside the code block
+- repairStatus MUST be exactly "FIXED", "UNFIXABLE", or "NEEDS_RETRY"
+- Do NOT write any artifact files yourself. The system will persist the repair report.`;
 
 export async function runRepair(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;

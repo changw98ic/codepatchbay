@@ -7,16 +7,21 @@ import { validatePlanMarkdown } from "../artifacts/validators.js";
 
 const JSON_INSTRUCTION = `
 
-You MUST respond with a JSON envelope:
+You MUST respond with ONLY a JSON envelope inside a code block. No text before or after.
+
+Example response:
 \`\`\`json
 {
   "status": "ok",
-  "planMarkdown": "...your plan in markdown..."
+  "planMarkdown": "## Analysis\\n- The task requires adding a new REST endpoint\\n\\n## Files to modify\\n- src/routes/api.js (add GET /users endpoint)\\n- src/models/user.js (add findAll method)\\n\\n## Implementation Steps\\n1. Add findAll() to User model\\n2. Add GET /users route handler\\n3. Add input validation\\n\\n## Testing\\n- Unit test for findAll()\\n- Integration test for GET /users\\n\\n## Risks\\n- Large result sets may need pagination"
 }
 \`\`\`
 
-Do NOT wrap the plan in any other format. The planMarkdown field must contain the full plan.
-Do NOT write any files yourself. The system will persist the plan.`;
+Rules:
+- The response MUST be valid JSON inside a \`\`\`json code block
+- Do NOT include any text outside the code block
+- The planMarkdown field must contain the full plan in markdown
+- Do NOT write any files yourself. The system will persist the plan`;
 
 export async function runPlan(ctx) {
   const { task, project, cpbRoot, pool, sourcePath, jobId } = ctx;

@@ -11,17 +11,22 @@ const execFile = promisify(execFileCb);
 
 const JSON_INSTRUCTION = `
 
-You MUST respond with a JSON envelope:
+You MUST respond with ONLY a JSON envelope inside a code block. No text before or after.
+
+Example response:
 \`\`\`json
 {
   "status": "ok",
-  "summary": "brief summary of changes",
-  "tests": ["test descriptions or file paths"],
-  "risks": ["any risks or concerns"]
+  "summary": "Added GET /users endpoint with pagination support and input validation",
+  "tests": ["src/routes/api.test.js: returns paginated users", "src/models/user.test.js: findAll respects limit param"],
+  "risks": ["No rate limiting on the new endpoint", "Default page size may be too large for big datasets"]
 }
 \`\`\`
 
-Do NOT write any artifact files yourself. The system will persist the deliverable.`;
+Rules:
+- The response MUST be valid JSON inside a \`\`\`json code block
+- Do NOT include any text outside the code block
+- Do NOT write any artifact files yourself. The system will persist the deliverable.`;
 
 export async function runExecute(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;

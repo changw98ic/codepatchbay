@@ -7,18 +7,36 @@ import { validateVerdict } from "../artifacts/validators.js";
 
 const JSON_INSTRUCTION = `
 
-You MUST respond with a JSON envelope:
+You MUST respond with ONLY a JSON envelope inside a code block. No text before or after.
+
+Example response (passing):
 \`\`\`json
 {
   "status": "ok",
-  "verdict": "pass" | "fail" | "partial",
-  "reason": "one-line explanation",
-  "details": "detailed verification notes",
-  "confidence": 0.0-1.0
+  "verdict": "pass",
+  "reason": "Implementation matches all acceptance criteria",
+  "details": "GET /users endpoint returns correct JSON structure. Pagination works with limit/offset params. Input validation rejects invalid params with 400.",
+  "confidence": 0.9
 }
 \`\`\`
 
-Do NOT write any artifact files yourself. The system will persist the verdict.`;
+Example response (failing):
+\`\`\`json
+{
+  "status": "ok",
+  "verdict": "fail",
+  "reason": "Missing input validation for negative page numbers",
+  "details": "The endpoint accepts page=-1 without error. Expected 400 Bad Request.",
+  "confidence": 0.95
+}
+\`\`\`
+
+Rules:
+- The response MUST be valid JSON inside a \`\`\`json code block
+- Do NOT include any text outside the code block
+- verdict MUST be exactly "pass", "fail", or "partial"
+- confidence MUST be a number between 0.0 and 1.0
+- Do NOT write any artifact files yourself. The system will persist the verdict.`;
 
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;

@@ -6,19 +6,26 @@ import { parseAgentJson } from "../agents/response-parser.js";
 
 const JSON_INSTRUCTION = `
 
-You MUST respond with a JSON envelope:
+You MUST respond with ONLY a JSON envelope inside a code block. No text before or after.
+
+Example response:
 \`\`\`json
 {
   "status": "ok",
-  "verdict": "approved" | "changes_requested" | "needs_discussion",
-  "summary": "review summary",
+  "verdict": "changes_requested",
+  "summary": "Endpoint logic is correct but missing error handling for database failures",
   "comments": [
-    { "file": "path/to/file", "line": 42, "comment": "suggestion" }
+    { "file": "src/routes/api.js", "line": 15, "comment": "Wrap db query in try-catch, return 500 on failure" },
+    { "file": "src/models/user.js", "line": 8, "comment": "Add connection timeout option to prevent hanging" }
   ]
 }
 \`\`\`
 
-Do NOT write any artifact files yourself. The system will persist the review.`;
+Rules:
+- The response MUST be valid JSON inside a \`\`\`json code block
+- Do NOT include any text outside the code block
+- verdict MUST be exactly "approved", "changes_requested", or "needs_discussion"
+- Do NOT write any artifact files yourself. The system will persist the review.`;
 
 export async function runReview(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
