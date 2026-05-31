@@ -532,10 +532,12 @@ ${issueContextLines}
 
 ## Instructions
 1. Read the deliverable file and referenced plan from the locators above.
-2. Run fast focused tests first. If fast tests pass AND diff is under 50 lines, you may short-circuit to PASS without running broad regression.
-3. Verify the deliverable against the task goal and plan Acceptance-Criteria.
-4. Write the verdict to: ${verdictFile}
-5. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
+2. MANDATORY: Run \`node --check\` on every added or modified .js/.mjs file in the diff. If ANY file has a syntax error, the verdict MUST be "fail" — no exceptions.
+3. MANDATORY: If a package.json with a "test" script exists in the project root, run \`npm test\`. If tests fail, the verdict MUST be "fail".
+4. If both step 2 and step 3 pass, then verify the deliverable against the task goal and plan Acceptance-Criteria.
+5. Run broader regression tests only when the above checks pass.
+6. Write the verdict to: ${verdictFile}
+7. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
 Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.
@@ -616,11 +618,13 @@ ${issueContextLines}
 
 ## Instructions
 1. Reconstruct the task goal and phase history from the job/event locators above.
-2. Run fast focused tests first. If fast tests pass AND diff is under 50 lines, you may short-circuit to PASS without running broad regression.
-3. Inspect current project state; executor deliverables are optional audit context, not required truth.
-4. If data is missing, return a diagnostic verdict instead of crashing.
-5. Write the verdict to: ${verdictFile}
-6. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
+2. MANDATORY: Run \`node --check\` on every added or modified .js/.mjs file in the diff. If ANY file has a syntax error, the verdict MUST be "fail" — no exceptions.
+3. MANDATORY: If a package.json with a "test" script exists in the project root, run \`npm test\`. If tests fail, the verdict MUST be "fail".
+4. If both step 2 and step 3 pass, inspect current project state and verify against task goal.
+5. Run broader regression tests only when the above checks pass.
+6. If data is missing, return a diagnostic verdict instead of crashing.
+7. Write the verdict to: ${verdictFile}
+8. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
 Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-form text before or after the JSON. The ENTIRE file must be valid JSON.

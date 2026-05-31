@@ -150,7 +150,11 @@ async function buildVerifyPrompt(ctx, deliverableArtifact) {
 Task: ${ctx.task}
 Project: ${ctx.project}
 ${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}
-Check that the implementation correctly addresses the task requirements.`;
+
+## MANDATORY checks (MUST run before any other verification):
+1. Run \`node --check\` on every added or modified .js/.mjs file. If ANY file has a syntax error, verdict = FAIL.
+2. If package.json with a "test" script exists, run \`npm test\`. If tests fail, verdict = FAIL.
+3. Only after both gates pass, verify the implementation against task requirements.`;
 }
 
 function resolveAgent(ctx, fallback) {
