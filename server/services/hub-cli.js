@@ -1,5 +1,5 @@
 import { openSync } from "node:fs";
-import { mkdir, stat, readFile } from "node:fs/promises";
+import { mkdir, stat, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness, getHubRuntime } from "./hub-runtime.js";
@@ -79,6 +79,12 @@ export async function cmdStart() {
           stdio: ["ignore", orchLogFd, orchLogFd],
         });
         orchChild.unref();
+        // Persist orchestrator PID for clean shutdown
+        await mkdir(path.join(hubRoot, "state"), { recursive: true });
+        await writeFile(
+          path.join(hubRoot, "state", "orchestrator.json"),
+          JSON.stringify({ pid: orchChild.pid, startedAt: new Date().toISOString() }, null, 2) + "\n",
+        );
         console.log(`Orchestrator started (pid: ${orchChild.pid})`);
       } catch (e) {
         console.error(`Orchestrator start failed: ${e.message}`);
@@ -114,13 +120,34 @@ export async function cmdStop() {
 
   process.kill(liveness.pid, "SIGTERM");
 
-  // Auto-stop Hub Orchestrator
+  // Stop managed workers (from WorkerStore)
   try {
-    const { cpbRoot: r1, hubRoot: h1 } = resolveRoots();
-    const { HubOrchestrator } = await import("../orchestrator/hub-orchestrator.js");
-    const orch = new HubOrchestrator(h1, r1);
-    await orch.stop();
-    console.log("Orchestrator stopped");
+    const { WorkerStore } = await import("../orchestrator/worker-store.js");
+    const store = new WorkerStore(hubRoot);
+    const workers = await store.listWorkers();
+    let stopped = 0;
+    for (const w of workers) {
+      if (w.pid && w.status !== "exited") {
+        try { process.kill(w.pid, "SIGTERM"); stopped++; } catch {}
+      }
+    }
+    if (stopped > 0) console.log(`Managed workers stopped (${stopped})`);
+  } catch {}
+
+  // Stop orchestrator process by PID (direct SIGTERM, not just lock release)
+  try {
+    const orchStatePath = path.join(hubRoot, "state", "orchestrator.json");
+    const orchState = JSON.parse(await readFile(orchStatePath, "utf8"));
+    if (orchState.pid) {
+      try { process.kill(orchState.pid, "SIGTERM"); } catch {}
+      // Also release leader lock for graceful cleanup
+      const { cpbRoot: r1, hubRoot: h1 } = resolveRoots();
+      const { HubOrchestrator } = await import("../orchestrator/hub-orchestrator.js");
+      const orch = new HubOrchestrator(h1, r1);
+      await orch.stop();
+      console.log(`Orchestrator stopped (pid: ${orchState.pid})`);
+    }
+    await rm(orchStatePath, { force: true });
   } catch {}
 
   // Auto-stop CodeGraph MCP server
