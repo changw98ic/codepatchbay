@@ -182,11 +182,11 @@ export async function runSinglePhase(phase, opts) {
     previousResults,
     agent,
     timeouts: {
-      plan: 600_000,
-      execute: 1_800_000,
-      verify: 600_000,
-      review: 600_000,
-      repair: 1_200_000,
+      plan: 0,
+      execute: 0,
+      verify: 0,
+      review: 0,
+      repair: 0,
     },
   });
 

@@ -477,7 +477,7 @@ export class AcpClient {
     this.childEnv = null;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
-    this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "1800000", 10);
+    this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "0", 10);
   }
 
   async start() {

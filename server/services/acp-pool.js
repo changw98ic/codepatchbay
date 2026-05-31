@@ -38,7 +38,7 @@ async function getRegistry() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 1_800_000);
+const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 0);
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
 const POOL_LIMIT_CONTROL_ENV = new Set([
@@ -615,26 +615,28 @@ export class AcpPool {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        terminateChild(child).finally(() => {
-          reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
-        });
-      }, timeoutMs);
-      timer.unref();
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            terminateChild(child).finally(() => {
+              reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
+            });
+          }, timeoutMs)
+        : null;
+      if (timer) timer.unref();
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
       child.on("error", (error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(error);
       });
       child.on("close", (code) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         if (code === 0) resolve(stdout.trim());
         else reject(new Error(`${agent} exited ${code}: ${stderr.slice(-1000)}`));
       });
@@ -662,13 +664,15 @@ export class AcpPool {
     let stderr = "";
     let timer;
 
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        void this.#closePersistentClient(key);
-        reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      timer.unref();
-    });
+    const timeout = timeoutMs > 0
+      ? new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            void this.#closePersistentClient(key);
+            reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          timer.unref();
+        })
+      : new Promise(() => {}); // never resolves — no timeout
 
     client.outputSink = (chunk) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
     client.errorSink = (chunk) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };

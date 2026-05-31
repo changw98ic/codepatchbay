@@ -1,7 +1,7 @@
 import { FailureKind, failure } from "../contracts/failure.js";
 
 const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests|capacity|overloaded/i;
-const DEFAULT_TIMEOUT_MS = 1_800_000;
+const DEFAULT_TIMEOUT_MS = 0;
 
 /**
  * Unified agent execution with structured error categorization.

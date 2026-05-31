@@ -124,9 +124,9 @@ export async function runJob(ctx) {
       agent: ctx.agent,
       agents: ctx.agents,
       timeouts: {
-        plan: Math.min(timeoutMs, 600_000),
-        execute: timeoutMs,
-        verify: Math.min(timeoutMs, 600_000),
+        plan: 0,
+        execute: 0,
+        verify: 0,
       },
     });
 

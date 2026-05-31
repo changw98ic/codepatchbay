@@ -51,7 +51,7 @@ export async function runVerify(ctx) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.verify || 600_000,
+    timeoutMs: ctx.timeouts?.verify ?? 0,
   });
 
   if (!agentResult.ok) {
