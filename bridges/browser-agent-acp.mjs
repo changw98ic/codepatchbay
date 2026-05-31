@@ -45,12 +45,11 @@ function respondError(id, code, message, data) {
 }
 
 function resolveProviderName(env = process.env) {
-  return (
+  const variant =
     env.CPB_ACP_BROWSER_AGENT_PROVIDER ||
     env.CPB_ACP_BROWSER_AGENT_VARIANT ||
-    env.CPB_ACP_AGENT_VARIANT ||
-    "chatgpt"
-  );
+    env.CPB_ACP_AGENT_VARIANT;
+  return variant && variant !== "none" ? variant : "chatgpt";
 }
 
 function resolveTimeoutMs(env = process.env) {

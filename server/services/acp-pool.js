@@ -620,7 +620,7 @@ export class AcpPool {
   #run(agent, prompt, cwd, timeoutMs, options = {}) {
     if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
     if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
-    if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
+    if (this.persistentProcesses || agent === "browser-agent") return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
   }
 

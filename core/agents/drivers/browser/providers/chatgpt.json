@@ -7,21 +7,21 @@
     "requiresManualLogin": true,
     "lastVerified": null
   },
-  "startUrl": "https://chat.openai.com",
+  "startUrl": "https://chatgpt.com",
   "auth": {
     "type": "persistent-profile",
-    "loginUrl": "https://chat.openai.com",
+    "loginUrl": "https://chatgpt.com",
     "loginCheck": {
       "mode": "selector-visible",
       "selector": "button:has-text('Log in'), a:has-text('Log in')"
     },
     "readyCheck": {
       "mode": "selector-visible",
-      "selector": "#prompt-textarea, textarea"
+      "selector": "#prompt-textarea:not([class*=fallback]), textarea:not([class*=fallback])"
     }
   },
   "input": {
-    "selector": "#prompt-textarea, textarea",
+    "selector": "#prompt-textarea:not([class*=fallback]), textarea:not([class*=fallback])",
     "kind": "textarea",
     "method": "fill",
     "clearBeforeInput": true,

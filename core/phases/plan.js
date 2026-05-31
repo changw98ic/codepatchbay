@@ -103,10 +103,48 @@ async function buildPlanPrompt(ctx) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("plan", ctx);
   }
-  return `You are a software planning agent. Create a detailed implementation plan for the following task:
 
-Task: ${ctx.task}
-Project: ${ctx.project}
+  const { task, project } = ctx;
+  const agent = resolveAgent(ctx, "codex").agent;
+  const isBrowserAgent = agent === "browser-agent";
+
+  let repoSection = "";
+  if (isBrowserAgent && ctx.sourcePath) {
+    try {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const { stdout } = await promisify(execFile)("git", ["remote", "get-url", "origin"], {
+        cwd: ctx.sourcePath,
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      const remoteUrl = stdout.trim();
+      const ghUrl = remoteUrl.replace(/\.git$/, "").replace("git@github.com:", "https://github.com/");
+      repoSection = `
+
+## Repository
+The source code is at: ${ghUrl}
+Browse the repository to understand the codebase before planning.`;
+    } catch {}
+  }
+
+  let filesSection = "";
+  const contextPack = ctx.sourceContext?.contextPack || ctx.sourceContext;
+  if (contextPack?.files?.length) {
+    filesSection = `
+
+## Relevant Files
+${contextPack.files.map((f) => `- ${f}`).join("\n")}`;
+  }
+
+  return `You are a software planning agent. Create a detailed implementation plan for the following task:
+${repoSection}${filesSection}
+
+## Task
+${task}
+
+## Project
+${project}
 
 The plan should include:
 - Analysis of the task requirements

@@ -322,12 +322,17 @@ export async function hubRoutes(fastify) {
 
   fastify.post("/hub/github/issues/sync", async (req) => {
     const body = req.body || {};
+    let cwd = req.cpbRoot;
+    if (body.projectId) {
+      const project = await getProject(hubRoot(req), body.projectId);
+      if (project?.sourcePath) cwd = project.sourcePath;
+    }
     const result = await syncGithubIssuesFromGh(hubRoot(req), {
       repo: body.repo,
       projectId: body.projectId,
       state: body.state,
       limit: body.limit,
-      cwd: req.cpbRoot,
+      cwd,
     });
     const response = { synced: true, ...result };
     if (body.autoEnqueue && body.projectId) {

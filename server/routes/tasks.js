@@ -52,7 +52,7 @@ export async function taskRoutes(fastify, opts) {
       task, workflow = 'standard', planMode = 'auto',
       acpProfile = 'headless', uiLaneReason = '',
       priority = 'P2', issueNumber, issueUrl, repo, issueTitle,
-      actor = 'api',
+      actor = 'api', agents, agent,
     } = body;
 
     if (!task) throw fastify.httpErrors.badRequest('task required');
@@ -94,6 +94,8 @@ export async function taskRoutes(fastify, opts) {
         issueTitle: issueTitle || task,
         actor,
         requestedAt: new Date().toISOString(),
+        agents: agents || undefined,
+        agent: agent || undefined,
       },
     });
 

@@ -20,6 +20,8 @@ import {
   markExited as markProcessExited,
   addChildPid,
 } from "../server/services/process-registry.js";
+import { createWorktree } from "../runtime/git/worktree.js";
+import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
 
 const rawArgs = process.argv.slice(2);
 
@@ -328,6 +330,30 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
+    // Default worktree isolation: create worktree for every job with a sourcePath
+    let worktreePath = null;
+    try {
+      const hubRoot = resolveHubRoot(cpbRoot);
+      const registered = await getProject(hubRoot, project);
+      const sourcePath = registered?.sourcePath;
+      if (sourcePath) {
+        const worktreesRoot = path.join(hubRoot, "worktrees");
+        const wt = await createWorktree({ project: sourcePath, jobId, slug: "pipeline", worktreesRoot });
+        worktreePath = wt.path;
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "worktree_created",
+          jobId,
+          project,
+          worktree: wt.path,
+          branch: wt.branch,
+          ts: eventTimestamp(),
+        });
+        console.error(`[job-runner] worktree: ${wt.branch} at ${wt.path}`);
+      }
+    } catch (err) {
+      console.error(`[job-runner] worktree creation skipped: ${err.message}`);
+    }
+
     const childEnv = buildChildEnv(process.env, {
       CPB_JOB_ID: jobId,
       CPB_ACP_JOB_ID: jobId,
@@ -337,6 +363,7 @@ async function main() {
       CPB_ACP_LAUNCH_PROFILE: process.env.CPB_ACP_LAUNCH_PROFILE || "headless",
       CPB_ACP_UI_LANE: process.env.CPB_ACP_UI_LANE || "0",
       CPB_ACP_UI_LANE_REASON: process.env.CPB_ACP_UI_LANE_REASON || "",
+      ...(worktreePath ? { CPB_ACP_CWD: worktreePath } : {}),
     });
     const activity = createActivityTracker(cpbRoot, project, jobId);
     childResult = await runChild(script.endsWith('.mjs') ? 'node' : script, script.endsWith('.mjs') ? [script, ...scriptArgs] : scriptArgs, cpbRoot, (output) => {

@@ -1,6 +1,6 @@
 {
   "name": "codepatchbay",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "bin": {
     "cpb": "cpb",
@@ -46,6 +46,7 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/sensible": "^6.0.4",
     "@fastify/websocket": "^11.0.0",
+    "@playwright/test": "1.60.0",
     "chokidar": "^4.0.0",
     "fastify": "^5.0.0",
     "glob": "^11.0.0",
