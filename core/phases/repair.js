@@ -36,7 +36,7 @@ export async function runRepair(ctx) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.repair || 1_200_000,
+    timeoutMs: ctx.timeouts?.repair ?? 0,
   });
 
   if (!agentResult.ok) {

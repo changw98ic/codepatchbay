@@ -49,7 +49,7 @@ export async function runExecute(ctx) {
     prompt,
     cwd,
     pool,
-    timeoutMs: ctx.timeouts?.execute || 1_800_000,
+    timeoutMs: ctx.timeouts?.execute ?? 0,
   });
 
   if (!agentResult.ok) {

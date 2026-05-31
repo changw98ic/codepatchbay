@@ -196,7 +196,6 @@ async function main() {
           sourcePath: effectiveSourcePath,
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
-          timeoutMin: 60,
           agent: metadata.agent || null,
           agents: metadata.agents || null,
         });

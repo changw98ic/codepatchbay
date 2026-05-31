@@ -40,7 +40,7 @@ export async function runReview(ctx) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.review || 600_000,
+    timeoutMs: ctx.timeouts?.review ?? 0,
   });
 
   if (!agentResult.ok) {

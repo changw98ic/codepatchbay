@@ -36,7 +36,7 @@ export async function runPlan(ctx) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.plan || 600_000,
+    timeoutMs: ctx.timeouts?.plan ?? 0,
   });
 
   if (!agentResult.ok) {

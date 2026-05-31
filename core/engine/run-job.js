@@ -99,7 +99,9 @@ export async function runJob(ctx) {
   const phaseResults = [];
   const state = { planId: null, deliverableId: null };
 
-  const timeoutMs = (timeoutMin || 60) * 60_000;
+  const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
+  // Explicit timeoutMin takes priority, then env var, then disabled
+  const phaseTimeout = timeoutMin != null ? (timeoutMin > 0 ? timeoutMin * 60_000 : 0) : envTimeout;
 
   const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
 
@@ -127,9 +129,11 @@ export async function runJob(ctx) {
       agent: ctx.agent,
       agents: ctx.agents,
       timeouts: {
-        plan: Math.min(timeoutMs, 600_000),
-        execute: timeoutMs,
-        verify: Math.min(timeoutMs, 600_000),
+        plan: phaseTimeout,
+        execute: phaseTimeout,
+        verify: phaseTimeout,
+        review: phaseTimeout,
+        repair: phaseTimeout,
       },
     });
 
