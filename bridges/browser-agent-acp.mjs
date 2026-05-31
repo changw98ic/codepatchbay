@@ -143,6 +143,7 @@ async function handleSessionPrompt(id, params) {
       providerName,
       prompt: promptText,
       timeoutMs: resolveTimeoutMs(),
+      headless: process.env.CPB_ACP_BROWSER_AGENT_HEADLESS === "1" || process.env.CI === "true",
       signal: session.abortController.signal,
     });
 

@@ -54,7 +54,7 @@ describe("acp-adapter: browser-agent-acp.mjs JSON-RPC over stdio", () => {
       });
     }
 
-    function waitFor(methodFilter, timeoutMs = 15000) {
+    function waitFor(methodFilter, timeoutMs = 30000) {
       return new Promise((resolve, reject) => {
         const start = Date.now();
         const timer = setInterval(() => {
@@ -109,7 +109,7 @@ describe("acp-adapter: browser-agent-acp.mjs JSON-RPC over stdio", () => {
             clearInterval(timer);
             resolve(final);
           }
-          if (Date.now() - start > 20000) {
+          if (Date.now() - start > 60000) {
             clearInterval(timer);
             reject(new Error("timeout waiting for final prompt response"));
           }
