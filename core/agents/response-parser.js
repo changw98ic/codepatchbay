@@ -64,16 +64,23 @@ export function parseExecutorJson(output) {
 export function parseVerifierJson(output) {
   const result = parseAgentJson(output);
   if (!result.ok) return result;
-  // Verifier envelope: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details }
+  // Verifier envelope: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details, diagnostics }
   const verdict = result.data.verdict;
   if (!verdict || !["pass", "fail", "partial"].includes(verdict)) {
     return { ok: false, reason: `invalid verdict: expected pass|fail|partial, got "${verdict}"` };
   }
+  const rawDiag = result.data.diagnostics;
   return {
     ok: true,
     status: verdict,
     reason: result.data.reason || "",
     details: result.data.details || "",
     confidence: result.data.confidence,
+    diagnostics: {
+      evidence: Array.isArray(rawDiag?.evidence) ? rawDiag.evidence : [],
+      filesReviewed: Array.isArray(rawDiag?.filesReviewed) ? rawDiag.filesReviewed : [],
+      commandsRun: Array.isArray(rawDiag?.commandsRun) ? rawDiag.commandsRun : [],
+      concerns: Array.isArray(rawDiag?.concerns) ? rawDiag.concerns : [],
+    },
   };
 }

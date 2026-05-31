@@ -457,6 +457,7 @@ export class AcpClient {
     errorSink = (chunk) => process.stderr.write(chunk),
     env = process.env,
     resumeSessionId = null,
+    loopDetector = null,
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -472,6 +473,7 @@ export class AcpClient {
     this.pending = new Map();
     this.terminals = new Map();
     this.nextTerminalId = 1;
+    this.loopDetector = loopDetector;
     this.closed = false;
     this.initialized = null;
     this.childEnv = null;
@@ -726,6 +728,13 @@ export class AcpClient {
 
   async handleClientRequest(message) {
     try {
+      // Tool-loop observability: record tool invocation when detector is enabled
+      if (this.loopDetector && message.method) {
+        const alert = this.loopDetector.record(message.method, message.params, this.cwd);
+        if (alert) {
+          this.errorSink(`[acp:${this.agent}] tool-loop alert: ${alert.method} called ${alert.consecutiveCalls} times consecutively\n`);
+        }
+      }
       await loadPermissionModules(this.env);
 
       // Headless UI tool denial (issue #62)
