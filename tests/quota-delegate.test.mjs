@@ -306,4 +306,105 @@ describe("integration: real delegate process", () => {
       await new Promise((r) => setTimeout(r, 200));
     }
   });
+
+  it("second delegate detects lock and exits without processing commands", async () => {
+    const delegatePath = path.join(process.cwd(), "server", "services", "quota-delegate.js");
+
+    // Start first delegate
+    const child1 = spawn(process.execPath, [delegatePath, "--hub-root", hubRoot], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout1 = "";
+    child1.stdout.on("data", (d) => { stdout1 += d.toString(); });
+    child1.stderr.on("data", (d) => { stdout1 += d.toString(); });
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Write a command that first delegate will process
+    const commandId = `lock-test-${Date.now()}`;
+    await appendCommand(hubRoot, {
+      commandId,
+      type: "quota_write",
+      ts: new Date().toISOString(),
+      providerKey: "lock-provider",
+      entry: { agent: "claude", status: "rate_limited", nextEligibleAt: Date.now() + 60000, source: "test", confidence: 0.9, reason: "test" },
+    });
+
+    const ack = await waitForAck(hubRoot, commandId, 3000);
+    assert.ok(ack, "first delegate should ack");
+
+    // Start second delegate — should detect lock and exit
+    const child2 = spawn(process.execPath, [delegatePath, "--hub-root", hubRoot], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout2 = "";
+    child2.stdout.on("data", (d) => { stdout2 += d.toString(); });
+    child2.stderr.on("data", (d) => { stdout2 += d.toString(); });
+
+    // Wait for second delegate to exit
+    const exitCode = await new Promise((resolve) => {
+      child2.on("close", (code) => resolve(code));
+      setTimeout(() => resolve(null), 3000);
+    });
+
+    // Second delegate should have exited (code 0 = clean exit due to lock)
+    assert.equal(exitCode, 0, "second delegate should exit cleanly");
+    assert.ok(stdout2.includes("another instance running"), "should print lock conflict message");
+
+    child1.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 200));
+  });
+
+  it("processing/ files are recovered to inbox on delegate restart", async () => {
+    const delegatePath = path.join(process.cwd(), "server", "services", "quota-delegate.js");
+    const processingDirPath = path.join(hubRoot, "providers", "delegate", "processing");
+
+    // Simulate a crashed delegate: write a command directly to processing/
+    const commandId = `recover-${Date.now()}`;
+    const cmd = {
+      commandId,
+      type: "quota_write",
+      ts: new Date().toISOString(),
+      providerKey: "recover-provider",
+      entry: { agent: "claude", status: "rate_limited", nextEligibleAt: Date.now() + 60000, source: "recovery-test", confidence: 0.9, reason: "429" },
+    };
+    await mkdir(processingDirPath, { recursive: true });
+    await writeFile(path.join(processingDirPath, `${commandId}.json`), JSON.stringify(cmd) + "\n");
+
+    // Verify command is in processing/, not inbox
+    const inboxBefore = await readdir(path.join(hubRoot, "providers", "delegate", "inbox"));
+    assert.ok(!inboxBefore.includes(`${commandId}.json`), "command should not be in inbox yet");
+
+    // Start delegate — should recover processing/ → inbox/ and process it
+    const child = spawn(process.execPath, [delegatePath, "--hub-root", hubRoot], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stdout += d.toString(); });
+
+    try {
+      // Wait for ack (delegate should recover + process)
+      const ack = await waitForAck(hubRoot, commandId, 5000);
+      assert.ok(ack, "ack should arrive after recovery");
+      assert.equal(ack.ok, true);
+
+      // Verify quota file
+      const quotas = await readProviderQuotas(hubRoot);
+      assert.ok(quotas["recover-provider"], "quota entry should exist after recovery");
+      assert.equal(quotas["recover-provider"].status, "rate_limited");
+
+      // Verify command moved to processed/
+      const processedFiles = await readdir(path.join(hubRoot, "providers", "delegate", "processed"));
+      assert.ok(processedFiles.includes(`${commandId}.json`), "command should be in processed/");
+
+      // Verify recovery log message
+      assert.ok(stdout.includes("recovered"), "should log recovery message");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
 });
