@@ -6,6 +6,7 @@ const BUILTIN_MANIFEST_DIR = path.join(import.meta.dirname, "manifests");
 const BUILTIN_ORDER = new Map([
   ["codex", 10],
   ["claude", 20],
+  ["reasonix", 25],
   ["opencode", 30],
   ["cursor", 40],
 ]);

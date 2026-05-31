@@ -1,0 +1,17 @@
+{
+  "name": "reasonix",
+  "displayName": "Reasonix",
+  "command": "reasonix-acp",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@reasonix/acp-adapter"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "repair"],
+  "defaultRoles": ["executor", "verifier"],
+  "stability": "stable",
+  "envPrefix": "CPB_ACP_REASONIX",
+  "description": "Reasonix — reasoning-first coding agent with ACP support",
+  "lifecycle": "one-shot",
+  "resumeCommand": "reasonix",
+  "resumeArgs": ["--resume"],
+  "poolLimit": 3
+}

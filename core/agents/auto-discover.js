@@ -19,6 +19,7 @@ const KNOWN_AGENTS = [
   { name: "goose", command: "goose", displayName: "Goose", envPrefix: "CPB_ACP_GOOSE" },
   { name: "cline", command: "cline", displayName: "Cline", envPrefix: "CPB_ACP_CLINE" },
   { name: "pi", command: "pi", displayName: "Pi", envPrefix: "CPB_ACP_PI" },
+  { name: "reasonix", command: "reasonix-acp", displayName: "Reasonix", envPrefix: "CPB_ACP_REASONIX" },
 ];
 
 /**

@@ -1,0 +1,51 @@
+{
+  "id": "reasonix",
+  "displayName": "Reasonix",
+  "vendor": "Reasonix Labs",
+  "binary": "reasonix",
+  "tier": 1,
+  "recommended": true,
+  "roles": ["executor", "verifier", "repairer"],
+  "capabilities": ["repo_inspect", "file_edit", "shell", "verify", "reasoning", "large_context"],
+  "sourceUrl": "https://reasonix.dev/docs/installation",
+  "install": {
+    "npm": {
+      "label": "npm",
+      "command": "npm install -g @reasonix/cli",
+      "pinnedCommandTemplate": "npm install -g @reasonix/cli@{version}",
+      "sourceUrl": "https://reasonix.dev/docs/installation"
+    },
+    "brew": {
+      "label": "Homebrew",
+      "command": "brew install reasonix-labs/tap/reasonix",
+      "sourceUrl": "https://reasonix.dev/docs/installation"
+    },
+    "script": {
+      "label": "install script",
+      "command": "curl -fsSL https://reasonix.dev/install.sh | bash",
+      "sourceUrl": "https://reasonix.dev/docs/installation",
+      "notes": ["Shows a fetched installer command; require local confirmation before executing."]
+    }
+  },
+  "upgrade": {
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g @reasonix/cli",
+      "sourceUrl": "https://reasonix.dev/docs/installation"
+    },
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade reasonix-labs/tap/reasonix",
+      "sourceUrl": "https://reasonix.dev/docs/installation"
+    }
+  },
+  "auth": {
+    "methods": ["api_key", "browser_login"],
+    "connectCommand": "reasonix auth login",
+    "statusCommand": "reasonix auth status"
+  },
+  "adapter": {
+    "protocol": "acp",
+    "command": "reasonix-acp"
+  }
+}

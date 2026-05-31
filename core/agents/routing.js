@@ -1,7 +1,9 @@
 import {
   defaultAgentForRole,
   getDescriptor,
+  hasAgent,
 } from "./registry.js";
+import { scoreAgentMetrics } from "./scoring.js";
 
 export const ROUTING_TASK_CATEGORIES = Object.freeze([
   "bugfix",
@@ -240,4 +242,107 @@ export function assertValidRoutingRules(routing, options = {}) {
     throw new Error(`invalid routing rules: ${result.errors.join("; ")}`);
   }
   return result;
+}
+
+/**
+ * Select an agent for a role using scoring-informed fallback.
+ * When the preferred agent is unavailable, picks the best alternative
+ * from candidates by comparing their score values (higher is better).
+ * Candidates with low confidence (< 0.2) get a neutral score of 0.5
+ * so they are not unfairly penalized for having insufficient history.
+ *
+ * agentScores: optional Map<name, { value, confidence, sampleSize }>
+ *   as returned by scoreAgentMetrics(). If omitted, falls back to
+ *   non-scoring selection.
+ */
+export function selectAgentWithScoring({
+  role,
+  preferredAgent,
+  candidates = [],
+  agentScores = null,
+  agentAvailability = null,
+  allowFallback = true,
+} = {}) {
+  // Fast path: no scoring data or no candidates
+  if (!agentScores || candidates.length === 0) {
+    return selectAgentWithFallback({
+      role,
+      preferredAgent,
+      fallbackAgent: candidates[0] || null,
+      agentAvailability,
+      allowFallback,
+    });
+  }
+
+  const preferredStatus = availabilityFor(agentAvailability, preferredAgent);
+  if (!preferredAgent || preferredStatus.available) {
+    return {
+      role,
+      preferredAgent: preferredAgent || null,
+      selectedAgent: preferredAgent || null,
+      fallbackAgent: null,
+      fallbackAllowed: allowFallback !== false,
+      fallbackApplied: false,
+      reason: preferredAgent ? "preferred agent available" : "no preferred agent",
+      scoredCandidates: [],
+    };
+  }
+
+  if (allowFallback === false) {
+    return {
+      role,
+      preferredAgent: preferredAgent || null,
+      selectedAgent: preferredAgent || null,
+      fallbackAgent: null,
+      fallbackAllowed: false,
+      fallbackApplied: false,
+      reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; fallbackAllowed=false`,
+      scoredCandidates: [],
+    };
+  }
+
+  // Score and rank candidates
+  const scored = candidates
+    .filter((name) => {
+      const s = availabilityFor(agentAvailability, name);
+      return s.available;
+    })
+    .map((name) => {
+      const raw = agentScores.get(name);
+      const value = raw ? raw.value : 0.5;
+      const confidence = raw ? raw.confidence : 0;
+      return {
+        name,
+        score: confidence < 0.2 ? 0.5 : value,
+        rawScore: value,
+        confidence,
+        sampleSize: raw ? raw.sampleSize : 0,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) {
+    return {
+      role,
+      preferredAgent: preferredAgent || null,
+      selectedAgent: preferredAgent || null,
+      fallbackAgent: candidates[0] || null,
+      fallbackAllowed: true,
+      fallbackApplied: false,
+      reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; no available fallback`,
+      scoredCandidates: [],
+    };
+  }
+
+  const best = scored[0];
+  return {
+    role,
+    preferredAgent: preferredAgent || null,
+    selectedAgent: best.name,
+    fallbackAgent: best.name,
+    fallbackAllowed: true,
+    fallbackApplied: true,
+    reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; scored fallback`,
+    scoredCandidates: scored,
+  };
 }
