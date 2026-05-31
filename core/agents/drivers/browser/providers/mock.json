@@ -3,10 +3,10 @@
   "name": "mock",
   "displayName": "Mock Provider",
   "support": { "tier": "official", "requiresManualLogin": false, "lastVerified": null },
-  "startUrl": "file:///Users/chengwen/dev/flow/.claude/worktrees/feature+browser-agent/core/agents/drivers/browser/fixtures/pages/mock-chat.html",
+  "startUrl": "fixture:mock-chat.html",
   "auth": {
     "type": "persistent-profile",
-    "loginUrl": "file:///dev/null",
+    "loginUrl": "fixture:dev-null.html",
     "loginCheck": { "mode": "selector-visible", "selector": ".never-exists" },
     "readyCheck": { "mode": "selector-visible", "selector": "#mock-textarea" }
   },

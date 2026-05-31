@@ -7,6 +7,7 @@ import { fillPrompt, submitPrompt } from "./input-controller.mjs"
 import { waitForFinalResponse, checkSelectorVisible } from "./response-waiter.mjs"
 import { saveDiagnostic } from "./diagnostics.mjs"
 import { BrowserAgentLoginRequiredError, BrowserAgentTimeoutError, BrowserAgentOutputEmptyError } from "./errors.mjs"
+import { globalSessionManager } from "./session-store.mjs"
 
 const PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
 
@@ -27,16 +28,13 @@ export async function executeBrowserAgent({
   // 1. Load provider profile
   const provider = await loadProvider(providerName)
 
-  // 2. Create persistent browser context
-  const profileDir = path.join(PROFILE_ROOT, providerName, "profile-0")
-  await ensureDir(profileDir)
-
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless: Boolean(headless),
-    args: ["--disable-blink-features=AutomationControlled"],
+  // 2. Acquire browser session via session manager
+  const sessionHandle = await globalSessionManager.acquire({
+    providerName,
+    headless,
   })
 
-  let page
+  const { page, context } = sessionHandle
   let resultText = ""
   let tracePath = null
   let continueClicks = 0
@@ -47,15 +45,11 @@ export async function executeBrowserAgent({
       await context.tracing.start({ screenshots: true, snapshots: true })
     }
 
-    // 3. Open page
-    const pages = context.pages()
-    page = pages.length > 0 ? pages[0] : await context.newPage()
-
-    // 4. Navigate to provider URL
+    // 3. Navigate to provider URL
     await page.goto(provider.startUrl, { waitUntil: "domcontentloaded" })
     await page.waitForTimeout(2000)
 
-    // 5. Check login
+    // 4. Check login
     const loginVisible = await checkSelectorVisible(page, provider.auth.loginCheck.selector, 3000)
     if (loginVisible) {
       throw new BrowserAgentLoginRequiredError(
@@ -64,19 +58,19 @@ export async function executeBrowserAgent({
       )
     }
 
-    // 6. Wait for readyCheck selector
+    // 5. Wait for readyCheck selector
     await page.waitForSelector(provider.auth.readyCheck.selector, {
       state: "visible",
       timeout: 30000,
     })
 
-    // 7. Fill prompt
+    // 6. Fill prompt
     await fillPrompt(page, provider, prompt)
 
-    // 8. Submit
+    // 7. Submit
     await submitPrompt(page, provider)
 
-    // 9-10. Wait for response
+    // 8-9. Wait for response
     const response = await waitForFinalResponse(page, provider, {
       signal,
       timeoutMs: Math.min(provider.response.maxWaitMs || 900_000, timeoutMs),
@@ -89,7 +83,7 @@ export async function executeBrowserAgent({
       throw new BrowserAgentOutputEmptyError(providerName)
     }
 
-    // 11. Save context state
+    // 10. Save trace
     if (trace && tracePath) {
       await context.tracing.stop({ path: tracePath })
     }
@@ -106,7 +100,7 @@ export async function executeBrowserAgent({
     }
     throw err
   } finally {
-    await context.close()
+    await globalSessionManager.release(sessionHandle)
   }
 
   const elapsedMs = Date.now() - startTime
@@ -116,7 +110,7 @@ export async function executeBrowserAgent({
     diagnostics: {
       provider: providerName,
       elapsedMs,
-      profileDir,
+      profileDir: sessionHandle.profileDir,
       responseChars: resultText.length,
       continueClicks,
       tracePath,

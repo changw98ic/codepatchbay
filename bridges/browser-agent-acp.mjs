@@ -53,6 +53,15 @@ function resolveProviderName(env = process.env) {
   );
 }
 
+function resolveTimeoutMs(env = process.env) {
+  return (
+    Number(env.CPB_ACP_BROWSER_AGENT_TIMEOUT_MS) ||
+    Number(env.CPB_ACP_PHASE_TIMEOUT_MS) ||
+    Number(env.CPB_ACP_TIMEOUT_MS) ||
+    900_000
+  );
+}
+
 async function mapErrorToJsonRpc(error) {
   const { LoginRequiredError, ProviderProfileError } = await getSchema();
   if (error instanceof LoginRequiredError || error.name === "BrowserAgentLoginRequiredError") {
@@ -133,6 +142,7 @@ async function handleSessionPrompt(id, params) {
     const result = await executeBrowserAgent({
       providerName,
       prompt: promptText,
+      timeoutMs: resolveTimeoutMs(),
       signal: session.abortController.signal,
     });
 

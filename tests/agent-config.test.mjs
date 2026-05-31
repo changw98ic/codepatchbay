@@ -20,6 +20,17 @@ describe("agent-config: normalizeAgentSpec", () => {
     assert.equal(spec, null);
   });
 
+  it("supports variant-only with agent: null", () => {
+    const spec = normalizeAgentSpec({ agent: null, variant: "chatgpt" });
+    assert.deepEqual(spec, { agent: null, variant: "chatgpt" });
+  });
+
+  it("variant-only keeps null agent instead of falling back to claude", () => {
+    const spec = normalizeAgentSpec({ agent: null, variant: "mimo" });
+    assert.equal(spec.agent, null);
+    assert.equal(spec.variant, "mimo");
+  });
+
   it("falls back to claude for object with empty agent", () => {
     const spec = normalizeAgentSpec({ agent: "" });
     assert.deepEqual(spec, { agent: "claude", variant: null });
@@ -105,6 +116,23 @@ describe("agent-config: buildAgentMetadata", () => {
       reviewVariant: "",
     });
     assert.equal(meta, undefined);
+  });
+
+  it("emits agent: null for variant-only entries", () => {
+    const meta = buildAgentMetadata({
+      agent: "",
+      planAgent: "",
+      executeAgent: "",
+      verifyAgent: "",
+      reviewAgent: "",
+      planVariant: "chatgpt",
+      executeVariant: "",
+      verifyVariant: "",
+      reviewVariant: "",
+    });
+    assert.deepEqual(meta, {
+      planner: { agent: null, variant: "chatgpt" },
+    });
   });
 
   it("returns agents object when global agent is set", () => {

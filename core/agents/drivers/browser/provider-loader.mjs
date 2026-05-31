@@ -1,8 +1,22 @@
-import { readdir, readFile } from "node:fs/promises"
+import { readdir, readFile, access } from "node:fs/promises"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { validateProviderProfile, ProviderProfileError } from "./profile-schema.mjs"
 
 const PROVIDERS_DIR = path.join(import.meta.dirname, "providers")
+const FIXTURES_DIR = path.join(import.meta.dirname, "fixtures", "pages")
+
+async function resolveFixtureUrl(url) {
+  if (typeof url !== "string" || !url.startsWith("fixture:")) return url
+  const fileName = url.slice("fixture:".length)
+  const filePath = path.join(FIXTURES_DIR, fileName)
+  try {
+    await access(filePath)
+  } catch {
+    throw new ProviderProfileError(`fixture not found: ${fileName}`)
+  }
+  return pathToFileURL(filePath).href
+}
 
 export async function loadProvider(name) {
   if (!name || typeof name !== "string") {
@@ -40,6 +54,14 @@ export async function loadProvider(name) {
     throw new ProviderProfileError(
       `provider "${name}" profile invalid: ${result.errors.join("; ")}`
     )
+  }
+
+  // Resolve fixture: URLs to file:// URLs
+  if (profile.startUrl && profile.startUrl.startsWith("fixture:")) {
+    profile.startUrl = await resolveFixtureUrl(profile.startUrl)
+  }
+  if (profile.auth?.loginUrl && profile.auth.loginUrl.startsWith("fixture:")) {
+    profile.auth.loginUrl = await resolveFixtureUrl(profile.auth.loginUrl)
   }
 
   return profile

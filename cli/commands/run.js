@@ -40,7 +40,7 @@ export function buildAgentMetadata({
     if (effectiveAgent || roleVariant) {
       hasAny = true;
       result[role] = {
-        agent: effectiveAgent || undefined,
+        agent: effectiveAgent || null,
         variant: roleVariant || undefined,
       };
     }

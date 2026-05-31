@@ -29,6 +29,7 @@ export class BrowserSessionManager {
       page,
       role,
       project,
+      profileDir,
       createdAt: Date.now(),
     }
 

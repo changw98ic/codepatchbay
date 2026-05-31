@@ -69,4 +69,10 @@ describe("provider-loader", () => {
     assert.equal(profile.name, "mock");
     assert.equal(profile.support.tier, "official");
   });
+
+  it("loadProvider resolves fixture: URLs to file:// URLs", async () => {
+    const profile = await loadProvider("mock");
+    assert.ok(profile.startUrl.startsWith("file://"), `expected file://, got: ${profile.startUrl}`);
+    assert.ok(profile.auth.loginUrl.startsWith("file://"), `expected file://, got: ${profile.auth.loginUrl}`);
+  });
 });

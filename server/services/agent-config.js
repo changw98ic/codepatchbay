@@ -56,6 +56,10 @@ export async function writeProjectAgents(cpbRoot, project, agents) {
 export function normalizeAgentSpec(raw) {
   if (!raw) return null;
   if (typeof raw === "object" && raw !== null) {
+    // Explicit variant-only: { agent: null, variant: "chatgpt" }
+    if (raw.agent === null && raw.variant) {
+      return { agent: null, variant: raw.variant };
+    }
     const agentStr = raw.agent || "";
     if (agentStr.includes(":")) {
       const [agent, variant] = agentStr.split(":", 2);
