@@ -3,15 +3,16 @@ import path from "node:path"
 import os from "node:os"
 import { mkdir } from "node:fs/promises"
 
-const PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
+const DEFAULT_PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
 
 export class BrowserSessionManager {
-  constructor() {
+  constructor(opts = {}) {
+    this.profileRoot = opts.profileRoot || DEFAULT_PROFILE_ROOT
     this.contexts = new Map() // id -> { id, providerName, context, page, role, project, createdAt }
   }
 
   async acquire({ providerName, sessionId, role, project, headless = false }) {
-    const profileDir = path.join(PROFILE_ROOT, providerName, "profile-0")
+    const profileDir = path.join(this.profileRoot, providerName, "profile-0")
     await mkdir(profileDir, { recursive: true })
 
     const context = await chromium.launchPersistentContext(profileDir, {

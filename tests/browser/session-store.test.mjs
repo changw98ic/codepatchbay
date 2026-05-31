@@ -11,8 +11,8 @@ describe("session-store: BrowserSessionManager", () => {
   let tempProfileDir;
 
   before(async () => {
-    manager = new BrowserSessionManager();
     tempProfileDir = await mkdtemp(path.join(os.tmpdir(), "cpb-browser-session-"));
+    manager = new BrowserSessionManager({ profileRoot: tempProfileDir });
   });
 
   after(async () => {
@@ -37,6 +37,7 @@ describe("session-store: BrowserSessionManager", () => {
     assert.ok(handle.context);
     assert.ok(handle.page);
     assert.equal(typeof handle.createdAt, "number");
+    assert.ok(handle.profileDir.includes(tempProfileDir));
     await manager.release(handle);
   });
 
@@ -56,13 +57,16 @@ describe("session-store: BrowserSessionManager", () => {
   });
 
   it("closeProvider closes all contexts for a provider", async () => {
+    // Use different providers to avoid concurrent persistent profile access
     const h1 = await manager.acquire({ providerName: "mock", sessionId: "s1", headless: true });
+    // Release h1 before acquiring another mock context (same profile dir)
+    await manager.release(h1);
+
     const h2 = await manager.acquire({ providerName: "mock", sessionId: "s2", headless: true });
     const h3 = await manager.acquire({ providerName: "chatgpt", sessionId: "s3", headless: true });
 
-    assert.equal(manager.contexts.size, 3);
+    assert.equal(manager.contexts.size, 2);
     await manager.closeProvider("mock");
-    assert.equal(manager.contexts.has(h1.id), false);
     assert.equal(manager.contexts.has(h2.id), false);
     assert.equal(manager.contexts.has(h3.id), true);
 

@@ -100,6 +100,25 @@ describe("agent-config: mergeAgentConfig", () => {
     assert.deepEqual(merged.planner, { agent: "claude", variant: null });
     assert.deepEqual(merged.executor, { agent: "claude", variant: null });
   });
+
+  it("variant-only metadata preserves existing agent from project config", () => {
+    const merged = mergeAgentConfig(
+      null,
+      { default: "browser-agent", phases: { plan: "browser-agent" } },
+      { planner: { agent: null, variant: "chatgpt" } }
+    );
+    assert.deepEqual(merged.planner, { agent: "browser-agent", variant: "chatgpt" });
+    assert.deepEqual(merged.executor, { agent: "browser-agent", variant: null });
+  });
+
+  it("variant-only metadata falls back when no prior agent exists", () => {
+    const merged = mergeAgentConfig(
+      null,
+      null,
+      { planner: { agent: null, variant: "chatgpt" } }
+    );
+    assert.deepEqual(merged.planner, { agent: null, variant: "chatgpt" });
+  });
 });
 
 describe("agent-config: buildAgentMetadata", () => {

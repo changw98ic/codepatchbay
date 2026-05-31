@@ -163,7 +163,12 @@ export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
         const spec = normalizeAgentSpec(raw);
         if (spec) {
           const role = PHASE_TO_ROLE[key] || key;
-          merged[role] = spec;
+          if (spec.agent === null && merged[role]) {
+            // Variant-only metadata — preserve existing agent, override variant
+            merged[role] = { ...merged[role], variant: spec.variant };
+          } else {
+            merged[role] = spec;
+          }
         }
       }
     } else {
