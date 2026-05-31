@@ -71,6 +71,8 @@ function usage() {
   console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
+  console.log(`  ${CYAN}gate${NC} [list|approve|deny|status]        Approval gate management`);
+  console.log(`  ${CYAN}policy${NC} [show|validate|defaults|knowledge]  Policy inspection`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
   console.log(`${BOLD}Global flags:${NC}`);
@@ -142,6 +144,8 @@ const COMMANDS = {
   coderag: "codegraph.js",
   codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
+  gate: "gate.js",
+  policy: "policy.js",
 };
 
 // --- Main ---

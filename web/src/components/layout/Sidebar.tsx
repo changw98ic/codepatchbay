@@ -98,6 +98,8 @@ export function Sidebar({ onNavigate }: SidebarProps) {
     { to: '/new-task', label: t('nav.newTask') },
     { to: '/review', label: t('nav.review') },
     { to: '/agents', label: t('nav.agents') },
+    { to: '/gates', label: t('nav.gates', 'Gates') },
+    { to: '/policy', label: t('nav.policy', 'Policy') },
     { to: '/logs', label: t('nav.logs') },
   ];
 

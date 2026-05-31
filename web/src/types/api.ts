@@ -158,3 +158,63 @@ export interface OutputFile {
   modified: string;
   size: number;
 }
+
+export interface ApprovalGate {
+  jobId: string;
+  project: string;
+  status: string;
+  phase?: string;
+  blockedReason?: string | null;
+  instruction?: string | null;
+  approvalPending: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GateListResponse {
+  gates: ApprovalGate[];
+}
+
+export interface GateActionResponse {
+  approved?: boolean;
+  denied?: boolean;
+  job: DurableJob;
+}
+
+export interface PhasePolicy {
+  role: string;
+  readScope: string;
+  readAllowed: string[];
+  writeAllowed: string[];
+  writeDenied: string[];
+  observablePaths: string[];
+  denyTools?: string[];
+  denyCommands?: string[];
+  profileConfigured?: boolean;
+}
+
+export interface PolicyValidationResult {
+  valid: boolean;
+  errors: string[];
+  approvalRequiredFor: string[];
+}
+
+export interface KnowledgePolicySummary {
+  promptCompositionOrder: string[];
+  automaticWrites: string[];
+  semiAutomaticWrites: string[];
+  explicitConfirmationWrites: string[];
+  forbiddenMarkdownState: string[];
+}
+
+export interface TeamPolicy {
+  approvals?: Record<string, { required: boolean; channels?: string[]; minReviewers?: number }>;
+  routing?: { defaultAgent?: string };
+  channels?: Record<string, { enabled?: boolean; allowedActions?: string[]; requireSignedRequests?: boolean }>;
+  protectedOperations?: string[];
+}
+
+export interface RolesPolicyResponse {
+  roles: string[];
+  policies: Record<string, PhasePolicy>;
+}

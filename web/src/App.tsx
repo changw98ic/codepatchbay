@@ -12,6 +12,8 @@ import ReviewPage from '@/pages/Review';
 import AgentBoard from '@/pages/AgentBoard';
 import NewTaskPage from '@/pages/NewTask';
 import LogsPage from '@/pages/Logs';
+import GatesPage from '@/pages/Gates';
+import PolicyPage from '@/pages/Policy';
 
 function AppContent() {
   const { subscribe } = useWebSocketStore();
@@ -50,6 +52,8 @@ function AppContent() {
         <Route path="/new-task" element={<NewTaskPage />} />
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/agents" element={<AgentBoard />} />
+        <Route path="/gates" element={<GatesPage />} />
+        <Route path="/policy" element={<PolicyPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

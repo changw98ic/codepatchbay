@@ -5,3 +5,5 @@ export { useAgentsStore } from './agents';
 export { useReviewStore } from './review';
 export { useLogsStore } from './logs';
 export { useUIStore } from './ui';
+export { useGatesStore } from './gates';
+export { usePolicyStore } from './policy';
