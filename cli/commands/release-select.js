@@ -31,6 +31,7 @@ Subcommands:
   current [--json]                   Show current release
   use <release-id> [--json] [--dest-root DIR]  Select a release
   install [--name ID] [--dest-root DIR] [--json]  Install a release
+  pack [--output DIR] [--verify] [--json]  Create distributable tarball
   doctor [--json]                    Release health checks
   gc [--dry-run|--execute] [--json]  Release garbage collection
 
@@ -39,6 +40,8 @@ Options:
   --dest-root DIR Release store root directory
   --dry-run       Preview only (default for gc)
   --execute       Execute GC deletions
+  --output DIR    Output directory for tarball (pack)
+  --verify        Verify tarball after creation (pack)
   --help          Show this help`);
 }
 
@@ -200,6 +203,17 @@ async function cmdInstall(args, context) {
   if (Number.isInteger(code)) process.exitCode = code;
 }
 
+async function cmdPack(args, context) {
+  const mod = await import("./release-pack.js");
+  if (typeof mod.run !== "function") {
+    console.error("release-pack module missing run()");
+    process.exitCode = 1;
+    return;
+  }
+  const code = await mod.run(args, context);
+  if (Number.isInteger(code)) process.exitCode = code;
+}
+
 export async function run(args, context) {
   const sub = args[0] || "";
   const flags = parseFlags(args.slice(1));
@@ -208,6 +222,7 @@ export async function run(args, context) {
     case "current": await cmdCurrent(flags); break;
     case "use": await cmdUse(flags); break;
     case "install": await cmdInstall(args.slice(1), context); break;
+    case "pack": await cmdPack(args.slice(1), context); break;
     case "doctor": await cmdDoctor(flags); break;
     case "gc": await cmdGc(flags); break;
     default:
