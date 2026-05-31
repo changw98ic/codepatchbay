@@ -100,7 +100,7 @@ export async function runJob(ctx) {
 
   const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
   // Explicit timeoutMin takes priority, then env var, then disabled
-  const phaseTimeout = timeoutMin != null ? (timeoutMin || 60) * 60_000 : envTimeout;
+  const phaseTimeout = timeoutMin != null ? (timeoutMin > 0 ? timeoutMin * 60_000 : 0) : envTimeout;
 
   for (const phase of phases) {
     await appendEvent(cpbRoot, project, jobId, {
