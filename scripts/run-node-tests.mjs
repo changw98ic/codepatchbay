@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-import { readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { glob } from "glob";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const files = (await readdir(path.join(repoRoot, "tests")))
-  .filter((name) => name.endsWith(".test.mjs"))
-  .map((name) => path.join("tests", name));
+const files = await glob("tests/**/*.test.mjs", { cwd: repoRoot });
 
 if (files.length === 0) {
   console.error("No Node test files found under tests/*.test.mjs");

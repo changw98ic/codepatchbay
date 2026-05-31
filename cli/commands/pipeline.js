@@ -7,6 +7,14 @@ export async function run(args, { cpbRoot, executorRoot }) {
   let planMode = "auto";
   let agent = "";
   let model = "";
+  let planAgent = "";
+  let executeAgent = "";
+  let verifyAgent = "";
+  let reviewAgent = "";
+  let planVariant = "";
+  let executeVariant = "";
+  let verifyVariant = "";
+  let reviewVariant = "";
   let workflow = "standard";
   let issueNumber = "";
   let issueUrl = "";
@@ -28,6 +36,22 @@ export async function run(args, { cpbRoot, executorRoot }) {
       issueUrl = args[++i];
     } else if (args[i] === "--repo" && args[i + 1]) {
       repo = args[++i];
+    } else if (args[i] === "--plan-agent" && args[i + 1]) {
+      planAgent = args[++i];
+    } else if (args[i] === "--execute-agent" && args[i + 1]) {
+      executeAgent = args[++i];
+    } else if (args[i] === "--verify-agent" && args[i + 1]) {
+      verifyAgent = args[++i];
+    } else if (args[i] === "--review-agent" && args[i + 1]) {
+      reviewAgent = args[++i];
+    } else if (args[i] === "--plan-variant" && args[i + 1]) {
+      planVariant = args[++i];
+    } else if (args[i] === "--execute-variant" && args[i + 1]) {
+      executeVariant = args[++i];
+    } else if (args[i] === "--verify-variant" && args[i + 1]) {
+      verifyVariant = args[++i];
+    } else if (args[i] === "--review-variant" && args[i + 1]) {
+      reviewVariant = args[++i];
     } else {
       filtered.push(args[i]);
     }
@@ -82,11 +106,19 @@ export async function run(args, { cpbRoot, executorRoot }) {
       planMode,
       actor: "cli",
       autoFinalize: true,
+      agent: agent || undefined,
+      model: model || undefined,
       issueNumber: issueNumber ? Number(issueNumber) : null,
       issueUrl: issueUrl || null,
       repo: repo || registered?.github?.fullName || null,
       issueTitle: task,
       requestedAt: new Date().toISOString(),
+      agents: {
+        planner: { agent: planAgent || agent, variant: planVariant },
+        executor: { agent: executeAgent || agent, variant: executeVariant },
+        verifier: { agent: verifyAgent || agent, variant: verifyVariant },
+        reviewer: { agent: reviewAgent || agent, variant: reviewVariant },
+      },
     },
   });
 

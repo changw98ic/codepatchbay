@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mock Chat</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 20px auto; }
+    #mock-messages { border: 1px solid #ccc; padding: 10px; min-height: 200px; margin-bottom: 10px; }
+    .mock-message { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 4px; }
+    .mock-text { white-space: pre-wrap; }
+    #mock-input-area { display: flex; gap: 10px; }
+    #mock-textarea { flex: 1; padding: 8px; }
+    button { padding: 8px 16px; }
+    #mock-continue { display: none; margin-top: 10px; }
+    #mock-loading { display: none; margin: 10px 0; color: #666; }
+  </style>
+</head>
+<body>
+  <div id="mock-messages"></div>
+  <div id="mock-loading">Loading...</div>
+  <div id="mock-input-area">
+    <textarea id="mock-textarea" rows="3"></textarea>
+    <button id="mock-send">Send</button>
+  </div>
+  <button id="mock-continue">Continue</button>
+
+  <script>
+    const messages = document.getElementById('mock-messages');
+    const textarea = document.getElementById('mock-textarea');
+    const sendBtn = document.getElementById('mock-send');
+    const loading = document.getElementById('mock-loading');
+    const continueBtn = document.getElementById('mock-continue');
+
+    const responses = [
+      '{"status":"ok","message":"browser-agent-ready"}',
+      'This is a longer response.',
+      'Another test response with some content.',
+    ];
+    let responseIndex = 0;
+
+    function addMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'mock-message';
+      div.innerHTML = `<div class="mock-text">${text}</div>`;
+      messages.appendChild(div);
+    }
+
+    sendBtn.addEventListener('click', async () => {
+      const prompt = textarea.value.trim();
+      if (!prompt) return;
+      textarea.value = '';
+      loading.style.display = 'block';
+      sendBtn.disabled = true;
+
+      await new Promise(r => setTimeout(r, 500));
+
+      let text = responses[responseIndex % responses.length];
+      responseIndex++;
+
+      // For "long" test, split response
+      if (prompt.includes('long')) {
+        text = 'Part 1 of long response.';
+        addMessage(text);
+        loading.style.display = 'none';
+        continueBtn.style.display = 'block';
+        return;
+      }
+
+      addMessage(text);
+      loading.style.display = 'none';
+      sendBtn.disabled = false;
+    });
+
+    continueBtn.addEventListener('click', () => {
+      continueBtn.style.display = 'none';
+      loading.style.display = 'block';
+      setTimeout(() => {
+        addMessage('Part 2 of long response.');
+        loading.style.display = 'none';
+        sendBtn.disabled = false;
+      }, 300);
+    });
+  </script>
+</body>
+</html>

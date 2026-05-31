@@ -748,6 +748,8 @@ export class ProjectWorker {
       sourcePath,
       sourceContext,
       maxRetries: 3,
+      agent: entry.metadata?.agent || null,
+      agents: entry.metadata?.agents || null,
     });
 
     const ok = result.status === "completed";
