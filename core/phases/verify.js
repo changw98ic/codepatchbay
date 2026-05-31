@@ -1,9 +1,13 @@
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
-import { validateVerdict } from "../artifacts/validators.js";
+
+const execFile = promisify(execFileCb);
 
 const JSON_INSTRUCTION = `
 
@@ -38,9 +42,71 @@ Rules:
 - confidence MUST be a number between 0.0 and 1.0
 - Do NOT write any artifact files yourself. The system will persist the verdict.`;
 
+async function getChangedJsFiles(cwd) {
+  try {
+    const { stdout } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd });
+    return stdout.trim().split("\n").filter(f => f && /\.(js|mjs)$/.test(f));
+  } catch {
+    return [];
+  }
+}
+
+async function hasTestScript(cwd) {
+  try {
+    const raw = await readFile(`${cwd}/package.json`, "utf8");
+    const pkg = JSON.parse(raw);
+    return typeof pkg.scripts?.test === "string";
+  } catch {
+    return false;
+  }
+}
+
+async function runHardGates(cwd) {
+  const errors = [];
+
+  // Gate 1: node --check on changed .js/.mjs files
+  const jsFiles = await getChangedJsFiles(cwd);
+  for (const file of jsFiles) {
+    try {
+      await execFile("node", ["--check", file], { cwd });
+    } catch (e) {
+      errors.push(`node --check ${file}: ${e.stderr?.trim() || e.message}`);
+    }
+  }
+
+  // Gate 2: npm test
+  if (await hasTestScript(cwd)) {
+    try {
+      await execFile("npm", ["test"], { cwd, env: { ...process.env, CI: "1" } });
+    } catch (e) {
+      errors.push(`npm test: ${e.stderr?.trim() || e.message}`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, reason: errors.join("\n") };
+  }
+  return { ok: true };
+}
+
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const cwd = sourcePath || cpbRoot;
   const deliverableArtifact = getRequiredArtifact(ctx.previousResults, "deliverable");
+
+  // Hard gates run BEFORE agent — non-bypassable syntax + test checks
+  const gate = await runHardGates(cwd);
+  if (!gate.ok) {
+    return phaseFailed({
+      phase: "verify",
+      failure: failure({
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: gate.reason,
+        retryable: true,
+      }),
+    });
+  }
 
   const prompt = await buildVerifyPrompt(ctx, deliverableArtifact) + JSON_INSTRUCTION;
 
@@ -49,9 +115,9 @@ export async function runVerify(ctx) {
     ...resolveAgent(ctx, "codex"),
     project,
     prompt,
-    cwd: sourcePath || cpbRoot,
+    cwd,
     pool,
-    timeoutMs: ctx.timeouts?.verify || 600_000,
+    timeoutMs: ctx.timeouts?.verify ?? 0,
   });
 
   if (!agentResult.ok) {
