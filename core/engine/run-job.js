@@ -215,29 +215,26 @@ export async function runJob(ctx) {
       handoffCount += 1;
       const quotaCause = result.failure.cause || {};
 
-      // Mark the failed provider as unavailable (via delegate client)
+      // Mark the failed provider as unavailable (via delegate client, fail closed)
       const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
       const failedAgent = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role];
       const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
-      const quotaOpts = {
-        providerKey: failedProviderKey,
-        agent: failedAgent,
-        variant: failedVariant,
-        status: quotaCause.status || "rate_limited",
-        nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
-        source: quotaCause.source || "run-job-handoff",
-        confidence: quotaCause.confidence ?? 0.8,
-        reason: result.failure.reason,
-      };
-      const dc = await getDelegateClient();
-      if (dc) {
-        await dc.delegateMarkProviderUnavailable(hubRoot, quotaOpts, async (hr, opts) => {
-          const pq = await getProviderQuota();
-          if (pq) await pq.markProviderUnavailable(hr, opts);
-        }).catch(() => null);
-      } else {
-        const pq = await getProviderQuota();
-        if (pq) await pq.markProviderUnavailable(hubRoot, quotaOpts).catch(() => null);
+      try {
+        const dc = await getDelegateClient();
+        if (dc) {
+          await dc.delegateMarkProviderUnavailable(hubRoot, {
+            providerKey: failedProviderKey,
+            agent: failedAgent,
+            variant: failedVariant,
+            status: quotaCause.status || "rate_limited",
+            nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+            source: quotaCause.source || "run-job-handoff",
+            confidence: quotaCause.confidence ?? 0.8,
+            reason: result.failure.reason,
+          });
+        }
+      } catch {
+        // Delegate unavailable — quota write is lost (fail closed)
       }
 
       // Track provider attempt for history chain
@@ -256,6 +253,13 @@ export async function runJob(ctx) {
       }).catch(() => null);
 
       if (!fallback || !fallback.available) {
+        // Ensure fallbackCount is in failure cause before breaking
+        if (result.failure?.cause) {
+          result.failure.cause.fallbackCount = handoffCount;
+          if (providerAttempts.length > 0) {
+            result.failure.cause.providerAttempts = providerAttempts;
+          }
+        }
         await appendEvent(cpbRoot, project, jobId, {
           type: "provider_quota_blocked",
           jobId,
@@ -374,15 +378,14 @@ export async function runJob(ctx) {
       ts: ts(),
     });
 
-    // Enqueue phase-level provider usage (best-effort, via delegate client)
+    // Enqueue phase-level provider usage (via delegate client, best-effort)
     if (hubRoot) {
       try {
         const dc = await getDelegateClient();
-        const pu = dc ? null : await getProviderUsage();
-        const pa = await getProviderAdapters();
-        if (dc || pu) {
+        if (dc) {
           const { agent: resolvedAgent, variant } = resolveRawAgent(phaseAgents, ctx.agent, role, phase);
           const providerKey = resolveProviderKey(pool, phaseAgents[role], ctx.agent);
+          const pa = await getProviderAdapters();
           const adapter = pa?.getProviderAdapter(providerKey);
           const failCause = result.failure?.cause || {};
           const diag = result.diagnostics || {};
@@ -398,7 +401,7 @@ export async function runJob(ctx) {
             }
           }
 
-          const usageRecord = {
+          await dc.delegateEnqueueProviderUsage(hubRoot, {
             project,
             issueNumber: sourceContext?.issueNumber ?? sourceContext?.github?.issueNumber ?? job?.issueNumber ?? null,
             source: sourceContext?.source || null,
@@ -432,13 +435,7 @@ export async function runJob(ctx) {
             } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
             usage: { calls: 1, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
-          };
-
-          if (dc) {
-            await dc.delegateEnqueueProviderUsage(hubRoot, usageRecord).catch(() => null);
-          } else {
-            await pu.enqueueProviderUsage(hubRoot, usageRecord);
-          }
+          }).catch(() => null);
         }
       } catch { /* usage tracking is best-effort */ }
     }

@@ -2,15 +2,15 @@
 /**
  * Quota Delegate — long-running process for quota/usage writes.
  *
- * Tails {hubRoot}/providers/delegate/commands.jsonl, processes commands,
- * sends acks for quota writes. Started/stopped by hub-cli.js.
+ * Reads command files from {hubRoot}/providers/delegate/inbox/,
+ * processes them, writes acks for quota commands. Started/stopped by hub-cli.js.
  *
  * Usage: node quota-delegate.js --hub-root <path>
  */
 
-import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
-import { redactSecrets, readProviderQuotas, writeProviderQuota, markProviderAvailable } from "./provider-quota.js";
+import { redactSecrets, writeProviderQuota, markProviderAvailable } from "./provider-quota.js";
 
 const POLL_INTERVAL_MS = Number(process.env.CPB_DELEGATE_POLL_MS || 100);
 const STALE_ACK_MS = 60_000;
@@ -23,12 +23,12 @@ function delegateDir(hubRoot) {
   return path.join(hubRoot, "providers", "delegate");
 }
 
-function commandsFilePath(hubRoot) {
-  return path.join(delegateDir(hubRoot), "commands.jsonl");
+function inboxDir(hubRoot) {
+  return path.join(delegateDir(hubRoot), "inbox");
 }
 
-function offsetFilePath(hubRoot) {
-  return path.join(delegateDir(hubRoot), "offset.json");
+function processedDir(hubRoot) {
+  return path.join(delegateDir(hubRoot), "processed");
 }
 
 function acksDir(hubRoot) {
@@ -39,61 +39,16 @@ function ackFilePath(hubRoot, commandId) {
   return path.join(acksDir(hubRoot), `${commandId}.json`);
 }
 
-// ─── Offset Tracking ─────────────────────────────────────────────────
-
-async function loadOffset(hubRoot) {
-  try {
-    const data = JSON.parse(await readFile(offsetFilePath(hubRoot), "utf8"));
-    return data.byteOffset || 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function saveOffset(hubRoot, offset) {
-  const dir = delegateDir(hubRoot);
-  await mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `offset.json.tmp-${process.pid}-${Date.now()}`);
-  await writeFile(tmp, JSON.stringify({ byteOffset: offset, updatedAt: new Date().toISOString() }) + "\n", "utf8");
-  await rename(tmp, offsetFilePath(hubRoot));
-}
-
-// ─── Command Tailing ─────────────────────────────────────────────────
-
-async function readNewCommands(hubRoot, byteOffset) {
-  try {
-    const fh = await (await import("node:fs/promises")).open(commandsFilePath(hubRoot), "r");
-    try {
-      const size = (await fh.stat()).size;
-      if (size <= byteOffset) return { commands: [], newOffset: byteOffset };
-
-      const buf = Buffer.alloc(size - byteOffset);
-      await fh.read(buf, 0, buf.length, byteOffset);
-      const text = buf.toString("utf8");
-      const lines = text.split("\n").filter(Boolean);
-      const commands = [];
-      for (const line of lines) {
-        try { commands.push(JSON.parse(line)); } catch { /* skip malformed */ }
-      }
-      return { commands, newOffset: size };
-    } finally {
-      await fh.close();
-    }
-  } catch (err) {
-    if (err.code === "ENOENT") return { commands: [], newOffset: byteOffset };
-    throw err;
-  }
-}
-
 // ─── Ack Writing ─────────────────────────────────────────────────────
 
 async function writeAck(hubRoot, commandId, ack) {
   const dir = acksDir(hubRoot);
   await mkdir(dir, { recursive: true });
   const ackData = { ...ack, commandId, processedAt: new Date().toISOString() };
-  const tmp = path.join(dir, `${commandId}.json.tmp-${process.pid}-${Date.now()}`);
+  const ackPath = ackFilePath(hubRoot, commandId);
+  const tmp = `${ackPath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, JSON.stringify(ackData) + "\n", "utf8");
-  await rename(tmp, ackFilePath(hubRoot, commandId));
+  await rename(tmp, ackPath);
 }
 
 // ─── Stale Ack Cleanup ───────────────────────────────────────────────
@@ -123,10 +78,8 @@ async function processCommand(hubRoot, cmd) {
 
   switch (cmd.type) {
     case "quota_write": {
-      // Redact secrets at the delegate boundary (item 8)
       const entry = { ...cmd.entry };
       if (entry.reason) entry.reason = redactSecrets(entry.reason);
-
       const result = await writeProviderQuota(hubRoot, cmd.providerKey, entry);
       if (cmd.commandId) {
         await writeAck(hubRoot, cmd.commandId, { ok: true, entry: result });
@@ -135,7 +88,6 @@ async function processCommand(hubRoot, cmd) {
     }
 
     case "usage_write": {
-      // Append to usage.jsonl directly (no ack needed)
       const record = cmd.record || {};
       const entry = {
         ts: record.ts || cmd.ts || new Date().toISOString(),
@@ -159,6 +111,7 @@ async function processCommand(hubRoot, cmd) {
         source: record.source || null,
       };
       await appendUsageLine(hubRoot, entry);
+      // No ack for usage writes
       break;
     }
 
@@ -171,7 +124,6 @@ async function processCommand(hubRoot, cmd) {
     }
 
     default:
-      // Unknown command type — skip
       break;
   }
 }
@@ -189,6 +141,73 @@ async function appendUsageLine(hubRoot, record) {
   }
 }
 
+// ─── Inbox Processing ────────────────────────────────────────────────
+
+async function processInbox(hubRoot) {
+  const inbox = inboxDir(hubRoot);
+  const processed = processedDir(hubRoot);
+  await mkdir(inbox, { recursive: true });
+  await mkdir(processed, { recursive: true });
+
+  let files;
+  try {
+    files = await readdir(inbox);
+  } catch {
+    return;
+  }
+
+  // Sort for deterministic ordering
+  const jsonFiles = files.filter((f) => f.endsWith(".json")).sort();
+
+  for (const file of jsonFiles) {
+    if (shuttingDown) break;
+
+    const commandPath = path.join(inbox, file);
+    const commandId = file.replace(/\.json$/, "");
+
+    // Dedup: skip if already processed
+    try {
+      await stat(path.join(processed, file));
+      // Already processed — remove from inbox
+      await unlink(commandPath).catch(() => null);
+      continue;
+    } catch {
+      // Not yet processed — proceed
+    }
+
+    // Read and parse command
+    let cmd;
+    try {
+      const content = await readFile(commandPath, "utf8");
+      cmd = JSON.parse(content);
+    } catch {
+      // Malformed command — move to processed to avoid retry loop
+      await rename(commandPath, path.join(processed, file)).catch(() => null);
+      continue;
+    }
+
+    // Verify commandId matches filename (防篡改)
+    if (cmd.commandId && cmd.commandId !== commandId) {
+      await rename(commandPath, path.join(processed, file)).catch(() => null);
+      continue;
+    }
+
+    // Process
+    try {
+      await processCommand(hubRoot, cmd);
+    } catch (err) {
+      console.error(`quota-delegate: command error (${commandId}): ${err.message}`);
+    }
+
+    // Move to processed (dedup marker)
+    try {
+      await rename(commandPath, path.join(processed, file));
+    } catch {
+      // May already be moved — ignore
+    }
+  }
+}
+
 // ─── Main Loop ───────────────────────────────────────────────────────
 
 async function main() {
@@ -201,53 +220,31 @@ async function main() {
     process.exit(1);
   }
 
-  // Ensure directories exist
   await mkdir(delegateDir(hubRoot), { recursive: true });
+  await mkdir(inboxDir(hubRoot), { recursive: true });
+  await mkdir(processedDir(hubRoot), { recursive: true });
   await mkdir(acksDir(hubRoot), { recursive: true });
 
-  let offset = await loadOffset(hubRoot);
-
-  // Clean stale acks on startup
   await cleanupStaleAcks(hubRoot);
 
-  // Signal handlers
-  process.on("SIGTERM", () => {
-    shuttingDown = true;
-  });
-  process.on("SIGINT", () => {
-    shuttingDown = true;
-  });
+  process.on("SIGTERM", () => { shuttingDown = true; });
+  process.on("SIGINT", () => { shuttingDown = true; });
 
-  console.log(`quota-delegate: started (hubRoot=${hubRoot}, offset=${offset})`);
+  console.log(`quota-delegate: started (hubRoot=${hubRoot})`);
 
   while (!shuttingDown) {
     try {
-      const { commands, newOffset } = await readNewCommands(hubRoot, offset);
-      for (const cmd of commands) {
-        if (shuttingDown) break;
-        await processCommand(hubRoot, cmd).catch((err) => {
-          console.error(`quota-delegate: command error: ${err.message}`);
-        });
-      }
-      if (newOffset !== offset) {
-        offset = newOffset;
-        await saveOffset(hubRoot, offset);
-      }
+      await processInbox(hubRoot);
     } catch (err) {
       console.error(`quota-delegate: loop error: ${err.message}`);
     }
-
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
-  // Graceful shutdown: drain remaining commands
+  // Graceful shutdown: drain remaining
   try {
-    const { commands } = await readNewCommands(hubRoot, offset);
-    for (const cmd of commands) {
-      await processCommand(hubRoot, cmd).catch(() => null);
-    }
-    await saveOffset(hubRoot, offset + Buffer.byteLength(JSON.stringify(commands), "utf8"));
-  } catch { /* best-effort drain */ }
+    await processInbox(hubRoot);
+  } catch { /* best-effort */ }
 
   console.log("quota-delegate: stopped");
   process.exit(0);

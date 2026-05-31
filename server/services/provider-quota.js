@@ -44,7 +44,7 @@ export class ProviderQuotaError extends Error {
    * @param {string} [opts.role]
    */
   constructor(message, opts) {
-    super(message);
+    super(redactSecrets(message));
     this.name = "ProviderQuotaError";
     this.providerKey = opts.providerKey;
     this.agent = opts.agent;

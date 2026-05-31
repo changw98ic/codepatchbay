@@ -1,12 +1,13 @@
 /**
  * Quota Delegate Client — IPC client for the quota delegate process.
  *
- * Sends structured commands to {hubRoot}/providers/delegate/commands.jsonl.
+ * Sends structured commands as individual files to {hubRoot}/providers/delegate/inbox/.
+ * Each command is a file named {commandId}.json, written via atomic rename.
  * Quota writes use strong ack (poll for ack file); usage writes are fire-and-forget.
- * Falls back to direct writes if delegate is unavailable.
+ * Fails closed when delegate is unavailable (no fallback to direct writes).
  */
 
-import { appendFile, mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -19,12 +20,16 @@ function delegateDir(hubRoot) {
   return path.join(hubRoot, "providers", "delegate");
 }
 
-function commandsFilePath(hubRoot) {
-  return path.join(delegateDir(hubRoot), "commands.jsonl");
+function inboxDir(hubRoot) {
+  return path.join(delegateDir(hubRoot), "inbox");
 }
 
 function acksDir(hubRoot) {
   return path.join(delegateDir(hubRoot), "acks");
+}
+
+function commandFilePath(hubRoot, commandId) {
+  return path.join(inboxDir(hubRoot), `${commandId}.json`);
 }
 
 function ackFilePath(hubRoot, commandId) {
@@ -35,29 +40,15 @@ function pidFilePath(hubRoot) {
   return path.join(hubRoot, "state", "quota-delegate.json");
 }
 
-// ─── Command Append ──────────────────────────────────────────────────
-
-// In-process queue to prevent interleaved JSONL writes
-const _appendQueues = new Map();
+// ─── Command Write (per-file, atomic rename) ─────────────────────────
 
 export async function appendCommand(hubRoot, command) {
-  const filePath = commandsFilePath(hubRoot);
-  const prev = _appendQueues.get(filePath) || Promise.resolve();
-  const next = prev.catch(() => null).then(async () => {
-    const line = `${JSON.stringify(command)}\n`;
-    try {
-      await appendFile(filePath, line, "utf8");
-    } catch (err) {
-      if (err.code === "ENOENT") {
-        await mkdir(delegateDir(hubRoot), { recursive: true });
-        await writeFile(filePath, line, "utf8");
-      } else {
-        throw err;
-      }
-    }
-  });
-  _appendQueues.set(filePath, next.catch(() => null));
-  return next;
+  const dir = inboxDir(hubRoot);
+  await mkdir(dir, { recursive: true });
+  const filePath = commandFilePath(hubRoot, command.commandId);
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, JSON.stringify(command) + "\n", "utf8");
+  await rename(tmp, filePath);
 }
 
 // ─── Ack Polling ─────────────────────────────────────────────────────
@@ -71,11 +62,10 @@ export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS)
       const content = await readFile(ackPath, "utf8");
       return JSON.parse(content);
     } catch {
-      // Not yet — wait and retry
       await new Promise((r) => setTimeout(r, ACK_POLL_MS));
     }
   }
-  return null; // timeout
+  return null;
 }
 
 // ─── Delegate Liveness ───────────────────────────────────────────────
@@ -96,9 +86,9 @@ export async function isDelegateAlive(hubRoot) {
 /**
  * Mark a provider as unavailable via the delegate.
  * Strong ack: blocks until delegate confirms the quota write.
- * Falls back to direct write if delegate is unavailable.
+ * Fails closed: returns null if delegate is unavailable (no fallback).
  */
-export async function delegateMarkProviderUnavailable(hubRoot, opts, directFallback, ackTimeoutMs) {
+export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutMs) {
   const commandId = randomUUID();
   const command = {
     commandId,
@@ -117,16 +107,8 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, directFallb
   };
 
   await appendCommand(hubRoot, command);
-
-  // Poll for ack
   const ack = await waitForAck(hubRoot, commandId, ackTimeoutMs || ACK_TIMEOUT_MS);
-  if (ack?.ok) return ack.entry;
-
-  // Fallback: delegate is down or timed out
-  if (directFallback) {
-    return directFallback(hubRoot, opts);
-  }
-  return null;
+  return ack?.ok ? ack.entry : null;
 }
 
 /**
@@ -134,8 +116,9 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, directFallb
  * Fire-and-forget: no ack, no waiting.
  */
 export async function delegateEnqueueProviderUsage(hubRoot, record) {
+  const commandId = randomUUID();
   const command = {
-    commandId: randomUUID(),
+    commandId,
     type: "usage_write",
     ts: new Date().toISOString(),
     record: {
