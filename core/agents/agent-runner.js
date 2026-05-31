@@ -1,6 +1,6 @@
 import { FailureKind, failure } from "../contracts/failure.js";
 
-const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests|capacity|overloaded/i;
+const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests|capacity|overloaded|ProviderQuotaError/i;
 const DEFAULT_TIMEOUT_MS = 0;
 
 /**
@@ -66,16 +66,25 @@ function classifyError(err, { agent, role, startedAt }) {
   const snippet = msg.slice(0, 500);
   const elapsedMs = Date.now() - startedAt;
 
-  // Rate limit
-  if (RATE_LIMIT_PATTERN.test(msg) || err?.name === "RateLimitError") {
-    const untilTs = err?.untilTs || parseResetTime(msg);
+  // Rate limit / ProviderQuotaError
+  if (RATE_LIMIT_PATTERN.test(msg) || err?.name === "RateLimitError" || err?.name === "ProviderQuotaError") {
+    const untilTs = err?.untilTs || err?.nextEligibleAt || parseResetTime(msg);
     return {
       ok: false,
       kind: FailureKind.AGENT_RATE_LIMITED,
       reason: msg,
       retryable: true,
       agent,
-      cause: { untilTs },
+      cause: {
+        untilTs,
+        status: err?.status || null,
+        providerKey: err?.providerKey || agent,
+        nextEligibleAt: err?.nextEligibleAt || untilTs,
+        source: err?.source || null,
+        confidence: err?.confidence ?? null,
+        stdout: err?.partialStdout || "",
+        stderr: err?.partialStderr || "",
+      },
       diagnostics: { elapsedMs, agent, role },
     };
   }

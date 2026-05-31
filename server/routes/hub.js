@@ -48,10 +48,13 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/acp", async (req) => {
-    const pool = getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot });
+    const hr = hubRoot(req);
+    const pool = getManagedAcpPool({ hubRoot: hr, cpbRoot: req.cpbRoot });
+    const quotas = await pool.readDurableRateLimits();
     return {
       ...pool.status(),
-      rateLimits: await pool.readDurableRateLimits(),
+      rateLimits: quotas,       // backward compat
+      providerQuotas: quotas,   // new name
     };
   });
 
@@ -250,11 +253,38 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/observability", async (req) => {
-    return buildObservabilitySummary({
+    const hr = hubRoot(req);
+    const summary = await buildObservabilitySummary({
       cpbRoot: req.cpbRoot,
-      hubRoot: hubRoot(req),
-      acpPool: getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot }),
+      hubRoot: hr,
+      acpPool: getManagedAcpPool({ hubRoot: hr, cpbRoot: req.cpbRoot }),
     });
+    // Extend with provider quota/usage summary
+    try {
+      const { listProviderQuotas } = await import("../services/provider-quota.js");
+      const { readSystemUsageRollup } = await import("../services/provider-usage.js");
+      const [quotas, usage] = await Promise.all([
+        listProviderQuotas(hr).catch(() => []),
+        readSystemUsageRollup(hr).catch(() => null),
+      ]);
+      summary.providerQuotas = quotas;
+      summary.providerUsage = usage;
+    } catch { /* optional enhancement */ }
+    return summary;
+  });
+
+  fastify.get("/hub/provider-quotas", async (req) => {
+    const { listProviderQuotas } = await import("../services/provider-quota.js");
+    return listProviderQuotas(hubRoot(req));
+  });
+
+  fastify.get("/hub/provider-usage", async (req) => {
+    const { readProviderUsageRollup, readSystemUsageRollup } = await import("../services/provider-usage.js");
+    const hr = hubRoot(req);
+    const rollup = req.query.system === "true"
+      ? await readSystemUsageRollup(hr)
+      : await readProviderUsageRollup(hr);
+    return rollup;
   });
 
   fastify.get("/hub/task-history", async (req) => {

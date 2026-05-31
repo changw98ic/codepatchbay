@@ -10,6 +10,9 @@ const MAX_RETRIES = {
   verification_failed: 2,
 };
 
+// Max provider fallback attempts before giving up
+const MAX_PROVIDER_FALLBACKS = Number(process.env.CPB_PROVIDER_FALLBACK_MAX || 2);
+
 // Complex failures that benefit from supervisor diagnosis (P1-2)
 const SUPERVISOR_ELIGIBLE_KINDS = new Set([
   FailureKind.AGENT_CONTRACT_INVALID,
@@ -34,12 +37,23 @@ export class FailureRouter {
     const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
 
-    // Rate limit → wait
+    // Rate limit → fallback or wait
     if (failure.kind === FailureKind.AGENT_RATE_LIMITED) {
+      const fallbackCount = failure.cause?.fallbackCount || 0;
+      if (fallbackCount < MAX_PROVIDER_FALLBACKS) {
+        return {
+          action: "fallback_provider",
+          reason: failure.reason,
+          providerKey: failure.cause?.providerKey,
+          nextEligibleAt: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
+          retryable: true,
+        };
+      }
+      // Exhausted fallbacks → wait
       return {
         action: "wait_for_rate_limit",
         reason: failure.reason,
-        untilTs: failure.cause?.untilTs || Date.now() + 60_000,
+        untilTs: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
         retryable: true,
       };
     }

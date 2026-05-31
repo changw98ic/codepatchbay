@@ -10,8 +10,21 @@
 
 import { runPhase } from "./run-phase.js";
 import { resolvePhases } from "./workflow-runner.js";
-import { isPhasePassed } from "../contracts/phase-result.js";
+import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
+import { FailureKind, failure } from "../contracts/failure.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
+import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
+
+// Lazy imports to avoid hard dependency on server/ from core/
+let _providerQuota = null;
+async function getProviderQuota() {
+  if (!_providerQuota) {
+    try { _providerQuota = await import("../../server/services/provider-quota.js"); } catch { _providerQuota = null; }
+  }
+  return _providerQuota;
+}
+
+const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 
 function ts() {
   return new Date().toISOString();
@@ -114,7 +127,36 @@ export async function runJob(ctx) {
       ts: ts(),
     });
 
-    const result = await runPhase({
+    // Provider selection + fallback for this phase
+    const role = phaseRoleMap[phase] || phase;
+    const phaseAgents = { ...ctx.agents };
+    let handoffCount = 0;
+    let handoffReason = null;
+
+    // Pre-flight: check if preferred provider is available
+    if (hubRoot && pool) {
+      const preflight = await preflightProvider({
+        hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
+      }).catch(() => null);
+      if (preflight && !preflight.available && preflight.fallback) {
+        phaseAgents[role] = preflight.fallback;
+        handoffReason = preflight.reason;
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "provider_handoff",
+          jobId,
+          project,
+          phase,
+          role,
+          from: preflight.from,
+          to: preflight.fallback,
+          reason: preflight.reason,
+          ts: ts(),
+        });
+      }
+    }
+
+    // Run phase (with mid-run quota fallback)
+    let result = await runPhase({
       phase,
       project,
       task,
@@ -127,7 +169,7 @@ export async function runJob(ctx) {
       state,
       previousResults: phaseResults,
       agent: ctx.agent,
-      agents: ctx.agents,
+      agents: phaseAgents,
       timeouts: {
         plan: phaseTimeout,
         execute: phaseTimeout,
@@ -137,11 +179,114 @@ export async function runJob(ctx) {
       },
     });
 
+    // Mid-run quota fallback: retry with different provider on AGENT_RATE_LIMITED
+    while (
+      hubRoot &&
+      !isPhasePassed(result) &&
+      result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
+      result.failure?.retryable &&
+      handoffCount < HANDOFF_MAX_PER_PHASE
+    ) {
+      handoffCount += 1;
+      const quotaCause = result.failure.cause || {};
+
+      // Mark the failed provider as unavailable
+      const pq = await getProviderQuota();
+      if (pq) await pq.markProviderUnavailable(hubRoot, {
+        providerKey: quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent),
+        agent: typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role],
+        variant: typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null,
+        status: quotaCause.status || "rate_limited",
+        nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+        source: quotaCause.source || "run-job-handoff",
+        confidence: quotaCause.confidence ?? 0.8,
+        reason: result.failure.reason,
+      }).catch(() => null);
+
+      // Select fallback provider
+      const fallback = await preflightProvider({
+        hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
+        excludeProvider: quotaCause.providerKey,
+      }).catch(() => null);
+
+      if (!fallback || !fallback.available) {
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "provider_quota_blocked",
+          jobId,
+          project,
+          phase,
+          role,
+          reason: "all fallback providers unavailable",
+          ts: ts(),
+        });
+        break;
+      }
+
+      // Apply fallback agent
+      phaseAgents[role] = fallback.fallback;
+
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "provider_handoff",
+        jobId,
+        project,
+        phase,
+        role,
+        from: quotaCause.providerKey,
+        to: fallback.fallback,
+        reason: result.failure.reason,
+        midRun: true,
+        attempt: handoffCount,
+        ts: ts(),
+      });
+
+      // Generate handoff context for continuation prompt (execute phase only)
+      let continuationContext = null;
+      if (phase === "execute") {
+        try {
+          continuationContext = await generateHandoffBundle({
+            project, jobId, phase, task,
+            originProvider: quotaCause.providerKey,
+            failureReason: result.failure.reason,
+            partialStdout: quotaCause.stdout || "",
+            partialStderr: quotaCause.stderr || "",
+            previousResults: phaseResults,
+            cpbRoot,
+            sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+          });
+        } catch { /* handoff bundle generation is best-effort */ }
+      }
+
+      // Retry the phase with fallback provider
+      result = await runPhase({
+        phase,
+        project,
+        task,
+        jobId,
+        job,
+        cpbRoot,
+        sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+        sourceContext: continuationContext
+          ? { ...sourceContext, handoff: continuationContext }
+          : sourceContext,
+        pool,
+        state,
+        previousResults: phaseResults,
+        agent: ctx.agent,
+        agents: phaseAgents,
+        timeouts: {
+          plan: phaseTimeout,
+          execute: phaseTimeout,
+          verify: phaseTimeout,
+          review: phaseTimeout,
+          repair: phaseTimeout,
+        },
+      });
+    }
+
     phaseResults.push(result);
 
-    // Resolve agent name for this phase (same logic as phase adapters)
-    const role = phaseRoleMap[phase] || phase;
-    const rawAgent = ctx.agents?.[role] || ctx.agent || legacyAgentForPhase(phase);
+    // Resolve agent name for this phase (use potentially handoff-modified phaseAgents)
+    const rawAgent = phaseAgents[role] || ctx.agent || legacyAgentForPhase(phase);
     const agentName = typeof rawAgent === "object" && rawAgent !== null
       ? (rawAgent.agent || rawAgent.name || legacyAgentForPhase(phase))
       : (rawAgent || legacyAgentForPhase(phase));
@@ -206,4 +351,99 @@ export async function runJob(ctx) {
     failure: null,
     phaseResults,
   };
+}
+
+// ─── Provider Selection Helpers ─────────────────────────────────────
+
+function resolveRawAgent(agents, agent, role, phase) {
+  const raw = agents?.[role] || agent || legacyAgentForPhase(phase);
+  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || raw.name || legacyAgentForPhase(phase), variant: raw.variant || null };
+  return { agent: raw, variant: null };
+}
+
+function resolveProviderKey(pool, rawAgent, defaultAgent) {
+  const { agent, variant } = typeof rawAgent === "object" && rawAgent !== null
+    ? { agent: rawAgent.agent || defaultAgent, variant: rawAgent.variant || null }
+    : { agent: rawAgent || defaultAgent, variant: null };
+  if (pool?.providerKey) return pool.providerKey(agent, variant);
+  if (variant && agent === "claude") return `claude:${variant}`;
+  return agent;
+}
+
+/**
+ * Pre-flight provider availability check.
+ * Returns { available, fallback, reason, from } or null if no quota service.
+ */
+async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, excludeProvider = null }) {
+  const pq = await getProviderQuota();
+  if (!pq || !hubRoot) return null;
+
+  const { agent: resolvedAgent, variant } = resolveRawAgent(agents, agent, role, phase);
+  const providerKey = resolveProviderKey(pool, agents?.[role], agent);
+
+  // Check preferred provider
+  if (providerKey !== excludeProvider) {
+    try {
+      await pq.assertProviderAvailable(hubRoot, {
+        providerKey,
+        agent: resolvedAgent,
+        variant,
+        phase,
+        role,
+      });
+      return { available: true, fallback: agents?.[role] || agent, reason: null, from: providerKey };
+    } catch {
+      // Preferred is unavailable — try fallbacks
+    }
+  }
+
+  // Try fallback candidates: other known variants
+  const fallbackCandidates = getFallbackCandidates(resolvedAgent, variant, excludeProvider || providerKey);
+  for (const candidate of fallbackCandidates) {
+    try {
+      await pq.assertProviderAvailable(hubRoot, {
+        providerKey: candidate.providerKey,
+        agent: candidate.agent,
+        variant: candidate.variant,
+        phase,
+        role,
+      });
+      return {
+        available: true,
+        fallback: candidate.variant ? { agent: candidate.agent, variant: candidate.variant } : candidate.agent,
+        reason: `fallback from ${providerKey}`,
+        from: providerKey,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    available: false,
+    fallback: null,
+    reason: `all providers unavailable for ${role}`,
+    from: providerKey,
+  };
+}
+
+function getFallbackCandidates(agent, currentVariant, excludeKey) {
+  const candidates = [];
+  if (agent === "claude") {
+    const variants = ["kimi-k2.6", "mimo-v2.5pro"];
+    for (const v of variants) {
+      const key = `claude:${v}`;
+      if (key !== excludeKey && v !== currentVariant) {
+        candidates.push({ agent: "claude", variant: v, providerKey: key });
+      }
+    }
+    // Also try plain claude if currently on a variant
+    if (currentVariant && "claude" !== excludeKey) {
+      candidates.push({ agent: "claude", variant: null, providerKey: "claude" });
+    }
+  }
+  if (agent === "codex" && "codex" !== excludeKey) {
+    candidates.push({ agent: "codex", variant: null, providerKey: "codex" });
+  }
+  return candidates;
 }
