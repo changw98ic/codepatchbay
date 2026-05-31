@@ -12,9 +12,9 @@ import {
   QuotaStatus,
   ProviderQuotaError,
   readProviderQuotas,
-  writeProviderQuota,
-  markProviderUnavailable,
-  markProviderAvailable,
+  _internalWriteProviderQuota,
+  _internalMarkProviderUnavailable,
+  _internalMarkProviderAvailable,
   assertProviderAvailable,
   classifyQuotaFailure,
   computeFixedBackoff,
@@ -24,7 +24,7 @@ import {
 } from "../server/services/provider-quota.js";
 import { getProviderAdapter, listAdapterKeys } from "../server/services/provider-adapters.js";
 import {
-  enqueueProviderUsage,
+  _internalAppendUsageLine,
   readProviderUsage,
   readProviderUsageRollup,
   readSystemUsageRollup,
@@ -89,7 +89,7 @@ describe("read/write quotas", () => {
   });
 
   it("writes and reads quota entry", async () => {
-    await writeProviderQuota(tmpDir, "claude", {
+    await _internalWriteProviderQuota(tmpDir, "claude", {
       agent: "claude",
       status: QuotaStatus.AVAILABLE,
     });
@@ -101,7 +101,7 @@ describe("read/write quotas", () => {
   });
 
   it("atomic write uses rename", async () => {
-    await writeProviderQuota(tmpDir, "codex", { agent: "codex", status: QuotaStatus.AVAILABLE });
+    await _internalWriteProviderQuota(tmpDir, "codex", { agent: "codex", status: QuotaStatus.AVAILABLE });
     const content = await readFile(path.join(tmpDir, "providers", "quotas.json"), "utf8");
     const parsed = JSON.parse(content);
     assert.ok(parsed.codex);
@@ -113,7 +113,7 @@ describe("read/write quotas", () => {
 describe("markProviderUnavailable", () => {
   it("sets status and nextEligibleAt", async () => {
     const nextEligibleAt = Date.now() + 60_000;
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       status: QuotaStatus.RATE_LIMITED,
@@ -127,7 +127,7 @@ describe("markProviderUnavailable", () => {
 
   it("rejects invalid status", async () => {
     await assert.rejects(
-      () => markProviderUnavailable(tmpDir, {
+      () => _internalMarkProviderUnavailable(tmpDir, {
         providerKey: "claude",
         agent: "claude",
         status: "available",
@@ -139,14 +139,14 @@ describe("markProviderUnavailable", () => {
 
 describe("markProviderAvailable", () => {
   it("clears status to available", async () => {
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       status: QuotaStatus.RATE_LIMITED,
       nextEligibleAt: Date.now() + 60_000,
       reason: "429",
     });
-    await markProviderAvailable(tmpDir, "claude");
+    await _internalMarkProviderAvailable(tmpDir, "claude");
     const quotas = await readProviderQuotas(tmpDir);
     assert.equal(quotas.claude.status, "available");
     assert.equal(quotas.claude.nextEligibleAt, null);
@@ -163,14 +163,14 @@ describe("assertProviderAvailable", () => {
   });
 
   it("passes when status is available", async () => {
-    await markProviderAvailable(tmpDir, "claude");
+    await _internalMarkProviderAvailable(tmpDir, "claude");
     await assert.doesNotReject(
       () => assertProviderAvailable(tmpDir, { providerKey: "claude", agent: "claude" }),
     );
   });
 
   it("throws when rate limited and not expired", async () => {
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       status: QuotaStatus.RATE_LIMITED,
@@ -184,7 +184,7 @@ describe("assertProviderAvailable", () => {
   });
 
   it("clears expired rate limit and passes", async () => {
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       status: QuotaStatus.RATE_LIMITED,
@@ -200,7 +200,7 @@ describe("assertProviderAvailable", () => {
   });
 
   it("throws for auth error (terminal)", async () => {
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       status: QuotaStatus.AUTH_ERROR,
@@ -218,7 +218,7 @@ describe("assertProviderAvailable", () => {
   });
 
   it("throws for window exhaustion without nextEligibleAt", async () => {
-    await markProviderUnavailable(tmpDir, {
+    await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude:kimi-k2.6",
       agent: "claude",
       variant: "kimi-k2.6",
@@ -455,7 +455,8 @@ describe("sanitizeProviderReason", () => {
 
 describe("provider-usage", () => {
   it("enqueues and reads usage", async () => {
-    await enqueueProviderUsage(tmpDir, {
+    await _internalAppendUsageLine(tmpDir, {
+      ts: new Date().toISOString(),
       providerKey: "claude",
       agent: "claude",
       phase: "execute",
@@ -473,7 +474,7 @@ describe("provider-usage", () => {
   });
 
   it("records new schema fields", async () => {
-    await enqueueProviderUsage(tmpDir, {
+    await _internalAppendUsageLine(tmpDir, {
       project: "my-proj",
       issueNumber: 42,
       attempt: 2,
@@ -505,9 +506,9 @@ describe("provider-usage", () => {
   });
 
   it("provider rollup aggregates correctly", async () => {
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 100, tokenSource: "reported", toolCalls: null, functionCalls: null } });
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "verify", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 50, tokenSource: "reported", toolCalls: null, functionCalls: null } });
-    await enqueueProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "error", phaseStatus: "failed" });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 100, tokenSource: "reported", toolCalls: null, functionCalls: null } });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "claude", agent: "claude", phase: "verify", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 50, tokenSource: "reported", toolCalls: null, functionCalls: null } });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "error", phaseStatus: "failed" });
 
     const rollup = await readProviderUsageRollup(tmpDir);
     assert.equal(rollup.claude.calls, 2);
@@ -518,8 +519,8 @@ describe("provider-usage", () => {
   });
 
   it("rollup counts fallbacks and quotaEvents", async () => {
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "fallback", phaseStatus: "passed", quota: { status: "rate_limited" }, fallback: { used: true, fromProviderKey: "claude", toProviderKey: "codex", count: 1, reason: "429" } });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "fallback", phaseStatus: "passed", quota: { status: "rate_limited" }, fallback: { used: true, fromProviderKey: "claude", toProviderKey: "codex", count: 1, reason: "429" } });
 
     const rollup = await readProviderUsageRollup(tmpDir);
     assert.equal(rollup.claude.calls, 2);
@@ -528,8 +529,8 @@ describe("provider-usage", () => {
   });
 
   it("system rollup aggregates all providers", async () => {
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
-    await enqueueProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "rate_limited", phaseStatus: "failed" });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
+    await _internalAppendUsageLine(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "rate_limited", phaseStatus: "failed" });
 
     const system = await readSystemUsageRollup(tmpDir);
     assert.equal(system.totalCalls, 2);
@@ -585,7 +586,7 @@ describe("concurrent write quotas.json", () => {
     const keys = ["a", "b", "c", "d", "e"];
     await Promise.all(
       keys.map((k) =>
-        writeProviderQuota(tmpDir, k, {
+        _internalWriteProviderQuota(tmpDir, k, {
           agent: k,
           status: QuotaStatus.AVAILABLE,
         }),

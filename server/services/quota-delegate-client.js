@@ -108,7 +108,12 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutM
 
   await appendCommand(hubRoot, command);
   const ack = await waitForAck(hubRoot, commandId, ackTimeoutMs || ACK_TIMEOUT_MS);
-  return ack?.ok ? ack.entry : null;
+  if (!ack?.ok) {
+    const err = new Error("quota delegate unavailable; provider state not recorded");
+    err.code = "QUOTA_DELEGATE_UNAVAILABLE";
+    throw err;
+  }
+  return ack.entry;
 }
 
 /**

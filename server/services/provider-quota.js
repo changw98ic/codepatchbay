@@ -90,7 +90,7 @@ export async function readProviderQuotas(hubRoot) {
 // In-process write queue to prevent concurrent write corruption
 const _writeQueues = new Map();
 
-export async function writeProviderQuota(hubRoot, providerKey, entry) {
+export async function _internalWriteProviderQuota(hubRoot, providerKey, entry) {
   const filePath = quotasFilePath(hubRoot);
   const queueKey = filePath;
   const prev = _writeQueues.get(queueKey) || Promise.resolve();
@@ -115,7 +115,7 @@ export async function writeProviderQuota(hubRoot, providerKey, entry) {
 }
 
 // ─── State Transitions ──────────────────────────────────────────────
-export async function markProviderUnavailable(hubRoot, {
+export async function _internalMarkProviderUnavailable(hubRoot, {
   providerKey,
   agent,
   variant,
@@ -135,7 +135,7 @@ export async function markProviderUnavailable(hubRoot, {
   if (!validStatuses.includes(status)) {
     throw new Error(`invalid unavailable status: ${status}`);
   }
-  return writeProviderQuota(hubRoot, providerKey, {
+  return _internalWriteProviderQuota(hubRoot, providerKey, {
     agent,
     variant: variant || null,
     status,
@@ -146,10 +146,10 @@ export async function markProviderUnavailable(hubRoot, {
   });
 }
 
-export async function markProviderAvailable(hubRoot, providerKey) {
+export async function _internalMarkProviderAvailable(hubRoot, providerKey) {
   const current = await readProviderQuotas(hubRoot);
   const existing = current[providerKey];
-  return writeProviderQuota(hubRoot, providerKey, {
+  return _internalWriteProviderQuota(hubRoot, providerKey, {
     agent: existing?.agent || providerKey,
     variant: existing?.variant || null,
     status: QuotaStatus.AVAILABLE,
@@ -211,7 +211,7 @@ export async function assertProviderAvailable(hubRoot, {
       );
     }
     // Expired — clear
-    await markProviderAvailable(hubRoot, providerKey);
+    await _internalMarkProviderAvailable(hubRoot, providerKey);
   }
 
   // Terminal statuses without nextEligibleAt (e.g. weekly/window with no reset)

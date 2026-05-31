@@ -24,14 +24,6 @@ async function getProviderQuota() {
   return _providerQuota;
 }
 
-let _providerUsage = null;
-async function getProviderUsage() {
-  if (!_providerUsage) {
-    try { _providerUsage = await import("../../server/services/provider-usage.js"); } catch { _providerUsage = null; }
-  }
-  return _providerUsage;
-}
-
 let _providerAdapters = null;
 async function getProviderAdapters() {
   if (!_providerAdapters) {
@@ -219,22 +211,19 @@ export async function runJob(ctx) {
       const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
       const failedAgent = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role];
       const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
-      try {
-        const dc = await getDelegateClient();
-        if (dc) {
-          await dc.delegateMarkProviderUnavailable(hubRoot, {
-            providerKey: failedProviderKey,
-            agent: failedAgent,
-            variant: failedVariant,
-            status: quotaCause.status || "rate_limited",
-            nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
-            source: quotaCause.source || "run-job-handoff",
-            confidence: quotaCause.confidence ?? 0.8,
-            reason: result.failure.reason,
-          });
-        }
-      } catch {
-        // Delegate unavailable — quota write is lost (fail closed)
+      // Mark failed provider unavailable via delegate (fail closed — error propagates)
+      const dc = await getDelegateClient();
+      if (dc) {
+        await dc.delegateMarkProviderUnavailable(hubRoot, {
+          providerKey: failedProviderKey,
+          agent: failedAgent,
+          variant: failedVariant,
+          status: quotaCause.status || "rate_limited",
+          nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+          source: quotaCause.source || "run-job-handoff",
+          confidence: quotaCause.confidence ?? 0.8,
+          reason: result.failure.reason,
+        });
       }
 
       // Track provider attempt for history chain

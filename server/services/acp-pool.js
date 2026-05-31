@@ -12,7 +12,6 @@ import {
   ProviderQuotaError,
   assertProviderAvailable,
   classifyQuotaFailure,
-  markProviderUnavailable,
 } from "./provider-quota.js";
 import { getProviderAdapter } from "./provider-adapters.js";
 
@@ -568,22 +567,18 @@ export class AcpPool {
 
       if (quotaResult.isQuota) {
         await this.#recycleSession(agent, "rate_limit");
-        // Route through delegate client (fail closed — no direct fallback)
-        try {
-          const { delegateMarkProviderUnavailable } = await import("./quota-delegate-client.js");
-          await delegateMarkProviderUnavailable(this.hubRoot, {
-            providerKey,
-            agent,
-            variant: options.variant,
-            status: quotaResult.status,
-            nextEligibleAt: quotaResult.nextEligibleAt,
-            source: quotaResult.source || "acp-pool-classifier",
-            confidence: quotaResult.confidence,
-            reason: quotaResult.reason,
-          });
-        } catch {
-          // Delegate unavailable — quota write is lost (fail closed)
-        }
+        // Route through delegate client (fail closed — delegate error propagates)
+        const { delegateMarkProviderUnavailable } = await import("./quota-delegate-client.js");
+        await delegateMarkProviderUnavailable(this.hubRoot, {
+          providerKey,
+          agent,
+          variant: options.variant,
+          status: quotaResult.status,
+          nextEligibleAt: quotaResult.nextEligibleAt,
+          source: quotaResult.source || "acp-pool-classifier",
+          confidence: quotaResult.confidence,
+          reason: quotaResult.reason,
+        });
         throw new ProviderQuotaError(quotaResult.reason, {
           providerKey,
           agent,

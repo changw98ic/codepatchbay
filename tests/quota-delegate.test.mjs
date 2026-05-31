@@ -103,23 +103,26 @@ describe("isDelegateAlive", () => {
 // ─── Client: delegateMarkProviderUnavailable ─────────────────────────
 
 describe("delegateMarkProviderUnavailable", () => {
-  it("writes command to inbox and returns null on timeout (fail closed)", async () => {
-    const result = await delegateMarkProviderUnavailable(hubRoot, {
-      providerKey: "test-provider",
-      agent: "claude",
-      status: "rate_limited",
-      reason: "429",
-      nextEligibleAt: Date.now() + 60000,
-      confidence: 0.9,
-      source: "test",
-    }, 200);
+  it("writes command to inbox and throws on timeout (fail closed)", async () => {
+    await assert.rejects(
+      () => delegateMarkProviderUnavailable(hubRoot, {
+        providerKey: "test-provider",
+        agent: "claude",
+        status: "rate_limited",
+        reason: "429",
+        nextEligibleAt: Date.now() + 60000,
+        confidence: 0.9,
+        source: "test",
+      }, 200),
+      (err) => {
+        assert.equal(err.code, "QUOTA_DELEGATE_UNAVAILABLE");
+        return true;
+      },
+    );
 
-    // Command was written to inbox
+    // Command was still written to inbox
     const files = await readdir(path.join(hubRoot, "providers", "delegate", "inbox"));
     assert.ok(files.some((f) => f.endsWith(".json")));
-
-    // No ack → null (fail closed, no fallback)
-    assert.equal(result, null);
   });
 });
 
@@ -162,7 +165,7 @@ describe("delegateEnqueueProviderUsage", () => {
 
 describe("delegate command processing", () => {
   it("quota_write produces quota entry via writeProviderQuota", async () => {
-    const { writeProviderQuota: wpq } = await import("../server/services/provider-quota.js");
+    const { _internalWriteProviderQuota: wpq } = await import("../server/services/provider-quota.js");
     await wpq(hubRoot, "test-key", { agent: "claude", status: "rate_limited", nextEligibleAt: Date.now() + 60000, source: "test", confidence: 0.9, reason: "429" });
     const quotas = await readProviderQuotas(hubRoot);
     assert.ok(quotas["test-key"]);

@@ -8,9 +8,10 @@
  * Usage: node quota-delegate.js --hub-root <path>
  */
 
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { redactSecrets, writeProviderQuota, markProviderAvailable } from "./provider-quota.js";
+import { redactSecrets, _internalWriteProviderQuota, _internalMarkProviderAvailable } from "./provider-quota.js";
+import { _internalAppendUsageLine } from "./provider-usage.js";
 
 const POLL_INTERVAL_MS = Number(process.env.CPB_DELEGATE_POLL_MS || 100);
 const STALE_ACK_MS = 60_000;
@@ -80,7 +81,7 @@ async function processCommand(hubRoot, cmd) {
     case "quota_write": {
       const entry = { ...cmd.entry };
       if (entry.reason) entry.reason = redactSecrets(entry.reason);
-      const result = await writeProviderQuota(hubRoot, cmd.providerKey, entry);
+      const result = await _internalWriteProviderQuota(hubRoot, cmd.providerKey, entry);
       if (cmd.commandId) {
         await writeAck(hubRoot, cmd.commandId, { ok: true, entry: result });
       }
@@ -89,6 +90,12 @@ async function processCommand(hubRoot, cmd) {
 
     case "usage_write": {
       const record = cmd.record || {};
+      // Redact secrets in nested reason fields at delegate boundary
+      const quota = record.quota ? { ...record.quota, reason: redactSecrets(record.quota.reason) } : null;
+      const fallback = record.fallback ? { ...record.fallback, reason: redactSecrets(record.fallback.reason) } : null;
+      const providerAttempts = record.providerAttempts
+        ? record.providerAttempts.map((a) => ({ ...a, reason: redactSecrets(a.reason) }))
+        : null;
       const entry = {
         ts: record.ts || cmd.ts || new Date().toISOString(),
         project: record.project || null,
@@ -104,19 +111,19 @@ async function processCommand(hubRoot, cmd) {
         status: record.status,
         phaseStatus: record.phaseStatus,
         durationMs: record.durationMs ?? null,
-        quota: record.quota || null,
+        quota,
         usage: record.usage || null,
-        fallback: record.fallback || null,
-        providerAttempts: record.providerAttempts || null,
+        fallback,
+        providerAttempts,
         source: record.source || null,
       };
-      await appendUsageLine(hubRoot, entry);
+      await _internalAppendUsageLine(hubRoot, entry);
       // No ack for usage writes
       break;
     }
 
     case "quota_available": {
-      await markProviderAvailable(hubRoot, cmd.providerKey);
+      await _internalMarkProviderAvailable(hubRoot, cmd.providerKey);
       if (cmd.commandId) {
         await writeAck(hubRoot, cmd.commandId, { ok: true });
       }
@@ -125,19 +132,6 @@ async function processCommand(hubRoot, cmd) {
 
     default:
       break;
-  }
-}
-
-// ─── Usage JSONL Append ──────────────────────────────────────────────
-
-async function appendUsageLine(hubRoot, record) {
-  const filePath = path.join(hubRoot, "providers", "usage.jsonl");
-  const line = `${JSON.stringify(record)}\n`;
-  try {
-    await appendFile(filePath, line, "utf8");
-  } catch {
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, line, "utf8");
   }
 }
 

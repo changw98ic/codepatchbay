@@ -4,8 +4,8 @@
  * Records provider usage per phase to {hubRoot}/providers/usage.jsonl.
  * Phase-level (not per-call): runJob() enqueues after each phase completes.
  *
- * Write API: enqueueProviderUsage (queue-based, in-process)
- * Read API:  readProviderUsage, readProviderUsageRollup, readSystemUsageRollup
+ * Write: _internalAppendUsageLine (delegate + tests only — production callers use quota-delegate-client.js)
+ * Read:  readProviderUsage, readProviderUsageRollup, readSystemUsageRollup
  */
 
 import { mkdir, readFile, appendFile, writeFile } from "node:fs/promises";
@@ -17,15 +17,13 @@ function usageFilePath(hubRoot) {
   return path.join(hubRoot, "providers", USAGE_FILE);
 }
 
-// ─── In-process write queue (same pattern as provider-quota.js) ─────
-const _usageWriteQueues = new Map();
-
 /**
- * Low-level JSONL append.
+ * Low-level JSONL append. Internal — only quota-delegate.js and tests should call.
+ * Production callers must use quota-delegate-client.delegateEnqueueProviderUsage().
  * @param {string} hubRoot
  * @param {object} record — already-normalized entry
  */
-async function appendProviderUsageLine(hubRoot, record) {
+export async function _internalAppendUsageLine(hubRoot, record) {
   const filePath = usageFilePath(hubRoot);
   const line = `${JSON.stringify(record)}\n`;
   try {
@@ -35,46 +33,6 @@ async function appendProviderUsageLine(hubRoot, record) {
     await writeFile(filePath, line, "utf8");
   }
   return record;
-}
-
-/**
- * Queue-based usage writer. Serializes concurrent writes to prevent
- * interleaved JSONL lines.
- *
- * @param {string} hubRoot
- * @param {object} record
- * @returns {Promise<object>} the normalized entry
- */
-export async function enqueueProviderUsage(hubRoot, record) {
-  const filePath = usageFilePath(hubRoot);
-  const prev = _usageWriteQueues.get(filePath) || Promise.resolve();
-  const next = prev.catch(() => null).then(async () => {
-    const entry = {
-      ts: new Date().toISOString(),
-      project: record.project || null,
-      issueNumber: record.issueNumber ?? null,
-      source: record.source || null,
-      attempt: record.attempt ?? null,
-      phase: record.phase,
-      role: record.role || null,
-      providerKey: record.providerKey,
-      agent: record.agent,
-      variant: record.variant || null,
-      providerRegion: record.providerRegion || null,
-      providerAdapter: record.providerAdapter || null,
-      status: record.status,
-      phaseStatus: record.phaseStatus,
-      durationMs: record.durationMs ?? null,
-      quota: record.quota || { status: null, source: null, confidence: null, nextEligibleAt: null, retryAfterMs: null, windowResetAt: null, weeklyResetAt: null, reason: null },
-      fallback: record.fallback || { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
-      providerAttempts: record.providerAttempts || null,
-      usage: record.usage || { calls: null, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
-    };
-    await appendProviderUsageLine(hubRoot, entry);
-    return entry;
-  });
-  _usageWriteQueues.set(filePath, next.catch(() => null));
-  return next;
 }
 
 // ─── Read API ───────────────────────────────────────────────────────
