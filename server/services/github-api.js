@@ -156,6 +156,49 @@ export async function closeGithubIssueWithApi({ repo, number, body }, config, { 
   };
 }
 
+// --- Transport: add labels to issue/PR ---
+
+export async function addGithubLabelsWithApi({ repo, issueNumber, labels }, config, { env = process.env } = {}) {
+  const token = await getInstallationToken(config, { env });
+  const result = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}/labels`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ labels }),
+  });
+  return {
+    added: (result || []).map((l) => l.name),
+  };
+}
+
+// --- Transport: remove a label from issue/PR ---
+
+export async function removeGithubLabelWithApi({ repo, issueNumber, label }, config, { env = process.env } = {}) {
+  const token = await getInstallationToken(config, { env });
+  await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return { removed: label };
+}
+
+// --- Transport: update pull request body ---
+
+export async function updateGithubPrBodyWithApi({ repo, pullNumber, body, title }, config, { env = process.env } = {}) {
+  const token = await getInstallationToken(config, { env });
+  const patch = {};
+  if (body !== undefined) patch.body = body;
+  if (title !== undefined) patch.title = title;
+  const result = await fetchJson(`${GITHUB_API}/repos/${repo}/pulls/${pullNumber}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(patch),
+  });
+  return {
+    url: result.html_url || result.url || null,
+    number: result.number || null,
+  };
+}
+
 // --- Composite transport selector (never throws) ---
 
 function makeDiagnostic(level, message) {
@@ -211,6 +254,9 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
       postComment: (req) => postGithubCommentWithApi(req, config, { env }),
       createPullRequest: (req) => createPullRequestWithApi(req, config, { env }),
       closeIssue: (req) => closeGithubIssueWithApi(req, config, { env }),
+      addLabels: (req) => addGithubLabelsWithApi(req, config, { env }),
+      removeLabel: (req) => removeGithubLabelWithApi(req, config, { env }),
+      updatePrBody: (req) => updateGithubPrBodyWithApi(req, config, { env }),
     };
   }
 
@@ -227,8 +273,8 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
   }
 
   if (ghAvailable) {
-    const { postGithubCommentWithGh } = await import("./github-comments.js");
-    const { createPullRequestWithGh } = await import("./github-pr.js");
+    const { postGithubCommentWithGh, addGithubLabelsWithGh, removeGithubLabelWithGh } = await import("./github-comments.js");
+    const { createPullRequestWithGh, updateGithubPrBodyWithGh } = await import("./github-pr.js");
     const { closeGithubIssueWithGh } = await import("./github-issues.js");
 
     const fallbackReason = apiDiagnostics.length > 0
@@ -247,6 +293,9 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
       postComment: (req) => postGithubCommentWithGh(req),
       createPullRequest: (req) => createPullRequestWithGh(req),
       closeIssue: (req) => closeGithubIssueWithGh(req),
+      addLabels: (req) => addGithubLabelsWithGh(req),
+      removeLabel: (req) => removeGithubLabelWithGh(req),
+      updatePrBody: (req) => updateGithubPrBodyWithGh(req),
     };
   }
 
@@ -264,5 +313,8 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
     postComment: null,
     createPullRequest: null,
     closeIssue: null,
+    addLabels: null,
+    removeLabel: null,
+    updatePrBody: null,
   };
 }

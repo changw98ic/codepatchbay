@@ -180,6 +180,26 @@ export async function createPullRequestWithGh(request, { runCommand = execFileAs
   }
 }
 
+export async function updateGithubPrBodyWithGh({ repo, pullNumber, body, title }, { runCommand = execFileAsync } = {}) {
+  const args = ["pr", "edit", String(pullNumber), "--repo", repo];
+  if (body) {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-body-edit-"));
+    const bodyFile = path.join(tmpDir, "body.md");
+    try {
+      await writeFile(bodyFile, body, "utf8");
+      args.push("--body-file", bodyFile);
+      if (title) args.push("--title", title);
+      await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  } else {
+    if (title) args.push("--title", title);
+    await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+  }
+  return { ok: true };
+}
+
 export async function openDraftPullRequest({
   job,
   verdict,

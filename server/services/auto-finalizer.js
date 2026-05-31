@@ -11,6 +11,7 @@ import {
 } from "./merge-steward.js";
 import { appendEvent } from "./event-store.js";
 import { openDraftPullRequest } from "./github-pr.js";
+import { addGithubLabels, removeGithubLabel, postGithubRunComment } from "./github-comments.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { actualDiffRiskGuard } from "../../core/triage/rules.js";
 import { normalizeRoute, scopesContainCritical } from "../../core/triage/schema.js";
@@ -411,6 +412,11 @@ export async function finalizeSuccessfulQueueEntry({
   transportMode = null,
   dataRoot,
   hubRoot = null,
+  addLabels = null,
+  removeLabel = null,
+  updatePrBody = null,
+  labelsToAdd = null,
+  labelsToRemove = null,
 } = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
   const projectId = project || job?.project || entry?.projectId || null;
@@ -648,6 +654,43 @@ export async function finalizeSuccessfulQueueEntry({
       ts: new Date().toISOString(),
     }, { dataRoot });
 
+    // Post-finalize writeback: labels + PR body enrichment
+    const writebackResults = {};
+    if (labelsToAdd?.length && typeof addLabels === "function") {
+      writebackResults.labelsAdded = await addGithubLabels({
+        cpbRoot, project: projectId, jobId: job.jobId,
+        repo: issue.repo, issueNumber: issue.number,
+        labels: labelsToAdd, addLabels, transportMode, dataRoot,
+      }).catch((err) => ({ status: "failed", error: { message: err.message } }));
+    }
+    if (labelsToRemove?.length && typeof removeLabel === "function") {
+      writebackResults.labelsRemoved = [];
+      for (const label of labelsToRemove) {
+        const result = await removeGithubLabel({
+          cpbRoot, project: projectId, jobId: job.jobId,
+          repo: issue.repo, issueNumber: issue.number,
+          label, removeLabel, transportMode, dataRoot,
+        }).catch((err) => ({ status: "failed", error: { message: err.message } }));
+        writebackResults.labelsRemoved.push(result);
+      }
+    }
+    if (pr.prNumber && typeof updatePrBody === "function") {
+      const { buildCodePatchBayPrBody } = await import("./pr-body.js");
+      const routingContext = buildRoutingContext(entry, job, routeGuard);
+      routingContext.changedFiles = files;
+      routingContext.commit = {
+        sha: pr.branchPreparation?.commit || await revParse(canonicalWorktreePath, "HEAD", { runCommand }),
+      };
+      const enrichedBody = buildCodePatchBayPrBody({ job: prJob, verdict: { status: "pass" }, routingContext });
+      try {
+        writebackResults.prBodyUpdate = await updatePrBody({
+          repo: issue.repo, pullNumber: pr.prNumber, body: enrichedBody,
+        });
+      } catch (err) {
+        writebackResults.prBodyUpdate = { status: "failed", error: { message: err.message } };
+      }
+    }
+
     const commit = pr.branchPreparation?.commit || await revParse(canonicalWorktreePath, "HEAD", { runCommand });
     return {
       ok: true,
@@ -667,6 +710,7 @@ export async function finalizeSuccessfulQueueEntry({
       prUrl: pr.prUrl,
       prNumber: pr.prNumber,
       pr,
+      writeback: Object.keys(writebackResults).length > 0 ? writebackResults : undefined,
     };
   }
 

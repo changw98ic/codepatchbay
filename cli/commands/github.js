@@ -9,6 +9,12 @@ function usage() {
     "  bind <project> <owner/repo> [--json]  Bind a Hub project to a GitHub repository",
     "  connect [options]                   Configure GitHub App credentials",
     "  doctor [--json]                     Check GitHub integration health",
+    "  label <owner/repo> <issue> --add <label> [--remove <label>]",
+    "                                      Add or remove labels on an issue",
+    "  comment <owner/repo> <issue> --body <text>",
+    "                                      Post a comment on an issue or PR",
+    "  pr-body <owner/repo> <pr-number> --body <text|@file>",
+    "                                      Update a PR body",
   ].join("\n");
 }
 
@@ -264,6 +270,165 @@ async function runDoctor(args, { cpbRoot } = {}) {
   return hasError ? 1 : 0;
 }
 
+async function runLabel(args, { cpbRoot } = {}) {
+  const json = args.includes("--json");
+  const filtered = args.filter((a) => a !== "--json");
+  const repo = filtered[0];
+  const issueNumber = Number(filtered[1]);
+
+  if (!repo || !Number.isFinite(issueNumber)) {
+    console.error("Usage: cpb github label <owner/repo> <issue-number> --add <label> [--remove <label>] [--json]");
+    return 1;
+  }
+
+  const addLabels = [];
+  const removeLabels = [];
+  for (let i = 2; i < filtered.length; i++) {
+    if (filtered[i] === "--add" && filtered[i + 1]) addLabels.push(filtered[++i]);
+    else if (filtered[i] === "--remove" && filtered[i + 1]) removeLabels.push(filtered[++i]);
+  }
+
+  if (addLabels.length === 0 && removeLabels.length === 0) {
+    console.error("Provide at least one --add or --remove label.");
+    return 1;
+  }
+
+  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveGithubTransport } = await import("../../server/services/github-api.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const transport = await resolveGithubTransport(hubRoot);
+
+  if (!transport?.healthy) {
+    console.error("GitHub transport unavailable. Run: cpb github doctor");
+    return 1;
+  }
+
+  const results = {};
+
+  if (addLabels.length > 0 && transport.addLabels) {
+    try {
+      results.added = await transport.addLabels({ repo, issueNumber, labels: addLabels });
+    } catch (err) {
+      results.addError = err.message;
+    }
+  }
+
+  for (const label of removeLabels) {
+    if (!transport.removeLabel) continue;
+    try {
+      await transport.removeLabel({ repo, issueNumber, label });
+      results.removed = results.removed || [];
+      results.removed.push(label);
+    } catch (err) {
+      results.removeError = err.message;
+    }
+  }
+
+  if (json) {
+    console.log(JSON.stringify(results, null, 2));
+  } else {
+    if (results.added) console.log(`Added labels: ${addLabels.join(", ")}`);
+    if (results.removed) console.log(`Removed labels: ${removeLabels.join(", ")}`);
+    if (results.addError) console.error(`Add error: ${results.addError}`);
+    if (results.removeError) console.error(`Remove error: ${results.removeError}`);
+  }
+  return results.addError || results.removeError ? 1 : 0;
+}
+
+async function runComment(args, { cpbRoot } = {}) {
+  const json = args.includes("--json");
+  const filtered = args.filter((a) => a !== "--json");
+  const repo = filtered[0];
+  const issueNumber = Number(filtered[1]);
+
+  if (!repo || !Number.isFinite(issueNumber)) {
+    console.error("Usage: cpb github comment <owner/repo> <issue-number> --body <text> [--json]");
+    return 1;
+  }
+
+  let body = null;
+  for (let i = 2; i < filtered.length; i++) {
+    if (filtered[i] === "--body" && filtered[i + 1]) body = filtered[++i];
+  }
+
+  if (!body) {
+    console.error("--body is required");
+    return 1;
+  }
+
+  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveGithubTransport } = await import("../../server/services/github-api.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const transport = await resolveGithubTransport(hubRoot);
+
+  if (!transport?.postComment) {
+    console.error("GitHub comment transport unavailable. Run: cpb github doctor");
+    return 1;
+  }
+
+  try {
+    const result = await transport.postComment({ repo, issueNumber, body });
+    if (json) console.log(JSON.stringify({ posted: true, result }, null, 2));
+    else console.log(`Comment posted on ${repo}#${issueNumber}`);
+    return 0;
+  } catch (err) {
+    if (json) console.log(JSON.stringify({ posted: false, error: err.message }, null, 2));
+    else console.error(`Failed: ${err.message}`);
+    return 1;
+  }
+}
+
+async function runPrBody(args, { cpbRoot } = {}) {
+  const json = args.includes("--json");
+  const filtered = args.filter((a) => a !== "--json");
+  const repo = filtered[0];
+  const pullNumber = Number(filtered[1]);
+
+  if (!repo || !Number.isFinite(pullNumber)) {
+    console.error("Usage: cpb github pr-body <owner/repo> <pr-number> --body <text|@file> [--json]");
+    return 1;
+  }
+
+  let body = null;
+  let title = null;
+  for (let i = 2; i < filtered.length; i++) {
+    if (filtered[i] === "--body" && filtered[i + 1]) {
+      body = filtered[++i];
+      if (body.startsWith("@")) {
+        const { readFileSync } = await import("node:fs");
+        body = readFileSync(body.slice(1), "utf8");
+      }
+    }
+    if (filtered[i] === "--title" && filtered[i + 1]) title = filtered[++i];
+  }
+
+  if (!body && !title) {
+    console.error("--body and/or --title is required");
+    return 1;
+  }
+
+  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveGithubTransport } = await import("../../server/services/github-api.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const transport = await resolveGithubTransport(hubRoot);
+
+  if (!transport?.updatePrBody) {
+    console.error("GitHub PR body update unavailable. Run: cpb github doctor");
+    return 1;
+  }
+
+  try {
+    const result = await transport.updatePrBody({ repo, pullNumber, body, title });
+    if (json) console.log(JSON.stringify({ updated: true, result }, null, 2));
+    else console.log(`PR #${pullNumber} updated on ${repo}`);
+    return 0;
+  } catch (err) {
+    if (json) console.log(JSON.stringify({ updated: false, error: err.message }, null, 2));
+    else console.error(`Failed: ${err.message}`);
+    return 1;
+  }
+}
+
 export async function run(args = [], { cpbRoot } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
@@ -284,6 +449,18 @@ export async function run(args = [], { cpbRoot } = {}) {
 
   if (parsed.command === "doctor") {
     return runDoctor(args, { cpbRoot });
+  }
+
+  if (parsed.command === "label") {
+    return runLabel(args, { cpbRoot });
+  }
+
+  if (parsed.command === "comment") {
+    return runComment(args, { cpbRoot });
+  }
+
+  if (parsed.command === "pr-body") {
+    return runPrBody(args, { cpbRoot });
   }
 
   if (parsed.command !== "bind") {

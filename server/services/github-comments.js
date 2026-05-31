@@ -105,6 +105,24 @@ export async function postGithubCommentWithGh({ repo, issueNumber, body }, { run
   };
 }
 
+export async function addGithubLabelsWithGh({ repo, issueNumber, labels }, { runCommand = execFileAsync } = {}) {
+  const args = ["issue", "edit", String(issueNumber), "--repo", repo];
+  for (const label of labels) {
+    args.push("--add-label", label);
+  }
+  await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+  return { added: labels };
+}
+
+export async function removeGithubLabelWithGh({ repo, issueNumber, label }, { runCommand = execFileAsync } = {}) {
+  await runCommand("gh", [
+    "issue", "edit", String(issueNumber),
+    "--repo", repo,
+    "--remove-label", label,
+  ], { maxBuffer: 1024 * 1024 });
+  return { removed: label };
+}
+
 function statusHeading(status) {
   if (status === "blocked") return "CodePatchBay blocked this run.";
   if (status === "failed") return "CodePatchBay failed this run.";
@@ -352,5 +370,210 @@ export async function postGithubStatusComment({
         code: error.code || null,
       },
     };
+  }
+}
+
+// --- Run progress comments (phase-by-phase updates) ---
+
+const PHASE_EMOJI = {
+  plan: "📋",
+  execute: "⚡",
+  verify: "✅",
+  review: "🔍",
+};
+
+const PHASE_LABEL = {
+  plan: "Planning",
+  execute: "Executing",
+  verify: "Verifying",
+  review: "Reviewing",
+};
+
+export function buildRunComment({ job = {}, phase = null, status = null, details = {} } = {}) {
+  const emoji = PHASE_EMOJI[phase] || "🔄";
+  const label = PHASE_LABEL[phase] || (phase || "Processing");
+  const jobId = job.jobId || details.jobId || "unknown";
+
+  const lines = [
+    `${emoji} **${label}** — ${status === "completed" ? "done" : status === "failed" ? "failed" : "in progress"}`,
+    "",
+    `- Job: ${jobId}`,
+  ];
+
+  if (details.artifactPath) {
+    lines.push(`- Artifact: \`${details.artifactPath}\``);
+  }
+  if (details.durationMs != null) {
+    const sec = Math.round(details.durationMs / 1000);
+    lines.push(`- Duration: ${sec}s`);
+  }
+  if (details.retryCount != null && details.retryCount > 0) {
+    lines.push(`- Retries: ${details.retryCount}`);
+  }
+  if (details.reason) {
+    lines.push(`- Reason: ${details.reason}`);
+  }
+  if (details.changedFiles) {
+    const files = details.changedFiles;
+    const display = files.length <= 10 ? files : [...files.slice(0, 10), `... +${files.length - 10} more`];
+    lines.push("", "**Changed files:**", ...display.map((f) => `- \`${f}\``));
+  }
+  if (details.summary) {
+    lines.push("", details.summary);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+export async function postGithubRunComment({
+  cpbRoot,
+  project,
+  jobId,
+  repo,
+  issueNumber,
+  phase,
+  status,
+  details = {},
+  postComment,
+  dryRun = false,
+  transportMode = null,
+  dataRoot,
+} = {}) {
+  const body = buildRunComment({ phase, status, details: { ...details, jobId } });
+  const request = { repo, issueNumber, body };
+
+  if (dryRun) {
+    return { status: "dry-run", posted: false, request, body };
+  }
+
+  try {
+    if (typeof postComment !== "function") {
+      throw new Error("GitHub comment transport not configured");
+    }
+    const response = await postComment(request);
+
+    if (cpbRoot && project && jobId) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "github_comment_posted",
+        jobId,
+        project,
+        commentKind: "run-progress",
+        phase,
+        phaseStatus: status,
+        repo,
+        issueNumber,
+        bodyHash: hashBody(body),
+        response: responseSummary(response),
+        transportMode,
+        transportFallback: transportMode === "gh",
+        ts: new Date().toISOString(),
+      }, { dataRoot }).catch(() => {});
+    }
+
+    return { status: "posted", posted: true, request, body, response };
+  } catch (error) {
+    if (cpbRoot && project && jobId) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "github_comment_failed",
+        jobId,
+        project,
+        commentKind: "run-progress",
+        phase,
+        phaseStatus: status,
+        repo,
+        issueNumber,
+        bodyHash: hashBody(body),
+        error: { message: error.message, code: error.code || null },
+        transportMode,
+        transportFallback: transportMode === "gh",
+        ts: new Date().toISOString(),
+      }, { dataRoot }).catch(() => {});
+    }
+    return { status: "failed", posted: false, request, body, error: { message: error.message } };
+  }
+}
+
+// --- Label management with audit logging ---
+
+export async function addGithubLabels({
+  cpbRoot,
+  project,
+  jobId,
+  repo,
+  issueNumber,
+  labels,
+  addLabels,
+  dryRun = false,
+  transportMode = null,
+  dataRoot,
+} = {}) {
+  if (!labels || labels.length === 0) return { status: "skipped", added: [] };
+  if (dryRun) return { status: "dry-run", added: labels };
+
+  try {
+    if (typeof addLabels !== "function") {
+      throw new Error("GitHub label transport not configured");
+    }
+    const result = await addLabels({ repo, issueNumber, labels });
+
+    if (cpbRoot && project && jobId) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "github_labels_added",
+        jobId,
+        project,
+        repo,
+        issueNumber,
+        labels,
+        added: result.added || labels,
+        transportMode,
+        transportFallback: transportMode === "gh",
+        ts: new Date().toISOString(),
+      }, { dataRoot }).catch(() => {});
+    }
+
+    return { status: "posted", added: result.added || labels };
+  } catch (error) {
+    return { status: "failed", added: [], error: { message: error.message } };
+  }
+}
+
+export async function removeGithubLabel({
+  cpbRoot,
+  project,
+  jobId,
+  repo,
+  issueNumber,
+  label,
+  removeLabel,
+  dryRun = false,
+  transportMode = null,
+  dataRoot,
+} = {}) {
+  if (!label) return { status: "skipped", removed: null };
+  if (dryRun) return { status: "dry-run", removed: label };
+
+  try {
+    if (typeof removeLabel !== "function") {
+      throw new Error("GitHub label transport not configured");
+    }
+    const result = await removeLabel({ repo, issueNumber, label });
+
+    if (cpbRoot && project && jobId) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "github_label_removed",
+        jobId,
+        project,
+        repo,
+        issueNumber,
+        label,
+        transportMode,
+        transportFallback: transportMode === "gh",
+        ts: new Date().toISOString(),
+      }, { dataRoot }).catch(() => {});
+    }
+
+    return { status: "posted", removed: result.removed || label };
+  } catch (error) {
+    return { status: "failed", removed: null, error: { message: error.message } };
   }
 }

@@ -114,6 +114,44 @@ function childTaskLines(rc) {
   ];
 }
 
+function changedFilesLines(rc) {
+  const files = rc?.changedFiles;
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const display = files.length <= 20 ? files : [...files.slice(0, 20), `... +${files.length - 20} more`];
+  return [
+    "",
+    "## Changed Files",
+    "",
+    ...display.map((f) => `- \`${f}\``),
+  ];
+}
+
+function commitLines(rc) {
+  const commit = rc?.commit;
+  if (!commit) return [];
+  return [
+    "",
+    "## Commit",
+    "",
+    `- SHA: ${valueOrUnavailable(commit.sha)}`,
+    `- Author: ${valueOrUnavailable(commit.author)}`,
+    `- Message: ${valueOrUnavailable(commit.message)}`,
+  ];
+}
+
+function runTimelineLines(rc) {
+  const timeline = rc?.runTimeline;
+  if (!Array.isArray(timeline) || timeline.length === 0) return [];
+  return [
+    "",
+    "## Run Timeline",
+    "",
+    "| Phase | Status | Duration |",
+    "|-------|--------|----------|",
+    ...timeline.map((t) => `| ${valueOrUnavailable(t.phase)} | ${valueOrUnavailable(t.status)} | ${t.durationMs != null ? `${Math.round(t.durationMs / 1000)}s` : "—"} |`),
+  ];
+}
+
 function planCacheLines(rc) {
   const cache = rc?.planCache;
   if (!cache) return [];
@@ -194,6 +232,9 @@ export function buildCodePatchBayPrBody({
     ...(routingContext?.contextPack?.path ? contextPackLines(routingContext) : []),
     ...(routingContext?.childTaskIds?.length ? childTaskLines(routingContext) : []),
     ...(routingContext?.planCache ? planCacheLines(routingContext) : []),
+    ...(routingContext?.changedFiles?.length ? changedFilesLines(routingContext) : []),
+    ...(routingContext?.commit ? commitLines(routingContext) : []),
+    ...(routingContext?.runTimeline?.length ? runTimelineLines(routingContext) : []),
     "",
     "## Tests",
     "",

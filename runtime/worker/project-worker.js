@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { getProject, heartbeatWorker, resolveHubRoot } from "../../server/services/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../../server/services/hub-queue.js";
 import { getJob, recordFinalizerResult } from "../../server/services/job-store.js";
-import { postGithubStatusComment } from "../../server/services/github-comments.js";
+import { postGithubStatusComment, postGithubRunComment, addGithubLabels, removeGithubLabel } from "../../server/services/github-comments.js";
 import { resolveGithubTransport } from "../../server/services/github-api.js";
 import { postSlackStatusComment } from "../../server/services/slack-comments.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
@@ -680,6 +680,11 @@ export class ProjectWorker {
       createPullRequest: transport?.createPullRequest || null,
       pushToken,
       transportMode: transport?.mode || null,
+      addLabels: transport?.addLabels || null,
+      removeLabel: transport?.removeLabel || null,
+      updatePrBody: transport?.updatePrBody || null,
+      labelsToAdd: this._resolveLabelsToAdd(entry, job),
+      labelsToRemove: this._resolveLabelsToRemove(entry, job),
     });
     return {
       ...finalizer,
@@ -698,7 +703,7 @@ export class ProjectWorker {
     if (!job?.sourceContext) return null;
     if (job.sourceContext.type === "github_issue") {
       const transport = await this._resolveGithubTransport();
-      return postGithubStatusComment({
+      const statusPromise = postGithubStatusComment({
         cpbRoot: this.cpbRoot,
         project: projectId,
         job,
@@ -709,6 +714,25 @@ export class ProjectWorker {
         posted: false,
         error: { message: error.message },
       }));
+      const runCommentPromise = postGithubRunComment({
+        cpbRoot: this.cpbRoot,
+        project: projectId,
+        jobId: job.jobId,
+        repo: job.sourceContext.repo,
+        issueNumber: job.sourceContext.issueNumber,
+        phase: job.failurePhase || "pipeline",
+        status: job.status === "completed" ? "completed" : "failed",
+        details: {
+          retryCount: job.retryCount || 0,
+          reason: job.failureCause?.message || job.blockedReason || null,
+          changedFiles: result.finalizer?.files?.map((f) => f.path || f) || null,
+          summary: result.finalizer?.prUrl ? `Draft PR: ${result.finalizer.prUrl}` : null,
+        },
+        postComment: transport?.postComment || null,
+        transportMode: transport?.mode || null,
+      }).catch(() => null);
+      const [statusResult, runCommentResult] = await Promise.all([statusPromise, runCommentPromise]);
+      return { status: statusResult, runComment: runCommentResult };
     }
     if (job.sourceContext.type === "slack" || job.sourceContext.channel === "slack") {
       return this._slackNotifierFn({
@@ -722,6 +746,23 @@ export class ProjectWorker {
       }));
     }
     return null;
+  }
+
+  _resolveLabelsToAdd(entry, job) {
+    const metadata = entry?.metadata || {};
+    const configured = metadata.labelsToAdd || job?.sourceContext?.labelsToAdd;
+    if (Array.isArray(configured)) return configured;
+    // Default: add "cpb-done" label on successful completion
+    if (job?.status === "completed") return ["cpb-done"];
+    return null;
+  }
+
+  _resolveLabelsToRemove(entry, job) {
+    const metadata = entry?.metadata || {};
+    const configured = metadata.labelsToRemove || job?.sourceContext?.labelsToRemove;
+    if (Array.isArray(configured)) return configured;
+    // Default: remove "cpb" trigger label to prevent re-triggering
+    return ["cpb"];
   }
 
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
