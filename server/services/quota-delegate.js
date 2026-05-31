@@ -14,7 +14,7 @@ import { redactSecrets, _internalWriteProviderQuota, _internalMarkProviderAvaila
 import { _internalAppendUsageLine } from "./provider-usage.js";
 
 const POLL_INTERVAL_MS = Number(process.env.CPB_DELEGATE_POLL_MS || 100);
-const STALE_ACK_MS = 60_000;
+const STALE_ACK_MS = Number(process.env.CPB_DELEGATE_ACK_TTL_MS || 60_000);
 
 let shuttingDown = false;
 

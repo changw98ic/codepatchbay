@@ -210,8 +210,9 @@ export async function assertProviderAvailable(hubRoot, {
         },
       );
     }
-    // Expired — clear
-    await _internalMarkProviderAvailable(hubRoot, providerKey);
+    // Expired — treat as available (do not mutate durable state here;
+    // delegate owns all writes; stale entries are reconciled by delegate or next write)
+    return;
   }
 
   // Terminal statuses without nextEligibleAt (e.g. weekly/window with no reset)

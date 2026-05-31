@@ -183,7 +183,7 @@ describe("assertProviderAvailable", () => {
     );
   });
 
-  it("clears expired rate limit and passes", async () => {
+  it("passes for expired rate limit without mutating state", async () => {
     await _internalMarkProviderUnavailable(tmpDir, {
       providerKey: "claude",
       agent: "claude",
@@ -194,9 +194,9 @@ describe("assertProviderAvailable", () => {
     await assert.doesNotReject(
       () => assertProviderAvailable(tmpDir, { providerKey: "claude", agent: "claude" }),
     );
-    // Should have been cleared to available
+    // State is NOT mutated — delegate owns all writes
     const quotas = await readProviderQuotas(tmpDir);
-    assert.equal(quotas.claude.status, "available");
+    assert.equal(quotas.claude.status, QuotaStatus.RATE_LIMITED);
   });
 
   it("throws for auth error (terminal)", async () => {

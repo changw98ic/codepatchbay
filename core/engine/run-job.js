@@ -213,18 +213,21 @@ export async function runJob(ctx) {
       const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
       // Mark failed provider unavailable via delegate (fail closed — error propagates)
       const dc = await getDelegateClient();
-      if (dc) {
-        await dc.delegateMarkProviderUnavailable(hubRoot, {
-          providerKey: failedProviderKey,
-          agent: failedAgent,
-          variant: failedVariant,
-          status: quotaCause.status || "rate_limited",
-          nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
-          source: quotaCause.source || "run-job-handoff",
-          confidence: quotaCause.confidence ?? 0.8,
-          reason: result.failure.reason,
-        });
+      if (!dc) {
+        const err = new Error("quota delegate client unavailable; provider state not recorded");
+        err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
+        throw err;
       }
+      await dc.delegateMarkProviderUnavailable(hubRoot, {
+        providerKey: failedProviderKey,
+        agent: failedAgent,
+        variant: failedVariant,
+        status: quotaCause.status || "rate_limited",
+        nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+        source: quotaCause.source || "run-job-handoff",
+        confidence: quotaCause.confidence ?? 0.8,
+        reason: result.failure.reason,
+      });
 
       // Track provider attempt for history chain
       providerAttempts.push({
