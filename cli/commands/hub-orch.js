@@ -110,7 +110,7 @@ async function retryJob([project, jobId, ...flags]) {
     const { getProject } = await import("../../server/services/hub-registry.js");
     const proj = await getProject(hubRoot, project);
     const dataRoot = proj?.projectRuntimeRoot || undefined;
-    const result = await doRetry(dataRoot, jobId, { force });
+    const result = await doRetry(hubRoot, project, jobId, { force, dataRoot });
     console.log(JSON.stringify(result, null, 2));
     return 0;
   } catch (err) {

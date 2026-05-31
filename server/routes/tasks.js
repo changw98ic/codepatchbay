@@ -130,7 +130,7 @@ export async function taskRoutes(fastify, opts) {
     const { name, jobId } = req.params;
     const { force = false } = req.body || {};
     const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
-    const result = await retryJob(dataRoot, jobId, { force });
+    const result = await retryJob(req.cpbRoot, name, jobId, { force, dataRoot });
     broadcast({ type: 'job:retried', project: name, jobId, recoveryJobId: result?.jobId });
     return result;
   });
