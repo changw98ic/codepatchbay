@@ -158,3 +158,85 @@ export interface OutputFile {
   modified: string;
   size: number;
 }
+
+// --- Workspace types ---
+
+export type WorkspaceBackendType = 'local' | 'docker' | 'ssh' | 'devcontainer';
+
+export type WorkspaceStatus =
+  | 'ready'
+  | 'preparing'
+  | 'not_created'
+  | 'stopped'
+  | 'unreachable'
+  | 'error';
+
+export interface WorkspaceConfig {
+  id: string;
+  projectId: string;
+  type: WorkspaceBackendType;
+  createdAt: string;
+  updatedAt: string;
+  // Docker-specific
+  image?: string;
+  dockerfile?: string;
+  workdir?: string;
+  memory?: string;
+  cpus?: number;
+  networkMode?: string;
+  keepContainer?: boolean;
+  // SSH-specific
+  host?: string;
+  user?: string;
+  port?: number;
+  identityFile?: string;
+  workspacePath?: string;
+  strictHostKeyChecking?: boolean;
+  connectTimeout?: number;
+  sshConfig?: string;
+  // Devcontainer-specific
+  configPath?: string;
+  // Common
+  sourcePath?: string;
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface WorkspaceIndexEntry {
+  id: string;
+  projectId: string;
+  type: WorkspaceBackendType;
+  createdAt: string;
+}
+
+export interface WorkspacePrepareResult {
+  status: 'ready' | 'error';
+  backendType: WorkspaceBackendType;
+  cwd: string | null;
+  env: Record<string, string>;
+  spawnOptions: Record<string, unknown>;
+  meta: Record<string, unknown>;
+  preparedAt: string;
+}
+
+export interface WorkspaceTeardownResult {
+  status: string;
+  cleanedAt: string;
+  containerRemoved?: boolean;
+  containerName?: string;
+}
+
+export interface WorkspaceStatusResult {
+  status: WorkspaceStatus;
+  backendType: WorkspaceBackendType;
+  ready: boolean;
+  details: Record<string, unknown>;
+  checkedAt: string;
+}
+
+export interface BackendHealthResult {
+  available: boolean;
+  backendType: WorkspaceBackendType;
+  version?: string;
+  error?: string;
+}
