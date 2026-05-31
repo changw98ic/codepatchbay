@@ -11,6 +11,12 @@ const WORKFLOWS = {
     none: ["execute", "verify"],
     parent: ["plan"],
   },
+  "browser-verify": {
+    full: ["plan", "execute", "verify"],
+    light: ["plan", "execute"],
+    none: ["execute", "verify"],
+    parent: ["plan"],
+  },
   review: {
     full: ["review"],
   },

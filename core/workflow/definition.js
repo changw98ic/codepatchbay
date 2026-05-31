@@ -51,6 +51,22 @@ const WORKCPBS = {
       verify: "run-phase.mjs",
     },
   },
+  "browser-verify": {
+    name: "browser-verify",
+    phases: ["plan", "execute", "verify"],
+    roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    bridgeForPhase: {
+      plan: "run-phase.mjs",
+      execute: "run-phase.mjs",
+      verify: "run-phase.mjs",
+    },
+    defaultAgents: {
+      planner: "browser-agent",
+      executor: "claude",
+      verifier: "claude",
+    },
+  },
   blocked: {
     name: "blocked",
     phases: [],
@@ -79,6 +95,10 @@ const _dagCache = new Map();
 
 export function getWorkflow(name) {
   return WORKCPBS[name] ?? WORKCPBS.standard;
+}
+
+export function getDefaultAgentsForWorkflow(name) {
+  return WORKCPBS[name]?.defaultAgents ?? null;
 }
 
 export function nextPhase(workflow, currentPhase) {
