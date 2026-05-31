@@ -117,6 +117,79 @@ async function exists(targetPath) {
   }
 }
 
+export async function dryRunInstallRelease({ sourceRoot, destRoot, name, now = new Date(), env } = {}) {
+  const resolvedSource = await assertExecutorRoot(sourceRoot);
+  const pkg = await readExecutorPackage(resolvedSource);
+
+  const releaseId = name
+    ? name
+    : generateDefaultReleaseId(pkg.version, now);
+  validateReleaseId(releaseId);
+
+  const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
+  const installedPath = path.join(storeRoot, releaseId);
+
+  if (!installedPath.startsWith(storeRoot + path.sep) && installedPath !== storeRoot) {
+    return { valid: false, error: `release id resolves outside the release store root: ${releaseId}`, releaseId, installedPath };
+  }
+
+  if (await exists(installedPath)) {
+    return { valid: false, error: `release already exists: ${installedPath}`, releaseId, installedPath };
+  }
+
+  const assets = [];
+  for (const item of ALLOWED_ASSETS) {
+    const sourceItem = path.join(resolvedSource, item);
+    if (await exists(sourceItem)) {
+      assets.push({ name: item, present: true });
+    } else {
+      assets.push({ name: item, present: false });
+    }
+  }
+
+  const wikiSystemDir = path.join(resolvedSource, "wiki", "system");
+  const wikiTemplateDir = path.join(resolvedSource, "wiki", "projects", "_template");
+
+  const { QUEUE_VERSION } = await import("./hub-queue.js");
+  const { JOBS_EVENTS_FORMAT_VERSION } = await import("./event-store.js");
+  const { LEASE_FORMAT_VERSION } = await import("./lease-manager.js");
+  const { PROCESS_REGISTRY_FORMAT_VERSION } = await import("./process-registry.js");
+
+  const manifest = {
+    metadataVersion: RELEASE_METADATA_FORMAT_VERSION,
+    releaseId,
+    sourcePath: resolvedSource,
+    installedPath,
+    createdAt: now instanceof Date ? now.toISOString() : new Date(now).toISOString(),
+    codeVersion: pkg.version,
+    packageName: pkg.name,
+    stateFormatVersions: {
+      queue: QUEUE_VERSION,
+      jobsEvents: JOBS_EVENTS_FORMAT_VERSION,
+      leases: LEASE_FORMAT_VERSION,
+      processRegistry: PROCESS_REGISTRY_FORMAT_VERSION,
+      releaseMetadata: RELEASE_METADATA_FORMAT_VERSION,
+    },
+  };
+
+  const missingAssets = assets.filter(a => !a.present).map(a => a.name);
+
+  return {
+    valid: missingAssets.length === 0,
+    releaseId,
+    installedPath,
+    storeRoot,
+    sourceRoot: resolvedSource,
+    packageName: pkg.name,
+    codeVersion: pkg.version,
+    manifest,
+    assets,
+    missingAssets,
+    wikiSystemPresent: await exists(wikiSystemDir),
+    wikiTemplatePresent: await exists(wikiTemplateDir),
+  };
+}
+
 export async function installRelease({ sourceRoot, destRoot, name, now = new Date(), env } = {}) {
   const resolvedSource = await assertExecutorRoot(sourceRoot);
   const pkg = await readExecutorPackage(resolvedSource);

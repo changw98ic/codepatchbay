@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { installRelease } from "../../server/services/release-store.js";
+import { installRelease, dryRunInstallRelease } from "../../server/services/release-store.js";
 
 export { installRelease };
 
 function usage() {
   return [
-    "Usage: cpb release install [--name ID] [--dest-root DIR] [--json]",
+    "Usage: cpb release install [--name ID] [--dest-root DIR] [--dry-run] [--json]",
     "",
     "Copies CPB executor assets into an immutable release directory.",
+    "",
+    "Options:",
+    "  --name ID        Custom release ID (default: <version>-<timestamp>)",
+    "  --dest-root DIR  Release store root directory override",
+    "  --dry-run        Validate without installing",
+    "  --json           Output as JSON",
+    "  --help           Show this help",
   ].join("\n");
 }
 
@@ -17,6 +24,7 @@ function parseArgs(argv) {
   const options = {
     name: null,
     destRoot: null,
+    dryRun: false,
     json: false,
     help: false,
   };
@@ -24,6 +32,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") options.json = true;
+    else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--name") {
       if (!argv[i + 1]) throw new Error("--name requires a value");
@@ -50,6 +59,36 @@ async function main(args, context) {
   const sourceRoot = context?.executorRoot
     || process.env.CPB_EXECUTOR_ROOT
     || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+  if (options.dryRun) {
+    const result = await dryRunInstallRelease({
+      sourceRoot,
+      destRoot: options.destRoot,
+      name: options.name,
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      if (result.valid) {
+        console.log("=== DRY RUN: Install would succeed ===");
+        console.log(`  Release ID: ${result.releaseId}`);
+        console.log(`  Target: ${result.installedPath}`);
+        console.log(`  Package: ${result.packageName} v${result.codeVersion}`);
+        console.log(`  Assets:`);
+        for (const a of result.assets) {
+          console.log(`    ${a.present ? "✓" : "✗"} ${a.name}`);
+        }
+        console.log(`  Wiki system: ${result.wikiSystemPresent ? "present" : "absent"}`);
+        console.log(`  Wiki template: ${result.wikiTemplatePresent ? "present" : "absent"}`);
+      } else {
+        console.error(`=== DRY RUN: Install would fail ===`);
+        console.error(`  Error: ${result.error}`);
+        return 1;
+      }
+    }
+    return result.valid ? 0 : 1;
+  }
 
   const manifest = await installRelease({
     sourceRoot,

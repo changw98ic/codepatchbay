@@ -1061,6 +1061,220 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env } = {}
   };
 }
 
+// --- Install diagnostics checks ---
+
+async function checkInstallPaths({ env }) {
+  const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
+  const paths = {
+    cpbHome,
+    releaseStore: path.join(cpbHome, "releases"),
+    currentState: path.join(cpbHome, "release", "current.json"),
+    currentLink: path.join(cpbHome, "current"),
+    binLink: path.join(cpbHome, "bin", "cpb"),
+  };
+
+  const results = [];
+  for (const [label, p] of Object.entries(paths)) {
+    try {
+      const info = await lstat(p);
+      results.push(okR(`install.paths.${label}`, `${label}: ${p} (${info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "dir" : "file"})`));
+    } catch {
+      results.push(warnR(`install.paths.${label}`, `${label}: ${p} (missing)`, {
+        guidance: label === "binLink"
+          ? "Run: cpb install-bin"
+          : label === "releaseStore"
+            ? "Run: cpb release install to create the first release"
+            : undefined,
+      }));
+    }
+  }
+  return results;
+}
+
+async function checkInstallPermissions({ env }) {
+  const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
+  const checks = [];
+
+  const dirs = [
+    { label: "cpb-home", path: cpbHome },
+    { label: "releases", path: path.join(cpbHome, "releases") },
+    { label: "bin", path: path.join(cpbHome, "bin") },
+  ];
+
+  for (const dir of dirs) {
+    try {
+      await mkdir(dir.path, { recursive: true });
+      const probeFile = path.join(dir.path, `.write-probe-${process.pid}`);
+      await writeFile(probeFile, "probe", "utf8");
+      await readFile(probeFile, "utf8");
+      await rm(probeFile, { force: true });
+      checks.push(okR(`install.permissions.${dir.label}`, `${dir.label} directory writable`));
+    } catch (e) {
+      checks.push(failR(`install.permissions.${dir.label}`, `${dir.label} directory not writable: ${e.message}`, {
+        guidance: `Fix permissions on ${dir.path}`,
+      }));
+    }
+  }
+
+  return checks;
+}
+
+async function checkInstallNodeModules({ env }) {
+  const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
+  if (!executorRoot) {
+    return [warnR("install.node_modules", "Cannot check node_modules without CPB_EXECUTOR_ROOT")];
+  }
+
+  const checks = [];
+  const nmPath = path.join(executorRoot, "node_modules");
+  try {
+    await access(nmPath, fsConstants.R_OK);
+    const entries = await readdir(nmPath);
+    checks.push(okR("install.node_modules", `node_modules present (${entries.length} entries)`));
+  } catch {
+    checks.push(warnR("install.node_modules", "node_modules not found in executor root", {
+      guidance: "Run: cd <executor-root> && npm install",
+    }));
+  }
+
+  const criticalDeps = ["fastify", "chokidar", "glob"];
+  for (const dep of criticalDeps) {
+    try {
+      await access(path.join(nmPath, dep), fsConstants.R_OK);
+      checks.push(okR(`install.dep.${dep}`, `${dep} installed`));
+    } catch {
+      checks.push(failR(`install.dep.${dep}`, `${dep} missing from node_modules`, {
+        guidance: "Run: cd <executor-root> && npm install",
+      }));
+    }
+  }
+
+  return checks;
+}
+
+async function checkInstallBinOnPath() {
+  const checks = [];
+  try {
+    const { stdout } = await execFileAsync("which", ["cpb"], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const resolved = stdout.trim();
+    checks.push(okR("install.on_path", `cpb found on PATH: ${resolved}`));
+
+    try {
+      const { stdout: verOut } = await execFileAsync(resolved, ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
+      checks.push(okR("install.version_check", `cpb --version: ${verOut.trim()}`));
+    } catch {
+      checks.push(warnR("install.version_check", "cpb found but --version failed", {
+        guidance: "Ensure the cpb binary is a valid Node.js script.",
+      }));
+    }
+  } catch {
+    checks.push(warnR("install.on_path", "cpb not found on PATH", {
+      guidance: "Run: cpb install-bin or add cpb to your PATH manually.",
+    }));
+  }
+  return checks;
+}
+
+async function checkInstallStoreIntegrity({ env }) {
+  const storeRoot = resolveReleaseStoreRoot({ env });
+  const checks = [];
+
+  let entries;
+  try {
+    entries = await readdir(storeRoot, { withFileTypes: true });
+  } catch {
+    checks.push(warnR("install.store_integrity", "Release store directory not found or not readable", {
+      guidance: "Run: cpb release install to create the first release.",
+    }));
+    return checks;
+  }
+
+  const releaseDirs = entries.filter(e => e.isDirectory());
+  if (releaseDirs.length === 0) {
+    checks.push(warnR("install.store_integrity", "No releases installed", {
+      guidance: "Run: cpb release install to install a release.",
+    }));
+    return checks;
+  }
+
+  let validCount = 0;
+  let invalidCount = 0;
+  for (const dir of releaseDirs) {
+    const manifestFile = path.join(storeRoot, dir.name, "release", "manifest.json");
+    try {
+      const raw = await readFile(manifestFile, "utf8");
+      JSON.parse(raw);
+      validCount++;
+    } catch {
+      invalidCount++;
+    }
+  }
+
+  if (invalidCount > 0) {
+    checks.push(warnR("install.store_integrity", `${validCount} valid, ${invalidCount} invalid release(s)`, {
+      guidance: "Invalid releases can be cleaned with: cpb release gc --execute",
+    }));
+  } else {
+    checks.push(okR("install.store_integrity", `${validCount} release(s) installed, all valid`));
+  }
+
+  return checks;
+}
+
+export async function runInstallDiagnostics({ cpbRoot, env = process.env } = {}) {
+  const nestedChecks = await Promise.all([
+    checkInstallPaths({ env }),
+    checkInstallPermissions({ env }),
+    checkInstallNodeModules({ env }),
+    checkInstallBinOnPath(),
+    checkInstallStoreIntegrity({ env }),
+  ]);
+
+  const checks = nestedChecks.flat();
+
+  const summary = { ok: 0, warn: 0, fail: 0 };
+  for (const check of checks) summary[check.status]++;
+  summary.success = summary.fail === 0;
+
+  return {
+    command: "cpb release diagnose",
+    generatedAt: new Date().toISOString(),
+    summary,
+    checks,
+  };
+}
+
+export function formatInstallDiagnosticsHuman(result) {
+  const { summary, checks } = result;
+  const lines = [];
+  lines.push(`${BOLD}Install Diagnostics${NC}`);
+  lines.push("");
+
+  for (const check of checks) {
+    const color = STATUS_COLOR[check.status === "fail" ? "error" : check.status === "warn" ? "warn" : "ok"];
+    const icon = check.status === "ok" ? "✓" : check.status === "warn" ? "!" : "✗";
+    let line = `  ${color}${icon}${NC} ${check.id}: ${check.message}`;
+    if (check.guidance) line += ` ${color}→ ${check.guidance}${NC}`;
+    lines.push(line);
+  }
+
+  lines.push("");
+  if (summary.success) {
+    if (summary.warn > 0) {
+      lines.push(`  ${STATUS_COLOR.warn}${summary.warn} warning(s)${NC}, ${summary.ok} passed.`);
+    } else {
+      lines.push(`  ${STATUS_COLOR.ok}All install checks passed.${NC}`);
+    }
+  } else {
+    lines.push(`  ${STATUS_COLOR.error}${summary.fail} failure(s)${NC}, ${summary.warn} warning(s), ${summary.ok} passed.`);
+  }
+  return lines.join("\n");
+}
+
+export function formatInstallDiagnosticsJson(result) {
+  return JSON.stringify(result, null, 2);
+}
+
 export function formatReleaseDoctorHuman(result) {
   const { summary, checks } = result;
   const lines = [];
