@@ -59,6 +59,21 @@ export class ProviderQuotaError extends Error {
   }
 }
 
+// ─── Secret Redaction ───────────────────────────────────────────────
+export function redactSecrets(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+    .replace(/Authorization:\s*\S+/gi, "Authorization: [REDACTED]")
+    .replace(/api[_-]?key=\S+/gi, "api_key=[REDACTED]")
+    .replace(/sk-\S+/gi, "sk-[REDACTED]")
+    .replace(/OPENAI_API_KEY=\S+/gi, "OPENAI_API_KEY=[REDACTED]")
+    .replace(/ANTHROPIC_API_KEY=\S+/gi, "ANTHROPIC_API_KEY=[REDACTED]")
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+    .slice(0, 500);
+}
+
 // ─── Persistence ────────────────────────────────────────────────────
 function quotasFilePath(hubRoot) {
   return path.join(hubRoot, "providers", "quotas.json");
@@ -72,19 +87,31 @@ export async function readProviderQuotas(hubRoot) {
   }
 }
 
+// In-process write queue to prevent concurrent write corruption
+const _writeQueues = new Map();
+
 export async function writeProviderQuota(hubRoot, providerKey, entry) {
   const filePath = quotasFilePath(hubRoot);
-  const current = await readProviderQuotas(hubRoot);
-  current[providerKey] = {
-    ...entry,
-    providerKey,
-    updatedAt: new Date().toISOString(),
-  };
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, `${JSON.stringify(current, null, 2)}\n`, "utf8");
-  await rename(tmp, filePath);
-  return current[providerKey];
+  const queueKey = filePath;
+  const prev = _writeQueues.get(queueKey) || Promise.resolve();
+  const next = prev.catch(() => null).then(async () => {
+    // Re-read latest to avoid clobbering concurrent writes
+    const current = await readProviderQuotas(hubRoot);
+    current[providerKey] = {
+      ...entry,
+      reason: redactSecrets(entry.reason),
+      providerKey,
+      updatedAt: new Date().toISOString(),
+    };
+    await mkdir(path.dirname(filePath), { recursive: true });
+    const randomSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tmp = `${filePath}.tmp-${randomSuffix}`;
+    await writeFile(tmp, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+    await rename(tmp, filePath);
+    return current[providerKey];
+  });
+  _writeQueues.set(queueKey, next.catch(() => null));
+  return next;
 }
 
 // ─── State Transitions ──────────────────────────────────────────────
@@ -212,7 +239,8 @@ const RETRY_AFTER_SEC = /(?:reset|retry|after)[^0-9]*(\d+)\s*(?:s|sec|seconds?)/
 const ISO_DATE = /20\d\d-\d\d-\d\d[T\s]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?/;
 const WINDOW_EXHAUST = /window|quota|exhaust|usage.?limit|monthly.?limit|5.?hour/i;
 const WEEKLY_EXHAUST = /weekly|week.?limit/i;
-const AUTH_FAIL = /auth|unauthorized|forbidden|invalid.?key|api.?key|token/i;
+const AUTH_FAIL = /(?:unauthorized|invalid api key|invalid token|expired token|authentication failed|auth failed|forbidden.*api key)/i;
+const TOKEN_CONTEXT = /context.?length|max.?token|output.?token|token.?limit/i;
 
 /**
  * Parse a reset time from an error message, respecting timezone.
@@ -348,8 +376,8 @@ export async function classifyQuotaFailure({ providerKey, agent, variant, error,
     };
   }
 
-  // Auth errors
-  if (AUTH_FAIL.test(msg)) {
+  // Auth errors (exclude token/context-length false positives)
+  if (AUTH_FAIL.test(msg) && !TOKEN_CONTEXT.test(msg)) {
     return {
       isQuota: true,
       status: QuotaStatus.AUTH_ERROR,

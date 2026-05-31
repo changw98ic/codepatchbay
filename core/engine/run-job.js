@@ -138,8 +138,8 @@ export async function runJob(ctx) {
       const preflight = await preflightProvider({
         hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
       }).catch(() => null);
-      if (preflight && !preflight.available && preflight.fallback) {
-        phaseAgents[role] = preflight.fallback;
+      if (preflight?.switched) {
+        phaseAgents[role] = preflight.selectedAgent;
         handoffReason = preflight.reason;
         await appendEvent(cpbRoot, project, jobId, {
           type: "provider_handoff",
@@ -148,7 +148,7 @@ export async function runJob(ctx) {
           phase,
           role,
           from: preflight.from,
-          to: preflight.fallback,
+          to: preflight.selectedProviderKey,
           reason: preflight.reason,
           ts: ts(),
         });
@@ -223,7 +223,10 @@ export async function runJob(ctx) {
       }
 
       // Apply fallback agent
-      phaseAgents[role] = fallback.fallback;
+      phaseAgents[role] = fallback.selectedAgent;
+
+      // Write fallbackCount into failure cause for orchestrator consumption
+      result.failure.cause = { ...result.failure.cause, fallbackCount: handoffCount };
 
       await appendEvent(cpbRoot, project, jobId, {
         type: "provider_handoff",
@@ -232,7 +235,7 @@ export async function runJob(ctx) {
         phase,
         role,
         from: quotaCause.providerKey,
-        to: fallback.fallback,
+        to: fallback.selectedProviderKey,
         reason: result.failure.reason,
         midRun: true,
         attempt: handoffCount,
@@ -372,7 +375,7 @@ function resolveProviderKey(pool, rawAgent, defaultAgent) {
 
 /**
  * Pre-flight provider availability check.
- * Returns { available, fallback, reason, from } or null if no quota service.
+ * Returns { available, switched, selectedAgent, selectedProviderKey, reason, from } or null.
  */
 async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, excludeProvider = null }) {
   const pq = await getProviderQuota();
@@ -391,14 +394,21 @@ async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, ex
         phase,
         role,
       });
-      return { available: true, fallback: agents?.[role] || agent, reason: null, from: providerKey };
+      return {
+        available: true,
+        switched: false,
+        selectedAgent: agents?.[role] || agent,
+        selectedProviderKey: providerKey,
+        reason: null,
+        from: providerKey,
+      };
     } catch {
       // Preferred is unavailable — try fallbacks
     }
   }
 
-  // Try fallback candidates: other known variants
-  const fallbackCandidates = getFallbackCandidates(resolvedAgent, variant, excludeProvider || providerKey);
+  // Try fallback candidates: other known variants (pool-configurable)
+  const fallbackCandidates = getFallbackCandidates(pool, resolvedAgent, variant, excludeProvider || providerKey);
   for (const candidate of fallbackCandidates) {
     try {
       await pq.assertProviderAvailable(hubRoot, {
@@ -408,9 +418,14 @@ async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, ex
         phase,
         role,
       });
+      const selectedAgent = candidate.variant
+        ? { agent: candidate.agent, variant: candidate.variant }
+        : candidate.agent;
       return {
         available: true,
-        fallback: candidate.variant ? { agent: candidate.agent, variant: candidate.variant } : candidate.agent,
+        switched: candidate.providerKey !== providerKey,
+        selectedAgent,
+        selectedProviderKey: candidate.providerKey,
         reason: `fallback from ${providerKey}`,
         from: providerKey,
       };
@@ -421,13 +436,24 @@ async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, ex
 
   return {
     available: false,
-    fallback: null,
+    switched: false,
+    selectedAgent: null,
+    selectedProviderKey: null,
     reason: `all providers unavailable for ${role}`,
     from: providerKey,
   };
 }
 
-function getFallbackCandidates(agent, currentVariant, excludeKey) {
+function getFallbackCandidates(pool, agent, currentVariant, excludeKey) {
+  // Pool-provided candidates take precedence (runtime-configurable)
+  if (pool?.fallbackCandidates) {
+    try {
+      const poolCandidates = pool.fallbackCandidates(agent, currentVariant, excludeKey);
+      if (Array.isArray(poolCandidates) && poolCandidates.length > 0) return poolCandidates;
+    } catch { /* fall through to defaults */ }
+  }
+
+  // Hardcoded defaults
   const candidates = [];
   if (agent === "claude") {
     const variants = ["kimi-k2.6", "mimo-v2.5pro"];

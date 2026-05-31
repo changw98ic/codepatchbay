@@ -5,7 +5,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import {
@@ -498,5 +498,195 @@ describe("provider-usage", () => {
     assert.deepEqual(records, []);
     const rollup = await readProviderUsageRollup(tmpDir);
     assert.deepEqual(rollup, {});
+  });
+});
+
+// ─── Auth False-Positive: context length should NOT be auth error ───
+
+describe("classifyQuotaFailure auth false-positive", () => {
+  it("context_length_exceeded is NOT classified as auth error", async () => {
+    const result = await classifyQuotaFailure({
+      providerKey: "claude",
+      agent: "claude",
+      error: new Error("context_length_exceeded: max tokens 200000"),
+    });
+    assert.equal(result.isQuota, false);
+  });
+
+  it("max_token limit is NOT classified as auth error", async () => {
+    const result = await classifyQuotaFailure({
+      providerKey: "claude",
+      agent: "claude",
+      error: new Error("unauthorized: output_token limit exceeded"),
+    });
+    assert.equal(result.isQuota, false);
+  });
+
+  it("genuine auth error still detected", async () => {
+    const result = await classifyQuotaFailure({
+      providerKey: "claude",
+      agent: "claude",
+      error: new Error("unauthorized: invalid api key"),
+    });
+    assert.equal(result.isQuota, true);
+    assert.equal(result.status, "auth_error");
+  });
+});
+
+// ─── Concurrency: write quotas.json safely ─────────────────────────
+
+describe("concurrent write quotas.json", () => {
+  it("concurrent writes do not corrupt file", async () => {
+    const keys = ["a", "b", "c", "d", "e"];
+    await Promise.all(
+      keys.map((k) =>
+        writeProviderQuota(tmpDir, k, {
+          agent: k,
+          status: QuotaStatus.AVAILABLE,
+        }),
+      ),
+    );
+    const quotas = await readProviderQuotas(tmpDir);
+    for (const k of keys) {
+      assert.ok(quotas[k], `missing key: ${k}`);
+      assert.equal(quotas[k].agent, k);
+    }
+    // File should be valid JSON
+    const content = await readFile(path.join(tmpDir, "providers", "quotas.json"), "utf8");
+    assert.doesNotThrow(() => JSON.parse(content));
+  });
+});
+
+// ─── Handoff Bundle: redaction + size limit ────────────────────────
+
+import { generateHandoffBundle } from "../core/handoff/handoff-bundle.js";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCb);
+
+describe("generateHandoffBundle", () => {
+  let gitDir;
+
+  beforeEach(async () => {
+    gitDir = await mkdtemp(path.join(os.tmpdir(), "handoff-test-"));
+    await execFile("git", ["init"], { cwd: gitDir });
+    await execFile("git", ["config", "user.email", "test@test.com"], { cwd: gitDir });
+    await execFile("git", ["config", "user.name", "Test"], { cwd: gitDir });
+    await writeFile(path.join(gitDir, "README.md"), "init\n");
+    await execFile("git", ["add", "."], { cwd: gitDir });
+    await execFile("git", ["commit", "-m", "init"], { cwd: gitDir });
+  });
+
+  afterEach(async () => {
+    await rm(gitDir, { recursive: true, force: true });
+  });
+
+  it("redacts secrets from stdout", async () => {
+    const bundle = await generateHandoffBundle({
+      project: "test",
+      jobId: "001",
+      phase: "execute",
+      task: "do stuff",
+      originProvider: "claude",
+      failureReason: "rate limited",
+      partialStdout: 'using key sk-abc123secret and Bearer tok_xxx',
+      cpbRoot: gitDir,
+      sourcePath: gitDir,
+    });
+    assert.ok(!bundle.includes("sk-abc123secret"));
+    assert.ok(!bundle.includes("tok_xxx"));
+    assert.ok(bundle.includes("[REDACTED]"));
+  });
+
+  it("redacts secrets from failureReason", async () => {
+    const bundle = await generateHandoffBundle({
+      project: "test",
+      jobId: "001",
+      phase: "execute",
+      task: "do stuff",
+      originProvider: "claude",
+      failureReason: "auth failed: api_key=sk-supersecret",
+      cpbRoot: gitDir,
+      sourcePath: gitDir,
+    });
+    assert.ok(!bundle.includes("sk-supersecret"));
+    assert.ok(bundle.includes("[REDACTED]"));
+  });
+
+  it("bundle stays within size bounds with large inputs", async () => {
+    // Create tracked files, then modify them to produce large git diff
+    for (let i = 0; i < 100; i++) {
+      await writeFile(path.join(gitDir, `file-${i}.txt`), "original\n");
+    }
+    await execFile("git", ["add", "."], { cwd: gitDir });
+    await execFile("git", ["commit", "-m", "add files"], { cwd: gitDir });
+    for (let i = 0; i < 100; i++) {
+      await writeFile(path.join(gitDir, `file-${i}.txt`), "x".repeat(1000));
+    }
+    const bigStdout = "y".repeat(100_000);
+    const bigStderr = "z".repeat(50_000);
+    const bundle = await generateHandoffBundle({
+      project: "test",
+      jobId: "001",
+      phase: "execute",
+      task: "do stuff",
+      originProvider: "claude",
+      failureReason: "rate limited",
+      partialStdout: bigStdout,
+      partialStderr: bigStderr,
+      cpbRoot: gitDir,
+      sourcePath: gitDir,
+    });
+    // Built-in slicing (stdout 2000, stderr 1000, diff 3000) caps output well under 50KB
+    assert.ok(bundle.length <= 50_000, `bundle length ${bundle.length} exceeds 50KB limit`);
+    assert.ok(bundle.length > 1000, "bundle should have meaningful content");
+  });
+});
+
+// ─── FailureRouter: fallback_count limit ───────────────────────────
+
+import { FailureRouter } from "../server/orchestrator/failure-router.js";
+import { FailureKind } from "../core/contracts/failure.js";
+
+describe("FailureRouter rate limit fallback", () => {
+  const router = new FailureRouter();
+
+  it("returns fallback_provider when fallback budget available", async () => {
+    const decision = await router.route({
+      assignment: { attempts: 0 },
+      attempt: {},
+      result: {
+        jobResult: {
+          failure: {
+            kind: FailureKind.AGENT_RATE_LIMITED,
+            reason: "429",
+            retryable: true,
+            cause: { providerKey: "claude:kimi-k2.6", fallbackCount: 0 },
+          },
+        },
+      },
+    });
+    assert.equal(decision.action, "fallback_provider");
+    assert.equal(decision.retryable, true);
+  });
+
+  it("returns wait_for_rate_limit when fallback budget exhausted", async () => {
+    const decision = await router.route({
+      assignment: { attempts: 0 },
+      attempt: {},
+      result: {
+        jobResult: {
+          failure: {
+            kind: FailureKind.AGENT_RATE_LIMITED,
+            reason: "429",
+            retryable: true,
+            cause: { providerKey: "claude:kimi-k2.6", fallbackCount: 99 },
+          },
+        },
+      },
+    });
+    assert.equal(decision.action, "wait_for_rate_limit");
+    assert.equal(decision.retryable, true);
   });
 });

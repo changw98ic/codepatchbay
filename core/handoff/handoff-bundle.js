@@ -11,6 +11,27 @@ import path from "node:path";
 
 const execFile = promisify(execFileCb);
 
+// Max handoff bundle size (50KB) — prevents token overflow in continuation prompts
+const MAX_BUNDLE_SIZE = 50_000;
+
+/**
+ * Redact secrets and strip control chars from text.
+ * Mirrors server/services/provider-quota.js:redactSecrets — kept here
+ * to avoid core/ → server/ import boundary violation.
+ */
+function redactSecrets(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+    .replace(/Authorization:\s*\S+/gi, "Authorization: [REDACTED]")
+    .replace(/api[_-]?key=\S+/gi, "api_key=[REDACTED]")
+    .replace(/sk-\S+/gi, "sk-[REDACTED]")
+    .replace(/OPENAI_API_KEY=\S+/gi, "OPENAI_API_KEY=[REDACTED]")
+    .replace(/ANTHROPIC_API_KEY=\S+/gi, "ANTHROPIC_API_KEY=[REDACTED]")
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+}
+
 /**
  * Generate a handoff bundle for mid-run provider fallback.
  *
@@ -64,21 +85,21 @@ export async function generateHandoffBundle({
   sections.push(`## Current Phase\n`);
   sections.push(`Phase: **${phase}**`);
   sections.push(`Origin provider: **${originProvider}**`);
-  sections.push(`Failure reason: ${failureReason}`);
+  sections.push(`Failure reason: ${redactSecrets(failureReason)}`);
   sections.push("");
 
-  // Partial output
+  // Partial output (redacted)
   if (partialStdout) {
     sections.push(`## Partial Stdout (last 2000 chars)\n`);
     sections.push("```");
-    sections.push(partialStdout.slice(-2000));
+    sections.push(redactSecrets(partialStdout).slice(-2000));
     sections.push("```");
     sections.push("");
   }
   if (partialStderr) {
     sections.push(`## Partial Stderr (last 1000 chars)\n`);
     sections.push("```");
-    sections.push(partialStderr.slice(-1000));
+    sections.push(redactSecrets(partialStderr).slice(-1000));
     sections.push("```");
     sections.push("");
   }
@@ -88,14 +109,14 @@ export async function generateHandoffBundle({
   if (gitState) {
     sections.push(`## Git Status\n`);
     sections.push("```");
-    sections.push(gitState.status);
+    sections.push(redactSecrets(gitState.status));
     sections.push("```");
     sections.push("");
 
     if (gitState.diff) {
       sections.push(`## Git Diff (staged + unstaged, last 3000 chars)\n`);
       sections.push("```diff");
-      sections.push(gitState.diff.slice(-3000));
+      sections.push(redactSecrets(gitState.diff).slice(-3000));
       sections.push("```");
       sections.push("");
     }
@@ -118,7 +139,11 @@ export async function generateHandoffBundle({
   sections.push("Complete the remaining work and return the required JSON envelope.");
   sections.push("");
 
-  return sections.join("\n");
+  let bundle = sections.join("\n");
+  if (bundle.length > MAX_BUNDLE_SIZE) {
+    bundle = bundle.slice(0, MAX_BUNDLE_SIZE) + "\n\n<!-- TRUNCATED: bundle exceeded 50KB limit -->\n";
+  }
+  return bundle;
 }
 
 async function captureGitState(cwd) {
