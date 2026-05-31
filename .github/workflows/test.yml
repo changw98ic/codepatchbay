@@ -23,8 +23,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
-        run: npx playwright install chromium
+      - name: Install Playwright Chromium with system deps
+        run: npx playwright install --with-deps chromium
 
       - name: Install rollup native binding (npm workspace bug workaround)
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
