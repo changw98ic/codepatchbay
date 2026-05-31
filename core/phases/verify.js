@@ -43,12 +43,22 @@ Rules:
 - Do NOT write any artifact files yourself. The system will persist the verdict.`;
 
 async function getChangedJsFiles(cwd) {
+  const files = new Set();
   try {
-    const { stdout } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd });
-    return stdout.trim().split("\n").filter(f => f && /\.(js|mjs)$/.test(f));
-  } catch {
-    return [];
-  }
+    // Tracked: staged or modified vs HEAD
+    const { stdout: diffOut } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd });
+    for (const f of diffOut.trim().split("\n")) {
+      if (f && /\.(js|mjs)$/.test(f)) files.add(f);
+    }
+  } catch { /* not a git repo */ }
+  try {
+    // Untracked: new files not yet staged
+    const { stdout: statOut } = await execFile("git", ["ls-files", "--others", "--exclude-standard"], { cwd });
+    for (const f of statOut.trim().split("\n")) {
+      if (f && /\.(js|mjs)$/.test(f)) files.add(f);
+    }
+  } catch { /* ignore */ }
+  return [...files];
 }
 
 async function hasTestScript(cwd) {
