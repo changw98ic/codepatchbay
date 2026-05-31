@@ -11,6 +11,7 @@
 import { runPhase } from "./run-phase.js";
 import { resolvePhases } from "./workflow-runner.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
+import { defaultAgentForRole } from "../agents/registry.js";
 
 function ts() {
   return new Date().toISOString();
@@ -136,10 +137,10 @@ export async function runJob(ctx) {
 
     // Resolve agent name for this phase (same logic as phase adapters)
     const role = phaseRoleMap[phase] || phase;
-    const rawAgent = ctx.agents?.[role] || ctx.agent;
+    const rawAgent = ctx.agents?.[role] || ctx.agent || defaultAgentForRole(role);
     const agentName = typeof rawAgent === "object" && rawAgent !== null
-      ? (rawAgent.agent || rawAgent.name || null)
-      : (rawAgent || null);
+      ? (rawAgent.agent || rawAgent.name || defaultAgentForRole(role))
+      : (rawAgent || defaultAgentForRole(role));
 
     // Track artifacts for subsequent phases
     if (isPhasePassed(result) && result.artifact) {
