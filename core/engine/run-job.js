@@ -211,23 +211,48 @@ export async function runJob(ctx) {
       const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
       const failedAgent = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role];
       const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
-      // Mark failed provider unavailable via delegate (fail closed — error propagates)
-      const dc = await getDelegateClient();
-      if (!dc) {
-        const err = new Error("quota delegate client unavailable; provider state not recorded");
-        err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
-        throw err;
+      // Mark failed provider unavailable via delegate (fail closed)
+      let delegateFailure = null;
+      try {
+        const dc = await getDelegateClient();
+        if (!dc) {
+          const err = new Error("quota delegate client unavailable; provider state not recorded");
+          err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
+          throw err;
+        }
+        await dc.delegateMarkProviderUnavailable(hubRoot, {
+          providerKey: failedProviderKey,
+          agent: failedAgent,
+          variant: failedVariant,
+          status: quotaCause.status || "rate_limited",
+          nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+          source: quotaCause.source || "run-job-handoff",
+          confidence: quotaCause.confidence ?? 0.8,
+          reason: result.failure.reason,
+        });
+      } catch (err) {
+        delegateFailure = err;
       }
-      await dc.delegateMarkProviderUnavailable(hubRoot, {
-        providerKey: failedProviderKey,
-        agent: failedAgent,
-        variant: failedVariant,
-        status: quotaCause.status || "rate_limited",
-        nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
-        source: quotaCause.source || "run-job-handoff",
-        confidence: quotaCause.confidence ?? 0.8,
-        reason: result.failure.reason,
-      });
+
+      // Delegate failure → structured phase failure (don't let runJob() bare-throw)
+      if (delegateFailure) {
+        result = phaseFailed({
+          phase,
+          failure: failure({
+            kind: FailureKind.RUNTIME_INTERRUPTED,
+            phase,
+            reason: `quota delegate failure: ${delegateFailure.message}`,
+            retryable: true,
+            cause: {
+              code: delegateFailure.code || "QUOTA_DELEGATE_WRITE_FAILED",
+              providerKey: failedProviderKey,
+              fallbackCount: handoffCount,
+              providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
+            },
+          }),
+        });
+        break;
+      }
 
       // Track provider attempt for history chain
       providerAttempts.push({

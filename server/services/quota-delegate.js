@@ -110,6 +110,27 @@ async function writeAck(hubRoot, commandId, ack) {
   await rename(tmp, ackPath);
 }
 
+// ─── Crash Recovery: move processing/ → inbox/ ───────────────────────
+
+async function recoverProcessing(hubRoot) {
+  const processing = processingDir(hubRoot);
+  const inbox = inboxDir(hubRoot);
+  try {
+    const files = await readdir(processing);
+    const jsonFiles = files.filter((f) => f.endsWith(".json"));
+    for (const file of jsonFiles) {
+      try {
+        await rename(path.join(processing, file), path.join(inbox, file));
+      } catch {
+        // May already be claimed by another delegate — ignore
+      }
+    }
+    if (jsonFiles.length > 0) {
+      console.log(`quota-delegate: recovered ${jsonFiles.length} command(s) from processing/`);
+    }
+  } catch { /* dir may not exist yet */ }
+}
+
 // ─── Stale Ack Cleanup ───────────────────────────────────────────────
 
 async function cleanupStaleAcks(hubRoot) {
@@ -300,6 +321,7 @@ async function main() {
   lockFd = await acquireLock(hubRoot);
 
   await cleanupStaleAcks(hubRoot);
+  await recoverProcessing(hubRoot);
 
   process.on("SIGTERM", () => { shuttingDown = true; });
   process.on("SIGINT", () => { shuttingDown = true; });
