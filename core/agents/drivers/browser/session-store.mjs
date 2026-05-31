@@ -7,12 +7,16 @@ const DEFAULT_PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
 
 export class BrowserSessionManager {
   constructor(opts = {}) {
-    this.profileRoot = opts.profileRoot || DEFAULT_PROFILE_ROOT
+    this._optsProfileRoot = opts.profileRoot || null
     this.contexts = new Map() // id -> { id, providerName, context, page, role, project, createdAt }
   }
 
+  _resolveProfileRoot() {
+    return this._optsProfileRoot || process.env.CPB_ACP_BROWSER_AGENT_PROFILE_ROOT || DEFAULT_PROFILE_ROOT
+  }
+
   async acquire({ providerName, sessionId, role, project, headless = false }) {
-    const profileDir = path.join(this.profileRoot, providerName, "profile-0")
+    const profileDir = path.join(this._resolveProfileRoot(), providerName, "profile-0")
     await mkdir(profileDir, { recursive: true })
 
     const context = await chromium.launchPersistentContext(profileDir, {

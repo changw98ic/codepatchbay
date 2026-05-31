@@ -1,16 +1,31 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
 
 const ACP_PATH = path.resolve(import.meta.dirname, "../../bridges/browser-agent-acp.mjs");
 
+let tempProfileDir;
+
 describe("acp-adapter: browser-agent-acp.mjs JSON-RPC over stdio", () => {
+  before(async () => {
+    tempProfileDir = await mkdtemp(path.join(os.tmpdir(), "cpb-acp-adapter-"));
+  });
+
+  after(async () => {
+    try {
+      await rm(tempProfileDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   it("handles initialize → session/new → session/prompt → session/close lifecycle", async () => {
     const child = spawn(process.execPath, [ACP_PATH], {
       env: {
         ...process.env,
         CPB_ACP_BROWSER_AGENT_PROVIDER: "mock",
+        CPB_ACP_BROWSER_AGENT_PROFILE_ROOT: tempProfileDir,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

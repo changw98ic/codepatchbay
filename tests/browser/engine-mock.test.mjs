@@ -1,15 +1,27 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
 
-import { executeBrowserAgent } from "../../core/agents/drivers/browser/engine.mjs";
-
-const FIXTURE_URL = "file://" + path.resolve(
-  import.meta.dirname,
-  "../../core/agents/drivers/browser/fixtures/pages/mock-chat.html"
-);
+let executeBrowserAgent;
+let tempProfileDir;
 
 describe("engine: executeBrowserAgent with mock provider", () => {
+  before(async () => {
+    tempProfileDir = await mkdtemp(path.join(os.tmpdir(), "cpb-engine-mock-"));
+    process.env.CPB_ACP_BROWSER_AGENT_PROFILE_ROOT = tempProfileDir;
+    const mod = await import("../../core/agents/drivers/browser/engine.mjs");
+    executeBrowserAgent = mod.executeBrowserAgent;
+  });
+
+  after(async () => {
+    delete process.env.CPB_ACP_BROWSER_AGENT_PROFILE_ROOT;
+    try {
+      await rm(tempProfileDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   it("sends prompt and receives expected mock response", async () => {
     const result = await executeBrowserAgent({
       providerName: "mock",
