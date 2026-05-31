@@ -36,8 +36,8 @@ function ackFilePath(hubRoot, commandId) {
   return path.join(acksDir(hubRoot), `${commandId}.json`);
 }
 
-function pidFilePath(hubRoot) {
-  return path.join(hubRoot, "state", "quota-delegate.json");
+function lockFilePath(hubRoot) {
+  return path.join(delegateDir(hubRoot), "delegate.lock");
 }
 
 // ─── Command Write (per-file, atomic rename) ─────────────────────────
@@ -72,9 +72,9 @@ export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS)
 
 export async function isDelegateAlive(hubRoot) {
   try {
-    const state = JSON.parse(await readFile(pidFilePath(hubRoot), "utf8"));
-    if (!state.pid) return false;
-    process.kill(state.pid, 0);
+    const lock = JSON.parse(await readFile(lockFilePath(hubRoot), "utf8"));
+    if (!lock.pid) return false;
+    process.kill(lock.pid, 0);
     return true;
   } catch {
     return false;

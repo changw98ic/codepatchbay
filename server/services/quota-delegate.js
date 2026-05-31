@@ -5,10 +5,13 @@
  * Reads command files from {hubRoot}/providers/delegate/inbox/,
  * processes them, writes acks for quota commands. Started/stopped by hub-cli.js.
  *
+ * Single-instance: exclusive lock file prevents duplicate delegates.
+ * Atomic claim: inbox → processing → processed (no double-process race).
+ *
  * Usage: node quota-delegate.js --hub-root <path>
  */
 
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { redactSecrets, _internalWriteProviderQuota, _internalMarkProviderAvailable } from "./provider-quota.js";
 import { _internalAppendUsageLine } from "./provider-usage.js";
@@ -17,6 +20,7 @@ const POLL_INTERVAL_MS = Number(process.env.CPB_DELEGATE_POLL_MS || 100);
 const STALE_ACK_MS = Number(process.env.CPB_DELEGATE_ACK_TTL_MS || 60_000);
 
 let shuttingDown = false;
+let lockFd = null;
 
 // ─── Paths ───────────────────────────────────────────────────────────
 
@@ -28,6 +32,10 @@ function inboxDir(hubRoot) {
   return path.join(delegateDir(hubRoot), "inbox");
 }
 
+function processingDir(hubRoot) {
+  return path.join(delegateDir(hubRoot), "processing");
+}
+
 function processedDir(hubRoot) {
   return path.join(delegateDir(hubRoot), "processed");
 }
@@ -36,8 +44,58 @@ function acksDir(hubRoot) {
   return path.join(delegateDir(hubRoot), "acks");
 }
 
+function lockFilePath(hubRoot) {
+  return path.join(delegateDir(hubRoot), "delegate.lock");
+}
+
 function ackFilePath(hubRoot, commandId) {
   return path.join(acksDir(hubRoot), `${commandId}.json`);
+}
+
+// ─── Single-Instance Lock ────────────────────────────────────────────
+
+async function acquireLock(hubRoot) {
+  const lockPath = lockFilePath(hubRoot);
+  await mkdir(delegateDir(hubRoot), { recursive: true });
+
+  try {
+    const fd = await open(lockPath, "wx");
+    await writeFile(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
+    return fd;
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+    // Lock exists — check if owner is alive
+    try {
+      const content = await readFile(lockPath, "utf8");
+      const lock = JSON.parse(content);
+      if (lock.pid) {
+        try {
+          process.kill(lock.pid, 0);
+          // Owner is alive — another delegate is running
+          console.error(`quota-delegate: another instance running (pid: ${lock.pid}), exiting`);
+          process.exit(0);
+        } catch {
+          // Stale lock — remove and retry
+        }
+      }
+      await unlink(lockPath);
+    } catch {
+      // Malformed or unreadable lock — remove and retry
+      await unlink(lockPath).catch(() => null);
+    }
+    // Retry acquisition
+    const fd = await open(lockPath, "wx");
+    await writeFile(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
+    return fd;
+  }
+}
+
+async function releaseLock() {
+  if (lockFd) {
+    try { await lockFd.close(); } catch { /* ignore */ }
+    lockFd = null;
+  }
+  await unlink(lockFilePath(process.env.CPB_HUB_ROOT || "")).catch(() => null);
 }
 
 // ─── Ack Writing ─────────────────────────────────────────────────────
@@ -135,12 +193,14 @@ async function processCommand(hubRoot, cmd) {
   }
 }
 
-// ─── Inbox Processing ────────────────────────────────────────────────
+// ─── Inbox Processing (atomic claim) ─────────────────────────────────
 
 async function processInbox(hubRoot) {
   const inbox = inboxDir(hubRoot);
+  const processing = processingDir(hubRoot);
   const processed = processedDir(hubRoot);
   await mkdir(inbox, { recursive: true });
+  await mkdir(processing, { recursive: true });
   await mkdir(processed, { recursive: true });
 
   let files;
@@ -157,32 +217,41 @@ async function processInbox(hubRoot) {
     if (shuttingDown) break;
 
     const commandPath = path.join(inbox, file);
+    const processingPath = path.join(processing, file);
+    const processedPath = path.join(processed, file);
     const commandId = file.replace(/\.json$/, "");
 
     // Dedup: skip if already processed
     try {
-      await stat(path.join(processed, file));
-      // Already processed — remove from inbox
+      await stat(processedPath);
       await unlink(commandPath).catch(() => null);
       continue;
     } catch {
       // Not yet processed — proceed
     }
 
-    // Read and parse command
+    // Atomic claim: move inbox → processing (prevents double-process by another delegate)
+    try {
+      await rename(commandPath, processingPath);
+    } catch {
+      // Another delegate claimed it, or file vanished — skip
+      continue;
+    }
+
+    // Read and parse command from processing/
     let cmd;
     try {
-      const content = await readFile(commandPath, "utf8");
+      const content = await readFile(processingPath, "utf8");
       cmd = JSON.parse(content);
     } catch {
       // Malformed command — move to processed to avoid retry loop
-      await rename(commandPath, path.join(processed, file)).catch(() => null);
+      await rename(processingPath, processedPath).catch(() => null);
       continue;
     }
 
     // Verify commandId matches filename (防篡改)
     if (cmd.commandId && cmd.commandId !== commandId) {
-      await rename(commandPath, path.join(processed, file)).catch(() => null);
+      await rename(processingPath, processedPath).catch(() => null);
       continue;
     }
 
@@ -191,11 +260,15 @@ async function processInbox(hubRoot) {
       await processCommand(hubRoot, cmd);
     } catch (err) {
       console.error(`quota-delegate: command error (${commandId}): ${err.message}`);
+      // On quota_write failure, write error ack so client doesn't hang
+      if (cmd.type === "quota_write" && cmd.commandId) {
+        await writeAck(hubRoot, cmd.commandId, { ok: false, error: err.message }).catch(() => null);
+      }
     }
 
-    // Move to processed (dedup marker)
+    // Move processing → processed (dedup marker)
     try {
-      await rename(commandPath, path.join(processed, file));
+      await rename(processingPath, processedPath);
     } catch {
       // May already be moved — ignore
     }
@@ -214,17 +287,25 @@ async function main() {
     process.exit(1);
   }
 
+  // Store hubRoot for lock cleanup on exit
+  process.env.CPB_HUB_ROOT = hubRoot;
+
   await mkdir(delegateDir(hubRoot), { recursive: true });
   await mkdir(inboxDir(hubRoot), { recursive: true });
+  await mkdir(processingDir(hubRoot), { recursive: true });
   await mkdir(processedDir(hubRoot), { recursive: true });
   await mkdir(acksDir(hubRoot), { recursive: true });
+
+  // Single-instance lock
+  lockFd = await acquireLock(hubRoot);
 
   await cleanupStaleAcks(hubRoot);
 
   process.on("SIGTERM", () => { shuttingDown = true; });
   process.on("SIGINT", () => { shuttingDown = true; });
+  process.on("exit", () => { releaseLock(); });
 
-  console.log(`quota-delegate: started (hubRoot=${hubRoot})`);
+  console.log(`quota-delegate: started (hubRoot=${hubRoot}, pid=${process.pid})`);
 
   while (!shuttingDown) {
     try {
@@ -240,6 +321,7 @@ async function main() {
     await processInbox(hubRoot);
   } catch { /* best-effort */ }
 
+  await releaseLock();
   console.log("quota-delegate: stopped");
   process.exit(0);
 }

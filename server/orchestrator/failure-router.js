@@ -10,9 +10,6 @@ const MAX_RETRIES = {
   verification_failed: 2,
 };
 
-// Max provider fallback attempts before giving up
-const MAX_PROVIDER_FALLBACKS = Number(process.env.CPB_PROVIDER_FALLBACK_MAX || 2);
-
 // Complex failures that benefit from supervisor diagnosis (P1-2)
 const SUPERVISOR_ELIGIBLE_KINDS = new Set([
   FailureKind.AGENT_CONTRACT_INVALID,

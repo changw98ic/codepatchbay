@@ -89,8 +89,12 @@ export async function cmdStart() {
       } catch (e) {
         console.error(`Orchestrator start failed: ${e.message}`);
       }
-      // Auto-start Quota Delegate
+      // Auto-start Quota Delegate (skip if already running)
       try {
+        const { isDelegateAlive } = await import("./quota-delegate-client.js");
+        if (await isDelegateAlive(hubRoot)) {
+          console.log("Quota delegate already running, skipping start");
+        } else {
         const delegateLogFd = openSync(path.join(hubRoot, "quota-delegate.log"), "a");
         const delegateChild = spawn(process.execPath, [
           path.join(executorRoot, "server", "services", "quota-delegate.js"),
@@ -102,12 +106,8 @@ export async function cmdStart() {
           stdio: ["ignore", delegateLogFd, delegateLogFd],
         });
         delegateChild.unref();
-        await mkdir(path.join(hubRoot, "state"), { recursive: true });
-        await writeFile(
-          path.join(hubRoot, "state", "quota-delegate.json"),
-          JSON.stringify({ pid: delegateChild.pid, startedAt: new Date().toISOString() }, null, 2) + "\n",
-        );
         console.log(`Quota delegate started (pid: ${delegateChild.pid})`);
+        }
       } catch (e) {
         console.error(`Quota delegate start failed: ${e.message}`);
       }
@@ -172,15 +172,17 @@ export async function cmdStop() {
     await rm(orchStatePath, { force: true });
   } catch {}
 
-  // Stop quota delegate process by PID
+  // Stop quota delegate process by PID (from delegate.lock)
   try {
-    const delegateStatePath = path.join(hubRoot, "state", "quota-delegate.json");
-    const delegateState = JSON.parse(await readFile(delegateStatePath, "utf8"));
-    if (delegateState.pid) {
-      try { process.kill(delegateState.pid, "SIGTERM"); } catch {}
-      console.log(`Quota delegate stopped (pid: ${delegateState.pid})`);
+    const delegateLockPath = path.join(hubRoot, "providers", "delegate", "delegate.lock");
+    const delegateLock = JSON.parse(await readFile(delegateLockPath, "utf8"));
+    if (delegateLock.pid) {
+      try { process.kill(delegateLock.pid, "SIGTERM"); } catch {}
+      console.log(`Quota delegate stopped (pid: ${delegateLock.pid})`);
     }
-    await rm(delegateStatePath, { force: true });
+    // Delegate cleans up its own lock on exit; remove if stale
+    await new Promise((r) => setTimeout(r, 500));
+    await rm(delegateLockPath, { force: true });
   } catch {}
 
   // Auto-stop CodeGraph MCP server

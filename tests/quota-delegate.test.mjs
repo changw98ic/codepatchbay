@@ -88,14 +88,14 @@ describe("isDelegateAlive", () => {
   });
 
   it("returns false for stale PID", async () => {
-    await mkdir(path.join(hubRoot, "state"), { recursive: true });
-    await writeFile(path.join(hubRoot, "state", "quota-delegate.json"), JSON.stringify({ pid: 999999999 }) + "\n");
+    await mkdir(path.join(hubRoot, "providers", "delegate"), { recursive: true });
+    await writeFile(path.join(hubRoot, "providers", "delegate", "delegate.lock"), JSON.stringify({ pid: 999999999 }) + "\n");
     assert.equal(await isDelegateAlive(hubRoot), false);
   });
 
   it("returns true for current process PID", async () => {
-    await mkdir(path.join(hubRoot, "state"), { recursive: true });
-    await writeFile(path.join(hubRoot, "state", "quota-delegate.json"), JSON.stringify({ pid: process.pid }) + "\n");
+    await mkdir(path.join(hubRoot, "providers", "delegate"), { recursive: true });
+    await writeFile(path.join(hubRoot, "providers", "delegate", "delegate.lock"), JSON.stringify({ pid: process.pid }) + "\n");
     assert.equal(await isDelegateAlive(hubRoot), true);
   });
 });
