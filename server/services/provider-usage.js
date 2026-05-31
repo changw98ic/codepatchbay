@@ -53,6 +53,7 @@ export async function enqueueProviderUsage(hubRoot, record) {
       ts: new Date().toISOString(),
       project: record.project || null,
       issueNumber: record.issueNumber ?? null,
+      source: record.source || null,
       attempt: record.attempt ?? null,
       phase: record.phase,
       role: record.role || null,
@@ -64,12 +65,10 @@ export async function enqueueProviderUsage(hubRoot, record) {
       status: record.status,
       phaseStatus: record.phaseStatus,
       durationMs: record.durationMs ?? null,
-      quotaStatus: record.quotaStatus || null,
-      quotaSource: record.quotaSource || null,
-      quotaConfidence: record.quotaConfidence ?? null,
-      nextEligibleAt: record.nextEligibleAt ?? null,
+      quota: record.quota || { status: null, source: null, confidence: null, nextEligibleAt: null, retryAfterMs: null, windowResetAt: null, weeklyResetAt: null, reason: null },
       fallback: record.fallback || { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
-      usage: record.usage || { calls: null, tokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
+      providerAttempts: record.providerAttempts || null,
+      usage: record.usage || { calls: null, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
     };
     await appendProviderUsageLine(hubRoot, entry);
     return entry;
@@ -131,9 +130,10 @@ export async function readProviderUsageRollup(hubRoot) {
     if (r.status === "ok") u.ok += 1;
     else if (r.status === "rate_limited" || r.status === "fallback") u.rateLimited += 1;
     else u.errors += 1;
-    if (r.usage?.tokens != null) u.tokens += r.usage.tokens;
+    if (r.usage?.totalTokens != null) u.tokens += r.usage.totalTokens;
+    else if (r.usage?.tokens != null) u.tokens += r.usage.tokens;
     if (r.fallback?.used) u.fallbacks += 1;
-    if (r.quotaStatus != null) u.quotaEvents += 1;
+    if (r.quota?.status != null) u.quotaEvents += 1;
     if (r.durationMs != null) u.totalDurationMs += r.durationMs;
   }
 

@@ -118,15 +118,8 @@ function envForAgent(agent, env = {}, variant = null) {
   return next;
 }
 
-export function sanitizeProviderReason(message) {
-  return String(message || "")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
-    .replace(
-      /\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+/gi,
-      "$1$2$3[REDACTED]",
-    )
-    .slice(0, 500);
-}
+// Re-export from provider-quota (redaction unified there)
+export { sanitizeProviderReason } from "./provider-quota.js";
 
 function poolLimitForAgentEnv(registry, agent, env = {}) {
   const desc = registry?.getDescriptor(agent);
@@ -575,7 +568,7 @@ export class AcpPool {
 
       if (quotaResult.isQuota) {
         await this.#recycleSession(agent, "rate_limit");
-        await markProviderUnavailable(this.hubRoot, {
+        const quotaOpts = {
           providerKey,
           agent,
           variant: options.variant,
@@ -584,7 +577,14 @@ export class AcpPool {
           source: quotaResult.source || "acp-pool-classifier",
           confidence: quotaResult.confidence,
           reason: quotaResult.reason,
-        });
+        };
+        // Route through delegate client with direct fallback
+        try {
+          const { delegateMarkProviderUnavailable } = await import("./quota-delegate-client.js");
+          await delegateMarkProviderUnavailable(this.hubRoot, quotaOpts, markProviderUnavailable);
+        } catch {
+          await markProviderUnavailable(this.hubRoot, quotaOpts);
+        }
         throw new ProviderQuotaError(quotaResult.reason, {
           providerKey,
           agent,

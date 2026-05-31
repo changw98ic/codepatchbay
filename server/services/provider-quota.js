@@ -53,7 +53,7 @@ export class ProviderQuotaError extends Error {
     this.nextEligibleAt = opts.nextEligibleAt ?? null;
     this.source = opts.source || "provider-quota";
     this.confidence = opts.confidence ?? 1;
-    this.reason = opts.reason || message;
+    this.reason = redactSecrets(opts.reason || message);
     this.phase = opts.phase || null;
     this.role = opts.role || null;
   }

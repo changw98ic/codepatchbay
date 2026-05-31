@@ -487,12 +487,9 @@ describe("provider-usage", () => {
       status: "fallback",
       phaseStatus: "passed",
       durationMs: 3000,
-      quotaStatus: "rate_limited",
-      quotaSource: "acp-pool-classifier",
-      quotaConfidence: 0.9,
-      nextEligibleAt: Date.now() + 60000,
+      quota: { status: "rate_limited", source: "acp-pool-classifier", confidence: 0.9, nextEligibleAt: Date.now() + 60000 },
       fallback: { used: true, fromProviderKey: "claude:kimi-k2.6", toProviderKey: "claude:mimo-v2.5pro", count: 1, reason: "429" },
-      usage: { calls: 1, tokens: 500, tokenSource: "reported", toolCalls: 3, functionCalls: 2 },
+      usage: { calls: 1, inputTokens: 200, outputTokens: 300, totalTokens: 500, tokenSource: "reported", toolCalls: 3, functionCalls: 2 },
     });
     const records = await readProviderUsage(tmpDir);
     assert.equal(records.length, 1);
@@ -501,10 +498,10 @@ describe("provider-usage", () => {
     assert.equal(r.issueNumber, 42);
     assert.equal(r.attempt, 2);
     assert.equal(r.providerRegion, "cn");
-    assert.equal(r.quotaStatus, "rate_limited");
+    assert.equal(r.quota.status, "rate_limited");
     assert.equal(r.fallback.used, true);
     assert.equal(r.fallback.count, 1);
-    assert.equal(r.usage.tokens, 500);
+    assert.equal(r.usage.totalTokens, 500);
   });
 
   it("provider rollup aggregates correctly", async () => {
@@ -522,7 +519,7 @@ describe("provider-usage", () => {
 
   it("rollup counts fallbacks and quotaEvents", async () => {
     await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
-    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "fallback", phaseStatus: "passed", quotaStatus: "rate_limited", fallback: { used: true, fromProviderKey: "claude", toProviderKey: "codex", count: 1, reason: "429" } });
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "fallback", phaseStatus: "passed", quota: { status: "rate_limited" }, fallback: { used: true, fromProviderKey: "claude", toProviderKey: "codex", count: 1, reason: "429" } });
 
     const rollup = await readProviderUsageRollup(tmpDir);
     assert.equal(rollup.claude.calls, 2);
@@ -700,7 +697,7 @@ import { FailureKind } from "../core/contracts/failure.js";
 describe("FailureRouter rate limit fallback", () => {
   const router = new FailureRouter();
 
-  it("returns fallback_provider when fallback budget available", async () => {
+  it("returns wait_for_rate_limit for rate limited (fallback handled at engine level)", async () => {
     const decision = await router.route({
       assignment: { attempts: 0 },
       attempt: {},
@@ -715,7 +712,7 @@ describe("FailureRouter rate limit fallback", () => {
         },
       },
     });
-    assert.equal(decision.action, "fallback_provider");
+    assert.equal(decision.action, "wait_for_rate_limit");
     assert.equal(decision.retryable, true);
   });
 

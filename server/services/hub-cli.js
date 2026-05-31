@@ -89,6 +89,28 @@ export async function cmdStart() {
       } catch (e) {
         console.error(`Orchestrator start failed: ${e.message}`);
       }
+      // Auto-start Quota Delegate
+      try {
+        const delegateLogFd = openSync(path.join(hubRoot, "quota-delegate.log"), "a");
+        const delegateChild = spawn(process.execPath, [
+          path.join(executorRoot, "server", "services", "quota-delegate.js"),
+          "--hub-root", hubRoot,
+        ], {
+          cwd: cpbRoot,
+          env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot }),
+          detached: true,
+          stdio: ["ignore", delegateLogFd, delegateLogFd],
+        });
+        delegateChild.unref();
+        await mkdir(path.join(hubRoot, "state"), { recursive: true });
+        await writeFile(
+          path.join(hubRoot, "state", "quota-delegate.json"),
+          JSON.stringify({ pid: delegateChild.pid, startedAt: new Date().toISOString() }, null, 2) + "\n",
+        );
+        console.log(`Quota delegate started (pid: ${delegateChild.pid})`);
+      } catch (e) {
+        console.error(`Quota delegate start failed: ${e.message}`);
+      }
       // Auto-start CodeGraph MCP server
       try {
         const { run: codegraphRun } = await import("../../cli/commands/codegraph.js");
@@ -148,6 +170,17 @@ export async function cmdStop() {
       console.log(`Orchestrator stopped (pid: ${orchState.pid})`);
     }
     await rm(orchStatePath, { force: true });
+  } catch {}
+
+  // Stop quota delegate process by PID
+  try {
+    const delegateStatePath = path.join(hubRoot, "state", "quota-delegate.json");
+    const delegateState = JSON.parse(await readFile(delegateStatePath, "utf8"));
+    if (delegateState.pid) {
+      try { process.kill(delegateState.pid, "SIGTERM"); } catch {}
+      console.log(`Quota delegate stopped (pid: ${delegateState.pid})`);
+    }
+    await rm(delegateStatePath, { force: true });
   } catch {}
 
   // Auto-stop CodeGraph MCP server
