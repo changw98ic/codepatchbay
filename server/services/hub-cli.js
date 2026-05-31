@@ -178,11 +178,29 @@ export async function cmdStop() {
     const delegateLock = JSON.parse(await readFile(delegateLockPath, "utf8"));
     if (delegateLock.pid) {
       try { process.kill(delegateLock.pid, "SIGTERM"); } catch {}
-      console.log(`Quota delegate stopped (pid: ${delegateLock.pid})`);
+      console.log(`Quota delegate stopping (pid: ${delegateLock.pid})`);
+
+      // Wait for process to actually exit (up to 5s)
+      const deadline = Date.now() + 5000;
+      let exited = false;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(delegateLock.pid, 0);
+          await new Promise((r) => setTimeout(r, 100));
+        } catch {
+          exited = true;
+          break;
+        }
+      }
+
+      if (exited) {
+        // Process exited; delegate should have cleaned its lock. Remove if stale.
+        await rm(delegateLockPath, { force: true });
+        console.log(`Quota delegate stopped (pid: ${delegateLock.pid})`);
+      } else {
+        console.error(`Quota delegate did not exit within timeout; leaving lock in place`);
+      }
     }
-    // Delegate cleans up its own lock on exit; remove if stale
-    await new Promise((r) => setTimeout(r, 500));
-    await rm(delegateLockPath, { force: true });
   } catch {}
 
   // Auto-stop CodeGraph MCP server
