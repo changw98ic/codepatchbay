@@ -24,6 +24,22 @@ async function getProviderQuota() {
   return _providerQuota;
 }
 
+let _providerUsage = null;
+async function getProviderUsage() {
+  if (!_providerUsage) {
+    try { _providerUsage = await import("../../server/services/provider-usage.js"); } catch { _providerUsage = null; }
+  }
+  return _providerUsage;
+}
+
+let _providerAdapters = null;
+async function getProviderAdapters() {
+  if (!_providerAdapters) {
+    try { _providerAdapters = await import("../../server/services/provider-adapters.js"); } catch { _providerAdapters = null; }
+  }
+  return _providerAdapters;
+}
+
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 
 function ts() {
@@ -319,6 +335,60 @@ export async function runJob(ctx) {
         : null,
       ts: ts(),
     });
+
+    // Enqueue phase-level provider usage (best-effort)
+    if (hubRoot) {
+      try {
+        const pu = await getProviderUsage();
+        const pa = await getProviderAdapters();
+        if (pu) {
+          const { agent: resolvedAgent, variant } = resolveRawAgent(phaseAgents, ctx.agent, role, phase);
+          const providerKey = resolveProviderKey(pool, phaseAgents[role], ctx.agent);
+          const adapter = pa?.getProviderAdapter(providerKey);
+          const failCause = result.failure?.cause || {};
+          const diag = result.diagnostics || {};
+
+          let usageStatus = "ok";
+          if (!isPhasePassed(result)) {
+            if (result.failure?.kind === FailureKind.AGENT_RATE_LIMITED) {
+              usageStatus = handoffCount > 0 ? "fallback" : "rate_limited";
+            } else if (result.failure?.kind === FailureKind.TIMEOUT) {
+              usageStatus = "timeout";
+            } else {
+              usageStatus = "error";
+            }
+          }
+
+          await pu.enqueueProviderUsage(hubRoot, {
+            project,
+            issueNumber: sourceContext?.issueNumber ?? null,
+            attempt: sourceContext?.attempt ?? null,
+            phase,
+            role,
+            providerKey: diag.providerKey || providerKey,
+            agent: diag.agent || resolvedAgent,
+            variant: diag.variant || variant,
+            providerRegion: adapter?.region || null,
+            providerAdapter: adapter?.providerKeyPattern || null,
+            status: usageStatus,
+            phaseStatus: isPhasePassed(result) ? "passed" : "failed",
+            durationMs: diag.elapsedMs ?? null,
+            quotaStatus: failCause.status || null,
+            quotaSource: failCause.source || null,
+            quotaConfidence: failCause.confidence ?? null,
+            nextEligibleAt: failCause.nextEligibleAt ?? null,
+            fallback: handoffCount > 0 || Boolean(handoffReason) ? {
+              used: true,
+              fromProviderKey: failCause.providerKey || null,
+              toProviderKey: diag.providerKey || providerKey,
+              count: handoffCount,
+              reason: handoffReason || result.failure?.reason || null,
+            } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
+            usage: { calls: 1, tokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
+          });
+        }
+      } catch { /* usage tracking is best-effort */ }
+    }
 
     if (!isPhasePassed(result)) {
       const fail = result.failure || {};

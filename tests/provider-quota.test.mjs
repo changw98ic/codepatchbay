@@ -24,7 +24,7 @@ import {
 } from "../server/services/provider-quota.js";
 import { getProviderAdapter, listAdapterKeys } from "../server/services/provider-adapters.js";
 import {
-  recordProviderUsage,
+  enqueueProviderUsage,
   readProviderUsage,
   readProviderUsageRollup,
   readSystemUsageRollup,
@@ -454,25 +454,63 @@ describe("sanitizeProviderReason", () => {
 // ─── Provider Usage ─────────────────────────────────────────────────
 
 describe("provider-usage", () => {
-  it("records and reads usage", async () => {
-    await recordProviderUsage(tmpDir, {
+  it("enqueues and reads usage", async () => {
+    await enqueueProviderUsage(tmpDir, {
       providerKey: "claude",
       agent: "claude",
       phase: "execute",
       status: "ok",
+      phaseStatus: "passed",
       durationMs: 1500,
     });
     const records = await readProviderUsage(tmpDir);
     assert.equal(records.length, 1);
     assert.equal(records[0].providerKey, "claude");
     assert.equal(records[0].status, "ok");
+    assert.equal(records[0].phaseStatus, "passed");
     assert.equal(records[0].durationMs, 1500);
+    assert.ok(records[0].ts);
+  });
+
+  it("records new schema fields", async () => {
+    await enqueueProviderUsage(tmpDir, {
+      project: "my-proj",
+      issueNumber: 42,
+      attempt: 2,
+      phase: "execute",
+      role: "executor",
+      providerKey: "claude:kimi-k2.6",
+      agent: "claude",
+      variant: "kimi-k2.6",
+      providerRegion: "cn",
+      providerAdapter: "claude:kimi-k2.6",
+      status: "fallback",
+      phaseStatus: "passed",
+      durationMs: 3000,
+      quotaStatus: "rate_limited",
+      quotaSource: "acp-pool-classifier",
+      quotaConfidence: 0.9,
+      nextEligibleAt: Date.now() + 60000,
+      fallback: { used: true, fromProviderKey: "claude:kimi-k2.6", toProviderKey: "claude:mimo-v2.5pro", count: 1, reason: "429" },
+      usage: { calls: 1, tokens: 500, tokenSource: "reported", toolCalls: 3, functionCalls: 2 },
+    });
+    const records = await readProviderUsage(tmpDir);
+    assert.equal(records.length, 1);
+    const r = records[0];
+    assert.equal(r.project, "my-proj");
+    assert.equal(r.issueNumber, 42);
+    assert.equal(r.attempt, 2);
+    assert.equal(r.providerRegion, "cn");
+    assert.equal(r.quotaStatus, "rate_limited");
+    assert.equal(r.fallback.used, true);
+    assert.equal(r.fallback.count, 1);
+    assert.equal(r.usage.tokens, 500);
   });
 
   it("provider rollup aggregates correctly", async () => {
-    await recordProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", tokens: 100 });
-    await recordProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "verify", status: "ok", tokens: 50 });
-    await recordProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "error" });
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 100, tokenSource: "reported", toolCalls: null, functionCalls: null } });
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "verify", status: "ok", phaseStatus: "passed", usage: { calls: 1, tokens: 50, tokenSource: "reported", toolCalls: null, functionCalls: null } });
+    await enqueueProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "error", phaseStatus: "failed" });
 
     const rollup = await readProviderUsageRollup(tmpDir);
     assert.equal(rollup.claude.calls, 2);
@@ -482,9 +520,19 @@ describe("provider-usage", () => {
     assert.equal(rollup.codex.errors, 1);
   });
 
+  it("rollup counts fallbacks and quotaEvents", async () => {
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "fallback", phaseStatus: "passed", quotaStatus: "rate_limited", fallback: { used: true, fromProviderKey: "claude", toProviderKey: "codex", count: 1, reason: "429" } });
+
+    const rollup = await readProviderUsageRollup(tmpDir);
+    assert.equal(rollup.claude.calls, 2);
+    assert.equal(rollup.claude.fallbacks, 1);
+    assert.equal(rollup.claude.quotaEvents, 1);
+  });
+
   it("system rollup aggregates all providers", async () => {
-    await recordProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok" });
-    await recordProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "rate_limited" });
+    await enqueueProviderUsage(tmpDir, { providerKey: "claude", agent: "claude", phase: "execute", status: "ok", phaseStatus: "passed" });
+    await enqueueProviderUsage(tmpDir, { providerKey: "codex", agent: "codex", phase: "plan", status: "rate_limited", phaseStatus: "failed" });
 
     const system = await readSystemUsageRollup(tmpDir);
     assert.equal(system.totalCalls, 2);

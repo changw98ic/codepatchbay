@@ -1,11 +1,14 @@
 /**
- * Provider Usage — JSONL-based usage tracking.
+ * Provider Usage — JSONL-based phase-level usage tracking.
  *
- * Records every provider call to {hubRoot}/providers/usage.jsonl
- * with structured metadata for observability and rollup.
+ * Records provider usage per phase to {hubRoot}/providers/usage.jsonl.
+ * Phase-level (not per-call): runJob() enqueues after each phase completes.
+ *
+ * Write API: enqueueProviderUsage (queue-based, in-process)
+ * Read API:  readProviderUsage, readProviderUsageRollup, readSystemUsageRollup
  */
 
-import { mkdir, readFile, rename, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const USAGE_FILE = "usage.jsonl";
@@ -14,68 +17,68 @@ function usageFilePath(hubRoot) {
   return path.join(hubRoot, "providers", USAGE_FILE);
 }
 
+// ─── In-process write queue (same pattern as provider-quota.js) ─────
+const _usageWriteQueues = new Map();
+
 /**
- * Append a usage record to the JSONL log.
- *
- * @param {object} record
- * @param {string} record.providerKey
- * @param {string} record.agent
- * @param {string} [record.variant]
- * @param {string} record.phase
- * @param {string} [record.role]
- * @param {string} [record.project]
- * @param {string} [record.jobId]
- * @param {string} [record.callType] - "execute" | "persistent" | "one-shot"
- * @param {string} record.status    - "ok" | "error" | "rate_limited" | "timeout"
- * @param {number} [record.tokens]
- * @param {string} [record.tokenSource] - "reported" | "estimated" | "unknown"
- * @param {number} [record.toolCalls]
- * @param {number} [record.functionCalls]
- * @param {boolean} [record.handoff]
- * @param {boolean} [record.midRunQuotaFailure]
- * @param {number} [record.durationMs]
- * @param {string} [record.errorKind]
- * @param {string} [record.errorMessage]
+ * Low-level JSONL append.
+ * @param {string} hubRoot
+ * @param {object} record — already-normalized entry
  */
-export async function recordProviderUsage(hubRoot, record) {
+async function appendProviderUsageLine(hubRoot, record) {
   const filePath = usageFilePath(hubRoot);
-  await mkdir(path.dirname(filePath), { recursive: true });
-
-  const entry = {
-    ts: new Date().toISOString(),
-    providerKey: record.providerKey,
-    agent: record.agent,
-    variant: record.variant || null,
-    phase: record.phase,
-    role: record.role || null,
-    project: record.project || null,
-    jobId: record.jobId || null,
-    callType: record.callType || null,
-    status: record.status,
-    tokens: record.tokens ?? null,
-    tokenSource: record.tokenSource || "unknown",
-    toolCalls: record.toolCalls ?? null,
-    functionCalls: record.functionCalls ?? null,
-    handoff: record.handoff || false,
-    midRunQuotaFailure: record.midRunQuotaFailure || false,
-    durationMs: record.durationMs ?? null,
-    errorKind: record.errorKind || null,
-    errorMessage: record.errorMessage || null,
-  };
-
-  const line = `${JSON.stringify(entry)}\n`;
-
-  // Atomic-ish append: use appendFile (POSIX appends are atomic for small writes)
+  const line = `${JSON.stringify(record)}\n`;
   try {
     await appendFile(filePath, line, "utf8");
   } catch {
-    // File might not exist yet — create it
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, line, "utf8");
   }
-
-  return entry;
+  return record;
 }
+
+/**
+ * Queue-based usage writer. Serializes concurrent writes to prevent
+ * interleaved JSONL lines.
+ *
+ * @param {string} hubRoot
+ * @param {object} record
+ * @returns {Promise<object>} the normalized entry
+ */
+export async function enqueueProviderUsage(hubRoot, record) {
+  const filePath = usageFilePath(hubRoot);
+  const prev = _usageWriteQueues.get(filePath) || Promise.resolve();
+  const next = prev.catch(() => null).then(async () => {
+    const entry = {
+      ts: new Date().toISOString(),
+      project: record.project || null,
+      issueNumber: record.issueNumber ?? null,
+      attempt: record.attempt ?? null,
+      phase: record.phase,
+      role: record.role || null,
+      providerKey: record.providerKey,
+      agent: record.agent,
+      variant: record.variant || null,
+      providerRegion: record.providerRegion || null,
+      providerAdapter: record.providerAdapter || null,
+      status: record.status,
+      phaseStatus: record.phaseStatus,
+      durationMs: record.durationMs ?? null,
+      quotaStatus: record.quotaStatus || null,
+      quotaSource: record.quotaSource || null,
+      quotaConfidence: record.quotaConfidence ?? null,
+      nextEligibleAt: record.nextEligibleAt ?? null,
+      fallback: record.fallback || { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
+      usage: record.usage || { calls: null, tokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
+    };
+    await appendProviderUsageLine(hubRoot, entry);
+    return entry;
+  });
+  _usageWriteQueues.set(filePath, next.catch(() => null));
+  return next;
+}
+
+// ─── Read API ───────────────────────────────────────────────────────
 
 /**
  * Read all usage records from the JSONL log.
@@ -118,19 +121,19 @@ export async function readProviderUsageRollup(hubRoot) {
         rateLimited: 0,
         tokens: 0,
         tokenSource: "unknown",
-        handoffs: 0,
-        midRunQuotaFailures: 0,
+        fallbacks: 0,
+        quotaEvents: 0,
         totalDurationMs: 0,
       };
     }
     const u = rollup[key];
     u.calls += 1;
     if (r.status === "ok") u.ok += 1;
-    else if (r.status === "rate_limited") u.rateLimited += 1;
+    else if (r.status === "rate_limited" || r.status === "fallback") u.rateLimited += 1;
     else u.errors += 1;
-    if (r.tokens != null) u.tokens += r.tokens;
-    if (r.handoff) u.handoffs += 1;
-    if (r.midRunQuotaFailure) u.midRunQuotaFailures += 1;
+    if (r.usage?.tokens != null) u.tokens += r.usage.tokens;
+    if (r.fallback?.used) u.fallbacks += 1;
+    if (r.quotaStatus != null) u.quotaEvents += 1;
     if (r.durationMs != null) u.totalDurationMs += r.durationMs;
   }
 
@@ -152,8 +155,8 @@ export async function readSystemUsageRollup(hubRoot) {
     totalErrors: providers.reduce((s, p) => s + p.errors, 0),
     totalRateLimited: providers.reduce((s, p) => s + p.rateLimited, 0),
     totalTokens: providers.reduce((s, p) => s + p.tokens, 0),
-    totalHandoffs: providers.reduce((s, p) => s + p.handoffs, 0),
-    totalMidRunQuotaFailures: providers.reduce((s, p) => s + p.midRunQuotaFailures, 0),
+    totalFallbacks: providers.reduce((s, p) => s + p.fallbacks, 0),
+    totalQuotaEvents: providers.reduce((s, p) => s + p.quotaEvents, 0),
     providerCount: providers.length,
     providers: providerRollup,
   };

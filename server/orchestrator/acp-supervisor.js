@@ -36,7 +36,7 @@ export class AcpSupervisor {
     const prompt = buildDiagnosisPrompt({ assignment, attempt, result });
 
     try {
-      const output = await pool.execute(
+      const { output } = await pool.execute(
         "supervisor",
         prompt,
         this.cpbRoot,

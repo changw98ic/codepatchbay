@@ -35,7 +35,7 @@ export async function runAgent({
   const startedAt = Date.now();
 
   try {
-    const output = await pool.execute(agent, prompt, cwd, timeoutMs, {
+    const execResult = await pool.execute(agent, prompt, cwd, timeoutMs, {
       phase: role,
       role,
       bypass: false,
@@ -44,6 +44,9 @@ export async function runAgent({
       workspaceId: scope?.workspaceId,
       policyHash: scope?.policyHash,
     });
+    const output = typeof execResult === "string" ? execResult : execResult.output;
+    const providerKey = execResult?.providerKey || null;
+    const execVariant = execResult?.variant || null;
 
     return {
       ok: true,
@@ -53,6 +56,8 @@ export async function runAgent({
         elapsedMs: Date.now() - startedAt,
         agent,
         role,
+        providerKey,
+        variant: execVariant,
       },
     };
   } catch (err) {

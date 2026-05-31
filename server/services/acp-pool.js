@@ -15,7 +15,6 @@ import {
   markProviderUnavailable,
 } from "./provider-quota.js";
 import { getProviderAdapter } from "./provider-adapters.js";
-import { recordProviderUsage } from "./provider-usage.js";
 
 let _registryCache = null;
 
@@ -524,14 +523,10 @@ export class AcpPool {
 
   async execute(agent, prompt, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options = {}) {
     if (options.bypass) {
-      return this.#run(agent, prompt, cwd, timeoutMs);
+      const output = await this.#run(agent, prompt, cwd, timeoutMs);
+      return { output, providerKey: null, agent, variant: null };
     }
     const providerKey = this.providerKey(agent, options.variant);
-    const executeStartedAt = Date.now();
-    let usageStatus = "ok";
-    let usageErrorKind = null;
-    let usageErrorMessage = null;
-    let isQuotaFailure = false;
 
     // Pre-flight quota gate (replaces old assertNotRateLimited)
     if (!this.runner) {
@@ -562,7 +557,7 @@ export class AcpPool {
       lifecycle.requestCount += 1;
       lifecycle.lastUsedAt = Date.now();
       lifecycle.recycleReason = null;
-      return output;
+      return { output, providerKey, agent, variant: options.variant || null };
     } catch (error) {
       this.errorCount.set(agent, (this.errorCount.get(agent) || 0) + 1);
 
@@ -579,10 +574,6 @@ export class AcpPool {
       });
 
       if (quotaResult.isQuota) {
-        isQuotaFailure = true;
-        usageStatus = "rate_limited";
-        usageErrorKind = quotaResult.status;
-        usageErrorMessage = quotaResult.reason;
         await this.#recycleSession(agent, "rate_limit");
         await markProviderUnavailable(this.hubRoot, {
           providerKey,
@@ -608,29 +599,10 @@ export class AcpPool {
         });
       }
 
-      usageStatus = error?.message?.includes("timed out") ? "timeout" : "error";
-      usageErrorKind = error?.name || "Error";
-      usageErrorMessage = error?.message?.slice(0, 200) || String(error);
       await this.#recycleSession(agent, "error");
       throw error;
     } finally {
       session.release();
-      // Record provider usage (best-effort, don't throw)
-      recordProviderUsage(this.hubRoot, {
-        providerKey,
-        agent,
-        variant: options.variant || null,
-        phase: options.phase || "unknown",
-        role: options.role || null,
-        project: options.projectId || null,
-        jobId: options.jobId || null,
-        callType: this.runner ? "injected" : this.persistentProcesses ? "persistent" : "one-shot",
-        status: usageStatus,
-        durationMs: Date.now() - executeStartedAt,
-        midRunQuotaFailure: isQuotaFailure,
-        errorKind: usageErrorKind,
-        errorMessage: usageErrorMessage,
-      }).catch(() => null);
     }
   }
 
