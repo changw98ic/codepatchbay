@@ -9,13 +9,31 @@ import {
   normalizeMergePath,
   summarizeMergeFiles,
 } from "./merge-steward.js";
-import { appendEvent } from "./event-store.js";
+import { appendEvent, readEvents } from "./event-store.js";
 import { openDraftPullRequest } from "./github-pr.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { actualDiffRiskGuard } from "../../core/triage/rules.js";
 import { normalizeRoute, scopesContainCritical } from "../../core/triage/schema.js";
 
 const execFileAsync = promisify(execFile);
+
+const PHASE_ROLE_MAP = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+
+async function resolveAgentsFromEvents(cpbRoot, projectId, jobId, { dataRoot } = {}) {
+  try {
+    const events = await readEvents(cpbRoot, projectId, jobId, { dataRoot });
+    const agents = {};
+    for (const ev of events) {
+      if (ev.type === "phase_result" && ev.phase && ev.agent) {
+        const role = PHASE_ROLE_MAP[ev.phase] || ev.phase;
+        if (!agents[role]) agents[role] = ev.agent;
+      }
+    }
+    return agents;
+  } catch {
+    return {};
+  }
+}
 
 async function runGit(cwd, args, { allowFailure = false, runCommand = execFileAsync } = {}) {
   try {
@@ -598,6 +616,7 @@ export async function finalizeSuccessfulQueueEntry({
         issueTitle: job.sourceContext?.issueTitle || entry?.metadata?.issueTitle || job.task || null,
       },
     };
+    const agents = await resolveAgentsFromEvents(cpbRoot, projectId, job.jobId, { dataRoot });
     const pr = await openDraftPullRequest({
       job: prJob,
       verdict: "PASS",
@@ -605,6 +624,7 @@ export async function finalizeSuccessfulQueueEntry({
       createPullRequest,
       runCommand,
       pushToken,
+      agents,
       routingContext: buildRoutingContext(entry, job, routeGuard),
     });
     if (pr.status !== "pr.opened") {
