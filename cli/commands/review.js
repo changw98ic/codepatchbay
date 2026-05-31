@@ -8,9 +8,16 @@ const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
 export async function run(args, { cpbRoot, executorRoot }) {
+  // Check for --pr mode first
+  const prIdx = args.indexOf("--pr");
+  if (prIdx !== -1) {
+    return runPrReview(args, { cpbRoot, executorRoot });
+  }
+
   const project = args[0];
   if (!project) {
     console.error("Usage: cpb review <project> [deliverable-id] [--agent <name>|--ai]");
+    console.error("       cpb review --pr <owner/repo> <pr-number> [--post] [--focus <text>]");
     process.exit(1);
   }
   const { readdir, readFile, access, constants } = await import("node:fs/promises");
@@ -174,4 +181,78 @@ export async function run(args, { cpbRoot, executorRoot }) {
   } else {
     console.log("No action taken.");
   }
+}
+
+async function runPrReview(args, { cpbRoot, executorRoot }) {
+  const filtered = [];
+  let postComment = false;
+  let focus = "";
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--pr") continue;
+    if (args[i] === "--post") { postComment = true; continue; }
+    if (args[i] === "--focus" && args[i + 1]) { focus = args[++i]; continue; }
+    filtered.push(args[i]);
+  }
+
+  const repo = filtered[0];
+  const prNumber = filtered[1];
+
+  if (!repo || !prNumber) {
+    console.error(`${RED}Usage: cpb review --pr <owner/repo> <pr-number> [--post] [--focus <text>]${NC}`);
+    process.exit(1);
+  }
+
+  if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo)) {
+    console.error(`${RED}Invalid repo format: ${repo} (expected owner/repo)${NC}`);
+    process.exit(1);
+  }
+
+  const pr = parseInt(prNumber, 10);
+  if (!pr || pr < 1) {
+    console.error(`${RED}Invalid PR number: ${prNumber}${NC}`);
+    process.exit(1);
+  }
+
+  console.log(`${BOLD}PR Review: ${repo}#${pr}${NC}`);
+  if (postComment) console.log(`${YELLOW}Will post review as PR comment${NC}`);
+  if (focus) console.log(`${CYAN}Focus: ${focus}${NC}`);
+  console.log("");
+
+  const { spawn } = await import("node:child_process");
+  const scriptPath = path.join(executorRoot || cpbRoot, "bridges", "pr-review-dispatch.mjs");
+  const bridgeArgs = [scriptPath, repo, String(pr), "", postComment ? "--post" : "", focus].filter(Boolean);
+
+  const child = spawn("node", bridgeArgs, {
+    cwd: cpbRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; process.stdout.write(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += chunk; process.stderr.write(chunk); });
+
+  const exitCode = await new Promise((resolve) => {
+    child.on("close", resolve);
+  });
+
+  if (exitCode !== 0 && !stdout.includes("__PR_REVIEW_RESULT__")) {
+    console.error(`${RED}PR review failed${NC}`);
+    return 1;
+  }
+
+  const marker = stdout.indexOf("__PR_REVIEW_RESULT__\n");
+  if (marker >= 0) {
+    const jsonStr = stdout.slice(marker + "__PR_REVIEW_RESULT__\n".length).trim();
+    try {
+      const result = JSON.parse(jsonStr);
+      console.log("");
+      console.log(`${BOLD}Verdict: ${result.verdict === "approved" ? GREEN : result.verdict === "changes_requested" ? RED : YELLOW}${result.verdict.toUpperCase()}${NC}`);
+      if (result.postedToGithub) {
+        console.log(`${GREEN}Review posted to GitHub${NC}`);
+      }
+    } catch {}
+  }
+
+  return exitCode === 0 ? 0 : 1;
 }

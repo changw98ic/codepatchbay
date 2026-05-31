@@ -456,6 +456,93 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
       raw: rawOutput,
     };
   });
+
+  // Read-only PR review: fetch PR diff, run reviewer agent, return review
+  fastify.post("/review/pr", async (req) => {
+    const { repo, prNumber, project, focus, postComment } = req.body || {};
+    if (!repo || typeof repo !== "string" || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo)) {
+      throw fastify.httpErrors.badRequest("valid repo required (owner/repo format)");
+    }
+    const pr = parseInt(prNumber, 10);
+    if (!pr || pr < 1) {
+      throw fastify.httpErrors.badRequest("valid prNumber required (positive integer)");
+    }
+
+    const scriptPath = path.join(req.cpbRoot, "bridges", "pr-review-dispatch.mjs");
+    const outputDir = path.join(req.cpbRoot, "wiki", "projects", project || "_pr-reviews", "outputs");
+    const args = [scriptPath, repo, String(pr), outputDir];
+    if (postComment) args.push("--post");
+    if (focus) args.push(focus);
+
+    const child = spawn("node", args, {
+      cwd: req.cpbRoot,
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot }),
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.unref();
+
+    const REVIEW_TIMEOUT_MS = 600_000;
+    const result = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve({ ok: false, error: "review timed out" });
+      }, REVIEW_TIMEOUT_MS);
+
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !stdout.includes("__PR_REVIEW_RESULT__")) {
+          resolve({ ok: false, error: stderr.slice(-500) || `exited with code ${code}` });
+          return;
+        }
+
+        const marker = stdout.indexOf("__PR_REVIEW_RESULT__\n");
+        if (marker === -1) {
+          resolve({ ok: false, error: "no review result in output" });
+          return;
+        }
+
+        const jsonStr = stdout.slice(marker + "__PR_REVIEW_RESULT__\n".length).trim();
+        try {
+          const data = JSON.parse(jsonStr);
+          resolve({ ok: true, data });
+        } catch {
+          resolve({ ok: false, error: "invalid JSON in review result" });
+        }
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: err.message });
+      });
+    });
+
+    if (!result.ok) {
+      return { accepted: true, reviewPosted: false, error: result.error };
+    }
+
+    notify({
+      type: "review:update",
+      sessionId: `pr-${repo.replace(/\//g, "-")}-${pr}`,
+      status: result.data.verdict === "approved" ? "approved" : "changes_requested",
+      project: project || repo,
+      review: result.data,
+    });
+
+    return {
+      accepted: true,
+      repo,
+      prNumber: pr,
+      verdict: result.data.verdict,
+      reviewPosted: Boolean(postComment),
+      review: result.data.review,
+    };
+  });
 }
 
 async function cancelRoute(req, reply, notify) {

@@ -51,6 +51,13 @@ const WORKCPBS = {
       verify: "run-phase.mjs",
     },
   },
+  "pr-review": {
+    name: "pr-review",
+    phases: ["pr-review"],
+    roleForPhase: { "pr-review": "reviewer" },
+    dispatchForPhase: { "pr-review": "reviewer" },
+    bridgeForPhase: { "pr-review": "pr-review-dispatch.mjs" },
+  },
   blocked: {
     name: "blocked",
     phases: [],
