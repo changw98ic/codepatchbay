@@ -237,7 +237,7 @@ export class MultiEvolveController {
 
   async scanProject(project, { agent = "codex", timeoutMs = 300_000 } = {}) {
     const fixture = process.env.CPB_MULTI_EVOLVE_SCAN_FIXTURE;
-    const output = fixture || await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs);
+    const output = fixture || (await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs)).output;
     const issues = parseScanResults(output);
     const result = await pushIssues(project.sourcePath, project.id, issues);
 

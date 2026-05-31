@@ -293,7 +293,8 @@ async function draftSddFiles(cpbRoot, project, event, {
   let error = null;
   try {
     const pool = acpPool || (await import("./acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
-    raw = await pool.execute(agent, prompt, cwd, timeoutMs);
+    const _r = await pool.execute(agent, prompt, cwd, timeoutMs);
+    raw = _r.output;
   } catch (err) {
     error = err.message;
   }

@@ -152,7 +152,8 @@ export async function triageIssueWithAcp(input = {}, {
 
   try {
     const pool = acpPool || (await import("./acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
-    acpResponse = await pool.execute(agent, prompt, cwd, timeoutMs);
+    const _r = await pool.execute(agent, prompt, cwd, timeoutMs);
+    acpResponse = _r.output;
   } catch (error) {
     acpError = error.message;
   }

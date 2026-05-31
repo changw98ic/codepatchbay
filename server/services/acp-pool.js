@@ -8,6 +8,12 @@ import { applyVariantToEnv, resolveVariantConfig } from "../../runtime/apply-var
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
+import {
+  ProviderQuotaError,
+  assertProviderAvailable,
+  classifyQuotaFailure,
+} from "./provider-quota.js";
+import { getProviderAdapter } from "./provider-adapters.js";
 
 let _registryCache = null;
 
@@ -62,9 +68,33 @@ export class RateLimitError extends Error {
   }
 }
 
-function is429(error) {
-  const message = error?.message || String(error || "");
-  return /\b429\b|rate.?limit|too many requests/i.test(message);
+/**
+ * Structured ACP execution error with partial stdout/stderr for handoff bundles.
+ */
+export class AcpExecutionError extends Error {
+  constructor(message, {
+    agent,
+    providerKey,
+    stdout = "",
+    stderr = "",
+    exitCode = null,
+    signal = null,
+    phase = null,
+    role = null,
+    quota = null,
+  } = {}) {
+    super(message);
+    this.name = "AcpExecutionError";
+    this.agent = agent;
+    this.providerKey = providerKey || agent;
+    this.partialStdout = String(stdout || "").slice(-4000);
+    this.partialStderr = String(stderr || "").slice(-4000);
+    this.exitCode = exitCode;
+    this.signal = signal;
+    this.phase = phase;
+    this.role = role;
+    this.quota = quota; // ProviderQuotaError if this was a quota failure
+  }
 }
 
 function agentEnvName(agent) {
@@ -105,28 +135,8 @@ export function envForAgent(agent, env = {}, variant = null) {
   return next;
 }
 
-function parseResetTime(message, fallbackMs) {
-  const text = String(message || "");
-  const iso = text.match(/20\d\d-\d\d-\d\d[T\s]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?/);
-  if (iso) {
-    const normalized = iso[0].includes("T") ? iso[0] : iso[0].replace(" ", "T");
-    const parsed = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(normalized) ? normalized : `${normalized}Z`);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  const seconds = text.match(/(?:reset|retry|after)[^0-9]*(\d+)\s*(?:s|sec|seconds?)/i);
-  if (seconds) return Date.now() + Number(seconds[1]) * 1000;
-  return Date.now() + fallbackMs;
-}
-
-export function sanitizeProviderReason(message) {
-  return String(message || "")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
-    .replace(
-      /\b([A-Za-z0-9_]*(?:api[_-]?key|auth[_-]?token|token|secret)[A-Za-z0-9_]*)(\s*[:=]\s*)(['"]?)[^\s,'"]+/gi,
-      "$1$2$3[REDACTED]",
-    )
-    .slice(0, 500);
-}
+// Re-export from provider-quota (redaction unified there)
+export { sanitizeProviderReason } from "./provider-quota.js";
 
 function poolLimitForAgentEnv(registry, agent, env = {}) {
   const desc = registry?.getDescriptor(agent);
@@ -250,7 +260,6 @@ export class AcpPool {
       opts.persistentProcesses ?? this.env.CPB_ACP_PERSISTENT_PROCESS,
       false,
     );
-    this.backoffMs = Number(opts.backoffMs || this.env.CPB_ACP_RATE_LIMIT_BACKOFF_MS || 60_000);
     this.maxSessionRequests = Math.max(
       0,
       numericOption(opts.maxSessionRequests ?? this.env.CPB_ACP_POOL_MAX_REQUESTS, 0),
@@ -265,7 +274,6 @@ export class AcpPool {
     );
     this.active = new Map();
     this.pending = new Map();
-    this.rateLimitState = new Map();
     this.requestCount = new Map();
     this.errorCount = new Map();
     this.lastSpawnAt = new Map();
@@ -375,7 +383,7 @@ export class AcpPool {
         recycleReason: session?.recycleReason || null,
         lastRecycleReason: this.lastRecycleReason.get(agent) || null,
         sessionId: session?.sessionId || null,
-        rateLimitedUntil: this.rateLimitState.get(this.providerKey(agent))?.untilTs || null,
+        rateLimitedUntil: null, // now managed by provider-quota service
         mode: this.runner
           ? "managed-reusable"
           : this.env.CPB_ACP_CLIENT
@@ -442,68 +450,24 @@ export class AcpPool {
     next.resolve({ agent, requestId: nextId, release: () => this.release(agent, nextId) });
   }
 
-  rateLimitFile() {
-    return path.join(this.hubRoot, "providers", "rate-limits.json");
-  }
-
   providerKey(agent, variant = null) {
     return providerKeyForAgent(agent, this.env, variant);
   }
 
+  /**
+   * Read provider quotas from the new provider-quota system.
+   * Replaces the old readDurableRateLimits().
+   */
+  async readProviderQuotas() {
+    const { readProviderQuotas } = await import("./provider-quota.js");
+    return readProviderQuotas(this.hubRoot);
+  }
+
+  /**
+   * Backward-compatible alias for hub routes that still call readDurableRateLimits.
+   */
   async readDurableRateLimits() {
-    try {
-      return JSON.parse(await readFile(this.rateLimitFile(), "utf8"));
-    } catch {
-      return {};
-    }
-  }
-
-  async writeDurableRateLimit(agent, state, variant = null) {
-    const filePath = this.rateLimitFile();
-    const current = await this.readDurableRateLimits();
-    const providerKey = this.providerKey(agent, variant);
-    current[providerKey] = {
-      agent,
-      providerKey,
-      variant: variantNameFromProviderKey(providerKey, agent),
-      untilTs: new Date(state.untilTs).toISOString(),
-      reason: sanitizeProviderReason(state.message),
-      updatedAt: new Date().toISOString(),
-    };
-    await mkdir(path.dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmp, `${JSON.stringify(current, null, 2)}\n`, "utf8");
-    await rename(tmp, filePath);
-  }
-
-  async refreshRateLimit(agent, variant = null) {
-    const durable = await this.readDurableRateLimits();
-    const providerKey = this.providerKey(agent, variant);
-    const item = durable?.[providerKey];
-    if (!item) return;
-    const untilTs = Date.parse(item.untilTs);
-    if (Number.isFinite(untilTs)) {
-      this.rateLimitState.set(providerKey, { untilTs, message: item.reason || "durable provider backoff" });
-    }
-  }
-
-  async noteRateLimit(agent, error, variant = null) {
-    const untilTs = parseResetTime(error?.message || String(error || ""), this.backoffMs);
-    const state = { untilTs, message: error?.message || String(error || "") };
-    const providerKey = this.providerKey(agent, variant);
-    this.rateLimitState.set(providerKey, state);
-    await this.writeDurableRateLimit(agent, state, variant);
-    return untilTs;
-  }
-
-  async assertNotRateLimited(agent, variant = null) {
-    const providerKey = this.providerKey(agent, variant);
-    await this.refreshRateLimit(agent, variant);
-    const state = this.rateLimitState.get(providerKey);
-    if (state && Date.now() < state.untilTs) {
-      throw new RateLimitError(providerKey, state.untilTs);
-    }
-    if (state) this.rateLimitState.delete(providerKey);
+    return this.readProviderQuotas();
   }
 
   #newSession(agent, recycleReason = null, recycledAt = null) {
@@ -568,9 +532,22 @@ export class AcpPool {
 
   async execute(agent, prompt, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options = {}) {
     if (options.bypass) {
-      return this.#run(agent, prompt, cwd, timeoutMs);
+      const output = await this.#run(agent, prompt, cwd, timeoutMs);
+      return { output, providerKey: null, agent, variant: null };
     }
-    if (!this.runner) await this.assertNotRateLimited(agent, options.variant);
+    const providerKey = this.providerKey(agent, options.variant);
+
+    // Pre-flight quota gate (replaces old assertNotRateLimited)
+    if (!this.runner) {
+      await assertProviderAvailable(this.hubRoot, {
+        providerKey,
+        agent,
+        variant: options.variant,
+        phase: options.phase,
+        role: options.role,
+      });
+    }
+
     const session = await this.acquire(agent);
     const lifecycle = await this.#prepareSession(agent);
     if (session.requestId) {
@@ -589,14 +566,50 @@ export class AcpPool {
       lifecycle.requestCount += 1;
       lifecycle.lastUsedAt = Date.now();
       lifecycle.recycleReason = null;
-      return output;
+      return { output, providerKey, agent, variant: options.variant || null };
     } catch (error) {
       this.errorCount.set(agent, (this.errorCount.get(agent) || 0) + 1);
-      if (is429(error)) {
+
+      // Classify via provider-quota (replaces old is429 + noteRateLimit)
+      const adapter = getProviderAdapter(providerKey);
+      const quotaResult = await classifyQuotaFailure({
+        providerKey,
+        agent,
+        variant: options.variant,
+        error,
+        stdout: "",
+        stderr: error?.message || "",
+        adapter,
+      });
+
+      if (quotaResult.isQuota) {
         await this.#recycleSession(agent, "rate_limit");
-        const untilTs = await this.noteRateLimit(agent, error, options.variant);
-        throw new RateLimitError(this.providerKey(agent, options.variant), untilTs, error.message);
+        // Route through delegate client (fail closed — delegate error propagates)
+        const { delegateMarkProviderUnavailable } = await import("./quota-delegate-client.js");
+        await delegateMarkProviderUnavailable(this.hubRoot, {
+          providerKey,
+          agent,
+          variant: options.variant,
+          status: quotaResult.status,
+          nextEligibleAt: quotaResult.nextEligibleAt,
+          source: quotaResult.source || "acp-pool-classifier",
+          confidence: quotaResult.confidence,
+          reason: quotaResult.reason,
+        });
+        throw new ProviderQuotaError(quotaResult.reason, {
+          providerKey,
+          agent,
+          variant: options.variant,
+          status: quotaResult.status,
+          nextEligibleAt: quotaResult.nextEligibleAt,
+          source: "acp-pool-classifier",
+          confidence: quotaResult.confidence,
+          reason: quotaResult.reason,
+          phase: options.phase,
+          role: options.role,
+        });
       }
+
       await this.#recycleSession(agent, "error");
       throw error;
     } finally {

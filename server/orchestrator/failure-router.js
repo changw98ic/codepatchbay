@@ -34,12 +34,12 @@ export class FailureRouter {
     const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
 
-    // Rate limit → wait
+    // Rate limit → wait (mid-run fallback handled at engine level in run-job.js)
     if (failure.kind === FailureKind.AGENT_RATE_LIMITED) {
       return {
         action: "wait_for_rate_limit",
         reason: failure.reason,
-        untilTs: failure.cause?.untilTs || Date.now() + 60_000,
+        untilTs: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
         retryable: true,
       };
     }
