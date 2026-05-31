@@ -199,7 +199,6 @@ export async function runFakeAcpSmoke({
       workflow: "complex",
       sourcePath,
       maxRetries: 1,
-      timeoutMin: 0,
     });
 
     const artifacts = await collectArtifacts(cpbRoot, project);

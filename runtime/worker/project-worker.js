@@ -748,7 +748,6 @@ export class ProjectWorker {
       sourcePath,
       sourceContext,
       maxRetries: 3,
-      timeoutMin: 60,
     });
 
     const ok = result.status === "completed";
