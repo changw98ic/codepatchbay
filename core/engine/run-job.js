@@ -11,6 +11,7 @@
 import { runPhase } from "./run-phase.js";
 import { resolvePhases } from "./workflow-runner.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
+import { legacyAgentForPhase } from "../agents/registry.js";
 
 function ts() {
   return new Date().toISOString();
@@ -100,6 +101,8 @@ export async function runJob(ctx) {
 
   const timeoutMs = (timeoutMin || 60) * 60_000;
 
+  const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+
   for (const phase of phases) {
     await appendEvent(cpbRoot, project, jobId, {
       type: "phase_started",
@@ -132,6 +135,13 @@ export async function runJob(ctx) {
 
     phaseResults.push(result);
 
+    // Resolve agent name for this phase (same logic as phase adapters)
+    const role = phaseRoleMap[phase] || phase;
+    const rawAgent = ctx.agents?.[role] || ctx.agent || legacyAgentForPhase(phase);
+    const agentName = typeof rawAgent === "object" && rawAgent !== null
+      ? (rawAgent.agent || rawAgent.name || legacyAgentForPhase(phase))
+      : (rawAgent || legacyAgentForPhase(phase));
+
     // Track artifacts for subsequent phases
     if (isPhasePassed(result) && result.artifact) {
       const artifactId = extractArtifactId(result.artifact);
@@ -149,6 +159,7 @@ export async function runJob(ctx) {
       jobId,
       project,
       phase,
+      agent: agentName,
       status: result.status,
       artifact: result.artifact?.name || null,
       failure: result.failure
