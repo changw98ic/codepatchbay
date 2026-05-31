@@ -48,10 +48,9 @@ Codex config is never modified.
 Codex ACP cannot accept non-empty `session/new.mcpServers`, so CPB still sends
 `mcpServers: []` for Codex sessions in both headless and UI lanes. Built-in
 CodeGraph is mounted through process-local Codex config instead: CPB launches
-`codex-acp` with
-`mcp_servers.codegraph.*` overrides that bridge the CodeGraph SSE endpoint through
-`supergateway`. Other ACP providers continue to receive CodeGraph through
-`session/new.mcpServers`.
+`codex-acp` with `mcp_servers.codegraph.*` overrides that spawn the built-in
+CodeGraph MCP server as a stdio subprocess. Other ACP providers receive CodeGraph
+through `session/new.mcpServers` via the shared SSE endpoint.
 
 At runtime, headless sessions deny Computer Use, Browser, Chrome, desktop
 automation, and MCP-shaped UI tool calls before side effects occur. Every

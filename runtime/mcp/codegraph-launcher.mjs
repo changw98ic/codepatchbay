@@ -1,45 +1,56 @@
 import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const PORT = parseInt(process.env.CPB_CODEGRAPH_PORT || "3100", 10);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const MCP_SERVER = resolve(__dirname, "codegraph-mcp-server.mjs");
+
+const DEFAULT_PORT = 3100;
+
+const PORT = parseInt(process.env.CPB_CODEGRAPH_PORT || String(DEFAULT_PORT), 10);
 const CODEBASE_ROOT = process.env.CPB_CODEBASE_ROOT || process.cwd();
 
 const STATE_FILE = resolve(
-  process.env.CPB_ROOT || resolve(dirname(import.meta.url.replace("file://", "")), "../.."),
+  process.env.CPB_ROOT || resolve(__dirname, "..", ".."),
   "cpb-task",
   "codegraph-state.json"
 );
 
 let proc = null;
 
-function resolveMcpStdioCommand() {
-  if (process.env.CPB_CODEGRAPH_MCP_STDIO) return process.env.CPB_CODEGRAPH_MCP_STDIO;
-  return "codegraph mcp";
+export function serverScriptPath() {
+  return MCP_SERVER;
+}
+
+export function buildStdioArgs({ codebaseRoot, cpbRoot } = {}) {
+  const root = codebaseRoot || CODEBASE_ROOT;
+  const args = [MCP_SERVER, "--codebase-root", root];
+  if (cpbRoot) args.push("--cpb-root", cpbRoot);
+  return { command: process.execPath, args };
 }
 
 export async function start() {
   if (proc) {
-    console.error("[codegraph] already running");
+    console.error("[codegraph] already running in-process");
     return;
   }
 
-  const mcpStdio = resolveMcpStdioCommand();
+  const cpbRoot = process.env.CPB_ROOT || resolve(__dirname, "..", "..");
 
-  // supergateway wraps codegraph MCP stdio -> SSE in one process
-  proc = spawn("npx", [
-    "-y", "supergateway",
-    "--stdio", mcpStdio,
+  proc = spawn(process.execPath, [
+    MCP_SERVER,
+    "--codebase-root", CODEBASE_ROOT,
+    "--cpb-root", cpbRoot,
+    "--sse",
     "--port", String(PORT),
-    "--ssePath", "/sse",
-    "--messagePath", "/message",
   ], {
     cwd: CODEBASE_ROOT,
     env: { ...process.env, CODEBASE_ROOT },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  proc.stdout?.on("data", () => {}); // drain
+  proc.stdout?.on("data", () => {});
   proc.stderr?.on("data", (d) => {
     const msg = d.toString().trim();
     if (msg) console.error(`[codegraph] ${msg}`);
@@ -50,7 +61,6 @@ export async function start() {
     proc = null;
   });
 
-  // Save state
   const stateDir = dirname(STATE_FILE);
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(STATE_FILE, JSON.stringify({
@@ -58,7 +68,7 @@ export async function start() {
     port: PORT,
     codebaseRoot: CODEBASE_ROOT,
     sseUrl: `http://localhost:${PORT}/sse`,
-    mcpStdio,
+    serverScript: MCP_SERVER,
     startedAt: new Date().toISOString(),
   }));
 
@@ -66,7 +76,6 @@ export async function start() {
 }
 
 export async function stop() {
-  // Try state file first (for CLI stop from another process)
   if (!proc && existsSync(STATE_FILE)) {
     try {
       const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
@@ -100,7 +109,7 @@ export function status() {
     codebaseRoot: CODEBASE_ROOT,
     sseUrl: `http://localhost:${PORT}/sse`,
     pid: proc?.pid || stateFile?.pid,
-    mcpStdio: resolveMcpStdioCommand(),
+    serverScript: MCP_SERVER,
     stateFile: STATE_FILE,
   };
 }

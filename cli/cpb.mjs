@@ -139,7 +139,6 @@ const COMMANDS = {
   "install-bin": "install-bin.js",
   audit: "audit.js",
   "backlog-hygiene": "backlog-hygiene.js",
-  coderag: "codegraph.js",
   codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
 };

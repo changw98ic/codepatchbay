@@ -395,13 +395,23 @@ function resolveCodegraphSseUrl(env) {
   return sseUrl;
 }
 
+function codegraphServerScript(env) {
+  const executorRoot = env.CPB_EXECUTOR_ROOT || env.CPB_ROOT || ".";
+  return path.join(executorRoot, "runtime", "mcp", "codegraph-mcp-server.mjs");
+}
+
+function codegraphCodebaseRoot(env) {
+  return env.CPB_PROJECT_PATH_OVERRIDE || env.CPB_ACP_CWD || env.CPB_CODEBASE_ROOT || process.cwd();
+}
+
 function codexCodegraphMcpServers(env) {
-  const sseUrl = resolveCodegraphSseUrl(env);
-  if (!sseUrl) return [];
+  if (env.CPB_CODEGRAPH_ENABLED === "0") return [];
+  const script = codegraphServerScript(env);
+  if (!existsSync(script)) return [];
   return [{
     name: "codegraph",
-    command: "npx",
-    args: ["-y", "supergateway", "--sse", sseUrl],
+    command: process.execPath,
+    args: [script, "--codebase-root", codegraphCodebaseRoot(env)],
   }];
 }
 
@@ -412,12 +422,14 @@ function isCodexAcpCommand(command, args = []) {
 }
 
 function buildMcpServers(agent, env) {
-  const sseUrl = resolveCodegraphSseUrl(env);
-  if (!sseUrl) return [];
+  if (env.CPB_CODEGRAPH_ENABLED === "0") return [];
 
   // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
   // CodeGraph through process-local launch config instead.
   if (agent === "codex") return [];
+
+  const sseUrl = resolveCodegraphSseUrl(env);
+  if (!sseUrl) return [];
 
   return [{ name: "codegraph", type: "sse", url: sseUrl }];
 }

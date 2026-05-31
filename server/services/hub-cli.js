@@ -96,6 +96,7 @@ export async function cmdStart() {
       } catch (e) {
         console.error(`CodeGraph start failed: ${e.message}`);
       }
+
       return;
     }
   }
