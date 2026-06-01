@@ -1,7 +1,9 @@
 import path from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, openSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 const DEFAULT_PORT = 3100;
+const STOP_TIMEOUT_MS = 5000;
 
 function stateFilePath(cpbRoot) {
   return path.join(cpbRoot, "cpb-task", "codegraph-state.json");
@@ -19,6 +21,22 @@ function isAlive(pid) {
 
 function resolveMcpStdioCommand() {
   return process.env.CPB_CODEGRAPH_MCP_STDIO || "codegraph mcp";
+}
+
+function waitForExit(pid, timeoutMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      try {
+        process.kill(pid, 0);
+        if (Date.now() >= deadline) return resolve(false);
+        setTimeout(check, 100);
+      } catch {
+        resolve(true);
+      }
+    };
+    check();
+  });
 }
 
 export async function run(args, { cpbRoot, executorRoot }) {
@@ -51,15 +69,24 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const logDir = path.join(stateDir, "codegraph-logs");
     mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, "codegraph.log");
+    const logFd = openSync(logFile, "a");
 
-    const envStr = `CODEBASE_ROOT=${codebaseRoot}`;
-    const cmd = `nohup npx -y supergateway --stdio "${mcpStdio}" --port ${port} --ssePath /sse --messagePath /message >> ${logFile} 2>&1 & echo $!`;
-
-    const { execSync } = await import("node:child_process");
-    const pid = parseInt(execSync(cmd, { cwd: codebaseRoot, env: { ...process.env, CODEBASE_ROOT: codebaseRoot }, shell: "/bin/bash" }).toString().trim(), 10);
+    const child = spawn("npx", [
+      "-y", "supergateway",
+      "--stdio", mcpStdio,
+      "--port", String(port),
+      "--ssePath", "/sse",
+      "--messagePath", "/message",
+    ], {
+      cwd: codebaseRoot,
+      env: { ...process.env, CODEBASE_ROOT: codebaseRoot },
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+    child.unref();
 
     writeFileSync(stateFilePath(cpbRoot), JSON.stringify({
-      pid,
+      pid: child.pid,
       port,
       codebaseRoot,
       sseUrl: `http://localhost:${port}/sse`,
@@ -67,7 +94,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       startedAt: new Date().toISOString(),
     }));
 
-    console.log(`codegraph: started (pid=${pid}, port=${port})`);
+    console.log(`codegraph: started (pid=${child.pid}, port=${port})`);
     console.log(`  SSE: http://localhost:${port}/sse`);
     console.log(`  MCP stdio: ${mcpStdio}`);
   } else if (sub === "stop") {
@@ -76,9 +103,19 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log("codegraph: not running");
       return;
     }
-    try { process.kill(state.pid, "SIGTERM"); } catch {}
+    if (isAlive(state.pid)) {
+      try { process.kill(state.pid, "SIGTERM"); } catch {}
+      const exited = await waitForExit(state.pid, STOP_TIMEOUT_MS);
+      if (!exited) {
+        try { process.kill(state.pid, 9); } catch {}
+        console.log(`codegraph: force-stopped (pid=${state.pid})`);
+      } else {
+        console.log(`codegraph: stopped (pid=${state.pid})`);
+      }
+    } else {
+      console.log(`codegraph: process already dead (pid=${state.pid})`);
+    }
     try { unlinkSync(stateFilePath(cpbRoot)); } catch {}
-    console.log(`codegraph: stopped (pid=${state.pid})`);
   } else {
     console.log("Usage: cpb codegraph [status|start|stop]");
   }

@@ -169,12 +169,14 @@ async function handleReviewCommand(cpbRoot, cmd, log, options = {}) {
 
     // Auto-start the review
     const scriptPath = path.join(cpbRoot, "bridges/review-dispatch.mjs");
-    spawn("node", [scriptPath, cpbRoot, session.sessionId], {
+    const child = spawn("node", [scriptPath, cpbRoot, session.sessionId], {
       cwd: cpbRoot,
       env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot }),
       stdio: "ignore",
       detached: true,
-    }).unref();
+    });
+    child.on("exit", () => { try { unregisterTask(`review:${session.sessionId}`); } catch {} });
+    child.unref();
 
     return { ok: true, sessionId: session.sessionId, action: "created" };
   }
@@ -229,7 +231,7 @@ async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = nul
 }
 
 export async function channelRoutes(fastify, opts) {
-  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer", bodyLimit: 2_097_152 }, (req, body, done) => {
     req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
     try {
       done(null, JSON.parse(req.rawBody.toString("utf8") || "{}"));
@@ -238,7 +240,7 @@ export async function channelRoutes(fastify, opts) {
     }
   });
 
-  fastify.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "buffer" }, (req, body, done) => {
+  fastify.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "buffer", bodyLimit: 2_097_152 }, (req, body, done) => {
     req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
     done(null, parseSlackFormBody(req.rawBody));
   });

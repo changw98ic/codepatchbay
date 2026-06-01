@@ -42,7 +42,7 @@ function responseBase({ event, delivery, action }) {
 }
 
 export async function githubRoutes(fastify, opts = {}) {
-  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (_req, body, done) => {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer", bodyLimit: 5_242_880 }, (_req, body, done) => {
     done(null, body);
   });
 

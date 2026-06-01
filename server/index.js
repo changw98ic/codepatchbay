@@ -40,6 +40,7 @@ try {
 }
 
 const app = Fastify({
+  bodyLimit: 2_097_152, // 2MB global body size limit
   logger: {
     level: 'info',
     redact: [

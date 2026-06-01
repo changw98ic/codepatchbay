@@ -3,6 +3,7 @@ import path from "path";
 import { readFile, rm } from "fs/promises";
 import { runtimeDataPath } from "../services/runtime-root.js";
 import { broadcast } from "../services/ws-broadcast.js";
+import { unregisterTask } from "../services/executor.js";
 import { enqueue } from "../services/hub-queue.js";
 import { makeJobId } from "../services/job-store.js";
 import {
@@ -98,6 +99,7 @@ export async function reviewRoutes(fastify, opts) {
     });
     child.stdout.on("data", (chunk) => process.stdout.write(`[review-dispatch] ${chunk}`));
     child.stderr.on("data", (chunk) => process.stderr.write(`[review-dispatch] ${chunk}`));
+    child.on("exit", () => { try { unregisterTask(`review:${session.sessionId}`); } catch {} });
     child.unref();
 
     return { accepted: true, sessionId: session.sessionId };
