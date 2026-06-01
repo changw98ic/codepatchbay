@@ -41,6 +41,14 @@ async function getDelegateClient() {
 }
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
+const PLAN_RETRY_MAX = Number(process.env.CPB_PLAN_RETRY_MAX || 2);
+const PLAN_RETRY_BASE_DELAY_MS = 30_000;
+const PLAN_RETRYABLE_KINDS = new Set([
+  FailureKind.AGENT_SPAWN_ERROR,
+  FailureKind.AGENT_EXIT_NONZERO,
+  FailureKind.TIMEOUT,
+  FailureKind.RUNTIME_INTERRUPTED,
+]);
 
 function ts() {
   return new Date().toISOString();
@@ -358,6 +366,50 @@ export async function runJob(ctx) {
       result.failure.cause.fallbackCount = handoffCount;
       if (providerAttempts.length > 0) {
         result.failure.cause.providerAttempts = providerAttempts;
+      }
+    }
+
+    // Plan-phase retry: transient failures get a second chance
+    if (phase === "plan" && !isPhasePassed(result) && PLAN_RETRY_MAX > 0) {
+      const isRetryable = result.failure?.retryable || PLAN_RETRYABLE_KINDS.has(result.failure?.kind);
+      if (isRetryable) {
+        for (let planRetry = 1; planRetry <= PLAN_RETRY_MAX; planRetry++) {
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "phase_retry",
+            jobId,
+            project,
+            phase,
+            attempt: planRetry,
+            maxAttempts: PLAN_RETRY_MAX,
+            failureKind: result.failure?.kind,
+            reason: result.failure?.reason,
+            ts: ts(),
+          });
+          await new Promise((r) => setTimeout(r, PLAN_RETRY_BASE_DELAY_MS * planRetry));
+          result = await runPhase({
+            phase,
+            project,
+            task,
+            jobId,
+            job,
+            cpbRoot,
+            sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+            sourceContext,
+            pool,
+            state,
+            previousResults: phaseResults,
+            agent: ctx.agent,
+            agents: phaseAgents,
+            timeouts: {
+              plan: phaseTimeout,
+              execute: phaseTimeout,
+              verify: phaseTimeout,
+              review: phaseTimeout,
+              repair: phaseTimeout,
+            },
+          });
+          if (isPhasePassed(result)) break;
+        }
       }
     }
 
