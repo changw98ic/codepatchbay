@@ -201,13 +201,30 @@ export class Reconciler {
       switch (decision.action) {
         case "restart_worker_and_retry":
         case "retry_same_worker":
-        case "wait_for_rate_limit":
+        case "wait_for_rate_limit": {
+          // Don't retry if the worker is dead (exited/unhealthy)
+          const workerId = attempt?.workerId || assignment.workerId;
+          if (workerId) {
+            const workers = await this.workers.listWorkers();
+            const worker = workers.find((w) => w.workerId === workerId);
+            if (worker && worker.status !== "online" && worker.status !== "ready" && worker.status !== "running" && worker.status !== "assigned") {
+              await updateEntry(this.hubRoot, assignment.entryId, {
+                status: "failed",
+                metadata: {
+                  failureReason: `worker ${workerId} is ${worker.status}: ${decision.reason}`,
+                  failedAt: new Date().toISOString(),
+                },
+              });
+              break;
+            }
+          }
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
           });
           break;
+        }
 
         case "mark_blocked":
           await updateEntry(this.hubRoot, assignment.entryId, {
