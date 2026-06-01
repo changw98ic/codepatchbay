@@ -78,6 +78,7 @@ export async function runExecute(ctx) {
         reason: parsed.reason,
         retryable: true,
         stderrSnippet: agentResult.output.slice(-500),
+        cause: { rawOutput: agentResult.output.slice(0, 2000) },
       }),
       diagnostics: agentResult.diagnostics,
     });
@@ -97,6 +98,7 @@ export async function runExecute(ctx) {
         phase: "execute",
         reason: validation.reason,
         retryable: validation.retryable ?? false,
+        cause: { rawOutput: deliverable.slice(0, 2000) },
       }),
       diagnostics: agentResult.diagnostics,
     });
@@ -168,12 +170,23 @@ async function buildExecutePrompt(ctx, planArtifact) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("execute", ctx, { planArtifact });
   }
+  const correction = ctx.sourceContext?.correction;
+  const correctionSection = correction
+    ? `
+
+## Previous Attempt Failed
+Your previous execution was rejected. Fix the issue and provide a corrected response.
+
+Error type: ${correction.failureKind}
+Error: ${correction.failureReason}
+${correction.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${correction.previousOutput}\n\`\`\`` : ""}`
+    : "";
   return `You are a software execution agent. Implement the following task:
 
 Task: ${ctx.task}
 Project: ${ctx.project}
 ${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : ""}
-Execute the implementation. Make code changes as needed.`;
+Execute the implementation. Make code changes as needed.${correctionSection}`;
 }
 
 function resolveAgent(ctx, fallback) {

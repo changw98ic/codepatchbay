@@ -65,6 +65,7 @@ export async function runPlan(ctx) {
         reason: parsed.reason,
         retryable: true,
         stderrSnippet: agentResult.output.slice(-500),
+        cause: { rawOutput: agentResult.output.slice(0, 2000) },
       }),
       diagnostics: agentResult.diagnostics,
     });
@@ -79,6 +80,7 @@ export async function runPlan(ctx) {
         phase: "plan",
         reason: validation.reason,
         retryable: true,
+        cause: { rawOutput: parsed.planMarkdown.slice(0, 2000) },
       }),
       diagnostics: agentResult.diagnostics,
     });
@@ -151,11 +153,24 @@ The plan should include:
 - Files that need to be modified or created
 - Implementation steps in order
 - Testing strategy
-- Potential risks and mitigations`;
+- Potential risks and mitigations${buildCorrectionSection(ctx.sourceContext)}`;
 }
 
 function resolveAgent(ctx, fallback) {
   const raw = ctx.agents?.planner || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
+}
+
+function buildCorrectionSection(sourceContext) {
+  const correction = sourceContext?.correction;
+  if (!correction) return "";
+  return `
+
+## Previous Attempt Failed
+Your previous plan was rejected. Fix the issue and provide a corrected response.
+
+Error type: ${correction.failureKind}
+Error: ${correction.failureReason}
+${correction.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${correction.previousOutput}\n\`\`\`` : ""}`;
 }
