@@ -107,7 +107,7 @@ Connect GitHub, label an issue with `cpb`, and CodePatchBay takes over:
 cpb github bind myproj owner/repo
 cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET
 cpb github doctor                # verify connectivity
-cpb daemon start                 # start worker
+cpb hub start                    # start Hub scheduler
 ```
 
 Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
@@ -191,9 +191,8 @@ cpb github bind <proj> <owner/repo>
 cpb github connect [options]
 cpb github doctor [--json]
 
-# Hub & daemon
+# Hub & scheduling
 cpb hub [status|start|stop|projects|...]
-cpb daemon [start|status|stop]
 cpb codegraph [status|start|stop]
 
 # Setup & diagnostics

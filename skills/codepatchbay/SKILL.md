@@ -103,7 +103,7 @@ For issue-driven unattended work:
 cpb github bind <project-id> <owner/repo>
 cpb github connect --app-id <id> --webhook-secret-ref env:<SECRET_ENV>
 cpb github doctor --json
-cpb daemon start
+cpb hub start
 ```
 
 Do not paste secrets into task text or artifacts. Prefer secret references such as `env:NAME`.

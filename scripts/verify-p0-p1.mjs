@@ -14,7 +14,6 @@ const focusedTests = [
   "tests/github-gateway.test.mjs",
   "tests/channel-commands.test.mjs",
   "tests/permission-react.test.mjs",
-  "tests/daemon.test.mjs",
   "tests/slack-comments.test.mjs",
   "tests/cli-entrypoints.test.mjs",
 ];

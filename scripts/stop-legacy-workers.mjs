@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Stop all legacy worker processes (project-worker, queue-daemon).
+ * Stop all legacy worker processes from the Hub worker registry.
  * Reads PID files from hub registry and sends SIGTERM.
  */
 

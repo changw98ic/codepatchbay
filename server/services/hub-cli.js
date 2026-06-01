@@ -235,16 +235,6 @@ export async function cmdStop() {
     await codegraphRun(["stop"], { cpbRoot: r2, executorRoot: e2 });
   } catch {}
 
-  // Auto-stop Queue Daemon workers
-  try {
-    const { cpbRoot: r3 } = resolveRoots();
-    const { stopDaemon } = await import("./queue-daemon.js");
-    const result = await stopDaemon({ cpbRoot: r3 });
-    if (result.status === "stopped" && result.pid) {
-      console.log(`Daemon workers stopped (pid: ${result.pid})`);
-    }
-  } catch {}
-
   for (let i = 0; i < 50; i++) {
     await new Promise((r) => setTimeout(r, 100));
     try {

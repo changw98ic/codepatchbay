@@ -107,7 +107,7 @@ cpb verdict <job-id>
 cpb github bind myproj owner/repo
 cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECRET
 cpb github doctor                # 验证通信正常
-cpb daemon start                 # 启动 worker
+cpb hub start                    # 启动 Hub 调度器
 ```
 
 给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 创建草稿 PR。
@@ -191,9 +191,8 @@ cpb github bind <proj> <owner/repo>
 cpb github connect [options]
 cpb github doctor [--json]
 
-# Hub 与守护进程
+# Hub 与调度
 cpb hub [status|start|stop|projects|...]
-cpb daemon [start|status|stop]
 cpb codegraph [status|start|stop]
 
 # 设置与诊断

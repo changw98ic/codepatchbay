@@ -34,7 +34,6 @@ function usage() {
   console.log(`  ${CYAN}init${NC} <path> [name]                  Initialize project`);
   console.log(`  ${CYAN}attach${NC} [path] [name]                  Attach project to Hub`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
-  console.log(`  ${CYAN}daemon${NC} [start|status|stop]             Queue worker daemon`);
   console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
@@ -99,7 +98,6 @@ const COMMANDS = {
   init: "init.js",
   attach: "attach.js",
   hub: "hub.js",
-  daemon: "daemon.js",
   pipeline: "pipeline.js",
   profile: "profile.js",
   run: "run.js",

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// e2e-npm-pack.mjs — One-shot E2E: pack → install → doctor → hub → enqueue → worker → verify
+// e2e-npm-pack.mjs — One-shot E2E: pack → install → doctor → hub → enqueue → verify
 // Usage: node scripts/e2e-npm-pack.mjs [--keep-state] [--project flow]
 import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -144,9 +144,8 @@ function configureAgentRoute() {
 
 // ─── Step 1: Stop everything ───────────────────────────────────────
 function stepStop() {
-  log("STOP", "Stopping hub, daemon, and codegraph...");
+  log("STOP", "Stopping hub and codegraph...");
   run("cpb hub stop", { allowFail: true, silent: true });
-  run("cpb daemon stop", { allowFail: true, silent: true });
   run("cpb codegraph stop", { allowFail: true, silent: true });
   // Kill leftover codex-acp processes from previous sessions
   try { execSync(`pkill -f "codex-acp.*plugins" 2>/dev/null || true`, { stdio: "pipe" }); } catch {}
@@ -172,7 +171,6 @@ function stepClean() {
     path.join(projectRuntime, "worktrees"),
     path.join(projectRuntime, "context-packs"),
     path.join(projectRuntime, "graph"),
-    path.join(CPB_ROOT, "cpb-task", "daemon"),
     path.join(CPB_ROOT, "cpb-task", "event-sources"),
     path.join(CPB_ROOT, "cpb-task", "codegraph-state.json"),
     path.join(CPB_ROOT, "cpb-task", "worktrees"),
@@ -315,28 +313,17 @@ function stepEnqueue() {
   return true;
 }
 
-// ─── Step 8: Start worker ──────────────────────────────────────────
+// ─── Step 8: Confirm Hub scheduling ────────────────────────────────
 async function stepWorker() {
-  log("WORKER", "Starting worker daemon...");
-  run("cpb daemon start --workers 1", {
-    timeout: 30_000,
-    env: {
-      CPB_AUTOFINALIZER_MODE: FINALIZER_MODE,
-      CPB_ACP_PHASE_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
-      CPB_ACP_TIMEOUT_MS: String(ACP_PHASE_TIMEOUT_MS),
-    },
-  });
+  log("WORKER", "Hub Orchestrator manages workers; no daemon startup required.");
   await wait(2000);
 
   const r = run("cpb hub status", { silent: true });
   if (r.ok) {
-    const match = r.stdout.match(/(\d+)\s+online/);
-    if (match && parseInt(match[1]) > 0) {
-      pass(`Worker online (${match[1]})`);
-      return;
-    }
+    pass("Hub is running and will schedule managed workers from queue entries");
+    return;
   }
-  log("WORKER", `${YELLOW}Worker not yet detected, continuing...${RESET}`);
+  log("WORKER", `${YELLOW}Hub status check failed, continuing monitor loop...${RESET}`);
 }
 
 function readQueue() {
@@ -537,7 +524,6 @@ async function main() {
     log("TEARDOWN", "Pipeline still running — leaving services up. Use 'cpb hub stop' when done.");
   } else {
     log("TEARDOWN", "Stopping services...");
-    run("cpb daemon stop", { silent: true, allowFail: true });
     run("cpb hub stop", { silent: true, allowFail: true });
   }
 }
