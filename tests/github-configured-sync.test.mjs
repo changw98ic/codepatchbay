@@ -143,4 +143,75 @@ process.exit(2);
       await rm(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it("CLI sync auto-enqueues matching synced issues by default", async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-github-sync-enqueue-cli-"));
+    const hubRoot = path.join(tmpRoot, "hub");
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const sourcePath = await mkdtemp(path.join(tmpRoot, "source-"));
+    const fakeBin = path.join(tmpRoot, "bin");
+
+    try {
+      await registerProject(hubRoot, { id: "alpha", sourcePath });
+      await bindProjectGithub(hubRoot, "alpha", "octo/alpha");
+      await updateProject(hubRoot, "alpha", {
+        github: {
+          fullName: "octo/alpha",
+          automation: {
+            enabled: true,
+            rules: [{ name: "cpb", match: { labels: ["cpb"] }, action: { workflow: "standard" } }],
+          },
+        },
+      });
+
+      await mkdir(fakeBin, { recursive: true });
+      const fakeGh = path.join(fakeBin, "gh");
+      await writeFile(
+        fakeGh,
+        `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "issue" && args[1] === "list") {
+  const repo = args[args.indexOf("--repo") + 1];
+  console.log(JSON.stringify([{ number: 9, title: "Auto me", state: "OPEN", url: "https://github.com/" + repo + "/issues/9", labels: [{ name: "cpb" }] }]));
+  process.exit(0);
+}
+console.error("unexpected gh call: " + args.join(" "));
+process.exit(2);
+`,
+        "utf8",
+      );
+      await chmod(fakeGh, 0o755);
+
+      const { stdout } = await execFileAsync(process.execPath, [path.join(repoRoot, "cli", "cpb.mjs"), "hub", "github-sync", "--json"], {
+        cwd: tmpRoot,
+        env: {
+          ...process.env,
+          CPB_HUB_ROOT: hubRoot,
+          CPB_ROOT: cpbRoot,
+          CPB_EXECUTOR_ROOT: repoRoot,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+        },
+      });
+
+      const result = JSON.parse(stdout);
+      assert.equal(result.count, 1);
+      assert.deepEqual(result.autoEnqueue.map((entry) => ({
+        projectId: entry.projectId,
+        enqueued: entry.enqueued,
+        skipped: entry.skipped,
+        duplicates: entry.duplicates,
+        total: entry.total,
+      })), [
+        { projectId: "alpha", enqueued: 1, skipped: 0, duplicates: 0, total: 1 },
+      ]);
+
+      const queue = JSON.parse(await readFile(path.join(hubRoot, "queue", "queue.json"), "utf8"));
+      assert.equal(queue.entries.length, 1);
+      assert.equal(queue.entries[0].projectId, "alpha");
+      assert.equal(queue.entries[0].metadata.issueNumber, 9);
+      assert.equal(queue.entries[0].metadata.repo, "octo/alpha");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -85,8 +85,19 @@ export async function run(args, { cpbRoot, executorRoot }) {
     }
   } else if (sub === "github-sync") {
     const syncProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
+    const shouldAutoEnqueue = !args.includes("--no-enqueue");
     const { syncConfiguredGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
     const result = await syncConfiguredGithubIssuesFromGh(hubRoot, { projectId: syncProject, state: "open", limit: 1000, cwd: cpbRoot });
+    if (shouldAutoEnqueue && result.projects?.length) {
+      const { autoEnqueueSyncedIssues } = await import("../../server/services/auto-enqueue.js");
+      result.autoEnqueue = [];
+      for (const project of result.projects) {
+        result.autoEnqueue.push({
+          projectId: project.projectId,
+          ...await autoEnqueueSyncedIssues(hubRoot, cpbRoot, project.projectId),
+        });
+      }
+    }
     if (json) console.log(JSON.stringify(result, null, 2));
     else {
       if (result.projectCount === 0) {
@@ -99,6 +110,12 @@ export async function run(args, { cpbRoot, executorRoot }) {
       }
       for (const skipped of result.skipped || []) {
         console.log(`  skipped ${skipped.projectId}: ${skipped.reason}`);
+      }
+      for (const eq of result.autoEnqueue || []) {
+        if (eq.error) console.log(`  auto-enqueue ${eq.projectId}: ${eq.error}`);
+        else {
+          console.log(`  auto-enqueue ${eq.projectId}: ${eq.enqueued} enqueued, ${eq.skipped} skipped, ${eq.duplicates} already queued`);
+        }
       }
     }
   } else if (sub === "enqueue-issues") {
