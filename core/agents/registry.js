@@ -1,7 +1,6 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
-import { getSetupAgent } from "../setup/agent-catalog.js";
 
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
 const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
@@ -128,31 +127,6 @@ export function getDescriptor(name) {
   return _registry.get(name) || _discovered.get(name) || null;
 }
 
-export function listDiscoveredAgents() {
-  ensureLoaded();
-  return [..._discovered.values()];
-}
-
-export function getSetupMetadata(name) {
-  ensureLoaded();
-  if (!hasAgent(name)) return null;
-  const setup = getSetupAgent(name);
-  if (!setup) return null;
-  return {
-    id: setup.id,
-    displayName: setup.displayName,
-    vendor: setup.vendor || null,
-    binary: setup.binary,
-    tier: setup.tier,
-    recommended: setup.recommended,
-    roles: setup.roles || [],
-    capabilities: setup.capabilities || [],
-    installMethods: Object.keys(setup.install || {}),
-    sourceUrl: setup.sourceUrl,
-    auth: setup.auth || null,
-    adapter: setup.adapter || null,
-  };
-}
 
 /**
  * Resolve the command and args for a given agent name.
@@ -200,34 +174,6 @@ export function defaultAgentForRole(role) {
   const CODEX_ROLES = new Set(["planner", "verifier", "reviewer"]);
   if (CODEX_ROLES.has(role)) return "codex";
   return "claude";
-}
-
-/**
- * Get all agents that support a given capability (plan, execute, verify, review).
- */
-export function agentsWithCapability(capability) {
-  ensureLoaded();
-  return [..._registry.values()].filter(
-    (d) => d.capabilities && d.capabilities.includes(capability),
-  );
-}
-
-/**
- * Check if an agent is considered stable.
- */
-export function isAgentStable(name) {
-  const d = getDescriptor(name);
-  return d ? d.stability === "stable" : false;
-}
-
-/**
- * Get pool limit for a given agent from env or descriptor.
- */
-export function poolLimitForAgent(name) {
-  const d = getDescriptor(name);
-  if (!d) return 0;
-  const envKey = `CPB_ACP_POOL_${name.toUpperCase()}`;
-  return Number(process.env[envKey]) || d.poolLimit || 2;
 }
 
 /**
