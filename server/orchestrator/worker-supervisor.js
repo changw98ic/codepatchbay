@@ -4,6 +4,8 @@ import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { WorkerStore } from "./worker-store.js";
 
+const DEFAULT_MAX_WORKERS = parseInt(process.env.CPB_MAX_WORKERS, 10) || 4;
+
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
 const MAX_RESTARTS = 3;
@@ -20,7 +22,10 @@ export class WorkerSupervisor {
     if (worker && worker.status === "ready") return worker;
     if (worker && worker.status === "starting") return worker;
 
-    // Start a new worker
+    const activeWorkers = await this.workers.listWorkers();
+    const alive = activeWorkers.filter(w => w.status !== "exited");
+    if (alive.length >= DEFAULT_MAX_WORKERS) return null;
+
     return this.startWorker(assignment);
   }
 
