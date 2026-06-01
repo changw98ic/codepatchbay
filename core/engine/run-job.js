@@ -48,6 +48,9 @@ const PHASE_RETRYABLE_KINDS = new Set([
   FailureKind.AGENT_EXIT_NONZERO,
   FailureKind.TIMEOUT,
   FailureKind.RUNTIME_INTERRUPTED,
+]);
+const PHASE_CORRECTION_MAX = Number(process.env.CPB_PHASE_CORRECTION_MAX || 1);
+const PHASE_CORRECTABLE_KINDS = new Set([
   FailureKind.ARTIFACT_INVALID,
   FailureKind.AGENT_CONTRACT_INVALID,
 ]);
@@ -412,6 +415,52 @@ export async function runJob(ctx) {
           });
           if (isPhasePassed(result)) break;
         }
+      }
+    }
+
+    // Phase correction: validation failures retry with error feedback appended
+    if (!isPhasePassed(result) && PHASE_CORRECTION_MAX > 0 && PHASE_CORRECTABLE_KINDS.has(result.failure?.kind)) {
+      for (let correctionAttempt = 1; correctionAttempt <= PHASE_CORRECTION_MAX; correctionAttempt++) {
+        const correction = {
+          failureKind: result.failure.kind,
+          failureReason: result.failure.reason,
+          previousOutput: result.failure.stderrSnippet || result.failure.cause?.rawOutput || "",
+          attempt: correctionAttempt,
+        };
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "phase_correction",
+          jobId,
+          project,
+          phase,
+          attempt: correctionAttempt,
+          maxAttempts: PHASE_CORRECTION_MAX,
+          failureKind: correction.failureKind,
+          reason: correction.failureReason,
+          ts: ts(),
+        });
+        result = await runPhase({
+          phase,
+          project,
+          task,
+          jobId,
+          job,
+          cpbRoot,
+          sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+          sourceContext: { ...sourceContext, correction },
+          pool,
+          state,
+          previousResults: phaseResults,
+          agent: ctx.agent,
+          agents: phaseAgents,
+          timeouts: {
+            plan: phaseTimeout,
+            execute: phaseTimeout,
+            verify: phaseTimeout,
+            review: phaseTimeout,
+            repair: phaseTimeout,
+          },
+        });
+        if (isPhasePassed(result)) break;
       }
     }
 
