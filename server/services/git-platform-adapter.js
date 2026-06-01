@@ -1,4 +1,4 @@
-import { isValidPlatform, validateGitPlatformAdapter } from "../../core/contracts/git-platform.js";
+import { validateGitPlatformAdapter } from "../../core/contracts/git-platform.js";
 import { createGithubAdapter } from "./git-adapters/github.js";
 
 const DEFAULT_PLATFORM = "github";
