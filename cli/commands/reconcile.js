@@ -45,6 +45,10 @@ export async function run(args, { cpbRoot }) {
     console.log("\nNo stale workers found.");
   }
 
+  if (report.workers.pruned > 0) {
+    console.log(`\nExited workers pruned: ${report.workers.pruned}`);
+  }
+
   if (report.streamRepairs.length > 0) {
     console.log(`\nRepaired event streams (${report.streamRepairs.length}):`);
     for (const s of report.streamRepairs) {

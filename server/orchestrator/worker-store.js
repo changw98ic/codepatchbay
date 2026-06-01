@@ -123,6 +123,18 @@ export class WorkerStore {
     } catch { /* already cleared */ }
   }
 
+  async pruneExited() {
+    const workers = await this.listWorkers({ status: "exited" });
+    const { unlink, rm } = await import("node:fs/promises");
+    let removed = 0;
+    for (const worker of workers) {
+      try { await unlink(path.join(this.registryDir, `worker-${worker.workerId}.json`)); } catch {}
+      try { await rm(path.join(this.inboxDir, worker.workerId), { recursive: true, force: true }); } catch {}
+      removed++;
+    }
+    return removed;
+  }
+
   static makeWorkerId() {
     return `w-${crypto.randomBytes(4).toString("hex")}`;
   }
