@@ -121,6 +121,11 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config --hub --execute-variant <variant>   Set global variant for execute phase
   cpb config --hub --verify-variant <variant>    Set global variant for verify phase
   cpb config --hub --agents                      Show global agent config
+  cpb config --hub --show-concurrency            Show global concurrency config
+  cpb config --hub --max-active-total <n>        Optional Hub-wide task cap (0 = unlimited)
+  cpb config --hub --max-active-per-project <n>  Set default project mutating task cap
+  cpb config --hub --acp-total <n>               Set global ACP connection cap
+  cpb config --hub --acp-provider-max <n>        Set per-provider ACP connection cap
   cpb config --hub --unset-agent                 Remove global agent overrides
 
   cpb config <project> --agent <name>            Set project default agent
@@ -141,6 +146,8 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config <project> --plan-model <profile>    Set model profile for plan phase
   cpb config <project> --instructions <text>      Set project-level agent instructions
   cpb config <project> --clear-instructions       Remove project-level agent instructions
+  cpb config <project> --max-active <n>            Set project concurrent mutating task cap
+  cpb config <project> --show-concurrency          Show project concurrency config
   cpb config <project> --show-automation           Show automation config
   cpb config <project> --automation-enabled <t|f>  Enable/disable automation
   cpb config <project> --automation-rule '<...>'   Add automation rule`);
@@ -161,6 +168,16 @@ export async function run(args, { cpbRoot } = {}) {
       return 0;
     }
 
+    if (args.includes("--show-concurrency")) {
+      const maxActiveTotal = hubConfig.concurrency?.maxActiveTotal;
+      console.log("Hub concurrency:");
+      console.log(`  maxActivePerProject: ${hubConfig.concurrency?.maxActivePerProject || "(default)"}`);
+      console.log(`  maxActiveTotal: ${maxActiveTotal === 0 ? "unlimited" : maxActiveTotal || "(default: unlimited)"}`);
+      console.log(`  acpPool.total: ${hubConfig.acpPool?.total || "(default)"}`);
+      console.log(`  acpPool.providerMax: ${hubConfig.acpPool?.providerMax || "(default)"}`);
+      return 0;
+    }
+
     if (args.includes("--unset-agent")) {
       delete hubConfig.agents;
       await writeHubConfig(hubRoot, hubConfig);
@@ -174,7 +191,48 @@ export async function run(args, { cpbRoot } = {}) {
     });
     if (applied) return 0;
 
-    console.error("No configuration option specified. Use --agent, --*-variant, --agents, or --unset-agent.");
+    const maxActiveTotal = optionValue(args, "--max-active-total");
+    const maxActivePerProject = optionValue(args, "--max-active-per-project");
+    const acpTotal = optionValue(args, "--acp-total");
+    const acpProviderMax = optionValue(args, "--acp-provider-max");
+    if (maxActiveTotal !== null || maxActivePerProject !== null || acpTotal !== null || acpProviderMax !== null) {
+      const parsePositive = (label, value) => {
+        if (value === null) return null;
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 1) throw new Error(`${label} must be a positive integer.`);
+        return Math.floor(n);
+      };
+      const parseNonNegative = (label, value) => {
+        if (value === null) return null;
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) throw new Error(`${label} must be a non-negative integer.`);
+        return Math.floor(n);
+      };
+      try {
+        if (maxActiveTotal !== null || maxActivePerProject !== null) {
+          hubConfig.concurrency = { ...(hubConfig.concurrency || {}) };
+          const total = parseNonNegative("--max-active-total", maxActiveTotal);
+          const perProject = parsePositive("--max-active-per-project", maxActivePerProject);
+          if (total !== null) hubConfig.concurrency.maxActiveTotal = total;
+          if (perProject !== null) hubConfig.concurrency.maxActivePerProject = perProject;
+        }
+        if (acpTotal !== null || acpProviderMax !== null) {
+          hubConfig.acpPool = { ...(hubConfig.acpPool || {}) };
+          const total = parsePositive("--acp-total", acpTotal);
+          const providerMax = parsePositive("--acp-provider-max", acpProviderMax);
+          if (total !== null) hubConfig.acpPool.total = total;
+          if (providerMax !== null) hubConfig.acpPool.providerMax = providerMax;
+        }
+      } catch (err) {
+        console.error(err.message);
+        return 1;
+      }
+      await writeHubConfig(hubRoot, hubConfig);
+      console.log("Updated global concurrency config.");
+      return 0;
+    }
+
+    console.error("No configuration option specified. Use --agent, --*-variant, --agents, --show-concurrency, --max-active-total, --acp-total, or --unset-agent.");
     return 1;
   }
 
@@ -276,6 +334,13 @@ export async function run(args, { cpbRoot } = {}) {
   // ─── Project-level agent + instructions config ───
   const data = await readProjectJsonFromRoots([hubRoot, cpbRoot], project);
 
+  if (args.includes("--show-concurrency")) {
+    const maxActive = data.concurrency?.maxActivePerProject ?? data.concurrency?.maxActive;
+    console.log(`Concurrency for project '${project}':`);
+    console.log(`  maxActivePerProject: ${maxActive || "(default)"}`);
+    return 0;
+  }
+
   // Clear instructions
   if (args.includes("--clear-instructions")) {
     delete data.agentInstructions;
@@ -298,6 +363,22 @@ export async function run(args, { cpbRoot } = {}) {
     data.agentInstructions = instructions;
     await writeProjectJson(hubRoot, project, data);
     console.log(`Set agent instructions for project '${project}'.`);
+    return 0;
+  }
+
+  const maxActive = optionValue(args, "--max-active") ?? optionValue(args, "--max-active-per-project");
+  if (maxActive !== null) {
+    const value = Number(maxActive);
+    if (!Number.isFinite(value) || value < 1) {
+      console.error("--max-active must be a positive integer.");
+      return 1;
+    }
+    data.concurrency = {
+      ...(data.concurrency || {}),
+      maxActivePerProject: Math.floor(value),
+    };
+    await writeProjectJson(hubRoot, project, data);
+    console.log(`Set project '${project}' maxActivePerProject to ${data.concurrency.maxActivePerProject}.`);
     return 0;
   }
 

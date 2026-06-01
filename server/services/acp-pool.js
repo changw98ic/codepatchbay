@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 0);
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
+const DEFAULT_TOTAL_CONNECTION_LIMIT = 4;
+const DEFAULT_PROVIDER_CONNECTION_LIMIT = 3;
+const CONNECTION_LOCK_TTL_MS = 30_000;
+const CONNECTION_POLL_MS = 50;
 const POOL_LIMIT_CONTROL_ENV = new Set([
+  "CPB_ACP_POOL_TOTAL",
+  "CPB_ACP_POOL_PROVIDER_MAX",
+  "CPB_ACP_POOL_CONNECTION_POLL_MS",
   "CPB_ACP_POOL_MAX_REQUESTS",
   "CPB_ACP_POOL_MAX_AGE_MS",
   "CPB_ACP_POOL_IDLE_MS",
@@ -165,6 +172,7 @@ async function normalizeLimitsAsync(limits = {}, env = process.env) {
   // Env overrides for any agent (CPB_ACP_POOL_<NAME>)
   for (const [key, value] of Object.entries(env)) {
     if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
+    if (key.startsWith("CPB_ACP_POOL_PROVIDER_")) continue;
     const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
     if (match) {
       const agentName = match[1].toLowerCase();
@@ -183,6 +191,7 @@ function normalizeLimits(limits = {}, env = process.env) {
   };
   for (const [key, value] of Object.entries(env)) {
     if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
+    if (key.startsWith("CPB_ACP_POOL_PROVIDER_")) continue;
     const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
     if (match) {
       const agentName = match[1].toLowerCase();
@@ -203,6 +212,19 @@ function booleanOption(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   if (typeof value === "boolean") return value;
   return !/^(0|false|no|off)$/i.test(String(value).trim());
+}
+
+function positiveIntOption(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function providerEnvKey(providerKey) {
+  return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function signalChild(child, signal) {
@@ -272,6 +294,19 @@ export class AcpPool {
       0,
       numericOption(opts.sessionIdleMs ?? this.env.CPB_ACP_POOL_IDLE_MS, 0),
     );
+    this.totalConnectionLimit = positiveIntOption(
+      opts.totalConnectionLimit ?? this.env.CPB_ACP_POOL_TOTAL,
+      DEFAULT_TOTAL_CONNECTION_LIMIT,
+    );
+    this.providerConnectionLimit = positiveIntOption(
+      opts.providerConnectionLimit ?? this.env.CPB_ACP_POOL_PROVIDER_MAX,
+      DEFAULT_PROVIDER_CONNECTION_LIMIT,
+    );
+    this.providerConnectionLimits = opts.providerConnectionLimits || {};
+    this.connectionPollMs = positiveIntOption(
+      opts.connectionPollMs ?? this.env.CPB_ACP_POOL_CONNECTION_POLL_MS,
+      CONNECTION_POLL_MS,
+    );
     this.active = new Map();
     this.pending = new Map();
     this.requestCount = new Map();
@@ -286,6 +321,7 @@ export class AcpPool {
     this.lastRecycleReason = new Map();
     this.toolPolicyPromise = null;
     this._seq = 0;
+    this.stopped = false;
     this.createdAt = Date.now();
   }
 
@@ -303,6 +339,7 @@ export class AcpPool {
   }
 
   async stop() {
+    this.stopped = true;
     await Promise.all([...this.persistentClients.keys()].map((agent) => this.#closePersistentClient(agent)));
     for (const queue of this.pending.values()) {
       while (queue.length) {
@@ -409,6 +446,10 @@ export class AcpPool {
     return {
       createdAt: this.createdAt,
       providerProcessReuse,
+      connectionLimits: {
+        total: this.totalConnectionLimit,
+        providerDefault: this.providerConnectionLimit,
+      },
       pools,
     };
   }
@@ -452,6 +493,133 @@ export class AcpPool {
 
   providerKey(agent, variant = null) {
     return providerKeyForAgent(agent, this.env, variant);
+  }
+
+  #connectionLeasesDir() {
+    return path.join(this.hubRoot, "providers", "acp-leases");
+  }
+
+  #connectionLockDir() {
+    return path.join(this.#connectionLeasesDir(), ".lock");
+  }
+
+  #providerConnectionLimit(providerKey) {
+    const specific = this.providerConnectionLimits[providerKey]
+      ?? this.env[`CPB_ACP_POOL_PROVIDER_${providerEnvKey(providerKey)}_MAX`];
+    return positiveIntOption(specific, this.providerConnectionLimit);
+  }
+
+  async #connectionLockIsStale(lockDir) {
+    try {
+      const info = await stat(lockDir);
+      return Date.now() - info.mtimeMs >= CONNECTION_LOCK_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  async #withConnectionLock(callback) {
+    const dir = this.#connectionLeasesDir();
+    const lockDir = this.#connectionLockDir();
+    await mkdir(dir, { recursive: true });
+
+    let acquired = false;
+    while (!this.stopped) {
+      try {
+        await mkdir(lockDir);
+        acquired = true;
+        break;
+      } catch (err) {
+        if (!err || err.code !== "EEXIST") throw err;
+        if (await this.#connectionLockIsStale(lockDir)) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        await sleep(10);
+      }
+    }
+
+    if (!acquired) throw new Error("ACP pool stopped");
+    try {
+      return await callback();
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  }
+
+  #leaseAlive(lease) {
+    if (!lease?.pid) return false;
+    try {
+      process.kill(Number(lease.pid), 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #listLiveConnectionLeasesLocked() {
+    const dir = this.#connectionLeasesDir();
+    const leases = [];
+    let files = [];
+    try {
+      files = await readdir(dir);
+    } catch {
+      return leases;
+    }
+
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      const filePath = path.join(dir, file);
+      try {
+        const lease = JSON.parse(await readFile(filePath, "utf8"));
+        if (this.#leaseAlive(lease)) {
+          leases.push({ ...lease, filePath });
+        } else {
+          await rm(filePath, { force: true });
+        }
+      } catch {
+        await rm(filePath, { force: true }).catch(() => null);
+      }
+    }
+    return leases;
+  }
+
+  async #tryAcquireConnectionLease(agent, providerKey, options = {}) {
+    return this.#withConnectionLock(async () => {
+      const leases = await this.#listLiveConnectionLeasesLocked();
+      const providerLimit = this.#providerConnectionLimit(providerKey);
+      const providerCount = leases.filter((lease) => lease.providerKey === providerKey).length;
+      if (leases.length >= this.totalConnectionLimit || providerCount >= providerLimit) {
+        return null;
+      }
+
+      const lease = {
+        leaseId: `${Date.now()}-${process.pid}-${++this._seq}`,
+        pid: process.pid,
+        agent,
+        providerKey,
+        phase: options.phase || null,
+        role: options.role || null,
+        acquiredAt: new Date().toISOString(),
+      };
+      const filePath = path.join(this.#connectionLeasesDir(), `${lease.leaseId}.json`);
+      await writeFile(filePath, `${JSON.stringify(lease, null, 2)}\n`, "utf8");
+      return { ...lease, filePath };
+    });
+  }
+
+  async #acquireConnectionLease(agent, providerKey, options = {}) {
+    while (!this.stopped) {
+      const lease = await this.#tryAcquireConnectionLease(agent, providerKey, options);
+      if (lease) return lease;
+      await sleep(this.connectionPollMs);
+    }
+    throw new Error("ACP pool stopped");
+  }
+
+  async #releaseConnectionLease(lease) {
+    if (!lease?.filePath) return;
+    await rm(lease.filePath, { force: true }).catch(() => null);
   }
 
   /**
@@ -617,62 +785,74 @@ export class AcpPool {
     }
   }
 
-  #run(agent, prompt, cwd, timeoutMs, options = {}) {
-    if (this.runner) return this.runner({ agent, prompt, cwd, timeoutMs });
+  async #run(agent, prompt, cwd, timeoutMs, options = {}) {
+    if (this.runner) {
+      const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
+      try {
+        return await this.runner({ agent, prompt, cwd, timeoutMs });
+      } finally {
+        await this.#releaseConnectionLease(lease);
+      }
+    }
     if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
     if (this.persistentProcesses || agent === "browser-agent") return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
   }
 
-  #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
+  async #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
+    const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
     const customClient = this.env.CPB_ACP_CLIENT;
     const clientPath = customClient || path.join(__dirname, "..", "bridges", "acp-client.mjs");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
-    return new Promise((resolve, reject) => {
-      const env = buildChildEnv(
-        envForAgent(agent, this.env, options.variant),
-        { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
-        { agent },
-      );
-      const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot });
-      const child = spawn(launch.command, launch.args, {
-        cwd: this.cpbRoot,
-        env,
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const timer = timeoutMs > 0
-        ? setTimeout(() => {
+    try {
+      return await new Promise((resolve, reject) => {
+        const env = buildChildEnv(
+          envForAgent(agent, this.env, options.variant),
+          { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
+          { agent },
+        );
+        const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot });
+        const child = spawn(launch.command, launch.args, {
+          cwd: this.cpbRoot,
+          env,
+          detached: process.platform !== "win32",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        const timer = timeoutMs > 0
+          ? setTimeout(() => {
             if (settled) return;
             settled = true;
             terminateChild(child).finally(() => {
               reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
             });
           }, timeoutMs)
-        : null;
-      if (timer) timer.unref();
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
-      child.on("error", (error) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        reject(error);
+          : null;
+        if (timer) timer.unref();
+        child.stdout.on("data", (chunk) => { stdout += chunk; });
+        child.stderr.on("data", (chunk) => { stderr += chunk; });
+        child.on("error", (error) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          reject(error);
+        });
+        child.on("close", (code) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (code === 0) resolve(stdout.trim());
+          else reject(new Error(`${agent} exited ${code}: ${stderr.slice(-1000)}`));
+        });
+        child.stdin.write(prompt);
+        child.stdin.end();
       });
-      child.on("close", (code) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        if (code === 0) resolve(stdout.trim());
-        else reject(new Error(`${agent} exited ${code}: ${stderr.slice(-1000)}`));
-      });
-      child.stdin.write(prompt);
-      child.stdin.end();
-    });
+    } finally {
+      await this.#releaseConnectionLease(lease);
+    }
   }
 
   #runPersistent(agent, prompt, cwd, timeoutMs, options = {}) {
@@ -744,6 +924,8 @@ export class AcpPool {
       if (cached?.sessionId) resumeSessionId = cached.sessionId;
     }
 
+    const providerKey = this.providerKey(agent, variant);
+    const lease = await this.#acquireConnectionLease(agent, providerKey);
     const client = new AcpClient({
       agent,
       cwd,
@@ -762,6 +944,8 @@ export class AcpPool {
     const meta = {
       client,
       agent,
+      providerKey,
+      connectionLease: lease,
       startedAt: Date.now(),
       requestCount: 0,
       lastUsedAt: null,
@@ -775,6 +959,7 @@ export class AcpPool {
     } catch (error) {
       this.persistentClients.delete(key);
       await client.close().catch(() => null);
+      await this.#releaseConnectionLease(lease);
       throw error;
     }
   }
@@ -805,6 +990,7 @@ export class AcpPool {
       }
       this.persistentClients.delete(key);
       await persistent.client.close().catch(() => null);
+      await this.#releaseConnectionLease(persistent.connectionLease);
     }
   }
 }

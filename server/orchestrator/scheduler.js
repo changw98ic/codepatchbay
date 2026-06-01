@@ -1,13 +1,29 @@
 import { AssignmentStore } from "./assignment-store.js";
+import {
+  DEFAULT_MAX_ACTIVE_PER_PROJECT,
+  DEFAULT_MAX_ACTIVE_TOTAL,
+  nonNegativeInt,
+  positiveInt,
+  resolveHubConcurrencyLimits,
+  resolveProjectConcurrencyLimits,
+} from "../services/concurrency-limits.js";
 
-const DEFAULT_MAX_ACTIVE_PER_PROJECT = 2;
 const CLAIM_TIMEOUT_MS = 120_000;
 
 export class Scheduler {
-  constructor(hubRoot, { assignmentStore, workerStore }) {
+  constructor(hubRoot, {
+    assignmentStore,
+    workerStore,
+    maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
+    maxActiveTotal = DEFAULT_MAX_ACTIVE_TOTAL,
+    getProjectFn = null,
+  }) {
     this.hubRoot = hubRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
+    this.maxActivePerProject = positiveInt(maxActivePerProject, DEFAULT_MAX_ACTIVE_PER_PROJECT);
+    this.maxActiveTotal = nonNegativeInt(maxActiveTotal, DEFAULT_MAX_ACTIVE_TOTAL);
+    this.getProjectFn = getProjectFn;
   }
 
   /**
@@ -44,20 +60,33 @@ export class Scheduler {
       }
     }
 
+    const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
+      maxActivePerProject: this.maxActivePerProject,
+      maxActiveTotal: this.maxActiveTotal,
+    });
+
     // Compute active mutating count per project
     const activeMutatingByProject = {};
+    let activeMutatingTotal = 0;
     for (const entry of allEntries) {
       if ((entry.status === "in_progress" || entry.status === "scheduled") && isMutatingEntry(entry)) {
         activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
+        activeMutatingTotal += 1;
       }
     }
+
+    const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
 
     // Filter eligible pending entries
     const pending = allEntries
       .filter(e => e.status === "pending")
       .filter(e => {
-        if (isMutatingEntry(e) && (activeMutatingByProject[e.projectId] || 0) >= DEFAULT_MAX_ACTIVE_PER_PROJECT) {
-          return false;
+        if (isMutatingEntry(e)) {
+          if (hubLimits.maxActiveTotal > 0 && activeMutatingTotal >= hubLimits.maxActiveTotal) return false;
+          const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
+          if (projectLimit > 0 && (activeMutatingByProject[e.projectId] || 0) >= projectLimit) {
+            return false;
+          }
         }
         return true;
       });
@@ -77,6 +106,14 @@ export class Scheduler {
 
   async findIdleWorker(projectId) {
     return this.workers.findIdleWorker(projectId);
+  }
+
+  async #resolveProjectLimits(entries, maxActivePerProject) {
+    const projectIds = [...new Set(entries.map((entry) => entry.projectId).filter(Boolean))];
+    return resolveProjectConcurrencyLimits(this.hubRoot, projectIds, {
+      maxActivePerProject,
+      getProjectFn: this.getProjectFn,
+    });
   }
 }
 

@@ -173,6 +173,7 @@ export async function hubRoutes(fastify) {
       workerId: body.workerId,
       projectId: body.projectId || null,
       maxActivePerProject: body.maxActivePerProject ?? 2,
+      maxActiveTotal: body.maxActiveTotal ?? Number(process.env.CPB_HUB_MAX_ACTIVE_TOTAL ?? 0),
       claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
       requireIssueLink: body.requireIssueLink !== false,

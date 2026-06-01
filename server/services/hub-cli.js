@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness, getHubRuntime } from "./hub-runtime.js";
 import { buildChildEnv, buildRuntimeEnv } from "./secret-policy.js";
+import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "./concurrency-limits.js";
 
 function resolveRoots() {
   const cpbRoot = path.resolve(process.env.CPB_ROOT || ".");
@@ -74,13 +75,20 @@ export async function cmdStart() {
 
   const port = process.env.CPB_PORT || "3456";
   const host = process.env.CPB_HOST || "127.0.0.1";
+  const configuredEnv = hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot, {
+    maxActivePerProject: process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT,
+    maxActiveTotal: process.env.CPB_HUB_MAX_ACTIVE_TOTAL,
+    acpPoolTotal: process.env.CPB_ACP_POOL_TOTAL,
+    acpProviderMax: process.env.CPB_ACP_POOL_PROVIDER_MAX,
+  }));
+  const hubProcessEnv = { ...process.env, ...configuredEnv };
   await mkdir(hubRoot, { recursive: true });
 
   const { spawn } = await import("node:child_process");
   const logFd = openSync(path.join(hubRoot, "hub.log"), "a");
   const child = spawn(process.execPath, [path.join(executorRoot, "server", "index.js")], {
     cwd: cpbRoot,
-    env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot, port, host }),
+    env: buildHubServerEnv(hubProcessEnv, { cpbRoot, executorRoot, hubRoot, port, host }),
     detached: true,
     stdio: ["ignore", logFd, logFd],
   });
@@ -99,7 +107,7 @@ export async function cmdStart() {
           path.join(executorRoot, "cli", "cpb.mjs"), "hub-orch", "start",
         ], {
           cwd: cpbRoot,
-          env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot, port, host }),
+          env: buildHubServerEnv(hubProcessEnv, { cpbRoot, executorRoot, hubRoot, port, host }),
           detached: true,
           stdio: ["ignore", orchLogFd, orchLogFd],
         });
@@ -126,7 +134,7 @@ export async function cmdStart() {
           "--hub-root", hubRoot,
         ], {
           cwd: cpbRoot,
-          env: buildHubServerEnv(process.env, { cpbRoot, executorRoot, hubRoot }),
+          env: buildHubServerEnv(hubProcessEnv, { cpbRoot, executorRoot, hubRoot }),
           detached: true,
           stdio: ["ignore", delegateLogFd, delegateLogFd],
         });

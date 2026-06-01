@@ -28,6 +28,7 @@ const CPB_RUNTIME_ENV = new Set([
   "CPB_RETRY_COUNT", "CPB_PREVIOUS_VERDICT_ID", "CPB_PREVIOUS_VERDICT_PATH",
   "CPB_LEASE_TTL_MS", "CPB_LEASE_RENEW_INTERVAL_MS",
   "CPB_EXECUTION_BOUNDARY",
+  "CPB_HUB_MAX_ACTIVE_PER_PROJECT", "CPB_HUB_MAX_ACTIVE_TOTAL",
   "CPB_MULTI_EVOLVE_INTERVAL_MS", "CPB_MULTI_EVOLVE_BATCH_SIZE",
   "CPB_MULTI_EVOLVE_MAX_ROUNDS", "CPB_MULTI_EVOLVE_MAX_ISSUES",
   "CPB_MULTI_EVOLVE_PROJECTS", "CPB_MULTI_EVOLVE_AGENT",
@@ -155,9 +156,12 @@ const ALLOWED_ENV = new Set([
 
 const ACP_POOL_ENV = new Set([
   "CPB_ACP_RATE_LIMIT_BACKOFF_MS",
+  "CPB_ACP_POOL_TOTAL",
+  "CPB_ACP_POOL_PROVIDER_MAX",
   "CPB_ACP_POOL_MAX_REQUESTS",
   "CPB_ACP_POOL_MAX_AGE_MS",
   "CPB_ACP_POOL_IDLE_MS",
+  "CPB_ACP_POOL_CONNECTION_POLL_MS",
 ]);
 
 function isDynamicAllowedEnvKey(key) {
@@ -203,20 +207,27 @@ function shouldCopyAcpPoolEnvEntry(key, value) {
   return isAllowedChildEnvKey(key);
 }
 
+function shouldCopyChildEnvEntry(key, value, options = {}) {
+  if (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) {
+    return isNumericEnvValue(value);
+  }
+  return isAllowedChildEnvKey(key, options);
+}
+
 export function isAllowedChildEnvKey(key, options = {}) {
   if (PROVIDER_CREDENTIALS.has(key)) {
     return allowedProviderCredentialsForOptions(options).has(key);
   }
-  return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key);
+  return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key) || isDynamicAcpPoolEnvKey(key);
 }
 
 export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
   const env = {};
   for (const [key, value] of Object.entries(parentEnv || {})) {
-    if (isAllowedChildEnvKey(key, options)) env[key] = value;
+    if (shouldCopyChildEnvEntry(key, value, options)) env[key] = value;
   }
   for (const [key, value] of Object.entries(extra || {})) {
-    if (isAllowedChildEnvKey(key, options)) env[key] = value;
+    if (shouldCopyChildEnvEntry(key, value, options)) env[key] = value;
   }
   return env;
 }

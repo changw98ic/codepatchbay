@@ -38,7 +38,9 @@ export async function run(args, { cpbRoot, executorRoot }) {
     await cmdStop();
   } else if (sub === "acp") {
     const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
-    const pool = getManagedAcpPool({ cpbRoot, hubRoot });
+    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
+    const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
+    const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
     const status = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
     if (json) {
       console.log(JSON.stringify(status, null, 2));
@@ -57,13 +59,15 @@ export async function run(args, { cpbRoot, executorRoot }) {
       if (json) console.log(JSON.stringify(qs, null, 2));
       else {
         console.log(`Queue: ${qs.total} entries`);
-        console.log(`  pending:${qs.pending} in_progress:${qs.inProgress} completed:${qs.completed} failed:${qs.failed} cancelled:${qs.cancelled}`);
+        console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} failed:${qs.failed} cancelled:${qs.cancelled}`);
+        console.log(`  active-mutating:${qs.activeMutatingTotal || 0}/${qs.maxActiveTotal > 0 ? qs.maxActiveTotal : "unlimited"}`);
         if (qs.eligibleQueued > 0) {
           console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects?.join(",") || ""}`);
         }
         if (qs.projects && Object.keys(qs.projects).length > 0) {
           for (const [pid, ps] of Object.entries(qs.projects)) {
-            let line = `  ${pid}\tpending:${ps.pending} active:${ps.inProgress}`;
+            let line = `  ${pid}\tpending:${ps.pending} scheduled:${ps.scheduled || 0} active:${ps.inProgress}`;
+            if (ps.maxActivePerProject) line += ` cap:${ps.activeMutating}/${ps.maxActivePerProject}`;
             if (ps.eligiblePending > 0) line += ` eligible:${ps.eligiblePending}`;
             if (ps.failed > 0) line += ` failed:${ps.failed}`;
             if (ps.busy) {
