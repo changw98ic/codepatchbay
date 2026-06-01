@@ -3,6 +3,7 @@ import path from "node:path"
 import os from "node:os"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, rm } from "node:fs/promises"
+import { applyAuthStateToContext, loadAuthState, promoteContextAuthState } from "./auth-state.mjs"
 
 const DEFAULT_PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
 const BASE_PROFILE_DIR = "profile-0"
@@ -53,9 +54,10 @@ export class BrowserSessionManager {
     const providerRoot = path.join(this._resolveProfileRoot(), providerName)
     const baseProfileDir = path.join(providerRoot, BASE_PROFILE_DIR)
     await mkdir(baseProfileDir, { recursive: true })
+    const baseAuthState = await loadAuthState(baseProfileDir)
 
     if (!shouldUseRuntimeProfiles()) {
-      return { profileDir: baseProfileDir, baseProfileDir, runtimeProfileDir: null }
+      return { profileDir: baseProfileDir, baseProfileDir, runtimeProfileDir: null, baseAuthState }
     }
 
     const runtimeProfileDir = path.join(
@@ -71,11 +73,11 @@ export class BrowserSessionManager {
       filter: (src) => shouldCopyProfilePath(baseProfileDir, src),
     })
 
-    return { profileDir: runtimeProfileDir, baseProfileDir, runtimeProfileDir }
+    return { profileDir: runtimeProfileDir, baseProfileDir, runtimeProfileDir, baseAuthState }
   }
 
   async acquire({ providerName, sessionId, role, project, headless = false }) {
-    const { profileDir, baseProfileDir, runtimeProfileDir } = await this._prepareProfile(providerName)
+    const { profileDir, baseProfileDir, runtimeProfileDir, baseAuthState } = await this._prepareProfile(providerName)
 
     let context
     try {
@@ -83,6 +85,9 @@ export class BrowserSessionManager {
         headless: Boolean(headless),
         args: ["--disable-blink-features=AutomationControlled"],
       })
+      if (baseAuthState) {
+        await applyAuthStateToContext(context, baseAuthState)
+      }
     } catch (err) {
       if (runtimeProfileDir && !shouldKeepRuntimeProfiles()) {
         await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => {})
@@ -103,6 +108,7 @@ export class BrowserSessionManager {
       profileDir,
       baseProfileDir,
       runtimeProfileDir,
+      baseAuthState,
       createdAt: Date.now(),
     }
 
@@ -110,9 +116,20 @@ export class BrowserSessionManager {
     return handle
   }
 
-  async release(handle) {
+  async release(handle, { promoteAuthState = false } = {}) {
     if (!handle) return
     this.contexts.delete(handle.id)
+    if (promoteAuthState && handle.context && handle.baseProfileDir) {
+      try {
+        await promoteContextAuthState({
+          baseProfileDir: handle.baseProfileDir,
+          baseAuthState: handle.baseAuthState,
+          context: handle.context,
+        })
+      } catch (err) {
+        handle.authStatePromotionError = err
+      }
+    }
     try {
       await handle.context.close()
     } catch {}

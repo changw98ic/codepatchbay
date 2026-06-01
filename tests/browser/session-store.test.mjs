@@ -1,5 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { access, constants } from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -77,6 +78,32 @@ describe("session-store: BrowserSessionManager", () => {
     } finally {
       await Promise.all([manager.release(h1), manager.release(h2)]);
     }
+  });
+
+  it("promotes runtime storage state on successful release", async () => {
+    const handle = await manager.acquire({
+      providerName: "mock",
+      sessionId: "promote-auth-state",
+      headless: true,
+    });
+
+    await handle.context.addCookies([{
+      name: "cpb_session",
+      value: "fresh",
+      domain: "example.com",
+      path: "/",
+      expires: Math.floor(Date.now() / 1000) + 3600,
+      httpOnly: false,
+      secure: false,
+      sameSite: "Lax",
+    }]);
+
+    await manager.release(handle, { promoteAuthState: true });
+
+    const statePath = path.join(handle.baseProfileDir, "auth-state.json");
+    await access(statePath, constants.F_OK);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(state.cookies.find((cookie) => cookie.name === "cpb_session")?.value, "fresh");
   });
 
   it("closeProvider closes all contexts for a provider", async () => {

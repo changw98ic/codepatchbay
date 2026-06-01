@@ -38,6 +38,7 @@ export async function executeBrowserAgent({
   let resultText = ""
   let tracePath = null
   let continueClicks = 0
+  let completed = false
 
   try {
     if (trace) {
@@ -87,6 +88,7 @@ export async function executeBrowserAgent({
     if (trace && tracePath) {
       await context.tracing.stop({ path: tracePath })
     }
+    completed = true
   } catch (err) {
     if (trace && tracePath) {
       try {
@@ -100,7 +102,7 @@ export async function executeBrowserAgent({
     }
     throw err
   } finally {
-    await globalSessionManager.release(sessionHandle)
+    await globalSessionManager.release(sessionHandle, { promoteAuthState: completed })
   }
 
   const elapsedMs = Date.now() - startTime
