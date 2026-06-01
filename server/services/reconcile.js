@@ -428,7 +428,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     const { WorkerStore } = await import("../orchestrator/worker-store.js");
     const store = new WorkerStore(hubRoot);
     await store.init();
-    const pruned = dryRun ? 0 : await store.pruneExited();
+    const pruned = dryRun ? 0 : await store.pruneDead();
     if (pruned > 0) {
       report.workers.pruned = pruned;
     }

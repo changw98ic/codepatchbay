@@ -123,16 +123,23 @@ export class WorkerStore {
     } catch { /* already cleared */ }
   }
 
-  async pruneExited() {
-    const workers = await this.listWorkers({ status: "exited" });
+  async pruneDead() {
+    const workers = await this.listWorkers();
     const { unlink, rm } = await import("node:fs/promises");
     let removed = 0;
     for (const worker of workers) {
-      try { await unlink(path.join(this.registryDir, `worker-${worker.workerId}.json`)); } catch {}
-      try { await rm(path.join(this.inboxDir, worker.workerId), { recursive: true, force: true }); } catch {}
-      removed++;
+      if (worker.status === "exited" || (worker.status === "unhealthy" && !this._isAlive(worker.pid))) {
+        try { await unlink(path.join(this.registryDir, `worker-${worker.workerId}.json`)); } catch {}
+        try { await rm(path.join(this.inboxDir, worker.workerId), { recursive: true, force: true }); } catch {}
+        removed++;
+      }
     }
     return removed;
+  }
+
+  _isAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; } catch { return false; }
   }
 
   static makeWorkerId() {
