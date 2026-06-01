@@ -1,6 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { readHubConfig, writeHubConfig, readProjectConfig, writeProjectAgents, mergeAgentConfig } from "../../server/services/agent-config.js";
+import {
+  readHubConfig,
+  writeHubConfig,
+  readProjectConfigFromRoots,
+  readProjectJsonFromRoots,
+  writeProjectJson,
+  mergeAgentConfig,
+} from "../../server/services/agent-config.js";
 
 function optionValue(args, name) {
   const idx = args.indexOf(name);
@@ -27,23 +32,6 @@ function parseRuleString(str) {
     }
   }
   return parts;
-}
-
-async function readProjectJson(cpbRoot, project) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-async function writeProjectJson(cpbRoot, project, data) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
 function displayAgents(config, label) {
@@ -200,7 +188,7 @@ export async function run(args, { cpbRoot } = {}) {
   // Show merged agent config
   if (args.includes("--agents")) {
     const hubConfig = await readHubConfig(hubRoot);
-    const projectAgents = await readProjectConfig(cpbRoot, project);
+    const projectAgents = await readProjectConfigFromRoots([hubRoot, cpbRoot], project);
     const merged = mergeAgentConfig(hubConfig.agents, projectAgents, null);
     console.log(`Agent config for project '${project}' (merged):`);
     for (const [role, spec] of Object.entries(merged)) {
@@ -286,12 +274,12 @@ export async function run(args, { cpbRoot } = {}) {
   }
 
   // ─── Project-level agent + instructions config ───
-  const data = await readProjectJson(cpbRoot, project);
+  const data = await readProjectJsonFromRoots([hubRoot, cpbRoot], project);
 
   // Clear instructions
   if (args.includes("--clear-instructions")) {
     delete data.agentInstructions;
-    await writeProjectJson(cpbRoot, project, data);
+    await writeProjectJson(hubRoot, project, data);
     console.log(`Cleared agent instructions for project '${project}'.`);
     return 0;
   }
@@ -299,7 +287,7 @@ export async function run(args, { cpbRoot } = {}) {
   // Unset agent overrides
   if (args.includes("--unset-agent")) {
     delete data.agents;
-    await writeProjectJson(cpbRoot, project, data);
+    await writeProjectJson(hubRoot, project, data);
     console.log(`Removed agent overrides for project '${project}'. Using registry defaults.`);
     return 0;
   }
@@ -308,14 +296,14 @@ export async function run(args, { cpbRoot } = {}) {
   const instructions = optionValue(args, "--instructions");
   if (instructions) {
     data.agentInstructions = instructions;
-    await writeProjectJson(cpbRoot, project, data);
+    await writeProjectJson(hubRoot, project, data);
     console.log(`Set agent instructions for project '${project}'.`);
     return 0;
   }
 
   // Set agent + variant overrides
   const applied = await applyAgentUpdates(args, data, "agents", async (d) => {
-    await writeProjectJson(cpbRoot, project, d);
+    await writeProjectJson(hubRoot, project, d);
     console.log(`Updated agent config for project '${project}'.`);
   });
   if (applied) return 0;
@@ -337,7 +325,7 @@ export async function run(args, { cpbRoot } = {}) {
       if (!v) delete profiles[k];
     }
     data.agents.phaseProfiles = Object.keys(profiles).length > 0 ? profiles : undefined;
-    await writeProjectJson(cpbRoot, project, data);
+    await writeProjectJson(hubRoot, project, data);
     console.log(`Updated agent config for project '${project}'.`);
     return 0;
   }

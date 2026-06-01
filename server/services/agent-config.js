@@ -34,21 +34,60 @@ export async function writeHubConfig(hubRoot, data) {
 
 // ── Project config (wiki/projects/{id}/project.json → agents) ──
 
+function projectConfigPath(root, project) {
+  return path.join(root, "wiki", "projects", project, "project.json");
+}
+
+function uniqueRoots(roots) {
+  const seen = new Set();
+  const result = [];
+  for (const root of roots) {
+    if (!root) continue;
+    const resolved = path.resolve(root);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    result.push(resolved);
+  }
+  return result;
+}
+
+export async function readProjectJson(cpbRoot, project) {
+  return readJson(projectConfigPath(cpbRoot, project));
+}
+
+export async function readProjectJsonFromRoots(roots, project) {
+  for (const root of uniqueRoots(roots)) {
+    const data = await readProjectJson(root, project);
+    if (data && Object.keys(data).length > 0) return data;
+  }
+  return {};
+}
+
+export async function writeProjectJson(cpbRoot, project, data) {
+  await writeJson(projectConfigPath(cpbRoot, project), data);
+}
+
 export async function readProjectConfig(cpbRoot, project) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  const data = await readJson(filePath);
+  const data = await readProjectJson(cpbRoot, project);
   return data.agents || null;
 }
 
+export async function readProjectConfigFromRoots(roots, project) {
+  for (const root of uniqueRoots(roots)) {
+    const agents = await readProjectConfig(root, project);
+    if (agents && Object.keys(agents).length > 0) return agents;
+  }
+  return null;
+}
+
 export async function writeProjectAgents(cpbRoot, project, agents) {
-  const filePath = path.join(cpbRoot, "wiki", "projects", project, "project.json");
-  const data = await readJson(filePath);
+  const data = await readProjectJson(cpbRoot, project);
   if (agents && Object.keys(agents).length > 0) {
     data.agents = agents;
   } else {
     delete data.agents;
   }
-  await writeJson(filePath, data);
+  await writeProjectJson(cpbRoot, project, data);
 }
 
 // ── Merge: resolve effective agents config ──
@@ -191,7 +230,10 @@ export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
  */
 export async function resolveAgentsForEntry(hubRoot, cpbRoot, project, metadata = {}) {
   const hubConfig = await readHubConfig(hubRoot);
-  const projectAgents = await readProjectConfig(cpbRoot, project);
+  const projectAgents = await readProjectConfigFromRoots(
+    [hubRoot, process.env.CPB_ROOT, cpbRoot],
+    project,
+  );
 
   const merged = mergeAgentConfig(
     hubConfig.agents,
