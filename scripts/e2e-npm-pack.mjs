@@ -14,7 +14,7 @@ const CPB_ROOT = ROOT;
 const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
 const TGZ = `${PKG_NAME}-0.2.0.tgz`;
-const GITHUB_REPO = "changw98ic/codepatchbay";
+const GITHUB_REPO = resolveGithubRepo({ env: process.env, root: ROOT });
 const AUTOMATION_LABEL = process.env.CPB_E2E_LABEL || "cpb";
 const TARGET_ISSUE_NUMBER = process.env.CPB_E2E_ISSUE_NUMBER
   ? String(process.env.CPB_E2E_ISSUE_NUMBER).replace(/^#/, "")
@@ -31,6 +31,41 @@ const YELLOW = "\x1b[0;33m";
 const CYAN = "\x1b[0;36m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
+
+export function normalizeGithubRepo(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const withoutGitSuffix = raw.replace(/\.git$/, "");
+  const sshMatch = withoutGitSuffix.match(/github\.com[:/]([^/\s]+\/[^/\s]+)$/);
+  if (sshMatch) return sshMatch[1];
+
+  const httpsMatch = withoutGitSuffix.match(/^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)$/);
+  if (httpsMatch) return httpsMatch[1];
+
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(withoutGitSuffix)) {
+    return withoutGitSuffix;
+  }
+
+  return "";
+}
+
+export function resolveGithubRepo({ env = process.env, root = ROOT, execSyncFn = execSync } = {}) {
+  const fromEnv = normalizeGithubRepo(env.CPB_E2E_GITHUB_REPO || env.GITHUB_REPOSITORY);
+  if (fromEnv) return fromEnv;
+
+  try {
+    const remote = execSyncFn("git config --get remote.origin.url", {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const fromRemote = normalizeGithubRepo(remote);
+    if (fromRemote) return fromRemote;
+  } catch {}
+
+  throw new Error("Could not resolve GitHub repo. Set CPB_E2E_GITHUB_REPO=owner/repo.");
+}
 
 function log(tag, msg) {
   console.log(`${CYAN}[${tag}]${RESET} ${msg}`);
@@ -507,7 +542,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  fail(`Unhandled: ${e.message}`);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => {
+    fail(`Unhandled: ${e.message}`);
+    process.exit(1);
+  });
+}
