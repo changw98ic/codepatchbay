@@ -1,4 +1,4 @@
-import { LeaderLock } from "./leader-lock.js";
+import { LeaderLock, readLeaderStatus } from "./leader-lock.js";
 import { AssignmentStore } from "./assignment-store.js";
 import { WorkerStore } from "./worker-store.js";
 import { Scheduler } from "./scheduler.js";
@@ -214,19 +214,19 @@ export class HubOrchestrator {
   }
 
   async status() {
-    const assignments = await this.assignmentStore.listAssignments();
-    const workers = await this.workerStore.listWorkers();
+    const [{ queueStatus }, workers, leaderStatus] = await Promise.all([
+      import("../services/hub-queue.js"),
+      this.workerStore.listWorkers(),
+      readLeaderStatus(this.hubRoot),
+    ]);
+    const queue = await queueStatus(this.hubRoot);
     return {
-      orchestrator: {
-        status: this.running ? "running" : "stopped",
-        hubId: this.leaderLock.getHubId(),
-        epoch: this.leaderLock.getEpoch(),
-      },
+      orchestrator: leaderStatus,
       queue: {
-        scheduled: assignments.filter(a => a.status === "scheduled").length,
-        running: assignments.filter(a => a.status === "running").length,
-        completed: assignments.filter(a => a.status === "completed").length,
-        failed: assignments.filter(a => a.status === "failed").length,
+        scheduled: queue.scheduled,
+        running: queue.inProgress,
+        completed: queue.completed,
+        failed: queue.failed,
       },
       workers: {
         ready: workers.filter(w => w.status === "ready").length,

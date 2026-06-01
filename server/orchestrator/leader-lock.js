@@ -147,3 +147,41 @@ export class LeaderLock {
   getEpoch() { return this.epoch; }
   getHubId() { return this.hubId; }
 }
+
+export async function readLeaderStatus(hubRoot) {
+  const lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
+  const leaderFile = path.join(lockDir, "leader.json");
+  const epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
+  const leader = await readJsonOrNull(leaderFile);
+  const epochState = await readJsonOrNull(epochFile);
+  const leaderAlive = isLeaderAlive(leader);
+
+  return {
+    status: leaderAlive ? "running" : "stopped",
+    hubId: leader?.hubId || null,
+    epoch: leader?.epoch || epochState?.epoch || 0,
+    pid: leader?.pid || null,
+    heartbeatAt: leader?.heartbeatAt || null,
+    expiresAt: leader?.expiresAt || null,
+  };
+}
+
+async function readJsonOrNull(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isLeaderAlive(leader) {
+  const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
+  if (!leader || !Number.isFinite(expiresAt) || Date.now() > expiresAt) return false;
+  if (!leader.pid || leader.host !== os.hostname()) return true;
+  try {
+    process.kill(leader.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
