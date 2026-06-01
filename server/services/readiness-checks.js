@@ -191,12 +191,29 @@ async function checkGit() {
   }
 }
 
-async function checkDiskSpace(dirPath, label) {
+async function findExistingDiskProbePath(targetPath, statFn = statFs) {
+  let current = path.resolve(targetPath);
+  while (true) {
+    try {
+      const info = await statFn(current);
+      return typeof info.isDirectory === "function" && !info.isDirectory()
+        ? path.dirname(current)
+        : current;
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") throw err;
+      const parent = path.dirname(current);
+      if (parent === current) throw err;
+      current = parent;
+    }
+  }
+}
+
+export async function checkDiskSpace(dirPath, label, { execFileFn = execFileAsync, statFn = statFs } = {}) {
   const id = `disk-${label}`;
   try {
     const resolved = path.resolve(dirPath);
-    try { await mkdir(resolved, { recursive: true }); } catch {}
-    const { stdout } = await execFileAsync("df", ["-k", resolved], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const probePath = await findExistingDiskProbePath(resolved, statFn);
+    const { stdout } = await execFileFn("df", ["-k", probePath], { timeout: SUBPROCESS_TIMEOUT_MS });
     const lines = stdout.trim().split("\n");
     if (lines.length < 2) return skipped(id, "disk", `Cannot parse df output for ${label}`);
     const parts = lines[lines.length - 1].split(/\s+/);

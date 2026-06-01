@@ -7,6 +7,12 @@ import { resolveAcpLane } from '../../core/acp/policy.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+const SAFE_JOB_ID = /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function isSafeJobId(value) {
+  const jobId = String(value || "");
+  return SAFE_JOB_ID.test(jobId) && !jobId.includes("..");
+}
 
 async function projectDataRoot(hubRoot, name) {
   if (!hubRoot) return undefined;
@@ -129,8 +135,9 @@ export async function taskRoutes(fastify, opts) {
   fastify.post('/tasks/:name/retry/:jobId', async (req) => {
     const { name, jobId } = req.params;
     const { force = false } = req.body || {};
+    if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
     const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
-    const result = await retryJob(dataRoot, jobId, { force });
+    const result = await retryJob(req.cpbRoot, name, jobId, { force, dataRoot });
     broadcast({ type: 'job:retried', project: name, jobId, recoveryJobId: result?.jobId });
     return result;
   });
