@@ -88,6 +88,22 @@ export class Reconciler {
             break;
           }
 
+          // Check if worker claimed queue entry directly (claimEligible) without
+          // writing accepted.json — the dual-path race.  If the queue entry is
+          // in_progress with a fresh claim, treat it as accepted.
+          {
+            const { listQueue } = await import("../services/hub-queue.js");
+            const claimed = await listQueue(this.hubRoot, { status: "in_progress", projectId: assignment.projectId });
+            const match = claimed.find((e) => e.id === assignment.entryId);
+            if (match?.claimedAt) {
+              const claimedAtMs = new Date(match.claimedAt).getTime();
+              if (Date.now() - claimedAtMs < ASSIGN_ACCEPT_TTL_MS) {
+                await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
+                break;
+              }
+            }
+          }
+
           const assignedAt = attempt.createdAt ? new Date(attempt.createdAt).getTime() : 0;
           if (Date.now() - assignedAt > ASSIGN_ACCEPT_TTL_MS) {
             // P0-4 fix: use writeSyntheticFailure for reconciler-created failures
@@ -254,7 +270,10 @@ export class Reconciler {
         default:
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "failed",
-            reason: decision.reason,
+            metadata: {
+              failureReason: decision.reason || "reconciler mark_failed",
+              failedAt: new Date().toISOString(),
+            },
           });
           break;
       }
