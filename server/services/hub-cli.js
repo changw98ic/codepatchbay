@@ -47,6 +47,31 @@ export async function cmdStart() {
     });
   }
 
+  // Ensure Playwright Chromium is installed when browser-agent is configured
+  try {
+    const { getManagedAcpPool } = await import("./acp-pool.js");
+    const pool = getManagedAcpPool({ cpbRoot, hubRoot });
+    const status = pool.status();
+    const hasBrowserAgent = Object.values(status.pools || {}).some((p) => p.agent === "browser-agent" || p.mode === "persistent");
+    if (hasBrowserAgent) {
+      const { default: playwright } = await import("playwright");
+      const execPath = playwright.chromium.executablePath();
+      await stat(execPath);
+    }
+  } catch {
+    console.log("Installing Playwright Chromium (browser-agent dependency)...");
+    const { execSync: _execSync } = await import("node:child_process");
+    try {
+      _execSync("npx playwright install chromium", {
+        cwd: executorRoot,
+        stdio: "pipe",
+        timeout: 120_000,
+      });
+    } catch {
+      console.error("Warning: Playwright Chromium install failed. Browser-agent tasks will not work.");
+    }
+  }
+
   const port = process.env.CPB_PORT || "3456";
   const host = process.env.CPB_HOST || "127.0.0.1";
   await mkdir(hubRoot, { recursive: true });
