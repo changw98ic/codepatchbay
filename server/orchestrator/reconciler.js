@@ -90,7 +90,19 @@ export class Reconciler {
 
           const assignedAt = attempt.createdAt ? new Date(attempt.createdAt).getTime() : 0;
           if (Date.now() - assignedAt > ASSIGN_ACCEPT_TTL_MS) {
-            // P0-4 fix: use writeSyntheticFailure for reconciler-created failures
+            // Dual-path race guard: project-worker may have claimed the queue entry directly
+            {
+              const { listQueue } = await import("../services/hub-queue.js");
+              const claimed = await listQueue(this.hubRoot, { status: "in_progress", projectId: assignment.projectId });
+              const match = claimed.find((e) => e.id === assignment.entryId);
+              if (match?.claimedAt) {
+                const claimedAtMs = new Date(match.claimedAt).getTime();
+                if (Date.now() - claimedAtMs < ASSIGN_ACCEPT_TTL_MS) {
+                  await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
+                  break;
+                }
+              }
+            }
             const result = {
               status: "failed",
               jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: "assignment not accepted within TTL" } },
@@ -185,13 +197,31 @@ export class Reconciler {
       switch (decision.action) {
         case "restart_worker_and_retry":
         case "retry_same_worker":
-        case "wait_for_rate_limit":
+        case "wait_for_rate_limit": {
+          // Dead-worker guard: skip retry if worker is no longer viable
+          const retryWorkerId = attempt?.workerId || assignment.workerId;
+          if (retryWorkerId) {
+            const workers = await this.workers.listWorkers();
+            const worker = workers.find((w) => w.workerId === retryWorkerId);
+            if (worker && worker.status !== "online" && worker.status !== "ready" && worker.status !== "running" && worker.status !== "assigned") {
+              await updateEntry(this.hubRoot, assignment.entryId, {
+                status: "failed",
+                metadata: {
+                  ...(assignment.sourceContext || {}),
+                  failureReason: `worker ${retryWorkerId} is ${worker.status}: ${decision.reason}`,
+                  failedAt: new Date().toISOString(),
+                },
+              });
+              break;
+            }
+          }
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
           });
           break;
+        }
 
         case "mark_blocked":
           await updateEntry(this.hubRoot, assignment.entryId, {
@@ -254,7 +284,11 @@ export class Reconciler {
         default:
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "failed",
-            reason: decision.reason,
+            metadata: {
+              ...(assignment.sourceContext || {}),
+              failureReason: decision.reason,
+              failedAt: new Date().toISOString(),
+            },
           });
           break;
       }

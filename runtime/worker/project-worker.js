@@ -823,6 +823,7 @@ export class ProjectWorker {
     }
     if (result.finalizer) {
       patch.metadata = {
+        ...(patch.metadata || {}),
         finalizer: finalizerMetadata(result.finalizer, this.autoFinalizerMode),
       };
       const jobId = result.finalizer.jobId || result.job?.jobId || result.jobId || extractJobId(result.stdout) || extractJobId(result.stderr);
