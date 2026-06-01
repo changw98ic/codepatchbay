@@ -360,6 +360,11 @@ export async function resolveAgentCommand(agent, env = process.env) {
   return { command, args };
 }
 
+export function shouldIsolateAgentHome(agent, env = process.env) {
+  if (env.CPB_AGENT_ISOLATE_HOME === "0") return false;
+  return agent !== "browser-agent";
+}
+
 function jsonRpcError(code, message, data) {
   const err = { code, message };
   if (data) err.data = data;
@@ -484,7 +489,7 @@ export class AcpClient {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
     const env = buildChildEnv(this.env, {}, { agent: this.agent });
-    if (env.CPB_AGENT_ISOLATE_HOME !== "0") {
+    if (shouldIsolateAgentHome(this.agent, env)) {
       const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || this.cwd;
       const homeEnv = await createAgentHome(
         cpbRoot,
