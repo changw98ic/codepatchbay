@@ -4,6 +4,7 @@ import { queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listJobs } from "./job-store.js";
 import { redactSecrets as sharedRedactSecrets } from "./secret-policy.js";
+import { WorkerStore, summarizeWorkers } from "../orchestrator/worker-store.js";
 
 function redactSecrets(obj) {
   return sharedRedactSecrets(obj);
@@ -36,7 +37,15 @@ export async function gatherDiagnostics({
     hub = await hubStatus(hubRoot);
   } catch (e) {
     errors.push({ source: "hub-status", message: e.message });
-    hub = { hubRoot: path.resolve(hubRoot), projectCount: 0, enabledProjectCount: 0, workersOnline: 0, workersStale: 0, workersOffline: 0 };
+    hub = { hubRoot: path.resolve(hubRoot), projectCount: 0, enabledProjectCount: 0 };
+  }
+
+  let managedWorkers = [];
+  try {
+    const workerStore = new WorkerStore(hubRoot);
+    managedWorkers = await workerStore.listWorkers();
+  } catch (e) {
+    errors.push({ source: "workers", message: e.message });
   }
 
   let projects = [];
@@ -99,10 +108,11 @@ export async function gatherDiagnostics({
       hubRoot: hub.hubRoot,
       projectCount: hub.projectCount,
       enabledProjectCount: hub.enabledProjectCount,
-      workersOnline: hub.workersOnline,
-      workersStale: hub.workersStale,
-      workersOffline: hub.workersOffline,
       updatedAt: hub.updatedAt,
+    },
+    workers: {
+      ...summarizeWorkers(managedWorkers),
+      details: managedWorkers,
     },
     projectIds: projects.map((p) => p.id),
     queue,

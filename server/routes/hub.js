@@ -7,7 +7,6 @@ import {
   registerProject,
   resolveHubRoot,
   updateProject,
-  workerStatus,
 } from "../services/hub-registry.js";
 import { readProjectIndex, writeProjectIndex } from "../services/project-index.js";
 import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge-policy.js";
@@ -69,7 +68,6 @@ export async function hubRoutes(fastify) {
       const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr });
       const entry = {
         ...project,
-        workerDerivedStatus: workerStatus(project),
         indexStatus: {
           status: idx.status,
           updatedAt: idx.updatedAt,
@@ -484,7 +482,6 @@ export async function hubRoutes(fastify) {
       const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr }).catch(() => ({ status: "unknown" }));
       const entry = {
         ...project,
-        workerDerivedStatus: workerStatus(project),
         indexStatus: {
           status: idx.status,
           updatedAt: idx.updatedAt,

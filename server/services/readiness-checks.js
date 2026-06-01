@@ -15,10 +15,11 @@ import { promisify } from "node:util";
 
 import { redactSecrets } from "./diagnostics-bundle.js";
 import { listJobs } from "./job-store.js";
-import { hubStatus, loadRegistry, resolveHubRoot, workerStatus } from "./hub-registry.js";
+import { hubStatus, loadRegistry, resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
+import { WorkerStore } from "../orchestrator/worker-store.js";
 
 import { sanitizeProviderReason } from "./acp-pool.js";
 import { scanHubPollution } from "./project-pollution.js";
@@ -366,14 +367,6 @@ async function checkRegistryConsistency(hubRoot) {
       } else if (!project.sourcePath) {
         issues.push({ project: project.id, issue: "missing sourcePath" });
       }
-      if (project.worker && project.worker.pid) {
-        try { process.kill(project.worker.pid, 0); } catch (err) {
-          // EPERM means process exists but no permission — not dead
-          if (err.code !== "EPERM") {
-            issues.push({ project: project.id, issue: `worker pid ${project.worker.pid} not alive` });
-          }
-        }
-      }
     }
     if (issues.length > 0) {
       return warn("registry-consistency", "registry", `${issues.length} registry issue(s)`, {
@@ -460,13 +453,16 @@ async function checkOrphanLeases(cpbRoot) {
 
 async function checkStaleWorkers(hubRoot) {
   try {
-    const registry = await loadRegistry(hubRoot);
-    const projects = Object.values(registry.projects);
+    const workerStore = new WorkerStore(hubRoot);
+    const workers = await workerStore.listWorkers();
     const stale = [];
-    for (const project of projects) {
-      const status = workerStatus(project, HUB_WORKER_TTL);
-      if (status === "stale") {
-        stale.push({ id: project.id, lastSeenAt: project.worker?.lastSeenAt });
+    const now = Date.now();
+    for (const worker of workers) {
+      if (worker.status === "exited") continue;
+      const lastSeenAt = worker.lastHeartbeatAt || worker.startedAt;
+      const lastSeenMs = lastSeenAt ? new Date(lastSeenAt).getTime() : NaN;
+      if (!Number.isFinite(lastSeenMs) || now - lastSeenMs > HUB_WORKER_TTL) {
+        stale.push({ workerId: worker.workerId, status: worker.status, lastSeenAt: lastSeenAt || null });
       }
     }
     if (stale.length > 0) {

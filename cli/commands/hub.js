@@ -1,23 +1,48 @@
 export async function run(args, { cpbRoot, executorRoot }) {
   const sub = args[0] || "status";
   const json = args.includes("--json");
-  const { getProject, hubStatus, listProjects, resolveHubRoot, workerStatus } = await import("../../server/services/hub-registry.js").then(m => ({
-    getProject: m.getProject, hubStatus: m.hubStatus, listProjects: m.listProjects, resolveHubRoot: m.resolveHubRoot, workerStatus: m.workerStatus,
+  const { getProject, hubStatus, listProjects, resolveHubRoot } = await import("../../server/services/hub-registry.js").then(m => ({
+    getProject: m.getProject, hubStatus: m.hubStatus, listProjects: m.listProjects, resolveHubRoot: m.resolveHubRoot,
   }));
   const { readHubLiveness } = await import("../../server/services/hub-runtime.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
   if (sub === "status") {
-    const status = await hubStatus(hubRoot);
-    const liveness = await readHubLiveness(hubRoot);
+    const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
+    const { WorkerStore, summarizeWorkers } = await import("../../server/orchestrator/worker-store.js");
+    const { queueStatus } = await import("../../server/services/hub-queue.js");
+    const workerStore = new WorkerStore(hubRoot);
+    const [status, liveness, orchestrator, queue, workers] = await Promise.all([
+      hubStatus(hubRoot),
+      readHubLiveness(hubRoot),
+      readLeaderStatus(hubRoot),
+      queueStatus(hubRoot),
+      workerStore.listWorkers(),
+    ]);
+    const managedWorkers = summarizeWorkers(workers);
     if (json) {
-      console.log(JSON.stringify({ ...status, liveness }, null, 2));
+      console.log(JSON.stringify({
+        hubRoot: status.hubRoot,
+        registryPath: status.registryPath,
+        projectCount: status.projectCount,
+        enabledProjectCount: status.enabledProjectCount,
+        updatedAt: status.updatedAt,
+        liveness,
+        orchestrator,
+        queue,
+        workers: managedWorkers,
+      }, null, 2));
     } else {
       const liveTag = liveness.alive ? "alive" : `down (${liveness.reason})`;
+      const orchestratorTag = orchestrator.status === "running"
+        ? `running pid:${orchestrator.pid || "-"} epoch:${orchestrator.epoch || 0}`
+        : `stopped${orchestrator.hubId ? ` hubId:${orchestrator.hubId}` : ""}`;
       console.log(`Hub: ${status.hubRoot}`);
       console.log(`Server: ${liveTag}`);
+      console.log(`Orchestrator: ${orchestratorTag}`);
       console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
-      console.log(`Workers: ${status.workersOnline} online, ${status.workersStale} stale, ${status.workersOffline} offline`);
+      console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} failed:${queue.failed}`);
+      console.log(`Workers: ${formatManagedWorkerSummary(managedWorkers)}`);
     }
   } else if (sub === "projects") {
     const projects = await listProjects(hubRoot);
@@ -26,8 +51,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     } else {
       if (projects.length === 0) console.log("No Hub projects. Run: cpb attach [path] [name]");
       for (const project of projects) {
-        const worker = project.worker?.lastSeenAt ? ` worker:${workerStatus(project)}` : "";
-        console.log(`${project.enabled === false ? "-" : "+"} ${project.id}\t${project.sourcePath}${worker}`);
+        console.log(`${project.enabled === false ? "-" : "+"} ${project.id}\t${project.sourcePath}`);
       }
     }
   } else if (sub === "start") {
@@ -207,4 +231,13 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.error(`Unknown hub subcommand: ${sub}`);
     process.exit(1);
   }
+}
+
+function formatManagedWorkerSummary(counts) {
+  const preferred = ["ready", "running", "unhealthy", "exited"];
+  const parts = preferred.map((status) => `${status}:${counts[status] || 0}`);
+  for (const [status, count] of Object.entries(counts)) {
+    if (!preferred.includes(status) && count > 0) parts.push(`${status}:${count}`);
+  }
+  return parts.join(" ");
 }

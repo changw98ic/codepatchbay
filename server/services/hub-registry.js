@@ -267,14 +267,6 @@ export async function updateProject(hubRoot, id, patch = {}) {
   });
 }
 
-const DEFAULT_WORKER_TTL = 120_000;
-
-export function workerStatus(project, ttlMs = DEFAULT_WORKER_TTL) {
-  if (!project.worker || !project.worker.lastSeenAt) return "offline";
-  const age = Date.now() - new Date(project.worker.lastSeenAt).getTime();
-  return age <= ttlMs ? "online" : "stale";
-}
-
 export async function heartbeatWorker(hubRoot, id, worker = {}) {
   const heartbeat = {
     workerId: worker.workerId || `worker-${process.pid}`,
@@ -287,22 +279,14 @@ export async function heartbeatWorker(hubRoot, id, worker = {}) {
   return updateProject(hubRoot, id, { worker: heartbeat });
 }
 
-export async function hubStatus(hubRoot, { workerTtl = DEFAULT_WORKER_TTL } = {}) {
+export async function hubStatus(hubRoot) {
   const registry = await loadRegistry(hubRoot);
   const projects = Object.values(registry.projects);
-  const statusCounts = { online: 0, stale: 0, offline: 0 };
-  for (const project of projects) {
-    statusCounts[workerStatus(project, workerTtl)]++;
-  }
   return {
     hubRoot: path.resolve(hubRoot),
     registryPath: registryPath(hubRoot),
     projectCount: projects.length,
     enabledProjectCount: projects.filter((project) => project.enabled !== false).length,
-    workersOnline: statusCounts.online,
-    workersStale: statusCounts.stale,
-    workersOffline: statusCounts.offline,
-    workerCount: statusCounts.online,
     updatedAt: registry.updatedAt,
   };
 }

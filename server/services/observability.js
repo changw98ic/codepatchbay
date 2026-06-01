@@ -1,10 +1,11 @@
 import { sanitizeProviderReason, getManagedAcpPool } from "./acp-pool.js";
-import { hubStatus, listProjects, workerStatus } from "./hub-registry.js";
+import { hubStatus, listProjects } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listDispatches } from "./dispatch-state.js";
 import { redactSecrets } from "./secret-policy.js";
 import { buildChainSnapshot, analyzeChainSnapshot } from "./observer.js";
+import { WorkerStore, summarizeWorkers } from "../orchestrator/worker-store.js";
 
 export function redactDiagnostics(value, key = "") {
   return redactSecrets(value, key);
@@ -13,28 +14,29 @@ export function redactDiagnostics(value, key = "") {
 export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = {}) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
   const now = Date.now();
+  const workerStore = new WorkerStore(hubRoot);
 
-  const [hub, projects, queue, acpStatus, rateLimits, dispatches] = await Promise.all([
+  const [hub, projects, queue, acpStatus, rateLimits, dispatches, workers] = await Promise.all([
     hubStatus(hubRoot),
     listProjects(hubRoot),
     queueStatus(hubRoot),
     pool.status(),
     pool.readDurableRateLimits(),
     listDispatches(hubRoot),
+    workerStore.listWorkers(),
   ]);
 
-  const workerDetails = projects.map((p) => {
-    const derived = workerStatus(p);
-    const lastSeen = p.worker?.lastSeenAt;
+  const workerDetails = workers.map((worker) => {
+    const lastSeen = worker.lastHeartbeatAt || worker.startedAt || null;
     const ageMs = lastSeen ? now - new Date(lastSeen).getTime() : null;
     return {
-      id: p.id,
-      name: p.name,
-      status: derived,
-      workerId: p.worker?.workerId || null,
+      id: worker.workerId,
+      status: worker.status || "unknown",
+      projectId: worker.projectId || null,
+      currentAssignmentId: worker.currentAssignmentId || null,
+      pid: worker.pid || null,
       lastSeenAt: lastSeen || null,
       ageMs,
-      capabilities: p.worker?.capabilities || [],
     };
   });
 
@@ -120,9 +122,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
       projectRuntimeRoots,
     },
     workers: {
-      online: hub.workersOnline,
-      stale: hub.workersStale,
-      offline: hub.workersOffline,
+      ...summarizeWorkers(workers),
       details: workerDetails,
     },
     queue,
@@ -154,10 +154,7 @@ export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) 
       hubRoot,
     },
     hub,
-    projects: projects.map((project) => ({
-      ...project,
-      workerDerivedStatus: workerStatus(project),
-    })),
+    projects,
     queue,
     queueEntries,
     acp: {

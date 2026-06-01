@@ -127,3 +127,12 @@ export class WorkerStore {
     return `w-${crypto.randomBytes(4).toString("hex")}`;
   }
 }
+
+export function summarizeWorkers(workers = []) {
+  const counts = { ready: 0, running: 0, unhealthy: 0, exited: 0 };
+  for (const worker of workers) {
+    const status = worker.status || "unknown";
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  return counts;
+}
