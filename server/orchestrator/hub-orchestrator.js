@@ -154,7 +154,6 @@ export class HubOrchestrator {
     // Find idle worker or start a new one (P0-1 fix: always proceeds even if no idle worker)
     const existingWorker = await this.scheduler.findIdleWorker(candidate.projectId);
     const worker = await this.workerSupervisor.ensureWorkerFor(assignment, existingWorker);
-    if (!worker) return { skipped: true, reason: "worker capacity reached" };
 
     // Create attempt with real epoch
     const epoch = this.leaderLock.getEpoch();
