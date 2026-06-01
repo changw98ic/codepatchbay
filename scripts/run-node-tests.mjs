@@ -45,6 +45,8 @@ if (allFiles.length === 0) {
 
 const browserFiles = allFiles.filter((f) => f.startsWith("tests/browser/"));
 const otherFiles = allFiles.filter((f) => !f.startsWith("tests/browser/"));
+const isolatedUnitFiles = otherFiles.filter((f) => f === "tests/quota-delegate.test.mjs");
+const parallelUnitFiles = otherFiles.filter((f) => !isolatedUnitFiles.includes(f));
 
 try {
   // Browser E2E tests: run serially to avoid concurrent Chromium contention
@@ -52,9 +54,14 @@ try {
     await runTests(browserFiles, { concurrency: 1, label: "browser E2E tests" });
   }
 
-  // Other unit tests: run in parallel (default Node concurrency)
-  if (otherFiles.length > 0) {
-    await runTests(otherFiles, { label: "unit tests" });
+  // Other unit tests: run in parallel (default Node concurrency).
+  if (parallelUnitFiles.length > 0) {
+    await runTests(parallelUnitFiles, { label: "unit tests" });
+  }
+
+  // Real-process delegate integration tests need isolation from parallel load.
+  if (isolatedUnitFiles.length > 0) {
+    await runTests(isolatedUnitFiles, { concurrency: 1, label: "isolated unit tests" });
   }
 } catch (err) {
   console.error(err.message);

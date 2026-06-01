@@ -50,6 +50,17 @@ export function issueToNormalizedEvent(issue, project) {
   };
 }
 
+function issueMatchesProject(issue, project) {
+  if (issue.projectId === project.id) return true;
+  if (issue.projectId && issue.projectId !== "flow") return false;
+  const repo = project.github?.fullName;
+  return Boolean(repo && (issue.repository || issue.repo || issue.repositoryFullName) === repo);
+}
+
+function issueQueueKey(repo, number) {
+  return `${repo || ""}#${Number(number)}`;
+}
+
 export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { createJobFn = null, dryRun = false } = {}) {
   const project = await getProject(hubRoot, projectId);
   if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
@@ -58,13 +69,13 @@ export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { cre
   if (!automation?.enabled) return { enqueued: 0, skipped: 0, duplicates: 0, total: 0, reason: "automation not enabled" };
 
   const issues = await readGithubIssues(hubRoot);
-  const projectIssues = issues.filter((i) => i.state === "OPEN");
+  const projectIssues = issues.filter((i) => i.state === "OPEN" && issueMatchesProject(i, project));
 
   const queue = await loadQueue(hubRoot);
-  const queuedIssueNumbers = new Set(
+  const queuedIssueKeys = new Set(
     queue.entries
-      .filter((e) => e.metadata?.issueNumber && (e.type === "github_issue" || e.metadata?.source === "github"))
-      .map((e) => Number(e.metadata.issueNumber)),
+      .filter((e) => e.projectId === project.id && e.metadata?.issueNumber && (e.type === "github_issue" || e.metadata?.source === "github"))
+      .map((e) => issueQueueKey(e.metadata?.repo || e.metadata?.repository || project.github?.fullName, e.metadata.issueNumber)),
   );
 
   let enqueued = 0;
@@ -73,7 +84,8 @@ export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { cre
   const matched = [];
 
   for (const issue of projectIssues) {
-    if (queuedIssueNumbers.has(issue.number)) { duplicates++; continue; }
+    const key = issueQueueKey(issue.repository || issue.repo || project.github?.fullName, issue.number);
+    if (queuedIssueKeys.has(key)) { duplicates++; continue; }
     if (isExcluded(issue, automation.exclude)) { skipped++; continue; }
 
     const rule = matchAutomationRule(issue, automation.rules);

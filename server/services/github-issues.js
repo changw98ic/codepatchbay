@@ -2,6 +2,7 @@ import { execFile as execFileCb } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { listProjects } from "./hub-registry.js";
 
 const execFileAsync = promisify(execFileCb);
 const CACHE_VERSION = 1;
@@ -58,16 +59,28 @@ export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", iss
   const normalized = (issues || [])
     .map((issue) => normalizeGithubIssue(issue, { repo, projectId }))
     .filter((issue) => Number.isFinite(issue.number));
+  const existing = await readGithubIssues(hubRoot);
+  const retained = existing.filter((issue) => !issueBelongsToSyncScope(issue, { repo, projectId }));
+  const merged = [...retained, ...normalized];
   const payload = {
     version: CACHE_VERSION,
     repo: repo || null,
     projectId,
     syncedAt,
     count: normalized.length,
-    issues: normalized,
+    totalCount: merged.length,
+    issues: merged,
   };
   await writeAtomic(cachePath(hubRoot), `${JSON.stringify(payload, null, 2)}\n`);
   return payload;
+}
+
+function issueBelongsToSyncScope(issue, { repo, projectId } = {}) {
+  const normalized = normalizeGithubIssue(issue);
+  if (projectId && normalized.projectId === projectId) return true;
+  if (!repo) return false;
+  if (normalized.repository !== repo) return false;
+  return !projectId || !normalized.projectId || normalized.projectId === "flow";
 }
 
 async function runGh(args, { cwd, execFile = execFileAsync } = {}) {
@@ -123,4 +136,55 @@ export async function syncGithubIssuesFromGh(hubRoot, {
     projectId,
     issues,
   });
+}
+
+export async function syncConfiguredGithubIssuesFromGh(hubRoot, {
+  projectId = null,
+  state = "open",
+  limit = 1000,
+  cwd = process.cwd(),
+  execFile,
+  listProjectsFn = listProjects,
+  syncProjectFn = syncGithubIssuesFromGh,
+} = {}) {
+  const projects = await listProjectsFn(hubRoot, { enabledOnly: true });
+  const selected = projectId ? projects.filter((project) => project.id === projectId) : projects;
+  if (projectId && selected.length === 0) {
+    throw new Error(`project not found or disabled: ${projectId}`);
+  }
+
+  const syncedProjects = [];
+  const skipped = [];
+
+  for (const project of selected) {
+    const repo = project.github?.fullName;
+    if (!repo) {
+      skipped.push({ projectId: project.id, reason: "no GitHub binding" });
+      continue;
+    }
+
+    const projectCwd = project.sourcePath || cwd;
+    const result = await syncProjectFn(hubRoot, {
+      repo,
+      projectId: project.id,
+      state,
+      limit,
+      cwd: projectCwd,
+      execFile,
+    });
+    syncedProjects.push({
+      projectId: project.id,
+      repo,
+      cwd: projectCwd,
+      count: result.count || 0,
+    });
+  }
+
+  return {
+    synced: true,
+    count: syncedProjects.reduce((total, project) => total + project.count, 0),
+    projectCount: syncedProjects.length,
+    projects: syncedProjects,
+    skipped,
+  };
 }

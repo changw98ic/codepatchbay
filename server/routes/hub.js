@@ -16,7 +16,7 @@ import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
 import { buildObservabilitySummary } from "../services/observability.js";
 import { buildTaskHistory } from "../services/task-history.js";
 import { buildTaskLedger } from "../services/task-ledger.js";
-import { readGithubIssues, syncGithubIssuesFromGh } from "../services/github-issues.js";
+import { readGithubIssues, syncConfiguredGithubIssuesFromGh, syncGithubIssuesFromGh } from "../services/github-issues.js";
 import { autoEnqueueSyncedIssues } from "../services/auto-enqueue.js";
 import {
   claimEligible,
@@ -322,13 +322,23 @@ export async function hubRoutes(fastify) {
 
   fastify.post("/hub/github/issues/sync", async (req) => {
     const body = req.body || {};
+    if (!body.projectId && !body.repo) {
+      return syncConfiguredGithubIssuesFromGh(hubRoot(req), {
+        state: body.state,
+        limit: body.limit,
+        cwd: req.cpbRoot,
+      });
+    }
+
     let cwd = req.cpbRoot;
+    let repo = body.repo;
     if (body.projectId) {
       const project = await getProject(hubRoot(req), body.projectId);
       if (project?.sourcePath) cwd = project.sourcePath;
+      if (!repo) repo = project?.github?.fullName;
     }
     const result = await syncGithubIssuesFromGh(hubRoot(req), {
-      repo: body.repo,
+      repo,
       projectId: body.projectId,
       state: body.state,
       limit: body.limit,
@@ -504,4 +514,3 @@ export async function hubRoutes(fastify) {
     };
   });
 }
-

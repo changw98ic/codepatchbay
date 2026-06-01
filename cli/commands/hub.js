@@ -1,10 +1,8 @@
-import path from "node:path";
-
 export async function run(args, { cpbRoot, executorRoot }) {
   const sub = args[0] || "status";
   const json = args.includes("--json");
-  const { hubStatus, listProjects, resolveHubRoot, workerStatus } = await import("../../server/services/hub-registry.js").then(m => ({
-    hubStatus: m.hubStatus, listProjects: m.listProjects, resolveHubRoot: m.resolveHubRoot, workerStatus: m.workerStatus,
+  const { getProject, hubStatus, listProjects, resolveHubRoot, workerStatus } = await import("../../server/services/hub-registry.js").then(m => ({
+    getProject: m.getProject, hubStatus: m.hubStatus, listProjects: m.listProjects, resolveHubRoot: m.resolveHubRoot, workerStatus: m.workerStatus,
   }));
   const { readHubLiveness } = await import("../../server/services/hub-runtime.js");
   const hubRoot = resolveHubRoot(cpbRoot);
@@ -86,10 +84,23 @@ export async function run(args, { cpbRoot, executorRoot }) {
       }
     }
   } else if (sub === "github-sync") {
-    const { syncGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
-    const result = await syncGithubIssuesFromGh(hubRoot, { repo: null, projectId: "flow", state: "open", limit: 1000, cwd: cpbRoot });
+    const syncProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
+    const { syncConfiguredGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
+    const result = await syncConfiguredGithubIssuesFromGh(hubRoot, { projectId: syncProject, state: "open", limit: 1000, cwd: cpbRoot });
     if (json) console.log(JSON.stringify(result, null, 2));
-    else console.log(`GitHub issues synced: ${result.count}`);
+    else {
+      if (result.projectCount === 0) {
+        console.log("No GitHub-bound Hub projects to sync. Run: cpb github bind <project> <owner/repo>");
+      } else {
+        console.log(`GitHub issues synced: ${result.count} across ${result.projectCount} project(s)`);
+        for (const project of result.projects) {
+          console.log(`  ${project.projectId}\t${project.repo}\t${project.count}`);
+        }
+      }
+      for (const skipped of result.skipped || []) {
+        console.log(`  skipped ${skipped.projectId}: ${skipped.reason}`);
+      }
+    }
   } else if (sub === "enqueue-issues") {
     const eqProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
     if (eqProject && !process.env.CPB_PROJECT_RUNTIME_ROOT) {
@@ -110,7 +121,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       const proj = await (await import("../../server/services/hub-registry.js")).getProject(hubRoot, eqProject);
       const repo = proj?.github?.fullName;
       if (repo) {
-        const syncResult = await syncGithubIssuesFromGh(hubRoot, { repo, projectId: eqProject, state: "open", limit: 500, cwd: cpbRoot });
+        const syncResult = await syncGithubIssuesFromGh(hubRoot, { repo, projectId: eqProject, state: "open", limit: 500, cwd: proj.sourcePath || cpbRoot });
         if (!json) console.log(`Synced ${syncResult.count} issues from ${repo}`);
       } else {
         console.error(`Project '${eqProject}' has no GitHub binding. Run: cpb github bind ${eqProject} <owner/repo>`);
