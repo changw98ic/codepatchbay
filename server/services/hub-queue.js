@@ -345,7 +345,7 @@ export function isMutatingEntry(entry) {
   return entry.metadata?.mutating !== false;
 }
 
-export function buildProjectQueueStatus(entries, { maxActivePerProject = 1 } = {}) {
+export function buildProjectQueueStatus(entries, { maxActivePerProject = 2 } = {}) {
   const byProject = {};
   for (const e of entries) {
     if (!byProject[e.projectId]) {
@@ -429,7 +429,7 @@ export async function claimEligible(hubRoot, opts = {}) {
   const {
     workerId = `worker-${process.pid}`,
     projectId = null,
-    maxActivePerProject = 1,
+    maxActivePerProject = 2,
     claimTimeoutMs = 120_000,
     providerSlotsAvailable = true,
     requireIssueLink = false,

@@ -299,7 +299,7 @@ export function parseArgs(argv) {
     heartbeatMs: 30_000,
     pollMs: 5_000,
     claimTimeoutMs: 120_000,
-    maxActivePerProject: 1,
+    maxActivePerProject: 2,
     agentPreflightRetries: numericOption(process.env.CPB_AGENT_PREFLIGHT_RETRIES, 3),
     agentPreflightBackoffMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_BACKOFF_MS, 30_000),
     agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
@@ -359,7 +359,7 @@ export class ProjectWorker {
     this.heartbeatMs = opts.heartbeatMs || 30_000;
     this.pollMs = opts.pollMs || 5_000;
     this.claimTimeoutMs = opts.claimTimeoutMs ?? 120_000;
-    this.maxActivePerProject = opts.maxActivePerProject ?? 1;
+    this.maxActivePerProject = opts.maxActivePerProject ?? 2;
     this.agentPreflightRetries = numericOption(opts.agentPreflightRetries, 3);
     this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
     this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
@@ -883,7 +883,7 @@ Options:
   --heartbeat-ms <n>         Heartbeat interval in ms (default: 30000)
   --poll-ms <n>              Queue poll interval in ms (default: 5000)
   --claim-timeout-ms <n>     Stale claim timeout in ms (default: 120000, 0 to disable)
-  --max-active-per-project <n> Max concurrent mutating tasks per project (default: 1)
+  --max-active-per-project <n> Max concurrent mutating tasks per project (default: 2)
   --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)

@@ -1,6 +1,6 @@
 import { AssignmentStore } from "./assignment-store.js";
 
-const DEFAULT_MAX_ACTIVE_PER_PROJECT = 1;
+const DEFAULT_MAX_ACTIVE_PER_PROJECT = 2;
 const CLAIM_TIMEOUT_MS = 120_000;
 
 export class Scheduler {

@@ -172,7 +172,7 @@ export async function hubRoutes(fastify) {
     const result = await claimEligible(hubRoot(req), {
       workerId: body.workerId,
       projectId: body.projectId || null,
-      maxActivePerProject: body.maxActivePerProject ?? 1,
+      maxActivePerProject: body.maxActivePerProject ?? 2,
       claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
       requireIssueLink: body.requireIssueLink !== false,
