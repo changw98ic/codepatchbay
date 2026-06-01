@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -56,10 +56,31 @@ describe("session-store: BrowserSessionManager", () => {
     await assert.doesNotReject(async () => manager.release(null));
   });
 
+  it("uses separate runtime profiles for concurrent acquires of the same provider", async () => {
+    const baseProfileDir = path.join(tempProfileDir, "mock", "profile-0");
+    await mkdir(baseProfileDir, { recursive: true });
+    await writeFile(path.join(baseProfileDir, "state.json"), '{"status":"ready"}', "utf8");
+
+    const [h1, h2] = await Promise.all([
+      manager.acquire({ providerName: "mock", sessionId: "parallel-1", headless: true }),
+      manager.acquire({ providerName: "mock", sessionId: "parallel-2", headless: true }),
+    ]);
+
+    try {
+      assert.notEqual(h1.profileDir, h2.profileDir);
+      assert.equal(h1.baseProfileDir, baseProfileDir);
+      assert.equal(h2.baseProfileDir, baseProfileDir);
+      assert.ok(h1.profileDir.includes(path.join("mock", "runtime-profiles")));
+      assert.ok(h2.profileDir.includes(path.join("mock", "runtime-profiles")));
+      assert.equal(await readFile(path.join(h1.profileDir, "state.json"), "utf8"), '{"status":"ready"}');
+      assert.equal(await readFile(path.join(h2.profileDir, "state.json"), "utf8"), '{"status":"ready"}');
+    } finally {
+      await Promise.all([manager.release(h1), manager.release(h2)]);
+    }
+  });
+
   it("closeProvider closes all contexts for a provider", async () => {
-    // Use different providers to avoid concurrent persistent profile access
     const h1 = await manager.acquire({ providerName: "mock", sessionId: "s1", headless: true });
-    // Release h1 before acquiring another mock context (same profile dir)
     await manager.release(h1);
 
     const h2 = await manager.acquire({ providerName: "mock", sessionId: "s2", headless: true });

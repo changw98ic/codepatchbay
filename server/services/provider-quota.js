@@ -238,10 +238,11 @@ export async function assertProviderAvailable(hubRoot, {
 const HTTP_429 = /\b429\b|rate.?limit|too many requests|capacity|overloaded/i;
 const RETRY_AFTER_SEC = /(?:reset|retry|after)[^0-9]*(\d+)\s*(?:s|sec|seconds?)/i;
 const ISO_DATE = /20\d\d-\d\d-\d\d[T\s]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?/;
-const WINDOW_EXHAUST = /window|quota|exhaust|usage.?limit|monthly.?limit|5.?hour/i;
+const WINDOW_EXHAUST = /window.{0,40}(?:quota|limit|exhaust|reset)|(?:quota|limit|exhaust).{0,40}window|usage.?limit|monthly.?limit|5.?hour/i;
 const WEEKLY_EXHAUST = /weekly|week.?limit/i;
 const AUTH_FAIL = /(?:unauthorized|invalid api key|invalid token|expired token|authentication failed|auth failed|forbidden.*api key)/i;
 const TOKEN_CONTEXT = /context.?length|max.?token|output.?token|token.?limit/i;
+const LOCAL_BROWSER_PROFILE_FAILURE = /ProcessSingleton|profile directory|launchPersistentContext|user.?data.?dir|SingletonLock|DevToolsActivePort/i;
 
 /**
  * Parse a reset time from an error message, respecting timezone.
@@ -343,6 +344,14 @@ function getTimezoneOffsetMinutes(utcMs, timezone) {
 export async function classifyQuotaFailure({ providerKey, agent, variant, error, stdout, stderr, adapter }) {
   const msg = error?.message || String(error || "");
   const combined = `${msg}\n${stderr || ""}\n${stdout || ""}`;
+
+  if (error instanceof ProviderQuotaError) {
+    return { isQuota: false };
+  }
+
+  if (agent === "browser-agent" && LOCAL_BROWSER_PROFILE_FAILURE.test(combined)) {
+    return { isQuota: false };
+  }
 
   // ── Layer 1: Deterministic parser ────────────────────────────────
   if (HTTP_429.test(combined)) {

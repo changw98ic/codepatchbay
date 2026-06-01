@@ -330,6 +330,42 @@ describe("classifyQuotaFailure", () => {
     assert.equal(result.isQuota, false);
   });
 
+  it("does not classify Chromium profile lock failures as quota", async () => {
+    const result = await classifyQuotaFailure({
+      providerKey: "browser-agent:none",
+      agent: "browser-agent",
+      error: new Error(
+        "browserType.launchPersistentContext: Target page, context or browser has been closed\n" +
+        "Failed to create a ProcessSingleton for your profile directory. " +
+        "This usually means that the profile is already in use by another instance of Chromium.\n" +
+        "Chrome flags include --window-size=1280,720"
+      ),
+    });
+    assert.equal(result.isQuota, false);
+  });
+
+  it("does not reclassify ProviderQuotaError gate failures", async () => {
+    const error = new ProviderQuotaError(
+      "provider browser-agent:none unavailable until 2026-06-01T10:55:49.386Z: possible window exhaustion",
+      {
+        providerKey: "browser-agent:none",
+        agent: "browser-agent",
+        status: QuotaStatus.WINDOW_EXHAUSTED,
+        nextEligibleAt: Date.now() + 60_000,
+        source: "provider-quota",
+        confidence: 0.6,
+        reason: "possible window exhaustion",
+      }
+    );
+
+    const result = await classifyQuotaFailure({
+      providerKey: "browser-agent:none",
+      agent: "browser-agent",
+      error,
+    });
+    assert.equal(result.isQuota, false);
+  });
+
   it("uses adapter timezone for naive timestamps", async () => {
     const adapter = getProviderAdapter("claude:kimi-k2.6");
     const result = await classifyQuotaFailure({
