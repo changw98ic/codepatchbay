@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { assertExecutorRoot, readExecutorPackage } from "./executor-root.js";
@@ -8,7 +9,36 @@ const execFileAsync = promisify(execFile);
 
 const CRITICAL_TARBALL_FILES = ["cpb", "cli/cpb.mjs", "package.json"];
 
-export async function packRelease({ sourceRoot, outputDir, json } = {}) {
+export function createManifestTempPath(manifestPath, idFn = randomUUID) {
+  return `${manifestPath}.tmp-${idFn()}`;
+}
+
+async function resolvePackedTarball(tgzPath, statFn = stat) {
+  let info;
+  try {
+    info = await statFn(tgzPath);
+  } catch (err) {
+    throw new Error(`npm pack tarball was not found at ${tgzPath}: ${err.message}`);
+  }
+
+  if (typeof info.isFile === "function" && !info.isFile()) {
+    throw new Error(`npm pack output is not a file: ${tgzPath}`);
+  }
+  if (!Number.isFinite(info.size) || info.size <= 0) {
+    throw new Error(`npm pack tarball is empty or unreadable: ${tgzPath}`);
+  }
+
+  return { tgzPath, tgzSize: info.size };
+}
+
+export async function packRelease({
+  sourceRoot,
+  outputDir,
+  json,
+  execFileFn = execFileAsync,
+  statFn = stat,
+  tempIdFn = randomUUID,
+} = {}) {
   const resolvedSource = await assertExecutorRoot(sourceRoot);
   const pkg = await readExecutorPackage(resolvedSource);
 
@@ -18,7 +48,7 @@ export async function packRelease({ sourceRoot, outputDir, json } = {}) {
 
   await mkdir(resolvedOutput, { recursive: true });
 
-  const { stdout } = await execFileAsync("npm", ["pack", "--silent", "--pack-destination", resolvedOutput], {
+  const { stdout } = await execFileFn("npm", ["pack", "--silent", "--pack-destination", resolvedOutput], {
     cwd: resolvedSource,
     timeout: 120_000,
   });
@@ -29,25 +59,20 @@ export async function packRelease({ sourceRoot, outputDir, json } = {}) {
   }
 
   const tgzPath = path.join(resolvedOutput, tgzFilename);
-
-  let tgzSize = 0;
-  try {
-    const info = await stat(tgzPath);
-    tgzSize = info.size;
-  } catch {}
+  const tarball = await resolvePackedTarball(tgzPath, statFn);
 
   const manifest = {
     packageName: pkg.name,
     version: pkg.version,
     tgzFilename,
-    tgzPath,
-    tgzSize,
+    tgzPath: tarball.tgzPath,
+    tgzSize: tarball.tgzSize,
     sourceRoot: resolvedSource,
     createdAt: new Date().toISOString(),
   };
 
   const manifestPath = path.join(resolvedOutput, `${tgzFilename}.manifest.json`);
-  const tmpManifest = `${manifestPath}.tmp-${Date.now()}`;
+  const tmpManifest = createManifestTempPath(manifestPath, tempIdFn);
   await writeFile(tmpManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   await rename(tmpManifest, manifestPath);
 
