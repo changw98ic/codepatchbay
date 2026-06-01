@@ -180,13 +180,60 @@ export async function cmdStop() {
     const { WorkerStore } = await import("../orchestrator/worker-store.js");
     const store = new WorkerStore(hubRoot);
     const workers = await store.listWorkers();
+    const liveWorkers = workers.filter((w) => w.pid && w.status !== "exited");
     let stopped = 0;
-    for (const w of workers) {
-      if (w.pid && w.status !== "exited") {
-        try { process.kill(w.pid, "SIGTERM"); stopped++; } catch {}
+    for (const w of liveWorkers) {
+      try { process.kill(w.pid, "SIGTERM"); stopped++; } catch {
+        // Process already dead — mark exited immediately
+        await store.updateWorker(w.workerId, { status: "exited" });
       }
     }
     if (stopped > 0) console.log(`Managed workers stopped (${stopped})`);
+
+    // Wait for workers to exit (up to 5s), then force-mark stragglers
+    if (stopped > 0) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        let allGone = true;
+        for (const w of liveWorkers) {
+          const cur = await store.getWorker(w.workerId);
+          if (cur && cur.status === "exited") continue;
+          try { process.kill(w.pid, 0); allGone = false; } catch {
+            await store.updateWorker(w.workerId, { status: "exited" });
+          }
+        }
+        if (allGone) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+
+    // Mark any stragglers as exited and prune dead workers from registry
+    for (const w of liveWorkers) {
+      const current = await store.getWorker(w.workerId);
+      if (current && current.status !== "exited") {
+        try { process.kill(w.pid, 9); } catch {}
+        await store.updateWorker(w.workerId, { status: "exited" });
+      }
+    }
+    await store.pruneDead();
+  } catch {}
+
+  // Release in_progress queue entries back to failed (workers are gone)
+  try {
+    const { loadQueue, saveQueue } = await import("../services/hub-queue.js");
+    const queue = await loadQueue(hubRoot);
+    let released = 0;
+    for (const e of queue.entries) {
+      if (e.status === "in_progress") {
+        e.status = "failed";
+        e.updatedAt = new Date().toISOString();
+        released++;
+      }
+    }
+    if (released > 0) {
+      await saveQueue(hubRoot, queue);
+      console.log(`Queue entries released (${released})`);
+    }
   } catch {}
 
   // Stop orchestrator process by PID (direct SIGTERM, not just lock release)
