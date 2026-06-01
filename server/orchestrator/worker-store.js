@@ -70,11 +70,26 @@ export class WorkerStore {
 
   async findIdleWorker(projectId) {
     const workers = await this.listWorkers();
-    return workers.find(w =>
-      w.status === "ready" &&
-      (!projectId || !w.projectId || w.projectId === projectId) &&
-      !w.currentAssignmentId,
-    ) || null;
+    for (const worker of workers) {
+      if (worker.status !== "ready") continue;
+      if (projectId && worker.projectId && worker.projectId !== projectId) continue;
+      if (worker.currentAssignmentId) continue;
+      if (await this.hasInboxWork(worker.workerId)) continue;
+      return worker;
+    }
+    return null;
+  }
+
+  async hasInboxWork(workerId) {
+    const inboxDir = path.join(this.inboxDir, workerId);
+    const hasJsonFile = async (dir) => {
+      try {
+        return (await readdir(dir)).some((file) => file.endsWith(".json"));
+      } catch {
+        return false;
+      }
+    };
+    return await hasJsonFile(inboxDir) || await hasJsonFile(path.join(inboxDir, "processing"));
   }
 
   async writeInbox(workerId, assignment) {
