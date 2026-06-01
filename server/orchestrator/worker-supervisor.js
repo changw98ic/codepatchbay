@@ -66,7 +66,7 @@ export class WorkerSupervisor {
   async stopWorker(workerId, reason) {
     const child = this._children.get(workerId);
     if (child?.pid) {
-      try { process.kill(child.pid, "SIGTERM"); } catch { /* already dead */ }
+      this._killProcessGroup(child.pid);
     }
     await this.workers.updateWorker(workerId, {
       status: "draining",
@@ -103,15 +103,23 @@ export class WorkerSupervisor {
       if (worker.status === "running" || worker.status === "assigned") {
         const lastHb = worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).getTime() : 0;
         if (Date.now() - lastHb > HEARTBEAT_STALE_MS * 2) {
+          this._killProcessGroup(worker.pid);
           await this.workers.updateWorker(worker.workerId, { status: "exited" });
         }
       }
       // Check if pid still alive
       if (worker.pid && worker.status !== "exited") {
         try { process.kill(worker.pid, 0); } catch {
+          this._killProcessGroup(worker.pid);
           await this.workers.updateWorker(worker.workerId, { status: "exited" });
         }
       }
     }
+  }
+
+  _killProcessGroup(pid) {
+    if (!pid) return;
+    try { process.kill(-pid, "SIGTERM"); } catch { /* no group or already dead */ }
+    try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
   }
 }
