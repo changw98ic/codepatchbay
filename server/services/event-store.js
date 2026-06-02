@@ -415,6 +415,7 @@ export function materializeJob(events) {
     failurePhase: null,
     retryable: false,
     retryCount: 0,
+    maxRetries: null,
     failureCause: null,
     cancelRequested: false,
     cancelReason: null,
@@ -668,6 +669,7 @@ export function materializeJob(events) {
         state.failurePhase = event.phase ?? state.failurePhase;
         state.retryable = event.retryable ?? state.retryable;
         state.retryCount = event.retryCount ?? state.retryCount;
+        state.maxRetries = event.maxRetries ?? state.maxRetries;
         state.failureCause = event.cause ?? state.failureCause;
         if (event.phase !== undefined) {
           state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
@@ -694,6 +696,7 @@ export function materializeJob(events) {
         state.failurePhase = event.phase ?? state.failurePhase;
         state.retryable = event.retryable ?? state.retryable;
         state.retryCount = event.retryCount ?? state.retryCount;
+        state.maxRetries = event.maxRetries ?? state.maxRetries;
         state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
@@ -786,6 +789,7 @@ export function materializeJob(events) {
         state.failurePhase = null;
         state.retryable = false;
         state.retryCount = event.retryCount ?? state.retryCount + 1;
+        state.maxRetries = event.maxRetries ?? state.maxRetries;
         state.failureCause = null;
         for (const artifactPhase of event.clearArtifacts ?? []) {
           delete state.artifacts[artifactPhase];
@@ -794,6 +798,8 @@ export function materializeJob(events) {
         break;
       case "recovery_created":
         state.recoveryOf = event.recoveryOf ?? null;
+        state.retryCount = event.retryCount ?? state.retryCount;
+        state.maxRetries = event.maxRetries ?? state.maxRetries;
         state.lineage = {
           parentJobId: event.lineage?.parentJobId ?? null,
           parentStatus: event.lineage?.parentStatus ?? null,
@@ -803,6 +809,8 @@ export function materializeJob(events) {
           recoveryReason: event.recoveryReason ?? null,
           trigger: event.trigger ?? null,
           executorSelection: event.executorSelection ?? null,
+          retryCount: event.retryCount ?? null,
+          maxRetries: event.maxRetries ?? null,
         };
         if (event.sourceContext) state.sourceContext = event.sourceContext;
         break;

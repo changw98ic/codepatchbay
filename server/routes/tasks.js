@@ -1,6 +1,6 @@
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks } from '../services/executor.js';
-import { requestCancelJob, requestRedirectJob, retryJob } from '../services/job-store.js';
+import { cancelJob, requestRedirectJob, retryJob } from '../services/job-store.js';
 import { enqueue } from '../services/hub-queue.js';
 import { getProject } from '../services/hub-registry.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
@@ -114,8 +114,8 @@ export async function taskRoutes(fastify, opts) {
     const { jobId, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
     const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
-    const job = await requestCancelJob(req.cpbRoot, name, jobId, { reason, dataRoot });
-    broadcast({ type: 'job:cancel_requested', project: name, jobId, reason });
+    const job = await cancelJob(req.cpbRoot, name, jobId, { reason, dataRoot });
+    broadcast({ type: 'job:cancelled', project: name, jobId, reason });
     return job;
   });
 

@@ -277,14 +277,13 @@ async function main() {
         jobLog.error(`job failed (${failureKind}): ${err.message}`);
         if (isPoolExhausted) {
           try {
-            const { appendEvent } = await import("../../server/services/event-store.js");
-            await appendEvent(cpbRoot, assignment.projectId, jobId, {
-              type: "pool_exhausted",
+            const { poolExhaustedJob } = await import("../../server/services/job-store.js");
+            await poolExhaustedJob(cpbRoot, assignment.projectId, jobId, {
               reason: err.message,
               providerKey: err.providerKey,
               agent: err.agent,
               elapsedMs: err.elapsedMs,
-              timestamp: new Date().toISOString(),
+              ts: new Date().toISOString(),
             });
           } catch {}
         }

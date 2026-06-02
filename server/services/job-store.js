@@ -409,7 +409,7 @@ export async function retryJob(
     fromPhase,
     force = false,
     trigger = "manual",
-    maxRetries = 3,
+    maxRetries,
     ts = nowIso(),
     dataRoot,
     useCurrentExecutor = false,
@@ -435,9 +435,10 @@ export async function retryJob(
     throw new Error(`job requires --force to retry: ${code}`);
   }
 
+  const effectiveMaxRetries = maxRetries ?? job.maxRetries ?? 3;
   const retryCount = (job.retryCount ?? 0) + 1;
-  if (retryCount > maxRetries) {
-    throw new Error(`retry limit exceeded: ${retryCount}/${maxRetries}`);
+  if (retryCount > effectiveMaxRetries) {
+    throw new Error(`retry limit exceeded: ${retryCount}/${effectiveMaxRetries}`);
   }
 
   const workflow = getWorkflow(job.workflow);
@@ -466,7 +467,7 @@ export async function retryJob(
     executor: selectedExecutor,
     executorSelection,
     retryCount,
-    maxRetries,
+    maxRetries: effectiveMaxRetries,
   });
 }
 
@@ -486,6 +487,42 @@ export async function budgetExceeded(
   }, { dataRoot });
 
   // Extract experience from budget-exceeded job (fire-and-forget)
+  const { extractExperienceForJob } = await import("./experience-extractor.js");
+  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
+  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
+}
+
+export async function poolExhaustedJob(
+  cpbRoot,
+  project,
+  jobId,
+  {
+    reason,
+    providerKey,
+    agent,
+    elapsedMs,
+    phase,
+    ts = nowIso(),
+    dataRoot,
+  } = {}
+) {
+  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
+  const event = {
+    type: "pool_exhausted",
+    jobId,
+    project,
+    reason,
+    providerKey,
+    agent,
+    elapsedMs,
+    phase,
+    ts,
+  };
+  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
+  // Extract experience from pool-exhausted job (fire-and-forget)
   const { extractExperienceForJob } = await import("./experience-extractor.js");
   extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
@@ -593,7 +630,7 @@ export async function requestCancelJob(
     reason,
     ts,
   }, { dataRoot });
-  return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
+  return cancelJob(cpbRoot, project, jobId, { reason, ts, dataRoot });
 }
 
 export async function cancelJob(
@@ -610,6 +647,7 @@ export async function cancelJob(
     reason,
     ts,
   }, { dataRoot });
+  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
   // Extract experience from cancelled job (fire-and-forget)
   const { extractExperienceForJob } = await import("./experience-extractor.js");
