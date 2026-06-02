@@ -70,6 +70,7 @@ function usage() {
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
+  console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
   console.log(`  ${CYAN}logs${NC} [--follow] [--worker <id>] [--job <id>] [--level <lvl>] [--since <5m|1h|1d>]  View logs`);
   console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
@@ -139,6 +140,7 @@ const COMMANDS = {
   "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",
   audit: "audit.js",
+  "review-bundle": "review-bundle.js",
   "backlog-hygiene": "backlog-hygiene.js",
   coderag: "codegraph.js",
   codegraph: "codegraph.js",
@@ -179,7 +181,7 @@ async function main() {
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally
