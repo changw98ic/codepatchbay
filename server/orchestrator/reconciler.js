@@ -4,6 +4,7 @@ import { createLogger } from "../services/logger.js";
 
 const HEARTBEAT_STALE_MS = 60_000;
 const ASSIGN_ACCEPT_TTL_MS = 120_000;
+const NON_REUSABLE_WORKER_STATUSES = new Set(["dead", "exited", "unhealthy", "draining"]);
 
 export class Reconciler {
   constructor(hubRoot, { assignmentStore, workerStore, leaderLock, failureRouter, hubRoot: _hr }) {
@@ -319,10 +320,12 @@ export class Reconciler {
     await this._guardLeader();
     const workerId = attempt?.workerId || assignment.workerId;
     if (workerId) {
-      await this.workers.updateWorker(workerId, {
-        status: "ready",
-        currentAssignmentId: null,
-      });
+      const worker = await this.workers.getWorker(workerId);
+      const updates = { currentAssignmentId: null };
+      if (!NON_REUSABLE_WORKER_STATUSES.has(worker?.status)) {
+        updates.status = "ready";
+      }
+      await this.workers.updateWorker(workerId, updates);
     }
     await this.assignments.markFinalized(assignment.assignmentId, "worker");
   }

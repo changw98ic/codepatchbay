@@ -36,8 +36,9 @@ export class LeaderLock {
         if (recheck && !this._isExpired(recheck)) {
           throw new Error(`leader lock stolen by ${recheck.hubId}`);
         }
-        // If rename failed but lock is still stale, force cleanup
-        await rm(this.lockDir, { recursive: true, force: true });
+        if (recheck) {
+          throw new Error(`leader lock stale cleanup failed for ${existing.hubId}; refusing unsafe delete`);
+        }
       }
     }
 
@@ -70,7 +71,7 @@ export class LeaderLock {
 
   async renew() {
     const current = await this._readLeader();
-    if (!current || current.hubId !== this.hubId) {
+    if (!this._isCurrentLeader(current)) {
       return false;
     }
     current.heartbeatAt = new Date().toISOString();
@@ -106,7 +107,7 @@ export class LeaderLock {
     this.stopRenewal();
     try {
       const current = await this._readLeader();
-      if (current?.hubId === this.hubId) {
+      if (this._matchesCurrentIdentity(current)) {
         await rm(this.lockDir, { recursive: true, force: true });
       }
     } catch { /* already released */ }
@@ -117,7 +118,7 @@ export class LeaderLock {
    */
   async stillHeld() {
     const current = await this._readLeader();
-    return current?.hubId === this.hubId;
+    return this._isCurrentLeader(current);
   }
 
   async _readLeader() {
@@ -129,7 +130,21 @@ export class LeaderLock {
   }
 
   _isExpired(leader) {
-    return Date.now() > new Date(leader.expiresAt).getTime();
+    const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
+    return !Number.isFinite(expiresAt) || Date.now() > expiresAt;
+  }
+
+  _matchesCurrentIdentity(leader) {
+    return Boolean(
+      leader
+      && this.epoch > 0
+      && leader.hubId === this.hubId
+      && Number(leader.epoch) === this.epoch,
+    );
+  }
+
+  _isCurrentLeader(leader) {
+    return this._matchesCurrentIdentity(leader) && !this._isExpired(leader);
   }
 
   async _incrementEpoch() {
