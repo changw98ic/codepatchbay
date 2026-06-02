@@ -16,6 +16,7 @@ import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.j
 import { createWorktree } from "../git/worktree.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import { resolveGithubTransport } from "../../server/services/github-api.js";
+import { createLogger } from "../../server/services/logger.js";
 
 const execFileAsync = promisify(_execFile);
 
@@ -41,6 +42,7 @@ async function main() {
   }
 
   const { workerId, hubRoot, cpbRoot, once } = opts;
+  const log = createLogger(`worker-${workerId}`);
   const inboxDir = path.join(hubRoot, "workers", "inbox", workerId);
   await mkdir(inboxDir, { recursive: true });
 
@@ -92,25 +94,26 @@ async function main() {
       try {
         assignment = JSON.parse(await readFile(claimedPath, "utf8"));
       } catch {
-        process.stderr.write(`[worker-${workerId}] malformed inbox file: ${file}\n`);
+        log.warn(`malformed inbox file: ${file}`);
         await unlink(claimedPath).catch(() => {});
         continue;
       }
 
       // Validate flattened payload (P0-2 fix)
       if (!Number.isInteger(assignment.attempt) || assignment.attempt < 1) {
-        process.stderr.write(`[worker-${workerId}] invalid attempt in assignment: ${JSON.stringify(assignment.attempt)}\n`);
+        log.warn(`invalid attempt in assignment: ${JSON.stringify(assignment.attempt)}`);
         await unlink(claimedPath).catch(() => {});
         continue;
       }
       if (!assignment.attemptToken) {
-        process.stderr.write(`[worker-${workerId}] missing attemptToken in assignment\n`);
+        log.warn(`missing attemptToken in assignment`);
         await unlink(claimedPath).catch(() => {});
         continue;
       }
 
       const assignmentId = assignment.assignmentId;
       const attemptNum = assignment.attempt;
+      const jobLog = log.child({ traceId: assignment.entryId });
       const attemptDir = path.join(
         hubRoot, "assignments", assignmentId, "attempts", String(attemptNum).padStart(3, "0"),
       );
@@ -177,9 +180,9 @@ async function main() {
             worktreesRoot,
           });
           effectiveSourcePath = worktreeInfo.path;
-          process.stderr.write(`[worker-${workerId}] worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}\n`);
+          jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
         } catch (err) {
-          process.stderr.write(`[worker-${workerId}] worktree creation failed: ${err.message}, using source path directly\n`);
+          jobLog.warn(`worktree creation failed: ${err.message}, using source path directly`);
         }
       }
 
@@ -213,7 +216,7 @@ async function main() {
               await execFileAsync("git", ["commit", "-m", assignment.task || "automated change"], { cwd: worktreeInfo.path });
             }
           } catch (commitErr) {
-            process.stderr.write(`[worker-${workerId}] worktree commit failed: ${commitErr.message}\n`);
+            jobLog.warn(`worktree commit failed: ${commitErr.message}`);
           }
           try {
             const transport = await resolveGithubTransport(hubRoot);
@@ -249,12 +252,12 @@ async function main() {
             });
 
             if (finalizeResult.ok) {
-              process.stderr.write(`[worker-${workerId}] finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}\n`);
+              jobLog.info(`finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}`);
             } else {
-              process.stderr.write(`[worker-${workerId}] finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}\n`);
+              jobLog.warn(`finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}`);
             }
           } catch (err) {
-            process.stderr.write(`[worker-${workerId}] finalize failed: ${err.message}\n`);
+            jobLog.warn(`finalize failed: ${err.message}`);
           }
         }
 
@@ -269,6 +272,22 @@ async function main() {
         });
       } catch (err) {
         clearInterval(assignmentHeartbeat);
+        const isPoolExhausted = err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError";
+        const failureKind = isPoolExhausted ? "pool_exhausted" : "worker_crashed";
+        jobLog.error(`job failed (${failureKind}): ${err.message}`);
+        if (isPoolExhausted) {
+          try {
+            const { appendEvent } = await import("../../server/services/event-store.js");
+            await appendEvent(cpbRoot, assignment.projectId, jobId, {
+              type: "pool_exhausted",
+              reason: err.message,
+              providerKey: err.providerKey,
+              agent: err.agent,
+              elapsedMs: err.elapsedMs,
+              timestamp: new Date().toISOString(),
+            });
+          } catch {}
+        }
         await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
@@ -276,7 +295,7 @@ async function main() {
           status: "failed",
           jobResult: {
             status: "failed",
-            failure: { kind: "worker_crashed", reason: err.message, retryable: true },
+            failure: { kind: failureKind, reason: err.message, retryable: true },
           },
           writtenAt: new Date().toISOString(),
         });
@@ -330,7 +349,7 @@ async function main() {
 
   watcher.on("add", async () => {
     try { await processInboxGuarded(); } catch (err) {
-      process.stderr.write(`[worker-${workerId}] process error: ${err.message}\n`);
+      log.error(`process error: ${err.message}`);
     }
   });
 

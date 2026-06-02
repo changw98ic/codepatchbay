@@ -6,6 +6,7 @@ import { WorkerSupervisor } from "./worker-supervisor.js";
 import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
+import { createLogger } from "../services/logger.js";
 
 const TICK_MS = 2_000;
 const JANITOR_MS = 30_000;
@@ -18,6 +19,7 @@ export class HubOrchestrator {
     this.cpbRoot = cpbRoot;
     this.running = false;
     this._stopped = null;
+    this.log = createLogger("orchestrator");
 
     this.leaderLock = new LeaderLock(hubRoot);
     this.assignmentStore = new AssignmentStore(hubRoot);
@@ -56,7 +58,7 @@ export class HubOrchestrator {
     // Acquire leader lock
     const leader = await this.leaderLock.acquire();
     this.leaderLock.startRenewal(() => {
-      process.stderr.write("[orchestrator] leader lock renewal failed; stopping hub\n");
+      this.log.warn("leader lock renewal failed; stopping hub");
       this.stop().catch(() => {});
     });
 
@@ -66,6 +68,7 @@ export class HubOrchestrator {
 
     // Full reconciliation on startup
     await this.reconciler.recoverRuntime();
+    await this.reconcileQueueVsAssignments();
 
     // Start main tick loop (NOT unref'd — this keeps the process alive)
     this._scheduleTick();
@@ -110,6 +113,7 @@ export class HubOrchestrator {
       if (!this.running) return;
       try {
         await this.workerSupervisor.checkHealth();
+        await this.reconcileQueueVsAssignments();
       } catch (err) {
         this._recordError(err);
       }
@@ -120,7 +124,7 @@ export class HubOrchestrator {
   async tick() {
     // Fencing: stop hub if leader lock is lost
     if (!(await this.leaderLock.stillHeld())) {
-      process.stderr.write("[orchestrator] leader lock lost; stopping hub\n");
+      this.log.warn("leader lock lost; stopping hub");
       await this.stop();
       return { stopped: true, reason: "leader lock lost" };
     }
@@ -131,11 +135,13 @@ export class HubOrchestrator {
     // Try to schedule new work
     const candidate = await this.scheduler.nextCandidate();
     if (!candidate) return { idle: true };
+    const sLog = this.log.child({ traceId: candidate.id });
+    sLog.info(`scheduling entry ${candidate.id} for project ${candidate.projectId}`);
 
     // Full dispatch chain: create assignment → ensure worker → create attempt → write inbox
     // Fence: ensure lock still held before scheduling
     if (!(await this.leaderLock.stillHeld())) {
-      process.stderr.write("[orchestrator] leader lock lost before schedule\n");
+      this.log.warn("leader lock lost before schedule");
       await this.stop();
       return { stopped: true, reason: "leader lock lost" };
     }
@@ -164,7 +170,7 @@ export class HubOrchestrator {
 
     // Fence: ensure lock still held before writing inbox
     if (!(await this.leaderLock.stillHeld())) {
-      process.stderr.write("[orchestrator] leader lock lost before write inbox\n");
+      this.log.warn("leader lock lost before write inbox");
       await this.stop();
       return { stopped: true, reason: "leader lock lost" };
     }
@@ -187,7 +193,7 @@ export class HubOrchestrator {
 
     // Fence: ensure lock still held before updating queue
     if (!(await this.leaderLock.stillHeld())) {
-      process.stderr.write("[orchestrator] leader lock lost before queue update\n");
+      this.log.warn("leader lock lost before queue update");
       await this.stop();
       return { stopped: true, reason: "leader lock lost" };
     }
@@ -206,11 +212,63 @@ export class HubOrchestrator {
       currentAssignmentId: assignment.assignmentId,
     });
 
+    sLog.info(`dispatched ${assignment.assignmentId} to worker ${worker.workerId}`);
     return { scheduled: true, assignmentId: assignment.assignmentId };
   }
 
   _recordError(err) {
-    process.stderr.write(`[orchestrator] error: ${err.message}\n`);
+    this.log.error(`tick error: ${err.message}`);
+  }
+
+  async reconcileQueueVsAssignments() {
+    const { listQueue, updateEntry } = await import("../services/hub-queue.js");
+    const entries = await listQueue(this.hubRoot, { status: "in_progress" });
+    const scheduled = await listQueue(this.hubRoot, { status: "scheduled" });
+    const allEntries = [...entries, ...scheduled];
+
+    for (const entry of allEntries) {
+      const assignmentId = `a-${entry.id}`;
+      const assignment = await this.assignmentStore.getAssignment(assignmentId);
+      const eLog = this.log.child({ traceId: entry.id });
+
+      if (!assignment) {
+        eLog.warn(`startup: ${entry.id} has no assignment, resetting to pending`);
+        await updateEntry(this.hubRoot, entry.id, { status: "pending", claimedBy: null, claimedAt: null });
+        continue;
+      }
+
+      if (assignment.status === "completed" || assignment.status === "failed") {
+        const finalStatus = assignment.status === "completed" ? "completed" : "failed";
+        eLog.warn(`startup: ${entry.id} assignment is ${assignment.status} but queue is ${entry.status}, aligning`);
+        await updateEntry(this.hubRoot, entry.id, {
+          status: finalStatus,
+          ...(finalStatus === "failed" ? { metadata: { failureReason: "assignment terminal on startup", failedAt: new Date().toISOString() } } : {}),
+        });
+        continue;
+      }
+
+      if (assignment.workerId) {
+        const worker = await this.workerStore.getWorker(assignment.workerId);
+        if (worker && worker.pid) {
+          try { process.kill(worker.pid, 0); } catch {
+            eLog.warn(`startup: ${entry.id} worker ${assignment.workerId} PID ${worker.pid} is dead, writing synthetic failure`);
+            const attemptNum = assignment.activeAttempt || 1;
+            await this.assignmentStore.writeSyntheticFailure(assignment.assignmentId, attemptNum, {
+              assignmentId: assignment.assignmentId,
+              attempt: attemptNum,
+              status: "failed",
+              jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: `worker PID ${worker.pid} dead on startup` } },
+              writtenAt: new Date().toISOString(),
+            });
+            await updateEntry(this.hubRoot, entry.id, {
+              status: "failed",
+              metadata: { failureReason: "worker dead on startup", failedAt: new Date().toISOString() },
+            });
+            await this.workerStore.updateWorker(assignment.workerId, { status: "exited" });
+          }
+        }
+      }
+    }
   }
 
   async status() {

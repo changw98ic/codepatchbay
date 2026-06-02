@@ -2,7 +2,7 @@ import { readHubConfig, readProjectJsonFromRoots } from "./agent-config.js";
 
 export const DEFAULT_MAX_ACTIVE_PER_PROJECT = Number(process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT || 2);
 export const DEFAULT_MAX_ACTIVE_TOTAL = Number(process.env.CPB_HUB_MAX_ACTIVE_TOTAL ?? 0);
-export const DEFAULT_ACP_POOL_TOTAL = Number(process.env.CPB_ACP_POOL_TOTAL || 4);
+export const DEFAULT_ACP_POOL_TOTAL = Number(process.env.CPB_ACP_POOL_TOTAL || 0);
 export const DEFAULT_ACP_PROVIDER_MAX = Number(process.env.CPB_ACP_POOL_PROVIDER_MAX || 3);
 
 export function positiveInt(value, fallback) {
@@ -83,7 +83,7 @@ export async function resolveHubConcurrencyLimits(hubRoot, fallback = {}) {
       concurrency.maxActiveTotal ?? fallback.maxActiveTotal,
       DEFAULT_MAX_ACTIVE_TOTAL,
     ),
-    acpPoolTotal: positiveInt(
+    acpPoolTotal: nonNegativeInt(
       acpPool.total ?? fallback.acpPoolTotal,
       DEFAULT_ACP_POOL_TOTAL,
     ),
@@ -100,7 +100,9 @@ export function hubConcurrencyEnv(limits = {}) {
   if (limits.maxActiveTotal !== undefined && limits.maxActiveTotal !== null) {
     env.CPB_HUB_MAX_ACTIVE_TOTAL = String(limits.maxActiveTotal);
   }
-  if (limits.acpPoolTotal) env.CPB_ACP_POOL_TOTAL = String(limits.acpPoolTotal);
+  if (limits.acpPoolTotal !== undefined && limits.acpPoolTotal !== null) {
+    env.CPB_ACP_POOL_TOTAL = String(limits.acpPoolTotal);
+  }
   if (limits.acpProviderMax) env.CPB_ACP_POOL_PROVIDER_MAX = String(limits.acpProviderMax);
   return env;
 }

@@ -17,6 +17,8 @@ export async function runPhase(ctx) {
   try {
     return await adapter(ctx);
   } catch (err) {
+    // Re-throw PoolExhaustedError so callers (managed-worker) can detect it
+    if (err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError") throw err;
     return phaseFailed({
       phase: ctx.phase,
       failure: failure({

@@ -697,6 +697,15 @@ export function materializeJob(events) {
         state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
+      case "pool_exhausted":
+        state.status = "failed";
+        state.leaseId = null;
+        state.blockedReason = event.reason ?? "ACP pool exhausted";
+        state.failureCode = "pool_exhausted";
+        state.failurePhase = event.phase ?? state.phase;
+        state.retryable = true;
+        terminal = true;
+        break;
       case "job_superseded":
         state.status = "superseded";
         state.blockedReason = event.reason ?? "superseded by repair lineage";

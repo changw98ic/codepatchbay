@@ -11,13 +11,18 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
     const { WorkerStore, summarizeWorkers } = await import("../../server/orchestrator/worker-store.js");
     const { queueStatus } = await import("../../server/services/hub-queue.js");
+    const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
+    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
     const workerStore = new WorkerStore(hubRoot);
-    const [status, liveness, orchestrator, queue, workers] = await Promise.all([
+    const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
+    const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
+    const [status, liveness, orchestrator, queue, workers, poolLeases] = await Promise.all([
       hubStatus(hubRoot),
       readHubLiveness(hubRoot),
       readLeaderStatus(hubRoot),
       queueStatus(hubRoot),
       workerStore.listWorkers(),
+      pool.connectionLeaseStatus().catch(() => ({ total: 0, providers: {} })),
     ]);
     const managedWorkers = summarizeWorkers(workers);
     if (json) {
@@ -31,6 +36,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
         orchestrator,
         queue,
         workers: managedWorkers,
+        poolLeases,
       }, null, 2));
     } else {
       const liveTag = liveness.alive ? "alive" : `down (${liveness.reason})`;
@@ -43,6 +49,19 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
       console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} failed:${queue.failed}`);
       console.log(`Workers: ${formatManagedWorkerSummary(managedWorkers)}`);
+      const defaultLimit = pool.providerConnectionLimit;
+      const knownKeys = await pool.getKnownProviderKeys();
+      const allProviders = new Set([
+        ...Object.keys(poolLeases.providers),
+        ...knownKeys,
+      ]);
+      const poolParts = [...allProviders].sort().map((k) => {
+        const active = poolLeases.providers[k] || 0;
+        const limit = pool.getProviderLimit(k);
+        return `${k}:${active}/${limit}`;
+      });
+      const noLease = poolParts.length === 0 ? ` 0/${defaultLimit}` : "";
+      console.log(`ACP Pool: ${poolParts.join(" ")}${noLease}`);
     }
   } else if (sub === "projects") {
     const projects = await listProjects(hubRoot);

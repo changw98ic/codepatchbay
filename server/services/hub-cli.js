@@ -1,5 +1,5 @@
-import { openSync } from "node:fs";
-import { mkdir, stat, readFile, writeFile, rm } from "node:fs/promises";
+import { openSync, readSync, closeSync, writeSync, fstatSync } from "node:fs";
+import { mkdir, stat, readFile, writeFile, rm, readdir } from "node:fs/promises";
 import path from "node:path";
 import { resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness, getHubRuntime } from "./hub-runtime.js";
@@ -25,6 +25,32 @@ export function buildHubServerEnv(parentEnv = process.env, { cpbRoot, executorRo
 
 export function buildHubInstallEnv(parentEnv = process.env) {
   return buildRuntimeEnv(parentEnv);
+}
+
+/**
+ * Rotate a log file if it exceeds maxSize by keeping only the last keepSize bytes.
+ * Truncates at the first newline boundary to avoid partial lines.
+ */
+function rotateLogIfNeeded(filePath, maxSize = 10 * 1024 * 1024, keepSize = 1024 * 1024) {
+  let fd;
+  try {
+    fd = openSync(filePath, "r");
+    const info = fstatSync(fd);
+    if (info.size <= maxSize) { closeSync(fd); return; }
+    const buf = Buffer.alloc(keepSize);
+    readSync(fd, buf, 0, keepSize, info.size - keepSize);
+    closeSync(fd);
+    fd = undefined;
+    // Find first newline to avoid partial lines
+    const nlIdx = buf.indexOf("\n");
+    const trimmed = nlIdx >= 0 ? buf.slice(nlIdx + 1) : buf;
+    const wfd = openSync(filePath, "w");
+    writeSync(wfd, trimmed);
+    closeSync(wfd);
+  } catch {
+    // File doesn't exist yet or can't be read — that's fine
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+  }
 }
 
 export async function cmdStart() {
@@ -85,6 +111,15 @@ export async function cmdStart() {
   await mkdir(hubRoot, { recursive: true });
 
   const { spawn } = await import("node:child_process");
+  rotateLogIfNeeded(path.join(hubRoot, "hub.log"));
+  // Rotate worker logs (keep last 5MB)
+  try {
+    const logsDir = path.join(hubRoot, "logs");
+    const logEntries = await readdir(logsDir);
+    for (const e of logEntries) {
+      if (e.endsWith(".log")) rotateLogIfNeeded(path.join(logsDir, e), 10 * 1024 * 1024, 5 * 1024 * 1024);
+    }
+  } catch {}
   const logFd = openSync(path.join(hubRoot, "hub.log"), "a");
   const child = spawn(process.execPath, [path.join(executorRoot, "server", "index.js")], {
     cwd: cpbRoot,
@@ -102,6 +137,7 @@ export async function cmdStart() {
       console.log(`Hub started on http://${host}:${port} (pid: ${check.pid})`);
       // Auto-start Hub Orchestrator
       try {
+        rotateLogIfNeeded(path.join(hubRoot, "orchestrator.log"));
         const orchLogFd = openSync(path.join(hubRoot, "orchestrator.log"), "a");
         const orchChild = spawn(process.execPath, [
           path.join(executorRoot, "cli", "cpb.mjs"), "hub-orch", "start",
@@ -128,6 +164,7 @@ export async function cmdStart() {
         if (await isDelegateAlive(hubRoot)) {
           console.log("Quota delegate already running, skipping start");
         } else {
+        rotateLogIfNeeded(path.join(hubRoot, "quota-delegate.log"));
         const delegateLogFd = openSync(path.join(hubRoot, "quota-delegate.log"), "a");
         const delegateChild = spawn(process.execPath, [
           path.join(executorRoot, "server", "services", "quota-delegate.js"),
@@ -159,7 +196,7 @@ export async function cmdStart() {
 }
 
 export async function cmdStop() {
-  const { hubRoot } = resolveRoots();
+  const { cpbRoot, hubRoot } = resolveRoots();
 
   const liveness = await readHubLiveness(hubRoot);
   if (!liveness.alive) {
@@ -235,6 +272,15 @@ export async function cmdStop() {
       console.log(`Queue entries released (${released})`);
     }
   } catch {}
+
+  // Flush jobs-index (rebuild from event logs to ensure consistency)
+  try {
+    const { rebuildJobsIndex } = await import("../services/jobs-index.js");
+    await rebuildJobsIndex(cpbRoot);
+    console.log("Jobs index flushed");
+  } catch (err) {
+    console.error(`Jobs index flush failed: ${err.message}`);
+  }
 
   // Stop orchestrator process by PID (direct SIGTERM, not just lock release)
   try {

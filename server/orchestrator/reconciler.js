@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { createLogger } from "../services/logger.js";
 
 const HEARTBEAT_STALE_MS = 60_000;
 const ASSIGN_ACCEPT_TTL_MS = 120_000;
@@ -11,6 +12,7 @@ export class Reconciler {
     this.workers = workerStore;
     this.leaderLock = leaderLock;
     this.failureRouter = failureRouter;
+    this.log = createLogger("reconciler");
   }
 
   /**
@@ -38,6 +40,7 @@ export class Reconciler {
 
       if (worker.pid) {
         try { process.kill(worker.pid, 0); } catch {
+          this.log.info(`worker ${worker.workerId} pid ${worker.pid} marked exited (dead PID)`);
           await this.workers.updateWorker(worker.workerId, { status: "exited" });
           continue;
         }
@@ -45,6 +48,7 @@ export class Reconciler {
 
       const lastHb = worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).getTime() : 0;
       if (now - lastHb > HEARTBEAT_STALE_MS * 2) {
+        this.log.warn(`worker ${worker.workerId} marked unhealthy (stale heartbeat)`);
         await this.workers.updateWorker(worker.workerId, { status: "unhealthy" });
       }
     }
@@ -55,12 +59,14 @@ export class Reconciler {
     const assignments = await this.assignments.listAssignments();
 
     for (const assignment of assignments) {
+      const aLog = this.log.child({ traceId: assignment.assignmentId });
       switch (assignment.status) {
         case "scheduled": {
           const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
           if (!attempt) break;
           const accepted = await this._readAccepted(assignment.assignmentId, attempt.attempt);
           if (accepted) {
+            aLog.info(`assignment ${assignment.assignmentId} accepted by worker, markRunning`);
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
             // Update queue to in_progress so scheduler doesn't reset it
             const { updateEntry } = await import("../services/hub-queue.js");
@@ -79,6 +85,7 @@ export class Reconciler {
           // Check accepted.json first
           const accepted = await this._readAccepted(assignment.assignmentId, attempt.attempt);
           if (accepted) {
+            aLog.info(`assignment ${assignment.assignmentId} accepted by worker, markRunning`);
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
             const { updateEntry } = await import("../services/hub-queue.js");
             await updateEntry(this.hubRoot, assignment.entryId, {
@@ -106,6 +113,7 @@ export class Reconciler {
 
           const assignedAt = attempt.createdAt ? new Date(attempt.createdAt).getTime() : 0;
           if (Date.now() - assignedAt > ASSIGN_ACCEPT_TTL_MS) {
+            aLog.warn(`assignment ${assignment.assignmentId} not accepted within TTL, writing synthetic failure`);
             // P0-4 fix: use writeSyntheticFailure for reconciler-created failures
             const result = {
               status: "failed",
@@ -125,6 +133,7 @@ export class Reconciler {
           // Check result.json → validate + finalize (P0-4: worker wrote, store validates)
           const result = await this._readAttemptResult(assignment.assignmentId, attempt.attempt);
           if (result) {
+            aLog.info(`assignment ${assignment.assignmentId} completed`);
             await this.assignments.completeAttemptFromExistingResult(assignment.assignmentId, attempt.attempt, result);
             await this._finalizeAssignment(assignment, attempt, result);
             break;
@@ -135,6 +144,7 @@ export class Reconciler {
           if (hb) {
             const lastHb = new Date(hb.updatedAt).getTime();
             if (Date.now() - lastHb > HEARTBEAT_STALE_MS * 2) {
+              aLog.warn(`assignment ${assignment.assignmentId} heartbeat stale for ${Math.round((Date.now() - lastHb) / 1000)}s`);
               const result = {
                 status: "failed",
                 jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: `heartbeat stale for ${Math.round((Date.now() - lastHb) / 1000)}s` } },
@@ -190,6 +200,7 @@ export class Reconciler {
     const { updateEntry } = await import("../services/hub-queue.js");
 
     if (result && result.status === "completed") {
+      this.log.info(`entry ${assignment.entryId} completed`);
       await updateEntry(this.hubRoot, assignment.entryId, {
         status: "completed",
         completedAt: new Date().toISOString(),
@@ -202,6 +213,7 @@ export class Reconciler {
         case "restart_worker_and_retry":
         case "retry_same_worker":
         case "wait_for_rate_limit": {
+          this.log.info(`entry ${assignment.entryId} retrying (${decision.action}: ${decision.reason})`);
           // Don't retry if the worker is dead (exited/unhealthy)
           const workerId = attempt?.workerId || assignment.workerId;
           if (workerId) {
@@ -227,6 +239,7 @@ export class Reconciler {
         }
 
         case "mark_blocked":
+          this.log.warn(`entry ${assignment.entryId} blocked: ${decision.reason}`);
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "blocked",
             reason: decision.reason,
@@ -234,6 +247,7 @@ export class Reconciler {
           break;
 
         case "reroute":
+          this.log.info(`entry ${assignment.entryId} reroute: ${decision.reason}`);
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
             claimedBy: null,
@@ -252,6 +266,7 @@ export class Reconciler {
           break;
 
         case "switch_agent":
+          this.log.info(`entry ${assignment.entryId} switch_agent: ${decision.reason}`);
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
             claimedBy: null,
@@ -285,6 +300,7 @@ export class Reconciler {
 
         case "mark_failed":
         default:
+          this.log.warn(`entry ${assignment.entryId} marked failed: ${decision.reason || "reconciler mark_failed"}`);
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "failed",
             metadata: {
@@ -326,6 +342,7 @@ export class Reconciler {
       const assignment = byEntry.get(entry.id);
       if (!assignment || assignment.status === "completed" || assignment.status === "failed") {
         const finalStatus = assignment?.status === "completed" ? "completed" : "failed";
+        this.log.warn(`orphaned scheduled entry ${entry.id} → ${finalStatus}`);
         await updateEntry(this.hubRoot, entry.id, {
           status: finalStatus,
           ...(finalStatus === "failed" ? { reason: "orphaned_queue_state" } : {}),

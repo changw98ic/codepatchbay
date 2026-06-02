@@ -20,6 +20,23 @@ import { validatePolicy } from "../../core/policy/team-policy.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
+async function retryUpdate(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await fn();
+      return;
+    } catch (err) {
+      if (i === maxRetries - 1) {
+        const ts = new Date().toISOString();
+        process.stderr.write(`${ts} [error] [job-store] index update failed after ${maxRetries} retries: ${err.message}\n`);
+        throw err;
+      } else {
+        await new Promise(r => setTimeout(r, 100 * (i + 1)));
+      }
+    }
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -38,7 +55,7 @@ async function requireNotTerminal(cpbRoot, project, jobId, { allowMissing = fals
 
 async function getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot } = {}) {
   const state = await getJob(cpbRoot, project, jobId, { dataRoot });
-  await updateJobsIndexEntry(cpbRoot, project, jobId, state, { dataRoot }).catch(() => {});
+  await retryUpdate(() => updateJobsIndexEntry(cpbRoot, project, jobId, state, { dataRoot }));
   return state;
 }
 

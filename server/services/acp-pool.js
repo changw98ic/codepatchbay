@@ -47,10 +47,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 0);
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
-const DEFAULT_TOTAL_CONNECTION_LIMIT = 4;
+const DEFAULT_TOTAL_CONNECTION_LIMIT = 0;
 const DEFAULT_PROVIDER_CONNECTION_LIMIT = 3;
 const CONNECTION_LOCK_TTL_MS = 30_000;
 const CONNECTION_POLL_MS = 50;
+const DEFAULT_POOL_WAIT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS || 300_000);
+const POOL_WAIT_WARN_INTERVAL_MS = 30_000;
 const POOL_LIMIT_CONTROL_ENV = new Set([
   "CPB_ACP_POOL_TOTAL",
   "CPB_ACP_POOL_PROVIDER_MAX",
@@ -101,6 +103,17 @@ export class AcpExecutionError extends Error {
     this.phase = phase;
     this.role = role;
     this.quota = quota; // ProviderQuotaError if this was a quota failure
+  }
+}
+
+export class PoolExhaustedError extends Error {
+  constructor(agent, providerKey, elapsedMs, message) {
+    super(message || `ACP pool exhausted: ${agent}/${providerKey} waited ${Math.round(elapsedMs / 1000)}s`);
+    this.name = "PoolExhaustedError";
+    this.code = "POOL_EXHAUSTED";
+    this.agent = agent;
+    this.providerKey = providerKey;
+    this.elapsedMs = elapsedMs;
   }
 }
 
@@ -219,6 +232,11 @@ function positiveIntOption(value, fallback) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
+function nonNegativeIntOption(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
 function providerEnvKey(providerKey) {
   return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
@@ -294,7 +312,7 @@ export class AcpPool {
       0,
       numericOption(opts.sessionIdleMs ?? this.env.CPB_ACP_POOL_IDLE_MS, 0),
     );
-    this.totalConnectionLimit = positiveIntOption(
+    this.totalConnectionLimit = nonNegativeIntOption(
       opts.totalConnectionLimit ?? this.env.CPB_ACP_POOL_TOTAL,
       DEFAULT_TOTAL_CONNECTION_LIMIT,
     );
@@ -404,9 +422,9 @@ export class AcpPool {
       if (providerProcessReuse) capabilities.push("provider-process-reuse");
       pools[agent] = {
         providerKey: this.providerKey(agent),
-        limit: this.limits[agent] || 1,
+        limit: this.#providerConnectionLimit(this.providerKey(agent)),
         active: this.active.get(agent) || 0,
-        queued: this.pending.get(agent)?.length || 0,
+        queued: this.pending.get(`provider:${this.providerKey(agent)}`)?.length || 0,
         activeRequests: allLive.filter((r) => r.requestId.startsWith(`${agent}-`)),
         requestCount: this.requestCount.get(agent) || 0,
         sessionRequestCount: session?.requestCount || 0,
@@ -462,33 +480,81 @@ export class AcpPool {
     return `${agent}-${Date.now()}-${++this._seq}`;
   }
 
-  acquire(agent) {
-    const limit = Math.max(1, this.limits[agent] || 1);
-    const active = this.active.get(agent) || 0;
+  acquire(agent, options = {}) {
+    const providerKey = this.providerKey(agent, options.variant);
+    const limit = this.#providerConnectionLimit(providerKey);
+    // Count all agents sharing the same provider key
+    const active = this.#providerActiveCount(providerKey);
     if (active < limit) {
       const requestId = this._nextId(agent);
-      this.active.set(agent, active + 1);
-      this.liveRequests.set(requestId, { agent, startedAt: Date.now() });
+      this.active.set(agent, (this.active.get(agent) || 0) + 1);
+      this.liveRequests.set(requestId, { agent, startedAt: Date.now(), providerKey });
       return Promise.resolve({ agent, requestId, release: () => this.release(agent, requestId) });
     }
+    const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const start = Date.now();
+    let warnTimer = null;
     return new Promise((resolve, reject) => {
-      const queue = this.pending.get(agent) || [];
-      queue.push({ resolve, reject });
-      this.pending.set(agent, queue);
+      // Queue under provider key (not agent name) so cross-agent waits are shared
+      const queueKey = `provider:${providerKey}`;
+      const queue = this.pending.get(queueKey) || [];
+      const entry = { resolve, reject, agent };
+      queue.push(entry);
+      this.pending.set(queueKey, queue);
+
+      // 30-second warn log
+      warnTimer = setInterval(() => {
+        const elapsed = Date.now() - start;
+        const currentActive = this.#providerActiveCount(providerKey);
+        process.stderr.write(
+          `[acp-pool] warn: ACP pool wait: ${agent}/${providerKey} waiting ${Math.round(elapsed / 1000)}s for provider slot (${currentActive}/${limit})\n`,
+        );
+      }, POOL_WAIT_WARN_INTERVAL_MS);
+      warnTimer.unref();
+
+      // Timeout
+      if (timeoutMs > 0) {
+        const timer = setTimeout(() => {
+          clearInterval(warnTimer);
+          const idx = queue.indexOf(entry);
+          if (idx !== -1) queue.splice(idx, 1);
+          const elapsed = Date.now() - start;
+          reject(new PoolExhaustedError(agent, providerKey, elapsed));
+        }, timeoutMs);
+        timer.unref();
+        entry._timer = timer;
+      }
     });
+  }
+
+  /**
+   * Count active sessions across all agents that share the same provider key.
+   * This is the in-process gate; the file-based lease in #run() handles cross-process.
+   */
+  #providerActiveCount(providerKey) {
+    let count = 0;
+    for (const [agent, active] of this.active.entries()) {
+      if (this.providerKey(agent) === providerKey) count += active;
+    }
+    return count;
   }
 
   release(agent, requestId) {
     const active = Math.max(0, (this.active.get(agent) || 1) - 1);
     this.active.set(agent, active);
     if (requestId) this.liveRequests.delete(requestId);
-    const queue = this.pending.get(agent) || [];
+    // Drain from provider-keyed queue (cross-agent sharing)
+    const providerKey = this.providerKey(agent);
+    const queueKey = `provider:${providerKey}`;
+    const queue = this.pending.get(queueKey) || [];
     const next = queue.shift();
     if (!next) return;
-    const nextId = this._nextId(agent);
-    this.active.set(agent, (this.active.get(agent) || 0) + 1);
-    this.liveRequests.set(nextId, { agent, startedAt: Date.now() });
-    next.resolve({ agent, requestId: nextId, release: () => this.release(agent, nextId) });
+    if (next._timer) clearTimeout(next._timer);
+    const nextAgent = next.agent || agent;
+    const nextId = this._nextId(nextAgent);
+    this.active.set(nextAgent, (this.active.get(nextAgent) || 0) + 1);
+    this.liveRequests.set(nextId, { agent: nextAgent, startedAt: Date.now() });
+    next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
   }
 
   providerKey(agent, variant = null) {
@@ -589,7 +655,7 @@ export class AcpPool {
       const leases = await this.#listLiveConnectionLeasesLocked();
       const providerLimit = this.#providerConnectionLimit(providerKey);
       const providerCount = leases.filter((lease) => lease.providerKey === providerKey).length;
-      if (leases.length >= this.totalConnectionLimit || providerCount >= providerLimit) {
+      if ((this.totalConnectionLimit > 0 && leases.length >= this.totalConnectionLimit) || providerCount >= providerLimit) {
         return null;
       }
 
@@ -609,17 +675,93 @@ export class AcpPool {
   }
 
   async #acquireConnectionLease(agent, providerKey, options = {}) {
+    const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const start = Date.now();
+    let lastWarnAt = start;
     while (!this.stopped) {
       const lease = await this.#tryAcquireConnectionLease(agent, providerKey, options);
       if (lease) return lease;
+      const elapsed = Date.now() - start;
+      if (timeoutMs > 0 && elapsed >= timeoutMs) {
+        throw new PoolExhaustedError(agent, providerKey, elapsed);
+      }
+      if (elapsed - (lastWarnAt - start) >= POOL_WAIT_WARN_INTERVAL_MS) {
+        const providerLimit = this.#providerConnectionLimit(providerKey);
+        const providerCount = await this.#countProviderLeases(providerKey);
+        process.stderr.write(
+          `[acp-pool] warn: ${agent}/${providerKey} waiting ${Math.round(elapsed / 1000)}s for provider slot (${providerCount}/${providerLimit})\n`,
+        );
+        lastWarnAt = Date.now();
+      }
       await sleep(this.connectionPollMs);
     }
     throw new Error("ACP pool stopped");
   }
 
+  async #countProviderLeases(providerKey) {
+    try {
+      const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
+      return leases.filter((l) => l.providerKey === providerKey).length;
+    } catch {
+      return -1;
+    }
+  }
+
   async #releaseConnectionLease(lease) {
     if (!lease?.filePath) return;
     await rm(lease.filePath, { force: true }).catch(() => null);
+  }
+
+  /**
+   * Return all known agent/provider keys from registry + config.
+   * Used by hub status to display providers with 0 active leases.
+   */
+  /**
+   * Return the effective connection limit for a provider key.
+   * Matches the internal #providerConnectionLimit() resolver.
+   */
+  getProviderLimit(providerKey) {
+    return this.#providerConnectionLimit(providerKey);
+  }
+
+  async getKnownProviderKeys() {
+    const keys = new Set(Object.keys(this.limits || {}));
+    for (const k of Object.keys(this.providerConnectionLimits || {})) keys.add(k);
+    try {
+      const registry = await getRegistry();
+      if (registry) {
+        for (const name of registry.listAgentNames()) keys.add(name);
+      }
+    } catch {}
+    // Ensure codex and claude are always present (sync fallback)
+    keys.add("codex");
+    keys.add("claude");
+    return [...keys];
+  }
+
+  async connectionLeaseStatus() {
+    const dir = this.#connectionLeasesDir();
+    const counts = {};
+    let files = [];
+    try {
+      files = await readdir(dir);
+    } catch {
+      return { total: 0, providers: {} };
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const lease = JSON.parse(await readFile(path.join(dir, file), "utf8"));
+        if (!this.#leaseAlive(lease)) {
+          await rm(path.join(dir, file), { force: true }).catch(() => null);
+          continue;
+        }
+        const key = lease.providerKey || "unknown";
+        counts[key] = (counts[key] || 0) + 1;
+      } catch {}
+    }
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    return { total, providers: counts };
   }
 
   /**
@@ -858,8 +1000,27 @@ export class AcpPool {
   #runPersistent(agent, prompt, cwd, timeoutMs, options = {}) {
     const key = poolClientKey(agent, options);
     const prior = this.persistentChains.get(key) || Promise.resolve();
-    const run = prior
-      .catch(() => null)
+    const providerKey = this.providerKey(agent, options.variant);
+    const waitTimeout = numericOption(this.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const warnInterval = POOL_WAIT_WARN_INTERVAL_MS;
+
+    // Wrap prior promise with timeout + warn so a stuck predecessor doesn't block forever
+    const timedPrior = new Promise((resolve, reject) => {
+      let elapsed = 0;
+      const warnTimer = setInterval(() => {
+        elapsed += warnInterval;
+        if (waitTimeout > 0 && elapsed >= waitTimeout) {
+          clearInterval(warnTimer);
+          reject(new PoolExhaustedError(agent, providerKey, elapsed, `persistent chain wait timeout: ${agent}/${providerKey} waited ${Math.round(elapsed / 1000)}s for prior call to complete`));
+        } else {
+          const ts = new Date().toISOString();
+          process.stderr.write(`${ts} [warn] [acp-pool] persistent chain wait: ${agent} waiting ${Math.round(elapsed / 1000)}s for prior call to complete\n`);
+        }
+      }, warnInterval);
+      prior.then(() => { clearInterval(warnTimer); resolve(); }, () => { clearInterval(warnTimer); resolve(); });
+    });
+
+    const run = timedPrior
       .then(() => this.#runPersistentNow(key, agent, prompt, cwd, timeoutMs, options));
     this.persistentChains.set(key, run.catch(() => null));
     return run;
