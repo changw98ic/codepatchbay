@@ -12,6 +12,7 @@ import ReviewPage from '@/pages/Review';
 import AgentBoard from '@/pages/AgentBoard';
 import NewTaskPage from '@/pages/NewTask';
 import LogsPage from '@/pages/Logs';
+import InboxPage from '@/pages/Inbox';
 
 function AppContent() {
   const { subscribe } = useWebSocketStore();
@@ -46,6 +47,7 @@ function AppContent() {
     <AppLayout>
       <Routes>
         <Route path="/" element={<Dashboard />} />
+        <Route path="/inbox" element={<InboxPage />} />
         <Route path="/project/:name" element={<Project />} />
         <Route path="/new-task" element={<NewTaskPage />} />
         <Route path="/review" element={<ReviewPage />} />

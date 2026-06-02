@@ -200,3 +200,101 @@ export interface OutputFile {
   modified: string;
   size: number;
 }
+
+// --- Inbox / Audit Workbench types ---
+
+export type InboxRequestType = 'pipeline' | 'queued' | 'review';
+export type InboxPriority = 'P0' | 'P1' | 'P2';
+export type InboxStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'passed' | 'pr-opened' | 'cancelled';
+
+export interface RequestSource {
+  type: string;
+  label: string;
+  issueNumber?: number | null;
+  repo?: string | null;
+  channel?: string | null;
+}
+
+export interface NextHumanAction {
+  kind: string;
+  label: string;
+}
+
+export interface InboxRequestRow {
+  id: string;
+  type: InboxRequestType;
+  project: string;
+  task: string;
+  status: InboxStatus | string;
+  rawStatus: string | null;
+  priority: InboxPriority;
+  phase: string | null;
+  currentPhase: string | null;
+  retryCount: number;
+  source: RequestSource;
+  nextHumanAction: NextHumanAction | null;
+  pr: { url?: string; number?: number } | null;
+  failureCode: string | null;
+  failurePhase: string | null;
+  cancelRequested: boolean;
+  redirectContext: unknown;
+  createdAt: string;
+  updatedAt: string;
+  lastActivityAt: string | null;
+  lastActivityMessage: string | null;
+}
+
+export interface InboxResponse {
+  items: InboxRequestRow[];
+  projects: string[];
+  statusCounts: Record<string, number>;
+  total: number;
+}
+
+export interface RetryChainEntry {
+  jobId: string;
+  status: string;
+  phase: string | null;
+  failureCode: string | null;
+  failurePhase: string | null;
+  retryCount: number;
+  attempt: number | null;
+  createdAt: string;
+  updatedAt: string;
+  isCurrent: boolean;
+}
+
+export interface InboxRequestDetail extends InboxRequestRow {
+  pipelineState?: PipelineState;
+  retryChain?: RetryChainEntry[];
+  workflow?: string;
+  research?: { codex?: string; claude?: string };
+  plan?: string;
+  reviewRounds?: Array<{
+    round: number;
+    codex?: string | null;
+    claude?: string | null;
+    issues: Array<{ severity: string; description: string; file?: string | null; line?: number | null }>;
+  }>;
+  budget?: {
+    maxRounds: number;
+    maxPromptBytes: number;
+    maxAcpCalls: number;
+    usedAcpCalls: number;
+    usedPromptBytes: number;
+  };
+  userVerdict?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface InboxProjectSummary {
+  name: string;
+  counts: {
+    total: number;
+    running: number;
+    failed: number;
+    blocked: number;
+    completed: number;
+    queued: number;
+  };
+}
