@@ -11,6 +11,7 @@
     "review": "Review",
     "agents": "Agents",
     "logs": "Logs",
+    "inbox": "Inbox",
     "search": "Search"
   },
   "dashboard": {
@@ -221,5 +222,41 @@
     "execute": "Execute",
     "verify": "Verify",
     "retry": "Retry"
+  },
+  "inbox": {
+    "title": "Inbox",
+    "subtitle": "Cross-project request audit workbench",
+    "allProjects": "All Projects",
+    "allStatuses": "All Statuses",
+    "allPriorities": "All Priorities",
+    "allTypes": "All Types",
+    "searchPlaceholder": "Search requests...",
+    "noRequests": "No requests found",
+    "noRequestsDesc": "Requests from pipelines, queue entries, and reviews will appear here.",
+    "requestCount": "{{count}} request(s)",
+    "detail": {
+      "back": "Back to list",
+      "pipeline": "Pipeline",
+      "queue": "Queue",
+      "review": "Review",
+      "retryChain": "Retry Chain",
+      "round": "Round {{n}}",
+      "noRetryChain": "No retry history",
+      "noActivity": "No recent activity",
+      "source": "Source",
+      "workflow": "Workflow",
+      "phase": "Phase",
+      "retryCount": "Retries",
+      "plan": "Plan",
+      "deliverable": "Deliverable",
+      "research": "Research",
+      "reviews": "Reviews",
+      "reviewBundle": "Review Bundle",
+      "changedFiles": "Changed Files",
+      "artifacts": "Artifacts",
+      "budget": "Budget",
+      "pr": "Pull Request",
+      "verdict": "Verdict"
+    }
   }
 }

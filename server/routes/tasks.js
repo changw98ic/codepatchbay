@@ -5,6 +5,7 @@ import { enqueue } from '../services/hub-queue.js';
 import { getProject } from '../services/hub-registry.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
+import { buildReviewBundle } from '../services/review-bundle.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 const SAFE_JOB_ID = /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -75,13 +76,7 @@ export async function taskRoutes(fastify, opts) {
     const resolvedRepo = repo || project.github?.fullName || null;
     const numericIssue = Number(issueNumber);
     const hasIssueLink = issueUrl || (resolvedRepo && Number.isInteger(numericIssue) && numericIssue > 0);
-    const shouldAutoFinalize = autoFinalize === undefined ? Boolean(hasIssueLink) : Boolean(autoFinalize);
-
-    if (shouldAutoFinalize && !hasIssueLink) {
-      throw fastify.httpErrors.badRequest(
-        'pipeline requires issueUrl or repo+issueNumber for PR finalization'
-      );
-    }
+    const shouldAutoFinalize = autoFinalize === undefined ? true : Boolean(autoFinalize);
 
     const entry = await enqueue(req.cpbHubRoot, {
       projectId: name,
@@ -143,5 +138,14 @@ export async function taskRoutes(fastify, opts) {
     const result = await retryJob(req.cpbRoot, name, jobId, { force, dataRoot });
     broadcast({ type: 'job:retried', project: name, jobId, recoveryJobId: result?.jobId });
     return result;
+  });
+
+  // Get review bundle for a job
+  fastify.get('/tasks/:name/jobs/:jobId/review-bundle', async (req) => {
+    const { name, jobId } = req.params;
+    if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
+    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const bundle = await buildReviewBundle(req.cpbRoot, name, jobId, { dataRoot });
+    return bundle;
   });
 }

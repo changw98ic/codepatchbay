@@ -10,9 +10,10 @@
 import { readFile, mkdir, writeFile, readdir, unlink, rename, rm } from "node:fs/promises";
 import { execFile as _execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import chokidar from "chokidar";
-import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.js";
+import { writeJsonOnce } from "../../server/services/fs-utils.js";
 import { createWorktree } from "../git/worktree.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import { resolveGithubTransport } from "../../server/services/github-api.js";
@@ -32,6 +33,106 @@ function parseArgs(argv) {
     else if (argv[i] === "--once") opts.once = true;
   }
   return opts;
+}
+
+export async function maybeFinalizeSuccessfulAssignment({
+  cpbRoot,
+  hubRoot,
+  assignment,
+  attemptNum,
+  jobId,
+  result,
+  worktreeInfo,
+  log = null,
+  resolveTransport = resolveGithubTransport,
+  finalizeQueueEntry = finalizeSuccessfulQueueEntry,
+} = {}) {
+  const metadata = assignment?.metadata || {};
+  const autoFinalize = Boolean(metadata.autoFinalize && assignment?.sourcePath);
+  if (!autoFinalize || result?.status !== "completed" || !worktreeInfo) return null;
+
+  try {
+    const transport = await resolveTransport(hubRoot);
+    const effectiveJobId = jobId || result?.jobId || `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
+    const entry = {
+      id: assignment.entryId,
+      projectId: assignment.projectId,
+      description: assignment.task,
+      metadata,
+    };
+    const job = {
+      status: "completed",
+      worktree: worktreeInfo.path,
+      jobId: effectiveJobId,
+      project: assignment.projectId,
+      sourceContext: assignment.sourceContext || {},
+      worktreeBranch: worktreeInfo.branch,
+      task: assignment.task,
+      planMode: assignment.planMode,
+    };
+
+    const finalizeResult = await finalizeQueueEntry({
+      cpbRoot,
+      hubRoot,
+      project: assignment.projectId,
+      entry,
+      job,
+      sourcePath: assignment.sourcePath,
+      mode: "pr",
+      issueCloser: transport?.closeIssue || null,
+      createPullRequest: transport?.createPullRequest || null,
+      pushToken: transport?.getToken ? await transport.getToken().catch(() => null) : null,
+      transportMode: transport?.mode || null,
+    });
+
+    if (finalizeResult.ok) {
+      log?.info?.(`finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}`);
+    } else {
+      log?.warn?.(`finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}`);
+    }
+
+    return finalizeResult;
+  } catch (err) {
+    log?.warn?.(`finalize failed: ${err.message}`);
+    return null;
+  }
+}
+
+export async function finalizeAndWriteSuccessfulResult({
+  cpbRoot,
+  hubRoot,
+  assignment,
+  attemptDir,
+  assignmentId,
+  attemptNum,
+  jobId,
+  result,
+  worktreeInfo,
+  log = null,
+  writeResult = writeJsonOnce,
+} = {}) {
+  const finalizeResult = await maybeFinalizeSuccessfulAssignment({
+    cpbRoot,
+    hubRoot,
+    assignment,
+    attemptNum,
+    jobId,
+    result,
+    worktreeInfo,
+    log,
+  });
+
+  await writeResult(path.join(attemptDir, "result.json"), {
+    assignmentId,
+    attempt: attemptNum,
+    attemptToken: assignment.attemptToken,
+    status: result.status,
+    jobResult: result,
+    finalizeResult: finalizeResult || null,
+    writtenAt: new Date().toISOString(),
+  });
+
+  return finalizeResult;
 }
 
 async function main() {
@@ -205,8 +306,7 @@ async function main() {
 
         clearInterval(assignmentHeartbeat);
 
-        // Finalize: create PR + close issue if autoFinalize and job succeeded
-        let finalizeResult = null;
+        // Finalize: create PR/review bundle if autoFinalize and job succeeded
         if (autoFinalize && result.status === "completed" && worktreeInfo) {
           // Commit any uncommitted changes in the worktree before finalizing
           try {
@@ -218,57 +318,19 @@ async function main() {
           } catch (commitErr) {
             jobLog.warn(`worktree commit failed: ${commitErr.message}`);
           }
-          try {
-            const transport = await resolveGithubTransport(hubRoot);
-            const entry = {
-              id: assignment.entryId,
-              projectId: assignment.projectId,
-              description: assignment.task,
-              metadata,
-            };
-            const job = {
-              status: "completed",
-              worktree: worktreeInfo.path,
-              jobId,
-              project: assignment.projectId,
-              sourceContext: assignment.sourceContext || {},
-              worktreeBranch: worktreeInfo.branch,
-              task: assignment.task,
-              planMode: assignment.planMode,
-            };
-
-            const finalizeResult = await finalizeSuccessfulQueueEntry({
-              cpbRoot,
-              hubRoot,
-              project: assignment.projectId,
-              entry,
-              job,
-              sourcePath: assignment.sourcePath,
-              mode: "pr",
-              issueCloser: transport?.closeIssue || null,
-              createPullRequest: transport?.createPullRequest || null,
-              pushToken: transport?.getToken ? await transport.getToken().catch(() => null) : null,
-              transportMode: transport?.mode || null,
-            });
-
-            if (finalizeResult.ok) {
-              jobLog.info(`finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}`);
-            } else {
-              jobLog.warn(`finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}`);
-            }
-          } catch (err) {
-            jobLog.warn(`finalize failed: ${err.message}`);
-          }
         }
 
-        await writeJsonOnce(path.join(attemptDir, "result.json"), {
+        await finalizeAndWriteSuccessfulResult({
+          cpbRoot,
+          hubRoot,
+          assignment,
+          attemptDir,
           assignmentId,
-          attempt: attemptNum,
-          attemptToken: assignment.attemptToken,
-          status: result.status,
-          jobResult: result,
-          finalizeResult: finalizeResult || null,
-          writtenAt: new Date().toISOString(),
+          attemptNum,
+          jobId,
+          result,
+          worktreeInfo,
+          log: jobLog,
         });
       } catch (err) {
         clearInterval(assignmentHeartbeat);
@@ -375,7 +437,9 @@ async function main() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main().catch((err) => {
-  process.stderr.write(`[managed-worker] fatal: ${err.message}\n`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`[managed-worker] fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}

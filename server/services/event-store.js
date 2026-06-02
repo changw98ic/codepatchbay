@@ -344,6 +344,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
   "merge_index_status",
   "finalizer_route_guard",
+  "review_bundle_created",
   "parallel_finalize_conflict",
   "pr_opened",
   "github_comment_posted", "github_comment_failed",

@@ -37,10 +37,16 @@ async function runTests(files, opts = {}) {
   });
 }
 
-const allFiles = await glob("tests/**/*.test.mjs", { cwd: repoRoot });
+const requestedFiles = process.argv.slice(2)
+  .filter((arg) => !arg.startsWith("-"))
+  .map((arg) => path.relative(repoRoot, path.resolve(repoRoot, arg)));
+
+const allFiles = requestedFiles.length > 0
+  ? requestedFiles
+  : await glob("tests/**/*.test.mjs", { cwd: repoRoot });
 
 if (allFiles.length === 0) {
-  console.error("No Node test files found under tests/*.test.mjs");
+  console.error("No Node test files found");
   process.exit(1);
 }
 

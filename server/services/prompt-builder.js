@@ -248,6 +248,24 @@ ${layerList}
 For each layer, report: what was run, pass/fail status, any issues found, and the subagent lane status. Aggregate results into the final verdict JSON envelope.`;
 }
 
+function executionIntensitySection(phase) {
+  const phaseLine = {
+    plan: "Plan only the smallest file-scoped path to satisfy this task; do not design unrelated product surface.",
+    execute: "Implement only the approved file-scoped path; do not re-plan the product or broaden scope unless a verifier-blocking issue proves it is required.",
+    verify: "Verify the task-specific acceptance criteria before broad regression; do not pass a task on generic test success alone.",
+    review: "Review the delivered change and evidence only; do not restart implementation.",
+    repair: "Repair the CPB/runtime fault only; do not redo the original product task.",
+  }[phase] || "Stay inside this phase boundary.";
+
+  return `\n## Execution Intensity Contract (MANDATORY)
+${phaseLine}
+- Start with indexed lookup: use codegraph/code index/project index if available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
+- First-pass source inspection budget: max 5 files or 3 symbol/index lookups before naming the concrete files you will touch or verify.
+- Prefer loaded role skills/profile guidance when relevant; record which index/skill path you used in the artifact.
+- Create 2-5 task-specific acceptance probes from the request before broad regression. A generic \`npm test\` pass is not enough when the request asks for a concrete artifact/API/UI behavior.
+- Stop after this phase's artifact is written. Do not continue into the next phase's responsibilities.`;
+}
+
 const HEADLESS_ESCALATION_CONTRACT = `## Headless Mode Escalation Contract
 You are running in a headless ACP session without UI automation tools (no Computer Use, Browser, Chrome, or desktop automation).
 If you encounter a situation where UI observation is genuinely necessary to proceed:
@@ -290,6 +308,8 @@ Your plan MUST address THIS EXACT task. Do NOT plan for any other work regardles
 ${constraints}
 
 ${headlessEscalationSection()}
+
+${executionIntensitySection("plan")}
 
 ${planModeGuidance}
 
@@ -379,6 +399,8 @@ ${constraints}
 
 ${headlessEscalationSection()}
 
+${executionIntensitySection("execute")}
+
 ${issueContextSection}
 
 ${fixSection}
@@ -456,6 +478,7 @@ ${contextPackLocator}
 - Handshake format: ${path.join(executorRoot, "wiki", "system", "handshake-protocol.md")}
 
 ${constraints}
+${executionIntensitySection("execute")}
 ${buildSubagentGuidance("execute", profile)}
 ## Routing Preflight
 Before modifying files, decide whether this route is strong enough for the task. If the job needs a stronger route, write this exact JSON shape to ${routingFeedbackFile}, then stop without creating a deliverable:
@@ -520,6 +543,8 @@ ${skillsSection}
 ${constraints}
 
 ${headlessEscalationSection()}
+
+${executionIntensitySection("verify")}
 
 ## Verification locators
 - Deliverable file: ${deliverableFile}
@@ -606,6 +631,8 @@ ${constraints}
 
 ${headlessEscalationSection()}
 
+${executionIntensitySection("verify")}
+
 ## Verification locators
 - Job ID: ${jobId}
 - Event log: ${path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`)}
@@ -684,6 +711,8 @@ ${constraints}
 ${buildSubagentGuidance("repair", profile)}
 
 ${headlessEscalationSection()}
+
+${executionIntensitySection("repair")}
 
 ## Locators
 - CPB executor root: ${executorRoot}

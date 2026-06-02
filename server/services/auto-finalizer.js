@@ -14,6 +14,7 @@ import { openDraftPullRequest } from "./github-pr.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { actualDiffRiskGuard } from "../../core/triage/rules.js";
 import { normalizeRoute, scopesContainCritical } from "../../core/triage/schema.js";
+import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "./review-bundle.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -414,6 +415,46 @@ export async function detectParallelConflict(
   };
 }
 
+async function finalizeAsReviewBundle({
+  cpbRoot, hubRoot, project, entry, job, sourcePath,
+  jobId, dataRoot,
+} = {}) {
+  try {
+    const bundle = await buildReviewBundle(cpbRoot, project, jobId, {
+      entry, job, sourcePath,
+      worktreePath: job?.worktree || null,
+      dataRoot,
+    });
+
+    const outputDir = hubRoot ? reviewBundleDir(hubRoot, project, jobId) : (cpbRoot || process.cwd());
+    const bundlePath = await writeReviewBundle(outputDir, bundle);
+
+    if (cpbRoot && project) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "review_bundle_created",
+        jobId,
+        project,
+        bundlePath,
+        changedFiles: bundle.evidence.changedFiles,
+        verdict: bundle.evidence.verdict?.verdict || null,
+        ts: new Date().toISOString(),
+      }, { dataRoot }).catch(() => {});
+    }
+
+    return {
+      ok: true,
+      status: "review_bundle",
+      mode: "review_bundle",
+      jobId,
+      bundlePath,
+      changedFiles: bundle.evidence.changedFiles,
+      verdict: bundle.evidence.verdict?.verdict || null,
+    };
+  } catch (err) {
+    return reject("REVIEW_BUNDLE_FAILED", { jobId, error: err.message });
+  }
+}
+
 export async function finalizeSuccessfulQueueEntry({
   cpbRoot,
   project,
@@ -439,7 +480,10 @@ export async function finalizeSuccessfulQueueEntry({
 
   const issue = resolveIssue(entry?.metadata);
   if (!issue) {
-    return reject("NO_ISSUE_LINK", { jobId });
+    return finalizeAsReviewBundle({
+      cpbRoot, hubRoot, project: projectId, entry, job, sourcePath,
+      jobId, dataRoot,
+    });
   }
 
   if (!job?.worktree || !(await pathExists(job.worktree))) {

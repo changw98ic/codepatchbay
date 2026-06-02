@@ -4,6 +4,7 @@ import { runAgent } from "../agents/agent-runner.js";
 import { parsePlannerJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { validatePlanMarkdown } from "../artifacts/validators.js";
+import { phaseExecutionContract } from "./prompt-contract.js";
 
 const JSON_INSTRUCTION = `
 
@@ -138,6 +139,8 @@ ${contextPack.files.map((f) => `- ${f}`).join("\n")}`;
 
   return `You are a software planning agent. Create a detailed implementation plan for the following task:
 ${repoSection}${filesSection}
+
+${phaseExecutionContract("plan")}
 
 ## Task
 ${task}

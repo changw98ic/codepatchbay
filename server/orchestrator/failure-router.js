@@ -44,6 +44,18 @@ export class FailureRouter {
       };
     }
 
+    if (
+      failure.retryable === false &&
+      failure.kind !== FailureKind.PERMISSION_DENIED &&
+      failure.kind !== FailureKind.HUMAN_APPROVAL_REQUIRED
+    ) {
+      return {
+        action: "mark_failed",
+        reason: `${failure.kind} is non-retryable: ${failure.reason}`,
+        retryable: false,
+      };
+    }
+
     // Over retry budget → mark failed
     if (attemptCount > maxRetries) {
       return {
