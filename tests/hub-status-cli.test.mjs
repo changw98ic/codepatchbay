@@ -51,6 +51,7 @@ describe("cpb hub status", () => {
         entries: [
           { id: "q-running", projectId: "alpha", status: "in_progress", metadata: {}, createdAt: new Date().toISOString() },
           { id: "q-pending", projectId: "beta", status: "pending", metadata: {}, createdAt: new Date().toISOString() },
+          { id: "q-blocked", projectId: "beta", status: "blocked", metadata: {}, createdAt: new Date().toISOString(), reason: "human approval required" },
         ],
       });
       for (const [workerId, status] of Object.entries({ ready: "ready", running: "running", unhealthy: "unhealthy", exited: "exited" })) {
@@ -73,7 +74,7 @@ describe("cpb hub status", () => {
       });
 
       assert.match(stdout, /Orchestrator: running .*epoch:7/);
-      assert.match(stdout, /Queue: 2 entries .*running:1.*failed:0/);
+      assert.match(stdout, /Queue: 3 entries .*running:1.*blocked:1.*failed:0/);
       assert.match(stdout, /Workers: ready:1 running:1 unhealthy:1 exited:1/);
       assert.doesNotMatch(stdout, /Workers: 0 online, 0 stale, 2 offline/);
 
@@ -87,6 +88,7 @@ describe("cpb hub status", () => {
         },
       });
       const parsed = JSON.parse(jsonResult.stdout);
+      assert.equal(parsed.queue.blocked, 1);
       assert.deepEqual(parsed.workers, { ready: 1, running: 1, unhealthy: 1, exited: 1 });
       assert.equal(Object.hasOwn(parsed, "legacyProjectWorkers"), false);
       assert.equal(Object.hasOwn(parsed, "workersOnline"), false);

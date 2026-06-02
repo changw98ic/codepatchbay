@@ -284,6 +284,7 @@ export class HubOrchestrator {
         scheduled: queue.scheduled,
         running: queue.inProgress,
         completed: queue.completed,
+        blocked: queue.blocked,
         failed: queue.failed,
       },
       workers: {

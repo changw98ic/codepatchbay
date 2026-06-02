@@ -266,6 +266,9 @@ export async function updateEntry(hubRoot, entryId, patch = {}) {
     if (patch.claimedBy !== undefined) entry.claimedBy = patch.claimedBy;
     if (patch.claimedAt !== undefined) entry.claimedAt = patch.claimedAt;
     if (patch.workerId !== undefined) entry.workerId = patch.workerId;
+    if (patch.reason !== undefined) entry.reason = patch.reason;
+    if (patch.completedAt !== undefined) entry.completedAt = patch.completedAt;
+    if (entry.status === "pending") clearClaim(entry);
     entry.updatedAt = nowIso();
 
     await saveQueue(hubRoot, queue);
@@ -323,6 +326,7 @@ export async function queueStatus(hubRoot) {
     inProgress: 0,
     completed: 0,
     failed: 0,
+    blocked: 0,
     cancelled: 0,
     needsIssueLink: 0,
     indexUnavailable: 0,
@@ -333,6 +337,7 @@ export async function queueStatus(hubRoot) {
     else if (e.status === "in_progress") counts.inProgress++;
     else if (e.status === "completed") counts.completed++;
     else if (e.status === "failed") counts.failed++;
+    else if (e.status === "blocked") counts.blocked++;
     else if (e.status === "cancelled") counts.cancelled++;
     else if (e.status === "needs_issue_link") counts.needsIssueLink++;
     else if (e.status === "index_unavailable") counts.indexUnavailable++;
@@ -372,6 +377,12 @@ function isActiveEntry(entry) {
   return entry.status === "in_progress" || entry.status === "scheduled";
 }
 
+function clearClaim(entry) {
+  entry.claimedBy = null;
+  entry.claimedAt = null;
+  entry.workerId = null;
+}
+
 function limitForProject(projectLimits, projectId, fallback) {
   if (projectLimits instanceof Map) {
     return positiveInt(projectLimits.get(projectId), fallback);
@@ -390,7 +401,7 @@ export function buildProjectQueueStatus(entries, {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
       byProject[e.projectId] = {
-        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, indexUnavailable: 0,
+        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         maxActivePerProject: limit,
         maxActiveTotal,
@@ -405,6 +416,7 @@ export function buildProjectQueueStatus(entries, {
     else if (e.status === "in_progress") ps.inProgress++;
     else if (e.status === "completed") ps.completed++;
     else if (e.status === "failed") ps.failed++;
+    else if (e.status === "blocked") ps.blocked++;
     else if (e.status === "cancelled") ps.cancelled++;
     else if (e.status === "index_unavailable") ps.indexUnavailable++;
     if (isActiveEntry(e) && isMutatingEntry(e)) {
@@ -450,9 +462,7 @@ function recoverStaleInProgress(entries, claimTimeoutMs) {
     const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
     if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
     e.status = "pending";
-    e.claimedBy = null;
-    e.claimedAt = null;
-    e.workerId = null;
+    clearClaim(e);
     e.updatedAt = nowIso();
     recovered.push(e.id);
   }
@@ -511,7 +521,7 @@ export async function claimEligible(hubRoot, opts = {}) {
     const activeMutatingByProject = {};
     let activeMutatingTotal = 0;
     for (const e of queue.entries) {
-      if (e.status === "in_progress" && isMutatingEntry(e)) {
+      if (isActiveEntry(e) && isMutatingEntry(e)) {
         activeMutatingByProject[e.projectId] = (activeMutatingByProject[e.projectId] || 0) + 1;
         activeMutatingTotal++;
       }

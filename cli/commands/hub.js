@@ -47,7 +47,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log(`Server: ${liveTag}`);
       console.log(`Orchestrator: ${orchestratorTag}`);
       console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
-      console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} failed:${queue.failed}`);
+      console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} blocked:${queue.blocked || 0} failed:${queue.failed}`);
       console.log(`Workers: ${formatManagedWorkerSummary(managedWorkers)}`);
       const defaultLimit = pool.providerConnectionLimit;
       const knownKeys = await pool.getKnownProviderKeys();
@@ -102,7 +102,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       if (json) console.log(JSON.stringify(qs, null, 2));
       else {
         console.log(`Queue: ${qs.total} entries`);
-        console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} failed:${qs.failed} cancelled:${qs.cancelled}`);
+        console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} blocked:${qs.blocked || 0} failed:${qs.failed} cancelled:${qs.cancelled}`);
         console.log(`  active-mutating:${qs.activeMutatingTotal || 0}/${qs.maxActiveTotal > 0 ? qs.maxActiveTotal : "unlimited"}`);
         if (qs.eligibleQueued > 0) {
           console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects?.join(",") || ""}`);
@@ -112,6 +112,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
             let line = `  ${pid}\tpending:${ps.pending} scheduled:${ps.scheduled || 0} active:${ps.inProgress}`;
             if (ps.maxActivePerProject) line += ` cap:${ps.activeMutating}/${ps.maxActivePerProject}`;
             if (ps.eligiblePending > 0) line += ` eligible:${ps.eligiblePending}`;
+            if (ps.blocked > 0) line += ` blocked:${ps.blocked}`;
             if (ps.failed > 0) line += ` failed:${ps.failed}`;
             if (ps.busy) {
               line += ` BUSY`;

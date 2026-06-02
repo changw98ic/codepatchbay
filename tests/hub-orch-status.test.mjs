@@ -55,12 +55,18 @@ describe("Hub orchestrator status", () => {
         projectId: "alpha",
         status: "failed",
       });
+      const blocked = await enqueue(hubRoot, { projectId: "beta", description: "blocked" });
+      await updateEntry(hubRoot, blocked.id, {
+        status: "blocked",
+        reason: "human approval required",
+      });
 
       const orchestrator = new HubOrchestrator(hubRoot, process.cwd());
       const status = await orchestrator.status();
 
       assert.equal(status.queue.running, 1);
       assert.equal(status.queue.failed, 0);
+      assert.equal(status.queue.blocked, 1);
     } finally {
       await rm(hubRoot, { recursive: true, force: true });
     }

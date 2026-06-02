@@ -1,10 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { buildProjectQueueStatus, claimEligible, enqueue, loadQueue } from "../server/services/hub-queue.js";
+import {
+  buildProjectQueueStatus,
+  claimEligible,
+  enqueue,
+  listQueue,
+  loadQueue,
+  queueStatus,
+  updateEntry,
+} from "../server/services/hub-queue.js";
 import { Scheduler } from "../server/orchestrator/scheduler.js";
 
 describe("Hub queue project concurrency", () => {
@@ -87,6 +95,111 @@ describe("Hub queue project concurrency", () => {
 
       const candidate = await scheduler.nextCandidate();
       assert.equal(candidate, null);
+    } finally {
+      await rm(hubRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats scheduled mutating entries as active when claiming", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-scheduled-active-"));
+
+    try {
+      await writeFile(
+        path.join(hubRoot, "config.json"),
+        `${JSON.stringify({ concurrency: { maxActivePerProject: 1 } }, null, 2)}\n`,
+        "utf8",
+      );
+      const scheduled = await enqueue(hubRoot, { projectId: "alpha", description: "alpha scheduled" });
+      await enqueue(hubRoot, { projectId: "alpha", description: "alpha pending" });
+
+      await updateEntry(hubRoot, scheduled.id, {
+        status: "scheduled",
+        claimedBy: "scheduler",
+        claimedAt: new Date().toISOString(),
+        workerId: "worker-alpha",
+      });
+
+      const claimed = await claimEligible(hubRoot, {
+        workerId: "worker-beta",
+        maxActivePerProject: 1,
+      });
+
+      assert.equal(claimed.entry, null);
+      assert.equal(claimed.reason, "all-projects-busy");
+      assert.deepEqual(claimed.skippedBusy, ["alpha"]);
+
+      const status = await queueStatus(hubRoot);
+      assert.equal(status.activeMutatingTotal, 1);
+      assert.equal(status.projects.alpha.activeMutating, 1);
+      assert.equal(status.projects.alpha.eligiblePending, 0);
+    } finally {
+      await rm(hubRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports blocked entries consistently in total and project queue status", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-blocked-status-"));
+
+    try {
+      const entry = await enqueue(hubRoot, { projectId: "alpha", description: "needs human input" });
+      await updateEntry(hubRoot, entry.id, {
+        status: "blocked",
+        reason: "human approval required",
+      });
+
+      const blocked = await listQueue(hubRoot, { status: "blocked" });
+      assert.equal(blocked.length, 1);
+      assert.equal(blocked[0].reason, "human approval required");
+
+      const status = await queueStatus(hubRoot);
+      assert.equal(status.blocked, 1);
+      assert.equal(status.projects.alpha.blocked, 1);
+    } finally {
+      await rm(hubRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("clears claim ownership whenever an entry returns to pending", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-pending-cleanup-"));
+
+    try {
+      const entry = await enqueue(hubRoot, { projectId: "alpha", description: "retry me" });
+      await updateEntry(hubRoot, entry.id, {
+        status: "in_progress",
+        claimedBy: "worker-alpha",
+        claimedAt: new Date().toISOString(),
+        workerId: "worker-alpha",
+      });
+
+      await updateEntry(hubRoot, entry.id, { status: "pending" });
+
+      const queue = await loadQueue(hubRoot);
+      const updated = queue.entries.find((e) => e.id === entry.id);
+      assert.equal(updated.status, "pending");
+      assert.equal(updated.claimedBy, null);
+      assert.equal(updated.claimedAt, null);
+      assert.equal(updated.workerId, null);
+    } finally {
+      await rm(hubRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("persists queue status fields supplied through updateEntry", async () => {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-update-fields-"));
+
+    try {
+      const entry = await enqueue(hubRoot, { projectId: "alpha", description: "complete me" });
+      const completedAt = new Date().toISOString();
+      await updateEntry(hubRoot, entry.id, {
+        status: "completed",
+        completedAt,
+        reason: "done by reconciler",
+      });
+
+      const queue = await loadQueue(hubRoot);
+      const updated = queue.entries.find((e) => e.id === entry.id);
+      assert.equal(updated.completedAt, completedAt);
+      assert.equal(updated.reason, "done by reconciler");
     } finally {
       await rm(hubRoot, { recursive: true, force: true });
     }
