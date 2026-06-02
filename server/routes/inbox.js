@@ -1,8 +1,12 @@
-import { listJobsAcrossRuntimeRoots, getJob } from "../services/job-store.js";
+import path from "node:path";
+
+import { listJobsAcrossRuntimeRoots } from "../services/job-store.js";
 import { jobToQueueRow, jobToPipelineState } from "../services/job-projection.js";
 import { listQueue } from "../services/hub-queue.js";
 import { listSessions, getSession } from "../services/review-session.js";
-import { listJobsFromIndex } from "../services/jobs-index.js";
+import { buildReviewBundle } from "../services/review-bundle.js";
+import { resolveProjectDataRoot } from "../services/runtime-context.js";
+import { runtimeDataRoot } from "../services/runtime-root.js";
 
 const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
 
@@ -115,22 +119,8 @@ export function inboxRoutes(fastify) {
       listSessions(cpbRoot).catch(() => []),
     ]);
 
-    let rows = [];
-
-    for (const job of jobs) {
-      rows.push(requestRowFromJob(job));
-    }
-
-    const jobIds = new Set(jobs.map((j) => j.jobId));
-    for (const entry of queueEntries) {
-      if (!entry.id || jobIds.has(entry.id)) continue;
-      rows.push(requestRowFromQueueEntry(entry));
-    }
-
-    for (const session of reviews) {
-      if (!session.sessionId) continue;
-      rows.push(requestRowFromReview(session));
-    }
+    const allRows = buildRequestRows(jobs, queueEntries, reviews);
+    let rows = [...allRows];
 
     if (status) {
       const statuses = new Set(status.split(","));
@@ -149,26 +139,18 @@ export function inboxRoutes(fastify) {
       rows = rows.filter((r) => types.has(r.type));
     }
 
-    const sortField = sort === "oldest" ? "createdAt" : "updatedAt";
-    rows.sort((a, b) => {
-      const pa = PRIORITY_ORDER[a.priority] ?? 9;
-      const pb = PRIORITY_ORDER[b.priority] ?? 9;
-      if (pa !== pb) return pa - pb;
-      const ta = a[sortField] ? new Date(a[sortField]).getTime() : 0;
-      const tb = b[sortField] ? new Date(b[sortField]).getTime() : 0;
-      return sort === "oldest" ? (ta - tb) : (tb - ta);
-    });
+    rows = sortRequestRows(rows, sort);
 
-    const maxLimit = Math.max(1, Math.min(200, parseInt(limit, 10) || 200));
-    rows = rows.slice(0, maxLimit);
-
-    const projects = [...new Set(rows.map((r) => r.project).filter(Boolean))];
+    const total = rows.length;
+    const projects = [...new Set(allRows.map((r) => r.project).filter(Boolean))].sort();
     const statusCounts = {};
     for (const r of rows) {
       statusCounts[r.status] = (statusCounts[r.status] || 0) + 1;
     }
+    const maxLimit = Math.max(1, Math.min(200, parseInt(limit, 10) || 200));
+    rows = rows.slice(0, maxLimit);
 
-    return { items: rows, projects, statusCounts, total: rows.length };
+    return { items: rows, projects, statusCounts, total };
   });
 
   fastify.get("/inbox/:requestId", async (req, reply) => {
@@ -183,6 +165,8 @@ export function inboxRoutes(fastify) {
       const row = jobToQueueRow(job);
       const pipelineState = jobToPipelineState(job);
       const retryChain = buildRetryChain(allJobs, job);
+      const reviewBundle = await buildInboxReviewBundle(cpbRoot, hubRoot, job);
+      const artifacts = artifactsFromReviewBundle(reviewBundle);
 
       return {
         id: job.jobId,
@@ -197,6 +181,11 @@ export function inboxRoutes(fastify) {
         pr: row.pr,
         pipelineState,
         retryChain,
+        reviewBundle,
+        plan: artifacts.plan?.content || null,
+        deliverable: artifacts.deliverable?.content || null,
+        verdict: artifacts.verdict?.parsed || null,
+        artifacts,
         workflow: job.workflow || "standard",
         retryCount: row.retryCount,
         failureCode: row.failureCode,
@@ -287,23 +276,133 @@ export function inboxRoutes(fastify) {
   });
 }
 
+function buildRequestRows(jobs, queueEntries, reviews) {
+  const rows = [];
+  for (const job of jobs) rows.push(requestRowFromJob(job));
+
+  const jobIds = new Set(jobs.map((j) => j.jobId));
+  for (const entry of queueEntries) {
+    if (!entry.id || jobIds.has(entry.id)) continue;
+    rows.push(requestRowFromQueueEntry(entry));
+  }
+
+  for (const session of reviews) {
+    if (!session.sessionId) continue;
+    rows.push(requestRowFromReview(session));
+  }
+  return rows;
+}
+
+function sortRequestRows(rows, sort) {
+  const sortField = sort === "oldest" ? "createdAt" : "updatedAt";
+  return [...rows].sort((a, b) => {
+    const pa = PRIORITY_ORDER[a.priority] ?? 9;
+    const pb = PRIORITY_ORDER[b.priority] ?? 9;
+    if (pa !== pb) return pa - pb;
+    const ta = a[sortField] ? new Date(a[sortField]).getTime() : 0;
+    const tb = b[sortField] ? new Date(b[sortField]).getTime() : 0;
+    return sort === "oldest" ? (ta - tb) : (tb - ta);
+  });
+}
+
+async function buildInboxReviewBundle(cpbRoot, hubRoot, job) {
+  try {
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, job.project, {
+      hubRoot,
+      dataRoot: job.dataRoot || null,
+    });
+    const wikiDir = job.wikiDir || runtimeWikiDirFor(cpbRoot, dataRoot);
+    const bundle = await buildReviewBundle(cpbRoot, job.project, job.jobId, {
+      dataRoot,
+      wikiDir,
+      worktreePath: job.worktree || null,
+    });
+    return {
+      schemaVersion: bundle.schemaVersion,
+      bundleType: bundle.bundleType,
+      generatedAt: bundle.generatedAt,
+      status: bundle.status,
+      links: bundle.links || { eventLog: null, artifacts: [] },
+      artifacts: bundle.links?.artifacts || [],
+      evidence: {
+        plan: bundle.evidence?.plan
+          ? { path: bundle.evidence.plan.path, content: bundle.evidence.plan.content }
+          : null,
+        deliverable: bundle.evidence?.deliverable
+          ? { path: bundle.evidence.deliverable.path, content: bundle.evidence.deliverable.content }
+          : null,
+        verdict: bundle.evidence?.verdict || null,
+        review: bundle.evidence?.review || null,
+        diffStat: bundle.evidence?.diffStat || null,
+        changedFiles: bundle.evidence?.changedFiles || [],
+      },
+      timeline: bundle.timeline || [],
+    };
+  } catch (err) {
+    return {
+      error: err.message || "review bundle unavailable",
+      links: { eventLog: null, artifacts: [] },
+      artifacts: [],
+      evidence: {
+        plan: null,
+        deliverable: null,
+        verdict: null,
+        review: null,
+        diffStat: null,
+        changedFiles: [],
+      },
+      timeline: [],
+    };
+  }
+}
+
+function runtimeWikiDirFor(cpbRoot, dataRoot) {
+  if (!dataRoot) return null;
+  const resolvedDataRoot = path.resolve(dataRoot);
+  if (resolvedDataRoot === path.resolve(runtimeDataRoot(cpbRoot))) return null;
+  return path.join(resolvedDataRoot, "wiki");
+}
+
+function artifactsFromReviewBundle(bundle) {
+  const artifactByKind = new Map((bundle?.artifacts || []).map((artifact) => [artifact.kind, artifact]));
+  return {
+    plan: bundle?.evidence?.plan
+      ? { ...artifactByKind.get("plan"), path: bundle.evidence.plan.path, content: bundle.evidence.plan.content }
+      : null,
+    deliverable: bundle?.evidence?.deliverable
+      ? { ...artifactByKind.get("deliverable"), path: bundle.evidence.deliverable.path, content: bundle.evidence.deliverable.content }
+      : null,
+    verdict: bundle?.evidence?.verdict
+      ? { ...artifactByKind.get("verdict"), parsed: bundle.evidence.verdict }
+      : null,
+    review: bundle?.evidence?.review
+      ? { ...artifactByKind.get("review"), content: bundle.evidence.review }
+      : null,
+  };
+}
+
 function buildRetryChain(allJobs, job) {
-  const chain = [job];
-  let current = job;
+  const byId = new Map(allJobs.map((j) => [j.jobId, j]));
+  let root = job;
 
-  // Walk backwards through parent lineage
-  while (current.lineage?.parentJobId) {
-    const parent = allJobs.find((j) => j.jobId === current.lineage.parentJobId);
+  while (root.lineage?.parentJobId) {
+    const parent = byId.get(root.lineage.parentJobId);
     if (!parent) break;
-    chain.unshift(parent);
-    current = parent;
+    root = parent;
   }
 
-  // Walk forwards: find children that point to this job
-  const children = allJobs.filter((j) => j.lineage?.parentJobId === job.jobId);
-  for (const child of children) {
-    chain.push(child);
+  const chain = [];
+  const seen = new Set();
+  function visit(current) {
+    if (!current?.jobId || seen.has(current.jobId)) return;
+    seen.add(current.jobId);
+    chain.push(current);
+    const children = allJobs
+      .filter((j) => j.lineage?.parentJobId === current.jobId)
+      .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+    for (const child of children) visit(child);
   }
+  visit(root);
 
   return chain.map((j) => ({
     jobId: j.jobId,

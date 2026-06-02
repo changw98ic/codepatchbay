@@ -6,6 +6,7 @@ import { runAgent } from "../agents/agent-runner.js";
 import { parseExecutorJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { validateDeliverable } from "../artifacts/validators.js";
+import { phaseExecutionContract } from "./prompt-contract.js";
 
 const execFile = promisify(execFileCb);
 
@@ -182,6 +183,8 @@ Error: ${correction.failureReason}
 ${correction.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${correction.previousOutput}\n\`\`\`` : ""}`
     : "";
   return `You are a software execution agent. Implement the following task:
+
+${phaseExecutionContract("execute")}
 
 Task: ${ctx.task}
 Project: ${ctx.project}

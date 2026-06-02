@@ -5,7 +5,8 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "../server/services/review-bundle.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { buildArtifactIndex } from "../server/services/artifact-index.js";
+import { appendEvent, readEventsReadOnly } from "../server/services/event-store.js";
 import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
 
 function mockExecFile(cmd, args, opts) {
@@ -65,6 +66,16 @@ describe("Review Bundle Service", () => {
   it("builds a review bundle from event log", async () => {
     const project = "test-project";
     const jobId = "job-test-001";
+    const inboxDir = path.join(cpbRoot, "wiki", "projects", project, "inbox");
+    const outputsDir = path.join(cpbRoot, "wiki", "projects", project, "outputs");
+    await mkdir(inboxDir, { recursive: true });
+    await mkdir(outputsDir, { recursive: true });
+    await writeFile(path.join(inboxDir, "plan-dark-mode.md"), "# Plan\n\nUse a persisted theme flag.\n");
+    await writeFile(path.join(outputsDir, "deliverable-dark-mode.md"), "# Deliverable\n\nChanged theme toggle code.\n");
+    await writeFile(
+      path.join(outputsDir, "verdict-dark-mode.md"),
+      JSON.stringify({ ok: true, status: "pass", confidence: 0.9, reason: "dark mode evidence is present" }),
+    );
 
     await appendEvent(cpbRoot, project, jobId, {
       type: "job_created",
@@ -79,7 +90,7 @@ describe("Review Bundle Service", () => {
       jobId,
       project,
       phase: "plan",
-      artifact: "plan-dark-mode.md",
+      artifact: "plan-dark-mode",
       agent: "codex",
       ts: new Date().toISOString(),
     });
@@ -89,7 +100,7 @@ describe("Review Bundle Service", () => {
       jobId,
       project,
       phase: "execute",
-      artifact: "deliverable-dark-mode.md",
+      artifact: "deliverable-dark-mode",
       agent: "claude",
       ts: new Date().toISOString(),
     });
@@ -99,7 +110,7 @@ describe("Review Bundle Service", () => {
       jobId,
       project,
       phase: "verify",
-      artifact: "verdict-dark-mode.md",
+      artifact: "verdict-dark-mode",
       agent: "codex",
       ts: new Date().toISOString(),
     });
@@ -110,6 +121,12 @@ describe("Review Bundle Service", () => {
       project,
       ts: new Date().toISOString(),
     });
+
+    const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId);
+    assert.deepEqual(artifactIndex.brokenReferences, []);
+    assert.equal(artifactIndex.entries.find((entry) => entry.kind === "plan")?.path, path.join(inboxDir, "plan-dark-mode.md"));
+    assert.equal(artifactIndex.entries.find((entry) => entry.kind === "deliverable")?.path, path.join(outputsDir, "deliverable-dark-mode.md"));
+    assert.equal(artifactIndex.entries.find((entry) => entry.kind === "verdict")?.path, path.join(outputsDir, "verdict-dark-mode.md"));
 
     const bundle = await buildReviewBundle(cpbRoot, project, jobId);
 
@@ -123,6 +140,31 @@ describe("Review Bundle Service", () => {
     assert.ok(bundle.timeline.length >= 5);
     assert.ok(bundle.generatedAt);
     assert.ok(Array.isArray(bundle.links.artifacts));
+    assert.match(bundle.evidence.plan.content, /persisted theme flag/);
+    assert.match(bundle.evidence.deliverable.content, /Changed theme toggle code/);
+    assert.equal(bundle.evidence.verdict.status, "pass");
+    assert.ok(bundle.links.artifacts.every((artifact) => artifact.broken === false));
+  });
+
+  it("resolves extensionless artifact references to existing markdown files", async () => {
+    const project = "artifact-index-project";
+    const jobId = "job-artifact-index-001";
+    const inboxDir = path.join(cpbRoot, "wiki", "projects", project, "inbox");
+    await mkdir(inboxDir, { recursive: true });
+    await writeFile(path.join(inboxDir, "plan-123.md"), "real plan\n");
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_completed",
+      jobId,
+      project,
+      phase: "plan",
+      artifact: "plan-123",
+      ts: new Date().toISOString(),
+    });
+
+    const index = await buildArtifactIndex(cpbRoot, project, jobId);
+    assert.equal(index.entries.length, 1);
+    assert.equal(index.entries[0].broken, false);
+    assert.equal(index.entries[0].path, path.join(inboxDir, "plan-123.md"));
   });
 
   it("writes review bundle to disk", async () => {
@@ -242,6 +284,13 @@ describe("Auto-finalizer review bundle fallback", () => {
     assert.equal(result.jobId, jobId);
     assert.ok(result.bundlePath);
     assert.ok(Array.isArray(result.changedFiles));
+
+    const events = await readEventsReadOnly(cpbRoot, project, jobId);
+    assert.ok(events.some((event) => (
+      event.type === "review_bundle_created"
+      && event.bundlePath === result.bundlePath
+      && event.jobId === jobId
+    )));
   });
 
   it("still requires issue link for PR mode when issue metadata is present", async () => {
@@ -297,5 +346,17 @@ describe("Auto-finalizer review bundle fallback", () => {
     // With an issue link, it should try PR path (will fail since no real git/PR setup)
     // but NOT produce a review bundle
     assert.notEqual(result.status, "review_bundle");
+  });
+});
+
+describe("Managed worker finalizer writeback contract", () => {
+  it("does not shadow finalizeResult before writing result.json", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "runtime", "worker", "managed-worker.js"),
+      "utf8",
+    );
+    assert.doesNotMatch(source, /const\s+finalizeResult\s*=\s*await\s+finalizeSuccessfulQueueEntry/);
+    assert.match(source, /await\s+finalizeAndWriteSuccessfulResult\(/);
+    assert.match(source, /finalizeResult:\s*finalizeResult\s*\|\|\s*null/);
   });
 });

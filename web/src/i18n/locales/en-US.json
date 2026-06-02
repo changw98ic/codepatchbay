@@ -248,8 +248,12 @@
       "phase": "Phase",
       "retryCount": "Retries",
       "plan": "Plan",
+      "deliverable": "Deliverable",
       "research": "Research",
       "reviews": "Reviews",
+      "reviewBundle": "Review Bundle",
+      "changedFiles": "Changed Files",
+      "artifacts": "Artifacts",
       "budget": "Budget",
       "pr": "Pull Request",
       "verdict": "Verdict"

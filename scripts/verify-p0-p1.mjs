@@ -16,6 +16,12 @@ const focusedTests = [
   "tests/permission-react.test.mjs",
   "tests/slack-comments.test.mjs",
   "tests/cli-entrypoints.test.mjs",
+  "tests/review-bundle.test.mjs",
+  "tests/managed-worker-finalizer.test.mjs",
+  "tests/inbox-routes.test.mjs",
+  "tests/verify-hard-gates.test.mjs",
+  "tests/failure-router.test.mjs",
+  "tests/prompt-builder-contract.test.mjs",
 ];
 
 function commandText(command, commandArgs) {

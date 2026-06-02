@@ -8,7 +8,7 @@ import sensible from "@fastify/sensible";
 
 import { inboxRoutes } from "../server/routes/inbox.js";
 import { registerProject } from "../server/services/hub-registry.js";
-import { createJob, failJob, completeJob, FAILURE_CODES } from "../server/services/job-store.js";
+import { createJob, failJob, completeJob, completePhase, retryJob, FAILURE_CODES } from "../server/services/job-store.js";
 
 async function buildApp({ cpbRoot, hubRoot } = {}) {
   const app = Fastify({ logger: false });
@@ -151,6 +151,52 @@ describe("inboxRoutes", () => {
     }
   });
 
+  it("GET /inbox keeps project options and counts independent from limit", async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), "cpb-inbox-"));
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const hubRoot = path.join(tmpRoot, "hub");
+    const sourcePathA = path.join(tmpRoot, "source-a");
+    const sourcePathB = path.join(tmpRoot, "source-b");
+    const runtimeRootA = path.join(tmpRoot, "runtime", "proj-a");
+    const runtimeRootB = path.join(tmpRoot, "runtime", "proj-b");
+    const app = await buildApp({ cpbRoot, hubRoot });
+
+    try {
+      await mkdir(sourcePathA, { recursive: true });
+      await mkdir(sourcePathB, { recursive: true });
+      await registerProject(hubRoot, { id: "proj-a", sourcePath: sourcePathA, projectRuntimeRoot: runtimeRootA });
+      await registerProject(hubRoot, { id: "proj-b", sourcePath: sourcePathB, projectRuntimeRoot: runtimeRootB });
+
+      await createJob(cpbRoot, {
+        project: "proj-a",
+        task: "Newest task",
+        workflow: "standard",
+        ts: "2026-06-02T00:02:00.000Z",
+        dataRoot: runtimeRootA,
+      });
+      await createJob(cpbRoot, {
+        project: "proj-b",
+        task: "Older task",
+        workflow: "standard",
+        ts: "2026-06-02T00:01:00.000Z",
+        dataRoot: runtimeRootB,
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/inbox?limit=1" });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.items.length, 1);
+      assert.equal(body.total, 2);
+      assert.ok(body.projects.includes("proj-a"));
+      assert.ok(body.projects.includes("proj-b"));
+      const counted = Object.values(body.statusCounts).reduce((sum, count) => sum + count, 0);
+      assert.equal(counted, 2);
+    } finally {
+      await app.close();
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("GET /inbox/:requestId returns job detail with retry chain", async () => {
     const tmpRoot = await mkdtemp(path.join(tmpdir(), "cpb-inbox-"));
     const cpbRoot = path.join(tmpRoot, "cpb");
@@ -179,6 +225,100 @@ describe("inboxRoutes", () => {
       assert.equal(body.task, "Detail test");
       assert.ok(body.pipelineState);
       assert.ok(Array.isArray(body.retryChain));
+    } finally {
+      await app.close();
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("GET /inbox/:requestId returns pipeline artifact drill-down content", async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), "cpb-inbox-"));
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const hubRoot = path.join(tmpRoot, "hub");
+    const sourcePath = path.join(tmpRoot, "source");
+    const runtimeRoot = path.join(tmpRoot, "runtime", "proj");
+    const wikiInbox = path.join(runtimeRoot, "wiki", "inbox");
+    const wikiOutputs = path.join(runtimeRoot, "wiki", "outputs");
+    const app = await buildApp({ cpbRoot, hubRoot });
+
+    try {
+      await mkdir(sourcePath, { recursive: true });
+      await mkdir(wikiInbox, { recursive: true });
+      await mkdir(wikiOutputs, { recursive: true });
+      await registerProject(hubRoot, { id: "proj", sourcePath, projectRuntimeRoot: runtimeRoot });
+
+      const job = await createJob(cpbRoot, {
+        project: "proj",
+        task: "Artifact detail test",
+        workflow: "standard",
+        dataRoot: runtimeRoot,
+      });
+      await writeFile(path.join(wikiInbox, "plan-001.md"), "# Plan\n\nBuild the thing.", "utf8");
+      await writeFile(path.join(wikiOutputs, "deliverable-001.md"), "# Deliverable\n\nChanged src/app.js.", "utf8");
+      await writeFile(path.join(wikiOutputs, "verdict-001.md"), JSON.stringify({ status: "pass", reason: "Looks good." }), "utf8");
+      await completePhase(cpbRoot, "proj", job.jobId, { phase: "plan", artifact: "plan-001", dataRoot: runtimeRoot });
+      await completePhase(cpbRoot, "proj", job.jobId, { phase: "execute", artifact: "deliverable-001", dataRoot: runtimeRoot });
+      await completePhase(cpbRoot, "proj", job.jobId, { phase: "verify", artifact: "verdict-001", dataRoot: runtimeRoot });
+      await completeJob(cpbRoot, "proj", job.jobId, { dataRoot: runtimeRoot });
+
+      const res = await app.inject({ method: "GET", url: `/api/inbox/${job.jobId}` });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.match(body.plan, /Build the thing/);
+      assert.match(body.deliverable, /Changed src\/app\.js/);
+      assert.equal(body.artifacts.plan.path, path.join(wikiInbox, "plan-001.md"));
+      assert.match(body.artifacts.plan.content, /Build the thing/);
+      assert.equal(body.artifacts.deliverable.path, path.join(wikiOutputs, "deliverable-001.md"));
+      assert.match(body.artifacts.deliverable.content, /Changed src\/app\.js/);
+      assert.equal(body.artifacts.verdict.path, path.join(wikiOutputs, "verdict-001.md"));
+      assert.equal(body.artifacts.verdict.parsed.status, "pass");
+      assert.ok(body.reviewBundle);
+      assert.equal(body.reviewBundle.bundleType, "local_review");
+      assert.ok(body.reviewBundle.links.artifacts.some((entry) => entry.kind === "plan"));
+    } finally {
+      await app.close();
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("GET /inbox/:requestId returns full multi-level retry lineage", async () => {
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), "cpb-inbox-"));
+    const cpbRoot = path.join(tmpRoot, "cpb");
+    const hubRoot = path.join(tmpRoot, "hub");
+    const sourcePath = path.join(tmpRoot, "source");
+    const runtimeRoot = path.join(tmpRoot, "runtime", "proj");
+    const app = await buildApp({ cpbRoot, hubRoot });
+
+    try {
+      await mkdir(sourcePath, { recursive: true });
+      await registerProject(hubRoot, { id: "proj", sourcePath, projectRuntimeRoot: runtimeRoot });
+
+      const first = await createJob(cpbRoot, {
+        project: "proj",
+        task: "Retry lineage test",
+        workflow: "standard",
+        dataRoot: runtimeRoot,
+      });
+      await failJob(cpbRoot, "proj", first.jobId, {
+        reason: "first failure",
+        code: FAILURE_CODES.RECOVERABLE,
+        phase: "execute",
+        dataRoot: runtimeRoot,
+      });
+      const second = await retryJob(cpbRoot, "proj", first.jobId, { dataRoot: runtimeRoot, ts: "2026-06-02T00:01:00.000Z" });
+      await failJob(cpbRoot, "proj", second.jobId, {
+        reason: "second failure",
+        code: FAILURE_CODES.RECOVERABLE,
+        phase: "verify",
+        dataRoot: runtimeRoot,
+      });
+      const third = await retryJob(cpbRoot, "proj", second.jobId, { dataRoot: runtimeRoot, ts: "2026-06-02T00:02:00.000Z" });
+
+      const res = await app.inject({ method: "GET", url: `/api/inbox/${first.jobId}` });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.deepEqual(body.retryChain.map((entry) => entry.jobId), [first.jobId, second.jobId, third.jobId]);
+      assert.deepEqual(body.retryChain.map((entry) => entry.isCurrent), [true, false, false]);
     } finally {
       await app.close();
       await rm(tmpRoot, { recursive: true, force: true });

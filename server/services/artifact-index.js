@@ -53,10 +53,28 @@ function artifactIdFor(artifact) {
   return withoutKnownExtension(basename(artifact));
 }
 
-function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
-  if (path.isAbsolute(artifact)) return artifact;
+function hasKnownExtension(fileName) {
+  return /\.(?:md|patch|diff|txt|json)$/i.test(fileName);
+}
+
+function candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir) {
+  if (path.isAbsolute(artifact)) {
+    return hasKnownExtension(artifact) ? [artifact] : [artifact, `${artifact}.md`];
+  }
   const dir = kind === "plan" ? inboxDir(cpbRoot, project, wikiDir) : outputsDir(cpbRoot, project, wikiDir);
-  return path.join(dir, artifact);
+  const direct = path.join(dir, artifact);
+  return hasKnownExtension(artifact) ? [direct] : [direct, `${direct}.md`];
+}
+
+async function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
+  const candidates = candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir);
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (info.isFile()) return candidate;
+    } catch {}
+  }
+  return candidates[0];
 }
 
 async function inspectArtifact(filePath) {
@@ -93,7 +111,7 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
 
   for (const event of artifactEvents(sourceEvents)) {
     const kind = inferKind(event, event.artifact);
-    const artifactPath = resolveArtifactPath(cpbRoot, project, kind, event.artifact, wikiDir);
+    const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, event.artifact, wikiDir);
     const key = `${kind}:${event.phase || ""}:${artifactPath}`;
     if (seen.has(key)) continue;
     seen.add(key);

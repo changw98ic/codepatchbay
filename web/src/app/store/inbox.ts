@@ -103,7 +103,11 @@ export const useInboxStore = create<InboxStore>((set, get) => ({
       const res = await fetch('/api/inbox/projects');
       if (!res.ok) return;
       const data = await res.json();
-      set({ projectSummaries: data.projects ?? [] });
+      const summaries: InboxProjectSummary[] = data.projects ?? [];
+      set({
+        projectSummaries: summaries,
+        projects: summaries.map((p) => p.name),
+      });
     } catch {
       // ignore
     }

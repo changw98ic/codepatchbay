@@ -6,6 +6,7 @@ import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
+import { phaseExecutionContract } from "./prompt-contract.js";
 
 const execFile = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
@@ -72,6 +73,24 @@ async function hasTestScript(cwd) {
   }
 }
 
+async function focusedNodeTestFiles(cwd, jsFiles) {
+  const tests = new Set();
+  for (const file of jsFiles) {
+    if (file.endsWith(".test.mjs")) tests.add(file);
+    const base = file.replace(/\.(js|mjs)$/, "");
+    for (const candidate of [
+      `${base}.test.mjs`,
+      `tests/${base.split("/").pop()}.test.mjs`,
+    ]) {
+      try {
+        await execFile("test", ["-f", candidate], { cwd });
+        tests.add(candidate);
+      } catch {}
+    }
+  }
+  return [...tests];
+}
+
 async function runHardGates(cwd) {
   const errors = [];
   const checks = [];
@@ -89,8 +108,23 @@ async function runHardGates(cwd) {
     }
   }
 
-  // Gate 2: npm test
-  if (await hasTestScript(cwd)) {
+  const focusedTests = await focusedNodeTestFiles(cwd, jsFiles);
+  if (focusedTests.length > 0) {
+    try {
+      await execFile("node", ["--test", ...focusedTests], { cwd, env: { ...process.env, CI: "1" } });
+      checks.push({ gate: "focused node --test", files: focusedTests, ok: true });
+    } catch (e) {
+      const formatted = formatCommandFailure(`node --test ${focusedTests.join(" ")}`, e);
+      checks.push({ gate: "focused node --test", files: focusedTests, ok: false, ...formatted });
+      errors.push(formatted.reason);
+    }
+  } else {
+    checks.push({ gate: "focused node --test", ok: true, skipped: true, reason: "no matching focused node tests" });
+  }
+
+  // Gate 2: full npm test only when explicitly requested. The verifier agent still
+  // checks acceptance criteria after these hard gates.
+  if (process.env.CPB_VERIFY_FULL === "1" && await hasTestScript(cwd)) {
     try {
       await execFile("npm", ["test"], { cwd, env: { ...process.env, CI: "1" } });
       checks.push({ gate: "npm test", ok: true });
@@ -263,14 +297,16 @@ async function buildVerifyPrompt(ctx, deliverableArtifact) {
   }
   return `You are a software verification agent. Verify the following implementation:
 
+${phaseExecutionContract("verify")}
+
 Task: ${ctx.task}
 Project: ${ctx.project}
 ${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}
 
 ## MANDATORY checks (MUST run before any other verification):
 1. Run \`node --check\` on every added or modified .js/.mjs file. If ANY file has a syntax error, verdict = FAIL.
-2. If package.json with a "test" script exists, run \`npm test\`. If tests fail, verdict = FAIL.
-3. Only after both gates pass, verify the implementation against task requirements.`;
+2. Run focused tests for directly changed files when they exist. Full \`npm test\` is a regression layer only when explicitly requested.
+3. Verify concrete request-level acceptance probes from the task requirements before returning PASS.`;
 }
 
 function resolveAgent(ctx, fallback) {

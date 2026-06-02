@@ -248,8 +248,12 @@
       "phase": "阶段",
       "retryCount": "重试次数",
       "plan": "规划",
+      "deliverable": "交付物",
       "research": "研究",
       "reviews": "审查",
+      "reviewBundle": "审阅包",
+      "changedFiles": "变更文件",
+      "artifacts": "产物",
       "budget": "预算",
       "pr": "Pull Request",
       "verdict": "裁决"

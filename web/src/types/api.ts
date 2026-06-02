@@ -264,12 +264,69 @@ export interface RetryChainEntry {
   isCurrent: boolean;
 }
 
+export interface InboxReviewBundle {
+  schemaVersion?: number;
+  bundleType?: string;
+  generatedAt?: string;
+  status?: {
+    jobStatus?: string;
+    completedPhases?: string[];
+    failureCode?: string | null;
+    failurePhase?: string | null;
+  };
+  links?: {
+    eventLog?: string | null;
+    artifacts: Array<{
+      kind?: string;
+      phase?: string | null;
+      path?: string;
+      broken?: boolean;
+      reason?: string | null;
+    }>;
+  };
+  artifacts: Array<{
+    id?: string;
+    kind?: string;
+    phase?: string | null;
+    path?: string;
+    broken?: boolean;
+    reason?: string | null;
+  }>;
+  evidence: {
+    plan: { path: string | null; content: string } | null;
+    deliverable: { path: string | null; content: string } | null;
+    verdict: unknown;
+    review: string | null;
+    diffStat: string | null;
+    changedFiles: string[];
+  };
+  timeline: Array<{
+    type?: string;
+    ts?: string | null;
+    phase?: string | null;
+    agent?: string | null;
+    status?: string | null;
+  }>;
+  error?: string;
+}
+
+export interface InboxArtifactDrilldown {
+  plan: ({ path?: string | null; content: string; broken?: boolean; reason?: string | null } | null);
+  deliverable: ({ path?: string | null; content: string; broken?: boolean; reason?: string | null } | null);
+  verdict: ({ path?: string | null; parsed: unknown; broken?: boolean; reason?: string | null } | null);
+  review: ({ path?: string | null; content: string; broken?: boolean; reason?: string | null } | null);
+}
+
 export interface InboxRequestDetail extends InboxRequestRow {
   pipelineState?: PipelineState;
   retryChain?: RetryChainEntry[];
+  reviewBundle?: InboxReviewBundle;
   workflow?: string;
   research?: { codex?: string; claude?: string };
-  plan?: string;
+  plan?: string | null;
+  deliverable?: string | null;
+  verdict?: unknown;
+  artifacts?: InboxArtifactDrilldown;
   reviewRounds?: Array<{
     round: number;
     codex?: string | null;

@@ -218,6 +218,12 @@ function timeAgo(dateStr: string | null): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
+function formatEvidence(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
+}
+
 const STATUS_OPTIONS = [
   { value: '', label: 'All Statuses' },
   { value: 'running', label: 'Running' },
@@ -401,6 +407,47 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {detail.reviewBundle && (
+        <div className={detailSection}>
+          <div className={detailLabel}>{t('inbox.detail.reviewBundle')}</div>
+          {detail.reviewBundle.error && (
+            <div className={detailValue} style={{ color: theme.error }}>{detail.reviewBundle.error}</div>
+          )}
+          {detail.reviewBundle.evidence?.plan?.content && (
+            <details style={{ marginBottom: space[2] }}>
+              <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.plan')}</summary>
+              <pre className={codeBlock}>{detail.reviewBundle.evidence.plan.content}</pre>
+            </details>
+          )}
+          {detail.reviewBundle.evidence?.deliverable?.content && (
+            <details style={{ marginBottom: space[2] }}>
+              <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.deliverable')}</summary>
+              <pre className={codeBlock}>{detail.reviewBundle.evidence.deliverable.content}</pre>
+            </details>
+          )}
+          {detail.reviewBundle.evidence?.verdict && (
+            <details style={{ marginBottom: space[2] }}>
+              <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.verdict')}</summary>
+              <pre className={codeBlock}>{formatEvidence(detail.reviewBundle.evidence.verdict)}</pre>
+            </details>
+          )}
+          {detail.reviewBundle.evidence?.changedFiles?.length > 0 && (
+            <details style={{ marginBottom: space[2] }}>
+              <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.changedFiles')}</summary>
+              <pre className={codeBlock}>{detail.reviewBundle.evidence.changedFiles.join('\n')}</pre>
+            </details>
+          )}
+          {detail.reviewBundle.artifacts?.length > 0 && (
+            <details>
+              <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.artifacts')}</summary>
+              <pre className={codeBlock}>
+                {detail.reviewBundle.artifacts.map((a) => `${a.kind || 'artifact'} ${a.broken ? 'broken' : 'ok'} ${a.path || ''}`).join('\n')}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
