@@ -1,5 +1,11 @@
 # CodePatchbay Task Runtime v2 Plan
 
+> **旧执行内核注释（2026-06-02）：** 本文描述或依赖的 `cpb supervisor`、
+> `bridges/supervisor-loop.mjs`、`bridges/job-runner.mjs`、`bridges/run-phase.mjs`、
+> `server/services/supervisor.js`、`server/services/phase-runner.js`、`server/services/role-bridge.js`
+> 已删除。本文仅作历史方案参考；当前执行入口是 `cpb hub-orch start`，
+> 执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
+
 > Replacement plan for CodePatchbay's 24h unattended fixed-role task runtime.
 > This plan intentionally keeps CodePatchbay runtime state out of `.omc/` and `.omx/`.
 

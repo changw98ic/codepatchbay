@@ -12,62 +12,37 @@ const WORKCPBS = {
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-    bridgeForPhase: {
-      plan: "run-phase.mjs",
-      execute: "run-phase.mjs",
-      verify: "run-phase.mjs",
-    },
   },
   direct: {
     name: "direct",
     phases: ["execute", "verify"],
     roleForPhase: { execute: "executor", verify: "verifier" },
     dispatchForPhase: { execute: "executor", verify: "verifier" },
-    bridgeForPhase: {
-      execute: "run-phase.mjs",
-      verify: "run-phase.mjs",
-    },
   },
   complex: {
     name: "complex",
     phases: ["plan", "execute", "review", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
-    bridgeForPhase: {
-      plan: "run-phase.mjs",
-      execute: "run-phase.mjs",
-      review: "run-phase.mjs",
-      verify: "run-phase.mjs",
-    },
   },
   "sdd-standard": {
     name: "sdd-standard",
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-    bridgeForPhase: {
-      plan: "run-phase.mjs",
-      execute: "run-phase.mjs",
-      verify: "run-phase.mjs",
-    },
   },
   blocked: {
     name: "blocked",
     phases: [],
     roleForPhase: {},
     dispatchForPhase: {},
-    bridgeForPhase: {},
   },
   accelerated: {
     name: "accelerated",
     stub: true,
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-    bridgeForPhase: {
-      plan: "run-phase.mjs",
-      execute: "run-phase.mjs",
-      verify: "run-phase.mjs",
-    },
+    dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     requireSubagents: { plan: true, execute: true, verify: true, repair: true },
     subagentConfig: { maxConcurrency: 3 },
     verificationLayers: ["fast", "changed", "regression", "acceptance"],
@@ -88,10 +63,6 @@ export function nextPhase(workflow, currentPhase) {
   const idx = phases.indexOf(currentPhase);
   if (idx === -1 || idx >= phases.length - 1) return null;
   return phases[idx + 1];
-}
-
-export function bridgeForPhase(workflow, phase) {
-  return workflow.bridgeForPhase[phase] ?? null;
 }
 
 export function dispatchForPhase(workflow, phase) {
@@ -260,7 +231,7 @@ export function registerDagWorkflow(name, { nodes, maxConcurrentNodes = 2 }) {
     name,
     phases: nodes.map((n) => n.phase),
     roleForPhase: Object.fromEntries(nodes.map((n) => [n.phase, n.role || "executor"])),
-    bridgeForPhase: Object.fromEntries(nodes.map((n) => [n.phase, "run-phase.mjs"])),
+    dispatchForPhase: Object.fromEntries(nodes.map((n) => [n.phase, n.role || "executor"])),
     nodes,
     maxConcurrentNodes,
   };

@@ -12,7 +12,7 @@ function _base(cpbRoot, opts) {
 
 const ownedLeaseTokens = new Map();
 // Lock TTL: timeout for mkdir-based atomic lock contention between competing processes.
-// This is NOT the phase lease TTL (see CPB_LEASE_TTL_MS in job-runner.mjs / run-pipeline.mjs).
+// This is not the worker lease heartbeat TTL.
 const DEFAULT_LOCK_TTL_MS = 30_000;
 
 function validateLeaseId(leaseId) {

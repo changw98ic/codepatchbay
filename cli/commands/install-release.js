@@ -61,7 +61,7 @@ async function main(args, context) {
     console.log(JSON.stringify(manifest, null, 2));
   } else {
     console.log(`Release installed: ${manifest.installedPath}`);
-    console.log(`Use: CPB_EXECUTOR_ROOT=${manifest.installedPath} CPB_ROOT=<project-cpb-root> cpb supervisor`);
+    console.log(`Use: CPB_EXECUTOR_ROOT=${manifest.installedPath} CPB_ROOT=<project-cpb-root> cpb hub-orch start`);
   }
   return 0;
 }

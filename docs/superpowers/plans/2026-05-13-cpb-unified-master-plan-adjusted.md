@@ -1,5 +1,11 @@
 # CodePatchbay 统合计划调整版
 
+> **旧执行内核注释（2026-06-02）：** 本文描述或依赖的 `cpb supervisor`、
+> `bridges/supervisor-loop.mjs`、`bridges/job-runner.mjs`、`bridges/run-phase.mjs`、
+> `server/services/supervisor.js`、`server/services/phase-runner.js`、`server/services/role-bridge.js`
+> 已删除。本文仅作历史方案参考；当前执行入口是 `cpb hub-orch start`，
+> 执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
+
 > 目的：在保留原统合计划战略方向的前提下，修正短期执行顺序、遗漏触点和验收口径。
 > 生成时间：2026-05-13
 > 适用对象：替代 `2026-05-13-cpb-unified-master-plan.md` 作为后续执行基线。
@@ -744,4 +750,3 @@ Suggested commit grouping:
 13. `Add event log compaction and retention`
 
 Each commit should follow the Lore Commit Protocol in `AGENTS.md`.
-

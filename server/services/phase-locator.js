@@ -203,7 +203,6 @@ export async function buildPhaseLocator(cpbRoot, project, jobId, phase) {
     locator.prevPhase = null;
     locator.prevArtifact = null;
     locator.prevArtifactPath = null;
-    locator.bridgeScript = null;
     return locator;
   }
 
@@ -216,7 +215,6 @@ export async function buildPhaseLocator(cpbRoot, project, jobId, phase) {
   locator.prevPhase = phaseIdx > 0 ? workflow.phases[phaseIdx - 1] : null;
   locator.prevArtifact = prevPhaseArtifact;
   locator.prevArtifactPath = resolveArtifactPath(cpbRoot, project, prevPhaseArtifact);
-  locator.bridgeScript = workflow.bridgeForPhase[phase] || null;
 
   return locator;
 }

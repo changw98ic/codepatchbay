@@ -1,5 +1,9 @@
 # Architecture Boundary Repair Implementation Plan
 
+> **旧执行内核注释（2026-06-02）：** 本文中的 `bridges/run-phase.mjs`
+> 引用属于已删除的旧执行内核。本文仅作历史方案参考；当前执行入口是
+> `cpb hub-orch start`，执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Repair the highest-risk architecture defects found in the read-only review: unsafe ACP imports, ACP pool cross-root reuse, fragmented runtime roots, and weak boundary tests.

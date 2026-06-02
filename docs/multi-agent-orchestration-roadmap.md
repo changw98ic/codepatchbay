@@ -1,5 +1,10 @@
 # CPB 多 Agent 编排增强 Roadmap
 
+> **旧执行内核注释（2026-06-02）：** 本文中将 `bridges/supervisor-loop.mjs`
+> 列为可用资产的部分已经过期；该旧 supervisor 执行链已删除。本文仅作历史路线参考；
+> 当前执行入口是 `cpb hub-orch start`，执行内核是 Hub queue worker 调用
+> `runJob` / `runJobWithServices`。
+
 > 基于 PilotDeck / AutoGen / LangGraph / CrewAI 等生态研究报告，结合 CPB v0.3.2 现状制定。
 > 原则：**默认不改现有路径，每步可单独合并回滚，feature flag 控制所有新能力。**
 

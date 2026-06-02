@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// Extracted from run-phase.mjs for testability (issue #62).
 // Records ui_lane_requested escalation events via the durable event log.
 
 import { detectUiEscalation } from "../core/acp/policy.js";

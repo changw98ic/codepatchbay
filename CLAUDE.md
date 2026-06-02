@@ -13,10 +13,9 @@ cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
 ├── bridges/               # ACP bridges + runtime
 │   ├── acp-client.mjs     # ACP stdio JSON-RPC client
 │   ├── acp-pool.mjs       # ACP session pool
-│   ├── run-phase.mjs      # Single-phase runner (plan/execute/verify)
 │   ├── run-pipeline.mjs   # Full pipeline orchestrator (plan→execute→verify+retry)
-│   ├── job-runner.mjs     # Durable job 单步执行器 (lease heartbeat)
-│   ├── supervisor-loop.mjs# 无人值守 supervisor
+│   ├── engine-bridge.js   # Queue/orchestrator job bridge
+│   ├── project-worker.mjs # Project-scoped worker entrypoint
 │   ├── dual-research.mjs  # Dual-agent research
 │   ├── multi-evolve.mjs   # Multi-phase evolution
 │   └── ...                # review, merge, provider-soak, etc.
@@ -31,7 +30,7 @@ cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
 │       ├── event-store.js # JSONL event log (append-only, materialize)
 │       ├── job-store.js   # Job lifecycle (create/phase/complete/fail/block)
 │       ├── lease-manager.js # 分布式 lease (atomic write + lock dir)
-│       └── supervisor.js  # Recovery: stale lease → resumable job
+│       └── hub-orchestrator.js # Queue/orchestrator worker lifecycle
 ├── web/                   # React 19 + Vite 前端
 │   └── src/
 │       ├── App.jsx        # Router + sidebar layout
@@ -49,7 +48,7 @@ cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
 | 层 | 技术 |
 |---|---|
 | CLI | Node.js (`cli/cpb.mjs` → `cli/commands/*.js`) |
-| Bridge | Node.js (mjs) — ACP client, phase runner, pipeline, job runner |
+| Bridge | Node.js — ACP client, pipeline, queue/orchestrator job bridge |
 | ACP 通信 | JSON-RPC over stdio |
 | 后端 | Fastify 5 + @fastify/websocket + chokidar |
 | 前端 | React 19 + React Router 7 + Vite 6 |
@@ -86,7 +85,7 @@ Wiki 写入权限隔离：Codex 写 `inbox/` 和 `outputs/verdict-*`，Claude �
 - Lease: `cpb-task/leases/{leaseId}.json` (TTL + heartbeat + atomic lock dir)
 - State: `cpb-task/state/pipeline-{project}.json`
 - Worktree: `cpb-task/worktrees/` (task-level git worktree)
-- Supervisor 通过 `recoverJobs()` 检测 stale lease → 恢复执行
+- Hub orchestrator/worker 通过 durable queue 与 lease 状态恢复执行
 
 ### Wiki 原子性
 - Handoff 文件必须包含 `## Handoff` 头和 `## Acceptance-Criteria` 尾

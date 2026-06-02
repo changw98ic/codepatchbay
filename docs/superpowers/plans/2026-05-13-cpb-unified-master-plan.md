@@ -5,6 +5,12 @@
 > 调整版修正了短期执行顺序、遗漏触点和验收口径。本文档中的 `config.yaml`、`simple: builder -> verifier`、
 > `job_cancelled`/`job_redirected` 等旧方向不再适用。仅保留作为历史参考。
 
+> **旧执行内核注释（2026-06-02）：** 本文描述或依赖的 `cpb supervisor`、
+> `bridges/supervisor-loop.mjs`、`bridges/job-runner.mjs`、`bridges/run-phase.mjs`、
+> `server/services/supervisor.js`、`server/services/phase-runner.js`、`server/services/role-bridge.js`
+> 已删除。本文仅作历史方案参考；当前执行入口是 `cpb hub-orch start`，
+> 执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
+
 > 合并 5 份独立计划为一份，消除矛盾，标注已完成项，明确剩余工作和长期路线。
 > 生成时间：2026-05-13
 

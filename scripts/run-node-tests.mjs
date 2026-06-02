@@ -6,7 +6,7 @@ import { glob } from "glob";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
 async function runTests(files, opts = {}) {
-  const { concurrency = undefined, label = "tests" } = opts;
+  const { concurrency = undefined, env: envOverrides = {}, label = "tests" } = opts;
   const args = ["--test", ...files];
   if (concurrency !== undefined) {
     args.unshift(`--test-concurrency=${concurrency}`);
@@ -17,6 +17,7 @@ async function runTests(files, opts = {}) {
     if (key.startsWith("CPB_")) delete env[key];
   }
   env.CPB_WORKER_DISPATCH_ENABLED = "0";
+  Object.assign(env, envOverrides);
 
   console.log(`Running ${label}: ${files.length} file(s)`);
   return new Promise((resolve, reject) => {
@@ -51,7 +52,11 @@ const parallelUnitFiles = otherFiles.filter((f) => !isolatedUnitFiles.includes(f
 try {
   // Browser E2E tests: run serially to avoid concurrent Chromium contention
   if (browserFiles.length > 0) {
-    await runTests(browserFiles, { concurrency: 1, label: "browser E2E tests" });
+    await runTests(browserFiles, {
+      concurrency: 1,
+      env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
+      label: "browser E2E tests",
+    });
   }
 
   // Other unit tests: run in parallel (default Node concurrency).
