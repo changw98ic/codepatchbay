@@ -1,9 +1,8 @@
 /**
  * runSinglePhase — run exactly one phase outside of a full pipeline.
  *
- * Used by `cpb plan`, `cpb execute`, `cpb verify`, `cpb repair`,
- * `cpb review` CLI commands.  Creates a job, runs the phase,
- * writes events, and returns an exit code.
+ * Used by repair/review flows and internal single-phase callers. Creates a job,
+ * runs the phase, writes events, and returns an exit code.
  *
  * All infrastructure services injected via opts.services — no server/ imports.
  */

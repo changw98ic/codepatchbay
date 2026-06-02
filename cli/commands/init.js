@@ -229,7 +229,7 @@ cpb:
   }
 
   console.log("");
-  console.log(`Next: cpb plan ${projectName} "<task>"`);
+  console.log(`Next: cpb run "<task>" --project ${projectName}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

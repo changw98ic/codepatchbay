@@ -79,12 +79,12 @@ cpb artifacts <job-id> --json
 cpb verdict <job-id> --json
 ```
 
-Use single-stage commands only when the user asks for that boundary:
+When the user asks for narrower follow-up, inspect or repair the durable job instead of routing through removed phase-specific entrypoints:
 
 ```bash
-cpb plan <project-id> "<task>"
-cpb execute <project-id> <plan-id>
-cpb verify <project-id> <deliverable-id>
+cpb status <project-id>
+cpb artifacts <job-id> --json
+cpb repair <project-id> <job-id>
 ```
 
 ## Operational Tasks

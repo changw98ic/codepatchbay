@@ -26,6 +26,27 @@ const runtimeGlobs = [
   "package.json",
 ];
 
+const currentGuidanceGlobs = [
+  "CLAUDE.md",
+  "README*.md",
+  "cli/**/*.{js,mjs}",
+  "docs/**/*.md",
+  "skills/**/*.md",
+];
+
+const historicalGuidanceMarkers = ["旧执行内核注释", "HISTORICAL:", "history-only"];
+
+const deletedPathPatterns = [
+  /bridges\/job-runner\.mjs/,
+  /bridges\/run-phase\.mjs/,
+  /bridges\/supervisor-loop\.mjs/,
+  /server\/services\/supervisor\.js/,
+  /server\/services\/phase-runner\.js/,
+  /server\/services\/role-bridge\.js/,
+];
+
+const removedPhaseCommandPattern = /\bcpb\s+(plan|execute|verify)\b/;
+
 async function exists(relativePath) {
   try {
     await access(path.join(repoRoot, relativePath));
@@ -70,6 +91,7 @@ describe("legacy execution kernel removal", () => {
       for (const marker of banned) {
         assert.equal(content.includes(marker), false, `${file} still references ${marker}`);
       }
+      assert.equal(removedPhaseCommandPattern.test(content), false, `${file} still references removed phase commands`);
     }
   });
 
@@ -84,6 +106,34 @@ describe("legacy execution kernel removal", () => {
     for (const name of listWorkflows()) {
       const workflow = getWorkflow(name);
       assert.equal(Object.hasOwn(workflow, "bridgeForPhase"), false, `${name} should not expose bridgeForPhase`);
+    }
+  });
+
+  it("does not route removed phase commands from the CLI command map", async () => {
+    const router = await readFile(path.join(repoRoot, "cli/cpb.mjs"), "utf8");
+    for (const command of ["plan", "execute", "verify", "supervisor"]) {
+      assert.equal(
+        new RegExp(`(?:^|[,\\s{])["']?${command}["']?\\s*:`, "m").test(router),
+        false,
+        `cli/cpb.mjs should not expose removed '${command}' command`,
+      );
+    }
+  });
+
+  it("does not publish current guidance for removed bridges or phase commands", async () => {
+    const files = await glob(currentGuidanceGlobs, {
+      cwd: repoRoot,
+      ignore: ["node_modules/**", "server/node_modules/**", "web/node_modules/**", "docs/superpowers/plans/**"],
+    });
+
+    for (const file of files) {
+      const content = await readFile(path.join(repoRoot, file), "utf8");
+      if (historicalGuidanceMarkers.some((marker) => content.includes(marker))) continue;
+
+      for (const pattern of deletedPathPatterns) {
+        assert.equal(pattern.test(content), false, `${file} still publishes removed runtime path ${pattern}`);
+      }
+      assert.equal(removedPhaseCommandPattern.test(content), false, `${file} still publishes removed phase commands`);
     }
   });
 });

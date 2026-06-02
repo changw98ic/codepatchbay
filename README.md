@@ -156,11 +156,9 @@ cpb status <project>               # 项目状态
 # 提交任务
 cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
 cpb pipeline <project> "<task>" [retries]  # 完整流程（显式项目）
-cpb plan <project> "<task>"        # 仅规划
-cpb execute <project> <plan-id>    # 仅执行
-cpb verify <project> <id>          # 仅验证
 cpb research <project> "<task>"    # 双 agent 研究
 cpb review <project> [id]          # 审查交付物
+cpb repair <project> <job-id>      # 修复失败任务
 
 # 多阶段与 SDD
 cpb evolve-multi [--once|--scan|--continuous]  # 多阶段进化

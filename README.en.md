@@ -156,11 +156,9 @@ cpb status <project>               # Project status
 # Submit tasks
 cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
-cpb plan <project> "<task>"        # Plan only
-cpb execute <project> <plan-id>    # Execute only
-cpb verify <project> <id>          # Verify only
 cpb research <project> "<task>"    # Dual-agent research
 cpb review <project> [id]          # Review deliverable
+cpb repair <project> <job-id>      # Repair a failed job
 
 # Multi-phase & SDD
 cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution

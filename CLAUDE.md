@@ -103,9 +103,7 @@ Pipeline 通过 grep 此行决定下一步。
 ```bash
 # CLI
 ./cpb init /path/to/project my-project
-./cpb plan my-project "Add dark mode"
-./cpb execute my-project 001
-./cpb verify my-project 001
+./cpb run "Add dark mode" --project my-project
 ./cpb pipeline my-project "Add unit tests" 3
 ./cpb research my-project "Investigate auth patterns"
 ./cpb evolve-multi --once --project my-project

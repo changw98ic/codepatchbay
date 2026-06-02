@@ -160,10 +160,11 @@ export async function run(args, { cpbRoot, executorRoot } = {}) {
   console.log("  Your project is set up. Here's how to use it:\n");
   console.log(`  ${CYAN}Run a full pipeline:${NC}`);
   console.log(`    cpb pipeline ${projectName} "Add a hello world endpoint" --agent ${selectedAgent || "claude"}\n`);
-  console.log(`  ${CYAN}Or step by step:${NC}`);
-  console.log(`    cpb plan ${projectName} "Add a hello world endpoint" --agent ${selectedAgent || "claude"}`);
-  console.log(`    cpb execute ${projectName} <plan-id> --agent ${selectedAgent || "claude"}`);
-  console.log(`    cpb verify ${projectName} <plan-id> --agent ${selectedAgent || "claude"}\n`);
+  console.log(`  ${CYAN}Or enqueue through the Hub worker:${NC}`);
+  console.log(`    cpb run "Add a hello world endpoint" --project ${projectName} --agent ${selectedAgent || "claude"}\n`);
+  console.log(`  ${CYAN}Inspect progress:${NC}`);
+  console.log(`    cpb status ${projectName}`);
+  console.log(`    cpb jobs report\n`);
   console.log(`  ${CYAN}Configure agent instructions:${NC}`);
   console.log(`    cpb config ${projectName} --instructions "Focus on performance and memory safety"\n`);
   console.log(`  ${CYAN}Add a new model provider:${NC}`);
