@@ -332,6 +332,11 @@ export async function failJob(
     ts,
   }, { dataRoot });
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
+  // Extract experience from failed job (fire-and-forget)
+  const { extractExperienceForJob } = await import("./experience-extractor.js");
+  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -479,6 +484,11 @@ export async function budgetExceeded(
     reason,
     ts,
   }, { dataRoot });
+
+  // Extract experience from budget-exceeded job (fire-and-forget)
+  const { extractExperienceForJob } = await import("./experience-extractor.js");
+  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -509,6 +519,11 @@ export async function completeJob(
   }
 
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
+  // Extract experience from completed job (fire-and-forget)
+  const { extractExperienceForJob } = await import("./experience-extractor.js");
+  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -595,6 +610,11 @@ export async function cancelJob(
     reason,
     ts,
   }, { dataRoot });
+
+  // Extract experience from cancelled job (fire-and-forget)
+  const { extractExperienceForJob } = await import("./experience-extractor.js");
+  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 

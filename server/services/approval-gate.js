@@ -55,5 +55,11 @@ export async function timeoutApprovalGate(
     reason,
     ts,
   }, { dataRoot });
-  return getJob(cpbRoot, project, jobId, { dataRoot });
+
+  // Extract experience from timed-out approval (fire-and-forget)
+  const { extractExperienceFromTerminalState } = await import("./experience-extractor.js");
+  const state = await getJob(cpbRoot, project, jobId, { dataRoot });
+  extractExperienceFromTerminalState(cpbRoot, project, jobId, state, "approval_timed_out").catch(() => {});
+
+  return state;
 }
