@@ -107,11 +107,8 @@ async function buildPlanPrompt(ctx) {
   }
 
   const { task, project } = ctx;
-  const agent = resolveAgent(ctx, "codex").agent;
-  const isBrowserAgent = agent === "browser-agent";
-
   let repoSection = "";
-  if (isBrowserAgent && ctx.sourcePath) {
+  if (ctx.sourcePath) {
     try {
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");

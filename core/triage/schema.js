@@ -18,7 +18,7 @@ const PLAN_MODE_RANK = {
 
 const WORKFLOW_DEFAULT_PLAN_MODE = {
   direct: "none",
-  standard: "light",
+  standard: "full",
   "sdd-standard": "parent",
   complex: "full",
   blocked: "none",
@@ -28,7 +28,7 @@ const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const SAFE_DEFAULT_ROUTE = Object.freeze({
   category: "unknown",
   workflow: "standard",
-  planMode: "light",
+  planMode: "full",
   reviewer: false,
   reason: "safe default route",
   source: "policy",

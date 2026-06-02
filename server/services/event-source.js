@@ -667,7 +667,7 @@ function channelQueuePayload(command, context = {}, route = null) {
   return {
     task: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
     workflow: explicitCustomWorkflow ? command.workflow : (effective.workflow || command.workflow || "standard"),
-    planMode: effective.planMode || command.planMode || "light",
+    planMode: effective.planMode || command.planMode || "full",
     command: command.command || command.type || null,
     issueNumber: command.issue || null,
     requestedWorkflow: command.workflow || null,
@@ -714,7 +714,7 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
       issueUrl,
       repo,
       workflow: payload.workflow || "standard",
-      planMode: payload.planMode || "light",
+      planMode: payload.planMode || "full",
       contextPackPath: contextPack?.path || null,
       contextPack,
       contextPackError: contextPackResult?.error || null,

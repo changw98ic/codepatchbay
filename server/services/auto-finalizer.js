@@ -196,7 +196,7 @@ function routingEffectiveRoute(entry = {}, job = {}) {
   return normalizeRoute(
     routing.effectiveRoute || routing.effective || {
       workflow: metadata.workflow || job.workflow || "standard",
-      planMode: metadata.planMode || job.planMode || "light",
+      planMode: metadata.planMode || job.planMode || "full",
       reviewer: Boolean(routing.effectiveRoute?.reviewer || routing.effective?.reviewer),
       source: "queue_metadata",
       reason: "queue routing metadata",

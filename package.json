@@ -1,6 +1,6 @@
 {
   "name": "codepatchbay",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "bin": {
     "cpb": "cpb",
