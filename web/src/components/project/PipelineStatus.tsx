@@ -2,6 +2,7 @@ import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize } from '@/design-system/tokens';
 import { useTranslation } from 'react-i18next';
+import type { PipelineState } from '@/types/api';
 
 const pipelineStyle = style({
   display: 'flex',
@@ -45,24 +46,6 @@ const retryStyle = style({
 });
 
 const KNOWN_PHASES = ['plan', 'execute', 'verify'];
-
-interface PipelineNode {
-  id: string;
-  phase?: string;
-  status?: string;
-  durationMs?: number;
-  attempt?: number;
-  error?: string;
-  reason?: string;
-}
-
-interface PipelineState {
-  status?: string;
-  phase?: string;
-  phases?: string[];
-  nodes?: PipelineNode[];
-  retryCount?: number;
-}
 
 function getPhases(state: PipelineState): string[] {
   if (state.phases && state.phases.length > 0) return state.phases;

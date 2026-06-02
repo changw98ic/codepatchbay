@@ -126,4 +126,38 @@ describe('Project Page', () => {
       expect(globalThis.fetch).toHaveBeenCalledWith('/api/hub/projects/test-project/index/refresh', { method: 'POST' });
     });
   });
+
+  it('runs project task actions through the backend pipeline route contract', async () => {
+    renderProject();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 2, name: 'test-project' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /project\.runPipeline/ }));
+    fireEvent.click(screen.getByRole('button', { name: /project\.planOnly/ }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/tasks/test-project/pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: 'Full pipeline run for test-project',
+          workflow: 'standard',
+          planMode: 'full',
+          autoFinalize: false,
+        }),
+      });
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tasks/test-project/pipeline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: 'Plan for test-project',
+        workflow: 'standard',
+        planMode: 'light',
+        autoFinalize: false,
+      }),
+    });
+  });
 });

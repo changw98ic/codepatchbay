@@ -556,16 +556,26 @@ export default function Project() {
           fetch(`/api/tasks/${name}/pipeline`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ instruction: `Full pipeline run for ${name}` }),
+            body: JSON.stringify({
+              task: `Full pipeline run for ${name}`,
+              workflow: 'standard',
+              planMode: 'full',
+              autoFinalize: false,
+            }),
           }).then(() => useProjectsStore.getState().fetchProjects());
         }}>
           ▶ {t('project.runPipeline')}
         </Button>
         <Button variant="default" size="sm" onClick={() => {
-          fetch(`/api/tasks/${name}/plan`, {
+          fetch(`/api/tasks/${name}/pipeline`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ instruction: `Plan for ${name}` }),
+            body: JSON.stringify({
+              task: `Plan for ${name}`,
+              workflow: 'standard',
+              planMode: 'light',
+              autoFinalize: false,
+            }),
           }).then(() => useProjectsStore.getState().fetchProjects());
         }}>
           📋 {t('project.planOnly')}

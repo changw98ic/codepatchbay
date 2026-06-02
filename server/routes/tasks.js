@@ -58,7 +58,7 @@ export async function taskRoutes(fastify, opts) {
       task, workflow = 'standard', planMode = 'auto',
       acpProfile = 'headless', uiLaneReason = '',
       priority = 'P2', issueNumber, issueUrl, repo, issueTitle,
-      actor = 'api', agents, agent,
+      actor = 'api', agents, agent, autoFinalize, maxRetries, timeoutSeconds,
     } = body;
 
     if (!task) throw fastify.httpErrors.badRequest('task required');
@@ -75,8 +75,9 @@ export async function taskRoutes(fastify, opts) {
     const resolvedRepo = repo || project.github?.fullName || null;
     const numericIssue = Number(issueNumber);
     const hasIssueLink = issueUrl || (resolvedRepo && Number.isInteger(numericIssue) && numericIssue > 0);
+    const shouldAutoFinalize = autoFinalize === undefined ? Boolean(hasIssueLink) : Boolean(autoFinalize);
 
-    if (!hasIssueLink) {
+    if (shouldAutoFinalize && !hasIssueLink) {
       throw fastify.httpErrors.badRequest(
         'pipeline requires issueUrl or repo+issueNumber for PR finalization'
       );
@@ -93,11 +94,13 @@ export async function taskRoutes(fastify, opts) {
         workflow, planMode, acpProfile,
         uiLane: acpProfile === 'ui',
         uiLaneReason,
-        autoFinalize: true,
+        autoFinalize: shouldAutoFinalize,
         issueNumber: Number.isInteger(numericIssue) ? numericIssue : null,
         issueUrl: issueUrl || null,
         repo: resolvedRepo,
         issueTitle: issueTitle || task,
+        maxRetries: Number.isFinite(Number(maxRetries)) ? Number(maxRetries) : undefined,
+        timeoutSeconds: Number.isFinite(Number(timeoutSeconds)) ? Number(timeoutSeconds) : undefined,
         actor,
         requestedAt: new Date().toISOString(),
         agents: agents || undefined,

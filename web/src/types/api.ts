@@ -10,13 +10,55 @@ export interface Project {
   worker?: WorkerStatus;
 }
 
-export interface PipelineState {
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'blocked';
+export type PipelineStatusValue =
+  | 'idle'
+  | 'pending'
+  | 'queued'
+  | 'running'
+  | 'retrying'
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled';
+
+export interface PipelineNode {
+  id: string;
   phase?: string;
-  error?: string;
+  status?: PipelineStatusValue | string;
+  attempt?: number | null;
+  artifact?: string | null;
+  reason?: string | null;
+  error?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failedAt?: string | null;
+  retryingAt?: string | null;
+  skippedAt?: string | null;
+  cancelledAt?: string | null;
+  blockedAt?: string | null;
+  durationMs?: number | null;
+}
+
+export interface PipelineState {
+  project?: string;
+  task?: string;
+  status?: PipelineStatusValue | string;
+  phase?: string | null;
+  phases?: string[];
+  error?: string | null;
   jobId?: string;
+  retryCount?: number;
+  maxRetries?: number | null;
+  started?: string;
+  updated?: string;
   startedAt?: string;
   updatedAt?: string;
+  lastActivityAt?: string | null;
+  lastActivityMessage?: string | null;
+  completedNodes?: string[];
+  runningNodes?: string[];
+  blockedNodes?: string[];
+  nodes?: PipelineNode[];
 }
 
 export interface ProjectIndex {

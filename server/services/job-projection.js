@@ -2,10 +2,12 @@ import { listJobsAcrossRuntimeRoots } from "./job-store.js";
 import { normalizeWorkflow } from "../../core/workflow/definition.js";
 
 const STATUS_MAP = {
-  running: "EXECUTING",
-  completed: "DONE",
-  failed: "FAILED",
-  blocked: "BLOCKED",
+  pending: "pending",
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  blocked: "blocked",
+  cancelled: "cancelled",
 };
 
 const ACTIVE_NODE_STATUSES = new Set(["running", "retrying", "blocked"]);

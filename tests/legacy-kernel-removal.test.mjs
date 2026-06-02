@@ -10,6 +10,7 @@ import { REQUIRED_EXECUTOR_FILES } from "../server/services/executor-root.js";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const removedLegacyFiles = [
   "bridges/job-runner.mjs",
+  "bridges/run-pipeline.mjs",
   "bridges/run-phase.mjs",
   "bridges/supervisor-loop.mjs",
   "server/services/supervisor.js",
@@ -77,6 +78,7 @@ describe("legacy execution kernel removal", () => {
 
     const banned = [
       "job-runner.mjs",
+      "run-pipeline.mjs",
       "run-phase.mjs",
       "supervisor-loop.mjs",
       "server/services/supervisor.js",

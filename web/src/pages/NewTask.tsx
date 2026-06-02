@@ -153,19 +153,28 @@ export default function NewTask() {
     setSubmitting(true);
     setResult(null);
     try {
-      const endpoint = mode === 'plan'
-        ? `/api/tasks/${project}/plan`
-        : `/api/tasks/${project}/pipeline`;
-      const res = await fetch(endpoint, {
+      const res = await fetch(`/api/tasks/${project}/pipeline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          instruction: description.trim(),
+          task: description.trim(),
+          workflow: 'standard',
+          planMode: mode === 'plan' ? 'light' : 'full',
+          autoFinalize: false,
           maxRetries: mode === 'full' ? maxRetries : undefined,
           timeoutSeconds: mode === 'full' ? timeout : undefined,
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          message = data?.message || data?.error || message;
+        } catch {
+          // Keep the status fallback when the server does not return JSON.
+        }
+        throw new Error(message);
+      }
       setResult({ ok: true, msg: t('task.success') });
     } catch (err) {
       setResult({ ok: false, msg: `${t('task.error')}: ${(err as Error).message}` });

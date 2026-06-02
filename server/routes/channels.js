@@ -1,10 +1,11 @@
 import path from "path";
 import { spawn } from "child_process";
 import { readFile } from "node:fs/promises";
-import { registerTask, unregisterTask } from "../services/executor.js";
 import { broadcast } from "../services/ws-broadcast.js";
 import { createSession, getSession, updateSession } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
+import { enqueue } from "../services/hub-queue.js";
+import { getProject } from "../services/hub-registry.js";
 import { parseChannelCommand } from "../services/channel-commands.js";
 import {
   authorizeDiscordInteraction,
@@ -24,66 +25,54 @@ import {
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-function spawnPipeline(cpbRoot, project, task, log) {
-  const scriptPath = path.join(cpbRoot, "bridges", "run-pipeline.mjs");
-  const taskId = `channel:${project}:pipeline:${Date.now()}`;
-
-  let child;
+async function queueReviewPipeline(cpbRoot, project, task, log, options = {}) {
+  const hubRoot = options.hubRoot || cpbRoot;
+  const queuedAt = new Date().toISOString();
   try {
-    child = spawn("node", [scriptPath, "--project", project, "--task", task, "--max-retries", "3", "--timeout-min", "0"], {
-      cwd: cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_DANGEROUS: process.env.CPB_DANGEROUS || "0" }),
-      stdio: ["ignore", "pipe", "pipe"],
+    const registeredProject = await getProject(hubRoot, project);
+    if (!registeredProject?.sourcePath) {
+      const error = `Project '${project}' has no sourcePath`;
+      log?.error(`queueReviewPipeline error: ${error}`);
+      return { accepted: false, taskId: null, error };
+    }
+
+    const entry = await enqueue(hubRoot, {
+      projectId: project,
+      sourcePath: registeredProject.sourcePath,
+      priority: "P2",
+      description: task,
+      type: "channel_review_pipeline",
+      metadata: {
+        source: "channel_review",
+        channel: options.channel || "channel",
+        workflow: "standard",
+        planMode: "full",
+        acpProfile: "headless",
+        uiLane: false,
+        uiLaneReason: "",
+        autoFinalize: false,
+        issueNumber: null,
+        issueUrl: null,
+        repo: registeredProject.github?.fullName || null,
+        issueTitle: task,
+        actor: options.actor || null,
+        requestedAt: queuedAt,
+      },
     });
+
+    broadcast({ type: "task:queued", taskId: entry.id, project, entry });
+    return { accepted: true, taskId: entry.id, entry };
   } catch (err) {
-    log?.error(`spawnPipeline sync error for ${taskId}: ${err.message}`);
-    return { accepted: false, taskId, error: err.message };
+    log?.error(`queueReviewPipeline error: ${err.message}`);
+    broadcast({
+      type: "task:error",
+      taskId: null,
+      project,
+      error: err.message,
+      code: err.code || "QUEUE_FAILURE",
+    });
+    return { accepted: false, taskId: null, error: err.message };
   }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let registered = false;
-    let output = "";
-
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      log?.error(`spawnPipeline async error for ${taskId}: ${err.message}`);
-      broadcast({
-        type: "task:error",
-        taskId,
-        project,
-        error: err.message,
-        code: err.code || "SPAWN_FAILURE",
-      });
-      resolve({ accepted: false, taskId, error: err.message });
-    });
-
-    child.on("spawn", () => {
-      if (settled) return;
-      settled = true;
-      registered = true;
-      registerTask(taskId, project, "run-pipeline.mjs", child.pid);
-      resolve({ accepted: true, taskId, pid: child.pid });
-    });
-
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      output += text;
-      broadcast({ type: "task:output", taskId, project, output: text, stream: "stdout" });
-    });
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      output += text;
-      broadcast({ type: "task:output", taskId, project, output: text, stream: "stderr" });
-    });
-
-    child.on("exit", (code) => {
-      if (registered) unregisterTask(taskId);
-      broadcast({ type: "task:complete", taskId, project, script: "run-pipeline.mjs", exitCode: code, output });
-      log?.info(`Channel pipeline ${taskId} exited with code ${code}`);
-    });
-  });
 }
 
 /**
@@ -190,7 +179,7 @@ async function handleReviewCommand(cpbRoot, cmd, log, options = {}) {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
     await updateSession(cpbRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" });
-    const result = await spawnPipeline(cpbRoot, session.project, session.intent, log);
+    const result = await queueReviewPipeline(cpbRoot, session.project, session.intent, log, options);
     await updateSession(cpbRoot, session.sessionId, { jobId: result.taskId });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "dispatched", jobId: result.taskId, project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "approved", taskId: result.taskId };
@@ -381,6 +370,7 @@ export async function channelRoutes(fastify, opts) {
           userId: event.sender?.sender_id?.user_id || event.sender?.id || event.message.sender?.id || null,
           channelId: event.message.chat_id || null,
         },
+        hubRoot: req.cpbHubRoot || cpbRoot,
       });
     }
 
@@ -459,6 +449,7 @@ export async function channelRoutes(fastify, opts) {
           userId: body.senderId || null,
           channelId: body.conversationId || null,
         },
+        hubRoot: req.cpbHubRoot || cpbRoot,
       });
     }
 
