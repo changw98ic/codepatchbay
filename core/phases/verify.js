@@ -8,6 +8,7 @@ import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 
 const execFile = promisify(execFileCb);
+const OUTPUT_TAIL_CHARS = 4000;
 
 const JSON_INSTRUCTION = `
 
@@ -73,14 +74,18 @@ async function hasTestScript(cwd) {
 
 async function runHardGates(cwd) {
   const errors = [];
+  const checks = [];
 
   // Gate 1: node --check on changed .js/.mjs files
   const jsFiles = await getChangedJsFiles(cwd);
   for (const file of jsFiles) {
     try {
       await execFile("node", ["--check", file], { cwd });
+      checks.push({ gate: "node --check", file, ok: true });
     } catch (e) {
-      errors.push(`node --check ${file}: ${e.stderr?.trim() || e.message}`);
+      const formatted = formatCommandFailure(`node --check ${file}`, e);
+      checks.push({ gate: "node --check", file, ok: false, ...formatted });
+      errors.push(formatted.reason);
     }
   }
 
@@ -88,15 +93,45 @@ async function runHardGates(cwd) {
   if (await hasTestScript(cwd)) {
     try {
       await execFile("npm", ["test"], { cwd, env: { ...process.env, CI: "1" } });
+      checks.push({ gate: "npm test", ok: true });
     } catch (e) {
-      errors.push(`npm test: ${e.stderr?.trim() || e.message}`);
+      const formatted = formatCommandFailure("npm test", e);
+      checks.push({ gate: "npm test", ok: false, ...formatted });
+      errors.push(formatted.reason);
     }
   }
 
   if (errors.length > 0) {
-    return { ok: false, reason: errors.join("\n") };
+    return { ok: false, reason: errors.join("\n"), checks };
   }
-  return { ok: true };
+  return { ok: true, checks };
+}
+
+function tail(text, maxChars = OUTPUT_TAIL_CHARS) {
+  const value = String(text || "");
+  return value.length > maxChars ? value.slice(-maxChars) : value;
+}
+
+function formatCommandFailure(command, err) {
+  const exitCode = err?.code ?? null;
+  const signal = err?.signal ?? null;
+  const stdoutTail = tail(err?.stdout || "");
+  const stderrTail = tail(err?.stderr || "");
+  const parts = [`${command} failed`];
+  if (exitCode !== null) parts.push(`exitCode=${exitCode}`);
+  if (signal) parts.push(`signal=${signal}`);
+  if (stdoutTail.trim()) parts.push(`stdout tail:\n${stdoutTail.trim()}`);
+  if (stderrTail.trim()) parts.push(`stderr tail:\n${stderrTail.trim()}`);
+  if (!stdoutTail.trim() && !stderrTail.trim() && err?.message) parts.push(`message: ${err.message}`);
+  return {
+    command,
+    exitCode,
+    signal,
+    stdoutTail,
+    stderrTail,
+    message: err?.message || "",
+    reason: parts.join("\n"),
+  };
 }
 
 export async function runVerify(ctx) {
@@ -113,8 +148,13 @@ export async function runVerify(ctx) {
         kind: FailureKind.VERIFICATION_FAILED,
         phase: "verify",
         reason: gate.reason,
-        retryable: true,
+        retryable: false,
+        cause: {
+          hardGate: true,
+          checks: gate.checks,
+        },
       }),
+      diagnostics: { hardGate: gate },
     });
   }
 

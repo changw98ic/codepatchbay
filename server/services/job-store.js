@@ -361,6 +361,62 @@ function terminalJobLineage(job) {
   };
 }
 
+function truncateRecoveryText(value, maxChars = 4000) {
+  const text = String(value || "");
+  return text.length > maxChars ? text.slice(-maxChars) : text;
+}
+
+function recoveryPreviousOutput(job) {
+  const cause = job?.failureCause || {};
+  const chunks = [];
+  if (cause.stderrSnippet) chunks.push(`stderr snippet:\n${cause.stderrSnippet}`);
+  if (cause.rawOutput) chunks.push(`raw output:\n${cause.rawOutput}`);
+  if (cause.stdoutTail) chunks.push(`stdout tail:\n${cause.stdoutTail}`);
+  if (cause.stderrTail) chunks.push(`stderr tail:\n${cause.stderrTail}`);
+  if (cause.stdout) chunks.push(`stdout:\n${cause.stdout}`);
+  if (cause.stderr) chunks.push(`stderr:\n${cause.stderr}`);
+  if (Array.isArray(cause.checks)) {
+    for (const check of cause.checks) {
+      if (check?.stdoutTail) chunks.push(`${check.command || check.gate || "check"} stdout tail:\n${check.stdoutTail}`);
+      if (check?.stderrTail) chunks.push(`${check.command || check.gate || "check"} stderr tail:\n${check.stderrTail}`);
+      if (check?.message && !check?.stdoutTail && !check?.stderrTail) chunks.push(`${check.command || check.gate || "check"} message:\n${check.message}`);
+    }
+  }
+  return truncateRecoveryText(chunks.filter(Boolean).join("\n\n"));
+}
+
+function buildRecoverySourceContext(originalJob, { fromPhase, trigger, recoveryReason, retryCount, maxRetries } = {}) {
+  const base = originalJob?.sourceContext && typeof originalJob.sourceContext === "object"
+    ? { ...originalJob.sourceContext }
+    : {};
+  const failureKind = originalJob?.failureCause?.kind || originalJob?.failureCode || "unknown";
+  const failureReason = originalJob?.blockedReason || originalJob?.failureCause?.reason || recoveryReason || "recovery requested";
+  const correction = {
+    failureKind,
+    failureReason,
+    previousOutput: recoveryPreviousOutput(originalJob),
+    previousJobId: originalJob?.jobId || null,
+    previousPhase: fromPhase || originalJob?.failurePhase || null,
+    previousQueueEntryId: originalJob?.queueEntryId || base.queueEntryId || null,
+    retryCount: retryCount ?? originalJob?.retryCount ?? null,
+    maxRetries: maxRetries ?? originalJob?.maxRetries ?? null,
+    trigger: trigger || "manual",
+    artifacts: originalJob?.artifacts || {},
+  };
+  return {
+    ...base,
+    correction,
+    previousFailure: {
+      kind: failureKind,
+      reason: failureReason,
+      jobId: originalJob?.jobId || null,
+      phase: correction.previousPhase,
+      retryCount: correction.retryCount,
+      maxRetries: correction.maxRetries,
+    },
+  };
+}
+
 export async function createRecoveryJob(
   cpbRoot,
   project,
@@ -370,6 +426,13 @@ export async function createRecoveryJob(
   const lineage = terminalJobLineage(originalJob);
   const now = ts || nowIso();
   const selectedExecutor = executor === undefined ? originalJob.executor ?? null : executor;
+  const recoverySourceContext = buildRecoverySourceContext(originalJob, {
+    fromPhase,
+    trigger,
+    recoveryReason,
+    retryCount,
+    maxRetries,
+  });
 
   const newJob = await createJob(cpbRoot, {
     project,
@@ -378,7 +441,7 @@ export async function createRecoveryJob(
     ts: now,
     executor: selectedExecutor,
     dataRoot,
-    sourceContext: originalJob.sourceContext ?? null,
+    sourceContext: recoverySourceContext,
   });
 
   const event = {
@@ -392,7 +455,7 @@ export async function createRecoveryJob(
     fromPhase: fromPhase || null,
     ts: now,
   };
-  if (originalJob.sourceContext) event.sourceContext = originalJob.sourceContext;
+  if (recoverySourceContext) event.sourceContext = recoverySourceContext;
   if (executorSelection) event.executorSelection = executorSelection;
   if (retryCount !== undefined) event.retryCount = retryCount;
   if (maxRetries !== undefined) event.maxRetries = maxRetries;

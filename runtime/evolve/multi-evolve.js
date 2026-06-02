@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { AcpPool, RateLimitError } from "../../server/services/acp-pool.js";
-import { AGENT_OUTAGE_EXIT_CODE, ProjectWorker } from "../worker/project-worker.js";
 import { getManagedAcpPool } from "../../server/services/acp-pool.js";
+import { AssignmentStore } from "../../server/orchestrator/assignment-store.js";
+import { WorkerStore } from "../../server/orchestrator/worker-store.js";
 import { listProjects, resolveHubRoot } from "../../server/services/hub-registry.js";
 import {
   appendHistory,
@@ -22,10 +26,13 @@ import {
   listQueue as hubListQueue,
   queueStatus as hubQueueStatus,
   syncBacklogResult,
+  updateEntry as hubUpdateEntry,
 } from "../../server/services/hub-queue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
+const execFileAsync = promisify(execFile);
+const MANAGED_WORKER_PATH = path.resolve(__dirname, "../worker/managed-worker.js");
 
 function parseArgs(argv) {
   const opts = {
@@ -151,6 +158,36 @@ function ageScore(issue) {
   const ts = Date.parse(issue.createdAt || "");
   if (!Number.isFinite(ts)) return 1;
   return Math.max(1, Date.now() - ts);
+}
+
+function sourceContextForQueueEntry(entry) {
+  const metadata = entry?.metadata || {};
+  const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
+    ? { ...metadata.sourceContext }
+    : {};
+  return {
+    ...inherited,
+    queueEntryId: entry?.id || inherited.queueEntryId || null,
+    type: inherited.type || metadata.source || entry?.type || null,
+    issueNumber: metadata.issueNumber ?? inherited.issueNumber ?? null,
+    issueUrl: metadata.issueUrl ?? inherited.issueUrl ?? null,
+    repo: metadata.repo ?? metadata.repository ?? metadata.repositoryFullName ?? inherited.repo ?? null,
+    issueTitle: metadata.issueTitle ?? inherited.issueTitle ?? null,
+    actor: metadata.actor ?? inherited.actor ?? null,
+  };
+}
+
+function resultFromManagedWorkerResult(result) {
+  const jobResult = result?.jobResult || {};
+  const completed = result?.status === "completed" || jobResult.status === "completed";
+  return {
+    ok: completed,
+    code: completed ? 0 : 1,
+    error: completed ? null : jobResult.failure?.reason || result?.error || "managed worker failed",
+    stdout: "",
+    stderr: "",
+    job: jobResult,
+  };
 }
 
 export class CrossProjectPriorityQueue {
@@ -310,7 +347,7 @@ export class MultiEvolveController {
     return new CrossProjectPriorityQueue(this.projects, this.hubRoot).dequeue();
   }
 
-  async runProjectWorker(issue, { workflow, queueEntry } = {}) {
+  async runManagedWorker(issue, { workflow, queueEntry, timeoutMs = 300_000 } = {}) {
     if (this.workerRunner) {
       return this.workerRunner({
         issue,
@@ -321,33 +358,106 @@ export class MultiEvolveController {
       });
     }
 
-    const worker = new ProjectWorker({
-      projectId: issue.project,
-      once: true,
-      workflow,
-      cpbRoot: this.cpbRoot,
-      hubRoot: this.hubRoot,
-      workerId: process.env.CPB_WORKER_ID || `multi-evolve-${process.pid}`,
+    if (!queueEntry?.id) {
+      return { ok: false, code: 1, error: "managed worker requires a hub queue entry", stdout: "", stderr: "" };
+    }
+
+    const workerId = process.env.CPB_WORKER_ID || `multi-evolve-${process.pid}`;
+    const assignmentStore = new AssignmentStore(this.hubRoot);
+    const workerStore = new WorkerStore(this.hubRoot);
+    await assignmentStore.init();
+    await workerStore.init();
+
+    const assignment = await assignmentStore.getOrCreateAssignmentForEntry({
+      entryId: queueEntry.id,
+      projectId: queueEntry.projectId || issue.project,
+      task: queueEntry.description || issue.description || "",
+      sourcePath: queueEntry.sourcePath || issue.sourcePath,
+      workflow: queueEntry.metadata?.workflow || workflow || "standard",
+      planMode: queueEntry.metadata?.planMode || "full",
+      sourceContext: sourceContextForQueueEntry(queueEntry),
+      metadata: queueEntry.metadata || {},
     });
-    const run = await worker.run();
-    if (run?.result) return run.result;
-    if (run?.reason === "agents_unavailable") {
+
+    await workerStore.registerWorker(workerId, { projectId: assignment.projectId, status: "ready" });
+    const attempt = await assignmentStore.createAttempt(assignment.assignmentId, {
+      workerId,
+      orchestratorEpoch: 0,
+    });
+    await workerStore.writeInbox(workerId, {
+      assignmentId: assignment.assignmentId,
+      entryId: assignment.entryId,
+      projectId: assignment.projectId,
+      task: assignment.task,
+      sourcePath: assignment.sourcePath,
+      workflow: assignment.workflow,
+      planMode: assignment.planMode,
+      sourceContext: assignment.sourceContext,
+      metadata: assignment.metadata || {},
+      attempt: attempt.attempt,
+      attemptToken: attempt.attemptToken,
+      orchestratorEpoch: attempt.orchestratorEpoch,
+    });
+    await hubUpdateEntry(this.hubRoot, queueEntry.id, {
+      status: "scheduled",
+      claimedBy: workerId,
+      claimedAt: new Date().toISOString(),
+    });
+    await workerStore.updateWorker(workerId, { status: "assigned", currentAssignmentId: assignment.assignmentId });
+
+    let child = { stdout: "", stderr: "" };
+    try {
+      child = await execFileAsync(process.execPath, [
+        MANAGED_WORKER_PATH,
+        "--worker-id", workerId,
+        "--hub-root", this.hubRoot,
+        "--cpb-root", this.cpbRoot,
+        "--once",
+      ], {
+        cwd: this.cpbRoot,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err) {
+      child = { stdout: err.stdout || "", stderr: err.stderr || err.message || "" };
+    }
+
+    const resultPath = path.join(
+      this.hubRoot,
+      "assignments",
+      assignment.assignmentId,
+      "attempts",
+      String(attempt.attempt).padStart(3, "0"),
+      "result.json",
+    );
+    let result;
+    try {
+      result = JSON.parse(await readFile(resultPath, "utf8"));
+    } catch {
+      await hubUpdateEntry(this.hubRoot, queueEntry.id, {
+        status: "failed",
+        metadata: { failureReason: child.stderr || "managed worker exited without result", failedAt: new Date().toISOString() },
+      });
       return {
         ok: false,
-        code: AGENT_OUTAGE_EXIT_CODE,
-        error: "agents_unavailable",
-        preflight: run.preflight,
-        stdout: "",
-        stderr: "",
+        code: 1,
+        error: child.stderr || "managed worker exited without result",
+        stdout: child.stdout || "",
+        stderr: child.stderr || "",
       };
     }
-    if (run?.idle) {
-      return { ok: false, code: 1, error: "project-worker found no pending queue entry", stdout: "", stderr: "" };
-    }
-    return { ok: false, code: 1, error: "project-worker returned no result", stdout: "", stderr: "" };
+    const normalized = resultFromManagedWorkerResult(result);
+    normalized.stdout = child.stdout || "";
+    normalized.stderr = child.stderr || "";
+    await hubUpdateEntry(this.hubRoot, queueEntry.id, {
+      status: normalized.ok ? "completed" : "failed",
+      ...(normalized.ok ? { completedAt: new Date().toISOString() } : {}),
+      metadata: normalized.ok ? {} : { failureReason: normalized.error, failedAt: new Date().toISOString() },
+    });
+    return normalized;
   }
 
-  async executeIssue(issue, { workflow = "standard" } = {}) {
+  async executeIssue(issue, { workflow = "standard", timeoutMs = 300_000 } = {}) {
     let queueEntry;
     try {
       queueEntry = await hubEnqueue(this.hubRoot, {
@@ -370,9 +480,9 @@ export class MultiEvolveController {
     }
 
     try {
-      return await this.runProjectWorker(issue, { workflow, queueEntry });
+      return await this.runManagedWorker(issue, { workflow, queueEntry, timeoutMs });
     } catch (err) {
-      return { ok: false, code: 1, error: `project-worker: ${err.message}`, stdout: "", stderr: "" };
+      return { ok: false, code: 1, error: `managed worker: ${err.message}`, stdout: "", stderr: "" };
     }
   }
 
@@ -409,7 +519,7 @@ export class MultiEvolveController {
     }
     const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
     await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description });
-    const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+    const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
     await this.completeIssueAndSync(issue, result);
     await appendHistory(issue.sourcePath, issue.project, {
       action: result.ok ? "execute_completed" : "execute_failed",
@@ -492,7 +602,7 @@ export class MultiEvolveController {
       const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
       await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description });
 
-      const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+      const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
       await this.completeIssueAndSync(issue, result);
       issuesExecuted++;
 
@@ -588,7 +698,7 @@ export class MultiEvolveController {
         issue: issue.description,
       });
 
-      const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard" });
+      const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
       await this.completeIssueAndSync(issue, result);
       issuesExecuted++;
 

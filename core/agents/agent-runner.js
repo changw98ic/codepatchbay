@@ -1,6 +1,6 @@
 import { FailureKind, failure } from "../contracts/failure.js";
 
-const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too many requests|capacity|overloaded|ProviderQuotaError/i;
+const RATE_LIMIT_PATTERN = /\b(?:429|529)\b|rate.?limit|too many requests|capacity|overloaded|over.?capacity|ProviderQuotaError|访问量过大|模型当前访问量|当前访问量过大|temporar(?:y|ily) unavailable/i;
 const DEFAULT_TIMEOUT_MS = 0;
 
 /**

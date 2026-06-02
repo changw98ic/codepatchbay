@@ -6,7 +6,7 @@
  */
 
 import { runJob } from "../core/engine/run-job.js";
-import { createJob, completePhase, completeJob, failJob } from "../server/services/job-store.js";
+import { createJob, startPhase, completePhase, completeJob, failJob } from "../server/services/job-store.js";
 import { appendEvent } from "../server/services/event-store.js";
 import { getManagedAcpPool } from "../server/services/acp-pool.js";
 import { resolveHubRoot, getProject } from "../server/services/hub-registry.js";
@@ -17,6 +17,7 @@ import { resolveHubRoot, getProject } from "../server/services/hub-registry.js";
 export function buildServices(cpbRoot) {
   return {
     createJob,
+    startPhase,
     completePhase,
     completeJob,
     failJob,

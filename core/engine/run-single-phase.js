@@ -8,7 +8,7 @@
  */
 
 import { runPhase } from "./run-phase.js";
-import { phasePassed } from "../contracts/phase-result.js";
+import { isPhasePassed } from "../contracts/phase-result.js";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -204,7 +204,7 @@ export async function runSinglePhase(phase, opts) {
     ts: ts(),
   });
 
-  if (phasePassed(result)) {
+  if (isPhasePassed(result)) {
     await completeJob(cpbRoot, project, jobId);
     console.log(`✓ ${phase} passed${result.artifact ? ` → ${result.artifact.name}` : ""}`);
     return 0;

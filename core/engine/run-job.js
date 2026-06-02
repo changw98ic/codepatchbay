@@ -78,6 +78,7 @@ function extractArtifactId(artifact) {
  * @param {number} [ctx.maxRetries]
  * @param {number} [ctx.timeoutMin]
  * @param {Function} ctx.createJob
+ * @param {Function} [ctx.startPhase]
  * @param {Function} ctx.completePhase
  * @param {Function} ctx.completeJob
  * @param {Function} ctx.failJob
@@ -99,6 +100,7 @@ export async function runJob(ctx) {
     timeoutMin,
     // Injected services
     createJob,
+    startPhase,
     completePhase,
     completeJob,
     failJob,
@@ -148,13 +150,17 @@ export async function runJob(ctx) {
   const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
 
   for (const phase of phases) {
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "phase_started",
-      jobId,
-      project,
-      phase,
-      ts: ts(),
-    });
+    if (typeof startPhase === "function") {
+      await startPhase(cpbRoot, project, jobId, { phase });
+    } else {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "phase_started",
+        jobId,
+        project,
+        phase,
+        ts: ts(),
+      });
+    }
 
     // Provider selection + fallback for this phase
     const role = phaseRoleMap[phase] || phase;
@@ -510,9 +516,12 @@ export async function runJob(ctx) {
           const failCause = result.failure?.cause || {};
           const diag = result.diagnostics || {};
 
+          const hardGateFailed = result.failure?.cause?.hardGate === true;
           let usageStatus = "ok";
           if (!isPhasePassed(result)) {
-            if (result.failure?.kind === FailureKind.AGENT_RATE_LIMITED) {
+            if (hardGateFailed) {
+              usageStatus = "hard_gate_failed";
+            } else if (result.failure?.kind === FailureKind.AGENT_RATE_LIMITED) {
               usageStatus = handoffCount > 0 ? "fallback" : "rate_limited";
             } else if (result.failure?.kind === FailureKind.TIMEOUT) {
               usageStatus = "timeout";
@@ -554,7 +563,7 @@ export async function runJob(ctx) {
               reason: handoffReason || result.failure?.reason || null,
             } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
-            usage: { calls: 1, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
+            usage: { calls: hardGateFailed ? 0 : 1, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
           }).catch(() => null);
         }
       } catch { /* usage tracking is best-effort */ }

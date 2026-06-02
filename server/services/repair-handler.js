@@ -214,6 +214,27 @@ async function createLineageTask(cpbRoot, { project, jobId, repairArtifact, repa
       repairArtifact,
       repairStatus,
       lineageReason: "external_repair_fixed_cpb_self_bug",
+      sourceContext: {
+        ...(origin?.metadata?.sourceContext || job.sourceContext || {}),
+        repair: {
+          previousJobId: jobId,
+          previousQueueEntryId: origin?.id || null,
+          repairArtifact,
+          repairStatus,
+          lineageReason: "external_repair_fixed_cpb_self_bug",
+          failureReason: job.blockedReason || null,
+          failurePhase: job.failurePhase || null,
+          failureCode: job.failureCode || null,
+          artifacts: job.artifacts || {},
+        },
+        correction: {
+          failureKind: job.failureCode || "external_repair",
+          failureReason: job.blockedReason || "external repair requested",
+          previousJobId: jobId,
+          previousPhase: job.failurePhase || null,
+          previousOutput: "",
+        },
+      },
     },
   });
 

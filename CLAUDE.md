@@ -15,7 +15,6 @@ cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
 │   ├── acp-pool.mjs       # ACP session pool
 │   ├── run-pipeline.mjs   # Full pipeline orchestrator (plan→execute→verify+retry)
 │   ├── engine-bridge.js   # Queue/orchestrator job bridge
-│   ├── project-worker.mjs # Project-scoped worker entrypoint
 │   ├── dual-research.mjs  # Dual-agent research
 │   ├── multi-evolve.mjs   # Multi-phase evolution
 │   └── ...                # review, merge, provider-soak, etc.
@@ -30,7 +29,7 @@ cpb (CLI入口, Node.js — cli/cpb.mjs → cli/commands/*.js)
 │       ├── event-store.js # JSONL event log (append-only, materialize)
 │       ├── job-store.js   # Job lifecycle (create/phase/complete/fail/block)
 │       ├── lease-manager.js # 分布式 lease (atomic write + lock dir)
-│       └── hub-orchestrator.js # Queue/orchestrator worker lifecycle
+│       └── hub-orchestrator.js # Queue/orchestrator + managed-worker lifecycle
 ├── web/                   # React 19 + Vite 前端
 │   └── src/
 │       ├── App.jsx        # Router + sidebar layout

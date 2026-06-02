@@ -30,7 +30,18 @@ register("claude", {
   region: "global",
   timezone: "UTC",
   quotaPolicy: { type: "per-minute", description: "Anthropic per-minute rate limit" },
-  parseLimitError: null,
+  parseLimitError({ error, stderr }) {
+    const msg = `${error?.message || ""}\n${stderr || ""}`;
+    if (Number(error?.code) === 529 || /\b529\b|访问量过大|模型当前访问量|当前访问量过大/i.test(msg)) {
+      return {
+        isQuota: true,
+        status: "rate_limited",
+        confidence: 0.95,
+        reason: msg.slice(0, 200) || "claude provider overloaded",
+      };
+    }
+    return null;
+  },
   parseResetTime: (msg) => parseResetTime(msg, "UTC"),
 });
 

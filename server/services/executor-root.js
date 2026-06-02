@@ -6,7 +6,6 @@ export const REQUIRED_EXECUTOR_FILES = [
   "cpb",
   "cli/cpb.mjs",
   "bridges/engine-bridge.js",
-  "bridges/project-worker.mjs",
   "core/workflow/definition.js",
   "runtime/evolve/multi-evolve.js",
   "runtime/worker/managed-worker.js",

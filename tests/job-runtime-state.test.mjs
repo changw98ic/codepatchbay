@@ -104,11 +104,20 @@ describe("job runtime state projection", () => {
         task: "retry me",
         workflow: "standard",
         dataRoot,
+        sourceContext: {
+          type: "github_issue",
+          issueNumber: 12,
+          repo: "acme/repo",
+        },
       });
       await failJob(cpbRoot, "proj", job.jobId, {
         reason: "recoverable failure",
         code: FAILURE_CODES.RECOVERABLE,
         phase: "execute",
+        cause: {
+          kind: "artifact_invalid",
+          rawOutput: "deliverable did not mention src/app.js",
+        },
         dataRoot,
       });
 
@@ -121,6 +130,11 @@ describe("job runtime state projection", () => {
       assert.equal(recovery.lineage.parentJobId, job.jobId);
       assert.equal(recovery.retryCount, 1);
       assert.equal(recovery.maxRetries, 1);
+      assert.equal(recovery.sourceContext.issueNumber, 12);
+      assert.equal(recovery.sourceContext.previousFailure.jobId, job.jobId);
+      assert.equal(recovery.sourceContext.previousFailure.reason, "recoverable failure");
+      assert.equal(recovery.sourceContext.correction.failureKind, "artifact_invalid");
+      assert.match(recovery.sourceContext.correction.previousOutput, /src\/app\.js/);
 
       await failJob(cpbRoot, "proj", recovery.jobId, {
         reason: "still failing",

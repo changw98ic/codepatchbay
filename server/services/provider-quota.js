@@ -235,7 +235,7 @@ export async function assertProviderAvailable(hubRoot, {
 }
 
 // ─── Quota Failure Classification ───────────────────────────────────
-const HTTP_429 = /\b429\b|rate.?limit|too many requests|capacity|overloaded/i;
+const HTTP_RATE_LIMIT = /\b(?:429|529)\b|rate.?limit|too many requests|capacity|overloaded|over.?capacity|访问量过大|模型当前访问量|当前访问量过大|temporar(?:y|ily) unavailable/i;
 const RETRY_AFTER_SEC = /(?:reset|retry|after)[^0-9]*(\d+)\s*(?:s|sec|seconds?)/i;
 const ISO_DATE = /20\d\d-\d\d-\d\d[T\s]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?/;
 const WINDOW_EXHAUST = /window.{0,40}(?:quota|limit|exhaust|reset)|(?:quota|limit|exhaust).{0,40}window|usage.?limit|monthly.?limit|5.?hour/i;
@@ -354,7 +354,7 @@ export async function classifyQuotaFailure({ providerKey, agent, variant, error,
   }
 
   // ── Layer 1: Deterministic parser ────────────────────────────────
-  if (HTTP_429.test(combined)) {
+  if (HTTP_RATE_LIMIT.test(combined)) {
     const timezone = adapter?.timezone || null;
     const nextEligibleAt = parseResetTime(combined, timezone);
 

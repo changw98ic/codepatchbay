@@ -717,7 +717,11 @@ export class AcpClient {
       if (!pending) return;
       this.pending.delete(message.id);
       if (message.error) {
-        pending.reject(new Error(message.error.message || `ACP error ${message.error.code}`));
+        const error = new Error(message.error.message || `ACP error ${message.error.code}`);
+        error.code = message.error.code ?? null;
+        error.data = message.error.data ?? null;
+        error.acpError = message.error;
+        pending.reject(error);
       } else {
         pending.resolve(message.result);
       }

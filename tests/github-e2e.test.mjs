@@ -136,7 +136,7 @@ describe("GitHub E2E: webhook → queue → pipeline mock → status comment →
       });
       assert.ok(job.jobId);
 
-      // Step 6: Simulate CPB_JOB_CREATED write-back (as project-worker does)
+      // Step 6: Simulate queue metadata write-back from the execution path
       await updateEntry(hubRoot, entry.id, { metadata: { jobId: job.jobId } });
       const afterWriteback = await listQueue(hubRoot, { projectId: "frontend" });
       assert.equal(afterWriteback[0].metadata.jobId, job.jobId);

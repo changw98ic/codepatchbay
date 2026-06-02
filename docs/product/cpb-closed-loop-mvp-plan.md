@@ -36,7 +36,7 @@ MVP 暂不完成：
 
 | 能力 | 当前资产 | MVP 缺口 |
 |---|---|---|
-| 队列和项目执行 | `server/services/hub-queue.js`、`runtime/worker/project-worker.js` | 动态上限、真实并发验收、非 GitHub finalization |
+| 队列和项目执行 | `server/services/hub-queue.js`、`runtime/worker/managed-worker.js`、`server/orchestrator/*` | 动态上限、真实并发验收、非 GitHub finalization |
 | agent 配置 | `server/services/agent-config.js`、`cli/commands/config.js` | 清理无效 variant，固定主链路不走 browser-agent |
 | 审阅会话 | `server/routes/review.js`、`server/services/review-session.js` | reject 后重新入队，而不是只结束 session |
 | 自动 finalizer | `server/services/auto-finalizer.js` | 无 issue link 时生成本地 Review Bundle |
@@ -99,7 +99,7 @@ MVP 不设置 ACP global total。可调旋钮只有：
 | A1 | 当前状态诊断和清理手册 | `cli/commands/doctor*`、jobs report/reconcile 相关命令 | 一份真实运行前检查清单 | `doctor`、`jobs report`、`jobs reconcile` 能解释当前 stale jobs，不执行 fake |
 | A2 | 清理主流水线 agent 配置 | `server/services/agent-config.js`、`cli/commands/config.js` | plan/execute/verify 的默认 agent 配置说明和修正 | 新 queue entry metadata 不再出现 browser-agent 或 provider `none` |
 | A3 | browser-agent 主链路隔离 | agent config、project config、文档 | browser-agent 标记为独立测试 lane | 主流水线真实任务不会尝试 Playwright/browser provider |
-| A4 | finalizer 默认模式调整 | `runtime/worker/project-worker.js`、hub config | MVP 默认使用 local 或 dry-run finalizer | GitHub App 缺失时 worker 不因 PR 模式直接失败 |
+| A4 | finalizer 默认模式调整 | `runtime/worker/managed-worker.js`、hub config | MVP 默认使用 local 或 dry-run finalizer | GitHub App 缺失时 worker 不因 PR 模式直接失败 |
 | A5 | 真实最小测试项目准备 | project registry、测试 fixture repo | 一个可回滚的真实 pipeline 测试项目 | 真实 agent 可以在该项目产生真实 diff |
 | A6 | 失败报告收敛 | `jobs report`、failure router/reporting | 失败类别说明：unavailable/rate_limited/contract_invalid/timeout | 最近失败能给出下一步操作，而不是只有 failed |
 
@@ -112,7 +112,7 @@ MVP 不设置 ACP global total。可调旋钮只有：
 | B3 | Limits API | hub/server routes | `GET/PATCH /api/runtime-limits` | API 能返回有效上限、版本、最近修改信息 |
 | B4 | CLI 动态调整 | `cli/commands/*` | `cpb limits set --project <id> --max-active <n>`、`--provider <name> --max <n>` | 命令执行后 hub/worker 不重启，新值可见 |
 | B5 | scheduler 动态读取 | `server/orchestrator/scheduler.js` | 每次调度前读取最新 limits snapshot | 上调后新任务可被 claim，下调后停止新的超额 claim |
-| B6 | worker claim 动态化 | `runtime/worker/project-worker.js` | `claimNext()` 使用 runtime limits，而不是 constructor 固定值 | 运行中的 worker 响应项目上限变化 |
+| B6 | worker 调度动态化 | `server/orchestrator/scheduler.js` | 调度使用 runtime limits，而不是旧 worker constructor 固定值 | 运行中的 worker 响应项目上限变化 |
 | B7 | ACP pool providerMax 动态化 | `server/services/acp-pool.js` | `updateLimits()` 或同等接口 | 下调不杀 active，上调允许更多同 provider request |
 | B8 | limit audit event | `server/services/event-store.js`、UI/CLI | `runtime_limits_updated` 事件 | 记录旧值、新值、actor、reason、影响范围 |
 

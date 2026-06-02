@@ -13,6 +13,71 @@ const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
+export function normalizedSourceContext(candidate) {
+  const metadata = candidate?.metadata || {};
+  const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
+    ? { ...metadata.sourceContext }
+    : {};
+  const queueEntryId = candidate?.id || inherited.queueEntryId || null;
+
+  if (metadata.source === "github" || candidate?.type === "github_issue" || metadata.issueUrl) {
+    return {
+      ...inherited,
+      type: "github_issue",
+      queueEntryId,
+      issueNumber: metadata.issueNumber ?? inherited.issueNumber ?? null,
+      issueUrl: metadata.issueUrl ?? inherited.issueUrl ?? null,
+      repo: metadata.repo ?? metadata.repository ?? metadata.repositoryFullName ?? inherited.repo ?? null,
+      issueTitle: metadata.issueTitle ?? inherited.issueTitle ?? null,
+      actor: metadata.actor ?? inherited.actor ?? null,
+      delivery: metadata.delivery ?? inherited.delivery ?? null,
+      commandText: metadata.commandText ?? inherited.commandText ?? null,
+      triggerReason: metadata.triggerReason ?? inherited.triggerReason ?? null,
+      failedQueueId: metadata.originQueueId ?? inherited.failedQueueId ?? null,
+      failedJobId: metadata.originJobId ?? inherited.failedJobId ?? null,
+      failureArtifact: metadata.failureArtifact ?? inherited.failureArtifact ?? null,
+      sddTrace: metadata.sddTrace ?? inherited.sddTrace ?? null,
+      sddTask: metadata.sddTask ?? inherited.sddTask ?? null,
+      taskId: metadata.sddTask?.id ?? metadata.taskId ?? inherited.taskId ?? null,
+      planGroupId: metadata.planGroupId ?? metadata.sddTask?.planGroupId ?? inherited.planGroupId ?? null,
+      parentPlanId: metadata.parentPlanId ?? metadata.sddTask?.parentPlanId ?? inherited.parentPlanId ?? null,
+      planCacheKey: metadata.planCacheKey ?? metadata.sddTask?.planCacheKey ?? inherited.planCacheKey ?? null,
+      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? inherited.contextPackPath ?? null,
+      contextPack: metadata.contextPack ?? inherited.contextPack ?? null,
+    };
+  }
+
+  const channel = metadata.channel || metadata.source || inherited.channel || null;
+  if (channel) {
+    return {
+      ...inherited,
+      type: inherited.type || channel,
+      channel,
+      queueEntryId,
+      actor: metadata.actor ?? inherited.actor ?? null,
+      actorName: metadata.actorName ?? inherited.actorName ?? null,
+      teamId: metadata.teamId ?? inherited.teamId ?? null,
+      channelId: metadata.channelId ?? inherited.channelId ?? null,
+      channelName: metadata.channelName ?? inherited.channelName ?? null,
+      commandText: metadata.commandText ?? inherited.commandText ?? null,
+      triggerId: metadata.triggerId ?? inherited.triggerId ?? null,
+      issueNumber: metadata.issueNumber ?? inherited.issueNumber ?? null,
+      issueUrl: metadata.issueUrl ?? inherited.issueUrl ?? null,
+      repo: metadata.repo ?? inherited.repo ?? null,
+      sddTrace: metadata.sddTrace ?? inherited.sddTrace ?? null,
+      sddTask: metadata.sddTask ?? inherited.sddTask ?? null,
+      taskId: metadata.sddTask?.id ?? metadata.taskId ?? inherited.taskId ?? null,
+      planGroupId: metadata.planGroupId ?? metadata.sddTask?.planGroupId ?? inherited.planGroupId ?? null,
+      parentPlanId: metadata.parentPlanId ?? metadata.sddTask?.parentPlanId ?? inherited.parentPlanId ?? null,
+      planCacheKey: metadata.planCacheKey ?? metadata.sddTask?.planCacheKey ?? inherited.planCacheKey ?? null,
+      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? inherited.contextPackPath ?? null,
+      contextPack: metadata.contextPack ?? inherited.contextPack ?? null,
+    };
+  }
+
+  return Object.keys(inherited).length > 0 ? { ...inherited, queueEntryId } : { queueEntryId };
+}
+
 export class HubOrchestrator {
   constructor(hubRoot, cpbRoot) {
     this.hubRoot = hubRoot;
@@ -153,7 +218,7 @@ export class HubOrchestrator {
       sourcePath: candidate.sourcePath || candidate.metadata?.sourcePath,
       workflow: candidate.metadata?.workflow || "standard",
       planMode: candidate.metadata?.planMode || "full",
-      sourceContext: candidate.metadata?.sourceContext || {},
+      sourceContext: normalizedSourceContext(candidate),
       metadata: candidate.metadata || {},
     });
 

@@ -291,6 +291,18 @@ describe("classifyQuotaFailure", () => {
     assert.ok(result.confidence >= 0.9);
   });
 
+  it("detects Claude 529 overload as rate_limited", async () => {
+    const result = await classifyQuotaFailure({
+      providerKey: "claude",
+      agent: "claude",
+      error: Object.assign(new Error("API Error 529: 该模型当前访问量过大"), { code: 529 }),
+      adapter: getProviderAdapter("claude"),
+    });
+    assert.equal(result.isQuota, true);
+    assert.equal(result.status, "rate_limited");
+    assert.ok(result.confidence >= 0.9);
+  });
+
   it("detects window exhaustion", async () => {
     const result = await classifyQuotaFailure({
       providerKey: "claude:kimi-k2.6",

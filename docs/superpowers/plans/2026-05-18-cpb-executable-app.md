@@ -88,7 +88,7 @@ Modify:
 - `server/services/executor-root.js`: expose release manifest validation helpers.
 - `bridges/supervisor-loop.mjs`: support pinned executor and safe upgrade checkpoint.
 - `server/services/supervisor.js`: stop claiming new jobs when a release upgrade is pending.
-- `bridges/project-worker.mjs`: keep passing explicit executor root to every pipeline run.
+- `runtime/worker/managed-worker.js`: keep passing explicit executor root to every pipeline run.
 - `bridges/run-pipeline.mjs`: keep job executor metadata deterministic and avoid surprising global env mutation where possible.
 - `server/services/job-store.js`: preserve executor metadata on `job_created`.
 - `server/services/event-store.js`: materialize executor metadata for old and new jobs.
@@ -889,7 +889,7 @@ Expected: all commands exit `0`.
 Run:
 
 ```bash
-node --test tests/executable-app.test.mjs tests/executor-release.test.mjs tests/project-worker.test.mjs tests/supervisor.test.mjs tests/job-store.test.mjs
+node --test tests/executable-app.test.mjs tests/executor-release.test.mjs tests/plumbing-agents.test.mjs tests/supervisor.test.mjs tests/job-store.test.mjs
 ```
 
 Expected:

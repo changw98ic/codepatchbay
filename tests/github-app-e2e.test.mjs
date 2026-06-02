@@ -8,9 +8,6 @@ import { createHmac } from "node:crypto";
 
 import { githubRoutes } from "../server/routes/github.js";
 import { loadQueue } from "../server/services/hub-queue.js";
-import { ProjectWorker } from "../runtime/worker/project-worker.js";
-
-const repoRoot = path.resolve(import.meta.dirname, "..");
 
 function webhookSignature(secret, body) {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -143,104 +140,4 @@ describe("GitHub App webhook E2E", () => {
     await app.close();
   });
 
-});
-
-describe("GitHub App worker E2E", () => {
-  let tmpDir;
-  let hubRoot;
-  let cpbRoot;
-
-  before(async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-github-e2e-"));
-    hubRoot = path.join(tmpDir, "hub");
-    cpbRoot = path.join(tmpDir, "cpb");
-    process.env.CPB_GITHUB_WEBHOOK_SECRET = secret;
-    await initHub(hubRoot, projectId, repo);
-  });
-
-  after(async () => {
-    delete process.env.CPB_GITHUB_WEBHOOK_SECRET;
-    try { await rm(tmpDir, { recursive: true }); } catch {}
-  });
-
-  it("worker processes queue entry and posts terminal status via mock transport", async () => {
-    // Pre-create a queue entry
-    const { enqueue } = await import("../server/services/hub-queue.js");
-    const entry = await enqueue(hubRoot, {
-      projectId,
-      description: "test task",
-      metadata: {
-        issueNumber: 43,
-        issueUrl: `https://github.com/${repo}/issues/43`,
-        repo,
-        autoFinalize: false,
-      },
-    });
-
-    const postedComments = [];
-    const mockPostComment = async (req) => {
-      postedComments.push(req);
-      return { id: 2, html_url: `https://github.com/${req.repo}/issues/${req.issueNumber}#issuecomment-2` };
-    };
-
-    const mockTransport = {
-      mode: "api",
-      postComment: mockPostComment,
-      closeIssue: async () => ({ ok: true }),
-      createPullRequest: async () => ({ url: "https://github.com/test/pr/1", number: 1 }),
-      getToken: async () => "mock-token",
-    };
-
-    // Create a fake completed job in the job store so resolveCompletedJob works
-    const { createJob, completeJob } = await import("../server/services/job-store.js");
-    let job = await createJob(cpbRoot, {
-      project: projectId,
-      task: "test task",
-      sourceContext: {
-        type: "github_issue",
-        issueNumber: 43,
-        repo,
-      },
-    });
-    job = await completeJob(cpbRoot, projectId, job.jobId);
-
-    const worker = new ProjectWorker({
-      projectId,
-      once: true,
-      cpbRoot,
-      hubRoot,
-      executorRoot: repoRoot,
-      worktreeMode: "off",
-      autoFinalizerMode: "off",
-      getProjectFn: async () => null, // skip index-freshness gate for test
-      runPipelineFn: async (entryArg, sourcePath, dispatchId, overrideProjectId, worktree) => {
-        // Simulate pipeline completion
-        return {
-          ok: true,
-          code: 0,
-          stdout: `CPB_JOB_CREATED {"jobId":"${job.jobId}","queueEntryId":"${entryArg.id}"}\nDone`,
-          stderr: "",
-          job,
-        };
-      },
-    });
-
-    // Override transport resolution to use mock
-    worker._githubTransportPromise = Promise.resolve(mockTransport);
-
-    const pollResult = await worker.run();
-
-    // The worker should have processed the entry
-    assert.ok(pollResult.entry || pollResult.result, "worker should have processed an entry");
-
-    // Re-read queue to verify entry status
-    const queue = await loadQueue(hubRoot);
-    const updated = queue.entries.find((e) => e.id === entry.id);
-    assert.equal(updated.status, "completed", "queue entry should be completed");
-
-    // Verify terminal status comment was posted
-    assert.equal(postedComments.length, 1, "terminal status comment should be posted");
-    assert.equal(postedComments[0].issueNumber, 43);
-    assert.ok(postedComments[0].body.includes("Verified patch ready") || postedComments[0].body.includes("CodePatchBay"));
-  });
 });

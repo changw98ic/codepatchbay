@@ -15,7 +15,7 @@ async function writeJson(file, value) {
 }
 
 describe("cpb hub status", () => {
-  it("prints managed orchestrator and worker state instead of legacy project-worker counts", async () => {
+  it("prints managed orchestrator and worker state instead of legacy worker counts", async () => {
     const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-status-"));
     const hubRoot = path.join(tmpRoot, "hub");
 
@@ -90,7 +90,6 @@ describe("cpb hub status", () => {
       const parsed = JSON.parse(jsonResult.stdout);
       assert.equal(parsed.queue.blocked, 1);
       assert.deepEqual(parsed.workers, { ready: 1, running: 1, unhealthy: 1, exited: 1 });
-      assert.equal(Object.hasOwn(parsed, "legacyProjectWorkers"), false);
       assert.equal(Object.hasOwn(parsed, "workersOnline"), false);
       assert.equal(Object.hasOwn(parsed, "workersStale"), false);
       assert.equal(Object.hasOwn(parsed, "workersOffline"), false);

@@ -5,6 +5,62 @@ import { createLogger } from "../services/logger.js";
 const HEARTBEAT_STALE_MS = 60_000;
 const ASSIGN_ACCEPT_TTL_MS = 120_000;
 const NON_REUSABLE_WORKER_STATUSES = new Set(["dead", "exited", "unhealthy", "draining"]);
+const PREVIOUS_OUTPUT_MAX = 4000;
+
+function truncateText(value, maxChars = PREVIOUS_OUTPUT_MAX) {
+  const text = String(value || "");
+  return text.length > maxChars ? text.slice(-maxChars) : text;
+}
+
+function extractPreviousOutput(failure) {
+  const cause = failure?.cause || {};
+  const chunks = [];
+  if (failure?.stderrSnippet) chunks.push(`stderr snippet:\n${failure.stderrSnippet}`);
+  if (cause.rawOutput) chunks.push(`raw output:\n${cause.rawOutput}`);
+  if (cause.stdoutTail) chunks.push(`stdout tail:\n${cause.stdoutTail}`);
+  if (cause.stderrTail) chunks.push(`stderr tail:\n${cause.stderrTail}`);
+  if (cause.stdout) chunks.push(`stdout:\n${cause.stdout}`);
+  if (cause.stderr) chunks.push(`stderr:\n${cause.stderr}`);
+  if (Array.isArray(cause.checks)) {
+    for (const check of cause.checks) {
+      if (check?.stdoutTail) chunks.push(`${check.command || check.gate || "check"} stdout tail:\n${check.stdoutTail}`);
+      if (check?.stderrTail) chunks.push(`${check.command || check.gate || "check"} stderr tail:\n${check.stderrTail}`);
+      if (check?.message && !check?.stdoutTail && !check?.stderrTail) chunks.push(`${check.command || check.gate || "check"} message:\n${check.message}`);
+    }
+  }
+  return truncateText(chunks.filter(Boolean).join("\n\n"));
+}
+
+export function buildRetrySourceContext(assignment, attempt, result, decision) {
+  const failure = result?.jobResult?.failure || result?.failure || {};
+  const base = assignment.sourceContext && typeof assignment.sourceContext === "object"
+    ? { ...assignment.sourceContext }
+    : {};
+  const previousOutput = extractPreviousOutput(failure);
+  const correction = {
+    failureKind: failure.kind || "unknown",
+    failureReason: failure.reason || decision?.reason || "retry requested",
+    previousOutput,
+    previousJobId: result?.jobResult?.jobId || result?.jobId || base.previousJobId || null,
+    previousAttempt: attempt?.attempt ?? assignment?.attempts ?? null,
+    previousPhase: failure.phase || result?.jobResult?.failure?.phase || null,
+    retryAction: decision?.action || null,
+    retryReason: decision?.reason || null,
+    retryable: decision?.retryable ?? failure.retryable ?? null,
+    retryQueuedAt: new Date().toISOString(),
+  };
+  return {
+    ...base,
+    correction,
+    previousFailure: {
+      kind: correction.failureKind,
+      reason: correction.failureReason,
+      jobId: correction.previousJobId,
+      phase: correction.previousPhase,
+      attempt: correction.previousAttempt,
+    },
+  };
+}
 
 export class Reconciler {
   constructor(hubRoot, { assignmentStore, workerStore, leaderLock, failureRouter, hubRoot: _hr }) {
@@ -235,6 +291,16 @@ export class Reconciler {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
+            metadata: {
+              sourceContext: buildRetrySourceContext(assignment, attempt, result, decision),
+              retryDecision: {
+                action: decision.action,
+                reason: decision.reason,
+                retryable: decision.retryable ?? null,
+                retryAt: new Date().toISOString(),
+                untilTs: decision.untilTs ?? null,
+              },
+            },
           });
           break;
         }
