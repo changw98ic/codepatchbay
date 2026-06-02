@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { writePromptArtifact } from "../core/artifacts/prompt-artifact.js";
 import { runExecute } from "../core/phases/execute.js";
 import { runPlan } from "../core/phases/plan.js";
 import { runVerify } from "../core/phases/verify.js";
@@ -19,6 +21,12 @@ async function withTempProject(fn) {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function writePlanArtifact(cpbRoot, name, content = "## Plan\n- Add the Inbox review bundle drill-down and verify changed files.\n") {
+  const filePath = path.join(cpbRoot, `${name}.md`);
+  await writeFile(filePath, content, "utf8");
+  return { kind: "plan", name, path: filePath };
 }
 
 function capturePool(prompts, output) {
@@ -85,6 +93,14 @@ describe("prompt-builder execution intensity contract", () => {
       assert.equal(planResult.status, "passed");
       assertExecutionContract(planPrompts[0]);
       assert.match(planPrompts[0], /Plan the smallest file-scoped path/);
+      assert.equal(planResult.diagnostics.promptArtifact.kind, "prompt");
+      assert.equal(planResult.diagnostics.promptArtifact.metadata.phase, "plan");
+      assert.equal(planResult.diagnostics.promptArtifact.metadata.role, "planner");
+      assert.equal(await readFile(planResult.diagnostics.promptArtifact.path, "utf8"), planPrompts[0]);
+      assert.equal(
+        planResult.diagnostics.promptArtifact.sha256,
+        createHash("sha256").update(planPrompts[0], "utf8").digest("hex"),
+      );
 
       const executePrompts = [];
       const executeResult = await runExecute({
@@ -109,6 +125,14 @@ describe("prompt-builder execution intensity contract", () => {
       assert.equal(executeResult.status, "passed");
       assertExecutionContract(executePrompts[0]);
       assert.match(executePrompts[0], /Implement only the scoped plan/);
+      assert.equal(executeResult.diagnostics.promptArtifact.kind, "prompt");
+      assert.equal(executeResult.diagnostics.promptArtifact.metadata.phase, "execute");
+      assert.equal(executeResult.diagnostics.promptArtifact.metadata.role, "executor");
+      assert.equal(await readFile(executeResult.diagnostics.promptArtifact.path, "utf8"), executePrompts[0]);
+      assert.equal(
+        executeResult.diagnostics.promptArtifact.sha256,
+        createHash("sha256").update(executePrompts[0], "utf8").digest("hex"),
+      );
 
       const verifyPrompts = [];
       const verifyResult = await runVerify({
@@ -118,7 +142,7 @@ describe("prompt-builder execution intensity contract", () => {
         jobId: "job-verify",
         task: "Add a focused Inbox review bundle drill-down.",
         previousResults: [
-          { phase: "execute", status: "passed", artifact: { kind: "deliverable", name: "deliverable-real" } },
+          { phase: "plan", status: "passed", artifact: await writePlanArtifact(cpbRoot, "plan-real") },
         ],
         pool: capturePool(verifyPrompts, `\`\`\`json
 {
@@ -134,6 +158,47 @@ describe("prompt-builder execution intensity contract", () => {
       assert.equal(verifyResult.status, "passed");
       assertExecutionContract(verifyPrompts[0]);
       assert.match(verifyPrompts[0], /generic test success alone is insufficient/);
+      assert.match(verifyPrompts[0], /Plan reference: plan-real/);
+      assert.match(verifyPrompts[0], /Executor deliverables\/summaries are self-reports/);
+      assert.doesNotMatch(verifyPrompts[0], /Deliverable:/);
+      assert.equal(verifyResult.diagnostics.promptArtifact.kind, "prompt");
+      assert.equal(verifyResult.diagnostics.promptArtifact.metadata.phase, "verify");
+      assert.equal(verifyResult.diagnostics.promptArtifact.metadata.role, "verifier");
+      assert.equal(await readFile(verifyResult.diagnostics.promptArtifact.path, "utf8"), verifyPrompts[0]);
+      assert.equal(
+        verifyResult.diagnostics.promptArtifact.sha256,
+        createHash("sha256").update(verifyPrompts[0], "utf8").digest("hex"),
+      );
+    });
+  });
+
+  it("redacts secret-shaped content from persisted prompt artifacts", async () => {
+    await withTempProject(async ({ cpbRoot }) => {
+      const rawPrompt = [
+        "Task mentions Bearer sk-abc123secret and API_KEY=supersecret.",
+        "Authorization: Bearer tok_verysecret",
+        "OPENAI_API_KEY=sk-openai123456789",
+      ].join("\n");
+
+      const artifact = await writePromptArtifact(cpbRoot, {
+        project: "proj",
+        jobId: "job-redacted-prompt",
+        phase: "verify",
+        role: "verifier",
+        agent: "codex",
+        prompt: rawPrompt,
+      });
+      const persisted = await readFile(artifact.path, "utf8");
+
+      assert.equal(artifact.kind, "prompt");
+      assert.equal(artifact.metadata.redacted, true);
+      assert.equal(artifact.metadata.rawSha256, createHash("sha256").update(rawPrompt, "utf8").digest("hex"));
+      assert.equal(artifact.sha256, createHash("sha256").update(persisted, "utf8").digest("hex"));
+      assert.ok(!persisted.includes("sk-abc123secret"));
+      assert.ok(!persisted.includes("supersecret"));
+      assert.ok(!persisted.includes("tok_verysecret"));
+      assert.ok(!persisted.includes("sk-openai123456789"));
+      assert.match(persisted, /\[REDACTED\]/);
     });
   });
 });

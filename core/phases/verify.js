@@ -6,10 +6,14 @@ import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
+import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
 
 const execFile = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
+const PROMPT_PLAN_CHARS = 12_000;
+const PROMPT_DIFF_CHARS = 16_000;
+const PROMPT_DIFF_STAT_CHARS = 40_000;
 
 const JSON_INSTRUCTION = `
 
@@ -171,7 +175,25 @@ function formatCommandFailure(command, err) {
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const cwd = sourcePath || cpbRoot;
-  const deliverableArtifact = getRequiredArtifact(ctx.previousResults, "deliverable");
+  const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
+  const planEvidence = await collectPlanEvidence(planArtifact);
+  if (!isUsablePlanEvidence(planEvidence)) {
+    const reason = planEvidence.reason || "verify requires a readable plan artifact before judging current diff";
+    return phaseFailed({
+      phase: "verify",
+      failure: failure({
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason,
+        retryable: false,
+        cause: {
+          planRequired: true,
+          plan: planEvidence,
+        },
+      }),
+      diagnostics: { planRequired: planEvidence },
+    });
+  }
 
   // Hard gates run BEFORE agent — non-bypassable syntax + test checks
   const gate = await runHardGates(cwd);
@@ -192,11 +214,21 @@ export async function runVerify(ctx) {
     });
   }
 
-  const prompt = await buildVerifyPrompt(ctx, deliverableArtifact) + JSON_INSTRUCTION;
+  const verificationEvidence = await collectVerificationEvidence(cwd, planArtifact, gate, planEvidence);
+  const prompt = await buildVerifyPrompt(ctx, planArtifact, verificationEvidence) + JSON_INSTRUCTION;
+  const resolvedAgent = resolveAgent(ctx, "codex");
+  const promptArtifact = await writePromptArtifact(cpbRoot, {
+    project,
+    jobId,
+    phase: "verify",
+    role: "verifier",
+    agent: resolvedAgent.agent,
+    prompt,
+  });
 
   const agentResult = await runAgent({
     role: "verifier",
-    ...resolveAgent(ctx, "codex"),
+    ...resolvedAgent,
     project,
     prompt,
     cwd,
@@ -216,7 +248,7 @@ export async function runVerify(ctx) {
         signal: agentResult.signal,
         cause: agentResult.cause || {},
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -231,7 +263,7 @@ export async function runVerify(ctx) {
         retryable: true,
         stderrSnippet: agentResult.output.slice(-500),
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -254,15 +286,115 @@ export async function runVerify(ctx) {
         retryable: true,
         cause: { verdict, artifact },
       }),
-      diagnostics: { artifact, verdict },
+      diagnostics: withPromptArtifactDiagnostics({ artifact, verdict }, promptArtifact),
     });
   }
 
   return phasePassed({
     phase: "verify",
     artifact,
-    diagnostics: { verdict },
+    diagnostics: withPromptArtifactDiagnostics({ verdict, verificationEvidence }, promptArtifact),
   });
+}
+
+async function collectVerificationEvidence(cwd, planArtifact, hardGate, planEvidence = null) {
+  const [plan, gitEvidence] = await Promise.all([
+    planEvidence ? Promise.resolve(planEvidence) : collectPlanEvidence(planArtifact),
+    collectGitEvidence(cwd),
+  ]);
+  return {
+    sourceOfTruth: ["task", "plan", "current_diff", "changed_files", "hard_gates"],
+    executorDeliverablePolicy: "self_report_only_not_verification_evidence",
+    plan,
+    git: gitEvidence,
+    hardGate,
+  };
+}
+
+async function collectPlanEvidence(planArtifact) {
+  if (!planArtifact) {
+    return { available: false, reason: "verify requires a plan artifact in previous phase results" };
+  }
+  const plan = {
+    available: true,
+    name: planArtifact.name || null,
+    path: planArtifact.path || null,
+    sha256: planArtifact.sha256 || null,
+    bytes: planArtifact.bytes || null,
+  };
+  if (!planArtifact.path) {
+    plan.available = false;
+    plan.reason = "verify requires a readable plan artifact path";
+    return plan;
+  }
+  try {
+    const content = await readFile(planArtifact.path, "utf8");
+    plan.excerpt = limitText(content, PROMPT_PLAN_CHARS);
+    plan.truncated = content.length > PROMPT_PLAN_CHARS;
+    if (!content.trim()) {
+      plan.available = false;
+      plan.reason = "verify requires non-empty plan artifact content";
+    }
+  } catch (err) {
+    plan.available = false;
+    plan.reason = `plan artifact unreadable: ${err?.message || err}`;
+  }
+  return plan;
+}
+
+function isUsablePlanEvidence(plan) {
+  return Boolean(plan?.available && plan.path && String(plan.excerpt || "").trim());
+}
+
+async function collectGitEvidence(cwd) {
+  const evidence = {
+    available: false,
+    cwd,
+    statusShort: "",
+    changedFiles: [],
+    diffStat: "",
+    diffExcerpt: "",
+    diffTruncated: false,
+    reason: null,
+  };
+
+  try {
+    const [status, trackedFiles, untrackedFiles, diffStat, diff] = await Promise.all([
+      git(cwd, ["status", "--short"]),
+      git(cwd, ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD"]),
+      git(cwd, ["ls-files", "--others", "--exclude-standard"]),
+      git(cwd, ["diff", "--stat", "HEAD"]),
+      git(cwd, ["diff", "HEAD"]),
+    ]);
+
+    const changedFiles = uniqueLines(`${trackedFiles.stdout}\n${untrackedFiles.stdout}`);
+    const diffExcerpt = limitText(diff.stdout, PROMPT_DIFF_CHARS);
+    evidence.available = true;
+    evidence.statusShort = status.stdout.trim();
+    evidence.changedFiles = changedFiles;
+    evidence.diffStat = limitText(diffStat.stdout, PROMPT_DIFF_STAT_CHARS).trim();
+    evidence.diffExcerpt = diffExcerpt;
+    evidence.diffTruncated = diff.stdout.length > PROMPT_DIFF_CHARS;
+  } catch (err) {
+    evidence.reason = err?.message || String(err);
+  }
+
+  return evidence;
+}
+
+async function git(cwd, args) {
+  return execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 })
+    .then(({ stdout = "", stderr = "" }) => ({ stdout, stderr }));
+}
+
+function uniqueLines(text) {
+  return [...new Set(String(text || "").split("\n").map((line) => line.trim()).filter(Boolean))];
+}
+
+function limitText(text, maxChars) {
+  const value = String(text || "");
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n\n[truncated ${value.length - maxChars} chars]`;
 }
 
 function getRequiredArtifact(previousResults, kind) {
@@ -291,9 +423,9 @@ ${verdict.confidence || "N/A"}
 `;
 }
 
-async function buildVerifyPrompt(ctx, deliverableArtifact) {
+async function buildVerifyPrompt(ctx, planArtifact, verificationEvidence) {
   if (typeof ctx.buildPrompt === "function") {
-    return ctx.buildPrompt("verify", ctx, { deliverableArtifact });
+    return ctx.buildPrompt("verify", ctx, { planArtifact, verificationEvidence });
   }
   return `You are a software verification agent. Verify the following implementation:
 
@@ -301,12 +433,21 @@ ${phaseExecutionContract("verify")}
 
 Task: ${ctx.task}
 Project: ${ctx.project}
-${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}
+${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : "\nPlan reference: unavailable\n"}
+
+## Verification Source Of Truth
+Use only the original task, the plan artifact, the current worktree diff/changed files, hard-gate results, and tests you actually run as proof.
+Executor deliverables/summaries are self-reports for later audit only. Do not use an executor deliverable, executor summary, or executor test list as proof for PASS.
+Codegraph/project indexes are optional accelerators. If unavailable, record the reason and continue with git diff, focused file inspection, and real tests.
+
+## Current Evidence Snapshot
+${JSON.stringify(verificationEvidence, null, 2)}
 
 ## MANDATORY checks (MUST run before any other verification):
 1. Run \`node --check\` on every added or modified .js/.mjs file. If ANY file has a syntax error, verdict = FAIL.
 2. Run focused tests for directly changed files when they exist. Full \`npm test\` is a regression layer only when explicitly requested.
-3. Verify concrete request-level acceptance probes from the task requirements before returning PASS.`;
+3. Verify concrete request-level acceptance probes from the task requirements and plan before returning PASS.
+4. Cross-check every claimed implementation path against the current diff. If the diff implements a different product path than the plan requires, verdict = FAIL or PARTIAL even when tests pass.`;
 }
 
 function resolveAgent(ctx, fallback) {

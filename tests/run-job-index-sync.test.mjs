@@ -26,6 +26,12 @@ describe("runJob job index sync", () => {
       };
       const pool = {
         async execute(_agent, _prompt, _cwd, _timeoutMs, options) {
+          if (options.role === "planner") {
+            return {
+              output: "```json\n{\"status\":\"ok\",\"planMarkdown\":\"## Analysis\\nUpdate source file reference.\\n\\n## Files to modify\\n- src/app.js\\n\\n## Implementation Steps\\n1. Update src/app.js.\\n\\n## Testing\\n- Verify src/app.test.js passes.\\n\\n## Risks\\n- None.\"}\n```",
+              providerKey: "codex",
+            };
+          }
           if (options.role === "executor") {
             return {
               output: "```json\n{\"status\":\"ok\",\"summary\":\"Updated src/app.js\",\"tests\":[\"src/app.test.js: passes\"],\"risks\":[]}\n```",
@@ -47,8 +53,8 @@ describe("runJob job index sync", () => {
         project: "proj",
         task: "update source file reference",
         jobId: "job-index-sync",
-        workflow: "direct",
-        planMode: "none",
+        workflow: "standard",
+        planMode: "full",
         sourcePath,
         sourceContext: {},
         createJob,
@@ -61,7 +67,7 @@ describe("runJob job index sync", () => {
       });
 
       assert.equal(result.status, "completed");
-      assert.deepEqual(started, ["execute", "verify"]);
+      assert.deepEqual(started, ["plan", "execute", "verify"]);
       const listed = (await listJobs(cpbRoot, { project: "proj" })).find((job) => job.jobId === "job-index-sync");
       assert.equal(listed?.status, "completed");
     } finally {

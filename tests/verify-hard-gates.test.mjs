@@ -19,6 +19,7 @@ async function withFailingNpmProject(fn) {
   const cpbRoot = path.join(root, "cpb");
   const sourcePath = path.join(root, "source");
   try {
+    await mkdir(cpbRoot, { recursive: true });
     await mkdir(sourcePath, { recursive: true });
     await mkdir(path.join(sourcePath, "src"), { recursive: true });
     await mkdir(path.join(sourcePath, "tests"), { recursive: true });
@@ -57,6 +58,12 @@ async function withFailingNpmProject(fn) {
   }
 }
 
+async function writePlanArtifact(cpbRoot, name = "plan-1") {
+  const filePath = path.join(cpbRoot, `${name}.md`);
+  await writeFile(filePath, "# Plan\n\nUpdate src/app.mjs and verify focused gates.\n", "utf8");
+  return { kind: "plan", name, path: filePath };
+}
+
 describe("verify hard gates", () => {
   it("runs focused gates by default and leaves full npm test to the verifier/regression layer", async () => {
     await withFailingNpmProject(async ({ cpbRoot, sourcePath }) => {
@@ -83,7 +90,7 @@ describe("verify hard gates", () => {
             },
           },
           previousResults: [
-            { phase: "execute", status: "passed", artifact: { kind: "deliverable", name: "deliverable-1" } },
+            { phase: "plan", status: "passed", artifact: await writePlanArtifact(cpbRoot) },
           ],
         });
 
@@ -110,7 +117,7 @@ describe("verify hard gates", () => {
           task: "verify hard gates",
           pool: { async execute() { calls += 1; return "should not run"; } },
           previousResults: [
-            { phase: "execute", status: "passed", artifact: { kind: "deliverable", name: "deliverable-1" } },
+            { phase: "plan", status: "passed", artifact: await writePlanArtifact(cpbRoot) },
           ],
         });
 
@@ -133,9 +140,9 @@ describe("verify hard gates", () => {
       const previous = process.env.CPB_VERIFY_FULL;
       process.env.CPB_VERIFY_FULL = "1";
       try {
-        const outputDir = path.join(cpbRoot, "wiki", "projects", "proj", "outputs");
-        await mkdir(outputDir, { recursive: true });
-        await writeFile(path.join(outputDir, "deliverable-1.md"), "# Deliverable\n\nUpdated src/app.js\n", "utf8");
+        const inboxDir = path.join(cpbRoot, "wiki", "projects", "proj", "inbox");
+        await mkdir(inboxDir, { recursive: true });
+        await writeFile(path.join(inboxDir, "plan-1.md"), "# Plan\n\nUpdate src/app.js and verify focused gates.\n", "utf8");
 
         const exitCode = await runSinglePhase("verify", {
           cpbRoot,

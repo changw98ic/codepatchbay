@@ -3,6 +3,7 @@ import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parsePlannerJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
+import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { validatePlanMarkdown } from "../artifacts/validators.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
 
@@ -29,10 +30,19 @@ export async function runPlan(ctx) {
 
   // Build prompt — reuse existing prompt-builder if available, else minimal
   const prompt = await buildPlanPrompt(ctx) + JSON_INSTRUCTION;
+  const resolvedAgent = resolveAgent(ctx, "codex");
+  const promptArtifact = await writePromptArtifact(cpbRoot, {
+    project,
+    jobId,
+    phase: "plan",
+    role: "planner",
+    agent: resolvedAgent.agent,
+    prompt,
+  });
 
   const agentResult = await runAgent({
     role: "planner",
-    ...resolveAgent(ctx, "codex"),
+    ...resolvedAgent,
     project,
     prompt,
     cwd: sourcePath || cpbRoot,
@@ -52,7 +62,7 @@ export async function runPlan(ctx) {
         signal: agentResult.signal,
         cause: agentResult.cause || {},
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -68,7 +78,7 @@ export async function runPlan(ctx) {
         stderrSnippet: agentResult.output.slice(-500),
         cause: { rawOutput: agentResult.output.slice(0, 2000) },
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -83,7 +93,7 @@ export async function runPlan(ctx) {
         retryable: true,
         cause: { rawOutput: parsed.planMarkdown.slice(0, 2000) },
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -98,7 +108,7 @@ export async function runPlan(ctx) {
   return phasePassed({
     phase: "plan",
     artifact,
-    diagnostics: agentResult.diagnostics,
+    diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
   });
 }
 

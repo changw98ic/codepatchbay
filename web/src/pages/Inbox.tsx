@@ -250,11 +250,22 @@ const TYPE_OPTIONS = [
   { value: 'review', label: 'Review' },
 ];
 
+const REVIEWABLE_PIPELINE_STATUSES = new Set(['passed', 'pr-opened', 'completed', 'failed', 'blocked', 'cancelled']);
+
 // --- detail ---
 
 function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading: boolean }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { acceptReviewBundle, rejectReviewBundle } = useInboxStore();
+  const [feedback, setFeedback] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFeedback('');
+    setReviewError(null);
+  }, [detail?.id]);
 
   if (!detail) {
     return (
@@ -262,6 +273,47 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
         <p className={detailValue} style={{ color: theme.textMuted }}>Select a request to view details</p>
       </GlassPanel>
     );
+  }
+
+  const latestReviewVerdict = detail.reviewLoop?.latest?.verdict;
+  const alreadyReviewedBundle = latestReviewVerdict === 'accepted' || latestReviewVerdict === 'rejected';
+  const canReviewBundle =
+    detail.type === 'pipeline' &&
+    Boolean(detail.reviewBundle) &&
+    !detail.reviewBundle?.error &&
+    REVIEWABLE_PIPELINE_STATUSES.has(String(detail.status)) &&
+    !alreadyReviewedBundle;
+
+  async function submitAccept() {
+    if (!detail) return;
+    setSubmittingReview(true);
+    setReviewError(null);
+    try {
+      await acceptReviewBundle(detail.id, feedback);
+      setFeedback('');
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : 'Accept failed');
+    } finally {
+      setSubmittingReview(false);
+    }
+  }
+
+  async function submitReject() {
+    if (!detail) return;
+    if (!feedback.trim()) {
+      setReviewError('Feedback required');
+      return;
+    }
+    setSubmittingReview(true);
+    setReviewError(null);
+    try {
+      await rejectReviewBundle(detail.id, feedback);
+      setFeedback('');
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : 'Reject failed');
+    } finally {
+      setSubmittingReview(false);
+    }
   }
 
   return (
@@ -448,6 +500,59 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
               </pre>
             </details>
           )}
+        </div>
+      )}
+
+      {canReviewBundle && (
+        <div className={detailSection}>
+          <div className={detailLabel}>Review Action</div>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Feedback"
+            rows={4}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              marginBottom: space[2],
+              borderRadius: 6,
+              border: `1px solid ${theme.border}`,
+              background: theme.surfaceAlt,
+              color: theme.text,
+              padding: space[2],
+              fontSize: fontSize.sm,
+              resize: 'vertical',
+            }}
+          />
+          {reviewError && (
+            <div className={detailValue} style={{ color: theme.error, marginBottom: space[2] }}>{reviewError}</div>
+          )}
+          <div style={{ display: 'flex', gap: space[2], flexWrap: 'wrap' }}>
+            <Button size="sm" variant="primary" disabled={submittingReview} onClick={submitAccept}>Accept</Button>
+            <Button size="sm" variant="danger" disabled={submittingReview || !feedback.trim()} onClick={submitReject}>Reject</Button>
+          </div>
+        </div>
+      )}
+
+      {detail.reviewLoop?.rounds && detail.reviewLoop.rounds.length > 0 && (
+        <div className={detailSection}>
+          <div className={detailLabel}>Review Rounds</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space[1] }}>
+            {detail.reviewLoop.rounds.map((round) => (
+              <div key={`${round.round}-${round.createdAt || ''}`} style={{ fontSize: fontSize.xs, color: theme.text }}>
+                <Badge variant={round.verdict === 'accepted' ? 'success' : round.verdict === 'rejected' ? 'error' : 'muted'}>
+                  {round.verdict}
+                </Badge>
+                <span style={{ marginLeft: space[2] }}>R{round.round}</span>
+                {round.correctionQueueEntryId && (
+                  <span style={{ marginLeft: space[2], color: theme.textMuted, fontFamily: 'monospace' }}>
+                    {round.correctionQueueEntryId}
+                  </span>
+                )}
+                {round.feedback && <div className={detailValue}>{round.feedback}</div>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

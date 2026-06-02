@@ -4,7 +4,7 @@ import path from "node:path";
 import { readEvents } from "./event-store.js";
 
 const SCHEMA_VERSION = 1;
-const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "diff", "tests", "risk", "pr"]);
+const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "prompt", "diff", "tests", "risk", "pr"]);
 
 function wikiProjectDir(cpbRoot, project, wikiDir) {
   if (wikiDir) return path.resolve(wikiDir);
@@ -37,6 +37,7 @@ function inferKind(event, artifact) {
   if (/^deliverable-/i.test(name)) return "deliverable";
   if (/^review-/i.test(name)) return "review";
   if (/^verdict-/i.test(name)) return "verdict";
+  if (/^prompt-/i.test(name)) return "prompt";
   if (/^diff-/i.test(name) || /\.(?:patch|diff)$/i.test(name)) return "diff";
   if (/^tests-/i.test(name)) return "tests";
   if (/^risk-/i.test(name)) return "risk";
@@ -98,10 +99,18 @@ async function inspectArtifact(filePath) {
   }
 }
 
-function artifactEvents(events) {
-  return events.filter((event) => {
-    return event && typeof event === "object" && typeof event.artifact === "string" && event.artifact.length > 0;
-  });
+function artifactReferences(events) {
+  const refs = [];
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    if (typeof event.artifact === "string" && event.artifact.length > 0) {
+      refs.push({ event, artifact: event.artifact, kind: inferKind(event, event.artifact) });
+    }
+    if (typeof event.promptArtifact === "string" && event.promptArtifact.length > 0) {
+      refs.push({ event, artifact: event.promptArtifact, kind: "prompt" });
+    }
+  }
+  return refs;
 }
 
 export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir } = {}) {
@@ -109,16 +118,16 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
   const entries = [];
   const seen = new Set();
 
-  for (const event of artifactEvents(sourceEvents)) {
-    const kind = inferKind(event, event.artifact);
-    const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, event.artifact, wikiDir);
+  for (const ref of artifactReferences(sourceEvents)) {
+    const { event, artifact, kind } = ref;
+    const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir);
     const key = `${kind}:${event.phase || ""}:${artifactPath}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
     const inspected = await inspectArtifact(artifactPath);
     entries.push({
-      id: artifactIdFor(event.artifact),
+      id: artifactIdFor(artifact),
       kind,
       phase: event.phase || null,
       path: artifactPath,

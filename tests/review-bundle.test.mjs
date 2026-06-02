@@ -70,12 +70,18 @@ describe("Review Bundle Service", () => {
     const outputsDir = path.join(cpbRoot, "wiki", "projects", project, "outputs");
     await mkdir(inboxDir, { recursive: true });
     await mkdir(outputsDir, { recursive: true });
+    const planPromptPath = path.join(outputsDir, "prompt-plan-audit.md");
+    const executePromptPath = path.join(outputsDir, "prompt-execute-audit.md");
+    const verifyPromptPath = path.join(outputsDir, "prompt-verify-audit.md");
     await writeFile(path.join(inboxDir, "plan-dark-mode.md"), "# Plan\n\nUse a persisted theme flag.\n");
     await writeFile(path.join(outputsDir, "deliverable-dark-mode.md"), "# Deliverable\n\nChanged theme toggle code.\n");
     await writeFile(
       path.join(outputsDir, "verdict-dark-mode.md"),
       JSON.stringify({ ok: true, status: "pass", confidence: 0.9, reason: "dark mode evidence is present" }),
     );
+    await writeFile(planPromptPath, "PLAN PROMPT: persisted theme flag\n");
+    await writeFile(executePromptPath, "EXECUTE PROMPT: changed theme toggle\n");
+    await writeFile(verifyPromptPath, "VERIFY PROMPT: inspect dark mode evidence\n");
 
     await appendEvent(cpbRoot, project, jobId, {
       type: "job_created",
@@ -91,6 +97,7 @@ describe("Review Bundle Service", () => {
       project,
       phase: "plan",
       artifact: "plan-dark-mode",
+      promptArtifact: "prompt-plan-audit",
       agent: "codex",
       ts: new Date().toISOString(),
     });
@@ -101,6 +108,7 @@ describe("Review Bundle Service", () => {
       project,
       phase: "execute",
       artifact: "deliverable-dark-mode",
+      promptArtifact: "prompt-execute-audit",
       agent: "claude",
       ts: new Date().toISOString(),
     });
@@ -111,6 +119,7 @@ describe("Review Bundle Service", () => {
       project,
       phase: "verify",
       artifact: "verdict-dark-mode",
+      promptArtifact: "prompt-verify-audit",
       agent: "codex",
       ts: new Date().toISOString(),
     });
@@ -127,6 +136,7 @@ describe("Review Bundle Service", () => {
     assert.equal(artifactIndex.entries.find((entry) => entry.kind === "plan")?.path, path.join(inboxDir, "plan-dark-mode.md"));
     assert.equal(artifactIndex.entries.find((entry) => entry.kind === "deliverable")?.path, path.join(outputsDir, "deliverable-dark-mode.md"));
     assert.equal(artifactIndex.entries.find((entry) => entry.kind === "verdict")?.path, path.join(outputsDir, "verdict-dark-mode.md"));
+    assert.equal(artifactIndex.entries.filter((entry) => entry.kind === "prompt").length, 3);
 
     const bundle = await buildReviewBundle(cpbRoot, project, jobId);
 
@@ -144,6 +154,17 @@ describe("Review Bundle Service", () => {
     assert.match(bundle.evidence.deliverable.content, /Changed theme toggle code/);
     assert.equal(bundle.evidence.verdict.status, "pass");
     assert.ok(bundle.links.artifacts.every((artifact) => artifact.broken === false));
+    assert.deepEqual(
+      bundle.promptAudit.map((entry) => ({ phase: entry.phase, path: entry.path, broken: entry.broken })),
+      [
+        { phase: "plan", path: planPromptPath, broken: false },
+        { phase: "execute", path: executePromptPath, broken: false },
+        { phase: "verify", path: verifyPromptPath, broken: false },
+      ],
+    );
+    assert.ok(bundle.promptAudit.every((entry) => typeof entry.sha256 === "string" && entry.sha256.length === 64));
+    assert.ok(bundle.links.artifacts.some((artifact) => artifact.kind === "prompt" && artifact.phase === "plan"));
+    assert.equal(JSON.stringify(bundle.evidence).includes("PLAN PROMPT"), false);
   });
 
   it("resolves extensionless artifact references to existing markdown files", async () => {

@@ -59,6 +59,15 @@ async function getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot } = {}) 
   return state;
 }
 
+async function extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot } = {}) {
+  try {
+    const { extractExperienceForJob } = await import("./experience-extractor.js");
+    await extractExperienceForJob(cpbRoot, project, jobId, { dataRoot });
+  } catch {
+    // Experience extraction should never change the terminal job outcome.
+  }
+}
+
 export const FAILURE_CODES = Object.freeze({
   RECOVERABLE: "RECOVERABLE",
   QUALITY_FAIL: "QUALITY_FAIL",
@@ -333,9 +342,7 @@ export async function failJob(
   }, { dataRoot });
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
-  // Extract experience from failed job (fire-and-forget)
-  const { extractExperienceForJob } = await import("./experience-extractor.js");
-  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
@@ -549,9 +556,7 @@ export async function budgetExceeded(
     ts,
   }, { dataRoot });
 
-  // Extract experience from budget-exceeded job (fire-and-forget)
-  const { extractExperienceForJob } = await import("./experience-extractor.js");
-  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
@@ -585,9 +590,7 @@ export async function poolExhaustedJob(
   await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
-  // Extract experience from pool-exhausted job (fire-and-forget)
-  const { extractExperienceForJob } = await import("./experience-extractor.js");
-  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
@@ -620,9 +623,7 @@ export async function completeJob(
 
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
-  // Extract experience from completed job (fire-and-forget)
-  const { extractExperienceForJob } = await import("./experience-extractor.js");
-  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
@@ -712,9 +713,7 @@ export async function cancelJob(
   }, { dataRoot });
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
 
-  // Extract experience from cancelled job (fire-and-forget)
-  const { extractExperienceForJob } = await import("./experience-extractor.js");
-  extractExperienceForJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }

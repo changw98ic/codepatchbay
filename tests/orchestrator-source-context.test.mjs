@@ -63,4 +63,35 @@ describe("hub orchestrator source context normalization", () => {
     assert.equal(context.correction.previousJobId, "job-1");
     assert.match(context.correction.previousOutput, /failing test name/);
   });
+
+  it("preserves review bundle correction context from queued reject feedback", () => {
+    const context = normalizedSourceContext({
+      id: "q-review-correction",
+      type: "review_bundle_correction",
+      metadata: {
+        source: "review_bundle_rejection",
+        sourceContext: {
+          type: "review_bundle_correction",
+          correction: {
+            failureKind: "human_rejected_review_bundle",
+            failureReason: "Missing Inbox route coverage.",
+            previousJobId: "job-20260602-000000-abcd12",
+            originalBundleId: "rb-proj-job-20260602-000000-abcd12",
+            reviewRound: 1,
+          },
+          reviewLoop: {
+            originalJobId: "job-20260602-000000-abcd12",
+            originalBundleId: "rb-proj-job-20260602-000000-abcd12",
+            round: 1,
+          },
+        },
+      },
+    });
+
+    assert.equal(context.queueEntryId, "q-review-correction");
+    assert.equal(context.type, "review_bundle_correction");
+    assert.equal(context.correction.failureKind, "human_rejected_review_bundle");
+    assert.equal(context.correction.reviewRound, 1);
+    assert.equal(context.reviewLoop.originalJobId, "job-20260602-000000-abcd12");
+  });
 });

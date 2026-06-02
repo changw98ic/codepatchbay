@@ -32,6 +32,8 @@ interface InboxStore {
   fetchInbox: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   selectRequest: (id: string | null) => Promise<void>;
+  acceptReviewBundle: (id: string, feedback?: string) => Promise<void>;
+  rejectReviewBundle: (id: string, feedback: string) => Promise<void>;
 }
 
 function buildQueryString(filters: InboxFilters): string {
@@ -127,5 +129,27 @@ export const useInboxStore = create<InboxStore>((set, get) => ({
     } catch {
       set({ detailLoading: false });
     }
+  },
+
+  acceptReviewBundle: async (id, feedback = '') => {
+    const res = await fetch(`/api/inbox/${encodeURIComponent(id)}/review-bundle/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor: 'inbox', feedback }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await get().selectRequest(id);
+    await get().fetchInbox();
+  },
+
+  rejectReviewBundle: async (id, feedback) => {
+    const res = await fetch(`/api/inbox/${encodeURIComponent(id)}/review-bundle/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor: 'inbox', feedback }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await get().selectRequest(id);
+    await get().fetchInbox();
   },
 }));
