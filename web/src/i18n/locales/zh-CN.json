@@ -11,6 +11,7 @@
     "review": "审查",
     "agents": "智能体",
     "logs": "日志",
+    "inbox": "收件箱",
     "search": "搜索"
   },
   "dashboard": {
@@ -221,5 +222,37 @@
     "execute": "执行",
     "verify": "验证",
     "retry": "重试"
+  },
+  "inbox": {
+    "title": "收件箱",
+    "subtitle": "跨项目请求审计工作台",
+    "allProjects": "所有项目",
+    "allStatuses": "所有状态",
+    "allPriorities": "所有优先级",
+    "allTypes": "所有类型",
+    "searchPlaceholder": "搜索请求...",
+    "noRequests": "未找到请求",
+    "noRequestsDesc": "来自流水线、队列和审查的请求将显示在这里。",
+    "requestCount": "{{count}} 个请求",
+    "detail": {
+      "back": "返回列表",
+      "pipeline": "流水线",
+      "queue": "队列",
+      "review": "审查",
+      "retryChain": "重试链",
+      "round": "第 {{n}} 轮",
+      "noRetryChain": "无重试历史",
+      "noActivity": "暂无近期活动",
+      "source": "来源",
+      "workflow": "工作流",
+      "phase": "阶段",
+      "retryCount": "重试次数",
+      "plan": "规划",
+      "research": "研究",
+      "reviews": "审查",
+      "budget": "预算",
+      "pr": "Pull Request",
+      "verdict": "裁决"
+    }
   }
 }

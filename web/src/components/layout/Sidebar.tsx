@@ -95,6 +95,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
 
   const navItems = [
     { to: '/', label: t('nav.dashboard'), end: true },
+    { to: '/inbox', label: t('nav.inbox') },
     { to: '/new-task', label: t('nav.newTask') },
     { to: '/review', label: t('nav.review') },
     { to: '/agents', label: t('nav.agents') },
