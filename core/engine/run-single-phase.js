@@ -145,17 +145,19 @@ export async function runSinglePhase(phase, opts) {
     deliverableId,
   });
 
-  // For execute/verify without explicit ID, try to find latest artifact
+  // For execute/verify without explicit ID, try to find latest plan artifact.
+  // Verify judges the current diff against the plan; execute deliverables are audit
+  // self-reports and are intentionally not verification proof.
   if (phase === "execute" && !planId) {
     const planArtifact = await findLatestArtifact(cpbRoot, project, "plan");
     if (planArtifact) {
       previousResults.push({ status: "passed", phase: "plan", artifact: planArtifact });
     }
   }
-  if (phase === "verify" && !deliverableId) {
-    const delivArtifact = await findLatestArtifact(cpbRoot, project, "deliverable");
-    if (delivArtifact) {
-      previousResults.push({ status: "passed", phase: "execute", artifact: delivArtifact });
+  if (phase === "verify" && !planId) {
+    const planArtifact = await findLatestArtifact(cpbRoot, project, "plan");
+    if (planArtifact) {
+      previousResults.push({ status: "passed", phase: "plan", artifact: planArtifact });
     }
   }
 
@@ -198,6 +200,7 @@ export async function runSinglePhase(phase, opts) {
     phase,
     status: result.status,
     artifact: result.artifact?.name || null,
+    promptArtifact: result.diagnostics?.promptArtifact?.name || null,
     failure: result.failure
       ? { kind: result.failure.kind, reason: result.failure.reason }
       : null,

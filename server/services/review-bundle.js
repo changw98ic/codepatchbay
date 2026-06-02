@@ -82,6 +82,17 @@ export async function buildReviewBundle(cpbRoot, project, jobId, {
   const deliverableArtifact = artifactIndex.entries.find((e) => e.kind === "deliverable" && !e.broken);
   const verdictArtifact = [...artifactIndex.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
   const reviewArtifact = artifactIndex.entries.find((e) => e.kind === "review" && !e.broken);
+  const promptAudit = artifactIndex.entries
+    .filter((e) => e.kind === "prompt")
+    .map((e) => ({
+      id: e.id,
+      phase: e.phase || null,
+      path: e.path,
+      sha256: e.sha256,
+      producerAgent: e.producerAgent || null,
+      broken: e.broken,
+      reason: e.reason || null,
+    }));
 
   let planContent = null;
   if (planArtifact) {
@@ -182,12 +193,15 @@ export async function buildReviewBundle(cpbRoot, project, jobId, {
 
     timeline,
 
+    promptAudit,
+
     links: {
       eventLog: `events/${project}/${jobId}.jsonl`,
       artifacts: artifactIndex.entries.map((e) => ({
         kind: e.kind,
         phase: e.phase || null,
         path: e.path,
+        sha256: e.sha256,
         broken: e.broken,
       })),
     },

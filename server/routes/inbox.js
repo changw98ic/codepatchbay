@@ -5,10 +5,18 @@ import { jobToQueueRow, jobToPipelineState } from "../services/job-projection.js
 import { listQueue } from "../services/hub-queue.js";
 import { listSessions, getSession } from "../services/review-session.js";
 import { buildReviewBundle } from "../services/review-bundle.js";
+import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from "../services/review-loop.js";
 import { resolveProjectDataRoot } from "../services/runtime-context.js";
 import { runtimeDataRoot } from "../services/runtime-root.js";
+import { getProject } from "../services/hub-registry.js";
+import { broadcast } from "../services/ws-broadcast.js";
 
 const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
+
+function sendReviewLoopError(reply, error) {
+  if (!isReviewLoopError(error)) throw error;
+  return reply.code(error.statusCode).send({ error: error.message, code: error.code });
+}
 
 function priorityForStatus(status) {
   if (["failed", "blocked"].includes(status)) return "P0";
@@ -182,6 +190,7 @@ export function inboxRoutes(fastify) {
         pipelineState,
         retryChain,
         reviewBundle,
+        reviewLoop: job.reviewLoop || { rounds: [], latest: null },
         plan: artifacts.plan?.content || null,
         deliverable: artifacts.deliverable?.content || null,
         verdict: artifacts.verdict?.parsed || null,
@@ -237,6 +246,73 @@ export function inboxRoutes(fastify) {
     }
 
     return reply.code(404).send({ error: "Request not found" });
+  });
+
+  fastify.post("/inbox/:requestId/review-bundle/accept", async (req, reply) => {
+    const cpbRoot = req.cpbRoot;
+    const hubRoot = req.cpbHubRoot;
+    const { requestId } = req.params;
+    const { actor = "inbox", feedback = "" } = req.body || {};
+
+    const allJobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot }).catch(() => []);
+    const job = allJobs.find((j) => j.jobId === requestId);
+    if (!job) return reply.code(404).send({ error: "Request not found" });
+
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, job.project, {
+      hubRoot,
+      dataRoot: job.dataRoot || null,
+    });
+    let result;
+    try {
+      result = await acceptReviewBundle(cpbRoot, job.project, job.jobId, {
+        actor,
+        feedback,
+        dataRoot,
+      });
+    } catch (error) {
+      return sendReviewLoopError(reply, error);
+    }
+    broadcast({ type: "review_bundle:accepted", project: job.project, jobId: job.jobId, round: result.round });
+    return result;
+  });
+
+  fastify.post("/inbox/:requestId/review-bundle/reject", async (req, reply) => {
+    const cpbRoot = req.cpbRoot;
+    const hubRoot = req.cpbHubRoot;
+    const { requestId } = req.params;
+    const { actor = "inbox", feedback = "" } = req.body || {};
+    if (!String(feedback || "").trim()) return reply.code(400).send({ error: "feedback required" });
+    if (!hubRoot) return reply.code(400).send({ error: "hubRoot required" });
+
+    const allJobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot }).catch(() => []);
+    const job = allJobs.find((j) => j.jobId === requestId);
+    if (!job) return reply.code(404).send({ error: "Request not found" });
+
+    const project = await getProject(hubRoot, job.project).catch(() => null);
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, job.project, {
+      hubRoot,
+      dataRoot: job.dataRoot || project?.projectRuntimeRoot || null,
+    });
+    let result;
+    try {
+      result = await rejectReviewBundle(cpbRoot, job.project, job.jobId, {
+        actor,
+        feedback,
+        hubRoot,
+        sourcePath: project?.sourcePath || job.sourcePath || null,
+        dataRoot,
+      });
+    } catch (error) {
+      return sendReviewLoopError(reply, error);
+    }
+    broadcast({
+      type: "review_bundle:rejected",
+      project: job.project,
+      jobId: job.jobId,
+      round: result.round,
+      correctionQueueEntryId: result.correctionQueueEntry?.id,
+    });
+    return result;
   });
 
   fastify.get("/inbox/projects", async (req) => {

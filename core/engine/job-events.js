@@ -17,7 +17,13 @@ export function phaseStartedEvent(phase) {
 }
 
 export function phaseResultEvent(phase, result) {
-  return { type: "phase_result", phase, status: result.status, artifact: result.artifact?.name || null };
+  return {
+    type: "phase_result",
+    phase,
+    status: result.status,
+    artifact: result.artifact?.name || null,
+    promptArtifact: result.diagnostics?.promptArtifact?.name || null,
+  };
 }
 
 export function jobCompletedEvent(artifact) {

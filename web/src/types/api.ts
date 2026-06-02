@@ -310,6 +310,21 @@ export interface InboxReviewBundle {
   error?: string;
 }
 
+export interface ReviewLoopRound {
+  round: number;
+  verdict: 'accepted' | 'rejected' | string;
+  feedback?: string | null;
+  correctionQueueEntryId?: string | null;
+  bundleId?: string | null;
+  actor?: string | null;
+  createdAt?: string | null;
+}
+
+export interface ReviewLoopState {
+  rounds: ReviewLoopRound[];
+  latest?: ReviewLoopRound | null;
+}
+
 export interface InboxArtifactDrilldown {
   plan: ({ path?: string | null; content: string; broken?: boolean; reason?: string | null } | null);
   deliverable: ({ path?: string | null; content: string; broken?: boolean; reason?: string | null } | null);
@@ -321,6 +336,7 @@ export interface InboxRequestDetail extends InboxRequestRow {
   pipelineState?: PipelineState;
   retryChain?: RetryChainEntry[];
   reviewBundle?: InboxReviewBundle;
+  reviewLoop?: ReviewLoopState;
   workflow?: string;
   research?: { codex?: string; claude?: string };
   plan?: string | null;

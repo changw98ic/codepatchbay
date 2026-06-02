@@ -6,6 +6,7 @@ import { getProject } from '../services/hub-registry.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
 import { buildReviewBundle } from '../services/review-bundle.js';
+import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from '../services/review-loop.js';
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 const SAFE_JOB_ID = /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -23,6 +24,11 @@ async function projectDataRoot(hubRoot, name) {
   } catch {
     return undefined;
   }
+}
+
+function sendReviewLoopError(reply, error) {
+  if (!isReviewLoopError(error)) throw error;
+  return reply.code(error.statusCode).send({ error: error.message, code: error.code });
 }
 
 export async function taskRoutes(fastify, opts) {
@@ -147,5 +153,56 @@ export async function taskRoutes(fastify, opts) {
     const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
     const bundle = await buildReviewBundle(req.cpbRoot, name, jobId, { dataRoot });
     return bundle;
+  });
+
+  fastify.post('/tasks/:name/jobs/:jobId/review-bundle/accept', async (req, reply) => {
+    const { name, jobId } = req.params;
+    const { actor = 'api', feedback = '' } = req.body || {};
+    if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
+    const project = await getProject(req.cpbHubRoot, name);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+    const dataRoot = project.projectRuntimeRoot || await projectDataRoot(req.cpbHubRoot, name);
+    let result;
+    try {
+      result = await acceptReviewBundle(req.cpbRoot, name, jobId, {
+        actor,
+        feedback,
+        dataRoot,
+      });
+    } catch (error) {
+      return sendReviewLoopError(reply, error);
+    }
+    broadcast({ type: 'review_bundle:accepted', project: name, jobId, round: result.round });
+    return result;
+  });
+
+  fastify.post('/tasks/:name/jobs/:jobId/review-bundle/reject', async (req, reply) => {
+    const { name, jobId } = req.params;
+    const { actor = 'api', feedback } = req.body || {};
+    if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
+    if (!feedback || !String(feedback).trim()) throw fastify.httpErrors.badRequest('feedback required');
+    const project = await getProject(req.cpbHubRoot, name);
+    if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+    const dataRoot = project.projectRuntimeRoot || await projectDataRoot(req.cpbHubRoot, name);
+    let result;
+    try {
+      result = await rejectReviewBundle(req.cpbRoot, name, jobId, {
+        actor,
+        feedback,
+        hubRoot: req.cpbHubRoot,
+        sourcePath: project.sourcePath || null,
+        dataRoot,
+      });
+    } catch (error) {
+      return sendReviewLoopError(reply, error);
+    }
+    broadcast({
+      type: 'review_bundle:rejected',
+      project: name,
+      jobId,
+      round: result.round,
+      correctionQueueEntryId: result.correctionQueueEntry?.id,
+    });
+    return result;
   });
 }

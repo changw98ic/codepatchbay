@@ -353,6 +353,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
   "approval_required", "job_approved", "approval_timed_out",
   "job_superseded",
+  "review_bundle_accepted", "review_bundle_rejected",
 ]);
 
 const NODE_STATE_DEFAULTS = {
@@ -448,6 +449,10 @@ export function materializeJob(events) {
     planCache: null,
     routingFeedback: null,
     approval: null,
+    reviewLoop: {
+      rounds: [],
+      latest: null,
+    },
   };
 
   let terminal = false;
@@ -749,6 +754,23 @@ export function materializeJob(events) {
         state.approval = state.approval ? { ...state.approval, timedOutAt: event.ts ?? null } : null;
         terminal = true;
         break;
+      case "review_bundle_accepted":
+      case "review_bundle_rejected": {
+        const round = {
+          round: event.round ?? state.reviewLoop.rounds.length + 1,
+          verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
+          feedback: event.feedback ?? null,
+          correctionQueueEntryId: event.correctionQueueEntryId ?? null,
+          bundleId: event.bundleId ?? null,
+          actor: event.actor ?? null,
+          createdAt: event.ts ?? null,
+        };
+        state.reviewLoop = {
+          rounds: [...state.reviewLoop.rounds, round],
+          latest: round,
+        };
+        break;
+      }
       case "job_completed":
         state.status = "completed";
         state.phase = "completed";

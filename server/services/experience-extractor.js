@@ -281,8 +281,8 @@ export async function writeExperience(cpbRoot, experience, { force = false, skip
   const content = formatExperienceFile(experience);
   await writeFile(filePath, content, "utf8");
 
-  // Auto-rebuild index after writing (fire-and-forget)
-  if (!skipIndexRebuild) rebuildExperienceIndex(cpbRoot).catch(() => {});
+  // Keep the experience file and index in the same awaited write contract.
+  if (!skipIndexRebuild) await rebuildExperienceIndex(cpbRoot);
 
   return true;
 }

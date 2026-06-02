@@ -5,6 +5,7 @@ import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseExecutorJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
+import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { validateDeliverable } from "../artifacts/validators.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
 
@@ -42,10 +43,19 @@ export async function runExecute(ctx) {
   } catch { /* not a git repo — skip */ }
 
   const prompt = await buildExecutePrompt(ctx, planArtifact) + JSON_INSTRUCTION;
+  const resolvedAgent = resolveAgent(ctx, "claude");
+  const promptArtifact = await writePromptArtifact(cpbRoot, {
+    project,
+    jobId,
+    phase: "execute",
+    role: "executor",
+    agent: resolvedAgent.agent,
+    prompt,
+  });
 
   const agentResult = await runAgent({
     role: "executor",
-    ...resolveAgent(ctx, "claude"),
+    ...resolvedAgent,
     project,
     prompt,
     cwd,
@@ -65,7 +75,7 @@ export async function runExecute(ctx) {
         signal: agentResult.signal,
         cause: agentResult.cause || {},
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -81,7 +91,7 @@ export async function runExecute(ctx) {
         stderrSnippet: agentResult.output.slice(-500),
         cause: { rawOutput: agentResult.output.slice(0, 2000) },
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -101,7 +111,7 @@ export async function runExecute(ctx) {
         retryable: validation.retryable ?? false,
         cause: { rawOutput: deliverable.slice(0, 2000) },
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
     });
   }
 
@@ -116,7 +126,7 @@ export async function runExecute(ctx) {
   return phasePassed({
     phase: "execute",
     artifact,
-    diagnostics: agentResult.diagnostics,
+    diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
   });
 }
 

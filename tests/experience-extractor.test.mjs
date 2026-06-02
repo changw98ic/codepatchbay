@@ -361,9 +361,6 @@ describe("index auto-rebuild on write", () => {
       reason: "test", details: "", fix: "待补充", prevention: "待补充",
     });
 
-    // writeExperience fires rebuildExperienceIndex as fire-and-forget;
-    // wait a tick for it to complete, then verify
-    await new Promise((r) => setTimeout(r, 50));
     const index = await readFile(
       path.join(cpbRoot, "wiki", "experience", "index.md"),
       "utf8",
@@ -382,9 +379,7 @@ describe("idempotent write does not rebuild index", () => {
       reason: "test", details: "", fix: "待补充", prevention: "待补充",
     };
 
-    // First write triggers rebuild
     await writeExperience(cpbRoot, exp);
-    await new Promise((r) => setTimeout(r, 50));
 
     // Get index content after first write
     const index1 = await readFile(

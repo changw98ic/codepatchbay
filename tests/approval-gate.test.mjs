@@ -20,8 +20,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Wait for fire-and-forget rebuildExperienceIndex to finish
-  await new Promise((r) => setTimeout(r, 100));
   await rm(tmpDir, { recursive: true, force: true });
 });
 

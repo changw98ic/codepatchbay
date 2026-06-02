@@ -498,6 +498,7 @@ export async function runJob(ctx) {
       agent: agentName,
       status: result.status,
       artifact: result.artifact?.name || null,
+      promptArtifact: result.diagnostics?.promptArtifact?.name || null,
       failure: result.failure
         ? { kind: result.failure.kind, reason: result.failure.reason }
         : null,
