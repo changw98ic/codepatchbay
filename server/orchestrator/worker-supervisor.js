@@ -3,15 +3,20 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { WorkerStore } from "./worker-store.js";
+import { executorEnv, resolveExecutorRoot } from "../services/executor-root.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
 const MAX_RESTARTS = 3;
 
 export class WorkerSupervisor {
-  constructor(hubRoot, cpbRoot, { workerStore }) {
-    this.hubRoot = hubRoot;
-    this.cpbRoot = cpbRoot;
+  constructor(hubRoot, cpbRoot, { workerStore, executorRoot } = {}) {
+    this.hubRoot = path.resolve(hubRoot);
+    this.cpbRoot = path.resolve(cpbRoot);
+    this.executorRoot = path.resolve(executorRoot || resolveExecutorRoot({
+      env: process.env,
+      fallbackRoot: this.cpbRoot,
+    }));
     this.workers = workerStore;
     this._children = new Map(); // workerId → ChildProcess
   }
@@ -25,7 +30,7 @@ export class WorkerSupervisor {
 
   async startWorker(assignment) {
     const workerId = WorkerStore.makeWorkerId();
-    const executorRoot = this.cpbRoot;
+    const executorRoot = this.executorRoot;
 
     const logDir = path.join(this.hubRoot, "logs");
     await mkdir(logDir, { recursive: true });
@@ -36,8 +41,11 @@ export class WorkerSupervisor {
       "--hub-root", this.hubRoot,
       "--cpb-root", this.cpbRoot,
     ], {
-      cwd: this.cpbRoot,
-      env: { ...process.env, CPB_ROOT: this.cpbRoot, CPB_HUB_ROOT: this.hubRoot },
+      cwd: executorRoot,
+      env: {
+        ...executorEnv(process.env, { cpbRoot: this.cpbRoot, executorRoot }),
+        CPB_HUB_ROOT: this.hubRoot,
+      },
       detached: true,
       stdio: ["ignore", logFd, logFd],
     });
@@ -49,6 +57,7 @@ export class WorkerSupervisor {
       projectId: assignment.projectId,
       pid: child.pid,
       status: "starting",
+      executorRoot,
     });
 
     child.on("exit", async (code) => {

@@ -444,13 +444,13 @@ async function printSummary() {
   const q = run("cpb hub queue-status", { silent: true, allowFail: true });
   if (q.ok) console.log(q.stdout);
 
-  // Check latest session for MCP usage when Codex participates in the route.
+  // Check latest session for CodeGraph usage when Codex participates in the route.
   if (AGENT_MODE === "claude" || AGENT_MODE === "cc") {
     log("MCP", "Pure Claude Code mode; skipping Codex MCP usage check.");
     return;
   }
 
-  log("MCP", "Checking if Codex used MCP tools...");
+  log("MCP", "Checking if Codex used CodeGraph tools...");
   try {
     const sessionDir = path.join(homedir(), ".codex", "sessions");
     let latestSession = null;
@@ -470,12 +470,12 @@ async function printSummary() {
     }
     if (latestSession) {
       const content = readFileSync(latestSession, "utf8");
-      const mcpCalls = (content.match(/codebase_search/g) || []).length;
+      const mcpCalls = (content.match(/mcp__codegraph__|mcp_servers\.codegraph|"name":"codegraph"/g) || []).length;
       const execCalls = (content.match(/"name":"exec_command"/g) || []).length;
       if (mcpCalls > 0) {
-        pass(`Codex used codebase_search ${mcpCalls} time(s), exec_command ${execCalls} time(s)`);
+        pass(`Codex used CodeGraph ${mcpCalls} time(s), exec_command ${execCalls} time(s)`);
       } else {
-        fail(`Codex did NOT use codebase_search (exec_command: ${execCalls})`);
+        fail(`Codex did NOT use CodeGraph (exec_command: ${execCalls})`);
       }
     } else {
       log("MCP", "No recent Codex session found");

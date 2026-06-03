@@ -230,6 +230,7 @@ export async function runVerify(ctx) {
     role: "verifier",
     ...resolvedAgent,
     project,
+    jobId,
     prompt,
     cwd,
     pool,
@@ -286,14 +287,14 @@ export async function runVerify(ctx) {
         retryable: true,
         cause: { verdict, artifact },
       }),
-      diagnostics: withPromptArtifactDiagnostics({ artifact, verdict }, promptArtifact),
+      diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, artifact, verdict }, promptArtifact),
     });
   }
 
   return phasePassed({
     phase: "verify",
     artifact,
-    diagnostics: withPromptArtifactDiagnostics({ verdict, verificationEvidence }, promptArtifact),
+    diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, verdict, verificationEvidence }, promptArtifact),
   });
 }
 

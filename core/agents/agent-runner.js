@@ -25,6 +25,7 @@ export async function runAgent({
   agent,
   variant,
   project,
+  jobId,
   prompt,
   cwd,
   pool,
@@ -40,6 +41,7 @@ export async function runAgent({
       role,
       bypass: false,
       projectId: project,
+      jobId,
       variant,
       workspaceId: scope?.workspaceId,
       policyHash: scope?.policyHash,
@@ -58,6 +60,8 @@ export async function runAgent({
         role,
         providerKey,
         variant: execVariant,
+        acpAuditFile: execResult?.acpAuditFile || null,
+        usage: execResult?.usage || null,
       },
     };
   } catch (err) {
@@ -75,6 +79,14 @@ function classifyError(err, { agent, role, startedAt }) {
   const lowerMsg = msg.toLowerCase();
   const snippet = msg.slice(0, 500);
   const elapsedMs = Date.now() - startedAt;
+  const diagnostics = (extra = {}) => ({
+    elapsedMs,
+    agent,
+    role,
+    acpAuditFile: err?.acpAuditFile || null,
+    usage: err?.usage || null,
+    ...extra,
+  });
 
   // Rate limit / ProviderQuotaError
   if (RATE_LIMIT_PATTERN.test(msg) || err?.name === "RateLimitError" || err?.name === "ProviderQuotaError") {
@@ -95,7 +107,7 @@ function classifyError(err, { agent, role, startedAt }) {
         stdout: err?.partialStdout || "",
         stderr: err?.partialStderr || "",
       },
-      diagnostics: { elapsedMs, agent, role },
+      diagnostics: diagnostics(),
     };
   }
 
@@ -107,7 +119,7 @@ function classifyError(err, { agent, role, startedAt }) {
       reason: msg,
       retryable: true,
       agent,
-      diagnostics: { elapsedMs, agent, role, stderrSnippet: snippet },
+      diagnostics: diagnostics({ stderrSnippet: snippet }),
     };
   }
 
@@ -120,7 +132,7 @@ function classifyError(err, { agent, role, startedAt }) {
       retryable: true,
       agent,
       signal: err.signal || null,
-      diagnostics: { elapsedMs, agent, role },
+      diagnostics: diagnostics(),
     };
   }
 
@@ -132,7 +144,7 @@ function classifyError(err, { agent, role, startedAt }) {
       reason: msg,
       retryable: true,
       agent,
-      diagnostics: { elapsedMs, agent, role },
+      diagnostics: diagnostics(),
     };
   }
 
@@ -146,7 +158,7 @@ function classifyError(err, { agent, role, startedAt }) {
       retryable: true,
       agent,
       exitCode: Number(exitMatch[1]),
-      diagnostics: { elapsedMs, agent, role, stderrSnippet: snippet },
+      diagnostics: diagnostics({ stderrSnippet: snippet }),
     };
   }
 
@@ -158,7 +170,7 @@ function classifyError(err, { agent, role, startedAt }) {
       reason: msg,
       retryable: true,
       agent,
-      diagnostics: { elapsedMs, agent, role },
+      diagnostics: diagnostics(),
     };
   }
 
@@ -170,7 +182,7 @@ function classifyError(err, { agent, role, startedAt }) {
       reason: msg,
       retryable: false,
       agent,
-      diagnostics: { elapsedMs, agent, role },
+      diagnostics: diagnostics(),
     };
   }
 
@@ -181,7 +193,7 @@ function classifyError(err, { agent, role, startedAt }) {
     reason: msg,
     retryable: false,
     agent,
-    diagnostics: { elapsedMs, agent, role },
+    diagnostics: diagnostics(),
   };
 }
 

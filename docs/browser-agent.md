@@ -226,4 +226,4 @@ CPB pipeline
 - Screenshots captured on failure (if enabled in profile)
 - Trace files saved when `CPB_ACP_BROWSER_AGENT_TRACE=1`
 - Each provider uses isolated persistent profile
-- Concurrent sessions per provider limited by `CPB_ACP_POOL_BROWSER_AGENT`
+- Concurrent sessions per provider are limited by `CPB_ACP_POOL_PROVIDER_MAX`

@@ -260,6 +260,7 @@ function executionIntensitySection(phase) {
   return `\n## Execution Intensity Contract (MANDATORY)
 ${phaseLine}
 - Start with indexed lookup: use codegraph/code index/project index if available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
+- If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.
 - First-pass source inspection budget: max 5 files or 3 symbol/index lookups before naming the concrete files you will touch or verify.
 - Prefer loaded role skills/profile guidance when relevant; record which index/skill path you used in the artifact.
 - Create 2-5 task-specific acceptance probes from the request before broad regression. A generic \`npm test\` pass is not enough when the request asks for a concrete artifact/API/UI behavior.

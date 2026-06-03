@@ -1,0 +1,15 @@
+{
+  "name": "fake-acp",
+  "displayName": "Fake ACP Agent",
+  "command": "cpb-test-acp-agent",
+  "fallbackCommand": "node",
+  "fallbackArgs": ["bridges/test-acp-agent.mjs"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "repair"],
+  "defaultRoles": [],
+  "stability": "test",
+  "envPrefix": "CPB_ACP_FAKE_ACP",
+  "description": "Deterministic ACP-compatible fake provider for CPB full-chain tests",
+  "lifecycle": "one-shot",
+  "poolLimit": 1
+}

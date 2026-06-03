@@ -36,6 +36,47 @@ During the run, inspect `./cpb hub acp --json` and confirm:
 The live soak is the acceptance gate for provider-specific behavior. Fake-agent
 tests prove deterministic pool policy, not unattended real-provider reliability.
 
+## Registered Fake ACP Agent
+
+CPB includes a deterministic ACP-compatible provider named `fake-acp`. It is
+registered through the normal agent registry and can be routed like any other
+agent:
+
+```json
+{
+  "agents": {
+    "default": "fake-acp",
+    "phases": {
+      "plan": "fake-acp",
+      "execute": "fake-acp",
+      "review": "fake-acp",
+      "verify": "fake-acp"
+    }
+  }
+}
+```
+
+The provider is exposed as `cpb-test-acp-agent` and accepts deterministic
+responses:
+
+```bash
+CPB_ACP_FAKE_ACP_COMMAND=node \
+CPB_ACP_FAKE_ACP_ARGS='["/path/to/bridges/test-acp-agent.mjs","--response","hello"]' \
+node bridges/acp-client.mjs --agent fake-acp --cwd "$PWD"
+```
+
+For full-chain tests, pass a scenario file:
+
+```bash
+CPB_ACP_FAKE_ACP_ARGS='["/path/to/bridges/test-acp-agent.mjs","--scenario-file","/tmp/scenario.json"]'
+```
+
+Scenario entries match prompts with `match` or `matchRegex` and can return
+`output`, `chunks`, `outputFile`, or perform ACP client file writes with
+`writes`. This lets tests control plan/execute/review/verify responses while
+still exercising registry resolution, ACP process launch, JSON-RPC handshake,
+session updates, response parsing, and artifact persistence.
+
 ## Headless vs UI ACP Lanes
 
 All normal code phases (plan, execute, verify, review, repair, retries, fixes)

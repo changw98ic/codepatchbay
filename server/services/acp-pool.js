@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AcpClient, parseToolPolicy, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
+import { AcpClient, parseToolPolicy, resolveAcpAuditFile, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
 import { applyVariantToEnv, resolveVariantConfig } from "../../runtime/apply-variant.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
@@ -18,8 +18,9 @@ import { getProviderAdapter } from "./provider-adapters.js";
 let _registryCache = null;
 
 /**
- * P1-5 fix: Compound key for persistent client isolation.
- * Prevents cross-project/cross-role client reuse.
+ * Compound key for persistent client isolation.
+ * Job id is intentionally excluded so a long-lived worker/orchestrator can
+ * reuse the same ACP process across sequential jobs for the same project role.
  */
 export function poolClientKey(agent, options = {}) {
   const role = options.role || options.phase || "";
@@ -47,25 +48,115 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 0);
 const CHILD_TERM_GRACE_MS = 500;
 const CHILD_KILL_GRACE_MS = 1_500;
-const DEFAULT_TOTAL_CONNECTION_LIMIT = 0;
 const DEFAULT_PROVIDER_CONNECTION_LIMIT = 3;
 const CONNECTION_LOCK_TTL_MS = 30_000;
 const CONNECTION_POLL_MS = 50;
 const DEFAULT_POOL_WAIT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS || 300_000);
 const POOL_WAIT_WARN_INTERVAL_MS = 30_000;
-const POOL_LIMIT_CONTROL_ENV = new Set([
-  "CPB_ACP_POOL_TOTAL",
-  "CPB_ACP_POOL_PROVIDER_MAX",
-  "CPB_ACP_POOL_CONNECTION_POLL_MS",
-  "CPB_ACP_POOL_MAX_REQUESTS",
-  "CPB_ACP_POOL_MAX_AGE_MS",
-  "CPB_ACP_POOL_IDLE_MS",
-]);
 
 function resolveHubRootFromEnv(cpbRoot, env = {}) {
   if (env.CPB_HUB_ROOT) return path.resolve(env.CPB_HUB_ROOT);
   const home = os.homedir();
   return home ? path.join(home, ".cpb") : path.join(path.resolve(cpbRoot), ".cpb", "hub");
+}
+
+function emptyUsageRollup() {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    toolCalls: 0,
+    functionCalls: 0,
+    events: 0,
+    tokenSource: null,
+  };
+}
+
+function addUsageRollup(target, usage = {}) {
+  for (const key of [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "costUsd",
+    "toolCalls",
+    "functionCalls",
+    "events",
+  ]) {
+    const value = Number(usage[key]);
+    if (Number.isFinite(value)) target[key] += value;
+  }
+  target.tokenSource = usage.tokenSource || target.tokenSource || "acp_audit";
+}
+
+function finalizeUsageRollup(rollup, { tokenEvents = 0, toolCalls = 0, source = "acp_audit" } = {}) {
+  if (toolCalls > 0 && rollup.toolCalls === 0) rollup.toolCalls = toolCalls;
+  if (rollup.events <= 0 && tokenEvents <= 0) {
+    return toolCalls > 0
+      ? { ...rollup, tokenSource: "acp_not_reported", toolCalls }
+      : null;
+  }
+  rollup.events = Math.max(rollup.events, tokenEvents);
+  rollup.tokenSource = rollup.tokenSource ? `${source}:${rollup.tokenSource}` : source;
+  return rollup;
+}
+
+function auditEventMatches(event, { phase = null, role = null } = {}) {
+  if (phase && event.phase !== phase) return false;
+  if (role && event.role !== role) return false;
+  return true;
+}
+
+export async function readAcpUsageFromAudit(auditFile, filter = {}) {
+  if (!auditFile) return null;
+  let raw;
+  try {
+    raw = await readFile(auditFile, "utf8");
+  } catch {
+    return null;
+  }
+
+  const promptRollup = emptyUsageRollup();
+  const tokenRollup = emptyUsageRollup();
+  let promptEvents = 0;
+  let tokenEvents = 0;
+  let toolCalls = 0;
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!auditEventMatches(event, filter)) continue;
+    if (event.event === "tool_call") toolCalls += 1;
+    if (event.event === "prompt_usage" && event.usage) {
+      addUsageRollup(promptRollup, event.usage);
+      promptEvents += 1;
+    } else if (event.event === "token_usage" && event.usage) {
+      addUsageRollup(tokenRollup, event.usage);
+      tokenEvents += 1;
+    }
+  }
+
+  if (promptEvents > 0) {
+    return finalizeUsageRollup(promptRollup, {
+      tokenEvents: promptEvents,
+      toolCalls,
+      source: "acp_audit_prompt_usage",
+    });
+  }
+  return finalizeUsageRollup(tokenRollup, {
+    tokenEvents,
+    toolCalls,
+    source: "acp_audit_token_usage",
+  });
 }
 
 export class RateLimitError extends Error {
@@ -155,41 +246,28 @@ export function envForAgent(agent, env = {}, variant = null) {
   return next;
 }
 
+function acpMetadataEnv(options = {}) {
+  const meta = {};
+  if (options.projectId) meta.CPB_ACP_PROJECT = options.projectId;
+  if (options.jobId) meta.CPB_ACP_JOB_ID = options.jobId;
+  if (options.phase) meta.CPB_ACP_PHASE = options.phase;
+  if (options.role) meta.CPB_ACP_ROLE = options.role;
+  return meta;
+}
+
 // Re-export from provider-quota (redaction unified there)
 export { sanitizeProviderReason } from "./provider-quota.js";
 
-function poolLimitForAgentEnv(registry, agent, env = {}) {
-  const desc = registry?.getDescriptor(agent);
-  return Number(env[`CPB_ACP_POOL_${agent.toUpperCase()}`]) || desc?.poolLimit || 2;
-}
-
-async function normalizeLimitsAsync(limits = {}, env = process.env) {
+async function normalizeLimitsAsync(limits = {}) {
   const registry = await getRegistry();
 
-  // Start with explicit limits from opts
   const result = { ...limits };
 
-  // Fill defaults from registry descriptors
   if (registry) {
     for (const agent of registry.listAgentNames()) {
       if (!(agent in result)) {
-        result[agent] = poolLimitForAgentEnv(registry, agent, env);
+        result[agent] = registry.getDescriptor(agent)?.poolLimit || 1;
       }
-    }
-  }
-
-  // Legacy fallback: always ensure codex and claude
-  if (!result.codex) result.codex = Number(env.CPB_ACP_POOL_CODEX || 2);
-  if (!result.claude) result.claude = Number(env.CPB_ACP_POOL_CLAUDE || 1);
-
-  // Env overrides for any agent (CPB_ACP_POOL_<NAME>)
-  for (const [key, value] of Object.entries(env)) {
-    if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
-    if (key.startsWith("CPB_ACP_POOL_PROVIDER_")) continue;
-    const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
-    if (match) {
-      const agentName = match[1].toLowerCase();
-      result[agentName] = Number(value) || 2;
     }
   }
 
@@ -197,22 +275,10 @@ async function normalizeLimitsAsync(limits = {}, env = process.env) {
 }
 
 // Sync fallback for constructor (registry not loaded yet)
-function normalizeLimits(limits = {}, env = process.env) {
-  const result = {
-    codex: Number(limits.codex || env.CPB_ACP_POOL_CODEX || 2),
-    claude: Number(limits.claude || env.CPB_ACP_POOL_CLAUDE || 1),
-  };
-  for (const [key, value] of Object.entries(env)) {
-    if (POOL_LIMIT_CONTROL_ENV.has(key)) continue;
-    if (key.startsWith("CPB_ACP_POOL_PROVIDER_")) continue;
-    const match = key.match(/^CPB_ACP_POOL_(\w+)$/);
-    if (match) {
-      const agentName = match[1].toLowerCase();
-      if (!(agentName in result)) {
-        result[agentName] = Number(value) || 2;
-      }
-    }
-  }
+function normalizeLimits(limits = {}) {
+  const result = { ...limits };
+  if (!result.codex) result.codex = 1;
+  if (!result.claude) result.claude = 1;
   return result;
 }
 
@@ -230,11 +296,6 @@ function booleanOption(value, fallback = false) {
 function positiveIntOption(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
-
-function nonNegativeIntOption(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
 function providerEnvKey(providerKey) {
@@ -312,10 +373,6 @@ export class AcpPool {
       0,
       numericOption(opts.sessionIdleMs ?? this.env.CPB_ACP_POOL_IDLE_MS, 0),
     );
-    this.totalConnectionLimit = nonNegativeIntOption(
-      opts.totalConnectionLimit ?? this.env.CPB_ACP_POOL_TOTAL,
-      DEFAULT_TOTAL_CONNECTION_LIMIT,
-    );
     this.providerConnectionLimit = positiveIntOption(
       opts.providerConnectionLimit ?? this.env.CPB_ACP_POOL_PROVIDER_MAX,
       DEFAULT_PROVIDER_CONNECTION_LIMIT,
@@ -346,7 +403,7 @@ export class AcpPool {
   async init() {
     const registry = await getRegistry();
     if (registry) {
-      this.limits = await normalizeLimitsAsync(this.limits, this.env);
+      this.limits = await normalizeLimitsAsync(this.limits);
     }
     return this;
   }
@@ -465,7 +522,6 @@ export class AcpPool {
       createdAt: this.createdAt,
       providerProcessReuse,
       connectionLimits: {
-        total: this.totalConnectionLimit,
         providerDefault: this.providerConnectionLimit,
       },
       pools,
@@ -655,7 +711,7 @@ export class AcpPool {
       const leases = await this.#listLiveConnectionLeasesLocked();
       const providerLimit = this.#providerConnectionLimit(providerKey);
       const providerCount = leases.filter((lease) => lease.providerKey === providerKey).length;
-      if ((this.totalConnectionLimit > 0 && leases.length >= this.totalConnectionLimit) || providerCount >= providerLimit) {
+      if (providerCount >= providerLimit) {
         return null;
       }
 
@@ -710,6 +766,19 @@ export class AcpPool {
   async #releaseConnectionLease(lease) {
     if (!lease?.filePath) return;
     await rm(lease.filePath, { force: true }).catch(() => null);
+  }
+
+  #executionEnv(agent, options = {}) {
+    return buildChildEnv(
+      envForAgent(agent, this.env, options.variant),
+      {
+        CPB_ROOT: this.cpbRoot,
+        CPB_ACP_CPB_ROOT: this.cpbRoot,
+        CPB_HUB_ROOT: this.hubRoot,
+        ...acpMetadataEnv(options),
+      },
+      { agent },
+    );
   }
 
   /**
@@ -846,6 +915,7 @@ export class AcpPool {
       return { output, providerKey: null, agent, variant: null };
     }
     const providerKey = this.providerKey(agent, options.variant);
+    const acpAuditFile = resolveAcpAuditFile(this.#executionEnv(agent, options));
 
     // Pre-flight quota gate (replaces old assertNotRateLimited)
     if (!this.runner) {
@@ -872,12 +942,22 @@ export class AcpPool {
     try {
       if (this.runner || !this.persistentProcesses) this.#noteSpawn(agent);
       const output = await this.#run(agent, prompt, cwd, timeoutMs, options);
+      const usage = await readAcpUsageFromAudit(acpAuditFile, {
+        phase: options.phase || null,
+        role: options.role || null,
+      });
       this.requestCount.set(agent, (this.requestCount.get(agent) || 0) + 1);
       lifecycle.requestCount += 1;
       lifecycle.lastUsedAt = Date.now();
       lifecycle.recycleReason = null;
-      return { output, providerKey, agent, variant: options.variant || null };
+      return { output, providerKey, agent, variant: options.variant || null, acpAuditFile, usage };
     } catch (error) {
+      const usage = await readAcpUsageFromAudit(acpAuditFile, {
+        phase: options.phase || null,
+        role: options.role || null,
+      });
+      if (usage) error.usage = usage;
+      if (acpAuditFile) error.acpAuditFile = acpAuditFile;
       this.errorCount.set(agent, (this.errorCount.get(agent) || 0) + 1);
 
       // Classify via provider-quota (replaces old is429 + noteRateLimit)
@@ -906,7 +986,7 @@ export class AcpPool {
           confidence: quotaResult.confidence,
           reason: quotaResult.reason,
         });
-        throw new ProviderQuotaError(quotaResult.reason, {
+        const quotaError = new ProviderQuotaError(quotaResult.reason, {
           providerKey,
           agent,
           variant: options.variant,
@@ -918,6 +998,9 @@ export class AcpPool {
           phase: options.phase,
           role: options.role,
         });
+        quotaError.usage = usage || null;
+        quotaError.acpAuditFile = acpAuditFile;
+        throw quotaError;
       }
 
       await this.#recycleSession(agent, "error");
@@ -944,16 +1027,12 @@ export class AcpPool {
   async #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
     const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
     const customClient = this.env.CPB_ACP_CLIENT;
-    const clientPath = customClient || path.join(__dirname, "..", "bridges", "acp-client.mjs");
+    const clientPath = customClient || path.join(__dirname, "..", "..", "bridges", "acp-client.mjs");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     try {
       return await new Promise((resolve, reject) => {
-        const env = buildChildEnv(
-          envForAgent(agent, this.env, options.variant),
-          { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
-          { agent },
-        );
+        const env = this.#executionEnv(agent, options);
         const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot });
         const child = spawn(launch.command, launch.args, {
           cwd: this.cpbRoot,
@@ -1027,8 +1106,13 @@ export class AcpPool {
   }
 
   async #runPersistentNow(key, agent, prompt, cwd, timeoutMs, options = {}) {
-    const persistent = await this.#getPersistentClient(key, agent, cwd, options.variant);
+    const persistent = await this.#getPersistentClient(key, agent, cwd, options);
     const client = persistent.client;
+    const executionEnv = this.#executionEnv(agent, options);
+    client.setAuditContext(executionEnv, {
+      cwd,
+      writeAllowPaths: resolveWriteAllowPaths(cwd, executionEnv),
+    });
     const previousOutputSink = client.outputSink;
     const previousErrorSink = client.errorSink;
     let stdout = "";
@@ -1071,7 +1155,7 @@ export class AcpPool {
     }
   }
 
-  async #getPersistentClient(key, agent, cwd, variant = null) {
+  async #getPersistentClient(key, agent, cwd, options = {}) {
     const existing = this.persistentClients.get(key);
     if (existing && !existing.client.closed) return existing;
     if (existing) this.persistentClients.delete(key);
@@ -1085,6 +1169,7 @@ export class AcpPool {
       if (cached?.sessionId) resumeSessionId = cached.sessionId;
     }
 
+    const variant = options.variant || null;
     const providerKey = this.providerKey(agent, variant);
     const lease = await this.#acquireConnectionLease(agent, providerKey);
     const client = new AcpClient({
@@ -1095,12 +1180,9 @@ export class AcpPool {
       toolPolicy: await this.#getToolPolicy(),
       outputSink: () => {},
       errorSink: () => {},
-      env: buildChildEnv(
-        envForAgent(agent, this.env, variant),
-        { CPB_ROOT: this.cpbRoot, CPB_ACP_CPB_ROOT: this.cpbRoot },
-        { agent },
-      ),
+      env: this.#executionEnv(agent, options),
       resumeSessionId,
+      reuseSession: true,
     });
     const meta = {
       client,

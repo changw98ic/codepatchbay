@@ -134,7 +134,7 @@ export function classifyIssueRules(input = {}) {
     route = {
       category: "docs",
       workflow: "direct",
-      planMode: "none",
+      planMode: "light",
       reason: "docs keyword",
       source: "rules",
     };
@@ -142,7 +142,7 @@ export function classifyIssueRules(input = {}) {
     route = {
       category: "test",
       workflow: "direct",
-      planMode: "none",
+      planMode: "light",
       reason: "test keyword",
       source: "rules",
     };

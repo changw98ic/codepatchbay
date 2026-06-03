@@ -22,14 +22,31 @@ async function writeJson(filePath, data) {
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function normalizeHubConfig(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const removedHubTotalKey = ["maxActive", "Total"].join("");
+  const next = { ...data };
+  if (next.concurrency && typeof next.concurrency === "object" && !Array.isArray(next.concurrency)) {
+    next.concurrency = { ...next.concurrency };
+    delete next.concurrency[removedHubTotalKey];
+    if (Object.keys(next.concurrency).length === 0) delete next.concurrency;
+  }
+  if (next.acpPool && typeof next.acpPool === "object" && !Array.isArray(next.acpPool)) {
+    next.acpPool = { ...next.acpPool };
+    delete next.acpPool.total;
+    if (Object.keys(next.acpPool).length === 0) delete next.acpPool;
+  }
+  return next;
+}
+
 // ── Hub config (~/.cpb/config.json) ──
 
 export async function readHubConfig(hubRoot) {
-  return readJson(path.join(hubRoot, HUB_CONFIG_FILE));
+  return normalizeHubConfig(await readJson(path.join(hubRoot, HUB_CONFIG_FILE)));
 }
 
 export async function writeHubConfig(hubRoot, data) {
-  await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), data);
+  await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), normalizeHubConfig(data));
 }
 
 // ── Project config (wiki/projects/{id}/project.json → agents) ──

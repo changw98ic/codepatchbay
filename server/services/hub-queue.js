@@ -6,7 +6,6 @@ import { resolveAgentsForEntry } from "./agent-config.js";
 import { getProject } from "./hub-registry.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
-  DEFAULT_MAX_ACTIVE_TOTAL,
   positiveInt,
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
@@ -348,13 +347,11 @@ export async function queueStatus(hubRoot) {
     queue.entries.map((entry) => entry.projectId),
     { maxActivePerProject: hubLimits.maxActivePerProject },
   );
-  counts.maxActiveTotal = hubLimits.maxActiveTotal;
   counts.activeMutatingTotal = queue.entries.filter(
     (entry) => isActiveEntry(entry) && isMutatingEntry(entry),
   ).length;
   counts.projects = buildProjectQueueStatus(queue.entries, {
     maxActivePerProject: hubLimits.maxActivePerProject,
-    maxActiveTotal: hubLimits.maxActiveTotal,
     projectLimits,
   });
   counts.activeProjects = Object.entries(counts.projects)
@@ -392,11 +389,9 @@ function limitForProject(projectLimits, projectId, fallback) {
 
 export function buildProjectQueueStatus(entries, {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
-  maxActiveTotal = DEFAULT_MAX_ACTIVE_TOTAL,
   projectLimits = new Map(),
 } = {}) {
   const byProject = {};
-  let activeMutatingTotal = 0;
   for (const e of entries) {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
@@ -404,7 +399,6 @@ export function buildProjectQueueStatus(entries, {
         pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         maxActivePerProject: limit,
-        maxActiveTotal,
         claimedBy: null, claimedAt: null, workerId: null,
         activeEntryIds: [],
         eligiblePending: 0, eligibleEntryIds: [],
@@ -421,7 +415,6 @@ export function buildProjectQueueStatus(entries, {
     else if (e.status === "index_unavailable") ps.indexUnavailable++;
     if (isActiveEntry(e) && isMutatingEntry(e)) {
       ps.activeMutating++;
-      activeMutatingTotal++;
       ps.activeEntryIds.push(e.id);
       ps.busy = true;
       ps.busyReason = e.status === "scheduled" ? "scheduled-mutating-task" : "active-mutating-task";
@@ -438,9 +431,6 @@ export function buildProjectQueueStatus(entries, {
       // Non-mutating pending entries are always eligible
       ps.eligiblePending++;
       ps.eligibleEntryIds.push(e.id);
-    } else if (maxActiveTotal > 0 && activeMutatingTotal >= maxActiveTotal) {
-      ps.busy = true;
-      ps.busyReason = "global-active-mutating-cap";
     } else if (ps.activeMutating < ps.maxActivePerProject) {
       // Mutating pending entries eligible when project not at capacity
       ps.eligiblePending++;
@@ -490,7 +480,6 @@ export async function claimEligible(hubRoot, opts = {}) {
     workerId = `worker-${process.pid}`,
     projectId = null,
     maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
-    maxActiveTotal = DEFAULT_MAX_ACTIVE_TOTAL,
     claimTimeoutMs = 120_000,
     providerSlotsAvailable = true,
     requireIssueLink = false,
@@ -515,15 +504,12 @@ export async function claimEligible(hubRoot, opts = {}) {
 
     const hubLimits = await resolveHubConcurrencyLimits(hubRoot, {
       maxActivePerProject,
-      maxActiveTotal,
     });
 
     const activeMutatingByProject = {};
-    let activeMutatingTotal = 0;
     for (const e of queue.entries) {
       if (isActiveEntry(e) && isMutatingEntry(e)) {
         activeMutatingByProject[e.projectId] = (activeMutatingByProject[e.projectId] || 0) + 1;
-        activeMutatingTotal++;
       }
     }
 
@@ -555,10 +541,6 @@ export async function claimEligible(hubRoot, opts = {}) {
     for (const candidate of pending) {
       if (isMutatingEntry(candidate)) {
         const projectLimit = limitForProject(projectLimits, candidate.projectId, maxActivePerProject);
-        if (hubLimits.maxActiveTotal > 0 && activeMutatingTotal >= hubLimits.maxActiveTotal) {
-          if (!skippedBusy.includes("*")) skippedBusy.push("*");
-          continue;
-        }
         if ((activeMutatingByProject[candidate.projectId] || 0) >= projectLimit) {
           if (!skippedBusy.includes(candidate.projectId)) skippedBusy.push(candidate.projectId);
           continue;
@@ -632,7 +614,6 @@ export async function claimEligible(hubRoot, opts = {}) {
     if (!chosen) {
       const projectStatus = buildProjectQueueStatus(queue.entries, {
         maxActivePerProject: hubLimits.maxActivePerProject,
-        maxActiveTotal: hubLimits.maxActiveTotal,
         projectLimits,
       });
       const activeProjects = Object.entries(projectStatus)
@@ -659,7 +640,6 @@ export async function claimEligible(hubRoot, opts = {}) {
 
     const projectStatus = buildProjectQueueStatus(queue.entries, {
       maxActivePerProject: hubLimits.maxActivePerProject,
-      maxActiveTotal: hubLimits.maxActiveTotal,
       projectLimits,
     });
     const activeProjects = Object.entries(projectStatus)

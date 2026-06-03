@@ -7,6 +7,7 @@ import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
 import { createLogger } from "../services/logger.js";
+import { resolveExecutorRoot } from "../services/executor-root.js";
 
 const TICK_MS = 2_000;
 const JANITOR_MS = 30_000;
@@ -79,9 +80,10 @@ export function normalizedSourceContext(candidate) {
 }
 
 export class HubOrchestrator {
-  constructor(hubRoot, cpbRoot) {
+  constructor(hubRoot, cpbRoot, { executorRoot } = {}) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
+    this.executorRoot = executorRoot || resolveExecutorRoot({ env: process.env, fallbackRoot: cpbRoot });
     this.running = false;
     this._stopped = null;
     this.log = createLogger("orchestrator");
@@ -95,6 +97,7 @@ export class HubOrchestrator {
     });
     this.workerSupervisor = new WorkerSupervisor(hubRoot, cpbRoot, {
       workerStore: this.workerStore,
+      executorRoot: this.executorRoot,
     });
 
     // P1-2: supervisor gets lazy pool — only used when pool is actually available
