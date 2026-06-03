@@ -308,34 +308,55 @@ async function ensureLocalGitExclude(worktreePath, pattern) {
   return true;
 }
 
-async function inheritCodegraph(project, worktreePath) {
-  const sourceCodegraph = path.join(path.resolve(project), ".codegraph");
+async function ensureIsolatedCodegraph(worktreePath) {
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
 
-  if (!(await pathExists(sourceCodegraph))) {
-    return false;
-  }
-
-  const target = await realpath(sourceCodegraph);
   await ensureLocalGitExclude(worktreePath, ".codegraph");
   try {
     const existing = await lstat(worktreeCodegraph);
     if (existing.isSymbolicLink()) {
-      try {
-        const existingTarget = await realpath(worktreeCodegraph);
-        if (existingTarget === target) {
-          return false;
-        }
-        throw new Error(`worktree .codegraph already points elsewhere: ${worktreeCodegraph} -> ${existingTarget}`);
-      } catch (err) {
-        if (err?.code === "ENOENT") {
-          await rm(worktreeCodegraph, { force: true });
-        } else {
-          throw err;
-        }
+      await rm(worktreeCodegraph, { force: true });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  return false;
+}
+
+async function ensureSharedNodeModules(project, worktreePath) {
+  const sourceNodeModules = path.join(path.resolve(project), "node_modules");
+  const worktreeNodeModules = path.join(worktreePath, "node_modules");
+
+  await ensureLocalGitExclude(worktreePath, "node_modules/");
+
+  try {
+    const sourceStats = await stat(sourceNodeModules);
+    if (!sourceStats.isDirectory()) return false;
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+
+  const sourceTarget = await realpath(sourceNodeModules);
+  try {
+    const existing = await lstat(worktreeNodeModules);
+    if (!existing.isSymbolicLink()) {
+      return false;
+    }
+    try {
+      const existingTarget = await realpath(worktreeNodeModules);
+      if (existingTarget === sourceTarget) {
+        return false;
       }
-    } else {
-      throw new Error(`worktree .codegraph already exists and does not point to source .codegraph: ${worktreeCodegraph}`);
+      return false;
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+      await rm(worktreeNodeModules, { force: true });
     }
   } catch (err) {
     if (!err || err.code !== "ENOENT") {
@@ -343,8 +364,13 @@ async function inheritCodegraph(project, worktreePath) {
     }
   }
 
-  await symlink(target, worktreeCodegraph, "dir");
+  await symlink(sourceTarget, worktreeNodeModules, "dir");
   return true;
+}
+
+async function prepareWorktreeRuntime(project, worktreePath) {
+  await ensureIsolatedCodegraph(worktreePath);
+  await ensureSharedNodeModules(project, worktreePath);
 }
 
 async function samePath(left, right) {
@@ -391,7 +417,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   const existingPath = await existingWorktreePath(path.resolve(project), branch);
   if (existingPath !== null) {
     if ((await pathExists(worktreePath)) && (await samePath(existingPath, worktreePath))) {
-      await inheritCodegraph(project, worktreePath);
+      await prepareWorktreeRuntime(project, worktreePath);
       return { branch, path: worktreePath };
     }
     throw new Error(`branch already has a different worktree: ${branch}`);
@@ -404,7 +430,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   }
 
   await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-  await inheritCodegraph(project, worktreePath);
+  await prepareWorktreeRuntime(project, worktreePath);
 
   return { branch, path: worktreePath };
 }

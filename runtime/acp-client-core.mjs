@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -333,6 +332,7 @@ function summarizeMcpServers(servers = []) {
     type: server?.type || null,
     url: server?.url || null,
     command: server?.command || null,
+    args: Array.isArray(server?.args) ? server.args : null,
   }));
 }
 
@@ -572,35 +572,25 @@ export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
     : null;
 }
 
-function resolveCodegraphSseUrl(env) {
+function resolveCodegraphMcpServer(env) {
   if (env.CPB_CODEGRAPH_ENABLED === "0") return null;
-
-  const cpbRoot = env.CPB_ROOT || env.CPB_ACP_CPB_ROOT;
-  let sseUrl;
-  if (cpbRoot) {
-    const stateFile = path.join(cpbRoot, "cpb-task", "codegraph-state.json");
-    if (existsSync(stateFile)) {
-      try {
-        const state = JSON.parse(readFileSync(stateFile, "utf8"));
-        sseUrl = state.sseUrl;
-      } catch {}
-    }
-  }
-  if (!sseUrl) {
-    const port = parseInt(env.CPB_CODEGRAPH_PORT || "3100", 10);
-    sseUrl = `http://localhost:${port}/sse`;
-  }
-  return sseUrl;
+  const codebaseRoot = path.resolve(
+    env.CPB_CODEGRAPH_ROOT ||
+    env.CPB_CODEBASE_ROOT ||
+    env.CPB_PROJECT_PATH_OVERRIDE ||
+    env.CPB_ACP_CWD ||
+    process.cwd(),
+  );
+  return {
+    name: "codegraph",
+    command: "codegraph",
+    args: ["serve", "--mcp", "--path", codebaseRoot],
+  };
 }
 
 function codexCodegraphMcpServers(env) {
-  const sseUrl = resolveCodegraphSseUrl(env);
-  if (!sseUrl) return [];
-  return [{
-    name: "codegraph",
-    command: "npx",
-    args: ["-y", "supergateway", "--sse", sseUrl],
-  }];
+  const server = resolveCodegraphMcpServer(env);
+  return server ? [server] : [];
 }
 
 function isCodexAcpCommand(command, args = []) {
@@ -610,14 +600,14 @@ function isCodexAcpCommand(command, args = []) {
 }
 
 function buildMcpServers(agent, env) {
-  const sseUrl = resolveCodegraphSseUrl(env);
-  if (!sseUrl) return [];
+  const server = resolveCodegraphMcpServer(env);
+  if (!server) return [];
 
   // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
   // CodeGraph through process-local launch config instead.
   if (agent === "codex") return [];
 
-  return [{ name: "codegraph", type: "sse", url: sseUrl }];
+  return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
 function codexMcpConfigArgs(env) {
@@ -665,7 +655,8 @@ export class AcpClient {
     this.toolPolicy = toolPolicy || null;
     this.outputSink = outputSink;
     this.errorSink = errorSink;
-    this.env = env;
+    this.env = { ...env };
+    if (cwd) this.env.CPB_ACP_CWD = cwd;
     this.resumeSessionId = resumeSessionId;
     this.reuseSession = Boolean(reuseSession);
     this.nextId = 1;
@@ -688,6 +679,7 @@ export class AcpClient {
 
   setAuditContext(envPatch = {}, { cwd = null, writeAllowPaths = undefined } = {}) {
     this.env = { ...this.env, ...envPatch };
+    if (cwd) this.env.CPB_ACP_CWD = cwd;
     this.auditEnv = { ...this.env };
     this.auditFile = resolveAcpAuditFile(this.auditEnv);
     if (cwd) this.cwd = cwd;
@@ -726,11 +718,15 @@ export class AcpClient {
       Object.assign(env, homeEnv);
     }
     const { command, args } = await resolveAgentCommand(this.agent, env);
-    const codegraphSseUrl = resolveCodegraphSseUrl(env);
+    const launchCodegraphServers = this.agent === "codex"
+      ? codexCodegraphMcpServers(env)
+      : buildMcpServers(this.agent, env);
+    const launchCodegraphSummary = summarizeMcpServers(launchCodegraphServers);
     await this.recordAudit("agent_launch", {
       command: path.basename(command),
-      mcpServerNames: codegraphSseUrl ? ["codegraph"] : [],
-      codegraphSseUrl: codegraphSseUrl || null,
+      mcpServers: launchCodegraphSummary,
+      mcpServerNames: launchCodegraphSummary.map((server) => server.name).filter(Boolean),
+      codegraphSseUrl: null,
     });
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
