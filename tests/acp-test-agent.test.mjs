@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
 import { AcpPool, readAcpUsageFromAudit } from "../server/services/acp-pool.js";
 import { buildAcpPoolEnv } from "../core/policy/child-env.js";
-import { resolveAgentCommand } from "../runtime/acp-client-core.mjs";
+import { AcpClient, resolveAgentCommand } from "../runtime/acp-client-core.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const acpClient = path.join(repoRoot, "runtime", "acp-client.mjs");
@@ -203,6 +203,48 @@ test("Codex ACP receives direct codegraph stdio config instead of shared SSE bri
     ["serve", "--mcp", "--path", tmp],
   );
   assert.ok(!args.some((arg) => /supergateway|--sse/.test(String(arg))));
+});
+
+test("ACP terminal commands launch through RTK when available", async () => {
+  const tmp = await tempRoot("cpb-acp-rtk-terminal");
+  const binDir = path.join(tmp, "bin");
+  const rtkPath = path.join(binDir, "rtk");
+  const auditPath = path.join(tmp, "audit.jsonl");
+  await mkdir(binDir, { recursive: true });
+  await symlink("/bin/echo", rtkPath);
+
+  const client = new AcpClient({
+    agent: "fake-acp",
+    cwd: tmp,
+    prompt: "",
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH || ""}`,
+      CPB_ACP_AUDIT_FILE: auditPath,
+      CPB_ACP_RTK_ENABLED: "1",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+    },
+  });
+
+  const created = await client.createTerminal({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('terminal-ok')"],
+    cwd: tmp,
+    outputByteLimit: 4096,
+  });
+  const exitStatus = await client.waitForTerminalExit({ terminalId: created.terminalId });
+  assert.deepEqual(exitStatus, { exitCode: 0, signal: null });
+  assert.equal(
+    client.terminalOutput({ terminalId: created.terminalId }).output.trim(),
+    `${process.execPath} -e process.stdout.write('terminal-ok')`,
+  );
+
+  const events = await readJsonl(auditPath);
+  const launch = events.find((event) => event.event === "terminal_launch");
+  assert.equal(launch?.command, process.execPath);
+  assert.equal(launch?.launchCommand, "rtk");
+  assert.equal(launch?.rtkEnabled, true);
 });
 
 test("AcpPool passes job metadata and reports the automatic ACP audit file", async () => {
