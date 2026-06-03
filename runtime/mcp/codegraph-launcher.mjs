@@ -13,9 +13,19 @@ const STATE_FILE = resolve(
 
 let proc = null;
 
+function shellQuoteArg(value) {
+  const str = String(value);
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(str)) return str;
+  return `'${str.replace(/'/g, `'\\''`)}'`;
+}
+
 function resolveMcpStdioCommand() {
   if (process.env.CPB_CODEGRAPH_MCP_STDIO) return process.env.CPB_CODEGRAPH_MCP_STDIO;
-  return "codegraph mcp";
+  return `codegraph serve --mcp --path ${shellQuoteArg(CODEBASE_ROOT)}`;
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 export async function start() {
@@ -94,12 +104,16 @@ export function status() {
   if (existsSync(STATE_FILE)) {
     try { stateFile = JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch {}
   }
+  const statePid = stateFile?.pid && isAlive(stateFile.pid) ? stateFile.pid : undefined;
+  if (stateFile?.pid && !statePid) {
+    try { unlinkSync(STATE_FILE); } catch {}
+  }
   return {
-    running: !!(proc || stateFile?.pid),
+    running: !!(proc || statePid),
     port: PORT,
     codebaseRoot: CODEBASE_ROOT,
     sseUrl: `http://localhost:${PORT}/sse`,
-    pid: proc?.pid || stateFile?.pid,
+    pid: proc?.pid || statePid,
     mcpStdio: resolveMcpStdioCommand(),
     stateFile: STATE_FILE,
   };
