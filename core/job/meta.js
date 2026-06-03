@@ -5,9 +5,11 @@
  * pipeline events.
  */
 
+export const REQUIRED_EXECUTION_BOUNDARY = "worktree";
+
 /**
  * Normalize execution metadata. Missing optional fields become explicit
- * null rather than silently empty strings. cwd defaults to sourcePath.
+ * null rather than silently empty strings.
  */
 export function buildMeta(input = {}) {
   return {
@@ -16,7 +18,7 @@ export function buildMeta(input = {}) {
     sessionId: input.sessionId || null,
     workerId: input.workerId || null,
     cwd: input.cwd || input.sourcePath || null,
-    executionBoundary: input.executionBoundary || "source",
+    executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
 }
 
@@ -30,6 +32,7 @@ export function executionBoundaryEvent(meta, { jobId, project, ts }) {
     project,
     sourcePath: meta.sourcePath,
     cwd: meta.cwd,
+    executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
     sessionId: meta.sessionId,
     workerId: meta.workerId,
     ts,

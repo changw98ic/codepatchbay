@@ -1,4 +1,5 @@
 import path from "node:path";
+import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { appendEvent } from "./event-store.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
@@ -503,6 +504,7 @@ export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, prof
     writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
     writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
     observablePaths: observable,
+    executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
 
   if (profileConfig) {
@@ -529,9 +531,7 @@ export function mergeProfilePolicy(basePolicy, profileConfig) {
       : profileConfig.write_paths.filter((p) => p !== "**/*");
     merged.writeAllowed = [...merged.writeAllowed, ...paths];
   }
-  if (profileConfig.execution_boundary) {
-    merged.executionBoundary = profileConfig.execution_boundary;
-  }
+  merged.executionBoundary = REQUIRED_EXECUTION_BOUNDARY;
 
   merged.profileConfigured = true;
   return merged;

@@ -17,8 +17,14 @@ function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function resolveMcpStdioCommand() {
-  return process.env.CPB_CODEGRAPH_MCP_STDIO || "codegraph mcp";
+function shellQuoteArg(value) {
+  const str = String(value);
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(str)) return str;
+  return `'${str.replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveMcpStdioCommand(codebaseRoot = process.env.CPB_CODEBASE_ROOT || process.cwd()) {
+  return process.env.CPB_CODEGRAPH_MCP_STDIO || `codegraph serve --mcp --path ${shellQuoteArg(codebaseRoot)}`;
 }
 
 export async function run(args, { cpbRoot, executorRoot }) {
@@ -35,7 +41,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     }
     console.log(`codegraph: running (pid=${state.pid}, port=${state.port})`);
     console.log(`  SSE: ${state.sseUrl}`);
-    console.log(`  MCP stdio: ${state.mcpStdio || resolveMcpStdioCommand()}`);
+    console.log(`  MCP stdio: ${state.mcpStdio || resolveMcpStdioCommand(codebaseRoot)}`);
     console.log(`  Codebase: ${state.codebaseRoot}`);
   } else if (sub === "start") {
     const existing = readState(cpbRoot);
@@ -44,7 +50,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       return;
     }
 
-    const mcpStdio = resolveMcpStdioCommand();
+    const mcpStdio = resolveMcpStdioCommand(codebaseRoot);
 
     const stateDir = path.dirname(stateFilePath(cpbRoot));
     mkdirSync(stateDir, { recursive: true });
@@ -52,7 +58,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
     mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, "codegraph.log");
 
-    const envStr = `CODEBASE_ROOT=${codebaseRoot}`;
     const cmd = `nohup npx -y supergateway --stdio "${mcpStdio}" --port ${port} --ssePath /sse --messagePath /message >> ${logFile} 2>&1 & echo $!`;
 
     const { execSync } = await import("node:child_process");

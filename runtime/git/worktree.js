@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const REQUIRED_IGNORES = [
@@ -275,6 +275,78 @@ async function pathExists(target) {
   }
 }
 
+async function ensureLocalGitExclude(worktreePath, pattern) {
+  const result = await git(worktreePath, ["rev-parse", "--git-path", "info/exclude"]);
+  if (result.code !== 0) {
+    throw new Error(`git rev-parse --git-path info/exclude failed: ${result.stderr || result.stdout}`);
+  }
+
+  const rawPath = result.stdout.trim();
+  const excludePath = path.isAbsolute(rawPath) ? rawPath : path.join(worktreePath, rawPath);
+  let raw = "";
+  try {
+    raw = await readFile(excludePath, "utf8");
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  const existing = new Set(
+    raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+  );
+  if (existing.has(pattern)) {
+    return false;
+  }
+
+  const prefix = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
+  await mkdir(path.dirname(excludePath), { recursive: true });
+  await writeFile(excludePath, `${raw}${prefix}${pattern}\n`, "utf8");
+  return true;
+}
+
+async function inheritCodegraph(project, worktreePath) {
+  const sourceCodegraph = path.join(path.resolve(project), ".codegraph");
+  const worktreeCodegraph = path.join(worktreePath, ".codegraph");
+
+  if (!(await pathExists(sourceCodegraph))) {
+    return false;
+  }
+
+  const target = await realpath(sourceCodegraph);
+  await ensureLocalGitExclude(worktreePath, ".codegraph");
+  try {
+    const existing = await lstat(worktreeCodegraph);
+    if (existing.isSymbolicLink()) {
+      try {
+        const existingTarget = await realpath(worktreeCodegraph);
+        if (existingTarget === target) {
+          return false;
+        }
+        throw new Error(`worktree .codegraph already points elsewhere: ${worktreeCodegraph} -> ${existingTarget}`);
+      } catch (err) {
+        if (err?.code === "ENOENT") {
+          await rm(worktreeCodegraph, { force: true });
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      throw new Error(`worktree .codegraph already exists and does not point to source .codegraph: ${worktreeCodegraph}`);
+    }
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  await symlink(target, worktreeCodegraph, "dir");
+  return true;
+}
+
 async function samePath(left, right) {
   try {
     return (await realpath(left)) === (await realpath(right));
@@ -319,6 +391,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   const existingPath = await existingWorktreePath(path.resolve(project), branch);
   if (existingPath !== null) {
     if ((await pathExists(worktreePath)) && (await samePath(existingPath, worktreePath))) {
+      await inheritCodegraph(project, worktreePath);
       return { branch, path: worktreePath };
     }
     throw new Error(`branch already has a different worktree: ${branch}`);
@@ -331,6 +404,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   }
 
   await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+  await inheritCodegraph(project, worktreePath);
 
   return { branch, path: worktreePath };
 }
