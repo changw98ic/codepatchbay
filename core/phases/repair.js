@@ -33,6 +33,7 @@ export async function runRepair(ctx) {
     role: "repairer",
     ...resolveAgent(ctx, "claude"),
     project,
+    jobId,
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,

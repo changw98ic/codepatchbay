@@ -122,9 +122,7 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config --hub --verify-variant <variant>    Set global variant for verify phase
   cpb config --hub --agents                      Show global agent config
   cpb config --hub --show-concurrency            Show global concurrency config
-  cpb config --hub --max-active-total <n>        Optional Hub-wide task cap (0 = unlimited)
   cpb config --hub --max-active-per-project <n>  Set default project mutating task cap
-  cpb config --hub --acp-total <n>               Set global ACP connection cap
   cpb config --hub --acp-provider-max <n>        Set per-provider ACP connection cap
   cpb config --hub --unset-agent                 Remove global agent overrides
 
@@ -169,11 +167,8 @@ export async function run(args, { cpbRoot } = {}) {
     }
 
     if (args.includes("--show-concurrency")) {
-      const maxActiveTotal = hubConfig.concurrency?.maxActiveTotal;
       console.log("Hub concurrency:");
       console.log(`  maxActivePerProject: ${hubConfig.concurrency?.maxActivePerProject || "(default)"}`);
-      console.log(`  maxActiveTotal: ${maxActiveTotal === 0 ? "unlimited" : maxActiveTotal || "(default: unlimited)"}`);
-      console.log(`  acpPool.total: ${hubConfig.acpPool?.total || "(default)"}`);
       console.log(`  acpPool.providerMax: ${hubConfig.acpPool?.providerMax || "(default)"}`);
       return 0;
     }
@@ -191,36 +186,24 @@ export async function run(args, { cpbRoot } = {}) {
     });
     if (applied) return 0;
 
-    const maxActiveTotal = optionValue(args, "--max-active-total");
     const maxActivePerProject = optionValue(args, "--max-active-per-project");
-    const acpTotal = optionValue(args, "--acp-total");
     const acpProviderMax = optionValue(args, "--acp-provider-max");
-    if (maxActiveTotal !== null || maxActivePerProject !== null || acpTotal !== null || acpProviderMax !== null) {
+    if (maxActivePerProject !== null || acpProviderMax !== null) {
       const parsePositive = (label, value) => {
         if (value === null) return null;
         const n = Number(value);
         if (!Number.isFinite(n) || n < 1) throw new Error(`${label} must be a positive integer.`);
         return Math.floor(n);
       };
-      const parseNonNegative = (label, value) => {
-        if (value === null) return null;
-        const n = Number(value);
-        if (!Number.isFinite(n) || n < 0) throw new Error(`${label} must be a non-negative integer.`);
-        return Math.floor(n);
-      };
       try {
-        if (maxActiveTotal !== null || maxActivePerProject !== null) {
+        if (maxActivePerProject !== null) {
           hubConfig.concurrency = { ...(hubConfig.concurrency || {}) };
-          const total = parseNonNegative("--max-active-total", maxActiveTotal);
           const perProject = parsePositive("--max-active-per-project", maxActivePerProject);
-          if (total !== null) hubConfig.concurrency.maxActiveTotal = total;
           if (perProject !== null) hubConfig.concurrency.maxActivePerProject = perProject;
         }
-        if (acpTotal !== null || acpProviderMax !== null) {
+        if (acpProviderMax !== null) {
           hubConfig.acpPool = { ...(hubConfig.acpPool || {}) };
-          const total = parsePositive("--acp-total", acpTotal);
           const providerMax = parsePositive("--acp-provider-max", acpProviderMax);
-          if (total !== null) hubConfig.acpPool.total = total;
           if (providerMax !== null) hubConfig.acpPool.providerMax = providerMax;
         }
       } catch (err) {
@@ -232,7 +215,7 @@ export async function run(args, { cpbRoot } = {}) {
       return 0;
     }
 
-    console.error("No configuration option specified. Use --agent, --*-variant, --agents, --show-concurrency, --max-active-total, --acp-total, or --unset-agent.");
+    console.error("No configuration option specified. Use --agent, --*-variant, --agents, --show-concurrency, --max-active-per-project, --acp-provider-max, or --unset-agent.");
     return 1;
   }
 

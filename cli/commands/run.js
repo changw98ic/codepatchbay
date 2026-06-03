@@ -54,6 +54,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
   let workflow = "standard";
   let planMode = "auto";
   let triageMode = null;
+  let workflowExplicit = false;
+  let planModeExplicit = false;
   let retries = 3;
   let agent = "";
   let model = "";
@@ -80,8 +82,10 @@ export async function run(args, { cpbRoot, executorRoot }) {
       }
     } else if (arg === "--workflow") {
       workflow = args[++i];
+      workflowExplicit = true;
     } else if (arg === "--plan-mode") {
       planMode = args[++i];
+      planModeExplicit = true;
       if (planMode && !["auto", "none", "light", "full", "parent"].includes(planMode)) {
         console.error(`Error: invalid --plan-mode '${planMode}'`);
         return 1;
@@ -150,6 +154,18 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   const resolvedCpbRoot = cpbRoot || process.env.CPB_ROOT || process.cwd();
   const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
+  const { resolveTaskRoute } = await import("../../core/workflow/auto-route.js");
+  const route = resolveTaskRoute({
+    task,
+    workflow,
+    planMode,
+    triageMode,
+    workflowExplicit,
+    planModeExplicit,
+    actor: "cli",
+  });
+  workflow = route.workflow;
+  planMode = route.planMode;
 
   const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
   const { getProject } = await import(path.join(executorRoot, "server", "services", "hub-registry.js"));
@@ -168,6 +184,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       workflow,
       planMode,
       triageMode,
+      routeDecision: route.decision || undefined,
       maxRetries: Number.parseInt(String(retries), 10) || 3,
       actor: "cli",
       autoFinalize: true,

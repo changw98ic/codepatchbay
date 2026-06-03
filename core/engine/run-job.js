@@ -42,7 +42,7 @@ async function getDelegateClient() {
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
-const PHASE_RETRY_BASE_DELAY_MS = 30_000;
+const PHASE_RETRY_BASE_DELAY_MS = Number(process.env.CPB_PHASE_RETRY_BASE_DELAY_MS || 30_000);
 const PHASE_RETRYABLE_KINDS = new Set([
   FailureKind.AGENT_SPAWN_ERROR,
   FailureKind.AGENT_EXIT_NONZERO,
@@ -63,6 +63,36 @@ function extractArtifactId(artifact) {
   if (!artifact?.name) return null;
   const parts = artifact.name.split("-");
   return parts.length > 1 ? parts[parts.length - 1] : artifact.id || null;
+}
+
+function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
+  if (hardGateFailed) {
+    return {
+      calls: 0,
+      inputTokens: null,
+      cachedInputTokens: null,
+      outputTokens: null,
+      reasoningOutputTokens: null,
+      totalTokens: null,
+      costUsd: null,
+      tokenSource: "hard_gate",
+      toolCalls: null,
+      functionCalls: null,
+    };
+  }
+
+  return {
+    calls: 1,
+    inputTokens: usage?.inputTokens ?? null,
+    cachedInputTokens: usage?.cachedInputTokens ?? null,
+    outputTokens: usage?.outputTokens ?? null,
+    reasoningOutputTokens: usage?.reasoningOutputTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    costUsd: usage?.costUsd ?? null,
+    tokenSource: usage?.tokenSource || "acp_not_reported",
+    toolCalls: usage?.toolCalls ?? null,
+    functionCalls: usage?.functionCalls ?? null,
+  };
 }
 
 /**
@@ -381,7 +411,8 @@ export async function runJob(ctx) {
     }
 
     // Phase retry: transient/validation failures get a second chance
-    if (!isPhasePassed(result) && PHASE_RETRY_MAX > 0) {
+    const quotaDelegateFailure = String(result.failure?.cause?.code || "").startsWith("QUOTA_DELEGATE_");
+    if (!quotaDelegateFailure && !isPhasePassed(result) && PHASE_RETRY_MAX > 0) {
       const isRetryable = result.failure?.retryable || PHASE_RETRYABLE_KINDS.has(result.failure?.kind);
       if (isRetryable) {
         for (let phaseRetry = 1; phaseRetry <= PHASE_RETRY_MAX; phaseRetry++) {
@@ -499,6 +530,8 @@ export async function runJob(ctx) {
       status: result.status,
       artifact: result.artifact?.name || null,
       promptArtifact: result.diagnostics?.promptArtifact?.name || null,
+      acpAuditFile: result.diagnostics?.acpAuditFile || null,
+      usage: result.diagnostics?.usage || null,
       failure: result.failure
         ? { kind: result.failure.kind, reason: result.failure.reason }
         : null,
@@ -564,7 +597,7 @@ export async function runJob(ctx) {
               reason: handoffReason || result.failure?.reason || null,
             } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
-            usage: { calls: hardGateFailed ? 0 : 1, inputTokens: null, outputTokens: null, totalTokens: null, tokenSource: null, toolCalls: null, functionCalls: null },
+            usage: normalizePhaseUsage(diag.usage, { hardGateFailed }),
           }).catch(() => null);
         }
       } catch { /* usage tracking is best-effort */ }

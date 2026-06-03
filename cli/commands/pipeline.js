@@ -17,6 +17,9 @@ export async function run(args, { cpbRoot, executorRoot }) {
   let verifyVariant = "";
   let reviewVariant = "";
   let workflow = "standard";
+  let triageMode = "auto";
+  let workflowExplicit = false;
+  let planModeExplicit = false;
   let issueNumber = "";
   let issueUrl = "";
   let repo = "";
@@ -25,12 +28,16 @@ export async function run(args, { cpbRoot, executorRoot }) {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--plan-mode" && args[i + 1]) {
       planMode = args[++i];
+      planModeExplicit = true;
     } else if (args[i] === "--agent" && args[i + 1]) {
       agent = args[++i];
     } else if (args[i] === "--model" && args[i + 1]) {
       model = args[++i];
     } else if (args[i] === "--workflow" && args[i + 1]) {
       workflow = args[++i];
+      workflowExplicit = true;
+    } else if (args[i] === "--triage" && args[i + 1]) {
+      triageMode = args[++i];
     } else if (args[i] === "--issue-number" && args[i + 1]) {
       issueNumber = args[++i];
     } else if (args[i] === "--issue-url" && args[i + 1]) {
@@ -65,7 +72,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   if (!project || !task) {
     console.error(
       "Usage: cpb pipeline [--interactive] [--plan-mode auto|none|light|full|parent] " +
-        "[--agent <name>] [--model <profile>] [--workflow standard|issue] " +
+        "[--agent <name>] [--model <profile>] [--workflow direct|standard|complex|issue] [--triage auto|rules|none] " +
         "[--issue-number <num>] [--issue-url <url>] [--repo <owner/repo>] " +
         "<project> '<task>' [retries]"
     );
@@ -80,6 +87,18 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const resolvedCpbRoot = cpbRoot || process.env.CPB_ROOT || process.cwd();
   const hubRoot =
     process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
+  const { resolveTaskRoute } = await import("../../core/workflow/auto-route.js");
+  const route = resolveTaskRoute({
+    task,
+    workflow,
+    planMode,
+    triageMode,
+    workflowExplicit,
+    planModeExplicit,
+    actor: "cli",
+  });
+  workflow = route.workflow;
+  planMode = route.planMode;
 
   const { enqueue } = await import(
     path.join(executorRoot, "server", "services", "hub-queue.js")
@@ -105,6 +124,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
       source: "cli",
       workflow,
       planMode,
+      triageMode,
+      routeDecision: route.decision || undefined,
       actor: "cli",
       autoFinalize: true,
       agent: agent || undefined,

@@ -2,7 +2,7 @@
 // local-smoke.mjs — repeatable local smoke checks with fake ACP providers.
 
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,79 +12,13 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_EXECUTOR_ROOT = path.resolve(__dirname, "..");
 
-function fakeClientSource() {
-  return `#!/usr/bin/env node
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
+const PLAN_PROMPT_RE = "software planning agent";
+const EXECUTE_PROMPT_RE = "software execution agent";
+const REVIEW_PROMPT_RE = "code review agent";
+const VERIFY_PROMPT_RE = "software verification agent";
 
-const chunks = [];
-for await (const chunk of process.stdin) chunks.push(chunk);
-const prompt = Buffer.concat(chunks).toString("utf8");
-
-function cleanPath(value) {
-  return value.trim().replace(/^["'\`]+|["'\`]+$/g, "").replace(/[.,]$/, "");
-}
-
-function firstPath(patterns) {
-  for (const pattern of patterns) {
-    const match = prompt.match(pattern);
-    if (match?.[1]) return cleanPath(match[1]);
-  }
-  return null;
-}
-
-async function writeArtifact(filePath, content) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, "utf8");
-  console.log("fake-acp wrote " + filePath);
-}
-
-const planFile = firstPath([
-  /^Write the plan to:\\s*(.+)$/m,
-]);
-const deliverableFile = firstPath([
-  /^- Write deliverable ONLY to:\\s*(.+)$/m,
-  /^\\d+\\. Write the deliverable to:\\s*(.+)$/m,
-  /^Write the deliverable to:\\s*(.+)$/m,
-]);
-const reviewFile = firstPath([
-  /^- ONLY write the review to:\\s*(.+)$/m,
-  /^Write the review to:\\s*(.+)$/m,
-]);
-const verdictFile = firstPath([
-  /^- ONLY write the verdict to:\\s*(.+)$/m,
-  /^\\d+\\. Write the verdict to:\\s*(.+)$/m,
-  /^Write the verdict to:\\s*(.+)$/m,
-]);
-
-if (planFile) {
-  await writeArtifact(planFile, "# Plan: local fake ACP smoke\\n\\n## Acceptance Criteria\\n- Pipeline creates deliverable, review, and verdict artifacts.\\n");
-} else if (deliverableFile) {
-  await writeArtifact(deliverableFile, "# Deliverable: local fake ACP smoke\\n\\nPlan-Ref: 001\\n\\nThe fake ACP provider exercised the pipeline artifact path.\\n");
-} else if (reviewFile) {
-  await writeArtifact(reviewFile, "## Verdict\\nREVIEW: PASS\\n\\n## Summary\\nFake ACP smoke review passed.\\n\\n## Blocking Findings\\nNone.\\n\\n## Non-Blocking Findings\\nNone.\\n");
-} else if (verdictFile) {
-  await writeArtifact(verdictFile, JSON.stringify({
-    status: "pass",
-    confidence: 1,
-    layers: {
-      fast: { status: "pass", detail: "Fake ACP smoke artifacts were present." },
-      changed: { status: "not_run", detail: "No production project changes were required." },
-      regression: { status: "skipped", detail: "Smoke check intentionally avoids broad regression." },
-      acceptance: { status: "pass", detail: "Pipeline reached verifier and wrote a pass verdict." }
-    },
-    blocking: [],
-    diff_summary: "fake smoke only",
-    task_goal: "Exercise local init, attach, pipeline, review, verify, and outputs paths.",
-    executor_summary: "Fake executor wrote a deliverable artifact.",
-    reason: "Fake ACP local smoke passed.",
-    fix_scope: []
-  }, null, 2) + "\\n");
-} else {
-  console.error("fake-acp could not find a known artifact path in prompt");
-  process.exit(1);
-}
-`;
+function jsonEnvelope(data) {
+  return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
 async function runCommand(command, args, opts = {}) {
@@ -109,11 +43,75 @@ async function runCommand(command, args, opts = {}) {
   }
 }
 
-async function writeFakeClient(tmpRoot) {
-  const clientPath = path.join(tmpRoot, "fake-acp-client.mjs");
-  await writeFile(clientPath, fakeClientSource(), "utf8");
-  await chmod(clientPath, 0o755);
-  return clientPath;
+async function withProcessEnv(env, fn) {
+  const previous = new Map();
+  for (const key of Object.keys(env)) {
+    previous.set(key, Object.hasOwn(process.env, key) ? process.env[key] : undefined);
+    process.env[key] = env[key];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function writeTestAgentScenario(tmpRoot) {
+  const scenarioPath = path.join(tmpRoot, "test-acp-scenario.json");
+  await writeFile(
+    scenarioPath,
+    `${JSON.stringify({
+      responses: [
+        {
+          name: "plan",
+          matchRegex: PLAN_PROMPT_RE,
+          output: jsonEnvelope({
+            status: "ok",
+            planMarkdown: "## Analysis\n- Exercise CPB's full fake ACP chain through the registered fake-acp agent.\n\n## Files to modify\n- README.md (smoke target only)\n\n## Implementation Steps\n1. Use the deterministic fake ACP provider.\n2. Return JSON envelopes for plan, execute, review, and verify phases.\n3. Let CPB persist every phase artifact.\n\n## Testing\n- Confirm CPB creates plan, deliverable, review, and verdict artifacts.\n\n## Risks\n- This smoke proves orchestration and ACP transport, not real provider quality.",
+          }),
+        },
+        {
+          name: "execute",
+          matchRegex: EXECUTE_PROMPT_RE,
+          output: jsonEnvelope({
+            status: "ok",
+            summary: "Fake ACP executed the smoke path and intentionally left README.md unchanged.",
+            tests: ["bridges/local-smoke.mjs: fake-acp full-chain smoke reached execute"],
+            risks: ["No production source changes are expected in this smoke."],
+          }),
+        },
+        {
+          name: "review",
+          matchRegex: REVIEW_PROMPT_RE,
+          output: jsonEnvelope({
+            status: "ok",
+            verdict: "approved",
+            summary: "Fake ACP smoke review approved the deterministic deliverable.",
+            comments: [],
+          }),
+        },
+        {
+          name: "verify",
+          matchRegex: VERIFY_PROMPT_RE,
+          output: jsonEnvelope({
+            status: "ok",
+            verdict: "pass",
+            reason: "Fake ACP local smoke passed.",
+            details: "The registered fake-acp agent completed plan, execute, review, and verify contracts through CPB.",
+            confidence: 1,
+          }),
+        },
+      ],
+      default: {
+        output: "fake-acp no matching artifact path",
+      },
+    }, null, 2)}\n`,
+    "utf8",
+  );
+  return scenarioPath;
 }
 
 async function listMarkdownFiles(dir) {
@@ -134,6 +132,18 @@ async function collectArtifacts(cpbRoot, project) {
   };
 }
 
+async function collectTranscriptEvents(transcriptFile) {
+  try {
+    const raw = await readFile(transcriptFile, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
 function assertArtifacts(artifacts) {
   const required = {
     plan: artifacts.inbox.some((entry) => /^plan-\d+\.md$/.test(entry)),
@@ -151,13 +161,17 @@ export async function runFakeAcpSmoke({
   executorRoot = DEFAULT_EXECUTOR_ROOT,
   keepTemp = false,
   project = "local-smoke",
+  codegraph = false,
 } = {}) {
   const root = path.resolve(executorRoot);
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-local-smoke-"));
   const cpbRoot = path.join(tmpRoot, "cpb-root");
   const hubRoot = path.join(tmpRoot, "hub");
   const sourcePath = path.join(tmpRoot, "source-project");
-  const fakeClient = await writeFakeClient(tmpRoot);
+  const scenarioFile = await writeTestAgentScenario(tmpRoot);
+  const transcriptFile = path.join(tmpRoot, "test-acp-transcript.jsonl");
+  const testAgentPath = path.join(root, "bridges", "test-acp-agent.mjs");
+  const testAgentArgs = JSON.stringify([testAgentPath, "--scenario-file", scenarioFile, "--transcript-file", transcriptFile]);
 
   try {
     await mkdir(cpbRoot, { recursive: true });
@@ -176,8 +190,16 @@ export async function runFakeAcpSmoke({
       CPB_HUB_ROOT: hubRoot,
       CPB_PROJECT_ROOTS: tmpRoot,
       CPB_ACP_USE_MANAGED_POOL: "0",
-      CPB_ACP_CLIENT: fakeClient,
+      CPB_ACP_PERSISTENT_PROCESS: "0",
+      CPB_ACP_TIMEOUT_MS: "30000",
+      CPB_ACP_PHASE_TIMEOUT_MS: "30000",
+      CPB_ACP_POOL_TIMEOUT_MS: "30000",
+      CPB_PHASE_RETRY_MAX: "0",
+      CPB_PHASE_CORRECTION_MAX: "0",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: testAgentArgs,
       CPB_USE_WORKTREE: "0",
+      ...(codegraph ? {} : { CPB_CODEGRAPH_ENABLED: "0" }),
     };
 
     const cli = path.join(root, "cli", "cpb.mjs");
@@ -189,16 +211,35 @@ export async function runFakeAcpSmoke({
       cwd: root,
       env,
     });
-    const { runJobWithServices } = await import("../bridges/engine-bridge.js");
-    await runJobWithServices({
-      cpbRoot,
-      hubRoot,
-      project,
-      task: "local fake ACP smoke",
-      jobId: "job-local-smoke-001",
-      workflow: "complex",
-      sourcePath,
-      maxRetries: 1,
+    const { writeProjectAgents } = await import("../server/services/agent-config.js");
+    await writeProjectAgents(cpbRoot, project, {
+      default: "fake-acp",
+      phases: {
+        plan: "fake-acp",
+        execute: "fake-acp",
+        review: "fake-acp",
+        verify: "fake-acp",
+      },
+    });
+    await withProcessEnv(env, async () => {
+      const { runJobWithServices } = await import("../bridges/engine-bridge.js");
+      return runJobWithServices({
+        cpbRoot,
+        hubRoot,
+        project,
+        task: "local fake ACP smoke",
+        jobId: "job-local-smoke-001",
+        workflow: "complex",
+        sourcePath,
+        maxRetries: 1,
+        agents: {
+          planner: "fake-acp",
+          executor: "fake-acp",
+          reviewer: "fake-acp",
+          verifier: "fake-acp",
+        },
+        env,
+      });
     });
 
     const artifacts = await collectArtifacts(cpbRoot, project);
@@ -207,9 +248,20 @@ export async function runFakeAcpSmoke({
     const verdictName = artifacts.outputs.find((entry) => /^verdict-\d+\.md$/.test(entry));
     const verdictPath = path.join(cpbRoot, "wiki", "projects", project, "outputs", verdictName);
     const verdictContent = await readFile(verdictPath, "utf8");
-    const verdict = JSON.parse(verdictContent);
-    if (verdict.status !== "pass") {
-      throw new Error(`fake ACP smoke verdict was not pass: ${verdict.status}`);
+    if (!/^## Status\s+PASS\b/m.test(verdictContent)) {
+      throw new Error(`fake ACP smoke verdict was not pass: ${verdictContent.slice(0, 200)}`);
+    }
+
+    const transcriptEvents = await collectTranscriptEvents(transcriptFile);
+    if (codegraph) {
+      const codegraphSession = transcriptEvents.find((event) =>
+        event.event === "session/new" &&
+        Array.isArray(event.mcpServers) &&
+        event.mcpServers.some((server) => server?.name === "codegraph" && server?.type === "sse" && server?.url)
+      );
+      if (!codegraphSession) {
+        throw new Error("fake ACP smoke did not receive codegraph MCP server in session/new");
+      }
     }
 
     return {
@@ -220,6 +272,10 @@ export async function runFakeAcpSmoke({
       hubRoot,
       sourcePath,
       artifacts,
+      codegraph: {
+        enabled: Boolean(codegraph),
+        sessionsWithMcp: transcriptEvents.filter((event) => event.event === "session/new" && event.mcpServers?.length > 0).length,
+      },
       keptTemp: keepTemp,
     };
   } finally {
@@ -230,11 +286,12 @@ export async function runFakeAcpSmoke({
 }
 
 function parseArgs(argv) {
-  const opts = { json: false, keepTemp: false };
+  const opts = { json: false, keepTemp: false, codegraph: false };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") opts.json = true;
     else if (arg === "--keep-temp") opts.keepTemp = true;
+    else if (arg === "--codegraph") opts.codegraph = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -244,12 +301,12 @@ function parseArgs(argv) {
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
-    console.log(`Usage: node bridges/local-smoke.mjs [--json] [--keep-temp]
+    console.log(`Usage: node bridges/local-smoke.mjs [--json] [--keep-temp] [--codegraph]
 
 Runs a repeatable local smoke with a fake ACP client. No real provider calls are made.`);
     return 0;
   }
-  const result = await runFakeAcpSmoke({ keepTemp: opts.keepTemp });
+  const result = await runFakeAcpSmoke({ keepTemp: opts.keepTemp, codegraph: opts.codegraph });
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {

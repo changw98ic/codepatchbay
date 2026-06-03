@@ -142,7 +142,6 @@ const COMMANDS = {
   audit: "audit.js",
   "review-bundle": "review-bundle.js",
   "backlog-hygiene": "backlog-hygiene.js",
-  coderag: "codegraph.js",
   codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
   logs: "logs.js",

@@ -1,8 +1,6 @@
 import { AssignmentStore } from "./assignment-store.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
-  DEFAULT_MAX_ACTIVE_TOTAL,
-  nonNegativeInt,
   positiveInt,
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
@@ -15,14 +13,12 @@ export class Scheduler {
     assignmentStore,
     workerStore,
     maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
-    maxActiveTotal = DEFAULT_MAX_ACTIVE_TOTAL,
     getProjectFn = null,
   }) {
     this.hubRoot = hubRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
     this.maxActivePerProject = positiveInt(maxActivePerProject, DEFAULT_MAX_ACTIVE_PER_PROJECT);
-    this.maxActiveTotal = nonNegativeInt(maxActiveTotal, DEFAULT_MAX_ACTIVE_TOTAL);
     this.getProjectFn = getProjectFn;
   }
 
@@ -62,16 +58,13 @@ export class Scheduler {
 
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
       maxActivePerProject: this.maxActivePerProject,
-      maxActiveTotal: this.maxActiveTotal,
     });
 
     // Compute active mutating count per project
     const activeMutatingByProject = {};
-    let activeMutatingTotal = 0;
     for (const entry of allEntries) {
       if ((entry.status === "in_progress" || entry.status === "scheduled") && isMutatingEntry(entry)) {
         activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
-        activeMutatingTotal += 1;
       }
     }
 
@@ -82,7 +75,6 @@ export class Scheduler {
       .filter(e => e.status === "pending")
       .filter(e => {
         if (isMutatingEntry(e)) {
-          if (hubLimits.maxActiveTotal > 0 && activeMutatingTotal >= hubLimits.maxActiveTotal) return false;
           const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
           if (projectLimit > 0 && (activeMutatingByProject[e.projectId] || 0) >= projectLimit) {
             return false;

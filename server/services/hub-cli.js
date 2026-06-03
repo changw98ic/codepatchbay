@@ -103,8 +103,6 @@ export async function cmdStart() {
   const host = process.env.CPB_HOST || "127.0.0.1";
   const configuredEnv = hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot, {
     maxActivePerProject: process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT,
-    maxActiveTotal: process.env.CPB_HUB_MAX_ACTIVE_TOTAL,
-    acpPoolTotal: process.env.CPB_ACP_POOL_TOTAL,
     acpProviderMax: process.env.CPB_ACP_POOL_PROVIDER_MAX,
   }));
   const hubProcessEnv = { ...process.env, ...configuredEnv };

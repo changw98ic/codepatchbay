@@ -44,6 +44,7 @@ export async function runPlan(ctx) {
     role: "planner",
     ...resolvedAgent,
     project,
+    jobId,
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,

@@ -103,7 +103,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       else {
         console.log(`Queue: ${qs.total} entries`);
         console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} blocked:${qs.blocked || 0} failed:${qs.failed} cancelled:${qs.cancelled}`);
-        console.log(`  active-mutating:${qs.activeMutatingTotal || 0}/${qs.maxActiveTotal > 0 ? qs.maxActiveTotal : "unlimited"}`);
+        console.log(`  active-mutating:${qs.activeMutatingTotal || 0}`);
         if (qs.eligibleQueued > 0) {
           console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects?.join(",") || ""}`);
         }

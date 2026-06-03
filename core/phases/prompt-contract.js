@@ -8,6 +8,7 @@ export function phaseExecutionContract(phase) {
   return `## Execution Intensity Contract
 ${phaseBoundary}
 - Start with indexed lookup: use codegraph, project code index, or context pack if available; otherwise use focused rg/rg --files.
+- If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.
 - First-pass inspection budget: max 5 files or 3 symbol/index lookups before naming the exact files you will modify or verify.
 - Prefer relevant loaded skills/profile guidance when available, and mention the index/skill path used in your JSON summary.
 - Define 2-5 task-specific acceptance probes from the request before running broad regression.

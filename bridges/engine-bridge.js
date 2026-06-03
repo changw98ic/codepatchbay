@@ -14,7 +14,7 @@ import { resolveHubRoot, getProject } from "../server/services/hub-registry.js";
 /**
  * Build the services object for DI injection.
  */
-export function buildServices(cpbRoot) {
+export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {}) {
   return {
     createJob,
     startPhase,
@@ -22,7 +22,7 @@ export function buildServices(cpbRoot) {
     completeJob,
     failJob,
     appendEvent,
-    getPool: () => getManagedAcpPool({ cpbRoot }),
+    getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
   };
 }
 
@@ -33,11 +33,12 @@ export function buildServices(cpbRoot) {
 export async function runJobWithServices(opts) {
   const { cpbRoot, project, sourcePath: explicitSourcePath, hubRoot: explicitHubRoot } = opts;
   const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot } = await resolveSourcePath(cpbRoot, project);
+  const hubRoot = explicitHubRoot || resolvedHubRoot;
   return runJob({
     ...opts,
-    hubRoot: explicitHubRoot || resolvedHubRoot,
+    hubRoot,
     sourcePath: explicitSourcePath || resolvedSourcePath,
-    ...buildServices(cpbRoot),
+    ...buildServices(cpbRoot, { hubRoot, env: opts.env || process.env }),
   });
 }
 

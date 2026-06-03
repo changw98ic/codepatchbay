@@ -4,6 +4,7 @@ import { cancelJob, requestRedirectJob, retryJob } from '../services/job-store.j
 import { enqueue } from '../services/hub-queue.js';
 import { getProject } from '../services/hub-registry.js';
 import { resolveAcpLane } from '../../core/acp/policy.js';
+import { resolveTaskRoute } from '../../core/workflow/auto-route.js';
 import { registerJobArtifactDetailRoute } from './job-artifacts.js';
 import { buildReviewBundle } from '../services/review-bundle.js';
 import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from '../services/review-loop.js';
@@ -63,6 +64,7 @@ export async function taskRoutes(fastify, opts) {
     const body = req.body || {};
     const {
       task, workflow = 'standard', planMode = 'auto',
+      triageMode = 'auto',
       acpProfile = 'headless', uiLaneReason = '',
       priority = 'P2', issueNumber, issueUrl, repo, issueTitle,
       actor = 'api', agents, agent, autoFinalize, maxRetries, timeoutSeconds,
@@ -83,6 +85,15 @@ export async function taskRoutes(fastify, opts) {
     const numericIssue = Number(issueNumber);
     const hasIssueLink = issueUrl || (resolvedRepo && Number.isInteger(numericIssue) && numericIssue > 0);
     const shouldAutoFinalize = autoFinalize === undefined ? true : Boolean(autoFinalize);
+    const route = resolveTaskRoute({
+      task,
+      workflow,
+      planMode,
+      triageMode,
+      workflowExplicit: Object.hasOwn(body, 'workflow'),
+      planModeExplicit: Object.hasOwn(body, 'planMode'),
+      actor,
+    });
 
     const entry = await enqueue(req.cpbHubRoot, {
       projectId: name,
@@ -92,7 +103,11 @@ export async function taskRoutes(fastify, opts) {
       type: 'api_pipeline',
       metadata: {
         source: 'api',
-        workflow, planMode, acpProfile,
+        workflow: route.workflow,
+        planMode: route.planMode,
+        triageMode,
+        routeDecision: route.decision || undefined,
+        acpProfile,
         uiLane: acpProfile === 'ui',
         uiLaneReason,
         autoFinalize: shouldAutoFinalize,

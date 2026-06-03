@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -302,6 +302,199 @@ function parseEnvArgs(value) {
   return splitWords(trimmed);
 }
 
+function safeAuditSegment(value, fallback) {
+  const raw = String(value || fallback || "unknown").trim();
+  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "");
+  return safe || fallback || "unknown";
+}
+
+export function resolveAcpAuditFile(env = process.env) {
+  if (env.CPB_ACP_AUDIT_FILE) return path.resolve(env.CPB_ACP_AUDIT_FILE);
+  if (env.CPB_ACP_AUDIT === "0") return null;
+
+  const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
+  const project = env.CPB_ACP_PROJECT || env.CPB_PROJECT;
+  const jobId = env.CPB_ACP_JOB_ID || env.CPB_JOB_ID;
+  if (!cpbRoot || !project || !jobId) return null;
+
+  return path.join(
+    path.resolve(cpbRoot),
+    "cpb-task",
+    "acp-audit",
+    safeAuditSegment(project, "project"),
+    `${safeAuditSegment(jobId, "job")}.jsonl`,
+  );
+}
+
+function summarizeMcpServers(servers = []) {
+  if (!Array.isArray(servers)) return [];
+  return servers.map((server) => ({
+    name: server?.name || null,
+    type: server?.type || null,
+    url: server?.url || null,
+    command: server?.command || null,
+  }));
+}
+
+function summarizeToolUpdate(update = {}) {
+  return {
+    sessionUpdate: update.sessionUpdate || null,
+    toolCallId: update.toolCallId || update.id || null,
+    title: update.title || update.name || update.toolName || null,
+    status: update.status || null,
+    kind: update.kind || null,
+    serverName: update.serverName || update.mcpServerName || update.mcp_server_name || null,
+    toolName: update.toolName || update.name || null,
+  };
+}
+
+function numberFrom(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNumber(source, keys = []) {
+  if (!source || typeof source !== "object") return null;
+  for (const key of keys) {
+    if (Object.hasOwn(source, key)) {
+      const value = numberFrom(source[key]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+function createUsageTotals() {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    toolCalls: 0,
+    functionCalls: 0,
+    events: 0,
+    tokenSource: null,
+  };
+}
+
+function cloneUsageTotals(totals) {
+  return { ...createUsageTotals(), ...(totals || {}) };
+}
+
+function normalizeAcpUsage(update = {}) {
+  const candidates = [
+    ["usage", update.usage],
+    ["tokenUsage", update.tokenUsage],
+    ["tokens", update.tokens],
+    ["modelUsage", update.modelUsage],
+    ["metrics.usage", update.metrics?.usage],
+    ["cost.usage", update.cost?.usage],
+  ];
+  if (update.sessionUpdate === "usage" || update.sessionUpdate === "token_usage") {
+    candidates.push(["sessionUpdate", update]);
+  }
+
+  for (const [source, candidate] of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    if (typeof candidate === "number") {
+      return {
+        inputTokens: null,
+        cachedInputTokens: null,
+        outputTokens: null,
+        reasoningOutputTokens: null,
+        totalTokens: candidate,
+        costUsd: null,
+        toolCalls: null,
+        functionCalls: null,
+        tokenSource: source,
+      };
+    }
+    if (typeof candidate !== "object" || Array.isArray(candidate)) continue;
+
+    const inputTokens = firstNumber(candidate, [
+      "inputTokens", "input_tokens", "promptTokens", "prompt_tokens", "prompt", "input",
+    ]);
+    const cachedInputTokens = firstNumber(candidate, [
+      "cachedInputTokens", "cached_input_tokens", "cacheReadInputTokens", "cache_read_input_tokens", "cacheReadTokens",
+    ]);
+    const outputTokens = firstNumber(candidate, [
+      "outputTokens", "output_tokens", "completionTokens", "completion_tokens", "completion", "output",
+    ]);
+    const reasoningOutputTokens = firstNumber(candidate, [
+      "reasoningOutputTokens", "reasoning_output_tokens", "reasoningTokens", "reasoning_tokens",
+    ]);
+    let totalTokens = firstNumber(candidate, ["totalTokens", "total_tokens", "total", "tokens"]);
+    if (totalTokens === null) {
+      const computed = [inputTokens, outputTokens, reasoningOutputTokens]
+        .filter((value) => value !== null)
+        .reduce((sum, value) => sum + value, 0);
+      totalTokens = computed > 0 ? computed : null;
+    }
+    const costUsd = firstNumber(candidate, ["costUsd", "costUSD", "totalCostUsd", "total_cost_usd", "usd"]);
+    const toolCalls = firstNumber(candidate, ["toolCalls", "tool_calls"]);
+    const functionCalls = firstNumber(candidate, ["functionCalls", "function_calls"]);
+
+    if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens, costUsd, toolCalls, functionCalls].every((value) => value === null)) {
+      continue;
+    }
+
+    return {
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      reasoningOutputTokens,
+      totalTokens,
+      costUsd,
+      toolCalls,
+      functionCalls,
+      tokenSource: source,
+    };
+  }
+
+  return null;
+}
+
+function addUsage(totals, usage) {
+  if (!usage) return;
+  for (const key of [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "costUsd",
+    "toolCalls",
+    "functionCalls",
+  ]) {
+    const value = numberFrom(usage[key]);
+    if (value !== null) totals[key] += value;
+  }
+  totals.events += 1;
+  totals.tokenSource = usage.tokenSource || totals.tokenSource || "acp_session_update";
+}
+
+function usageDelta(before, after) {
+  const delta = createUsageTotals();
+  for (const key of [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "costUsd",
+    "toolCalls",
+    "functionCalls",
+    "events",
+  ]) {
+    delta[key] = Math.max(0, (after?.[key] || 0) - (before?.[key] || 0));
+  }
+  if (delta.events <= 0) return null;
+  delta.tokenSource = after?.tokenSource || "acp_session_update";
+  return delta;
+}
+
 function defaultAgentCommand(agent) {
   // Legacy hardcoded fallback for codex/claude when registry is unavailable
   if (agent === "codex") {
@@ -462,6 +655,7 @@ export class AcpClient {
     errorSink = (chunk) => process.stderr.write(chunk),
     env = process.env,
     resumeSessionId = null,
+    reuseSession = false,
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -473,6 +667,7 @@ export class AcpClient {
     this.errorSink = errorSink;
     this.env = env;
     this.resumeSessionId = resumeSessionId;
+    this.reuseSession = Boolean(reuseSession);
     this.nextId = 1;
     this.pending = new Map();
     this.terminals = new Map();
@@ -483,6 +678,37 @@ export class AcpClient {
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
     this.idleTimeoutMs = Number.parseInt(this.env.CPB_ACP_TIMEOUT_MS || "0", 10);
+    this.auditEnv = { ...this.env };
+    this.auditFile = resolveAcpAuditFile(this.auditEnv);
+    this.activeSessionId = null;
+    this.activeSessionCwd = null;
+    this.usageTotals = createUsageTotals();
+    this.lastPromptUsage = null;
+  }
+
+  setAuditContext(envPatch = {}, { cwd = null, writeAllowPaths = undefined } = {}) {
+    this.env = { ...this.env, ...envPatch };
+    this.auditEnv = { ...this.env };
+    this.auditFile = resolveAcpAuditFile(this.auditEnv);
+    if (cwd) this.cwd = cwd;
+    if (writeAllowPaths !== undefined) this.writeAllowPaths = writeAllowPaths || null;
+  }
+
+  async recordAudit(event, details = {}) {
+    if (!this.auditFile) return;
+    const auditEnv = this.auditEnv || this.env;
+    const entry = {
+      ts: new Date().toISOString(),
+      event,
+      agent: this.agent,
+      project: auditEnv.CPB_ACP_PROJECT || null,
+      jobId: auditEnv.CPB_ACP_JOB_ID || null,
+      phase: auditEnv.CPB_ACP_PHASE || null,
+      role: auditEnv.CPB_ACP_ROLE || null,
+      ...details,
+    };
+    await mkdir(path.dirname(this.auditFile), { recursive: true });
+    await appendFile(this.auditFile, `${JSON.stringify(entry)}\n`, "utf8");
   }
 
   async start() {
@@ -500,6 +726,12 @@ export class AcpClient {
       Object.assign(env, homeEnv);
     }
     const { command, args } = await resolveAgentCommand(this.agent, env);
+    const codegraphSseUrl = resolveCodegraphSseUrl(env);
+    await this.recordAudit("agent_launch", {
+      command: path.basename(command),
+      mcpServerNames: codegraphSseUrl ? ["codegraph"] : [],
+      codegraphSseUrl: codegraphSseUrl || null,
+    });
     if (command === "npx" && !env.npm_config_cache) {
       const instanceCache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
       await mkdir(instanceCache, { recursive: true });
@@ -572,12 +804,37 @@ export class AcpClient {
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
     const mcpServers = buildMcpServers(this.agent, this.env);
+    const usageBefore = cloneUsageTotals(this.usageTotals);
     const newSession = async (servers) => {
+      await this.recordAudit("session_new_request", {
+        cwd,
+        mcpServers: summarizeMcpServers(servers),
+        mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+      });
       try {
-        return await this.request("session/new", { cwd, mcpServers: servers });
+        const session = await this.request("session/new", { cwd, mcpServers: servers });
+        await this.recordAudit("session_new", {
+          cwd,
+          sessionId: session.sessionId || null,
+          mcpServers: summarizeMcpServers(servers),
+          mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+        });
+        return session;
       } catch (error) {
         if (servers?.length > 0 && /invalid params/i.test(error.message || "")) {
-          return this.request("session/new", { cwd, mcpServers: [] });
+          await this.recordAudit("session_new_mcp_fallback", {
+            cwd,
+            reason: error.message || "session/new rejected mcpServers",
+            mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+          });
+          const session = await this.request("session/new", { cwd, mcpServers: [] });
+          await this.recordAudit("session_new", {
+            cwd,
+            sessionId: session.sessionId || null,
+            mcpServers: [],
+            mcpServerNames: [],
+          });
+          return session;
         }
         throw error;
       }
@@ -585,14 +842,27 @@ export class AcpClient {
 
     // Try to resume a cached session, fall back to new
     let session;
-    if (this.resumeSessionId) {
-      try {
-        session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
-      } catch {
+    if (this.reuseSession && this.activeSessionId && this.activeSessionCwd === cwd) {
+      session = { sessionId: this.activeSessionId };
+      await this.recordAudit("session_reuse", { cwd, sessionId: this.activeSessionId });
+    } else {
+      if (this.reuseSession && this.activeSessionId && this.activeSessionCwd !== cwd) {
+        await this.closeActiveSession("cwd_changed");
+      }
+      if (this.resumeSessionId) {
+        try {
+          session = await this.request("session/resume", { sessionId: this.resumeSessionId, cwd });
+          await this.recordAudit("session_resume", { cwd, sessionId: session.sessionId || this.resumeSessionId });
+        } catch {
+          session = await newSession(mcpServers);
+        }
+      } else {
         session = await newSession(mcpServers);
       }
-    } else {
-      session = await newSession(mcpServers);
+      if (this.reuseSession && session?.sessionId) {
+        this.activeSessionId = session.sessionId;
+        this.activeSessionCwd = cwd;
+      }
     }
 
     await this.request("session/prompt", {
@@ -601,11 +871,35 @@ export class AcpClient {
     });
     await this.lineQueue;
 
-    if (initialized.agentCapabilities?.sessionCapabilities?.close) {
+    this.lastPromptUsage = usageDelta(usageBefore, this.usageTotals);
+    if (this.lastPromptUsage) {
+      await this.recordAudit("prompt_usage", {
+        sessionId: session.sessionId,
+        usage: this.lastPromptUsage,
+      });
+    }
+
+    if (!this.reuseSession && initialized.agentCapabilities?.sessionCapabilities?.close) {
       await this.request("session/close", { sessionId: session.sessionId }).catch(() => null);
+      await this.recordAudit("session_close", {
+        sessionId: session.sessionId,
+        cwd,
+        reason: "prompt_complete",
+      });
     }
 
     return session.sessionId;
+  }
+
+  async closeActiveSession(reason = "client_close") {
+    if (!this.activeSessionId) return;
+    const sessionId = this.activeSessionId;
+    const cwd = this.activeSessionCwd;
+    this.activeSessionId = null;
+    this.activeSessionCwd = null;
+    if (!this.child || this.closed || !this.initialized?.agentCapabilities?.sessionCapabilities?.close) return;
+    await this.request("session/close", { sessionId }).catch(() => null);
+    await this.recordAudit("session_close", { sessionId, cwd, reason });
   }
 
   async run() {
@@ -619,6 +913,7 @@ export class AcpClient {
   async close() {
     this.clearIdleTimer();
     if (!this.child || this.closed) return;
+    await this.closeActiveSession("client_close");
     const child = this.child;
     const closed = new Promise((resolve) => {
       child.once("close", resolve);
@@ -776,7 +1071,7 @@ export class AcpClient {
 
       switch (message.method) {
         case "session/update":
-          this.handleSessionUpdate(message.params);
+          await this.handleSessionUpdate(message.params);
           if (Object.hasOwn(message, "id")) this.respond(message.id, null);
           break;
         case "fs/read_text_file":
@@ -826,13 +1121,26 @@ export class AcpClient {
     }
   }
 
-  handleSessionUpdate(params) {
+  async handleSessionUpdate(params) {
     const update = params?.update;
     if (!update) return;
+
+    const usage = normalizeAcpUsage(update);
+    if (usage) {
+      addUsage(this.usageTotals, usage);
+      await this.recordAudit("token_usage", {
+        sessionId: params?.sessionId || null,
+        usage,
+      });
+    }
 
     if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
       this.outputSink(update.content.text);
     } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      await this.recordAudit("tool_call", {
+        sessionId: params?.sessionId || null,
+        ...summarizeToolUpdate(update),
+      });
       const title = update.title || update.toolCallId || "tool";
       const status = update.status ? ` ${update.status}` : "";
       this.errorSink(`[acp:${this.agent}] ${title}${status}\n`);

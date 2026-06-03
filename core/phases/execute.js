@@ -57,6 +57,7 @@ export async function runExecute(ctx) {
     role: "executor",
     ...resolvedAgent,
     project,
+    jobId,
     prompt,
     cwd,
     pool,

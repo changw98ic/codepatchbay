@@ -37,6 +37,7 @@ export async function runReview(ctx) {
     role: "reviewer",
     ...resolveAgent(ctx, "codex"),
     project,
+    jobId,
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
