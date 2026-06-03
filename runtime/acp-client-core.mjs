@@ -241,8 +241,8 @@ export async function parseToolPolicy(env = process.env) {
   return null;
 }
 
-function commandExists(command) {
-  const result = spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", command]);
+function commandExists(command, env = process.env) {
+  const result = spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", command], { env });
   return result.status === 0;
 }
 
@@ -608,6 +608,23 @@ function buildMcpServers(agent, env) {
   if (agent === "codex") return [];
 
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
+}
+
+function resolveTerminalLaunchCommand(command, args = [], env = process.env) {
+  if (env.CPB_ACP_RTK_ENABLED === "0") {
+    return { command, args, rtkEnabled: false };
+  }
+  if (path.basename(String(command || "")) === "rtk") {
+    return { command, args, rtkEnabled: true };
+  }
+  if (!commandExists("rtk", env)) {
+    return { command, args, rtkEnabled: false };
+  }
+  return {
+    command: "rtk",
+    args: [command, ...args],
+    rtkEnabled: true,
+  };
 }
 
 function codexMcpConfigArgs(env) {
@@ -1080,7 +1097,7 @@ export class AcpClient {
           this.respond(message.id, this.permissionResponse(message.params));
           break;
         case "terminal/create":
-          this.respond(message.id, this.createTerminal(message.params));
+          this.respond(message.id, await this.createTerminal(message.params));
           break;
         case "terminal/output":
           this.respond(message.id, this.terminalOutput(message.params));
@@ -1254,7 +1271,7 @@ export class AcpClient {
     return { outcome: { outcome: "selected", optionId: preferred.optionId } };
   }
 
-  createTerminal(params) {
+  async createTerminal(params) {
     if (this.terminalPolicy === "deny") {
       throw new Error("terminal access denied for this phase");
     }
@@ -1286,8 +1303,16 @@ export class AcpClient {
       if (item?.name) extraEnv[item.name] = item.value;
     }
     const env = buildChildEnv(this.childEnv || this.env, extraEnv, { agent: this.agent });
+    const terminalLaunch = resolveTerminalLaunchCommand(params.command, params.args || [], env);
 
-    const launch = buildAgentSandboxLaunch(params.command, params.args || [], { env, cwd: terminalCwd });
+    await this.recordAudit("terminal_launch", {
+      cwd: terminalCwd,
+      command: params.command,
+      launchCommand: terminalLaunch.command,
+      rtkEnabled: terminalLaunch.rtkEnabled,
+    });
+
+    const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
     const child = spawn(launch.command, launch.args, {
       cwd: params.cwd || this.cwd,
       env,

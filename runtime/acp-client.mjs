@@ -28,6 +28,7 @@ Environment:
   CPB_ACP_DENY_TOOLS         Comma-separated tool names to deny (e.g. "terminal/create,fs/delete")
   CPB_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
   CPB_AGENT_SANDBOX          off|best-effort|required|strict for agent/terminal process sandboxing
+  CPB_ACP_RTK_ENABLED        1/0, wrap ACP terminal commands with rtk when available (default: 1)
 
 Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
 `;
