@@ -20,6 +20,37 @@ const TEST_KEYWORDS = [
   /\bci\b/i,
 ];
 
+const IMPLEMENTATION_VERBS = [
+  /\bimplement\b/i,
+  /\bbuild\b/i,
+  /\bcreate\b/i,
+  /\badd\b/i,
+  /\bdevelop\b/i,
+  /\bcomplete\b/i,
+  /\bextend\b/i,
+  /\brefactor\b/i,
+];
+
+const COMPLEX_IMPLEMENTATION_OBJECTS = [
+  /\bapis?\b/i,
+  /\bcli\b/i,
+  /\bfinali[sz]er\b/i,
+  /\breview bundle\b/i,
+  /\blocal-only\b/i,
+  /\bworkbench\b/i,
+  /\bmulti-project\b/i,
+  /\bproject-scoped\b/i,
+  /\bqueue\b/i,
+  /\bworker\b/i,
+  /\borchestrator\b/i,
+  /\bfrontend\b/i,
+  /\bbackend\b/i,
+  /\bintegration\b/i,
+  /\bend-to-end\b/i,
+  /\bfull[- ]?link\b/i,
+  /\bphase \d+\b/i,
+];
+
 const PROTECTED_RULES = [
   {
     scope: "security",
@@ -72,6 +103,10 @@ function includesLabel(labels, expected) {
 
 function matchesAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
+}
+
+function isComplexImplementationTask(text) {
+  return matchesAny(text, IMPLEMENTATION_VERBS) && matchesAny(text, COMPLEX_IMPLEMENTATION_OBJECTS);
 }
 
 function changedFiles(input = {}) {
@@ -128,6 +163,14 @@ export function classifyIssueRules(input = {}) {
       workflow: "sdd-standard",
       planMode: "parent",
       reason: "sdd label",
+      source: "rules",
+    };
+  } else if (isComplexImplementationTask(text)) {
+    route = {
+      category: "implementation",
+      workflow: "standard",
+      planMode: "full",
+      reason: "complex implementation signal",
       source: "rules",
     };
   } else if (matchesAny(text, DOC_KEYWORDS)) {

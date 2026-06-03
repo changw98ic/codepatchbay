@@ -277,6 +277,19 @@ test("trusted simple tasks auto-route to a single ACP execute phase", async () =
   assert.equal(calls[0].meta.role, "executor");
 });
 
+test("complex implementation tasks mentioning tests keep the standard full pipeline", () => {
+  const route = resolveTaskRoute({
+    task: "Implement the MVP Local Review Bundle and finalizer bridge. Expose hub APIs and CLI surfaces, and include focused tests.",
+    actor: "cli",
+    trustedActors: ["cli"],
+  });
+
+  assert.equal(route.workflow, "standard");
+  assert.equal(route.planMode, "full");
+  assert.equal(route.triageApplied, true);
+  assert.equal(route.decision.ruleRoute.category, "implementation");
+});
+
 test("unknown auto-routed tasks keep the requested safe default", async () => {
   const route = resolveTaskRoute({
     task: "Build a small Vue dashboard page",
