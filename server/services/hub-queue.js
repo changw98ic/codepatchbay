@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { buildMeta } from "../../core/job/meta.js";
+import { buildMeta, REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { ensureIndexFresh } from "./index-freshness.js";
 import { resolveAgentsForEntry } from "./agent-config.js";
 import { getProject } from "./hub-registry.js";
@@ -169,7 +169,7 @@ export async function enqueue(hubRoot, input = {}) {
     sessionId: meta.sessionId,
     workerId: meta.workerId,
     cwd: meta.cwd,
-    executionBoundary: meta.executionBoundary,
+    executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
   if (!normalizedInput.metadata) normalizedInput.metadata = {};
   normalizedInput.metadata.acpProfile = normalizedInput.metadata.acpProfile || "headless";
@@ -209,7 +209,7 @@ export async function enqueue(hubRoot, input = {}) {
       sessionId: meta.sessionId,
       workerId: meta.workerId,
       cwd: meta.cwd,
-      executionBoundary: meta.executionBoundary,
+      executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
       type: normalizedInput.type || "candidate",
       status: "pending",
       priority: normalizedInput.priority || "P2",

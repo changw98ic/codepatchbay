@@ -21,6 +21,7 @@ import {
 import { checkPolicy } from "../../server/services/evolve-policy.js";
 import { closeBudget, consume, createBudget } from "../../core/evolve/budget.js";
 import { isWorkflowName } from "../../core/workflow/definition.js";
+import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import {
   enqueue as hubEnqueue,
   listQueue as hubListQueue,
@@ -280,14 +281,13 @@ export class MultiEvolveController {
 
     if (this.hubRoot && issues.length > 0) {
       const sessionId = process.env.CPB_SESSION_ID || "";
-      const executionBoundary = process.env.CPB_EXECUTION_BOUNDARY || "source";
       for (const issue of issues) {
         try {
           await hubEnqueue(this.hubRoot, {
             projectId: project.id,
             sourcePath: project.sourcePath,
             sessionId,
-            executionBoundary,
+            executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
             priority: issue.priority,
             description: issue.description,
             type: "candidate",
@@ -465,7 +465,7 @@ export class MultiEvolveController {
         sourcePath: issue.sourcePath,
         sessionId: process.env.CPB_SESSION_ID || null,
         workerId: process.env.CPB_WORKER_ID || null,
-        executionBoundary: process.env.CPB_EXECUTION_BOUNDARY || "source",
+        executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
         priority: issue.priority || "P2",
         description: issue.description,
         type: "candidate",
