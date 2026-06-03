@@ -68,19 +68,35 @@ function ensureInside(root, child) {
 
 function run(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      ...options,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    let child;
     let stdout = "";
     let stderr = "";
+    try {
+      child = spawn(command, args, {
+        ...options,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      finish({ code: null, stdout, stderr: err?.message || String(err), error: err });
+      return;
+    }
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("error", (err) => {
+      finish({ code: null, stdout, stderr: stderr || err?.message || String(err), error: err });
+    });
+    child.on("close", (code) => finish({ code, stdout, stderr }));
   });
 }
 
@@ -308,24 +324,42 @@ async function ensureLocalGitExclude(worktreePath, pattern) {
   return true;
 }
 
-async function ensureIsolatedCodegraph(worktreePath) {
+function commandFailureMessage(command, args, result) {
+  const output = `${result.stderr || ""}${result.stdout || ""}`.trim();
+  const suffix = output.length > 0 ? `: ${output}` : "";
+  return `${command} ${args.join(" ")} failed${suffix}`;
+}
+
+async function initCodegraphIndex(worktreePath, runCommand = run) {
+  const args = ["init", worktreePath];
+  const result = await runCommand("codegraph", args, { cwd: worktreePath });
+  if (result.code !== 0) {
+    throw new Error(commandFailureMessage("codegraph", args, result));
+  }
+  return true;
+}
+
+async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodegraphIndex } = {}) {
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
+  let resetCodegraph = false;
 
   await ensureLocalGitExclude(worktreePath, ".codegraph");
   try {
     const existing = await lstat(worktreeCodegraph);
-    if (existing.isSymbolicLink()) {
+    if (existing.isSymbolicLink() || !existing.isDirectory()) {
       await rm(worktreeCodegraph, { force: true });
-      return true;
+      resetCodegraph = true;
     }
-    return false;
   } catch (err) {
     if (!err || err.code !== "ENOENT") {
       throw err;
     }
+    resetCodegraph = true;
   }
 
-  return false;
+  await initCodegraph(worktreePath);
+
+  return resetCodegraph;
 }
 
 async function ensureSharedNodeModules(project, worktreePath) {
@@ -368,8 +402,8 @@ async function ensureSharedNodeModules(project, worktreePath) {
   return true;
 }
 
-async function prepareWorktreeRuntime(project, worktreePath) {
-  await ensureIsolatedCodegraph(worktreePath);
+async function prepareWorktreeRuntime(project, worktreePath, options = {}) {
+  await ensureIsolatedCodegraph(worktreePath, options);
   await ensureSharedNodeModules(project, worktreePath);
 }
 
@@ -399,7 +433,7 @@ async function existingWorktreePath(project, branch) {
   return null;
 }
 
-export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
+export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph } = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
   validateComponent("job-id", jobId);
@@ -417,7 +451,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   const existingPath = await existingWorktreePath(path.resolve(project), branch);
   if (existingPath !== null) {
     if ((await pathExists(worktreePath)) && (await samePath(existingPath, worktreePath))) {
-      await prepareWorktreeRuntime(project, worktreePath);
+      await prepareWorktreeRuntime(project, worktreePath, { initCodegraph });
       return { branch, path: worktreePath };
     }
     throw new Error(`branch already has a different worktree: ${branch}`);
@@ -430,7 +464,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot }) {
   }
 
   await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-  await prepareWorktreeRuntime(project, worktreePath);
+  await prepareWorktreeRuntime(project, worktreePath, { initCodegraph });
 
   return { branch, path: worktreePath };
 }
