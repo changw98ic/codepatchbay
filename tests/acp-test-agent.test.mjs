@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
 import { AcpPool, readAcpUsageFromAudit } from "../server/services/acp-pool.js";
 import { buildAcpPoolEnv } from "../core/policy/child-env.js";
+import { resolveAgentCommand } from "../runtime/acp-client-core.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const acpClient = path.join(repoRoot, "runtime", "acp-client.mjs");
@@ -134,6 +135,14 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
 
   assert.equal(result.stdout, "audited-response");
   const events = await readJsonl(auditPath);
+  const sessionNewRequest = events.find((event) => event.event === "session_new_request");
+  assert.deepEqual(sessionNewRequest?.mcpServers?.[0], {
+    name: "codegraph",
+    type: "stdio",
+    url: null,
+    command: "codegraph",
+    args: ["serve", "--mcp", "--path", repoRoot],
+  });
   assert.ok(
     events.some((event) =>
       event.event === "session_new" &&
@@ -168,6 +177,32 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
     ),
     "prompt_usage audit should record per-prompt usage delta",
   );
+});
+
+test("Codex ACP receives direct codegraph stdio config instead of shared SSE bridge", async () => {
+  const tmp = await tempRoot("cpb-codex-codegraph-direct");
+  const { args } = await resolveAgentCommand("codex", {
+    ...process.env,
+    CPB_ACP_CODEX_COMMAND: "codex-acp",
+    CPB_ACP_CODEX_ARGS: "[]",
+    CPB_AGENT_ISOLATE_HOME: "0",
+    CPB_CODEGRAPH_ENABLED: "1",
+    CPB_PROJECT_PATH_OVERRIDE: tmp,
+  });
+
+  const launchConfig = new Map();
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== "-c" || !args[i + 1]) continue;
+    const [key, ...valueParts] = args[i + 1].split("=");
+    launchConfig.set(key, valueParts.join("="));
+  }
+
+  assert.equal(launchConfig.get("mcp_servers.codegraph.command"), JSON.stringify("codegraph"));
+  assert.deepEqual(
+    JSON.parse(launchConfig.get("mcp_servers.codegraph.args")),
+    ["serve", "--mcp", "--path", tmp],
+  );
+  assert.ok(!args.some((arg) => /supergateway|--sse/.test(String(arg))));
 });
 
 test("AcpPool passes job metadata and reports the automatic ACP audit file", async () => {
