@@ -166,6 +166,7 @@ export async function createPullRequestWithGh(request, { runCommand = execFileAs
       "--head", request.head,
       "--base", request.base,
     ];
+    if (request.draft) args.push("--draft");
     const result = await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
     const parsed = parseGhPrUrl(result.stdout);
     return {

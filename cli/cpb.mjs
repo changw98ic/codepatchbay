@@ -180,7 +180,7 @@ async function main() {
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally

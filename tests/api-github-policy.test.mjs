@@ -429,6 +429,24 @@ test("GitHub webhook route rejects bad inputs, returns 202 for unsupported/unreg
   assert.match(bodyOf(deniedIssue).error, /issue/);
 
   await updateEntry(hubRoot, approval.id, { status: "waiting.approval", metadata: { repo: "owner/repo", issueNumber: 5 } });
+  const policyApp = await makeApp(githubRoutes, {
+    cpbRoot,
+    hubRoot,
+    opts: {
+      githubDryRun: true,
+      channelPolicy: {
+        enabled: true,
+        default: "deny",
+        allow: [{ channel: "github", action: "status", project: "proj" }],
+      },
+    },
+  });
+  const deniedPolicy = await policyApp.inject({ method: "POST", url: "/github/webhook", headers: signedHeaders(member, secret, "issue_comment"), payload: member });
+  assert.equal(deniedPolicy.statusCode, 403);
+  assert.equal(bodyOf(deniedPolicy).code, "CHANNEL_POLICY_DENIED");
+  assert.match(bodyOf(deniedPolicy).error, /not allowed/);
+  await policyApp.close();
+
   const approved = await app.inject({ method: "POST", url: "/github/webhook", headers: signedHeaders(member, secret, "issue_comment"), payload: member });
   assert.equal(approved.statusCode, 202);
   assert.equal(bodyOf(approved).commandHandled, "approve");

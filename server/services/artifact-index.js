@@ -58,13 +58,37 @@ function hasKnownExtension(fileName) {
   return /\.(?:md|patch|diff|txt|json)$/i.test(fileName);
 }
 
+function isInside(root, filePath) {
+  const relative = path.relative(path.resolve(root), path.resolve(filePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir) {
   if (path.isAbsolute(artifact)) {
     return hasKnownExtension(artifact) ? [artifact] : [artifact, `${artifact}.md`];
   }
   const dir = kind === "plan" ? inboxDir(cpbRoot, project, wikiDir) : outputsDir(cpbRoot, project, wikiDir);
-  const direct = path.join(dir, artifact);
+  const direct = path.resolve(dir, artifact);
   return hasKnownExtension(artifact) ? [direct] : [direct, `${direct}.md`];
+}
+
+function blockedWikiReference(cpbRoot, project, kind, artifact, wikiDir, restrictToWiki) {
+  if (!restrictToWiki) return null;
+  const dir = kind === "plan" ? inboxDir(cpbRoot, project, wikiDir) : outputsDir(cpbRoot, project, wikiDir);
+  if (path.isAbsolute(artifact)) {
+    return {
+      path: basename(artifact) || "artifact",
+      reason: "artifact reference outside project wiki",
+    };
+  }
+  const candidates = candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir);
+  if (candidates.some((candidate) => !isInside(dir, candidate))) {
+    return {
+      path: basename(artifact) || "artifact",
+      reason: "artifact reference outside project wiki",
+    };
+  }
+  return null;
 }
 
 async function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
@@ -113,13 +137,34 @@ function artifactReferences(events) {
   return refs;
 }
 
-export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir } = {}) {
+export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir, restrictToWiki = false } = {}) {
   const sourceEvents = events || await readEvents(cpbRoot, project, jobId, { dataRoot });
   const entries = [];
   const seen = new Set();
 
   for (const ref of artifactReferences(sourceEvents)) {
     const { event, artifact, kind } = ref;
+    const blocked = blockedWikiReference(cpbRoot, project, kind, artifact, wikiDir, restrictToWiki);
+    if (blocked) {
+      const key = `${kind}:${event.phase || ""}:${blocked.path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({
+        id: artifactIdFor(artifact),
+        kind,
+        phase: event.phase || null,
+        path: blocked.path,
+        sha256: null,
+        createdAt: event.ts || null,
+        producerAgent: event.agent || event.producerAgent || event.executor || null,
+        exists: false,
+        broken: true,
+        reason: blocked.reason,
+        eventType: event.type || null,
+      });
+      continue;
+    }
+
     const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir);
     const key = `${kind}:${event.phase || ""}:${artifactPath}`;
     if (seen.has(key)) continue;

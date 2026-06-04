@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { appendEvent, readEvents } from "../server/services/event-store.js";
+import { appendEvent, materializeJob, readEvents } from "../server/services/event-store.js";
 import { _internalMarkProviderUnavailable, QuotaStatus } from "../server/services/provider-quota.js";
 import { resolveTaskRoute } from "../core/workflow/auto-route.js";
 import { tempRoot } from "./helpers.mjs";
@@ -194,6 +194,10 @@ async function runEngine({
   servicesState = {},
   pool = null,
   agents = null,
+  routing = null,
+  agentAvailability = null,
+  agentHealth = null,
+  teamPolicy = null,
   jobId = "job-engine",
 } = {}) {
   const runJob = await loadRunJob();
@@ -217,6 +221,10 @@ async function runEngine({
       reviewer: "fake-primary",
       verifier: "fake-primary",
     },
+    routing,
+    agentAvailability,
+    agentHealth,
+    teamPolicy,
     ...services,
     getPool: () => effectivePool,
   });
@@ -250,6 +258,69 @@ test("runJob preserves phase order and switches unavailable providers during pre
   assert.deepEqual(result.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
   assert.ok(calls.every((call) => call.agent === "fake-secondary"));
   assert.ok(events.some((event) => event.type === "provider_handoff" && event.phase === "plan" && event.from === "fake-primary" && event.to === "fake-secondary"));
+});
+
+test("runJob applies configured phase fallback before provider execution", async () => {
+  const events = [];
+  const calls = [];
+  const routing = {
+    planner: "fake-primary",
+    executor: "fake-primary",
+    verifier: "fake-primary",
+    fallback: { verifier: "fake-secondary" },
+    allowFallback: true,
+  };
+
+  const { result } = await runEngine({
+    servicesState: { events },
+    pool: makePool({ calls }),
+    routing,
+    agentAvailability: {
+      "fake-primary": { available: false, status: "offline" },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  const verifyCall = calls.find((call) => call.meta.role === "verifier");
+  assert.equal(verifyCall.agent, "fake-secondary");
+  const verifyDecision = events.find((event) => event.type === "agent_routing_decision" && event.phase === "verify");
+  assert.ok(verifyDecision);
+  assert.equal(verifyDecision.preferredAgent, "fake-primary");
+  assert.equal(verifyDecision.selectedAgent, "fake-secondary");
+  assert.equal(verifyDecision.fallbackApplied, true);
+});
+
+test("materializeJob keeps phase fallback separate from job executor selection", () => {
+  const job = materializeJob([
+    {
+      type: "job_created",
+      jobId: "job-routing-state",
+      project: "proj",
+      task: "route",
+      executor: "claude",
+      ts: "2026-06-04T00:00:00.000Z",
+    },
+    {
+      type: "agent_routing_decision",
+      jobId: "job-routing-state",
+      project: "proj",
+      phase: "verify",
+      role: "verifier",
+      preferredAgent: "codex",
+      selectedAgent: "claude",
+      fallbackAgent: "claude",
+      fallbackAllowed: true,
+      fallbackApplied: true,
+      reason: "preferred unavailable",
+      ts: "2026-06-04T00:01:00.000Z",
+    },
+  ]);
+
+  assert.equal(job.executor, "claude");
+  assert.equal(job.executorSelection, undefined);
+  assert.equal(job.phaseAgentSelections.length, 1);
+  assert.equal(job.phaseAgentSelections[0].phase, "verify");
+  assert.equal(job.phaseAgentSelections[0].role, "verifier");
 });
 
 test("runJob releases ACP provider resources after every phase attempt", async () => {

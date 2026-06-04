@@ -13,6 +13,7 @@ import { resolvePhases } from "./workflow-runner.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
+import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
 
 // Lazy imports to avoid hard dependency on server/ from core/
@@ -180,21 +181,58 @@ export async function runJob(ctx) {
   const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
 
   for (const phase of phases) {
+    const role = phaseRoleMap[phase] || phase;
+    const phaseAgents = { ...(ctx.agents || {}) };
+    const phaseRoutingDecision = ctx.routing
+      ? resolvePhaseAgentWithFallback({
+        routing: ctx.routing,
+        phase,
+        role,
+        agentAvailability: ctx.agentAvailability,
+        agentHealth: ctx.agentHealth,
+        teamPolicy: ctx.teamPolicy,
+      })
+      : null;
+
+    if (phaseRoutingDecision?.selectedAgent) {
+      phaseAgents[role] = phaseRoutingDecision.selectedAgent;
+    }
+
     if (typeof startPhase === "function") {
-      await startPhase(cpbRoot, project, jobId, { phase });
+      await startPhase(cpbRoot, project, jobId, {
+        phase,
+        agent: phaseRoutingDecision?.selectedAgent || null,
+        role,
+      });
     } else {
       await appendEvent(cpbRoot, project, jobId, {
         type: "phase_started",
         jobId,
         project,
         phase,
+        agent: phaseRoutingDecision?.selectedAgent || null,
+        ts: ts(),
+      });
+    }
+
+    if (phaseRoutingDecision?.role) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "agent_routing_decision",
+        jobId,
+        project,
+        phase,
+        role: phaseRoutingDecision.role,
+        preferredAgent: phaseRoutingDecision.preferredAgent,
+        selectedAgent: phaseRoutingDecision.selectedAgent,
+        fallbackAgent: phaseRoutingDecision.fallbackAgent,
+        fallbackAllowed: phaseRoutingDecision.fallbackAllowed,
+        fallbackApplied: phaseRoutingDecision.fallbackApplied,
+        reason: phaseRoutingDecision.reason,
         ts: ts(),
       });
     }
 
     // Provider selection + fallback for this phase
-    const role = phaseRoleMap[phase] || phase;
-    const phaseAgents = { ...ctx.agents };
     let handoffCount = 0;
     let handoffReason = null;
     const providerAttempts = [];

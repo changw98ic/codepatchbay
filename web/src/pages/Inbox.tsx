@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { Select } from '@/components/shared/Select';
 import { Input } from '@/components/shared/Input';
 import { Skeleton } from '@/components/shared/Skeleton';
+import { ArtifactPanel } from '@/components/shared/ArtifactPanel';
 import { useInboxStore, useWebSocketStore } from '@/app/store';
 import type { InboxRequestRow, InboxRequestDetail, RetryChainEntry } from '@/types/api';
 import { style } from '@vanilla-extract/css';
@@ -224,6 +225,10 @@ function formatEvidence(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function hasJobArtifactDetail(detail: InboxRequestDetail): boolean {
+  return detail.type === 'pipeline' && /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(detail.id || '');
+}
+
 const STATUS_OPTIONS = [
   { value: '', label: 'All Statuses' },
   { value: 'running', label: 'Running' },
@@ -384,6 +389,13 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
           <a href={detail.pr.url} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent, fontSize: fontSize.sm }}>
             PR #{detail.pr.number || 'view'}
           </a>
+        </div>
+      )}
+
+      {hasJobArtifactDetail(detail) && (
+        <div className={detailSection}>
+          <div className={detailLabel}>{t('inbox.detail.artifacts')}</div>
+          <ArtifactPanel project={detail.project} jobId={detail.id} />
         </div>
       )}
 

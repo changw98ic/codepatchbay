@@ -38,6 +38,10 @@ export async function runJobWithServices(opts) {
     ...opts,
     hubRoot,
     sourcePath: explicitSourcePath || resolvedSourcePath,
+    routing: opts.routing || null,
+    agentAvailability: opts.agentAvailability || null,
+    agentHealth: opts.agentHealth || null,
+    teamPolicy: opts.teamPolicy || null,
     ...buildServices(cpbRoot, { hubRoot, env: opts.env || process.env }),
   });
 }

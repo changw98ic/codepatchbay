@@ -13,6 +13,7 @@ import {
   postGithubQueuedComment,
 } from "../services/github-comments.js";
 import { parseChannelCommand } from "../services/channel-commands.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
 import { loadQueue, updateEntry } from "../services/hub-queue.js";
 
 function rawBodyBuffer(body) {
@@ -109,6 +110,28 @@ export async function githubRoutes(fastify, opts = {}) {
         }
         if (entry.metadata?.issueNumber && String(entry.metadata.issueNumber) !== String(normalized.issueNumber)) {
           return permissionDenied("queue entry does not belong to this issue");
+        }
+        if (opts.channelPolicy) {
+          const decision = await enforceChannelPolicy(req.cpbHubRoot, opts.channelPolicy, channelPolicyRequest({
+            channel: "github",
+            action: "approve",
+            project: project.id,
+            job: entry.id,
+            actor: {
+              userId: normalized.actor || null,
+              channelId: normalized.repo || null,
+            },
+          }));
+          if (!decision.allowed) {
+            return reply.code(403).send({
+              ...base,
+              normalized,
+              projectId: project.id,
+              commandHandled: "approve",
+              code: "CHANNEL_POLICY_DENIED",
+              error: decision.reason,
+            });
+          }
         }
 
         {

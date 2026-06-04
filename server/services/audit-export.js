@@ -8,7 +8,12 @@ import { parseVerdictEnvelope } from "../../core/workflow/verdict.js";
 export async function buildJobAuditExport(cpbRoot, project, jobId, { dataRoot, wikiDir } = {}) {
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
 
-  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir });
+  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, {
+    events,
+    dataRoot,
+    wikiDir,
+    restrictToWiki: true,
+  });
   delete artifactIndex.generatedAt;
   artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e) => ({ ...e }));
 

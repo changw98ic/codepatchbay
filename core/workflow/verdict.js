@@ -129,6 +129,21 @@ function repairScopeFromEnvelope(envelope) {
   return uniqueNonEmpty([...explicit, ...blockingFiles]);
 }
 
+export function normalizeRetryReason(verdictContent, {
+  retryCount = 1,
+  previousVerdictId = null,
+  previousVerdictPath = null,
+  maxItems = 5,
+} = {}) {
+  const envelope = parseVerdictEnvelope(verdictContent);
+  return buildRetryInputFromVerdict(envelope, {
+    retryCount,
+    previousVerdictId,
+    previousVerdictPath,
+    maxItems,
+  });
+}
+
 export function buildRetryInputFromVerdict(envelope, {
   retryCount = 1,
   previousVerdictId = null,

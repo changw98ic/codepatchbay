@@ -131,6 +131,7 @@ export async function createJob(
       fallbackAgent: fallbackAgentForRole(routingSelection, "executor"),
       agentAvailability,
       allowFallback: routingSelection.allowFallback,
+      policyAllowsFallback: teamPolicy?.routing?.allowFallback !== false,
     });
     selectedExecutor = executorSelection.selectedAgent || null;
     executorSelection = {

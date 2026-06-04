@@ -454,6 +454,10 @@ async function main() {
           maxRetries: 3,
           agent: metadata.agent || null,
           agents: metadata.agents || null,
+          routing: metadata.routing || null,
+          agentAvailability: metadata.agentAvailability || null,
+          agentHealth: metadata.agentHealth || null,
+          teamPolicy: metadata.teamPolicy || null,
         });
 
         clearInterval(assignmentHeartbeat);
