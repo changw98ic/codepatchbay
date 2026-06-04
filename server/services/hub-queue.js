@@ -318,6 +318,7 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 
 export async function queueStatus(hubRoot) {
   const queue = await loadQueue(hubRoot);
+  const failedTargetStatus = summarizeFailedTargets(queue.entries);
   const counts = {
     total: queue.entries.length,
     pending: 0,
@@ -329,6 +330,7 @@ export async function queueStatus(hubRoot) {
     cancelled: 0,
     needsIssueLink: 0,
     indexUnavailable: 0,
+    ...failedTargetStatus,
   };
   for (const e of queue.entries) {
     if (e.status === "pending") counts.pending++;
@@ -364,6 +366,63 @@ export async function queueStatus(hubRoot) {
     if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
   }
   return counts;
+}
+
+const ACTIVE_REPAIR_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
+
+function failedTargetKey(entry) {
+  const targetJobId = entry.type === "cli_repair"
+    ? entry.metadata?.repairJobId
+    : `job-${entry.id}`;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+function activeRepairTargetKey(entry) {
+  if (entry.type !== "cli_repair" || !ACTIVE_REPAIR_STATUSES.has(entry.status)) return null;
+  const targetJobId = entry.metadata?.repairJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+function completedRepairTargetKey(entry) {
+  if (entry.type !== "cli_repair" || entry.status !== "completed") return null;
+  const targetJobId = entry.metadata?.repairJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+export function summarizeFailedTargets(entries = []) {
+  const failedTargets = new Set();
+  const activeRepairTargets = new Set();
+  const completedRepairTargets = new Set();
+  for (const entry of entries) {
+    const activeRepair = activeRepairTargetKey(entry);
+    if (activeRepair) activeRepairTargets.add(activeRepair);
+    const completedRepair = completedRepairTargetKey(entry);
+    if (completedRepair) completedRepairTargets.add(completedRepair);
+    if (entry.status === "failed") {
+      const failedTarget = failedTargetKey(entry);
+      if (failedTarget) failedTargets.add(failedTarget);
+    }
+  }
+
+  let retryingFailedTargets = 0;
+  let repairedFailedTargets = 0;
+  for (const target of failedTargets) {
+    if (activeRepairTargets.has(target)) {
+      retryingFailedTargets++;
+    } else if (completedRepairTargets.has(target)) {
+      repairedFailedTargets++;
+    }
+  }
+  return {
+    failedEntries: entries.filter((entry) => entry.status === "failed").length,
+    failedTargets: failedTargets.size,
+    retryingFailedTargets,
+    repairedFailedTargets,
+    unretriedFailedTargets: failedTargets.size - retryingFailedTargets - repairedFailedTargets,
+  };
 }
 
 export function isMutatingEntry(entry) {
@@ -422,6 +481,12 @@ export function buildProjectQueueStatus(entries, {
       ps.claimedAt = e.claimedAt;
       ps.workerId = e.workerId;
     }
+  }
+  for (const [projectId, ps] of Object.entries(byProject)) {
+    Object.assign(
+      ps,
+      summarizeFailedTargets(entries.filter((entry) => entry.projectId === projectId)),
+    );
   }
   // Second pass: compute eligible pending entries
   for (const e of entries) {

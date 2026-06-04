@@ -6,6 +6,7 @@ import {
   claimEligible,
   enqueue,
   listQueue,
+  queueStatus,
   updateEntry,
 } from "../server/services/hub-queue.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
@@ -51,6 +52,50 @@ test("claimEligible reports provider slot exhaustion without mutating pending qu
   assert.equal(result.reason, "provider-slots-exhausted");
   assert.equal((await listQueue(hubRoot))[0].id, entry.id);
   assert.equal((await listQueue(hubRoot))[0].status, "pending");
+});
+
+test("queueStatus separates historical failed entries from failed targets still needing retry", async () => {
+  const hubRoot = await tempRoot("cpb-queue-failed-targets");
+  const original = await enqueue(hubRoot, { projectId: "proj", description: "original failed job" });
+  await updateEntry(hubRoot, original.id, { status: "failed" });
+  const failedRepair = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${original.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${original.id}` },
+  });
+  await updateEntry(hubRoot, failedRepair.id, { status: "failed" });
+  await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${original.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${original.id}` },
+  });
+  const unretried = await enqueue(hubRoot, { projectId: "proj", description: "unretried failed job" });
+  await updateEntry(hubRoot, unretried.id, { status: "failed" });
+  const repaired = await enqueue(hubRoot, { projectId: "proj", description: "repaired failed job" });
+  await updateEntry(hubRoot, repaired.id, { status: "failed" });
+  const completedRepair = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${repaired.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${repaired.id}` },
+  });
+  await updateEntry(hubRoot, completedRepair.id, { status: "completed" });
+
+  const status = await queueStatus(hubRoot);
+
+  assert.equal(status.failed, 4);
+  assert.equal(status.failedEntries, 4);
+  assert.equal(status.failedTargets, 3);
+  assert.equal(status.retryingFailedTargets, 1);
+  assert.equal(status.repairedFailedTargets, 1);
+  assert.equal(status.unretriedFailedTargets, 1);
+  assert.equal(status.projects.proj.failedEntries, 4);
+  assert.equal(status.projects.proj.failedTargets, 3);
+  assert.equal(status.projects.proj.retryingFailedTargets, 1);
+  assert.equal(status.projects.proj.repairedFailedTargets, 1);
+  assert.equal(status.projects.proj.unretriedFailedTargets, 1);
 });
 
 test("claimEligible recovers stale in_progress entries and reclaims them", async () => {

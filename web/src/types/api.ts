@@ -99,10 +99,20 @@ export interface AcpStatus {
 }
 
 export interface QueueStatus {
+  total?: number;
   pending: number;
+  scheduled?: number;
+  inProgress?: number;
   running: number;
   completed: number;
   failed: number;
+  failedEntries?: number;
+  failedTargets?: number;
+  retryingFailedTargets?: number;
+  repairedFailedTargets?: number;
+  unretriedFailedTargets?: number;
+  blocked?: number;
+  cancelled?: number;
 }
 
 export interface QueueEntry {
