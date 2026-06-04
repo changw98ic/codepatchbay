@@ -12,6 +12,25 @@ function pushStringError(errors, manifest, key) {
   }
 }
 
+function validateMethodEntry(errors, prefix, config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    errors.push(`${prefix} must be an object`);
+    return;
+  }
+  if (!isNonEmptyString(config.label)) {
+    errors.push(`${prefix}.label must be a non-empty string`);
+  }
+  if (!isNonEmptyString(config.command)) {
+    errors.push(`${prefix}.command must be a non-empty string`);
+  }
+  if (config.sourceUrl !== undefined && !isNonEmptyString(config.sourceUrl)) {
+    errors.push(`${prefix}.sourceUrl must be a non-empty string when present`);
+  }
+  if (config.notes !== undefined && !isStringArray(config.notes)) {
+    errors.push(`${prefix}.notes must be a non-empty string array when present`);
+  }
+}
+
 function validateInstall(errors, install) {
   if (!install || typeof install !== "object" || Array.isArray(install)) {
     errors.push("install must be an object with at least one method");
@@ -25,22 +44,21 @@ function validateInstall(errors, install) {
   }
 
   for (const [method, config] of entries) {
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      errors.push(`install.${method} must be an object`);
-      continue;
+    validateMethodEntry(errors, `install.${method}`, config);
+    if (config.pinnedCommandTemplate !== undefined && !isNonEmptyString(config.pinnedCommandTemplate)) {
+      errors.push(`install.${method}.pinnedCommandTemplate must be a non-empty string when present`);
     }
-    if (!isNonEmptyString(config.label)) {
-      errors.push(`install.${method}.label must be a non-empty string`);
-    }
-    if (!isNonEmptyString(config.command)) {
-      errors.push(`install.${method}.command must be a non-empty string`);
-    }
-    if (!isNonEmptyString(config.sourceUrl)) {
-      errors.push(`install.${method}.sourceUrl must be a non-empty string`);
-    }
-    if (config.notes !== undefined && !isStringArray(config.notes)) {
-      errors.push(`install.${method}.notes must be a non-empty string array when present`);
-    }
+  }
+}
+
+function validateUpgrade(errors, upgrade) {
+  if (upgrade === undefined) return;
+  if (!upgrade || typeof upgrade !== "object" || Array.isArray(upgrade)) {
+    errors.push("upgrade must be an object when present");
+    return;
+  }
+  for (const [method, config] of Object.entries(upgrade)) {
+    validateMethodEntry(errors, `upgrade.${method}`, config);
   }
 }
 
@@ -60,6 +78,7 @@ export function validateSetupAgentManifest(manifest) {
     errors.push("capabilities must be a non-empty string array");
   }
   validateInstall(errors, manifest.install);
+  validateUpgrade(errors, manifest.upgrade);
 
   return { valid: errors.length === 0, errors };
 }

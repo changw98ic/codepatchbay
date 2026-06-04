@@ -19,6 +19,24 @@ registry for the local CLI package.
   you set via `CPB_ACP_*` environment variables. Verify adapter binaries before
   first use.
 
+### Install Plan Safety
+
+When `cpb agents install <agent> --yes` runs a third-party install command, the
+following safeguards apply:
+
+- Every install plan carries `requiresExplicitConfirmation: true` metadata. The
+  execution engine refuses to run any plan without this flag.
+- Each plan includes a `sourceUrl` for supply-chain review, a `rollback`
+  uninstall command, and `supplyChainNotes` reminding the user to review the
+  source before executing.
+- Shell-script install commands (using pipes, redirections, or subshells) are
+  flagged with `shell: true` so users can assess risk before consenting.
+- Without `--yes`, the install command prints the plan and exits without
+  spawning any child process.
+- Install attempts are recorded to a local JSONL audit log with a SHA-256 hash
+  of the command (not the command text itself), start/end timestamps, and exit
+  code. Error messages in events are redacted.
+
 ## Auth Model
 
 CPB uses provider-native authentication. Each coding agent (Codex, Claude Code,
@@ -84,6 +102,22 @@ operator actions.
 - The `detectSecretInput()` function scans all incoming channel messages. Any
   message containing a raw secret pattern is rejected before processing.
 
+### Channel Permission Model
+
+Channel commands are governed by a rule-based access control system
+(`server/services/channel-policy.js`):
+
+- Policies are defined as arrays of `allow` or `deny` rules matching on channel,
+  project, channel ID, user ID, and action. Wildcards (`*`) are supported.
+- **Deny rules take precedence** over allow rules (deny-first evaluation). If no
+  rule matches, the default is `allow` unless the policy sets `default: "deny"`.
+- Read-only actions (e.g. `status`) can be allowed separately from write actions
+  (e.g. `run`, `approve`, `cancel`).
+- Every policy decision is recorded to a JSONL audit log with request details
+  redacted via `redactSecrets()`.
+- GitHub `/cpb approve` is further restricted to users with `OWNER`, `MEMBER`,
+  or `COLLABORATOR` association, with cross-repo and cross-issue validation.
+
 ## GitHub Webhook Signature Verification
 
 CPB verifies the authenticity of incoming GitHub webhook events using HMAC-SHA256
@@ -126,6 +160,23 @@ The verifier role is constrained to prevent unintended side effects:
 These constraints are enforced through the verifier role profile and the CPB
 write-permission boundary (verifier agents write only to `outputs/verdict-*`).
 
+### Role-Based Permission Matrix
+
+All agent roles (planner, executor, verifier, repairer, reviewer) are subject
+to a per-role permission matrix (`server/services/permission-matrix.js`):
+
+| Scope | Planner | Executor | Verifier | Repairer | Reviewer |
+|--------|---------|----------|----------|----------|----------|
+| **Write** | `inbox/` only | `outputs/` + source | `outputs/` only | all under `cpbRoot` | `outputs/` only |
+| **Execute** | read-only inspection | all except unsafe cmds | read-only + validation | all except unsafe cmds | read-only + validation |
+| **Read** | broad (except secrets) | broad (except secrets) | broad (except secrets) | broad (except secrets) | broad (except secrets) |
+
+Blocked command patterns include `sudo`, `rm -rf`, `dd`, `chmod`, `curl|sh`,
+`git reset/clean/push`, and `npm publish/deploy`. Shell mutation syntax (`;`,
+`&`, `|`, `<`, `>`, backticks, `$`) is detected and blocked for read-only
+roles. All roles are denied access to secret/credential file paths via
+`isSecretPath()`.
+
 ## Draft PR Policy and No Automatic Merge
 
 CPB does not automatically merge branches or pull requests.
@@ -138,3 +189,32 @@ CPB does not automatically merge branches or pull requests.
   human review (e.g. schema files, shared state).
 - No CPB command or pipeline stage performs an automatic merge to the base
   branch. All merges require explicit user initiation.
+
+## Event Log Integrity
+
+- Event logs are append-only JSONL files. Once a job reaches a terminal status
+  (`completed`, `failed`, `blocked`, `cancelled`, `superseded`), only a
+  whitelist of post-terminal event types (e.g. `pr_opened`,
+  `github_comment_posted`, `permission_denied`) may be appended.
+- Project and job IDs are validated against `/^[A-Za-z0-9][A-Za-z0-9-]*$/` and
+  path traversal is prevented by resolving and checking file paths against the
+  events root directory.
+
+## Agent Process Isolation
+
+CPB provides layered isolation for agent processes:
+
+- **Git worktree isolation** (see above): each job runs in an independent
+  worktree with enforced `.gitignore` patterns (`.env`, `.env.*`,
+  `node_modules/`, etc.) and a baseline commit anchor.
+- **Agent home isolation**: each agent job gets its own HOME, XDG_CONFIG_HOME,
+  XDG_DATA_HOME, and XDG_CACHE_HOME directories. Provider credentials are
+  symlinked selectively (e.g. only `auth.json` and `config.toml` for Codex).
+- **OS-level sandbox** (optional): `CPB_AGENT_SANDBOX` supports `off`,
+  `best-effort`, `required`, and `strict` modes using macOS `sandbox-exec` or
+  Linux `bwrap`. Strict mode denies network and subprocess by default.
+- **Environment allowlist**: child processes receive only an explicit allowlist
+  of runtime and provider-specific credential variables. Provider credentials
+  are scoped per agent (Codex receives OpenAI keys, Claude receives Anthropic
+  keys, etc.). See `docs/security/cpb-agent-secret-boundary.md` for the full
+  boundary analysis.

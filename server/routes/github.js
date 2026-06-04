@@ -153,7 +153,6 @@ export async function githubRoutes(fastify, opts = {}) {
           });
         }
       }
-      return reply.code(202).send({ ...base, normalized, projectId: project.id });
     }
 
     const match = matchGithubTrigger(normalized, project.github?.triggers);

@@ -151,6 +151,13 @@ export async function createJob(
     }
   }
 
+  if (queueEntryId) {
+    const existingForQueue = await getJobByQueueEntryId(cpbRoot, project, queueEntryId, { dataRoot });
+    if (existingForQueue) {
+      return existingForQueue;
+    }
+  }
+
   const event = {
     type: "job_created",
     jobId,
@@ -765,6 +772,12 @@ export async function listJobs(cpbRoot, options = {}) {
   const { dataRoot, ...rest } = options;
   const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+}
+
+export async function getJobByQueueEntryId(cpbRoot, project, queueEntryId, { dataRoot } = {}) {
+  if (!queueEntryId) return null;
+  const jobs = await listJobs(cpbRoot, { project, dataRoot });
+  return jobs.find((job) => job.queueEntryId === queueEntryId) || null;
 }
 
 export async function listJobsAcrossRuntimeRoots(cpbRoot, options = {}) {

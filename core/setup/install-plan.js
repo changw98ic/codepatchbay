@@ -73,7 +73,7 @@ function planCommand(command) {
   return { ...parsed, shell };
 }
 
-function upgradeFor(method, agent) {
+export function upgradeFor(method, agent) {
   const upgrade = agent.upgrade?.[method] || null;
   if (!upgrade?.command) return null;
   const parsed = planCommand(upgrade.command);
