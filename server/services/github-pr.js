@@ -19,15 +19,37 @@ function prTitle(job) {
   return `[cpb] ${title}`;
 }
 
-function prBody(job, routingContext = null, agents = {}) {
-  return buildCodePatchBayPrBody({ job, verdict: { status: "pass" }, routingContext, agents });
+function verdictForBody(verdict, verdictDetail) {
+  if (verdictDetail && typeof verdictDetail === "object") return verdictDetail;
+  const status = String(verdict || "").toLowerCase();
+  return { status: status || "unavailable" };
 }
 
-function buildRequest(job, routingContext = null, agents = {}) {
+function prBody(job, routingContext = null, agents = {}, bodyContext = {}) {
+  const {
+    artifacts = {},
+    tests = [],
+    audit = {},
+    verdict = { status: "pass" },
+    sddTrace = null,
+  } = bodyContext || {};
+  return buildCodePatchBayPrBody({
+    job,
+    verdict,
+    routingContext,
+    agents,
+    artifacts,
+    tests,
+    audit,
+    sddTrace,
+  });
+}
+
+function buildRequest(job, routingContext = null, agents = {}, bodyContext = {}) {
   return {
     repo: job.sourceContext?.repo || null,
     title: prTitle(job),
-    body: prBody(job, routingContext, agents),
+    body: prBody(job, routingContext, agents, bodyContext),
     head: job.worktreeBranch || null,
     base: job.worktreeBaseBranch || "main",
     draft: true,
@@ -191,6 +213,11 @@ export async function openDraftPullRequest({
   pushToken = null,
   agents = {},
   routingContext = null,
+  artifacts = {},
+  tests = [],
+  audit = {},
+  verdictDetail = null,
+  sddTrace = null,
 } = {}) {
   if (!isPass(verdict)) {
     return {
@@ -200,7 +227,13 @@ export async function openDraftPullRequest({
     };
   }
 
-  const request = buildRequest(job || {}, routingContext, agents);
+  const request = buildRequest(job || {}, routingContext, agents, {
+    artifacts,
+    tests,
+    audit,
+    verdict: verdictForBody(verdict, verdictDetail),
+    sddTrace,
+  });
   const evidence = {
     repo: request.repo,
     head: request.head,
@@ -266,6 +299,11 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options
     pushToken: options.pushToken,
     agents: options.agents || {},
     routingContext: options.routingContext || null,
+    artifacts: options.artifacts || {},
+    tests: options.tests || [],
+    audit: options.audit || {},
+    verdictDetail: options.verdictDetail || null,
+    sddTrace: options.sddTrace || null,
   });
 
   if (result.status === "pr.opened") {

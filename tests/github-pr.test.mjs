@@ -37,6 +37,29 @@ test("openDraftPullRequest dry-run returns draft request shape", async () => {
   assert.match(result.request.title, /\[cpb\] Add dark mode/);
 });
 
+test("openDraftPullRequest carries artifact test audit and verdict evidence into the body", async () => {
+  const result = await openDraftPullRequest({
+    job: makeJob(),
+    verdict: "PASS",
+    branchPushed: true,
+    dryRun: true,
+    artifacts: {
+      plan: { id: "plan-job-pr-test", path: "wiki/projects/proj/inbox/plan-job-pr-test.md" },
+      verdict: { id: "verdict-job-pr-test", path: "wiki/projects/proj/outputs/verdict-job-pr-test.md" },
+    },
+    tests: ["node --test tests/github-pr.test.mjs"],
+    audit: { eventLog: "events/proj/job-pr-test.jsonl", artifactIndex: "2 artifact references" },
+    verdictDetail: { status: "pass", confidence: 0.9, reason: "verified", blockingCount: 0 },
+  });
+
+  assert.equal(result.status, "dry-run");
+  assert.match(result.request.body, /plan-job-pr-test \(wiki\/projects\/proj\/inbox\/plan-job-pr-test\.md\)/);
+  assert.match(result.request.body, /node --test tests\/github-pr\.test\.mjs/);
+  assert.match(result.request.body, /- Status: pass/);
+  assert.match(result.request.body, /- Reason: verified/);
+  assert.match(result.request.body, /- Artifact index: 2 artifact references/);
+});
+
 test("createPullRequestWithGh passes --draft for draft requests", async () => {
   const calls = [];
   const result = await createPullRequestWithGh({
