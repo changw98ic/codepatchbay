@@ -4,7 +4,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
-import { AcpPool, readAcpUsageFromAudit } from "../server/services/acp-pool.js";
+import { AcpPool, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../server/services/acp-pool.js";
 import { buildAcpPoolEnv } from "../core/policy/child-env.js";
 import { AcpClient, resolveAgentCommand } from "../runtime/acp-client-core.mjs";
 
@@ -343,6 +343,67 @@ test("AcpPool ignores removed total connection cap and only reports provider lim
     assert.equal(Object.hasOwn(status.connectionLimits, "total"), false);
     assert.equal(status.connectionLimits.providerDefault, 7);
   } finally {
+    await pool.stop();
+  }
+});
+
+test("AcpPool waits indefinitely for provider slots by default", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-wait-default");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  assert.equal(resolvePoolWaitTimeoutMs(undefined), 0);
+  assert.equal(resolvePoolWaitTimeoutMs(""), 0);
+  assert.equal(resolvePoolWaitTimeoutMs("1200"), 1200);
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    providerConnectionLimit: 1,
+  });
+
+  const first = await pool.acquire("codex");
+  const second = pool.acquire("codex");
+
+  try {
+    const stillQueued = await Promise.race([
+      second.then(() => false, () => false),
+      new Promise((resolve) => setTimeout(() => resolve(true), 25)),
+    ]);
+    assert.equal(stillQueued, true);
+
+    first.release();
+    const acquired = await second;
+    acquired.release();
+  } finally {
+    first.release();
+    await pool.stop();
+  }
+});
+
+test("AcpPool still honors explicit provider slot wait timeouts", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-wait-timeout");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    providerConnectionLimit: 1,
+  });
+
+  const first = await pool.acquire("codex");
+  try {
+    await assert.rejects(
+      pool.acquire("codex", { waitTimeoutMs: 10 }),
+      /ACP pool exhausted: codex\/codex waited/,
+    );
+  } finally {
+    first.release();
     await pool.stop();
   }
 });

@@ -51,7 +51,7 @@ const CHILD_KILL_GRACE_MS = 1_500;
 const DEFAULT_PROVIDER_CONNECTION_LIMIT = 3;
 const CONNECTION_LOCK_TTL_MS = 30_000;
 const CONNECTION_POLL_MS = 50;
-const DEFAULT_POOL_WAIT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS || 300_000);
+const DEFAULT_POOL_WAIT_TIMEOUT_MS = resolvePoolWaitTimeoutMs();
 const POOL_WAIT_WARN_INTERVAL_MS = 30_000;
 
 function resolveHubRootFromEnv(cpbRoot, env = {}) {
@@ -285,6 +285,10 @@ function normalizeLimits(limits = {}) {
 function numericOption(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+export function resolvePoolWaitTimeoutMs(value = process.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS) {
+  return numericOption(value, 0);
 }
 
 function booleanOption(value, fallback = false) {
