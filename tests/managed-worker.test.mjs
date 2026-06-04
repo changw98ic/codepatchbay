@@ -279,14 +279,17 @@ test("managed worker atomically claims and removes malformed inbox payloads", as
   });
 
   const worker = spawnWorker({ workerId, hubRoot, cpbRoot, timeoutMs: 10_000 });
-  await waitFor(async () => {
-    const pending = await listJsonFiles(inboxDir);
-    const processing = await listJsonFiles(path.join(inboxDir, "processing"));
-    return pending.length === 0 && processing.length === 0;
-  });
-
-  worker.child.kill("SIGTERM");
-  const stopped = await worker.done;
+  let stopped = null;
+  try {
+    await waitFor(async () => {
+      const pending = await listJsonFiles(inboxDir);
+      const processing = await listJsonFiles(path.join(inboxDir, "processing"));
+      return pending.length === 0 && processing.length === 0;
+    }, { timeoutMs: 20_000 });
+  } finally {
+    worker.child.kill("SIGTERM");
+    stopped = await worker.done.catch((err) => ({ error: err }));
+  }
 
   assert.ok(stopped.code === 0 || stopped.signal === "SIGTERM", `unexpected exit: ${JSON.stringify(stopped)}`);
   assert.match(worker.stderr, /malformed inbox file/);
@@ -443,6 +446,7 @@ test("managed worker persistent ACP reuses one provider process while isolating 
       .map((line) => JSON.parse(line));
     assert.equal(transcript.filter((event) => event.event === "initialize").length, 1);
     assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/close").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 2);
 
     const firstAuditFile = firstResult.jobResult.phaseResults[0].diagnostics.acpAuditFile;
@@ -450,8 +454,10 @@ test("managed worker persistent ACP reuses one provider process while isolating 
     const firstAudit = (await readFile(firstAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const secondAudit = (await readFile(secondAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     assert.ok(firstAudit.some((event) => event.event === "agent_launch"));
+    assert.ok(firstAudit.some((event) => event.event === "session_close" && event.reason === "worktree_release"));
     assert.ok(firstAudit.every((event) => event.jobId === "job-managed-persistent-one"));
     assert.ok(secondAudit.some((event) => event.event === "session_new"));
+    assert.ok(secondAudit.some((event) => event.event === "session_close" && event.reason === "worktree_release"));
     assert.ok(secondAudit.every((event) => event.jobId === "job-managed-persistent-two"));
   } finally {
     worker.child.kill("SIGTERM");

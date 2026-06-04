@@ -18,6 +18,7 @@ import { createWorktree } from "../git/worktree.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import { resolveGithubTransport } from "../../server/services/github-api.js";
 import { createLogger } from "../../server/services/logger.js";
+import { releaseManagedAcpWorktree, stopManagedAcpPool } from "../../server/services/acp-pool.js";
 
 const execFileAsync = promisify(_execFile);
 
@@ -297,6 +298,25 @@ async function main() {
   // Bridge: service injection + sourcePath resolution (no direct core import)
   const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
 
+  async function stopWorkerAcpPool(jobLog = log) {
+    try {
+      const stopped = await stopManagedAcpPool({ cpbRoot, hubRoot });
+      if (stopped) jobLog.info("ACP pool stopped");
+    } catch (err) {
+      jobLog.warn(`ACP pool stop failed: ${err.message}`);
+    }
+  }
+
+  async function releaseWorkerAcpWorktree(worktreePath, jobLog = log) {
+    if (!worktreePath) return;
+    try {
+      const released = await releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd: worktreePath });
+      if (released) jobLog.info("ACP worktree session released");
+    } catch (err) {
+      jobLog.warn(`ACP worktree session release failed: ${err.message}`);
+    }
+  }
+
   // Process inbox
   async function processInbox() {
     const files = await readdir(inboxDir).catch(() => []);
@@ -385,6 +405,8 @@ async function main() {
             attempt: attemptNum,
             phase: "running",
             status: "running",
+            executionBoundary: "worktree",
+            sourcePath: assignment.sourcePath,
             pid: process.pid,
             updatedAt: new Date().toISOString(),
           }, null, 2) + "\n", "utf8");
@@ -492,6 +514,7 @@ async function main() {
           writtenAt: new Date().toISOString(),
         });
       } finally {
+        await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
         // Cleanup worktree regardless of outcome
         if (worktreeInfo && assignment.sourcePath) {
           try {
@@ -556,6 +579,7 @@ async function main() {
     clearInterval(heartbeatTimer);
     clearInterval(pollTimer);
     await watcher.close();
+    await stopWorkerAcpPool();
 
     const reg = JSON.parse(await readFile(registryFile, "utf8"));
     reg.status = "exited";

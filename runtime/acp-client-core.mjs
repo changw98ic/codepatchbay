@@ -925,7 +925,11 @@ export class AcpClient {
 
   async close() {
     this.clearIdleTimer();
-    if (!this.child || this.closed) return;
+    this.terminateTerminals("SIGTERM");
+    if (!this.child || this.closed) {
+      this.terminateTerminals("SIGKILL", { drop: true });
+      return;
+    }
     await this.closeActiveSession("client_close");
     const child = this.child;
     const closed = new Promise((resolve) => {
@@ -936,12 +940,41 @@ export class AcpClient {
       if (!this.closed) this.terminateAgent("SIGTERM");
     }, 500).unref();
     const killTimer = setTimeout(() => {
-      if (!this.closed) this.terminateAgent("SIGKILL");
+      if (!this.closed) {
+        this.terminateTerminals("SIGKILL", { drop: true });
+        this.terminateAgent("SIGKILL");
+      }
     }, 1_500).unref();
     const waitTimer = new Promise((resolve) => setTimeout(resolve, 2_000));
     await Promise.race([closed, waitTimer]);
     clearTimeout(terminateTimer);
     clearTimeout(killTimer);
+    this.terminateTerminals("SIGKILL", { drop: true });
+  }
+
+  waitForTerminalExitStatus(terminal, timeoutMs) {
+    if (!terminal?.child || terminal.exitStatus || terminal.child.exitCode !== null || terminal.child.signalCode !== null) {
+      return Promise.resolve(terminal?.exitStatus || {
+        exitCode: terminal?.child?.exitCode ?? null,
+        signal: terminal?.child?.signalCode ?? null,
+      });
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(null);
+      }, timeoutMs);
+      timer.unref();
+      const done = (exitCode, signal) => {
+        cleanup();
+        resolve({ exitCode, signal });
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        terminal.child.removeListener("exit", done);
+      };
+      terminal.child.once("exit", done);
+    });
   }
 
   request(method, params) {
@@ -1002,6 +1035,63 @@ export class AcpClient {
         // Process already exited.
       }
     }
+  }
+
+  signalTerminal(terminal, signal) {
+    if (!terminal?.child?.pid) return;
+    try {
+      if (terminal.detached && process.platform !== "win32") {
+        process.kill(-terminal.child.pid, signal);
+      } else {
+        terminal.child.kill(signal);
+      }
+    } catch {
+      try {
+        terminal.child.kill(signal);
+      } catch {
+        // Process already exited.
+      }
+    }
+  }
+
+  terminateTerminals(signal, { drop = false, cwd = null } = {}) {
+    const target = cwd ? path.resolve(cwd) : null;
+    for (const [terminalId, terminal] of this.terminals) {
+      if (target && path.resolve(terminal.cwd || this.cwd) !== target) continue;
+      if (!terminal.exitStatus) {
+        this.signalTerminal(terminal, signal);
+      }
+      if (drop) this.terminals.delete(terminalId);
+    }
+  }
+
+  async cleanupTerminalsForCwd(cwd, { reason = "worktree_release", termGraceMs = 500, killGraceMs = 1_500 } = {}) {
+    if (!cwd) return 0;
+    const target = path.resolve(cwd);
+    const entries = [...this.terminals.entries()]
+      .filter(([, terminal]) => path.resolve(terminal.cwd || this.cwd) === target);
+    if (entries.length === 0) return 0;
+
+    await this.recordAudit("terminal_cleanup", {
+      cwd: target,
+      reason,
+      terminalIds: entries.map(([terminalId]) => terminalId),
+    });
+
+    for (const [, terminal] of entries) {
+      if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
+    }
+    await Promise.all(entries.map(([, terminal]) => this.waitForTerminalExitStatus(terminal, termGraceMs)));
+
+    for (const [, terminal] of entries) {
+      if (!terminal.exitStatus && terminal.child.exitCode === null && terminal.child.signalCode === null) {
+        this.signalTerminal(terminal, "SIGKILL");
+      }
+    }
+    await Promise.all(entries.map(([, terminal]) => this.waitForTerminalExitStatus(terminal, killGraceMs)));
+
+    for (const [terminalId] of entries) this.terminals.delete(terminalId);
+    return entries.length;
   }
 
   rejectAll(error) {
@@ -1276,7 +1366,7 @@ export class AcpClient {
       throw new Error("terminal access denied for this phase");
     }
 
-    const terminalCwd = params.cwd || this.cwd;
+    const terminalCwd = path.resolve(this.cwd, params.cwd || this.cwd);
     const commandLine = [params.command, ...(params.args || [])].join(" ");
     const permResult = enforcePermissionSync("execute", commandLine, this.env);
     if (!permResult.allowed) {
@@ -1313,14 +1403,18 @@ export class AcpClient {
     });
 
     const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
+    const detached = process.platform !== "win32";
     const child = spawn(launch.command, launch.args, {
-      cwd: params.cwd || this.cwd,
+      cwd: terminalCwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      detached,
     });
 
     const terminal = {
       child,
+      cwd: terminalCwd,
+      detached,
       output: "",
       truncated: false,
       outputByteLimit: params.outputByteLimit || 1048576,
@@ -1366,13 +1460,13 @@ export class AcpClient {
 
   killTerminal(params) {
     const terminal = this.getTerminal(params.terminalId);
-    if (!terminal.exitStatus) terminal.child.kill("SIGTERM");
+    if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
     return null;
   }
 
   releaseTerminal(params) {
     const terminal = this.getTerminal(params.terminalId);
-    if (!terminal.exitStatus) terminal.child.kill("SIGTERM");
+    if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
     this.terminals.delete(params.terminalId);
     return null;
   }

@@ -19,17 +19,17 @@ let _registryCache = null;
 
 /**
  * Compound key for persistent client isolation.
- * Job id is intentionally excluded so a long-lived worker/orchestrator can
- * reuse the same ACP process across sequential jobs for the same project role.
+ * Job id, role, and cwd are intentionally excluded so a long-lived worker can
+ * reuse the same ACP provider process across sequential jobs. Agents with
+ * launch-scoped MCP config can opt into processCwd to avoid stale launch args.
  */
 export function poolClientKey(agent, options = {}) {
-  const role = options.role || options.phase || "";
   const projectId = options.projectId || "";
   const workspaceId = options.workspaceId || "";
-  const cwd = options.cwd || "";
+  const processCwd = options.processCwd || "";
   const policyHash = options.policyHash || "";
   const variant = options.variant || "";
-  return [agent, role, projectId, workspaceId, cwd, policyHash, variant].join("::");
+  return [agent, projectId, workspaceId, processCwd, policyHash, variant].join("::");
 }
 
 async function getRegistry() {
@@ -387,6 +387,7 @@ export class AcpPool {
       CONNECTION_POLL_MS,
     );
     this.active = new Map();
+    this.activeProviders = new Map();
     this.pending = new Map();
     this.requestCount = new Map();
     this.errorCount = new Map();
@@ -428,8 +429,35 @@ export class AcpPool {
     }
     this.pending.clear();
     this.liveRequests.clear();
+    this.active.clear();
     this.sessions.clear();
+    this.activeProviders.clear();
     this.persistentChains.clear();
+  }
+
+  async releaseWorktree(cwd, reason = "worktree_release") {
+    if (!cwd) return false;
+    const target = path.resolve(cwd);
+    let released = false;
+    for (const [key, persistent] of [...this.persistentClients.entries()]) {
+      const clientCwd = persistent.client?.activeSessionCwd
+        ? path.resolve(persistent.client.activeSessionCwd)
+        : null;
+      const launchCwd = persistent.launchCwd ? path.resolve(persistent.launchCwd) : null;
+      const lastCwd = persistent.lastCwd ? path.resolve(persistent.lastCwd) : null;
+      const activeMatches = clientCwd === target;
+      const terminalCleanupCount = await persistent.client.cleanupTerminalsForCwd(target, { reason }).catch(() => 0);
+
+      if (persistent.launchScopedMcp) {
+        if (!activeMatches && launchCwd !== target && lastCwd !== target && terminalCleanupCount === 0) continue;
+        await this.#closePersistentClient(key);
+      } else {
+        if (activeMatches) await persistent.client.closeActiveSession(reason).catch(() => null);
+        if (!activeMatches && terminalCleanupCount === 0) continue;
+      }
+      released = true;
+    }
+    return released;
   }
 
   async statusAsync() {
@@ -536,6 +564,17 @@ export class AcpPool {
     return Boolean(this.persistentProcesses && !this.runner);
   }
 
+  #usesLaunchScopedMcp(agent, options = {}) {
+    if (agent !== "codex") return false;
+    const env = this.#executionEnv(agent, options);
+    return env.CPB_CODEGRAPH_ENABLED !== "0";
+  }
+
+  #persistentClientKey(agent, options = {}) {
+    const processCwd = this.#usesLaunchScopedMcp(agent, options) ? options.cwd || "" : "";
+    return poolClientKey(agent, { ...options, processCwd });
+  }
+
   _nextId(agent) {
     return `${agent}-${Date.now()}-${++this._seq}`;
   }
@@ -548,6 +587,7 @@ export class AcpPool {
     if (active < limit) {
       const requestId = this._nextId(agent);
       this.active.set(agent, (this.active.get(agent) || 0) + 1);
+      this.activeProviders.set(providerKey, (this.activeProviders.get(providerKey) || 0) + 1);
       this.liveRequests.set(requestId, { agent, startedAt: Date.now(), providerKey });
       return Promise.resolve({ agent, requestId, release: () => this.release(agent, requestId) });
     }
@@ -558,7 +598,7 @@ export class AcpPool {
       // Queue under provider key (not agent name) so cross-agent waits are shared
       const queueKey = `provider:${providerKey}`;
       const queue = this.pending.get(queueKey) || [];
-      const entry = { resolve, reject, agent };
+      const entry = { resolve, reject, agent, providerKey };
       queue.push(entry);
       this.pending.set(queueKey, queue);
 
@@ -592,28 +632,29 @@ export class AcpPool {
    * This is the in-process gate; the file-based lease in #run() handles cross-process.
    */
   #providerActiveCount(providerKey) {
-    let count = 0;
-    for (const [agent, active] of this.active.entries()) {
-      if (this.providerKey(agent) === providerKey) count += active;
-    }
-    return count;
+    return this.activeProviders.get(providerKey) || 0;
   }
 
   release(agent, requestId) {
+    const request = requestId ? this.liveRequests.get(requestId) : null;
+    const providerKey = request?.providerKey || this.providerKey(agent);
     const active = Math.max(0, (this.active.get(agent) || 1) - 1);
     this.active.set(agent, active);
+    const providerActive = Math.max(0, (this.activeProviders.get(providerKey) || 1) - 1);
+    this.activeProviders.set(providerKey, providerActive);
     if (requestId) this.liveRequests.delete(requestId);
     // Drain from provider-keyed queue (cross-agent sharing)
-    const providerKey = this.providerKey(agent);
     const queueKey = `provider:${providerKey}`;
     const queue = this.pending.get(queueKey) || [];
     const next = queue.shift();
     if (!next) return;
     if (next._timer) clearTimeout(next._timer);
     const nextAgent = next.agent || agent;
+    const nextProviderKey = next.providerKey || this.providerKey(nextAgent);
     const nextId = this._nextId(nextAgent);
     this.active.set(nextAgent, (this.active.get(nextAgent) || 0) + 1);
-    this.liveRequests.set(nextId, { agent: nextAgent, startedAt: Date.now() });
+    this.activeProviders.set(nextProviderKey, (this.activeProviders.get(nextProviderKey) || 0) + 1);
+    this.liveRequests.set(nextId, { agent: nextAgent, startedAt: Date.now(), providerKey: nextProviderKey });
     next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
   }
 
@@ -914,21 +955,22 @@ export class AcpPool {
   }
 
   async execute(agent, prompt, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options = {}) {
+    const scopedOptions = { ...options, cwd };
     if (options.bypass) {
-      const output = await this.#run(agent, prompt, cwd, timeoutMs);
+      const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
       return { output, providerKey: null, agent, variant: null };
     }
-    const providerKey = this.providerKey(agent, options.variant);
-    const acpAuditFile = resolveAcpAuditFile(this.#executionEnv(agent, options));
+    const providerKey = this.providerKey(agent, scopedOptions.variant);
+    const acpAuditFile = resolveAcpAuditFile(this.#executionEnv(agent, scopedOptions));
 
     // Pre-flight quota gate (replaces old assertNotRateLimited)
     if (!this.runner) {
       await assertProviderAvailable(this.hubRoot, {
         providerKey,
         agent,
-        variant: options.variant,
-        phase: options.phase,
-        role: options.role,
+        variant: scopedOptions.variant,
+        phase: scopedOptions.phase,
+        role: scopedOptions.role,
       });
     }
 
@@ -940,25 +982,25 @@ export class AcpPool {
         const promptText = String(prompt);
         entry.promptSnippet = promptText.slice(0, 80);
         entry.promptBytes = Buffer.byteLength(promptText, "utf8");
-        if (options.phase) entry.phase = options.phase;
+        if (scopedOptions.phase) entry.phase = scopedOptions.phase;
       }
     }
     try {
       if (this.runner || !this.persistentProcesses) this.#noteSpawn(agent);
-      const output = await this.#run(agent, prompt, cwd, timeoutMs, options);
+      const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
       const usage = await readAcpUsageFromAudit(acpAuditFile, {
-        phase: options.phase || null,
-        role: options.role || null,
+        phase: scopedOptions.phase || null,
+        role: scopedOptions.role || null,
       });
       this.requestCount.set(agent, (this.requestCount.get(agent) || 0) + 1);
       lifecycle.requestCount += 1;
       lifecycle.lastUsedAt = Date.now();
       lifecycle.recycleReason = null;
-      return { output, providerKey, agent, variant: options.variant || null, acpAuditFile, usage };
+      return { output, providerKey, agent, variant: scopedOptions.variant || null, acpAuditFile, usage };
     } catch (error) {
       const usage = await readAcpUsageFromAudit(acpAuditFile, {
-        phase: options.phase || null,
-        role: options.role || null,
+        phase: scopedOptions.phase || null,
+        role: scopedOptions.role || null,
       });
       if (usage) error.usage = usage;
       if (acpAuditFile) error.acpAuditFile = acpAuditFile;
@@ -969,7 +1011,7 @@ export class AcpPool {
       const quotaResult = await classifyQuotaFailure({
         providerKey,
         agent,
-        variant: options.variant,
+        variant: scopedOptions.variant,
         error,
         stdout: "",
         stderr: error?.message || "",
@@ -983,7 +1025,7 @@ export class AcpPool {
         await delegateMarkProviderUnavailable(this.hubRoot, {
           providerKey,
           agent,
-          variant: options.variant,
+          variant: scopedOptions.variant,
           status: quotaResult.status,
           nextEligibleAt: quotaResult.nextEligibleAt,
           source: quotaResult.source || "acp-pool-classifier",
@@ -993,14 +1035,14 @@ export class AcpPool {
         const quotaError = new ProviderQuotaError(quotaResult.reason, {
           providerKey,
           agent,
-          variant: options.variant,
+          variant: scopedOptions.variant,
           status: quotaResult.status,
           nextEligibleAt: quotaResult.nextEligibleAt,
           source: "acp-pool-classifier",
           confidence: quotaResult.confidence,
           reason: quotaResult.reason,
-          phase: options.phase,
-          role: options.role,
+          phase: scopedOptions.phase,
+          role: scopedOptions.role,
         });
         quotaError.usage = usage || null;
         quotaError.acpAuditFile = acpAuditFile;
@@ -1081,7 +1123,7 @@ export class AcpPool {
   }
 
   #runPersistent(agent, prompt, cwd, timeoutMs, options = {}) {
-    const key = poolClientKey(agent, options);
+    const key = this.#persistentClientKey(agent, { ...options, cwd });
     const prior = this.persistentChains.get(key) || Promise.resolve();
     const providerKey = this.providerKey(agent, options.variant);
     const waitTimeout = numericOption(this.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS, DEFAULT_POOL_WAIT_TIMEOUT_MS);
@@ -1111,6 +1153,7 @@ export class AcpPool {
 
   async #runPersistentNow(key, agent, prompt, cwd, timeoutMs, options = {}) {
     const persistent = await this.#getPersistentClient(key, agent, cwd, options);
+    persistent.lastCwd = cwd;
     const client = persistent.client;
     const executionEnv = this.#executionEnv(agent, options);
     client.setAuditContext(executionEnv, {
@@ -1176,6 +1219,7 @@ export class AcpPool {
     const variant = options.variant || null;
     const providerKey = this.providerKey(agent, variant);
     const lease = await this.#acquireConnectionLease(agent, providerKey);
+    const launchScopedMcp = this.#usesLaunchScopedMcp(agent, { ...options, cwd });
     const client = new AcpClient({
       agent,
       cwd,
@@ -1193,6 +1237,8 @@ export class AcpPool {
       agent,
       providerKey,
       connectionLease: lease,
+      launchCwd: cwd,
+      launchScopedMcp,
       startedAt: Date.now(),
       requestCount: 0,
       lastUsedAt: null,
@@ -1306,25 +1352,51 @@ export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
   return managedViews.get(roots.key);
 }
 
-export function resetPoolRuntime(hubRootOrObj) {
+export async function stopPoolRuntime(hubRootOrObj) {
   let key;
   if (typeof hubRootOrObj === "string") {
     key = hubRootOrObj;
   } else if (hubRootOrObj) {
-    key = resolvePoolRoots(hubRootOrObj.hubRoot, hubRootOrObj.cpbRoot).key;
+    key = resolvePoolRoots(
+      hubRootOrObj.hubRoot,
+      hubRootOrObj.cpbRoot,
+      hubRootOrObj.env || process.env,
+    ).key;
   }
   const pool = runtimes.get(key);
   if (pool) {
-    pool.stop();
     runtimes.delete(key);
     managedViews.delete(key);
+    await pool.stop();
+    return true;
   }
+  return false;
+}
+
+export function resetPoolRuntime(hubRootOrObj) {
+  void stopPoolRuntime(hubRootOrObj);
+}
+
+export async function stopAllPoolRuntimes() {
+  const pools = [...runtimes.values()];
+  runtimes.clear();
+  managedViews.clear();
+  await Promise.all(pools.map((pool) => pool.stop()));
 }
 
 export function resetAllPoolRuntimes() {
-  for (const pool of runtimes.values()) pool.stop();
-  runtimes.clear();
-  managedViews.clear();
+  void stopAllPoolRuntimes();
+}
+
+export function stopManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
+  return stopPoolRuntime({ cpbRoot, hubRoot, env: opts.env || process.env });
+}
+
+export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "worktree_release", ...opts } = {}) {
+  const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
+  const pool = runtimes.get(roots.key);
+  if (!pool) return false;
+  return pool.releaseWorktree(cwd, reason);
 }
 
 export const resetManagedAcpPoolsForTests = resetAllPoolRuntimes;
