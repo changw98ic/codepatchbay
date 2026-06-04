@@ -596,6 +596,79 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
   }
 });
 
+test("AcpPool closeProvider worktree release frees persistent provider lease", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-phase-release");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const worktree = path.join(tmp, "worktree");
+  const scenarioPath = path.join(tmp, "scenario.json");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await mkdir(worktree, { recursive: true });
+  await writeFile(
+    scenarioPath,
+    JSON.stringify({
+      responses: [
+        { match: "first phase", output: "first-phase-response" },
+        { match: "second phase", output: "second-phase-response" },
+      ],
+    }),
+    "utf8",
+  );
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--scenario-file",
+        scenarioPath,
+        "--transcript-file",
+        transcriptPath,
+      ]),
+    },
+  });
+
+  try {
+    const first = await pool.execute("fake-acp", "first phase", worktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-phase-one",
+      phase: "plan",
+      role: "planner",
+    });
+
+    assert.equal(first.output, "first-phase-response");
+    assert.equal(pool.persistentClients.size, 1);
+
+    const released = await pool.releaseWorktree(worktree, "phase_plan_complete", { closeProvider: true });
+    assert.equal(released, true);
+    assert.equal(pool.persistentClients.size, 0);
+    assert.equal(pool.activeProviders.get("fake-acp") || 0, 0);
+
+    const second = await pool.execute("fake-acp", "second phase", worktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-phase-two",
+      phase: "execute",
+      role: "executor",
+    });
+
+    assert.equal(second.output, "second-phase-response");
+    const transcript = await readJsonl(transcriptPath);
+    assert.equal(transcript.filter((event) => event.event === "initialize").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+  } finally {
+    await pool.stop();
+  }
+});
+
 test("AcpPool persistent ACP reuses the provider process across isolated worktrees", async () => {
   const tmp = await tempRoot("cpb-acp-persistent-cwd");
   const cpbRoot = path.join(tmp, "cpb");

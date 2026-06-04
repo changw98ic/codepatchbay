@@ -112,7 +112,7 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] } 
   };
 }
 
-function makePool({ onExecute, calls = [] } = {}) {
+function makePool({ onExecute, calls = [], releases = [] } = {}) {
   return {
     providerKey(agent, variant) {
       return variant ? `${agent}:${variant}` : agent;
@@ -130,6 +130,10 @@ function makePool({ onExecute, calls = [] } = {}) {
         if (value !== undefined) return value;
       }
       return { output: phaseOutput(meta.role), providerKey: this.providerKey(agent, meta.variant), variant: meta.variant || null };
+    },
+    async releaseWorktree(cwd, reason, options) {
+      releases.push({ cwd, reason, options });
+      return true;
     },
   };
 }
@@ -246,6 +250,24 @@ test("runJob preserves phase order and switches unavailable providers during pre
   assert.deepEqual(result.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
   assert.ok(calls.every((call) => call.agent === "fake-secondary"));
   assert.ok(events.some((event) => event.type === "provider_handoff" && event.phase === "plan" && event.from === "fake-primary" && event.to === "fake-secondary"));
+});
+
+test("runJob releases ACP provider resources after every phase attempt", async () => {
+  const calls = [];
+  const releases = [];
+  const { result, sourcePath } = await runEngine({
+    pool: makePool({ calls, releases }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => call.meta.role), ["planner", "executor", "verifier"]);
+  assert.deepEqual(releases.map((release) => release.reason), [
+    "phase_plan_complete",
+    "phase_execute_complete",
+    "phase_verify_complete",
+  ]);
+  assert.ok(releases.every((release) => release.cwd === sourcePath));
+  assert.ok(releases.every((release) => release.options?.closeProvider === true));
 });
 
 test("trusted simple tasks auto-route to a single ACP execute phase", async () => {

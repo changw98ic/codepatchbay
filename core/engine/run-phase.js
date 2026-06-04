@@ -29,5 +29,24 @@ export async function runPhase(ctx) {
         cause: { stack: err.stack },
       }),
     });
+  } finally {
+    await releasePhaseAcpResources(ctx);
+  }
+}
+
+async function releasePhaseAcpResources(ctx) {
+  const releaseWorktree = ctx.pool?.releaseWorktree;
+  if (typeof releaseWorktree !== "function") return;
+  const cwd = ctx.sourcePath || ctx.cwd || ctx.cpbRoot;
+  if (!cwd) return;
+  try {
+    await releaseWorktree.call(
+      ctx.pool,
+      cwd,
+      `phase_${ctx.phase || "unknown"}_complete`,
+      { closeProvider: true },
+    );
+  } catch {
+    // Phase results must not be masked by best-effort resource cleanup.
   }
 }

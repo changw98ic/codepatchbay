@@ -374,7 +374,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   await rm(root, { recursive: true, force: true });
 });
 
-test("managed worker persistent ACP reuses one provider process while isolating worktree sessions", async () => {
+test("managed worker releases persistent ACP provider resources between assignments", async () => {
   const root = await tempRoot("cpb-managed-persistent");
   const hubRoot = path.join(root, "hub");
   const cpbRoot = path.join(root, "cpb");
@@ -444,7 +444,7 @@ test("managed worker persistent ACP reuses one provider process while isolating 
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    assert.equal(transcript.filter((event) => event.event === "initialize").length, 1);
+    assert.equal(transcript.filter((event) => event.event === "initialize").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/close").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 2);
@@ -454,10 +454,8 @@ test("managed worker persistent ACP reuses one provider process while isolating 
     const firstAudit = (await readFile(firstAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const secondAudit = (await readFile(secondAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     assert.ok(firstAudit.some((event) => event.event === "agent_launch"));
-    assert.ok(firstAudit.some((event) => event.event === "session_close" && event.reason === "worktree_release"));
     assert.ok(firstAudit.every((event) => event.jobId === "job-managed-persistent-one"));
     assert.ok(secondAudit.some((event) => event.event === "session_new"));
-    assert.ok(secondAudit.some((event) => event.event === "session_close" && event.reason === "worktree_release"));
     assert.ok(secondAudit.every((event) => event.jobId === "job-managed-persistent-two"));
   } finally {
     worker.child.kill("SIGTERM");

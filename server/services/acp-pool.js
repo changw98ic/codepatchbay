@@ -435,8 +435,13 @@ export class AcpPool {
     this.persistentChains.clear();
   }
 
-  async releaseWorktree(cwd, reason = "worktree_release") {
+  async releaseWorktree(cwd, reason = "worktree_release", options = {}) {
     if (!cwd) return false;
+    if (reason && typeof reason === "object") {
+      options = reason;
+      reason = "worktree_release";
+    }
+    const closeProvider = Boolean(options.closeProvider || options.closePersistent);
     const target = path.resolve(cwd);
     let released = false;
     for (const [key, persistent] of [...this.persistentClients.entries()]) {
@@ -448,7 +453,7 @@ export class AcpPool {
       const activeMatches = clientCwd === target;
       const terminalCleanupCount = await persistent.client.cleanupTerminalsForCwd(target, { reason }).catch(() => 0);
 
-      if (persistent.launchScopedMcp) {
+      if (persistent.launchScopedMcp || closeProvider) {
         if (!activeMatches && launchCwd !== target && lastCwd !== target && terminalCleanupCount === 0) continue;
         await this.#closePersistentClient(key);
       } else {
@@ -1392,11 +1397,11 @@ export function stopManagedAcpPool({ cpbRoot, hubRoot, ...opts } = {}) {
   return stopPoolRuntime({ cpbRoot, hubRoot, env: opts.env || process.env });
 }
 
-export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "worktree_release", ...opts } = {}) {
+export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "worktree_release", closeProvider = false, closePersistent = false, ...opts } = {}) {
   const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
   const pool = runtimes.get(roots.key);
   if (!pool) return false;
-  return pool.releaseWorktree(cwd, reason);
+  return pool.releaseWorktree(cwd, reason, { closeProvider, closePersistent });
 }
 
 export const resetManagedAcpPoolsForTests = resetAllPoolRuntimes;
