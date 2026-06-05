@@ -6,7 +6,7 @@
 //   applyVariant(); // modifies process.env in-place
 //
 // Shell usage:
-//   eval "$(node bridges/apply-variant.mjs --export)"
+//   eval "$(node server/services/apply-variant.js --export)"
 
 function envFirst(env, ...names) {
   for (const name of names) {
@@ -128,7 +128,7 @@ export function applyVariant(opts = {}) {
   return applyVariantToEnv(process.env, opts);
 }
 
-// --- CLI mode: node bridges/apply-variant.mjs [--export] [--json] [--variant <name>] ---
+// --- CLI mode: node server/services/apply-variant.js [--export] [--json] [--variant <name>] ---
 const isDirect = process.argv[1] && process.argv[1].endsWith("apply-variant.mjs");
 if (isDirect) {
   const args = process.argv.slice(2);

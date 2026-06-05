@@ -1,10 +1,16 @@
-import { AssignmentStore } from "./assignment-store.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
   positiveInt,
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
 } from "../services/concurrency-limits.js";
+import {
+  priorityScore,
+  isMutatingEntry,
+  isActiveEntry,
+  recoverStaleInProgressAsync,
+} from "../services/queue-rules.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
 
@@ -24,36 +30,23 @@ export class Scheduler {
 
   /**
    * Find the next eligible pending queue entry.
-   * P0-2 fix: stale recovery checks assignment state before resetting queue.
-   * P1-9: concurrency gating, priority sorting.
+   * Stale recovery goes through shared queue-rules (assignment-aware).
    */
   async nextCandidate() {
     const { listQueue, updateEntry } = await import("../services/hub-queue.js");
     const allEntries = await listQueue(this.hubRoot);
 
-    // Recover stale in_progress entries — but only if no active assignment exists
-    const now = Date.now();
-    for (const entry of allEntries) {
-      if (entry.status !== "in_progress" && entry.status !== "scheduled") continue;
-      const claimedAt = entry.claimedAt ? new Date(entry.claimedAt).getTime() : 0;
-      if (claimedAt > 0 && now - claimedAt > CLAIM_TIMEOUT_MS) {
-        // P0-2 fix: check if assignment is actually running before resetting
-        const assignment = await this.assignments.getAssignment(`a-${entry.id}`);
-        if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
-          // Assignment is active — refresh claimedAt instead of resetting to pending
-          await updateEntry(this.hubRoot, entry.id, {
-            claimedAt: new Date().toISOString(),
-          });
-          continue;
-        }
-        // No active assignment — safe to reset
-        await updateEntry(this.hubRoot, entry.id, {
-          status: "pending",
-          claimedBy: null,
-          claimedAt: null,
-        });
-        entry.status = "pending";
-      }
+    // Recover stale entries — shared rule checks assignment state before resetting
+    const { recovered, refreshed } = await recoverStaleInProgressAsync(allEntries, {
+      claimTimeoutMs: CLAIM_TIMEOUT_MS,
+      assignmentStore: this.assignments,
+    });
+    for (const id of recovered) {
+      await updateEntry(this.hubRoot, id, { status: "pending", claimedBy: null, claimedAt: null });
+    }
+    for (const id of refreshed) {
+      const entry = allEntries.find((e) => e.id === id);
+      if (entry) await updateEntry(this.hubRoot, id, { claimedAt: entry.claimedAt });
     }
 
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
@@ -63,7 +56,7 @@ export class Scheduler {
     // Compute active mutating count per project
     const activeMutatingByProject = {};
     for (const entry of allEntries) {
-      if ((entry.status === "in_progress" || entry.status === "scheduled") && isMutatingEntry(entry)) {
+      if (isActiveEntry(entry) && isMutatingEntry(entry)) {
         activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
       }
     }
@@ -107,13 +100,4 @@ export class Scheduler {
       getProjectFn: this.getProjectFn,
     });
   }
-}
-
-function priorityScore(p) {
-  const map = { P0: 0, P1: 1, P2: 2, P3: 3 };
-  return map[p] ?? 2;
-}
-
-function isMutatingEntry(entry) {
-  return entry.metadata?.mutating !== false;
 }

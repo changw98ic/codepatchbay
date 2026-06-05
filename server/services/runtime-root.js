@@ -1,5 +1,5 @@
-// Re-export from core/paths.js — path resolution is pure logic, belongs in core.
-// This file exists for backward compatibility with existing imports.
+// Server-facing runtime path facade over core/paths.js.
+// Keep the exported surface explicit so boundary checks can reason about it.
 export {
   runtimeDataRoot,
   runtimeDataPath,

@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_EXECUTOR_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_EXECUTOR_ROOT = path.resolve(__dirname, "..", "..");
 
 const PLAN_PROMPT_RE = "software planning agent";
 const EXECUTE_PROMPT_RE = "software execution agent";
@@ -79,7 +79,7 @@ async function writeTestAgentScenario(tmpRoot) {
           output: jsonEnvelope({
             status: "ok",
             summary: "Fake ACP executed the smoke path and intentionally left README.md unchanged.",
-            tests: ["bridges/local-smoke.mjs: fake-acp full-chain smoke reached execute"],
+            tests: ["server/services/local-smoke.mjs: fake-acp full-chain smoke reached execute"],
             risks: ["No production source changes are expected in this smoke."],
           }),
         },
@@ -211,7 +211,7 @@ export async function runFakeAcpSmoke({
       cwd: root,
       env,
     });
-    const { writeProjectAgents } = await import("../server/services/agent-config.js");
+    const { writeProjectAgents } = await import("./agent-config.js");
     await writeProjectAgents(cpbRoot, project, {
       default: "fake-acp",
       phases: {
@@ -222,7 +222,7 @@ export async function runFakeAcpSmoke({
       },
     });
     await withProcessEnv(env, async () => {
-      const { runJobWithServices } = await import("../bridges/engine-bridge.js");
+      const { runJobWithServices } = await import("./engine-runner.js");
       return runJobWithServices({
         cpbRoot,
         hubRoot,
@@ -301,7 +301,7 @@ function parseArgs(argv) {
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
-    console.log(`Usage: node bridges/local-smoke.mjs [--json] [--keep-temp] [--codegraph]
+    console.log(`Usage: node server/services/local-smoke.mjs [--json] [--keep-temp] [--codegraph]
 
 Runs a repeatable local smoke with a fake ACP client. No real provider calls are made.`);
     return 0;

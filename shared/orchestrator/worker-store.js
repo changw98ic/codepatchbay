@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { writeJsonAtomic } from "../services/fs-utils.js";
+import { writeJsonAtomic } from "../fs-utils.js";
 
 const WORKERS_DIR = "workers";
 

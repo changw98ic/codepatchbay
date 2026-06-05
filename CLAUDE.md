@@ -168,7 +168,7 @@ WS   /ws                        # WebSocket (实时事件推送)
 ## 注意事项
 
 - 项目名只允许 `[a-zA-Z0-9-]`，通过 `require_safe_name` 校验
-- ACP client (`bridges/acp-client.mjs`) 必须有执行权限
+- ACP client 入口是 `server/services/acp-client-core.mjs`
 - 后端 CORS 仅允许 `localhost:5173` 和 `127.0.0.1:5173`
 - Lease 默认 TTL 120s，heartbeat 间隔 TTL/3
 - Pipeline 的 total timeout 通过 watchdog 写 state flag，不杀进程

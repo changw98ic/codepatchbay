@@ -214,7 +214,7 @@ Check `~/.cpb/browser-agents/<provider>/diagnostics/` for screenshots.
 CPB pipeline
   -> runAgent({ agent: "browser-agent", variant: "chatgpt" })
     -> AcpPool.execute()
-      -> browser-agent-acp.mjs (ACP server)
+      -> server/services/browser-agent-acp.mjs (ACP server)
         -> Playwright engine
           -> provider profile (chatgpt.json)
             -> ChatGPT Web

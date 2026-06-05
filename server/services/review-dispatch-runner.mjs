@@ -5,9 +5,10 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import readline from "node:readline";
-import { createSession, getSession, updateSession, parseIssues, startSessionResearch, noteReviewAcpCall, assertReviewBudget } from "../server/services/review-session.js";
-import { buildChildEnv } from "../core/policy/child-env.js";
+import { createSession, getSession, updateSession, parseIssues, startSessionResearch, noteReviewAcpCall, assertReviewBudget } from "./review-session.js";
+import { buildChildEnv } from "../../core/policy/child-env.js";
 
 const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
@@ -389,8 +390,12 @@ async function runReview(cpbRoot, sessionId) {
       new PersistentAcp("claude").start(),
     ]);
 
-    // Phase 1: Research
-    await startSessionResearch(cpbRoot, sessionId, `dispatch-${sessionId}`);
+    // Phase 1: Research. HTTP routes may already have moved the session into
+    // researching to enforce idempotency before spawning this runner.
+    const initialSession = await getSession(cpbRoot, sessionId);
+    if (initialSession?.status === "idle") {
+      await startSessionResearch(cpbRoot, sessionId, `dispatch-${sessionId}`);
+    }
     console.log(`[review] ${sessionId} phase 1: researching`);
 
     let currentBudget = await getSession(cpbRoot, sessionId);
@@ -515,12 +520,13 @@ async function runReview(cpbRoot, sessionId) {
   }
 }
 
-// CLI entry
-const cpbRoot = process.argv[2];
-const sessionId = process.argv[3];
-if (!cpbRoot || !sessionId) {
-  console.error("Usage: review-dispatch.mjs <cpbRoot> <sessionId>");
-  process.exit(1);
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const cpbRoot = process.argv[2];
+  const sessionId = process.argv[3];
+  if (!cpbRoot || !sessionId) {
+    console.error("Usage: review-dispatch-runner.mjs <cpbRoot> <sessionId>");
+    process.exit(1);
+  }
 
-runReview(cpbRoot, sessionId);
+  runReview(cpbRoot, sessionId);
+}

@@ -1,26 +1,55 @@
-# Runtime Boundary Contract
+# 运行时边界契约
 
-## Layers
+## 分层
 
-- `core/`: pure policy and parsing helpers. It must not import `server/`, `bridges/`, `cli/`, or `runtime/`.
-- `server/services/`: durable state, registries, HTTP-facing orchestration helpers, and runtime-root path ownership.
-- `bridges/`: executable compatibility wrappers and phase/pipeline adapters.
-- `cli/`: command routing and command-specific adapters.
-- `runtime/`: long-running worker/generic-evolve orchestration and the Rust runtime adapter.
+- `core/`：纯策略、解析、状态机与领域契约。不得导入 `server/`、`bridges/`、`cli/` 或 `runtime/`。
+- `server/services/`：持久化状态、注册表、HTTP/Hub 编排服务、ACP 池与服务级运行时能力。
+- `bridges/`：跨层装配层，只保留真实装配逻辑，例如 engine 注入、runtime 服务注入、测试 ACP provider；不新增兼容 re-export。
+- `cli/`：命令路由和命令参数/输出适配。命令文件直接调用 canonical `server/services/` 或 `server/orchestrator/` 能力，不再经过已删除的 CLI bridge。
+- `runtime/`：长期 worker、multi-evolve 编排与运行时脚本。运行时文件使用 canonical `runtime/` 入口，不得导入 `server/`，也不得新增旧路径兼容入口。
+- `shared/`：无 HTTP / CLI / runtime 副作用的共享基础设施，例如文件工具、日志、worker store、assignment store。
 
-## Temporary Exceptions
+## 允许方向
 
-- `runtime/acp-pool.js` may call `bridges/acp-client.mjs` until ACP client process launch is moved behind a neutral adapter.
-- Runtime orchestration files may import selected `server/services/*` while durable state remains owned by server services.
+- `bridges/` 可以导入 `server/`、`core/`、`runtime/`，只用于边界装配和明确入口。
+- `server/` 可以导入 `core/`，不得导入 `runtime/` 实现模块；允许为 child process 启动拼接 canonical runtime 可执行入口。
+- `runtime/` 可以导入 `core/`、`shared/`、`bridges/engine-bridge.js`、`bridges/runtime-services.js`；不得直接导入 `server/`。
+- `cli/` 可以导入 `core/`、`server/services/` 与 `server/orchestrator/`；不得恢复已删除的 CLI bridge，也不得直接拼接 `bridges/` 或 `runtime/` 入口。
+- `core/` 只能依赖自身子目录和标准库/外部包，不得反向穿透其他层。
 
-## Direction
+## 当前已锁定的边界测试
 
-New pure logic goes to `core/`.
-New executable compatibility surfaces go to `bridges/`.
-New CLI routing goes to `cli/commands/`.
-New durable state writes stay in `server/services/` until a single migration moves them behind a runtime adapter.
+- `tests/core-boundary.test.mjs`：禁止 `core/` 导入 `server/`、`runtime/`、`cli/`、`bridges/`。
+- `tests/server-boundary.test.mjs`：禁止 `server/` 导入 `runtime/` 实现。
+- `tests/runtime-boundary.test.mjs`：禁止 runtime 直接导入 `server/`，并禁止已删除的 runtime ACP / guard / variant 入口和兼容 re-export 壳回归。
+- `tests/cli-boundary.test.mjs`：禁止 `cli/` 重新导入或动态拼接 `bridges/`、`runtime/`。
 
-## Current Debt Register
+## 硬切原则
 
-- `server/services/acp-pool.js` imports `runtime/acp-client-core.mjs` for managed in-process ACP sessions. The core module re-exports `AcpClient` class without CLI side effects. This exception remains until the ACP client core migrates to `server/services/`.
-- Runtime-root reads must go through `server/services/runtime-context.js`; direct legacy-only `runtimeDataPath(cpbRoot, "events", ...)` reads are compatibility-only.
+用户明确要求：后续拆分不做兼容。
+
+- 不保留旧路径兼容入口。
+- 不新增兼容 re-export。
+- 不维护同一能力的新旧双轨调用。
+- 迁移完成后，旧入口应删除或改为明确失败，而不是继续透传。
+- 发现“为了兼容而存在”的壳层，应优先列为清理项。
+
+## 迁移结果
+
+- `core/engine/run-job.js` 不再懒加载 `server/services/provider-*` 或 quota delegate，改由 `ctx.providerServices` 注入。
+- `server/services/engine-runner.js` 负责把 provider quota、provider adapter、quota delegate 注入核心引擎。
+- `bridges/engine-bridge.js` 是 runtime-facing 边界入口，runtime 通过它调用 server-owned engine runner。
+- `runtime/worker/managed-worker.js` 是服务端启动托管 worker 的 canonical 可执行入口。
+- `runtime/evolve/multi-evolve.js` 是 multi-evolve 的 canonical 可执行入口。
+- `cli/commands/*` 直接调用 canonical `server/services/*` 与 `server/orchestrator/*`。
+- ACP client core、delete guard、variant overlay 的服务级实现已迁入 `server/services/`；旧 runtime 入口已删除，不作为长期设计。
+- `runtime/` 不再直接导入 `server/`。运行时需要的 server 协作者集中由 `bridges/runtime-services.js` 注入，这是显式装配点，不是旧路径兼容入口；见 `docs/architecture/system-risk-register.md` 的 `RISK-012`。
+
+## 新代码放置规则
+
+- 新的纯逻辑放入 `core/`。
+- 新的持久化状态读写放入 `server/services/`。
+- 新的跨层装配放入 `bridges/`，不得新增兼容导出或薄转发入口。
+- 新的 CLI 参数解析和展示逻辑放入 `cli/commands/`，服务调用直接进入 canonical server 模块。
+- 新的长期 worker 或运行时脚本放入 `runtime/`，不通过 re-export 做旧路径兼容。
+- 新增 runtime 代码不得直接导入 server 服务；确需复用 server 协作者时，必须通过明确的跨层装配点注入，并同步补边界测试。

@@ -212,7 +212,7 @@ export async function cmdStop() {
 
   // Stop managed workers (from WorkerStore)
   try {
-    const { WorkerStore } = await import("../orchestrator/worker-store.js");
+    const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
     const store = new WorkerStore(hubRoot);
     const workers = await store.listWorkers();
     const liveWorkers = workers.filter((w) => w.pid && w.status !== "exited");

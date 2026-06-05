@@ -1,35 +1,28 @@
-import { spawn, execFile } from "child_process";
+import { spawn } from "child_process";
 import path from "path";
 import { readFile, rm } from "fs/promises";
 import { runtimeDataPath } from "../services/runtime-root.js";
 import { broadcast } from "../services/ws-broadcast.js";
-import { enqueue } from "../services/hub-queue.js";
 import { makeJobId } from "../services/job-store.js";
 import {
   createSession,
   getSession,
   listSessions,
-  updateSession,
   startSessionResearch,
 } from "../services/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 import { writeProjectIndex } from "../services/project-index.js";
 import { resolveHubRoot, getProject } from "../services/hub-registry.js";
+import {
+  dispatchSession,
+  autoApproveSession,
+  cancelReviewDispatch,
+  analyzeSession,
+  acceptSession,
+  rejectSession,
+} from "../services/review-dispatch.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
-
-function gitExec(cwd, ...args) {
-  return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`git ${args.join(" ")} failed: ${stderr || err.message}`));
-      else resolve(stdout.trim());
-    });
-  });
-}
-
-function worktreePathFor(cpbRoot, jobId) {
-  return runtimeDataPath(cpbRoot, "worktrees", `${jobId}-pipeline`);
-}
 
 const REVIEW_NOTIFY_STATUSES = new Set(["user_review", "dispatched", "expired", "cancelled"]);
 
@@ -69,10 +62,12 @@ export async function reviewRoutes(fastify, opts) {
     return session;
   });
 
-  // Start review cpb (spawns review-dispatch.mjs in background)
+  // Start review workflow in background.
   fastify.post("/review/:id/start", async (req) => {
     let session;
     const key = req.headers['idempotency-key'] || `start-${Date.now()}`;
+    const existing = await getSession(req.cpbRoot, req.params.id);
+    const alreadyStarted = existing?.idempotency?.startKey === key;
     try {
       session = await startSessionResearch(req.cpbRoot, req.params.id, key);
     } catch (err) {
@@ -88,11 +83,20 @@ export async function reviewRoutes(fastify, opts) {
       throw err;
     }
 
-    const scriptPath = path.join(req.cpbRoot, "bridges/review-dispatch.mjs");
+    if (alreadyStarted) {
+      return { accepted: true, sessionId: session.sessionId, alreadyStarted: true };
+    }
+
+    if (opts.startRunner === false) {
+      return { accepted: true, sessionId: session.sessionId, runnerStarted: false };
+    }
+
+    const executorRoot = path.resolve(opts.executorRoot || process.env.CPB_EXECUTOR_ROOT || req.cpbRoot);
+    const scriptPath = path.join(executorRoot, "server/services/review-dispatch-runner.mjs");
 
     const child = spawn("node", [scriptPath, req.cpbRoot, session.sessionId], {
       cwd: req.cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot }),
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_EXECUTOR_ROOT: executorRoot }),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -111,125 +115,53 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
-
-    let registered;
-    try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
-
-    const entry = await enqueue(hubRoot, {
-      projectId: session.project,
-      sourcePath: registered?.sourcePath || null,
-      priority: "P1",
-      description: session.intent,
-      type: "review_dispatch",
-      metadata: {
-        source: "review",
-        reviewSessionId: session.sessionId,
-        jobId,
-        workflow: "standard",
-        autoFinalize: true,
-        requestedAt: new Date().toISOString(),
-      },
+    const result = await dispatchSession(req.cpbRoot, req.params.id, {
+      hubRoot: req.cpbHubRoot,
     });
-
-    await updateSession(req.cpbRoot, session.sessionId, {
-      status: "dispatched",
-      userVerdict: "approved",
-      jobId,
-      worktreePath: wtPath,
-    });
+    if (!result.ok) throw fastify.httpErrors.notFound(result.error);
 
     notify({
       type: "review:update",
-      sessionId: session.sessionId,
+      sessionId: result.sessionId,
       status: "dispatched",
-      jobId: entry.id,
-      project: session.project,
-      session: await getSession(req.cpbRoot, session.sessionId),
+      jobId: result.taskId,
+      project: result.project,
+      session: result.session,
     });
 
-    return { dispatched: true, sessionId: session.sessionId, taskId: entry.id };
+    return { dispatched: true, sessionId: result.sessionId, taskId: result.taskId };
   });
 
   // Internal auto-approve path (used by self-evolve)
   fastify.post("/review/:id/auto-approve", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
-    if (!session) throw fastify.httpErrors.notFound("session not found");
-
-    if (!["dispatched", "user_review"].includes(session.status)) {
-      return {
-        dispatched: false,
-        sessionId: session.sessionId,
-        status: session.status,
-        note: "invalid_state_for_auto_approve",
-      };
-    }
-
-    const result = await updateSession(
-      req.cpbRoot,
-      session.sessionId,
-      {
-        status: session.status === "dispatched" ? session.status : "dispatched",
-        userVerdict: "approved",
-      },
-      { skipTransitionCheck: true },
-    );
-
-    if (result.status === "dispatched" && result.jobId) {
-      return {
-        dispatched: true,
-        sessionId: session.sessionId,
-        taskId: result.jobId,
-        note: "already_dispatched",
-      };
-    }
-
-    const jobId = makeJobId();
-    const wtPath = worktreePathFor(req.cpbRoot, jobId);
-    const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
-
-    let registered;
-    try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
-
-    const spawnResult = await enqueue(hubRoot, {
-      projectId: session.project,
-      sourcePath: registered?.sourcePath || null,
-      priority: "P1",
-      description: session.intent,
-      type: "review_dispatch",
-      metadata: {
-        source: "review",
-        reviewSessionId: session.sessionId,
-        jobId,
-        workflow: "standard",
-        autoFinalize: true,
-        requestedAt: new Date().toISOString(),
-      },
+    const result = await autoApproveSession(req.cpbRoot, req.params.id, {
+      hubRoot: req.cpbHubRoot,
     });
 
-    const refreshed = await updateSession(req.cpbRoot, session.sessionId, {
-      ...result,
-      jobId,
-      worktreePath: wtPath,
-      status: "dispatched",
-      userVerdict: "approved",
-    }, { skipTransitionCheck: true });
+    if (!result.ok) {
+      if (result.error === "session_not_found") throw fastify.httpErrors.notFound("session not found");
+      return {
+        dispatched: false,
+        sessionId: req.params.id,
+        status: result.status,
+        note: result.note,
+      };
+    }
 
     notify({
       type: "review:update",
-      sessionId: refreshed.sessionId,
-      status: refreshed.status,
-      jobId: refreshed.jobId,
-      project: refreshed.project,
-      session: refreshed,
+      sessionId: result.sessionId,
+      status: "dispatched",
+      jobId: result.taskId,
+      project: result.project,
+      session: result.session,
     });
 
     return {
       dispatched: true,
-      sessionId: session.sessionId,
-      taskId: spawnResult.id,
+      sessionId: result.sessionId,
+      taskId: result.taskId,
+      note: result.note,
     };
   });
 
@@ -241,29 +173,20 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    // Clean up worktree if it exists
-    if (session.worktreePath) {
-      try {
-        const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
-        const meta = JSON.parse(await readFile(projectJson, "utf8"));
-        if (meta.sourcePath) {
-          await gitExec(meta.sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
-        }
-      } catch {}
-      try { await rm(session.worktreePath, { recursive: true, force: true }); } catch {}
-    }
+    const result = await rejectSession(req.cpbRoot, req.params.id);
+    if (!result.ok) throw fastify.httpErrors.notFound(result.error);
 
-    const updated = await updateSession(req.cpbRoot, session.sessionId, {
-      status: "expired",
-      userVerdict: "rejected",
-    });
-
-    notify({ type: "review:update", sessionId: session.sessionId, status: "expired", project: session.project, session: updated });
-    return updated;
+    notify({ type: "review:update", sessionId: result.sessionId, status: "expired", project: result.project, session: result.session });
+    return result.session;
   });
 
   // User accepts → merge worktree branch into main, clean up worktree
-  fastify.post("/review/:id/cancel", async (req, reply) => cancelRoute(req, reply, notify));
+  fastify.post("/review/:id/cancel", async (req, reply) => {
+    const result = await cancelReviewDispatch(req.cpbRoot, req.params.id, req.body?.reason);
+    if (!result.ok) return reply.code(404).send({ error: "not found" });
+    notify({ type: "review:update", sessionId: result.sessionId, status: "cancelled", project: result.project, session: result.session });
+    return { cancelled: true, sessionId: result.sessionId };
+  });
 
   fastify.post("/review/:id/accept", async (req) => {
     const session = await getSession(req.cpbRoot, req.params.id);
@@ -272,201 +195,50 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.conflict(`session not in reviewable state (status: ${session.status})`);
     }
 
-    let merged = false;
-    let mergeError = null;
     const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+    const result = await acceptSession(req.cpbRoot, req.params.id);
 
-    if (session.worktreePath && session.jobId) {
+    // Persist project-index after successful merge (best-effort, stays in route)
+    if (result.merged && result.session?.jobId) {
       try {
         const projectJson = path.join(req.cpbRoot, "wiki", "projects", session.project, "project.json");
         const meta = JSON.parse(await readFile(projectJson, "utf8"));
-        const sourcePath = meta.sourcePath;
-        if (sourcePath) {
-          const branch = `cpb/${session.jobId}-pipeline`;
-          try {
-            await gitExec(sourcePath, "rev-parse", "--verify", branch);
-            await gitExec(sourcePath, "merge", "--no-ff", "-m", `cpb: accept review ${session.sessionId}`, branch);
-            merged = true;
-            await gitExec(sourcePath, "branch", "-D", branch).catch(() => {});
-
-            // Persist project-index after successful merge
-            try {
-              const gitHead = await gitExec(sourcePath, "rev-parse", "HEAD");
-              const currentBranch = await gitExec(sourcePath, "rev-parse", "--abbrev-ref", "HEAD");
-              await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
-                state: "merged_indexed",
-                branch: currentBranch,
-                gitHead,
-                indexedFrom: `merge:${session.jobId}`,
-                timestamp: new Date().toISOString(),
-              });
-            } catch { /* best effort index write */ }
-          } catch (err) {
-            mergeError = err.message;
-          }
-          await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
-          await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
-
-          // Persist merge failure status
-          if (!merged && mergeError) {
-            try {
-              const gitHead = await gitExec(sourcePath, "rev-parse", "HEAD").catch(() => null);
-              const currentBranch = await gitExec(sourcePath, "rev-parse", "--abbrev-ref", "HEAD").catch(() => null);
-              await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
-                state: "merge_failed",
-                branch: currentBranch,
-                gitHead,
-                indexedFrom: `merge:${session.jobId}`,
-                timestamp: new Date().toISOString(),
-                error: mergeError,
-              });
-            } catch { /* best effort */ }
-          }
+        if (meta.sourcePath) {
+          const { execFile: execFileCb } = await import("child_process");
+          const { promisify } = await import("util");
+          const execFileAsync = promisify(execFileCb);
+          const gitHead = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: meta.sourcePath, encoding: "utf8" }).then(r => r.stdout.trim());
+          const currentBranch = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: meta.sourcePath, encoding: "utf8" }).then(r => r.stdout.trim());
+          await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
+            state: "merged_indexed",
+            branch: currentBranch,
+            gitHead,
+            indexedFrom: `merge:${result.session.jobId}`,
+            timestamp: new Date().toISOString(),
+          });
         }
-      } catch (err) {
-        // Best effort merge
-      }
+      } catch { /* best effort */ }
+    } else if (result.mergeFailed && result.session?.jobId) {
+      try {
+        await writeProjectIndex(hubRoot, req.cpbRoot, session.project, {
+          state: "merge_failed",
+          indexedFrom: `merge:${result.session.jobId}`,
+          error: result.session.mergeError || "merge failed",
+          timestamp: new Date().toISOString(),
+        });
+      } catch { /* best effort */ }
     }
 
-    const finalStatus = (!merged && mergeError) ? "merge_failed" : "completed";
-    const updated = await updateSession(req.cpbRoot, session.sessionId, {
-      status: finalStatus,
-      userVerdict: "accepted",
-      merged,
-      ...(mergeError && { mergeError }),
-    });
-
-    notify({ type: "review:update", sessionId: session.sessionId, status: finalStatus, project: session.project, session: updated });
-    return { accepted: true, merged, mergeFailed: !merged && Boolean(mergeError), sessionId: session.sessionId };
+    notify({ type: "review:update", sessionId: result.sessionId, status: result.status, project: result.project, session: result.session });
+    return { accepted: true, merged: result.merged, mergeFailed: result.mergeFailed, sessionId: result.sessionId };
   });
 
   // Analyze session for approval (ACP-triggered summary)
   fastify.post("/review/:id/analyze", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
-    if (!session) throw fastify.httpErrors.notFound("session not found");
-
-    // Build context sections from session data
-    const sections = [];
-    if (session.intent) sections.push(`## Intent\n${session.intent}`);
-    if (session.research?.codex) sections.push(`## Codex Research\n${session.research.codex.slice(0, 3000)}`);
-    if (session.research?.claude) sections.push(`## Claude Research\n${session.research.claude.slice(0, 3000)}`);
-    if (session.plan) sections.push(`## Implementation Plan\n${session.plan.slice(0, 4000)}`);
-
-    if (session.reviews && session.reviews.length > 0) {
-      const latest = session.reviews[session.reviews.length - 1];
-      if (latest.codex) sections.push(`## Codex Review (Round ${latest.round})\n${latest.codex.slice(0, 3000)}`);
-      if (latest.claude) sections.push(`## Claude Review (Round ${latest.round})\n${latest.claude.slice(0, 3000)}`);
-      const issues = [
-        ...(latest.codexIssues || []).map(i => `[Codex P${i.severity}] ${i.message || "issue"}`),
-        ...(latest.claudeIssues || []).map(i => `[Claude P${i.severity}] ${i.message || "issue"}`),
-      ];
-      if (issues.length > 0) sections.push(`## Issues Found\n${issues.join("\n")}`);
+    const result = await analyzeSession(req.cpbRoot, req.params.id);
+    if (!result.ok && result.error === "session_not_found") {
+      throw fastify.httpErrors.notFound("session not found");
     }
-
-    if (sections.length === 0) {
-      return { summary: "No content available yet for analysis.", changes: [], risks: [], recommendation: `Session is in ${session.status} state.` };
-    }
-
-    const prompt = `You are a code review analyst. Analyze the following review session and produce a JSON object.
-
-Project: ${session.project}
-Status: ${session.status}
-
-${sections.join("\n\n")}
-
-Respond with ONLY a JSON object (no markdown fences) with these fields:
-- "summary": one paragraph explaining what this review is about
-- "changes": array of strings describing key changes proposed
-- "risks": array of strings describing risks or concerns found
-- "recommendation": string with clear approve/reject advice and reasoning`;
-
-    // Run ACP agent to analyze
-    const scriptPath = path.join(req.cpbRoot, "runtime", "acp-client.mjs");
-    const env = buildChildEnv(
-      process.env,
-      { CPB_ROOT: req.cpbRoot, CPB_ACP_TIMEOUT_MS: "90000" },
-      { agent: "claude" },
-    );
-
-    const acpResult = await new Promise((resolve) => {
-      const child = spawn("node", [scriptPath, "--agent", "claude", "--cwd", req.cpbRoot], {
-        cwd: req.cpbRoot,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 120000,
-      });
-
-      let stdout = "";
-      let stderr = "";
-
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
-
-      child.stdin.write(prompt);
-      child.stdin.end();
-
-      const timer = setTimeout(() => { child.kill(); resolve({ error: "Analysis timed out" }); }, 120000);
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code !== 0 && !stdout) {
-          resolve({ error: stderr.slice(-500) || `ACP exited with code ${code}` });
-        } else {
-          resolve({ output: stdout });
-        }
-      });
-
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ error: err.message });
-      });
-    });
-
-    // Parse ACP response
-    if (acpResult.error) {
-      return { summary: `Analysis failed: ${acpResult.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
-    }
-
-    // Extract JSON from output (agent may wrap in markdown fences)
-    let parsed = null;
-    const rawOutput = acpResult.output || "";
-    const jsonMatch = rawOutput.match(/```json\s*([\s\S]*?)```/) || rawOutput.match(/\{[\s\S]*"summary"[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-      } catch { /* fall through */ }
-    }
-
-    if (parsed && parsed.summary) {
-      return {
-        summary: parsed.summary,
-        changes: Array.isArray(parsed.changes) ? parsed.changes : [],
-        risks: Array.isArray(parsed.risks) ? parsed.risks : [],
-        recommendation: parsed.recommendation || "",
-        raw: rawOutput,
-      };
-    }
-
-    // Fallback: return raw output as summary if JSON parse fails
-    return {
-      summary: rawOutput.slice(0, 500) || "Analysis produced no output.",
-      changes: [],
-      risks: [],
-      recommendation: "Review the raw analysis output for details.",
-      raw: rawOutput,
-    };
+    return result;
   });
-}
-
-async function cancelRoute(req, reply, notify) {
-  const { id } = req.params;
-  if (!req.cpbRoot) return reply.code(400).send({ error: "missing project root" });
-  const session = await getSession(req.cpbRoot, id);
-  if (!session) return reply.code(404).send({ error: "not found" });
-  const updated = await updateSession(req.cpbRoot, id, {
-    status: "cancelled",
-    detail: req.body?.reason || "cancelled",
-  }, { skipTransitionCheck: true });
-  notify({ type: "review:update", sessionId: id, status: "cancelled", project: session.project, session: updated });
-  return { cancelled: true, sessionId: id };
 }

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
-import { WorkerStore } from "./worker-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { executorEnv, resolveExecutorRoot } from "../services/executor-root.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
@@ -36,7 +36,7 @@ export class WorkerSupervisor {
     await mkdir(logDir, { recursive: true });
     const logFd = await open(path.join(logDir, `worker-${workerId}.log`), "a");
     const child = spawn(process.execPath, [
-      path.join(executorRoot, "runtime/worker/managed-worker.js"),
+      path.join(executorRoot, "runtime", "worker", "managed-worker.js"),
       "--worker-id", workerId,
       "--hub-root", this.hubRoot,
       "--cpb-root", this.cpbRoot,
@@ -53,19 +53,44 @@ export class WorkerSupervisor {
 
     this._children.set(workerId, child);
 
+    const restartCount = assignment._restartCount || 0;
+
     const worker = await this.workers.registerWorker(workerId, {
       projectId: assignment.projectId,
       pid: child.pid,
       status: "starting",
       executorRoot,
+      restartCount,
     });
 
     child.on("exit", async (code) => {
       this._children.delete(workerId);
+      const current = await this.workers.getWorker(workerId);
+      const wasDeliberate = current?.status === "draining" || current?.stopReason;
       await this.workers.updateWorker(workerId, {
         status: "exited",
         exitCode: code,
       });
+
+      const nextRestart = (current?.restartCount || 0) + 1;
+      if (!wasDeliberate && nextRestart <= MAX_RESTARTS) {
+        await this.workers.updateWorker(workerId, {
+          restartCount: nextRestart,
+          status: "restarting",
+        });
+        try {
+          await this.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
+        } catch (err) {
+          await this.workers.updateWorker(workerId, {
+            status: "exhausted",
+            restartError: err.message,
+          });
+        }
+      } else if (!wasDeliberate) {
+        await this.workers.updateWorker(workerId, {
+          status: "exhausted",
+        });
+      }
     });
 
     return worker;

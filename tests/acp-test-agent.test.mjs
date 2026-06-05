@@ -7,10 +7,10 @@ import { tempRoot } from "./helpers.mjs";
 import { runAgent } from "../core/agents/agent-runner.js";
 import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../server/services/acp-pool.js";
 import { buildAcpPoolEnv } from "../core/policy/child-env.js";
-import { AcpClient, resolveAgentCommand } from "../runtime/acp-client-core.mjs";
+import { AcpClient, resolveAgentCommand } from "../server/services/acp-client-core.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const acpClient = path.join(repoRoot, "runtime", "acp-client.mjs");
+const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.mjs");
 const testAgent = path.join(repoRoot, "bridges", "test-acp-agent.mjs");
 
 async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {

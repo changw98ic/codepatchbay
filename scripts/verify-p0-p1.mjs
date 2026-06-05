@@ -33,6 +33,7 @@ const focusedTests = [
   "tests/engine-provider-event.test.mjs",
   "tests/managed-worker.test.mjs",
   "tests/queue-orchestrator.test.mjs",
+  "tests/release-pack-smoke.test.mjs",
 ];
 
 function commandText(command, commandArgs) {

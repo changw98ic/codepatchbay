@@ -5,7 +5,7 @@ import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listDispatches } from "./dispatch-state.js";
 import { redactSecrets } from "./secret-policy.js";
 import { buildChainSnapshot, analyzeChainSnapshot } from "./observer.js";
-import { WorkerStore, summarizeWorkers } from "../orchestrator/worker-store.js";
+import { WorkerStore, summarizeWorkers } from "../../shared/orchestrator/worker-store.js";
 
 export function redactDiagnostics(value, key = "") {
   return redactSecrets(value, key);
@@ -16,12 +16,12 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
   const now = Date.now();
   const workerStore = new WorkerStore(hubRoot);
 
-  const [hub, projects, queue, acpStatus, rateLimits, dispatches, workers] = await Promise.all([
+  const [hub, projects, queue, acpStatus, providerQuotas, dispatches, workers] = await Promise.all([
     hubStatus(hubRoot),
     listProjects(hubRoot),
     queueStatus(hubRoot),
     pool.status(),
-    pool.readDurableRateLimits(),
+    pool.readProviderQuotas(),
     listDispatches(hubRoot),
     workerStore.listWorkers(),
   ]);
@@ -128,7 +128,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     queue,
     pools,
     acpPool: acpPoolSummary,
-    rateLimits,
+    providerQuotas,
     dispatchSummary,
     observerBlockedChains,
     observerStaleProcesses,
@@ -138,12 +138,12 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
 
 export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
-  const [hub, projects, queue, queueEntries, rateLimits] = await Promise.all([
+  const [hub, projects, queue, queueEntries, providerQuotas] = await Promise.all([
     hubStatus(hubRoot),
     listProjects(hubRoot),
     queueStatus(hubRoot),
     listQueue(hubRoot),
-    pool.readDurableRateLimits(),
+    pool.readProviderQuotas(),
   ]);
 
   return redactDiagnostics({
@@ -159,7 +159,7 @@ export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) 
     queueEntries,
     acp: {
       ...pool.status(),
-      rateLimits,
+      providerQuotas,
     },
     knowledgePolicy: knowledgePolicySummary(),
   });

@@ -4,7 +4,7 @@ import { queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listJobs } from "./job-store.js";
 import { redactSecrets as sharedRedactSecrets } from "./secret-policy.js";
-import { WorkerStore, summarizeWorkers } from "../orchestrator/worker-store.js";
+import { WorkerStore, summarizeWorkers } from "../../shared/orchestrator/worker-store.js";
 
 function redactSecrets(obj) {
   return sharedRedactSecrets(obj);
@@ -66,15 +66,15 @@ export async function gatherDiagnostics({
   let acp;
   try {
     if (acpPool) {
-      acp = { ...acpPool.status(), rateLimits: await acpPool.readDurableRateLimits() };
+      acp = { ...acpPool.status(), providerQuotas: await acpPool.readProviderQuotas() };
     } else {
       const { AcpPool } = await import("./acp-pool.js");
       const pool = new AcpPool({ cpbRoot, hubRoot });
-      acp = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
+      acp = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
     }
   } catch (e) {
     errors.push({ source: "acp-pool", message: e.message });
-    acp = { pools: {}, rateLimits: {} };
+    acp = { pools: {}, providerQuotas: {} };
   }
 
   let knowledgePolicy;

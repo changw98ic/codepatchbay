@@ -64,7 +64,7 @@ const sectionGap = style({
 interface HubHealthPanelProps {
   hubStatus: { projectCount: number } | null;
   hubProjects: Array<{ id: string; name: string; workerDerivedStatus?: string; worker?: { status: string } }>;
-  hubAcp?: { pools?: Record<string, { mode?: string; active?: number; limit?: number; queued?: number }>; rateLimits?: Record<string, { untilTs?: number }> } | null;
+  hubAcp?: { pools?: Record<string, { mode?: string; active?: number; limit?: number; queued?: number }>; providerQuotas?: Record<string, { untilTs?: number }> } | null;
   knowledgePolicy?: { automaticWrites?: unknown[]; forbiddenMarkdownState?: unknown[] } | null;
   observability?: {
     pools?: Record<string, { requestCount?: number; errorCount?: number; recycleCount?: number; processAgeMs?: number; rateLimitedUntil?: number }>;

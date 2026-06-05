@@ -3,8 +3,8 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AcpClient, parseToolPolicy, resolveAcpAuditFile, resolveWriteAllowPaths } from "../../runtime/acp-client-core.mjs";
-import { applyVariantToEnv, resolveVariantConfig } from "../../runtime/apply-variant.js";
+import { AcpClient, parseToolPolicy, resolveAcpAuditFile, resolveWriteAllowPaths } from "./acp-client-core.mjs";
+import { applyVariantToEnv, resolveVariantConfig } from "./apply-variant.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../core/agents/session-cache.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
@@ -883,20 +883,9 @@ export class AcpPool {
     return { total, providers: counts };
   }
 
-  /**
-   * Read provider quotas from the new provider-quota system.
-   * Replaces the old readDurableRateLimits().
-   */
   async readProviderQuotas() {
     const { readProviderQuotas } = await import("./provider-quota.js");
     return readProviderQuotas(this.hubRoot);
-  }
-
-  /**
-   * Backward-compatible alias for hub routes that still call readDurableRateLimits.
-   */
-  async readDurableRateLimits() {
-    return this.readProviderQuotas();
   }
 
   #newSession(agent, recycleReason = null, recycledAt = null) {
@@ -1078,7 +1067,7 @@ export class AcpPool {
   async #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
     const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
     const customClient = this.env.CPB_ACP_CLIENT;
-    const clientPath = customClient || path.join(__dirname, "..", "..", "bridges", "acp-client.mjs");
+    const clientPath = customClient || path.join(__dirname, "acp-client-core.mjs");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     try {

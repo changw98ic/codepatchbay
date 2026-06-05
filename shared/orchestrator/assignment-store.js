@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { writeJsonAtomic, writeJsonOnce } from "../services/fs-utils.js";
+import { writeJsonAtomic, writeJsonOnce } from "../fs-utils.js";
 
 const ASSIGNMENTS_DIR = "assignments";
 

@@ -5,10 +5,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import {
-  createIsolatedWorktreeWithRetry,
-  finalizeAndWriteSuccessfulResult,
-} from "../runtime/worker/managed-worker.js";
+import { createIsolatedWorktreeWithRetry } from "../runtime/worker/worktree-manager.js";
+import { finalizeAndWriteSuccessfulResult } from "../runtime/worker/assignment-finalizer.js";
 import { readJson, tempRoot, writeJson } from "./helpers.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");

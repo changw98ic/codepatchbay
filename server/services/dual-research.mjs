@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dual-research.mjs — Dual-agent parallel research (Node.js, replaces dual-research.sh)
+// dual-research.mjs — Dual-agent parallel research service.
 
 import { mkdir, writeFile, readFile, access, constants, rm } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
@@ -139,7 +139,7 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 }
 
 function acpRun(agent, cwd, executorRoot, cpbRoot, input) {
-  const acp = path.join(executorRoot, "bridges", "acp-client.mjs");
+  const acp = path.join(executorRoot, "server", "services", "acp-client-core.mjs");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
       env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }, { agent }),

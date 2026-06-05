@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { MultiEvolveController } from "./multi-evolve.mjs";
+import { MultiEvolveController } from "../runtime/evolve/multi-evolve.js";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
 import { runChecks as runReadinessChecks } from "./validate-scan-readiness.mjs";
 

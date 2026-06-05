@@ -136,7 +136,7 @@ async function check({ cpbRoot, executorRoot, options }) {
   // Check 4: repeatable fake ACP smoke
   if (options.fakeAcpSmoke) {
     try {
-      const { runFakeAcpSmoke } = await import("../../bridges/local-smoke.mjs");
+      const { runFakeAcpSmoke } = await import("../../server/services/local-smoke.mjs");
       const smoke = await runFakeAcpSmoke({ executorRoot: executorRoot || cpbRoot });
       checks.push({ name: "fake-acp-smoke", ok: smoke.ok, artifacts: smoke.artifacts });
       console.log(`PASS: fake-acp-smoke (${smoke.artifacts.inbox.length} inbox, ${smoke.artifacts.outputs.length} outputs)`);

@@ -10,6 +10,14 @@ import {
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
 } from "./concurrency-limits.js";
+import {
+  priorityScore,
+  isMutatingEntry,
+  isActiveEntry,
+  clearClaim,
+  recoverStaleInProgressAsync,
+  recoverIndexUnavailable,
+} from "./queue-rules.js";
 
 
 export const QUEUE_VERSION = 1;
@@ -134,13 +142,6 @@ function generateId() {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function priorityScore(priority) {
-  if (priority === "P0") return 0;
-  if (priority === "P1") return 1;
-  if (priority === "P2") return 2;
-  return 3;
-}
-
 function hasIssueLink(metadata) {
   if (!metadata || typeof metadata !== "object") return false;
   return Boolean(metadata.issueNumber || metadata.issueUrl);
@@ -221,25 +222,6 @@ export async function enqueue(hubRoot, input = {}) {
     };
 
     queue.entries.push(entry);
-    await saveQueue(hubRoot, queue);
-    return entry;
-  });
-}
-
-// Legacy low-level helper: claims the highest-priority pending entry without
-// index freshness gating. Public surfaces (routes, worker dispatch) should
-// use claimEligible() with getProjectFn to gate on ensureIndexFresh().
-export async function dequeue(hubRoot) {
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
-    const pending = queue.entries.filter((e) => e.status === "pending");
-    if (pending.length === 0) return null;
-
-    pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt));
-    const entry = pending[0];
-    entry.status = "in_progress";
-    entry.claimedAt = nowIso();
-    entry.updatedAt = entry.claimedAt;
     await saveQueue(hubRoot, queue);
     return entry;
   });
@@ -425,20 +407,6 @@ export function summarizeFailedTargets(entries = []) {
   };
 }
 
-export function isMutatingEntry(entry) {
-  return entry.metadata?.mutating !== false;
-}
-
-function isActiveEntry(entry) {
-  return entry.status === "in_progress" || entry.status === "scheduled";
-}
-
-function clearClaim(entry) {
-  entry.claimedBy = null;
-  entry.claimedAt = null;
-  entry.workerId = null;
-}
-
 function limitForProject(projectLimits, projectId, fallback) {
   if (projectLimits instanceof Map) {
     return positiveInt(projectLimits.get(projectId), fallback);
@@ -508,38 +476,6 @@ export function buildProjectQueueStatus(entries, {
   return byProject;
 }
 
-function recoverStaleInProgress(entries, claimTimeoutMs) {
-  if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [] };
-  const now = Date.now();
-  const recovered = [];
-  for (const e of entries) {
-    if (e.status !== "in_progress") continue;
-    const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
-    if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
-    e.status = "pending";
-    clearClaim(e);
-    e.updatedAt = nowIso();
-    recovered.push(e.id);
-  }
-  return { recovered };
-}
-
-function recoverIndexUnavailable(entries, retryMs) {
-  if (!retryMs || retryMs <= 0) return { recovered: [] };
-  const now = Date.now();
-  const recovered = [];
-  for (const e of entries) {
-    if (e.status !== "index_unavailable") continue;
-    const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
-    if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
-    e.status = "pending";
-    e.updatedAt = nowIso();
-    if (e.metadata) delete e.metadata.indexFreshness;
-    recovered.push(e.id);
-  }
-  return { recovered };
-}
-
 export async function claimEligible(hubRoot, opts = {}) {
   const {
     workerId = `worker-${process.pid}`,
@@ -550,6 +486,7 @@ export async function claimEligible(hubRoot, opts = {}) {
     requireIssueLink = false,
     getProjectFn = null,
     indexUnavailableRetryMs = 300_000,
+    assignmentStore = null,
   } = opts;
 
   if (!providerSlotsAvailable) {
@@ -558,12 +495,12 @@ export async function claimEligible(hubRoot, opts = {}) {
 
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);
-    const { recovered } = recoverStaleInProgress(queue.entries, claimTimeoutMs);
+    const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, { claimTimeoutMs, assignmentStore });
     const { recovered: recoveredIdx } = recoverIndexUnavailable(queue.entries, indexUnavailableRetryMs);
     if (recoveredIdx.length > 0) {
       recovered.push(...recoveredIdx);
     }
-    if (recovered.length > 0) {
+    if (recovered.length > 0 || refreshed.length > 0) {
       await saveQueue(hubRoot, queue);
     }
 

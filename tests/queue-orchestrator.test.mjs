@@ -13,6 +13,9 @@ import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/concurrency-limits.js";
 import { tempRoot, oldIso, readJson } from "./helpers.mjs";
 
+// Mock assignmentStore: always returns null (no active assignment)
+const noAssignmentStore = { getAssignment: async () => null };
+
 test("enqueue dedupes pending entries and requires UI lane reason", async () => {
   const hubRoot = await tempRoot("cpb-queue");
   const first = await enqueue(hubRoot, {
@@ -46,6 +49,7 @@ test("claimEligible reports provider slot exhaustion without mutating pending qu
   const result = await claimEligible(hubRoot, {
     workerId: "w-provider",
     providerSlotsAvailable: false,
+    assignmentStore: noAssignmentStore,
   });
 
   assert.equal(result.entry, null);
@@ -111,6 +115,7 @@ test("claimEligible recovers stale in_progress entries and reclaims them", async
   const result = await claimEligible(hubRoot, {
     workerId: "w-new",
     claimTimeoutMs: 1,
+    assignmentStore: noAssignmentStore,
   });
 
   assert.equal(result.entry.id, entry.id);
@@ -123,7 +128,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
   const hubRoot = await tempRoot("cpb-queue-concurrency");
   const removedHubTotalOption = ["maxActive", "Total"].join("");
   const active = await enqueue(hubRoot, { projectId: "proj-a", description: "active" });
-  await claimEligible(hubRoot, { workerId: "w-active" });
+  await claimEligible(hubRoot, { workerId: "w-active", assignmentStore: noAssignmentStore });
   await enqueue(hubRoot, { projectId: "proj-a", description: "same project pending" });
   await enqueue(hubRoot, { projectId: "proj-b", description: "other project pending" });
 
@@ -132,6 +137,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
     maxActivePerProject: 1,
     [removedHubTotalOption]: 99,
     projectId: "proj-a",
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(sameProject.entry, null);
   assert.equal(sameProject.reason, "all-projects-busy");
@@ -141,6 +147,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
     workerId: "w-global",
     maxActivePerProject: 1,
     [removedHubTotalOption]: 1,
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(otherProject.entry.projectId, "proj-b");
 
@@ -202,6 +209,7 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   const issueGate = await claimEligible(hubRoot, {
     workerId: "w-linked",
     requireIssueLink: true,
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(issueGate.entry.id, linked.id);
   assert.equal((await listQueue(hubRoot)).find((entry) => entry.id === unlinked.id).status, "pending");
@@ -210,6 +218,7 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   const staleIndex = await enqueue(indexHubRoot, { projectId: "indexed", description: "needs index" });
   const indexGate = await claimEligible(indexHubRoot, {
     workerId: "w-index",
+    assignmentStore: noAssignmentStore,
     getProjectFn: async (_hubRoot, projectId) => (
       projectId === "indexed"
         ? { id: projectId, sourcePath: null, projectRuntimeRoot: null }

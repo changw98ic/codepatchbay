@@ -49,9 +49,9 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
     // ACP client
     try {
-      await access(path.join(executorRoot, "bridges", "acp-client.mjs"), constants.X_OK);
+      await access(path.join(executorRoot, "server", "services", "acp-client-core.mjs"), constants.R_OK);
     } catch {
-      console.log("  acp-client.mjs not executable");
+      console.log("  server/services/acp-client-core.mjs missing");
       issues++;
     }
 

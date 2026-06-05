@@ -3,8 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { FailureKind } from "../../core/contracts/failure.js";
-import { writeJsonAtomic } from "../services/fs-utils.js";
-import { createLogger } from "../services/logger.js";
+import { writeJsonAtomic } from "../../shared/fs-utils.js";
+import { createLogger } from "../../shared/logger.js";
 
 const execFile = promisify(execFileCallback);
 const HEARTBEAT_STALE_MS = 60_000;

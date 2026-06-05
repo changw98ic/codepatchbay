@@ -157,10 +157,11 @@ async function handleReviewCommand(cpbRoot, cmd, log, options = {}) {
     broadcast({ type: "review:update", sessionId: session.sessionId, status: session.status, project: cmd.project, session });
 
     // Auto-start the review
-    const scriptPath = path.join(cpbRoot, "bridges/review-dispatch.mjs");
+    const executorRoot = path.resolve(options.executorRoot || process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+    const scriptPath = path.join(executorRoot, "server/services/review-dispatch-runner.mjs");
     spawn("node", [scriptPath, cpbRoot, session.sessionId], {
       cwd: cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot }),
+      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: executorRoot }),
       stdio: "ignore",
       detached: true,
     }).unref();

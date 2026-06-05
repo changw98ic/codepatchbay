@@ -1,12 +1,12 @@
 import { LeaderLock, readLeaderStatus } from "./leader-lock.js";
-import { AssignmentStore } from "./assignment-store.js";
-import { WorkerStore } from "./worker-store.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { Scheduler } from "./scheduler.js";
 import { WorkerSupervisor } from "./worker-supervisor.js";
 import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
-import { createLogger } from "../services/logger.js";
+import { createLogger } from "../../shared/logger.js";
 import { resolveExecutorRoot } from "../services/executor-root.js";
 
 const TICK_MS = 2_000;

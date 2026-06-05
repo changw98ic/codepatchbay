@@ -19,13 +19,13 @@ import { readGithubIssues, syncConfiguredGithubIssuesFromGh, syncGithubIssuesFro
 import { autoEnqueueSyncedIssues } from "../services/auto-enqueue.js";
 import {
   claimEligible,
-  dequeue as dequeueEntry,
   enqueue,
   listQueue,
   queueStatus,
   updateEntry,
 } from "../services/hub-queue.js";
 import { listDispatches } from "../services/dispatch-state.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   guardSourcePath,
   markDispatchAssigned,
@@ -49,11 +49,10 @@ export async function hubRoutes(fastify) {
   fastify.get("/hub/acp", async (req) => {
     const hr = hubRoot(req);
     const pool = getManagedAcpPool({ hubRoot: hr, cpbRoot: req.cpbRoot });
-    const quotas = await pool.readDurableRateLimits();
+    const quotas = await pool.readProviderQuotas();
     return {
       ...pool.status(),
-      rateLimits: quotas,       // backward compat
-      providerQuotas: quotas,   // new name
+      providerQuotas: quotas,
     };
   });
 
@@ -149,25 +148,12 @@ export async function hubRoutes(fastify) {
     return { enqueued: true, entry };
   });
 
-  fastify.post("/hub/queue/dequeue", async (req) => {
-    const result = await claimEligible(hubRoot(req), {
-      workerId: `dequeue-${process.pid}`,
-      getProjectFn: getProject,
-    });
-    if (!result.entry) throw fastify.httpErrors.notFound(result.reason || "No pending entries in queue");
-    const entry = result.entry;
-    const dispatch = await recordDispatch(hubRoot(req), {
-      projectId: entry.projectId,
-      sourcePath: entry.sourcePath,
-      sessionId: entry.sessionId,
-      queueEntryId: entry.id,
-    });
-    return { dequeued: true, entry, dispatch };
-  });
-
   fastify.post("/hub/queue/claim", async (req) => {
     const body = req.body || {};
-    const result = await claimEligible(hubRoot(req), {
+    const hr = hubRoot(req);
+    const assignmentStore = new AssignmentStore(hr);
+    await assignmentStore.init();
+    const result = await claimEligible(hr, {
       workerId: body.workerId,
       projectId: body.projectId || null,
       maxActivePerProject: body.maxActivePerProject ?? 2,
@@ -175,6 +161,7 @@ export async function hubRoutes(fastify) {
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
       requireIssueLink: body.requireIssueLink !== false,
       getProjectFn: getProject,
+      assignmentStore,
     });
     if (!result.entry) {
       return { claimed: false, reason: result.reason, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy };
@@ -461,10 +448,10 @@ export async function hubRoutes(fastify) {
       listProjects(hr, { enabledOnly: req.query.enabledOnly === "true" }).catch(() => []),
       (async () => {
         const pool = getManagedAcpPool({ hubRoot: hr, cpbRoot: cr });
-        const durLimits = await pool.readDurableRateLimits().catch(() => ({}));
+        const providerQuotas = await pool.readProviderQuotas().catch(() => ({}));
         return {
           ...pool.status(),
-          rateLimits: durLimits,
+          providerQuotas,
         };
       })().catch(() => null),
       Promise.resolve(knowledgePolicySummary()).catch(() => null),

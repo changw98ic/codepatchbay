@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import path from "node:path";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
 
 let _engineModule = null;
 async function getEngine() {
@@ -240,12 +242,18 @@ function onSignal(signal) {
   shutdown(signal);
 }
 
-process.once("SIGINT", () => onSignal("SIGINT"));
-process.once("SIGTERM", () => onSignal("SIGTERM"));
+function startServer() {
+  process.once("SIGINT", () => onSignal("SIGINT"));
+  process.once("SIGTERM", () => onSignal("SIGTERM"));
 
-// Keep stdin alive in non-TTY environments
-if (!process.stdin.isTTY) {
-  process.stdin.on("end", () => shutdown("stdin end"));
+  // Keep stdin alive in non-TTY environments
+  if (!process.stdin.isTTY) {
+    process.stdin.on("end", () => shutdown("stdin end"));
+  }
+
+  setupStdinReader();
 }
 
-setupStdinReader();
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  startServer();
+}

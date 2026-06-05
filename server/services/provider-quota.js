@@ -1,8 +1,7 @@
 /**
  * Provider Quota — centralised provider availability state.
  *
- * Replaces the old per-pool rateLimitState / rate-limits.json with a
- * single source of truth for provider health, quota exhaustion, and
+ * Central source of truth for provider health, quota exhaustion, and
  * back-off scheduling.
  *
  * Durable file: {hubRoot}/providers/quotas.json

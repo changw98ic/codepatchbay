@@ -36,8 +36,8 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
 async function checkQueueAssignments(hubRoot, results) {
   const { listQueue } = await import("../../server/services/hub-queue.js");
-  const { AssignmentStore } = await import("../../server/orchestrator/assignment-store.js");
-  const { WorkerStore } = await import("../../server/orchestrator/worker-store.js");
+  const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
+  const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
 
   const assignmentStore = new AssignmentStore(hubRoot);
   const workerStore = new WorkerStore(hubRoot);
@@ -102,7 +102,7 @@ async function checkQueueAssignments(hubRoot, results) {
 }
 
 async function checkZombieWorkers(hubRoot, results) {
-  const { WorkerStore } = await import("../../server/orchestrator/worker-store.js");
+  const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
   const store = new WorkerStore(hubRoot);
   const workers = await store.listWorkers();
 
@@ -149,7 +149,7 @@ async function checkOrphanLeases(hubRoot, results) {
 }
 
 async function checkDeadPidAssignments(hubRoot, results) {
-  const { AssignmentStore } = await import("../../server/orchestrator/assignment-store.js");
+  const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
   const { readFile } = await import("node:fs/promises");
   const path = await import("node:path");
 

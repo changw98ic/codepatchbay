@@ -5,19 +5,20 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
 } from "./delete-guard.js";
-import { createAgentHome } from "../core/agents/isolation.js";
+import { createAgentHome } from "../../core/agents/isolation.js";
 import {
   headlessCodexConfigArgs,
   classifyUiToolRequest,
   mergeHeadlessDenyTools,
-} from "../core/acp/policy.js";
-import { buildChildEnv } from "../core/policy/child-env.js";
-import { buildAgentSandboxLaunch } from "../core/policy/agent-sandbox.js";
+} from "../../core/acp/policy.js";
+import { buildChildEnv } from "../../core/policy/child-env.js";
+import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;
@@ -514,7 +515,7 @@ function defaultAgentCommand(agent) {
 export async function resolveAgentCommand(agent, env = process.env) {
   // Try registry-based resolution first
   try {
-    const { loadRegistry, getDescriptor, hasAgent } = await import("../core/agents/registry.js");
+    const { loadRegistry, getDescriptor, hasAgent } = await import("../../core/agents/registry.js");
     await loadRegistry();
     if (hasAgent(agent)) {
       const descriptor = getDescriptor(agent);
@@ -1476,4 +1477,110 @@ export class AcpClient {
     if (!terminal) throw new Error(`unknown terminal: ${terminalId}`);
     return terminal;
   }
+}
+
+const usage = `Usage: acp-client-core.mjs --agent <name> [--cwd <path>]
+
+Reads a prompt from stdin and sends it to an ACP agent over stdio.
+
+Supported agents: codex, claude, or any registered agent from the local registry.
+
+Environment:
+  CPB_ACP_{PREFIX}_COMMAND   Override command for agent (e.g. CPB_ACP_CODEX_COMMAND)
+  CPB_ACP_{PREFIX}_ARGS      Override args for agent
+  CPB_ACP_TIMEOUT_MS         Idle timeout in milliseconds; activity resets it
+  CPB_ACP_PERMISSION         allow or reject permission requests
+  CPB_ACP_WRITE_ALLOW        Comma-separated glob patterns for allowed write paths
+  CPB_ACP_TERMINAL           allow or deny terminal creation
+  CPB_ACP_TOOL_POLICY_FILE   Path to JSON file mapping tool names to "allow"|"deny"
+  CPB_ACP_DENY_TOOLS         Comma-separated tool names to deny
+  CPB_ACP_ALLOW_TOOLS        Comma-separated tool names to explicitly allow
+  CPB_AGENT_SANDBOX          off|best-effort|required|strict for agent/terminal process sandboxing
+  CPB_ACP_RTK_ENABLED        1/0, wrap ACP terminal commands with rtk when available
+
+Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
+`;
+
+async function parseCli(argv) {
+  const result = { agent: "", cwd: process.cwd() };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--agent") {
+      result.agent = argv[++i] ?? "";
+    } else if (arg === "--cwd") {
+      result.cwd = argv[++i] ?? "";
+    } else if (arg === "--help" || arg === "-h") {
+      console.log(usage);
+      process.exit(0);
+    } else {
+      throw new Error(`unknown argument: ${arg}`);
+    }
+  }
+
+  if (result.agent !== "codex" && result.agent !== "claude") {
+    try {
+      const { loadRegistry, hasAgent } = await import("../../core/agents/registry.js");
+      await loadRegistry();
+      if (!hasAgent(result.agent)) {
+        throw new Error(`unknown agent: ${result.agent}`);
+      }
+    } catch (err) {
+      if (err.message.startsWith("unknown agent:")) throw err;
+      throw new Error("--agent must be a registered agent name (registry unavailable, fallback: codex or claude)");
+    }
+  }
+
+  result.cwd = path.resolve(result.cwd || process.cwd());
+  return result;
+}
+
+async function readStdin() {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) input += chunk;
+  return input;
+}
+
+export async function main() {
+  const options = await parseCli(process.argv.slice(2));
+  const prompt = await readStdin();
+  const writeAllowPaths = resolveWriteAllowPaths(options.cwd, process.env);
+  const terminalPolicy = process.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow";
+  const toolPolicy = await parseToolPolicy(process.env);
+  const client = new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy });
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const code = signal === "SIGINT" ? 130 : 143;
+    client.close().finally(() => process.exit(code));
+  };
+  const onSigint = () => shutdown("SIGINT");
+  const onSigterm = () => shutdown("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  try {
+    await client.run();
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  }
+}
+
+function isDirectRun(metaUrl, argvPath) {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(argvPath);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun(import.meta.url, process.argv[1])) {
+  await main().catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  });
 }

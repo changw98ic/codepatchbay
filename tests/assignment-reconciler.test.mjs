@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 
-import { AssignmentStore } from "../server/orchestrator/assignment-store.js";
-import { WorkerStore } from "../server/orchestrator/worker-store.js";
+import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
+import { WorkerStore } from "../shared/orchestrator/worker-store.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { Reconciler } from "../server/orchestrator/reconciler.js";
 import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";

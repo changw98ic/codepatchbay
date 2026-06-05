@@ -62,7 +62,7 @@ responses:
 ```bash
 CPB_ACP_FAKE_ACP_COMMAND=node \
 CPB_ACP_FAKE_ACP_ARGS='["/path/to/bridges/test-acp-agent.mjs","--response","hello"]' \
-node bridges/acp-client.mjs --agent fake-acp --cwd "$PWD"
+node server/services/acp-client-core.mjs --agent fake-acp --cwd "$PWD"
 ```
 
 For full-chain tests, pass a scenario file:

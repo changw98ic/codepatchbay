@@ -1,7 +1,7 @@
 # CPB 多 Agent 编排增强 Roadmap
 
-> **旧执行内核注释（2026-06-02）：** 本文中将 `bridges/supervisor-loop.mjs`
-> 列为可用资产的部分已经过期；该旧 supervisor 执行链已删除。本文仅作历史路线参考；
+> **旧执行内核注释（2026-06-02）：** 本文早期将已删除的旧 supervisor 执行链
+> 列为可用资产；该描述已经过期。本文仅作历史路线参考；
 > 当前执行入口是 `cpb hub-orch start`，执行内核是 Hub queue worker 调用
 > `runJob` / `runJobWithServices`。
 
@@ -20,8 +20,8 @@ CPB 已有但未充分利用的资产：
 | Agent 路由 | `core/agents/routing.js` | 基础可用，规则驱动，缺成本/复杂度感知 |
 | 上下文分层 | `server/services/phase-context.js` + knowledge-* | 存在但无预算统计 |
 | 可观测性 | `server/services/observability.js` + `observer.js` + `performance-tracker.js` | 有框架，缺 UI 暴露和 job timeline |
-| ACP 持久进程池 | `bridges/acp-pool.mjs` + `runtime/acp-client.mjs` | 成熟，含 reuse/回收/429 处理 |
-| Supervisor | `bridges/supervisor-loop.mjs` | 可用，支持 DAG recovery |
+| ACP 持久进程池 | `server/services/acp-pool.js` + `server/services/acp-client-core.mjs` | 成熟，含 reuse/回收/429 处理 |
+| Supervisor | `server/orchestrator/hub-orchestrator.js` + `server/orchestrator/worker-supervisor.js` | 当前执行内核，支持队列调度、worker 生命周期和恢复 |
 | 控制面 Web UI | `web/` (React 19 + Vite) | 存在，缺 timeline/route trace/memory 面板 |
 
 **核心判断：CPB 的基础设施比研究报告描述的更成熟。真正缺的不是"更多 agent"，而是三层东西：可观测性 → 智能路由 → 决策记忆。**
@@ -34,7 +34,7 @@ CPB 已有但未充分利用的资产：
 
 ### 0.1 tool-loop-detector
 - **文件**: 新增 `bridges/tool-loop-detector.mjs`
-- **改动**: `bridges/acp-client.mjs` 注入可选 detector
+- **改动**: `server/services/acp-client-core.mjs` 注入可选 detector
 - **行为**: 默认关闭，开启后只记录不拦截，连续 3 次相同指纹 (tool+args+cwd) 才告警
 - **测试**: 单元测试 + ACP 客户端集成测试
 - **状态**: 已有设计方案 (`docs/project-shortcomings-plan-plain.md`)，直接执行
@@ -184,7 +184,7 @@ CPB 已有但未充分利用的资产：
 - **回滚**: 巡检失败不改代码，只写事件
 
 ### 4.3 进程恢复增强
-- **改动**: `bridges/supervisor-loop.mjs` 增加 stale job 恢复后自动重入队列
+- **改动**: `server/orchestrator/reconciler.js` / `server/orchestrator/scheduler.js` 增加 stale job 恢复后自动重入队列
 - **测试**: 模拟进程 kill → 恢复 → 任务续跑
 
 **验收**: 定时任务可配置且进程重启后可恢复；空闲巡检受预算控制；不重复执行已完成任务。

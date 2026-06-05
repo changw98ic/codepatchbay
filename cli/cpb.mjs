@@ -82,9 +82,9 @@ function usage() {
 async function checkDeps() {
   const missing = [];
   try {
-    await access(path.join(CPB_EXECUTOR_ROOT, "bridges", "acp-client.mjs"), constants.X_OK);
+    await access(path.join(CPB_EXECUTOR_ROOT, "server", "services", "acp-client-core.mjs"), constants.R_OK);
   } catch {
-    missing.push("acp-client.mjs (run: chmod +x bridges/acp-client.mjs)");
+    missing.push("server/services/acp-client-core.mjs");
   }
   if (missing.length > 0) {
     console.log(`${YELLOW}Missing:${NC}`);

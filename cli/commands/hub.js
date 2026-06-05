@@ -9,7 +9,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   if (sub === "status") {
     const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
-    const { WorkerStore, summarizeWorkers } = await import("../../server/orchestrator/worker-store.js");
+    const { WorkerStore, summarizeWorkers } = await import("../../shared/orchestrator/worker-store.js");
     const { queueStatus } = await import("../../server/services/hub-queue.js");
     const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
     const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
@@ -84,13 +84,13 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
     const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
     const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
-    const status = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
+    const status = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
     if (json) {
       console.log(JSON.stringify(status, null, 2));
     } else {
       console.log("ACP pools:");
       for (const [agent, info] of Object.entries(status.pools || {})) {
-        const limit = status.rateLimits?.[agent];
+        const limit = status.providerQuotas?.[agent];
         const backoff = limit?.untilTs ? ` backoff:${limit.untilTs}` : "";
         console.log(`  ${agent}\tmode:${info.mode} limit:${info.limit} active:${info.active} queued:${info.queued}${backoff}`);
       }

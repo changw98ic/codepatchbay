@@ -5,28 +5,28 @@
  * Watches inbox directory for assignment files, executes via Engine.runJob(),
  * writes results back to assignment directory. Does NOT poll queue or claim entries.
  * Can run independently of Hub parent process (file-based communication).
+ *
+ * Modularized:
+ *   - worktree-manager.js  : worktree creation, isolation, cleanup
+ *   - assignment-finalizer.js : PR/review bundle finalization + result persistence
  */
 
-import { readFile, mkdir, writeFile, readdir, unlink, rename, rm, realpath } from "node:fs/promises";
+import { readFile, mkdir, writeFile, readdir, unlink, rename, rm } from "node:fs/promises";
 import { execFile as _execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import chokidar from "chokidar";
-import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.js";
-import { createWorktree } from "../git/worktree.js";
-import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
-import { resolveGithubTransport } from "../../server/services/github-api.js";
-import { createLogger } from "../../server/services/logger.js";
-import { releaseManagedAcpWorktree, stopManagedAcpPool } from "../../server/services/acp-pool.js";
+import { poolExhaustedJob, releaseManagedAcpWorktree, stopManagedAcpPool } from "../../bridges/runtime-services.js";
+import { createLogger } from "../../shared/logger.js";
+import { writeJsonAtomic, writeJsonOnce } from "../../shared/fs-utils.js";
+import { createIsolatedWorktreeWithRetry } from "./worktree-manager.js";
+import { finalizeAndWriteSuccessfulResult } from "./assignment-finalizer.js";
 
 const execFileAsync = promisify(_execFile);
 
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
-const WORKTREE_SLUG = "pipeline";
-const WORKTREE_CREATE_MAX_ATTEMPTS = 3;
-const WORKTREE_CREATE_RETRY_DELAY_MS = 500;
 
 function parseArgs(argv) {
   const opts = {};
@@ -39,229 +39,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-export async function maybeFinalizeSuccessfulAssignment({
-  cpbRoot,
-  hubRoot,
-  assignment,
-  attemptNum,
-  jobId,
-  result,
-  worktreeInfo,
-  log = null,
-  resolveTransport = resolveGithubTransport,
-  finalizeQueueEntry = finalizeSuccessfulQueueEntry,
-} = {}) {
-  const metadata = assignment?.metadata || {};
-  const autoFinalize = Boolean(metadata.autoFinalize && assignment?.sourcePath);
-  if (!autoFinalize || result?.status !== "completed" || !worktreeInfo) return null;
-
-  try {
-    const transport = await resolveTransport(hubRoot);
-    const effectiveJobId = jobId || result?.jobId || `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
-    const entry = {
-      id: assignment.entryId,
-      projectId: assignment.projectId,
-      description: assignment.task,
-      metadata,
-    };
-    const job = {
-      status: "completed",
-      worktree: worktreeInfo.path,
-      jobId: effectiveJobId,
-      project: assignment.projectId,
-      sourceContext: assignment.sourceContext || {},
-      worktreeBranch: worktreeInfo.branch,
-      task: assignment.task,
-      planMode: assignment.planMode,
-    };
-
-    const finalizeResult = await finalizeQueueEntry({
-      cpbRoot,
-      hubRoot,
-      project: assignment.projectId,
-      entry,
-      job,
-      sourcePath: assignment.sourcePath,
-      mode: "pr",
-      issueCloser: transport?.closeIssue || null,
-      createPullRequest: transport?.createPullRequest || null,
-      pushToken: transport?.getToken ? await transport.getToken().catch(() => null) : null,
-      transportMode: transport?.mode || null,
-    });
-
-    if (finalizeResult.ok) {
-      log?.info?.(`finalize: ${finalizeResult.status} pr=${finalizeResult.prUrl || "n/a"}`);
-    } else {
-      log?.warn?.(`finalize: ${finalizeResult.status} code=${finalizeResult.code || "unknown"}`);
-    }
-
-    return finalizeResult;
-  } catch (err) {
-    log?.warn?.(`finalize failed: ${err.message}`);
-    return null;
-  }
-}
-
-function childPathOf(parent, candidate) {
-  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
-  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-async function canonicalPath(candidate) {
-  try {
-    return await realpath(candidate);
-  } catch {
-    return path.resolve(candidate);
-  }
-}
-
-async function assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo }) {
-  if (!worktreeInfo?.path) {
-    throw new Error("worktree creation returned no path");
-  }
-
-  const sourceReal = await canonicalPath(sourcePath);
-  const worktreeReal = await canonicalPath(worktreeInfo.path);
-  if (sourceReal === worktreeReal) {
-    throw new Error("worktree path resolves to the source checkout");
-  }
-
-  if (!childPathOf(worktreesRoot, worktreeInfo.path)) {
-    throw new Error(`worktree path outside managed worktrees root: ${worktreeInfo.path}`);
-  }
-}
-
-async function cleanupFailedWorktreeCreate({
-  sourcePath,
-  worktreePath,
-  branch,
-  runGit = execFileAsync,
-  removePath = rm,
-  log = null,
-}) {
-  const gitOpts = { cwd: sourcePath, maxBuffer: 10 * 1024 * 1024 };
-  try {
-    await runGit("git", ["worktree", "remove", "--force", worktreePath], gitOpts);
-  } catch (err) {
-    log?.debug?.(`worktree retry cleanup remove skipped: ${err.message}`);
-  }
-  try {
-    await removePath(worktreePath, { recursive: true, force: true });
-  } catch (err) {
-    log?.debug?.(`worktree retry cleanup rm skipped: ${err.message}`);
-  }
-  try {
-    await runGit("git", ["branch", "-D", branch], gitOpts);
-  } catch (err) {
-    log?.debug?.(`worktree retry cleanup branch skipped: ${err.message}`);
-  }
-  try {
-    await runGit("git", ["worktree", "prune"], gitOpts);
-  } catch (err) {
-    log?.debug?.(`worktree retry cleanup prune skipped: ${err.message}`);
-  }
-}
-
-function delay(ms) {
-  if (!ms) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export async function createIsolatedWorktreeWithRetry({
-  hubRoot,
-  sourcePath,
-  entryId,
-  slug = WORKTREE_SLUG,
-  create = createWorktree,
-  runGit = execFileAsync,
-  removePath = rm,
-  maxAttempts = WORKTREE_CREATE_MAX_ATTEMPTS,
-  retryDelayMs = WORKTREE_CREATE_RETRY_DELAY_MS,
-  log = null,
-} = {}) {
-  if (!hubRoot) throw new Error("hubRoot is required for worktree isolation");
-  if (!sourcePath) throw new Error("sourcePath is required for worktree isolation");
-  if (!entryId) throw new Error("entryId is required for worktree isolation");
-
-  const worktreesRoot = path.join(hubRoot, "worktrees");
-  const worktreeJobId = `job-${entryId}`;
-  const branch = `cpb/${worktreeJobId}-${slug}`;
-  const worktreePath = path.resolve(worktreesRoot, `${worktreeJobId}-${slug}`);
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const info = await create({
-        project: sourcePath,
-        jobId: worktreeJobId,
-        slug,
-        worktreesRoot,
-      });
-      await assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo: info });
-      if (attempt > 1) {
-        log?.info?.(`worktree created after retry ${attempt}/${maxAttempts}: ${info.branch} at ${info.path}`);
-      }
-      return info;
-    } catch (err) {
-      lastError = err;
-      log?.warn?.(`worktree create attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
-      await cleanupFailedWorktreeCreate({
-        sourcePath,
-        worktreePath,
-        branch,
-        runGit,
-        removePath,
-        log,
-      });
-      if (attempt < maxAttempts) await delay(retryDelayMs);
-    }
-  }
-
-  const failure = new Error(
-    `worktree creation failed after ${maxAttempts} attempts; refusing to run against source checkout: ${lastError?.message || "unknown error"}`,
-  );
-  failure.code = "WORKTREE_UNAVAILABLE";
-  throw failure;
-}
-
-export async function finalizeAndWriteSuccessfulResult({
-  cpbRoot,
-  hubRoot,
-  assignment,
-  attemptDir,
-  assignmentId,
-  attemptNum,
-  jobId,
-  result,
-  worktreeInfo,
-  log = null,
-  writeResult = writeJsonOnce,
-} = {}) {
-  const finalizeResult = await maybeFinalizeSuccessfulAssignment({
-    cpbRoot,
-    hubRoot,
-    assignment,
-    attemptNum,
-    jobId,
-    result,
-    worktreeInfo,
-    log,
-  });
-
-  await writeResult(path.join(attemptDir, "result.json"), {
-    assignmentId,
-    attempt: attemptNum,
-    attemptToken: assignment.attemptToken,
-    status: result.status,
-    jobResult: result,
-    finalizeResult: finalizeResult || null,
-    writtenAt: new Date().toISOString(),
-  });
-
-  return finalizeResult;
-}
-
-async function main() {
+export async function main() {
   const opts = parseArgs(process.argv);
   if (!opts.workerId || !opts.hubRoot || !opts.cpbRoot) {
     process.stderr.write("Usage: managed-worker.js --worker-id <id> --hub-root <path> --cpb-root <path> [--once]\n");
@@ -439,7 +217,6 @@ async function main() {
           hubRoot,
           sourcePath: assignment.sourcePath,
           entryId: assignment.entryId,
-          slug: WORKTREE_SLUG,
           log: jobLog,
         });
         jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
@@ -531,7 +308,6 @@ async function main() {
         jobLog.error(`job failed (${failureKind}): ${err.message}`);
         if (isPoolExhausted) {
           try {
-            const { poolExhaustedJob } = await import("../../server/services/job-store.js");
             await poolExhaustedJob(cpbRoot, assignment.projectId, jobId, {
               reason: err.message,
               providerKey: err.providerKey,

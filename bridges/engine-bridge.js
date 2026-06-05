@@ -1,60 +1,19 @@
 /**
- * Engine Bridge — thin CLI wrapper around core/engine/run-job.js.
+ * Engine Bridge — runtime-facing engine boundary.
  *
- * Wires server infrastructure (job-store, event-store, acp-pool,
- * hub-registry) into the pure core engine via dependency injection.
+ * Runtime code imports this bridge instead of importing server services.
+ * Server-owned dependency wiring lives in server/services/engine-runner.js.
  */
 
-import { runJob } from "../core/engine/run-job.js";
-import { createJob, startPhase, completePhase, completeJob, failJob } from "../server/services/job-store.js";
-import { appendEvent } from "../server/services/event-store.js";
-import { getManagedAcpPool } from "../server/services/acp-pool.js";
-import { resolveHubRoot, getProject } from "../server/services/hub-registry.js";
+import {
+  buildServices as buildServerServices,
+  runJobWithServices as runJobWithServerServices,
+} from "../server/services/engine-runner.js";
 
-/**
- * Build the services object for DI injection.
- */
-export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {}) {
-  return {
-    createJob,
-    startPhase,
-    completePhase,
-    completeJob,
-    failJob,
-    appendEvent,
-    getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
-  };
+export function buildServices(cpbRoot, opts = {}) {
+  return buildServerServices(cpbRoot, opts);
 }
 
-/**
- * Run a single job with service injection (no retry loop).
- * For callers (e.g. managed-worker) that handle retries externally.
- */
 export async function runJobWithServices(opts) {
-  const { cpbRoot, project, sourcePath: explicitSourcePath, hubRoot: explicitHubRoot } = opts;
-  const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot } = await resolveSourcePath(cpbRoot, project);
-  const hubRoot = explicitHubRoot || resolvedHubRoot;
-  return runJob({
-    ...opts,
-    hubRoot,
-    sourcePath: explicitSourcePath || resolvedSourcePath,
-    routing: opts.routing || null,
-    agentAvailability: opts.agentAvailability || null,
-    agentHealth: opts.agentHealth || null,
-    teamPolicy: opts.teamPolicy || null,
-    ...buildServices(cpbRoot, { hubRoot, env: opts.env || process.env }),
-  });
-}
-
-/**
- * Resolve sourcePath from hub registry.
- */
-async function resolveSourcePath(cpbRoot, project) {
-  try {
-    const hubRoot = resolveHubRoot(cpbRoot);
-    const registered = await getProject(hubRoot, project);
-    return { sourcePath: registered?.sourcePath || null, hubRoot };
-  } catch {
-    return { sourcePath: null, hubRoot: null };
-  }
+  return runJobWithServerServices(opts);
 }

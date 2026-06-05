@@ -425,7 +425,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
   // 3b. Prune exited workers from registry
   try {
-    const { WorkerStore } = await import("../orchestrator/worker-store.js");
+    const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
     const store = new WorkerStore(hubRoot);
     await store.init();
     const pruned = dryRun ? 0 : await store.pruneDead();
