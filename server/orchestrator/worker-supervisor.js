@@ -73,8 +73,10 @@ export class WorkerSupervisor {
 
   async stopWorker(workerId, reason) {
     const child = this._children.get(workerId);
-    if (child?.pid) {
-      this._killProcessGroup(child.pid);
+    const worker = await this.workers.getWorker(workerId);
+    const pid = child?.pid || worker?.pid;
+    if (pid) {
+      this._killProcessGroup(pid);
     }
     await this.workers.updateWorker(workerId, {
       status: "draining",

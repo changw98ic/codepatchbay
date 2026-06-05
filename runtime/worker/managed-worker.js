@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import chokidar from "chokidar";
-import { writeJsonOnce } from "../../server/services/fs-utils.js";
+import { writeJsonAtomic, writeJsonOnce } from "../../server/services/fs-utils.js";
 import { createWorktree } from "../git/worktree.js";
 import { finalizeSuccessfulQueueEntry } from "../../server/services/auto-finalizer.js";
 import { resolveGithubTransport } from "../../server/services/github-api.js";
@@ -382,34 +382,47 @@ async function main() {
         pid: process.pid,
       }, null, 2) + "\n", "utf8");
 
-      // Write initial heartbeat for this assignment
-      await writeFile(path.join(attemptDir, "heartbeat.json"), JSON.stringify({
+      const heartbeatPath = path.join(attemptDir, "heartbeat.json");
+      let heartbeatState = {
         workerId,
         assignmentId,
         attempt: attemptNum,
         phase: "starting",
+        activePhase: null,
+        activeJobId: null,
         status: "running",
         executionBoundary: "worktree",
         sourcePath: assignment.sourcePath,
         pid: process.pid,
+        progressKind: "accepted",
+        lastProgressType: "accepted",
+        progressUpdatedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      }, null, 2) + "\n", "utf8");
+      };
+
+      async function writeAssignmentHeartbeat(patch = {}, { progress = false } = {}) {
+        const now = new Date().toISOString();
+        heartbeatState = {
+          ...heartbeatState,
+          ...patch,
+          updatedAt: now,
+        };
+        if (progress) {
+          heartbeatState.progressUpdatedAt = patch.progressUpdatedAt || now;
+          heartbeatState.progressKind = patch.progressKind || patch.lastProgressType || heartbeatState.progressKind;
+          heartbeatState.lastProgressType = patch.lastProgressType || patch.progressKind || heartbeatState.lastProgressType;
+        }
+        await writeJsonAtomic(heartbeatPath, heartbeatState);
+      }
+
+      await writeAssignmentHeartbeat({}, { progress: true });
 
       // Start assignment heartbeat timer — refreshes heartbeat.json during execution
-      // so the Reconciler does not mark long-running tasks as heartbeat-lost
+      // without refreshing progressUpdatedAt. Reconciler distinguishes healthy
+      // long-running tasks from no-progress stalls using the progress timestamp.
       const assignmentHeartbeat = setInterval(async () => {
         try {
-          await writeFile(path.join(attemptDir, "heartbeat.json"), JSON.stringify({
-            workerId,
-            assignmentId,
-            attempt: attemptNum,
-            phase: "running",
-            status: "running",
-            executionBoundary: "worktree",
-            sourcePath: assignment.sourcePath,
-            pid: process.pid,
-            updatedAt: new Date().toISOString(),
-          }, null, 2) + "\n", "utf8");
+          await writeAssignmentHeartbeat({ status: "running" });
         } catch { /* ignore */ }
       }, HEARTBEAT_MS);
 
@@ -430,6 +443,14 @@ async function main() {
           log: jobLog,
         });
         jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
+        await writeAssignmentHeartbeat({
+          phase: "worktree",
+          activePhase: null,
+          worktreePath: worktreeInfo.path,
+          worktreeBranch: worktreeInfo.branch,
+          progressKind: "worktree_created",
+          lastProgressType: "worktree_created",
+        }, { progress: true });
         await writeFile(path.join(attemptDir, "worktree.json"), JSON.stringify({
           assignmentId,
           attempt: attemptNum,
@@ -458,6 +479,20 @@ async function main() {
           agentAvailability: metadata.agentAvailability || null,
           agentHealth: metadata.agentHealth || null,
           teamPolicy: metadata.teamPolicy || null,
+          onProgress: async (event = {}) => {
+            const eventType = event.type || "progress";
+            const activePhase = eventType === "phase_result" || eventType === "job_completed" || eventType === "job_failed"
+              ? null
+              : (event.phase || heartbeatState.activePhase || null);
+            await writeAssignmentHeartbeat({
+              phase: event.phase || activePhase || "running",
+              activePhase,
+              activeJobId: event.jobId || jobId,
+              progressKind: eventType,
+              lastProgressType: eventType,
+              progressUpdatedAt: event.ts || new Date().toISOString(),
+            }, { progress: true });
+          },
         });
 
         clearInterval(assignmentHeartbeat);

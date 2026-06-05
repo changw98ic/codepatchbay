@@ -107,6 +107,7 @@ export class HubOrchestrator {
     this.reconciler = new Reconciler(hubRoot, {
       assignmentStore: this.assignmentStore,
       workerStore: this.workerStore,
+      workerSupervisor: this.workerSupervisor,
       leaderLock: this.leaderLock,
       failureRouter,
       hubRoot,

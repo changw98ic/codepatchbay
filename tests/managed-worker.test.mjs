@@ -345,6 +345,9 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(heartbeat.workerId, workerId);
   assert.equal(heartbeat.status, "running");
   assert.equal(heartbeat.executionBoundary, "worktree");
+  assert.equal(heartbeat.activeJobId, "job-managed-success");
+  assert.ok(heartbeat.progressUpdatedAt);
+  assert.ok(heartbeat.lastProgressType);
 
   const worktree = await readJson(path.join(attemptDir, "worktree.json"));
   assert.equal(worktree.sourcePath, sourcePath);

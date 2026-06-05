@@ -60,6 +60,15 @@ function ts() {
   return new Date().toISOString();
 }
 
+async function reportProgress(ctx, event) {
+  if (typeof ctx.onProgress !== "function") return;
+  try {
+    await ctx.onProgress({ ts: ts(), ...event });
+  } catch {
+    // Progress reporting must not change job execution outcome.
+  }
+}
+
 function extractArtifactId(artifact) {
   if (!artifact?.name) return null;
   const parts = artifact.name.split("-");
@@ -163,6 +172,7 @@ export async function runJob(ctx) {
     planMode,
     ts: ts(),
   });
+  await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
   // 2. Resolve phases
   const phases = resolvePhases(workflow, planMode);
@@ -214,6 +224,14 @@ export async function runJob(ctx) {
         ts: ts(),
       });
     }
+    await reportProgress(ctx, {
+      type: "phase_started",
+      jobId,
+      project,
+      phase,
+      role,
+      agent: phaseRoutingDecision?.selectedAgent || null,
+    });
 
     if (phaseRoutingDecision?.role) {
       await appendEvent(cpbRoot, project, jobId, {
@@ -255,6 +273,16 @@ export async function runJob(ctx) {
           to: preflight.selectedProviderKey,
           reason: preflight.reason,
           ts: ts(),
+        });
+        await reportProgress(ctx, {
+          type: "provider_handoff",
+          jobId,
+          project,
+          phase,
+          role,
+          from: preflight.from,
+          to: preflight.selectedProviderKey,
+          reason: preflight.reason,
         });
       }
     }
@@ -373,6 +401,14 @@ export async function runJob(ctx) {
           reason: "all fallback providers unavailable",
           ts: ts(),
         });
+        await reportProgress(ctx, {
+          type: "provider_quota_blocked",
+          jobId,
+          project,
+          phase,
+          role,
+          reason: "all fallback providers unavailable",
+        });
         break;
       }
 
@@ -394,6 +430,16 @@ export async function runJob(ctx) {
         midRun: true,
         attempt: handoffCount,
         ts: ts(),
+      });
+      await reportProgress(ctx, {
+        type: "provider_handoff",
+        jobId,
+        project,
+        phase,
+        role,
+        from: quotaCause.providerKey,
+        to: fallback.selectedProviderKey,
+        reason: result.failure.reason,
       });
 
       // Generate handoff context for continuation prompt (execute phase only)
@@ -465,6 +511,16 @@ export async function runJob(ctx) {
             reason: result.failure?.reason,
             ts: ts(),
           });
+          await reportProgress(ctx, {
+            type: "phase_retry",
+            jobId,
+            project,
+            phase,
+            attempt: phaseRetry,
+            maxAttempts: PHASE_RETRY_MAX,
+            failureKind: result.failure?.kind,
+            reason: result.failure?.reason,
+          });
           await new Promise((r) => setTimeout(r, PHASE_RETRY_BASE_DELAY_MS * phaseRetry));
           result = await runPhase({
             phase,
@@ -512,6 +568,16 @@ export async function runJob(ctx) {
           failureKind: correction.failureKind,
           reason: correction.failureReason,
           ts: ts(),
+        });
+        await reportProgress(ctx, {
+          type: "phase_correction",
+          jobId,
+          project,
+          phase,
+          attempt: correctionAttempt,
+          maxAttempts: PHASE_CORRECTION_MAX,
+          failureKind: correction.failureKind,
+          reason: correction.failureReason,
         });
         result = await runPhase({
           phase,
@@ -574,6 +640,18 @@ export async function runJob(ctx) {
         ? { kind: result.failure.kind, reason: result.failure.reason }
         : null,
       ts: ts(),
+    });
+    await reportProgress(ctx, {
+      type: "phase_result",
+      jobId,
+      project,
+      phase,
+      agent: agentName,
+      status: result.status,
+      artifact: result.artifact?.name || null,
+      failure: result.failure
+        ? { kind: result.failure.kind, reason: result.failure.reason }
+        : null,
     });
 
     // Enqueue phase-level provider usage (via delegate client, best-effort)
@@ -649,6 +727,14 @@ export async function runJob(ctx) {
         phase,
         cause: fail,
       });
+      await reportProgress(ctx, {
+        type: "job_failed",
+        jobId,
+        project,
+        phase,
+        failureKind: fail.kind || null,
+        reason: fail.reason || `${phase} phase failed`,
+      });
 
       return {
         status: "failed",
@@ -667,6 +753,7 @@ export async function runJob(ctx) {
 
   // 5. Complete job
   await completeJob(cpbRoot, project, jobId);
+  await reportProgress(ctx, { type: "job_completed", jobId, project });
 
   return {
     status: "completed",

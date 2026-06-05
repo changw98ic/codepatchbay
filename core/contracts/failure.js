@@ -10,6 +10,7 @@ export const FailureKind = Object.freeze({
   RUNTIME_INTERRUPTED: "runtime_interrupted",
   WORKER_CRASHED: "worker_crashed",
   WORKER_HEARTBEAT_LOST: "worker_heartbeat_lost",
+  ASSIGNMENT_PROGRESS_STALE: "assignment_progress_stale",
   TIMEOUT: "timeout",
   INDEX_UNAVAILABLE: "index_unavailable",
   VERIFICATION_FAILED: "verification_failed",

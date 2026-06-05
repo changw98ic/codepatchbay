@@ -6,6 +6,7 @@ const MAX_RETRIES = {
   agent_contract_invalid: 1,
   worker_crashed: 2,
   worker_heartbeat_lost: 2,
+  assignment_progress_stale: 2,
   agent_rate_limited: 0,
   verification_failed: 2,
 };
@@ -82,6 +83,7 @@ export class FailureRouter {
       case FailureKind.RUNTIME_INTERRUPTED:
       case FailureKind.WORKER_CRASHED:
       case FailureKind.WORKER_HEARTBEAT_LOST:
+      case FailureKind.ASSIGNMENT_PROGRESS_STALE:
         return {
           action: "restart_worker_and_retry",
           reason: `${failure.kind}: ${failure.reason}`,
