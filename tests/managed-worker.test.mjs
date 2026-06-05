@@ -11,7 +11,7 @@ import { readJson, tempRoot, writeJson } from "./helpers.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const workerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
-const testAgentScript = path.join(repoRoot, "bridges", "test-acp-agent.mjs");
+const testAgentScript = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 
 function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;

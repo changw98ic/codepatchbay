@@ -8,10 +8,10 @@
 //   4. Cross-project state stays separated
 //
 // Usage:
-//   node bridges/provider-soak.mjs --dry-run --max-rounds 10
-//   node bridges/provider-soak.mjs --live --max-duration-ms 28800000  # 8h overnight
-//   node bridges/provider-soak.mjs --json                      # machine-readable output
-//   node bridges/provider-soak.mjs --status-interval-ms 60000  # periodic status to stderr
+//   node scripts/provider-soak.mjs --dry-run --max-rounds 10
+//   node scripts/provider-soak.mjs --live --max-duration-ms 28800000  # 8h overnight
+//   node scripts/provider-soak.mjs --json                      # machine-readable output
+//   node scripts/provider-soak.mjs --status-interval-ms 60000  # periodic status to stderr
 //
 // Modes:
 //   --dry-run (default): uses injected fake runner, no real ACP provider calls
@@ -335,7 +335,7 @@ export function formatReport(result) {
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
-    console.log(`Usage: node bridges/provider-soak.mjs [options]
+    console.log(`Usage: node scripts/provider-soak.mjs [options]
 
 Operational soak harness for multi-project scan validation.
 
@@ -357,7 +357,7 @@ Options:
   --help                   Show this help
 
 Real overnight soak example:
-  node bridges/provider-soak.mjs --live \\
+  node scripts/provider-soak.mjs --live \\
     --max-duration-ms 28800000 \\
     --status-interval-ms 300000 \\
     --max-process-count 5

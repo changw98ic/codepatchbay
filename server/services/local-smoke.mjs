@@ -170,7 +170,7 @@ export async function runFakeAcpSmoke({
   const sourcePath = path.join(tmpRoot, "source-project");
   const scenarioFile = await writeTestAgentScenario(tmpRoot);
   const transcriptFile = path.join(tmpRoot, "test-acp-transcript.jsonl");
-  const testAgentPath = path.join(root, "bridges", "test-acp-agent.mjs");
+  const testAgentPath = path.join(root, "server", "services", "test-acp-agent.mjs");
   const testAgentArgs = JSON.stringify([testAgentPath, "--scenario-file", scenarioFile, "--transcript-file", transcriptFile]);
 
   try {

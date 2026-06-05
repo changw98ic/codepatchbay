@@ -61,14 +61,14 @@ responses:
 
 ```bash
 CPB_ACP_FAKE_ACP_COMMAND=node \
-CPB_ACP_FAKE_ACP_ARGS='["/path/to/bridges/test-acp-agent.mjs","--response","hello"]' \
+CPB_ACP_FAKE_ACP_ARGS='["/path/to/server/services/test-acp-agent.mjs","--response","hello"]' \
 node server/services/acp-client-core.mjs --agent fake-acp --cwd "$PWD"
 ```
 
 For full-chain tests, pass a scenario file:
 
 ```bash
-CPB_ACP_FAKE_ACP_ARGS='["/path/to/bridges/test-acp-agent.mjs","--scenario-file","/tmp/scenario.json"]'
+CPB_ACP_FAKE_ACP_ARGS='["/path/to/server/services/test-acp-agent.mjs","--scenario-file","/tmp/scenario.json"]'
 ```
 
 Scenario entries match prompts with `match` or `matchRegex` and can return

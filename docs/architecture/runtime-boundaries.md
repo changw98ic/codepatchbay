@@ -4,14 +4,14 @@
 
 - `core/`：纯策略、解析、状态机与领域契约。不得导入 `server/`、`bridges/`、`cli/` 或 `runtime/`。
 - `server/services/`：持久化状态、注册表、HTTP/Hub 编排服务、ACP 池与服务级运行时能力。
-- `bridges/`：跨层装配层，只保留真实装配逻辑，例如 engine 注入、runtime 服务注入、测试 ACP provider；不新增兼容 re-export。
+- `bridges/`：runtime-facing 跨层装配层，只保留 `engine-bridge.js` 与 `runtime-services.js` 这类明确边界入口；不放测试工具、运维 harness 或兼容 re-export。
 - `cli/`：命令路由和命令参数/输出适配。命令文件直接调用 canonical `server/services/` 或 `server/orchestrator/` 能力，不再经过已删除的 CLI bridge。
 - `runtime/`：长期 worker、multi-evolve 编排与运行时脚本。运行时文件使用 canonical `runtime/` 入口，不得导入 `server/`，也不得新增旧路径兼容入口。
 - `shared/`：无 HTTP / CLI / runtime 副作用的共享基础设施，例如文件工具、日志、worker store、assignment store。
 
 ## 允许方向
 
-- `bridges/` 可以导入 `server/`、`core/`、`runtime/`，只用于边界装配和明确入口。
+- `bridges/` 可以导入 `server/`、`core/`、`runtime/`，但只用于 runtime 边界装配和明确入口。
 - `server/` 可以导入 `core/`，不得导入 `runtime/` 实现模块；允许为 child process 启动拼接 canonical runtime 可执行入口。
 - `runtime/` 可以导入 `core/`、`shared/`、`bridges/engine-bridge.js`、`bridges/runtime-services.js`；不得直接导入 `server/`。
 - `cli/` 可以导入 `core/`、`server/services/` 与 `server/orchestrator/`；不得恢复已删除的 CLI bridge，也不得直接拼接 `bridges/` 或 `runtime/` 入口。
@@ -22,6 +22,7 @@
 - `tests/core-boundary.test.mjs`：禁止 `core/` 导入 `server/`、`runtime/`、`cli/`、`bridges/`。
 - `tests/server-boundary.test.mjs`：禁止 `server/` 导入 `runtime/` 实现。
 - `tests/runtime-boundary.test.mjs`：禁止 runtime 直接导入 `server/`，并禁止已删除的 runtime ACP / guard / variant 入口和兼容 re-export 壳回归。
+- `tests/runtime-boundary.test.mjs`：锁定 `bridges/` 精确只包含 runtime 边界适配器，防止工具脚本回流。
 - `tests/cli-boundary.test.mjs`：禁止 `cli/` 重新导入或动态拼接 `bridges/`、`runtime/`。
 
 ## 硬切原则
@@ -49,7 +50,7 @@
 
 - 新的纯逻辑放入 `core/`。
 - 新的持久化状态读写放入 `server/services/`。
-- 新的跨层装配放入 `bridges/`，不得新增兼容导出或薄转发入口。
+- 新的 runtime-facing 跨层装配才放入 `bridges/`，不得新增兼容导出或薄转发入口；测试 provider、验证 harness、研究合并脚本放入 `server/services/`。
 - 新的 CLI 参数解析和展示逻辑放入 `cli/commands/`，服务调用直接进入 canonical server 模块。
 - 新的长期 worker 或运行时脚本放入 `runtime/`，不通过 re-export 做旧路径兼容。
 - 新增 runtime 代码不得直接导入 server 服务；确需复用 server 协作者时，必须通过明确的跨层装配点注入，并同步补边界测试。

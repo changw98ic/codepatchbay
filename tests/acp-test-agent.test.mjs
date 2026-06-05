@@ -11,7 +11,7 @@ import { AcpClient, resolveAgentCommand } from "../server/services/acp-client-co
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.mjs");
-const testAgent = path.join(repoRoot, "bridges", "test-acp-agent.mjs");
+const testAgent = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 
 async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {
   return new Promise((resolve, reject) => {

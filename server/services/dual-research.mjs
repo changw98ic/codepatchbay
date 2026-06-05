@@ -209,7 +209,7 @@ export async function runResearch({ project, task, executorRoot, cpbRoot }) {
   await writeFile(claudeOut, claudeResult.stdout);
 
   // Merge results
-  const mergeScript = path.join(executorRoot, "bridges", "merge-research.mjs");
+  const mergeScript = path.join(executorRoot, "server", "services", "merge-research.mjs");
   await new Promise((resolve) => {
     const child = spawn(process.execPath, [
       mergeScript,

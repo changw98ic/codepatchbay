@@ -76,8 +76,6 @@
 - 新增：`server/services/acp-client-core.mjs`
 - 新增：`server/services/delete-guard.js`
 - 新增：`server/services/apply-variant.js`
-- 新增：`bridges/delete-guard.js`
-- 新增：`bridges/apply-variant.js`
 - 修改：`server/services/acp-pool.js`
 - 删除：runtime 旧 ACP / guard / variant 入口
 

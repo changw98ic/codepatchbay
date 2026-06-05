@@ -786,7 +786,7 @@ flowchart TD
 - `runtime/evolve/multi-evolve.js`
 - `cli/commands/research.js`
 - `server/services/dual-research.mjs`
-- `bridges/merge-research.mjs`
+- `server/services/merge-research.mjs`
 - `server/services/review-dispatch-runner.mjs`
 - `server/services/review-dispatch.js`
 - `server/services/review-session.js`
@@ -806,4 +806,4 @@ flowchart TD
 | 编排器 | `server/orchestrator/*` |
 | 运行时/ACP | `runtime/worker/managed-worker.js`, `runtime/evolve/multi-evolve.js`, `runtime/git/worktree.js`, `bridges/runtime-services.js`, `server/services/acp-pool.js`, `server/services/acp-client-core.mjs` |
 | 网页界面 | `web/src/App.tsx`, `web/src/pages/*`, `web/src/app/store/*`, `web/src/components/*` |
-| 安装/自动化 | `core/setup/*`, `profiles/*`, `skills/*`, `bridges/*`, `runtime/evolve/*`, `core/sdd/*` |
+| 安装/自动化 | `core/setup/*`, `profiles/*`, `skills/*`, `server/services/init-project.mjs`, `server/services/provider-soak.mjs`, `server/services/validate-scan-readiness.mjs`, `runtime/evolve/*`, `core/sdd/*` |

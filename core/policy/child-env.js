@@ -118,7 +118,7 @@ const ANTHROPIC_COMPATIBLE_CREDENTIALS = new Set([
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
   // Kimi / Ollama Cloud and Xiaomi / MiMo are applied as Claude-compatible
-  // provider variants by bridges/apply-variant.js.
+  // provider variants by server/services/apply-variant.js.
   "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL",
   "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL",
   "KIMI_BASE_URL", "MOONSHOT_BASE_URL",

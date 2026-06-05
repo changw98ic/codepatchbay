@@ -3,10 +3,10 @@
 // under simulated 429/backoff pressure.
 //
 // Usage:
-//   node bridges/validate-scan-readiness.mjs                # dry-run with temp dirs
-//   node bridges/validate-scan-readiness.mjs --live         # validate against real hub root
-//   node bridges/validate-scan-readiness.mjs --hub-root DIR # validate specific hub root
-//   node bridges/validate-scan-readiness.mjs --json         # machine-readable output
+//   node scripts/validate-scan-readiness.mjs                # dry-run with temp dirs
+//   node scripts/validate-scan-readiness.mjs --live         # validate against real hub root
+//   node scripts/validate-scan-readiness.mjs --hub-root DIR # validate specific hub root
+//   node scripts/validate-scan-readiness.mjs --json         # machine-readable output
 //
 // Checks:
 //   1. Queue integrity: loads/parses, valid state machine
@@ -16,14 +16,16 @@
 //   5. Multi-project scan under 429: backoff propagates across projects
 //   6. Process growth bound: pool tracks active requests, no leak after release
 
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { AcpPool, RateLimitError } from "../server/services/acp-pool.js";
+import { AcpPool } from "../server/services/acp-pool.js";
 import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub-queue.js";
 import { resolveHubRoot } from "../server/services/hub-registry.js";
+import { assertProviderAvailable, ProviderQuotaError } from "../server/services/provider-quota.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +54,47 @@ export function parseArgs(argv) {
 
 export function makeTempHub() {
   return mkdtemp(path.join(os.tmpdir(), "cpb-val-"));
+}
+
+async function withQuotaDelegate(hubRoot, fn) {
+  const delegateScript = path.join(__dirname, "..", "server", "services", "quota-delegate.js");
+  const child = spawn(process.execPath, [delegateScript, "--hub-root", hubRoot], {
+    env: { ...process.env, CPB_DELEGATE_POLL_MS: "10" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`quota delegate did not start\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, 3_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.includes("quota-delegate: started")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`quota delegate exited before start: ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    });
+  });
+
+  try {
+    return await fn();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("close", resolve));
+  }
 }
 
 async function seedQueue(hubRoot, entries) {
@@ -114,37 +157,42 @@ export async function checkQueueStatusSurfaces(hubRoot) {
 }
 
 export async function checkRateLimitBackoff(hubRoot) {
-  const pool = new AcpPool({
-    hubRoot,
-    limits: { codex: 1 },
-    backoffMs: 5_000,
-    runner: async () => { throw new Error("429 rate limit: retry after 5 seconds"); },
+  return withQuotaDelegate(hubRoot, async () => {
+    const pool = new AcpPool({
+      hubRoot,
+      limits: { codex: 1 },
+      backoffMs: 5_000,
+      runner: async () => { throw new Error("429 rate limit: retry after 5 seconds"); },
+    });
+    const providerKey = pool.providerKey("codex");
+
+    let firstQuotaError = null;
+    try {
+      await pool.execute("codex", "trigger-429");
+      return { pass: false, detail: "429 runner should have thrown" };
+    } catch (err) {
+      if (!(err instanceof ProviderQuotaError)) {
+        return { pass: false, detail: `expected ProviderQuotaError, got ${err.name}: ${err.message}` };
+      }
+      firstQuotaError = err;
+    }
+
+    try {
+      await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
+      return { pass: false, detail: "provider quota gate should reject during backoff" };
+    } catch (err) {
+      if (!(err instanceof ProviderQuotaError)) {
+        return { pass: false, detail: `quota gate rejection not ProviderQuotaError: ${err.name}` };
+      }
+      if (!err.nextEligibleAt || err.nextEligibleAt <= Date.now()) {
+        return { pass: false, detail: `nextEligibleAt not in future: ${err.nextEligibleAt}` };
+      }
+      return {
+        pass: true,
+        detail: `429 → delegate quota write, gate blocks until ${new Date(err.nextEligibleAt).toISOString()} (source=${firstQuotaError.source})`,
+      };
+    }
   });
-
-  try {
-    await pool.execute("codex", "trigger-429");
-    return { pass: false, detail: "429 runner should have thrown" };
-  } catch (err) {
-    if (!(err instanceof RateLimitError)) {
-      return { pass: false, detail: `expected RateLimitError, got ${err.name}: ${err.message}` };
-    }
-  }
-
-  try {
-    await pool.execute("codex", "should-reject");
-    return { pass: false, detail: "should have rejected during backoff" };
-  } catch (err) {
-    if (!(err instanceof RateLimitError)) {
-      return { pass: false, detail: `backoff rejection not RateLimitError: ${err.name}` };
-    }
-  }
-
-  const st = pool.status().pools.codex;
-  if (!st.rateLimitedUntil || st.rateLimitedUntil <= Date.now()) {
-    return { pass: false, detail: `rateLimitedUntil not in future: ${st.rateLimitedUntil}` };
-  }
-
-  return { pass: true, detail: `429 → RateLimitError, backoff until ${new Date(st.rateLimitedUntil).toISOString()}` };
 }
 
 export async function checkConcurrencyBounds(hubRoot) {
@@ -153,6 +201,7 @@ export async function checkConcurrencyBounds(hubRoot) {
   const pool = new AcpPool({
     hubRoot,
     limits: { codex: 2 },
+    providerConnectionLimit: 2,
     runner: async () => {
       currentActive++;
       maxActive = Math.max(maxActive, currentActive);
@@ -168,7 +217,7 @@ export async function checkConcurrencyBounds(hubRoot) {
   }
   const results = await Promise.all(promises);
 
-  if (results.some((r) => r !== "ok")) return { pass: false, detail: "some executions failed" };
+  if (results.some((r) => r.output !== "ok")) return { pass: false, detail: "some executions failed" };
   if (maxActive > 2) return { pass: false, detail: `maxActive=${maxActive} exceeded limit of 2` };
 
   const st = pool.status().pools.codex;
@@ -178,49 +227,60 @@ export async function checkConcurrencyBounds(hubRoot) {
 }
 
 export async function checkMultiProjectScanUnder429(hubRoot) {
-  let callCount = 0;
-  const rateLimitedProjects = new Set();
+  return withQuotaDelegate(hubRoot, async () => {
+    let callCount = 0;
+    const rateLimitedProjects = new Set();
 
-  const pool = new AcpPool({
-    hubRoot,
-    limits: { codex: 1 },
-    backoffMs: 30_000,
-    runner: async ({ prompt }) => {
-      callCount++;
-      if (prompt.includes("proj-1")) {
-        throw new Error("429 rate limit exceeded for proj-1");
+    const pool = new AcpPool({
+      hubRoot,
+      limits: { codex: 1 },
+      backoffMs: 30_000,
+      runner: async ({ prompt }) => {
+        callCount++;
+        if (prompt.includes("proj-1")) {
+          throw new Error("429 rate limit exceeded for proj-1");
+        }
+        return "[ISSUE] P2 normal finding";
+      },
+    });
+    const providerKey = pool.providerKey("codex");
+
+    const projects = [
+      { id: "proj-0", sourcePath: "/tmp/fake-0", name: "proj-0", enabled: true },
+      { id: "proj-1", sourcePath: "/tmp/fake-1", name: "proj-1", enabled: true },
+      { id: "proj-2", sourcePath: "/tmp/fake-2", name: "proj-2", enabled: true },
+    ];
+
+    for (const project of projects) {
+      try {
+        await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
+      } catch (err) {
+        if (!(err instanceof ProviderQuotaError)) throw err;
+        project.rateLimitedUntil = err.nextEligibleAt;
+        rateLimitedProjects.add(project.id);
+        continue;
       }
-      return "[ISSUE] P2 normal finding";
-    },
-  });
 
-  const projects = [
-    { id: "proj-0", sourcePath: "/tmp/fake-0", name: "proj-0", enabled: true },
-    { id: "proj-1", sourcePath: "/tmp/fake-1", name: "proj-1", enabled: true },
-    { id: "proj-2", sourcePath: "/tmp/fake-2", name: "proj-2", enabled: true },
-  ];
-
-  for (const project of projects) {
-    try {
-      await pool.execute("codex", `scan-${project.id}`, project.sourcePath, 5_000);
-    } catch (err) {
-      if (err instanceof RateLimitError) {
-        project.rateLimitedUntil = err.untilTs;
+      try {
+        await pool.execute("codex", `scan-${project.id}`, project.sourcePath, 5_000);
+      } catch (err) {
+        if (!(err instanceof ProviderQuotaError)) {
+          return { pass: false, detail: `unexpected scan error for ${project.id}: ${err.name}: ${err.message}` };
+        }
+        project.rateLimitedUntil = err.nextEligibleAt;
         rateLimitedProjects.add(project.id);
       }
     }
-  }
 
-  const st = pool.status().pools.codex;
-  if (!st.rateLimitedUntil) return { pass: false, detail: "expected global rate-limit after proj-1 429" };
+    const blocked = projects.filter((p) => p.rateLimitedUntil).length;
+    if (blocked === 0) return { pass: false, detail: "no projects marked rate-limited after 429" };
+    if (callCount !== 2) return { pass: false, detail: `expected two provider calls before backoff blocked later projects, got ${callCount}` };
 
-  const blocked = projects.filter((p) => p.rateLimitedUntil).length;
-  if (blocked === 0) return { pass: false, detail: "no projects marked rate-limited after 429" };
-
-  return {
-    pass: true,
-    detail: `scanned ${projects.length} projects, ${blocked} blocked by backoff, callCount=${callCount}`,
-  };
+    return {
+      pass: true,
+      detail: `scanned ${projects.length} projects, ${blocked} blocked by delegate-backed quota gate, callCount=${callCount}`,
+    };
+  });
 }
 
 export async function checkProcessGrowthBound(hubRoot) {
@@ -302,7 +362,7 @@ export function formatResults(results, { json: asJson } = {}) {
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
-    console.log(`Usage: node bridges/validate-scan-readiness.mjs [options]
+    console.log(`Usage: node scripts/validate-scan-readiness.mjs [options]
 
 Options:
   --live            Validate against real hub root (requires --hub-root)

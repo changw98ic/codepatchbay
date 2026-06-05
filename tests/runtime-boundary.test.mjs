@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -22,6 +22,30 @@ const DELETED_RUNTIME_ENTRIES = [
 ];
 
 const FORBIDDEN_RUNTIME_IMPORTS = new Set(["server"]);
+const BRIDGE_ENTRY_FILES = [
+  "bridges/engine-bridge.js",
+  "bridges/runtime-services.js",
+];
+
+async function listFiles(dir) {
+  const files = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFiles(full));
+    } else {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+test("bridges directory contains only runtime boundary adapters", async () => {
+  const bridgeFiles = (await listFiles(path.join(REPO_ROOT, "bridges")))
+    .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join("/"))
+    .sort();
+  assert.deepEqual(bridgeFiles, BRIDGE_ENTRY_FILES);
+});
 
 test("runtime old ACP entry files are deleted", async () => {
   for (const relativePath of DELETED_RUNTIME_ENTRIES) {
