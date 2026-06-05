@@ -21,7 +21,9 @@ export function importSpecifiers(source) {
   const specs = [];
   const patterns = [
     /from\s+["']([^"']+)["']/g,
+    /import\s+["']([^"']+)["']/g,
     /import\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /require\s*\(\s*["']([^"']+)["']\s*\)/g,
   ];
   for (const pattern of patterns) {
     let match;
@@ -39,11 +41,19 @@ export function topLevelTarget(fromFile, specifier) {
   return relative.split(path.sep)[0] || null;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function dynamicPathRefs(source, targetDir) {
   const refs = [];
+  const escapedTarget = escapeRegExp(targetDir);
   const patterns = [
-    new RegExp(`path\\.join\\([^)]*["']${targetDir}["'][^)]*\\)`, "g"),
-    new RegExp(`path\\.resolve\\([^)]*["']${targetDir}["'][^)]*\\)`, "g"),
+    new RegExp(`path\\.join\\([^)]*["']${escapedTarget}["'][^)]*\\)`, "g"),
+    new RegExp(`path\\.resolve\\([^)]*["']${escapedTarget}["'][^)]*\\)`, "g"),
+    new RegExp("[\"'`]" + escapedTarget + "[/\\\\][^\"'`]*[\"'`]", "g"),
+    new RegExp("[\"'`][^\"'`]*(?:^|[/\\\\])" + escapedTarget + "[/\\\\][^\"'`]*[\"'`]", "g"),
+    new RegExp("[\"']" + escapedTarget + "[\"']\\s*\\+\\s*[\"'][/\\\\]", "g"),
   ];
   for (const pattern of patterns) {
     let match;

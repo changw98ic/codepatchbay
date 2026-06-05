@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -10,6 +10,43 @@ import {
 } from "../server/services/executor-root.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const REQUIRED_SHARED_FILES = [
+  "shared/fs-utils.js",
+  "shared/logger.js",
+  "shared/orchestrator/assignment-store.js",
+  "shared/orchestrator/worker-store.js",
+];
+
+function listFiles(dir) {
+  const files = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listFiles(full));
+    } else {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+function relativeRepoPath(file) {
+  return path.relative(ROOT, file).split(path.sep).join("/");
+}
+
+test("executor manifest lists the exact shared layer file set", () => {
+  const actualSharedFiles = listFiles(path.join(ROOT, "shared"))
+    .map(relativeRepoPath)
+    .sort();
+  assert.deepEqual(actualSharedFiles, [...REQUIRED_SHARED_FILES].sort());
+
+  for (const required of REQUIRED_SHARED_FILES) {
+    assert.ok(
+      REQUIRED_EXECUTOR_FILES.includes(required),
+      `REQUIRED_EXECUTOR_FILES must include ${required}`,
+    );
+  }
+});
 
 test("npm pack includes all REQUIRED_EXECUTOR_FILES", () => {
   const raw = execSync("npm pack --dry-run --json --ignore-scripts", {

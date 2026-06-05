@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { REQUIRED_EXECUTOR_FILES } from "../server/services/executor-root.js";
 
 const args = process.argv.slice(2);
 const KEEP_STATE = args.includes("--keep-state");
@@ -103,6 +104,16 @@ function run(cmd, opts = {}) {
 
 function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function assertPackedExecutorFiles(packEntry) {
+  const packedPaths = new Set((packEntry.files || []).map((file) => file.path).filter(Boolean));
+  const missing = REQUIRED_EXECUTOR_FILES.filter((required) => !packedPaths.has(required));
+  if (missing.length > 0) {
+    fail(`Pack is missing executor files: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  pass(`Pack contains ${REQUIRED_EXECUTOR_FILES.length} required executor files`);
 }
 
 function configureAgentRoute() {
@@ -229,17 +240,21 @@ function stepPack() {
   });
 
   let tgzFilename;
+  let packEntry;
   try {
     const packMeta = JSON.parse(packResult.stdout);
     if (!Array.isArray(packMeta) || packMeta.length === 0 || !packMeta[0].filename) {
       throw new Error("npm pack --json returned no filename");
     }
-    tgzFilename = packMeta[0].filename;
+    packEntry = packMeta[0];
+    tgzFilename = packEntry.filename;
   } catch (e) {
     fail(`Could not parse npm pack output: ${e.message}`);
     if (packResult.stdout) log("PACK", `stdout: ${packResult.stdout.substring(0, 500)}`);
     process.exit(1);
   }
+
+  assertPackedExecutorFiles(packEntry);
 
   const tgzPath = path.join(packDir, tgzFilename);
   if (!existsSync(tgzPath)) { fail(`Tarball not found: ${tgzPath}`); process.exit(1); }
