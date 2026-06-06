@@ -102,7 +102,11 @@ export class HubOrchestrator {
 
     // P1-2: supervisor gets lazy pool — only used when pool is actually available
     const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot });
-    const failureRouter = new FailureRouter(acpSupervisor);
+    const readModeFn = async () => {
+      const { readHubConfig: rhc, readSchedulerConfig: rsc } = await import("../services/agent-config.js");
+      return rsc(await rhc(hubRoot)).mode;
+    };
+    const failureRouter = new FailureRouter(acpSupervisor, { readModeFn });
 
     this.reconciler = new Reconciler(hubRoot, {
       assignmentStore: this.assignmentStore,

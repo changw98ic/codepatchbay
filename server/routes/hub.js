@@ -12,6 +12,7 @@ import { readProjectIndex, writeProjectIndex } from "../services/project-index.j
 import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge-policy.js";
 import { getManagedAcpPool } from "../services/acp-pool.js";
 import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
+import { readHubConfig, writeHubConfig, isValidSchedulerMode } from "../services/agent-config.js";
 import { buildObservabilitySummary } from "../services/observability.js";
 import { buildTaskHistory } from "../services/task-history.js";
 import { buildTaskLedger } from "../services/task-ledger.js";
@@ -44,6 +45,24 @@ export async function hubRoutes(fastify) {
   fastify.get("/hub/status", async (req) => {
     const base = await hubStatus(hubRoot(req));
     return req.hubRuntime ? { ...base, runtime: req.hubRuntime.status() } : base;
+  });
+
+  // ── Scheduler config ──
+  fastify.get("/hub/scheduler", async (req) => {
+    const config = await readHubConfig(hubRoot(req));
+    return { mode: config.scheduler?.mode || "default" };
+  });
+
+  fastify.patch("/hub/scheduler", async (req) => {
+    const body = req.body || {};
+    if (!body.mode || !isValidSchedulerMode(body.mode)) {
+      throw fastify.httpErrors.badRequest("mode must be 'default' or 'smart'");
+    }
+    const hr = hubRoot(req);
+    const config = await readHubConfig(hr);
+    config.scheduler = { ...(config.scheduler || {}), mode: body.mode };
+    await writeHubConfig(hr, config);
+    return { mode: body.mode };
   });
 
   fastify.get("/hub/acp", async (req) => {
