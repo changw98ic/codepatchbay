@@ -290,7 +290,7 @@ Each task below is scoped to one focused developer day:
 - Test: `tests/pipeline-contract.test.mjs`
 
 **Acceptance:**
-- Retry prompt includes concise failing checks and expected repair scope.
+- Retry prompt includes concise failing checks and expected retry scope.
 - Retry count and previous verdict id are recorded.
 - PASS verdict never triggers retry.
 

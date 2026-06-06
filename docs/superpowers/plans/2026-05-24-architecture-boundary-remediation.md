@@ -1,4 +1,4 @@
-# Architecture Boundary Repair Implementation Plan
+# Architecture Boundary Remediation Implementation Plan
 
 > **旧执行内核注释（2026-06-02）：** 本文中的 `bridges/run-phase.mjs`
 > 引用属于已删除的旧执行内核。本文仅作历史方案参考；当前执行入口是
@@ -6,9 +6,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Repair the highest-risk architecture defects found in the read-only review: unsafe ACP imports, ACP pool cross-root reuse, fragmented runtime roots, and weak boundary tests.
+**Goal:** Remediate the highest-risk architecture defects found in the read-only review: unsafe ACP imports, ACP pool cross-root reuse, fragmented runtime roots, and weak boundary tests.
 
-**Architecture:** Use a staged repair instead of a broad rewrite. First make existing modules import-safe and root-isolated, then introduce a shared runtime-root query surface, then tighten architecture tests so the contract in `docs/architecture/runtime-boundaries.md` is mechanically enforced.
+**Architecture:** Use a staged remediation instead of a broad rewrite. First make existing modules import-safe and root-isolated, then introduce a shared runtime-root query surface, then tighten architecture tests so the contract in `docs/architecture/runtime-boundaries.md` is mechanically enforced.
 
 **Tech Stack:** Node.js ESM, `node:test`, existing Fastify/server services, existing `cpb-task` and Hub runtime-root model. No new dependencies.
 
@@ -21,7 +21,7 @@
 - Do not remove legacy `cpb-task` fallback in the first pass.
 - No new npm dependencies.
 - Preserve current dirty worktree changes; do not revert unrelated edits.
-- Lock each architectural repair with regression tests before implementation.
+- Lock each architectural remediation with regression tests before implementation.
 
 ## Current Evidence
 

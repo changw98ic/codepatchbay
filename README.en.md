@@ -158,7 +158,7 @@ cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
 cpb research <project> "<task>"    # Dual-agent research
 cpb review <project> [id]          # Review deliverable
-cpb repair <project> <job-id>      # Repair a failed job
+cpb retry <project> <job-id>       # Retry a failed job
 
 # Multi-phase & SDD
 cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution
@@ -168,7 +168,7 @@ cpb sdd <init|bootstrap|verify|drift> <project> # Spec-driven development
 cpb jobs [reconcile|cleanup|report]
 cpb artifacts <job-id> [--json]
 cpb verdict <job-id> [--json]
-cpb repair <project> <job-id> [--agent <name>]
+cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 

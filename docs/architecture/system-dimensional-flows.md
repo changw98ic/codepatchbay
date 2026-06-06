@@ -184,7 +184,7 @@ stateDiagram-v2
   pending --> waiting_approval
   waiting_approval --> pending
   waiting_approval --> archived
-  failed --> pending: retry / correction
+  failed --> pending: retry / feedback retry
   completed --> [*]
   archived --> [*]
 ```
@@ -288,8 +288,8 @@ flowchart TD
   MidFallback --> RunPhase
   PhaseResult -->|"可重试失败"| Retry["phase_retry"]
   Retry --> RunPhase
-  PhaseResult -->|"可修正失败"| Correction["phase_correction"]
-  Correction --> RunPhase
+  PhaseResult -->|"可修正失败"| FeedbackRetry["phase_feedback_retry"]
+  FeedbackRetry --> RunPhase
   PhaseResult -->|"失败"| Fail["failJob 并返回 failed"]
   PhaseResult -->|"通过"| CompletePhase["completePhase + phase_result + usage"]
   CompletePhase --> More{"还有阶段？"}
@@ -414,9 +414,9 @@ flowchart TD
   JobDone["job 终态"] --> Bundle["buildReviewBundle"]
   Bundle --> HumanVerdict{"人工 bundle verdict"}
   HumanVerdict -->|"accept"| AcceptedEvent["append review_bundle_accepted"]
-  HumanVerdict -->|"reject"| Correction["构造 correction sourceContext"]
-  Correction --> CorrectionQueue["enqueue review_bundle_correction"]
-  CorrectionQueue --> NextRun["进入普通队列重新执行"]
+  HumanVerdict -->|"reject"| Retry["构造 retry sourceContext"]
+  Retry --> RetryQueue["enqueue review_bundle_retry"]
+  RetryQueue --> NextRun["进入普通队列重新执行"]
 ```
 
 审查有两条线：
@@ -431,7 +431,7 @@ flowchart TD
 - 用户反馈。
 - 上一轮计划、交付物、verdict、diff 片段。
 - `reviewRound`。
-- `correctionQueueEntryId`。
+- `retryQueueEntryId`。
 
 这使下一轮执行能看到“为什么被拒绝”和“要修什么”。
 

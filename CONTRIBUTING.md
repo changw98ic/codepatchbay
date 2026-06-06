@@ -16,7 +16,7 @@ Please keep contributions aligned with that scope unless an issue or maintainer 
 
 ## Good first contribution areas
 
-- documentation and quick-start corrections
+- documentation and quick-start updates
 - clean-machine setup notes
 - safer defaults and clearer error messages
 - ACP permission policy examples

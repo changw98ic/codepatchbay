@@ -430,13 +430,13 @@ npm test
 
 1. 抽统一 queue input builder。
 2. API、GitHub、Slack/Discord、CLI 都产出同一 intake DTO。
-3. 审查 session approve / review bundle reject 都走同一 correction queue builder。
+3. 审查 session approve / review bundle reject 都走同一 retry queue builder。
 4. 删除分散拼 metadata 的重复逻辑。
 
 验收标准：
 
 - 同一任务来源字段在 CLI/API/GitHub/渠道中一致。
-- review reject 生成 correction queue entry 的字段稳定。
+- review reject 生成 retry queue entry 的字段稳定。
 - 修改 queue metadata schema 时只改一个模块。
 
 验证命令：

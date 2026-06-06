@@ -751,7 +751,7 @@ cpb supervisor
 The behavior can be implemented through existing Node runtime pieces, but the
 user-facing contract should remain stable.
 
-Important correction:
+Important clarification:
 
 Compatibility means command behavior, not freezing old internals. It is valid
 to migrate `cpb pipeline` internals to `cpb-task/` as long as output,

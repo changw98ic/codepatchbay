@@ -58,7 +58,7 @@ flowchart TD
   G --> H["Agent Review Summary"]
   H --> I{"User Verdict"}
   I -->|Approve| J["Local Accept / Merge"]
-  I -->|Reject with Feedback| K["Correction Queue Entry"]
+  I -->|Reject with Feedback| K["Retry Queue Entry"]
   K --> F
 ```
 
@@ -133,11 +133,11 @@ MVP 不设置 ACP global total。可调旋钮只有：
 | ID | 任务 | 代码落点 | 交付物 | 验收 |
 |---|---|---|---|---|
 | D1 | reject 语义改造 | `server/routes/review.js`、review session service | reject 保存 user feedback，不直接结束为 expired | session 保留 rejected round 和用户意见 |
-| D2 | correction queue entry | `server/routes/review.js`、`server/services/hub-queue.js` | reject 后创建 correction entry | queue entry metadata 带 origin bundle、round、feedback |
-| D3 | correction context builder | pipeline context/phase context | 把上一轮 diff、agent 缺陷、用户意见注入下一轮 | 新任务不是从零开始，而是针对拒绝点修正 |
+| D2 | retry queue entry | `server/routes/review.js`、`server/services/hub-queue.js` | reject 后创建 retry entry | queue entry metadata 带 origin bundle、round、feedback |
+| D3 | retry context builder | pipeline context/phase context | 把上一轮 diff、agent 缺陷、用户意见注入下一轮 | 新任务不是从零开始，而是针对拒绝点修正 |
 | D4 | rounds 版本链 | review session model/store | `rounds[]` 记录每轮 bundle/verdict/status | UI/API 能看到第几轮、每轮结论 |
 | D5 | accept/local merge | review routes/finalizer | approve 后执行 local accept 或标记 ready-to-merge | 无 GitHub 时可以完成本地批准路径 |
-| D6 | reject loop 集成测试 | tests | bundle -> reject -> correction entry -> next bundle 的集成测试 | 真实 git fixture 验证，不用 fake provider 验收 |
+| D6 | reject loop 集成测试 | tests | bundle -> reject -> retry entry -> next bundle 的集成测试 | 真实 git fixture 验证，不用 fake provider 验收 |
 
 ### E. 真实并发验证，5 人天
 
@@ -153,7 +153,7 @@ MVP 不设置 ACP global total。可调旋钮只有：
 
 | ID | 任务 | 代码落点 | 交付物 | 验收 |
 |---|---|---|---|---|
-| F1 | event schema 扩展 | `server/services/event-store.js` | `runtime_limits_updated`、`review_bundle_created`、`correction_started` | 事件可追加、可读取、可 redaction |
+| F1 | event schema 扩展 | `server/services/event-store.js` | `runtime_limits_updated`、`review_bundle_created`、`retry_started` | 事件可追加、可读取、可 redaction |
 | F2 | phase diff snapshot | `core/engine/run-job.js` 或 worker wrapper | phase 前后记录 changed files 和 diff summary | 能看出哪个 phase 引入了文件变化 |
 | F3 | agent/provider trace summary | `core/engine/run-job.js` | agent handoff、provider retry、quota/backoff 更可读 | 单个 job 的失败链路可解释 |
 | F4 | trace API 最小版 | job/review routes | 按 job id 返回 timeline | Review Bundle 可以链接到 job timeline |
@@ -164,7 +164,7 @@ MVP 不设置 ACP global total。可调旋钮只有：
 | ID | 任务 | 代码落点 | 交付物 | 验收 |
 |---|---|---|---|---|
 | G1 | MVP runbook | `docs/product/` | 真实验收步骤文档 | 按文档能重复跑一轮真实任务 |
-| G2 | 真实端到端验收 | CLI/UI/hub/worker | 一次真实 closed-loop 记录 | 无 GitHub、无 fake、真实 diff、可 reject correction |
+| G2 | 真实端到端验收 | CLI/UI/hub/worker | 一次真实 closed-loop 记录 | 无 GitHub、无 fake、真实 diff、可 reject retry |
 | G3 | 风险和缺口复盘 | `docs/product/` | MVP 完成报告 | 明确哪些能力进入完整产品规划 |
 
 ## 真实验收脚本口径
@@ -178,8 +178,8 @@ MVP 的最终验收必须至少跑以下真实场景：
 5. pipeline 真实执行并生成 Review Bundle。
 6. agent 给出 approve/reject recommendation。
 7. 用户拒绝并填写意见。
-8. CPB 创建 correction queue entry。
-9. correction pipeline 生成新版 Review Bundle。
+8. CPB 创建 retry queue entry。
+9. retry pipeline 生成新版 Review Bundle。
 10. 用户批准。
 11. 本地 accept/merge 或 ready-to-merge 状态完成。
 12. 全过程事件可追溯。
@@ -202,7 +202,7 @@ MVP 完成时必须满足：
 4. 项目上限和 provider 上限可以运行时调整。
 5. ACP global total 未设置。
 6. Review Bundle 可读、可审、可追溯。
-7. reject 会触发 correction loop。
+7. reject 会触发 retry loop。
 8. 真实并发验证通过。
 9. 失败时能定位到 phase、agent/provider、主要原因和相关 diff。
 
