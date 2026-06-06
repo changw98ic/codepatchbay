@@ -448,6 +448,7 @@ export function materializeJob(events) {
     indexFreshness: null,
     planCache: null,
     routingFeedback: null,
+    phaseAgentSelections: [],
     approval: null,
     reviewLoop: {
       rounds: [],
@@ -517,18 +518,32 @@ export function materializeJob(events) {
         };
         break;
       case "agent_routing_decision":
-        state.executorSelection = event.executorSelection ?? {
-          role: event.role ?? null,
-          category: event.category ?? null,
-          workflow: event.workflow ?? null,
-          preferredAgent: event.preferredAgent ?? null,
-          selectedAgent: event.selectedAgent ?? null,
-          fallbackAgent: event.fallbackAgent ?? null,
-          fallbackAllowed: event.fallbackAllowed ?? null,
-          fallbackApplied: event.fallbackApplied ?? null,
-          reason: event.reason ?? null,
-        };
-        if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
+        {
+          const selection = event.executorSelection ?? {
+            role: event.role ?? null,
+            category: event.category ?? null,
+            workflow: event.workflow ?? null,
+            preferredAgent: event.preferredAgent ?? null,
+            selectedAgent: event.selectedAgent ?? null,
+            fallbackAgent: event.fallbackAgent ?? null,
+            fallbackAllowed: event.fallbackAllowed ?? null,
+            fallbackApplied: event.fallbackApplied ?? null,
+            reason: event.reason ?? null,
+          };
+          if (event.phase) {
+            state.phaseAgentSelections = [
+              ...state.phaseAgentSelections,
+              {
+                phase: event.phase,
+                ...selection,
+                ts: event.ts ?? null,
+              },
+            ];
+            break;
+          }
+          state.executorSelection = selection;
+          if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
+        }
         break;
       case "worktree_created":
         state.worktree = event.worktree ?? event.path ?? state.worktree;

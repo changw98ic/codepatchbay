@@ -4,8 +4,17 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { appendEvent, readEvents } from "../server/services/event-store.js";
-import { _internalMarkProviderUnavailable, QuotaStatus } from "../server/services/provider-quota.js";
+import { appendEvent, materializeJob, readEvents } from "../server/services/event-store.js";
+import {
+  _internalMarkProviderUnavailable,
+  assertProviderAvailable,
+  QuotaStatus,
+} from "../server/services/provider-quota.js";
+import { getProviderAdapter } from "../server/services/provider-adapters.js";
+import {
+  delegateEnqueueProviderUsage,
+  delegateMarkProviderUnavailable,
+} from "../server/services/quota-delegate-client.js";
 import { resolveTaskRoute } from "../core/workflow/auto-route.js";
 import { tempRoot } from "./helpers.mjs";
 
@@ -112,7 +121,7 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] } 
   };
 }
 
-function makePool({ onExecute, calls = [] } = {}) {
+function makePool({ onExecute, calls = [], releases = [] } = {}) {
   return {
     providerKey(agent, variant) {
       return variant ? `${agent}:${variant}` : agent;
@@ -130,6 +139,10 @@ function makePool({ onExecute, calls = [] } = {}) {
         if (value !== undefined) return value;
       }
       return { output: phaseOutput(meta.role), providerKey: this.providerKey(agent, meta.variant), variant: meta.variant || null };
+    },
+    async releaseWorktree(cwd, reason, options) {
+      releases.push({ cwd, reason, options });
+      return true;
     },
   };
 }
@@ -190,6 +203,16 @@ async function runEngine({
   servicesState = {},
   pool = null,
   agents = null,
+  routing = null,
+  agentAvailability = null,
+  agentHealth = null,
+  teamPolicy = null,
+  providerServices = {
+    assertProviderAvailable,
+    getProviderAdapter,
+    delegateMarkProviderUnavailable,
+    delegateEnqueueProviderUsage,
+  },
   jobId = "job-engine",
 } = {}) {
   const runJob = await loadRunJob();
@@ -213,6 +236,11 @@ async function runEngine({
       reviewer: "fake-primary",
       verifier: "fake-primary",
     },
+    routing,
+    agentAvailability,
+    agentHealth,
+    teamPolicy,
+    providerServices,
     ...services,
     getPool: () => effectivePool,
   });
@@ -246,6 +274,98 @@ test("runJob preserves phase order and switches unavailable providers during pre
   assert.deepEqual(result.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
   assert.ok(calls.every((call) => call.agent === "fake-secondary"));
   assert.ok(events.some((event) => event.type === "provider_handoff" && event.phase === "plan" && event.from === "fake-primary" && event.to === "fake-secondary"));
+});
+
+test("runJob applies configured phase fallback before provider execution", async () => {
+  const events = [];
+  const calls = [];
+  const routing = {
+    planner: "fake-primary",
+    executor: "fake-primary",
+    verifier: "fake-primary",
+    fallback: { verifier: "fake-secondary" },
+    allowFallback: true,
+  };
+
+  const { result } = await runEngine({
+    servicesState: { events },
+    pool: makePool({ calls }),
+    routing,
+    agentAvailability: {
+      "fake-primary": { available: false, status: "offline" },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  const verifyCall = calls.find((call) => call.meta.role === "verifier");
+  assert.equal(verifyCall.agent, "fake-secondary");
+  const verifyDecision = events.find((event) => event.type === "agent_routing_decision" && event.phase === "verify");
+  assert.ok(verifyDecision);
+  assert.equal(verifyDecision.preferredAgent, "fake-primary");
+  assert.equal(verifyDecision.selectedAgent, "fake-secondary");
+  assert.equal(verifyDecision.fallbackApplied, true);
+});
+
+test("runJob tolerates missing provider services when provider checks are unused", async () => {
+  const calls = [];
+  const { result } = await runEngine({
+    providerServices: null,
+    pool: makePool({ calls }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => call.meta.role), ["planner", "executor", "verifier"]);
+});
+
+test("materializeJob keeps phase fallback separate from job executor selection", () => {
+  const job = materializeJob([
+    {
+      type: "job_created",
+      jobId: "job-routing-state",
+      project: "proj",
+      task: "route",
+      executor: "claude",
+      ts: "2026-06-04T00:00:00.000Z",
+    },
+    {
+      type: "agent_routing_decision",
+      jobId: "job-routing-state",
+      project: "proj",
+      phase: "verify",
+      role: "verifier",
+      preferredAgent: "codex",
+      selectedAgent: "claude",
+      fallbackAgent: "claude",
+      fallbackAllowed: true,
+      fallbackApplied: true,
+      reason: "preferred unavailable",
+      ts: "2026-06-04T00:01:00.000Z",
+    },
+  ]);
+
+  assert.equal(job.executor, "claude");
+  assert.equal(job.executorSelection, undefined);
+  assert.equal(job.phaseAgentSelections.length, 1);
+  assert.equal(job.phaseAgentSelections[0].phase, "verify");
+  assert.equal(job.phaseAgentSelections[0].role, "verifier");
+});
+
+test("runJob releases ACP provider resources after every phase attempt", async () => {
+  const calls = [];
+  const releases = [];
+  const { result, sourcePath } = await runEngine({
+    pool: makePool({ calls, releases }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => call.meta.role), ["planner", "executor", "verifier"]);
+  assert.deepEqual(releases.map((release) => release.reason), [
+    "phase_plan_complete",
+    "phase_execute_complete",
+    "phase_verify_complete",
+  ]);
+  assert.ok(releases.every((release) => release.cwd === sourcePath));
+  assert.ok(releases.every((release) => release.options?.closeProvider === true));
 });
 
 test("trusted simple tasks auto-route to a single ACP execute phase", async () => {
@@ -549,4 +669,100 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
   });
   const redacted = await readEvents(cpbRoot, project, redactedJobId);
   assert.equal(redacted[0].metadata.apiKey, "[REDACTED]");
+});
+
+test("providerServices: null is an explicit test-only disable — no provider checks even with hubRoot", async () => {
+  const hubRoot = await tempRoot("cpb-engine-hub-null-ps");
+  const events = [];
+  const calls = [];
+
+  const { result } = await runEngine({
+    hubRoot,
+    providerServices: null,
+    servicesState: { events },
+    pool: makePool({ calls }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => call.meta.role), ["planner", "executor", "verifier"]);
+  // No provider_handoff events because all provider functions are null
+  assert.ok(!events.some((event) => event.type === "provider_handoff"));
+  // No provider_quota_blocked events
+  assert.ok(!events.some((event) => event.type === "provider_quota_blocked"));
+});
+
+test("handoffState tracks consolidated from/to/reason/count for preflight switches", async () => {
+  const hubRoot = await tempRoot("cpb-engine-hub-handoff-state");
+  const events = [];
+  const usageCommands = [];
+
+  // Mark fake-primary as unavailable so preflight switches to fake-secondary
+  await _internalMarkProviderUnavailable(hubRoot, {
+    providerKey: "fake-primary",
+    agent: "fake-primary",
+    status: QuotaStatus.RATE_LIMITED,
+    nextEligibleAt: Date.now() + 60_000,
+    source: "test",
+    reason: "preflight saturated",
+  });
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events },
+    pool: makePool({}),
+  });
+
+  assert.equal(result.status, "completed");
+
+  // All phases should have preflight handoff events
+  const handoffs = events.filter((event) => event.type === "provider_handoff" && !event.midRun);
+  assert.ok(handoffs.length >= 1, "at least one preflight handoff event");
+  assert.equal(handoffs[0].from, "fake-primary");
+  assert.equal(handoffs[0].to, "fake-secondary");
+  assert.match(handoffs[0].reason, /fallback/);
+});
+
+test("usage fallback record uses handoffState from/to/reason — not inferred from result.failure", async (t) => {
+  const hubRoot = await tempRoot("cpb-engine-hub-usage-handoff");
+  await startDelegateAckLoop(t, hubRoot);
+  const events = [];
+  const calls = [];
+  let executePrimaryFailed = false;
+
+  const pool = makePool({
+    calls,
+    onExecute: async ({ agent, meta }) => {
+      if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
+        executePrimaryFailed = true;
+        const err = new Error("429 rate limit from primary");
+        err.name = "RateLimitError";
+        err.providerKey = "fake-primary";
+        err.status = "rate_limited";
+        err.nextEligibleAt = Date.now() + 60_000;
+        err.confidence = 1;
+        throw err;
+      }
+      return { output: phaseOutput(meta.role), providerKey: agent, variant: null };
+    },
+  });
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events },
+    pool,
+  });
+
+  assert.equal(result.status, "completed");
+
+  // Read the usage commands written to the delegate
+  const usageCommands = await readDelegateUsageCommands(hubRoot);
+  const executeUsage = usageCommands.find((command) => command.record?.phase === "execute");
+  assert.ok(executeUsage, "execute usage command should exist");
+
+  const fallback = executeUsage.record.fallback;
+  assert.equal(fallback.used, true, "fallback.used should be true");
+  assert.equal(fallback.fromProviderKey, "fake-primary", "from should be the original provider");
+  assert.equal(fallback.toProviderKey, "fake-secondary", "to should be the fallback provider");
+  assert.equal(fallback.count, 1, "count should reflect handoffState.count");
+  assert.ok(fallback.reason, "reason should be populated from handoffState");
 });

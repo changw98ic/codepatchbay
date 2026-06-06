@@ -4,14 +4,15 @@
   "type": "module",
   "bin": {
     "cpb": "cpb",
-    "cpb-browser-agent-acp": "bridges/browser-agent-acp.mjs",
-    "cpb-test-acp-agent": "bridges/test-acp-agent.mjs"
+    "cpb-browser-agent-acp": "server/services/browser-agent-acp.mjs",
+    "cpb-test-acp-agent": "server/services/test-acp-agent.mjs"
   },
   "files": [
     "cpb",
     "cli/",
     "bridges/",
     "core/",
+    "shared/",
     "runtime/",
     "server/index.js",
     "server/orchestrator/",

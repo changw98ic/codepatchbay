@@ -255,7 +255,7 @@ async function cmdDoctor(args, cpbRoot) {
   }
 
   // 6. ACP adapter executable
-  const acpPath = path.join(cpbRoot, "bridges/browser-agent-acp.mjs");
+  const acpPath = path.join(cpbRoot, "server/services/browser-agent-acp.mjs");
   try {
     await access(acpPath, constants.X_OK);
     checks.push({ name: "acp-adapter", status: "ok" });

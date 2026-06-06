@@ -52,7 +52,7 @@ export async function allocateArtifactId(dir, prefix) {
   }
 }
 
-// --- Legacy path helpers (backward compat) ---
+// --- Wiki artifact path helpers ---
 
 export function planFilePath(cpbRoot, project, planId) {
   return path.join(cpbRoot, "wiki", "projects", project, "inbox", `plan-${planId}.md`);

@@ -44,6 +44,7 @@ export async function runAgent({
       jobId,
       variant,
       workspaceId: scope?.workspaceId,
+      cwd,
       policyHash: scope?.policyHash,
     });
     const output = typeof execResult === "string" ? execResult : execResult.output;

@@ -219,7 +219,15 @@ cpb version
 
 ## 安全
 
-CodePatchBay 使用各 agent 的原生认证，不存储 provider token，拦截任务输入和产物中的密钥。完整安全模型参见 [docs/security/](docs/security/)，涵盖安装安全、密钥脱敏、webhook 签名验证、工作树隔离和草稿 PR 策略。
+CodePatchBay 使用各 agent 的原生认证，不存储 provider token，拦截任务输入和产物中的密钥。
+
+- **不复制 provider token** — API key 和 OAuth token 保留在 agent 进程环境中，CPB 从不写入磁盘。
+- **密钥提交被禁止** — 不允许通过 Slack、Discord、GitHub 评论或任何 IM 渠道提交密钥。
+- **Webhook 签名验证** — GitHub webhook 使用 HMAC-SHA256 验证，Slack 使用请求签名，Discord 使用 Ed25519。
+- **草稿 PR 策略** — 所有 PR 以 draft 创建，不自动合并。
+- **工作树隔离** — 任务在独立 git worktree 中执行，不修改主分支。
+
+完整安全模型参见 [Security Documentation](docs/security/codepatchbay-gateway-security.md)，涵盖安装安全、密钥脱敏、webhook 签名验证、工作树隔离、角色权限矩阵和草稿 PR 策略。Agent 进程隔离边界分析参见 [Agent Secret Boundary](docs/security/cpb-agent-secret-boundary.md)。
 
 ## 系统要求
 

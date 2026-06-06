@@ -1,11 +1,40 @@
-import { readFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { createLogger } from "../services/logger.js";
+import { promisify } from "node:util";
+import { FailureKind } from "../../core/contracts/failure.js";
+import { writeJsonAtomic } from "../../shared/fs-utils.js";
+import { createLogger } from "../../shared/logger.js";
 
+const execFile = promisify(execFileCallback);
 const HEARTBEAT_STALE_MS = 60_000;
 const ASSIGN_ACCEPT_TTL_MS = 120_000;
+const DEFAULT_PROGRESS_INFO_MS = 5 * 60_000;
+const DEFAULT_PROGRESS_WARN_MS = 15 * 60_000;
+const DEFAULT_PROGRESS_ERROR_MS = 30 * 60_000;
+const DEFAULT_PROGRESS_FORCE_RETRY_MS = 35 * 60_000;
 const NON_REUSABLE_WORKER_STATUSES = new Set(["dead", "exited", "unhealthy", "draining"]);
 const PREVIOUS_OUTPUT_MAX = 4000;
+const PROGRESS_PROBE_LOG_TAIL = 6000;
+const PROGRESS_ALERT_RANK = { info: 1, warn: 2, error: 3, force: 4 };
+const PROGRESS_PROBE_DEPTH = { info: "heartbeat", warn: "worker", error: "deep", force: "deep" };
+const PROGRESS_PROBE_INTERVAL_MS = { info: 5 * 60_000, warn: 60_000, error: 60_000, force: 0 };
+const DEEP_PROGRESS_PROBE_LEVELS = new Set(["error", "force"]);
+const WAITLESS_LOG_PATTERNS = [
+  /\bjob failed\b/i,
+  /\bfatal\b/i,
+  /\buncaught\b/i,
+  /\bunhandled\b/i,
+  /\bEADDRINUSE\b/,
+  /\bENOENT\b/,
+];
+
+function resolveProgressThresholdMs(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, parsed);
+}
 
 function truncateText(value, maxChars = PREVIOUS_OUTPUT_MAX) {
   const text = String(value || "");
@@ -63,12 +92,43 @@ export function buildRetrySourceContext(assignment, attempt, result, decision) {
 }
 
 export class Reconciler {
-  constructor(hubRoot, { assignmentStore, workerStore, leaderLock, failureRouter, hubRoot: _hr }) {
+  constructor(hubRoot, {
+    assignmentStore,
+    workerStore,
+    workerSupervisor,
+    leaderLock,
+    failureRouter,
+    hubRoot: _hr,
+    progressInfoMs,
+    progressWarnMs,
+    progressErrorMs,
+    progressForceRetryMs,
+    progressStaleMs,
+  }) {
     this.hubRoot = hubRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
+    this.workerSupervisor = workerSupervisor || null;
     this.leaderLock = leaderLock;
     this.failureRouter = failureRouter;
+    this.progressInfoMs = resolveProgressThresholdMs(
+      progressInfoMs ?? process.env.CPB_ASSIGNMENT_PROGRESS_INFO_MS,
+      DEFAULT_PROGRESS_INFO_MS,
+    );
+    this.progressWarnMs = resolveProgressThresholdMs(
+      progressWarnMs ?? process.env.CPB_ASSIGNMENT_PROGRESS_WARNING_MS ?? process.env.CPB_ASSIGNMENT_PROGRESS_WARN_MS,
+      DEFAULT_PROGRESS_WARN_MS,
+    );
+    this.progressErrorMs = resolveProgressThresholdMs(
+      progressErrorMs ?? process.env.CPB_ASSIGNMENT_PROGRESS_ERROR_MS,
+      DEFAULT_PROGRESS_ERROR_MS,
+    );
+    this.progressForceRetryMs = resolveProgressThresholdMs(
+      progressForceRetryMs ?? progressStaleMs ?? process.env.CPB_ASSIGNMENT_PROGRESS_FORCE_RETRY_MS ?? process.env.CPB_ASSIGNMENT_PROGRESS_STALE_MS,
+      DEFAULT_PROGRESS_FORCE_RETRY_MS,
+    );
+    this.progressAlertLevels = new Map();
+    this.progressProbeCheckedAt = new Map();
     this.log = createLogger("reconciler");
   }
 
@@ -209,6 +269,39 @@ export class Reconciler {
               };
               await this.assignments.writeSyntheticFailure(assignment.assignmentId, attempt.attempt, result);
               await this._finalizeAssignment(assignment, attempt, result);
+              break;
+            }
+
+            const progressDelay = this._classifyProgressDelay(assignment, attempt, hb);
+            if (progressDelay) {
+              const probe = await this._maybeProbeProgressDelay(assignment, attempt, hb, progressDelay);
+              if (probe) progressDelay.cause.probe = probe;
+              this._logProgressDelay(aLog, assignment, attempt, progressDelay);
+              const shouldFail = progressDelay.shouldFail || probe?.waitUseful === false;
+              if (!shouldFail) break;
+              if (probe?.waitUseful === false && !progressDelay.shouldFail) {
+                aLog.error(`assignment ${assignment.assignmentId} progress probe closed early: ${probe.reason}`);
+              }
+              const reason = probe?.waitUseful === false
+                ? `${progressDelay.reason}; probe confirmed waiting cannot recover: ${probe.reason}`
+                : progressDelay.reason;
+              const result = {
+                status: "failed",
+                jobResult: {
+                  status: "failed",
+                  failure: {
+                    kind: FailureKind.ASSIGNMENT_PROGRESS_STALE,
+                    phase: progressDelay.phase,
+                    reason,
+                    retryable: true,
+                    cause: progressDelay.cause,
+                  },
+                },
+                attemptToken: attempt.attemptToken,
+              };
+              await this.assignments.writeSyntheticFailure(assignment.assignmentId, attempt.attempt, result);
+              await this._finalizeAssignment(assignment, attempt, result);
+              break;
             }
           }
           break;
@@ -220,6 +313,243 @@ export class Reconciler {
           await this._compensateFinalization(assignment);
           break;
       }
+    }
+  }
+
+  _classifyProgressDelay(assignment, attempt, heartbeat) {
+    if (!this.progressForceRetryMs) return null;
+    if (!heartbeat || heartbeat.status !== "running") return null;
+
+    const progressAt = heartbeat.progressUpdatedAt || heartbeat.lastProgressAt || heartbeat.phaseUpdatedAt;
+    if (!progressAt) return null;
+
+    const progressMs = new Date(progressAt).getTime();
+    if (!Number.isFinite(progressMs)) return null;
+
+    const ageMs = Date.now() - progressMs;
+    if (ageMs < 0) return null;
+
+    let level = null;
+    let thresholdMs = 0;
+    if (ageMs >= this.progressForceRetryMs) {
+      level = "force";
+      thresholdMs = this.progressForceRetryMs;
+    } else if (this.progressErrorMs && ageMs >= this.progressErrorMs) {
+      level = "error";
+      thresholdMs = this.progressErrorMs;
+    } else if (this.progressWarnMs && ageMs >= this.progressWarnMs) {
+      level = "warn";
+      thresholdMs = this.progressWarnMs;
+    } else if (this.progressInfoMs && ageMs >= this.progressInfoMs) {
+      level = "info";
+      thresholdMs = this.progressInfoMs;
+    }
+    if (!level) return null;
+
+    const phase = heartbeat.activePhase || heartbeat.phase || null;
+    const phaseLabel = phase ? `phase ${phase}` : "active phase";
+    const ageSec = Math.round(ageMs / 1000);
+    const thresholdSec = Math.round(thresholdMs / 1000);
+    const forceSec = Math.round(this.progressForceRetryMs / 1000);
+    const detail = level === "force"
+      ? `force retry threshold ${forceSec}s`
+      : `${level} threshold ${thresholdSec}s; force retry at ${forceSec}s`;
+    return {
+      level,
+      shouldFail: level === "force",
+      phase,
+      reason: `${phaseLabel} made no progress for ${ageSec}s (${detail})`,
+      cause: {
+        assignmentId: assignment.assignmentId,
+        entryId: assignment.entryId,
+        attempt: attempt?.attempt ?? null,
+        activeJobId: heartbeat.activeJobId || null,
+        activePhase: heartbeat.activePhase || null,
+        lastProgressAt: progressAt,
+        lastProgressType: heartbeat.lastProgressType || heartbeat.progressKind || null,
+        heartbeatAt: heartbeat.updatedAt || null,
+        worktreePath: heartbeat.worktreePath || null,
+        workerPid: heartbeat.pid || null,
+        ageMs,
+        infoThresholdMs: this.progressInfoMs,
+        warnThresholdMs: this.progressWarnMs,
+        errorThresholdMs: this.progressErrorMs,
+        forceRetryThresholdMs: this.progressForceRetryMs,
+      },
+    };
+  }
+
+  _logProgressDelay(aLog, assignment, attempt, progressDelay) {
+    const key = `${assignment.assignmentId}:${attempt?.attempt ?? "unknown"}`;
+    const rank = PROGRESS_ALERT_RANK[progressDelay.level] || 0;
+    const previousRank = this.progressAlertLevels.get(key) || 0;
+    if (rank <= previousRank) return;
+
+    this.progressAlertLevels.set(key, rank);
+    const logLevel = progressDelay.level === "force" ? "error" : progressDelay.level;
+    aLog[logLevel](`assignment ${assignment.assignmentId} progress ${progressDelay.level}: ${progressDelay.reason}`);
+  }
+
+  async _maybeProbeProgressDelay(assignment, attempt, heartbeat, progressDelay) {
+    const key = `${assignment.assignmentId}:${attempt?.attempt ?? "unknown"}:${progressDelay.level}`;
+    const intervalMs = PROGRESS_PROBE_INTERVAL_MS[progressDelay.level] ?? 60_000;
+    const now = Date.now();
+    const lastCheckedAt = this.progressProbeCheckedAt.get(key) || 0;
+    if (intervalMs && now - lastCheckedAt < intervalMs) return null;
+
+    this.progressProbeCheckedAt.set(key, now);
+    const probe = await this._probeProgressDelay(assignment, attempt, heartbeat, progressDelay);
+    await this._writeProgressProbe(assignment.assignmentId, attempt.attempt, progressDelay.level, probe);
+    return probe;
+  }
+
+  async _probeProgressDelay(assignment, attempt, heartbeat, progressDelay) {
+    const depth = PROGRESS_PROBE_DEPTH[progressDelay.level] || "heartbeat";
+    const workerId = attempt?.workerId || assignment.workerId || heartbeat.workerId || null;
+    const probe = {
+      checkedAt: new Date().toISOString(),
+      level: progressDelay.level,
+      depth,
+      waitUseful: true,
+      reason: null,
+      failureSignals: [],
+      heartbeat: {
+        status: heartbeat.status || null,
+        updatedAt: heartbeat.updatedAt || null,
+        progressUpdatedAt: heartbeat.progressUpdatedAt || heartbeat.lastProgressAt || heartbeat.phaseUpdatedAt || null,
+        progressKind: heartbeat.progressKind || null,
+        lastProgressType: heartbeat.lastProgressType || null,
+        activePhase: heartbeat.activePhase || heartbeat.phase || null,
+        activeJobId: heartbeat.activeJobId || null,
+        worktreePath: heartbeat.worktreePath || null,
+      },
+      worker: null,
+      attemptFiles: null,
+      workerLog: null,
+      worktree: null,
+    };
+
+    if (depth === "heartbeat") return probe;
+
+    const worker = workerId ? await this.workers.getWorker(workerId) : null;
+    const pid = heartbeat.pid || worker?.pid || null;
+    const pidAlive = this._pidAlive(pid);
+    probe.worker = {
+      workerId,
+      found: Boolean(worker),
+      status: worker?.status || null,
+      pid,
+      pidAlive,
+      currentAssignmentId: worker?.currentAssignmentId || null,
+      lastHeartbeatAt: worker?.lastHeartbeatAt || null,
+    };
+
+    if (!worker) {
+      this._addProbeFailure(probe, "worker_registry_missing");
+    } else {
+      if (NON_REUSABLE_WORKER_STATUSES.has(worker.status)) {
+        this._addProbeFailure(probe, `worker_status_${worker.status}`);
+      }
+      if (worker.currentAssignmentId && worker.currentAssignmentId !== assignment.assignmentId) {
+        this._addProbeFailure(probe, "worker_assignment_mismatch");
+      }
+    }
+    if (pid && pidAlive === false) {
+      this._addProbeFailure(probe, "worker_pid_dead");
+    }
+
+    if (!DEEP_PROGRESS_PROBE_LEVELS.has(progressDelay.level)) {
+      this._finishProbe(probe);
+      return probe;
+    }
+
+    const attemptDir = this._attemptDir(assignment.assignmentId, attempt.attempt);
+    const resultPath = path.join(attemptDir, "result.json");
+    const resultExists = await this._pathExists(resultPath);
+    probe.attemptFiles = {
+      acceptedExists: await this._pathExists(path.join(attemptDir, "accepted.json")),
+      heartbeatExists: await this._pathExists(path.join(attemptDir, "heartbeat.json")),
+      resultExists,
+      resultReadable: resultExists ? Boolean(await this._readAttemptResult(assignment.assignmentId, attempt.attempt)) : null,
+    };
+    if (probe.attemptFiles.resultExists && probe.attemptFiles.resultReadable === false) {
+      this._addProbeFailure(probe, "result_file_unreadable");
+    }
+
+    probe.workerLog = await this._probeWorkerLog(workerId, resultExists);
+    if (probe.workerLog?.indicatesFailedJob) {
+      this._addProbeFailure(probe, "worker_log_failed_without_result");
+    }
+
+    probe.worktree = await this._probeWorktree(heartbeat.worktreePath);
+    if (probe.worktree?.path && probe.worktree.exists === false) {
+      this._addProbeFailure(probe, "worktree_missing");
+    }
+
+    this._finishProbe(probe);
+    return probe;
+  }
+
+  _addProbeFailure(probe, signal) {
+    if (!probe.failureSignals.includes(signal)) probe.failureSignals.push(signal);
+  }
+
+  _finishProbe(probe) {
+    if (probe.failureSignals.length === 0) return;
+    probe.waitUseful = false;
+    probe.reason = probe.failureSignals.join(", ");
+  }
+
+  _pidAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async _probeWorkerLog(workerId, resultExists) {
+    if (!workerId) return null;
+    const logPath = path.join(this.hubRoot, "logs", `worker-${workerId}.log`);
+    try {
+      const logTail = truncateText(await readFile(logPath, "utf8"), PROGRESS_PROBE_LOG_TAIL);
+      const indicatesFailedJob = !resultExists && WAITLESS_LOG_PATTERNS.some((pattern) => pattern.test(logTail));
+      return { path: logPath, exists: true, tail: logTail, indicatesFailedJob };
+    } catch {
+      return { path: logPath, exists: false, tail: "", indicatesFailedJob: false };
+    }
+  }
+
+  async _probeWorktree(worktreePath) {
+    if (!worktreePath) return null;
+    const info = { path: worktreePath, exists: false, gitStatus: null };
+    try {
+      const pathStat = await stat(worktreePath);
+      info.exists = pathStat.isDirectory();
+    } catch {
+      return info;
+    }
+    if (!info.exists) return info;
+    try {
+      const { stdout } = await execFile("git", ["status", "--porcelain"], {
+        cwd: worktreePath,
+        timeout: 3000,
+        maxBuffer: 64 * 1024,
+      });
+      info.gitStatus = truncateText(stdout, 2000);
+    } catch (err) {
+      info.gitStatusError = err.message;
+    }
+    return info;
+  }
+
+  async _writeProgressProbe(assignmentId, attemptNum, level, probe) {
+    try {
+      await writeJsonAtomic(path.join(this._attemptDir(assignmentId, attemptNum), `progress-probe-${level}.json`), probe);
+    } catch {
+      // Probe persistence is diagnostic only; reconciliation must continue.
     }
   }
 
@@ -276,7 +606,14 @@ export class Reconciler {
           if (workerId) {
             const workers = await this.workers.listWorkers();
             const worker = workers.find((w) => w.workerId === workerId);
-            if (worker && worker.status !== "online" && worker.status !== "ready" && worker.status !== "running" && worker.status !== "assigned") {
+            if (
+              decision.action !== "restart_worker_and_retry" &&
+              worker &&
+              worker.status !== "online" &&
+              worker.status !== "ready" &&
+              worker.status !== "running" &&
+              worker.status !== "assigned"
+            ) {
               await updateEntry(this.hubRoot, assignment.entryId, {
                 status: "failed",
                 metadata: {
@@ -286,6 +623,9 @@ export class Reconciler {
               });
               break;
             }
+          }
+          if (decision.action === "restart_worker_and_retry") {
+            await this._stopWorkerForRestart(assignment, attempt, decision.reason);
           }
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
@@ -382,6 +722,16 @@ export class Reconciler {
     await this.assignments.markFinalized(assignment.assignmentId, "queue");
   }
 
+  async _stopWorkerForRestart(assignment, attempt, reason) {
+    const workerId = attempt?.workerId || assignment.workerId;
+    if (!workerId || !this.workerSupervisor?.stopWorker) return;
+    try {
+      await this.workerSupervisor.stopWorker(workerId, reason || "restart_worker_and_retry");
+    } catch (err) {
+      this.log.warn(`worker ${workerId} restart stop failed: ${err.message}`);
+    }
+  }
+
   async _finalizeWorker(assignment, attempt) {
     await this._guardLeader();
     const workerId = attempt?.workerId || assignment.workerId;
@@ -422,9 +772,8 @@ export class Reconciler {
 
   async _readAccepted(assignmentId, attemptNum) {
     try {
-      const dir = String(attemptNum).padStart(3, "0");
       return JSON.parse(await readFile(
-        path.join(this.hubRoot, "assignments", assignmentId, "attempts", dir, "accepted.json"),
+        path.join(this._attemptDir(assignmentId, attemptNum), "accepted.json"),
         "utf8",
       ));
     } catch { return null; }
@@ -432,9 +781,8 @@ export class Reconciler {
 
   async _readAttemptResult(assignmentId, attemptNum) {
     try {
-      const dir = String(attemptNum).padStart(3, "0");
       return JSON.parse(await readFile(
-        path.join(this.hubRoot, "assignments", assignmentId, "attempts", dir, "result.json"),
+        path.join(this._attemptDir(assignmentId, attemptNum), "result.json"),
         "utf8",
       ));
     } catch { return null; }
@@ -442,11 +790,23 @@ export class Reconciler {
 
   async _readHeartbeat(assignmentId, attemptNum) {
     try {
-      const dir = String(attemptNum).padStart(3, "0");
       return JSON.parse(await readFile(
-        path.join(this.hubRoot, "assignments", assignmentId, "attempts", dir, "heartbeat.json"),
+        path.join(this._attemptDir(assignmentId, attemptNum), "heartbeat.json"),
         "utf8",
       ));
     } catch { return null; }
+  }
+
+  _attemptDir(assignmentId, attemptNum) {
+    return path.join(this.hubRoot, "assignments", assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
+  }
+
+  async _pathExists(filePath) {
+    try {
+      await stat(filePath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

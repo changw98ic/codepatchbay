@@ -2,17 +2,18 @@
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
-import { createInstallPlan } from "../../core/setup/install-plan.js";
+import { createInstallPlan, upgradeFor } from "../../core/setup/install-plan.js";
 import { runInstallPlanWithEvents } from "../../server/services/setup-events.js";
 
 function usage() {
   return [
-    "Usage: cpb agents <list|detect|install|test> [options]",
+    "Usage: cpb agents <list|detect|install|upgrade|test> [options]",
     "",
     "Commands:",
     "  cpb agents list [--json]",
     "  cpb agents detect [--json]",
-    "  cpb agents install <agent> --method <method> [--json] [--yes]",
+    "  cpb agents install <agent> [--method <method>] [--version <ver>] [--json] [--yes]",
+    "  cpb agents upgrade <agent> [--method <method>] [--json] [--yes]",
     "  cpb agents test <agent> [--json]",
   ].join("\n");
 }
@@ -77,6 +78,52 @@ export async function run(args = []) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(`Plan: ${plan.displayCommand}`);
+      if (plan.version) console.log(`Pinned: ${plan.version}`);
+      if (plan.upgrade) console.log(`Upgrade: ${plan.upgrade.displayCommand}`);
+      if (plan.rollback?.command) console.log(`Rollback: ${plan.rollback.command}`);
+      console.log(shouldExecute ? "Executed: yes" : "Executed: no (pass --yes to run)");
+    }
+    return 0;
+  }
+
+  if (command === "upgrade") {
+    const agentId = args[1];
+    const method = optionValue(args, "--method");
+    if (!agentId) {
+      console.error(usage());
+      return 1;
+    }
+
+    const { getSetupAgent } = await import("../../core/setup/agent-catalog.js");
+    const agent = getSetupAgent(agentId);
+    if (!agent) {
+      console.error(`Unknown agent: ${agentId}`);
+      return 1;
+    }
+
+    const detected = await detectSetupEnvironment();
+    const selectedMethod = method || (agent.install.brew && detected?.tools?.brew?.installed
+      ? "brew"
+      : Object.keys(agent.upgrade || {})[0]);
+    const upgrade = upgradeFor(selectedMethod, agent);
+    if (!upgrade) {
+      console.error(`No upgrade path found for '${agentId}' via '${selectedMethod}'`);
+      return 1;
+    }
+
+    const shouldExecute = args.includes("--yes");
+    if (shouldExecute) {
+      await runInstallPlanWithEvents(
+        { ...upgrade, agent: { id: agent.id, displayName: agent.displayName, vendor: agent.vendor, binary: agent.binary } },
+        { cpbRoot: process.env.CPB_ROOT },
+      );
+    }
+
+    if (args.includes("--json")) {
+      console.log(JSON.stringify({ executed: shouldExecute, upgrade }, null, 2));
+    } else {
+      console.log(`Upgrade: ${upgrade.displayCommand}`);
+      console.log(`Source: ${upgrade.sourceUrl}`);
       console.log(shouldExecute ? "Executed: yes" : "Executed: no (pass --yes to run)");
     }
     return 0;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
@@ -22,21 +22,12 @@ function git(cwd, args) {
   return result;
 }
 
-async function missing(filePath) {
-  try {
-    await lstat(filePath);
-    return false;
-  } catch (err) {
-    if (err?.code === "ENOENT") return true;
-    throw err;
-  }
-}
-
-test("createWorktree isolates codegraph while reusing installed dependencies", async () => {
+test("createWorktree initializes isolated codegraph while reusing installed dependencies", async () => {
   const root = await tempRoot("cpb-worktree-codegraph");
   const project = path.join(root, "project");
   const worktreesRoot = path.join(root, "worktrees");
   const sourceNodeModules = path.join(project, "node_modules");
+  const initCalls = [];
   await mkdir(path.join(project, ".codegraph"), { recursive: true });
   await mkdir(path.join(sourceNodeModules, "chokidar"), { recursive: true });
   await writeFile(path.join(sourceNodeModules, "chokidar", "package.json"), "{\"name\":\"chokidar\"}\n", "utf8");
@@ -44,30 +35,68 @@ test("createWorktree isolates codegraph while reusing installed dependencies", a
   git(project, ["init"]);
   git(project, ["add", "README.md"]);
   git(project, ["commit", "-m", "Initial"]);
+  const initCodegraph = async (worktreePath) => {
+    initCalls.push(worktreePath);
+    await mkdir(path.join(worktreePath, ".codegraph"), { recursive: true });
+    await writeFile(path.join(worktreePath, ".codegraph", "index.sqlite"), "", "utf8");
+  };
 
   const created = await createWorktree({
     project,
     jobId: "job-codegraph",
     slug: "pipeline",
     worktreesRoot,
+    initCodegraph,
   });
   const worktreeCodegraph = path.join(created.path, ".codegraph");
   const worktreeNodeModules = path.join(created.path, "node_modules");
 
-  assert.equal(await missing(worktreeCodegraph), true);
+  assert.deepEqual(initCalls, [created.path]);
+  assert.equal((await lstat(worktreeCodegraph)).isDirectory(), true);
+  assert.notEqual(await realpath(worktreeCodegraph), await realpath(path.join(project, ".codegraph")));
   assert.equal((await lstat(worktreeNodeModules)).isSymbolicLink(), true);
   assert.equal(await realpath(worktreeNodeModules), await realpath(sourceNodeModules));
 
+  await rm(worktreeCodegraph, { recursive: true, force: true });
   await symlink(path.join(project, ".codegraph"), worktreeCodegraph, "dir");
   const reused = await createWorktree({
     project,
     jobId: "job-codegraph",
     slug: "pipeline",
     worktreesRoot,
+    initCodegraph,
   });
 
   assert.equal(reused.path, created.path);
-  assert.equal(await missing(worktreeCodegraph), true);
+  assert.deepEqual(initCalls, [created.path, created.path]);
+  assert.equal((await lstat(worktreeCodegraph)).isDirectory(), true);
+  assert.notEqual(await realpath(worktreeCodegraph), await realpath(path.join(project, ".codegraph")));
   assert.equal((await lstat(worktreeNodeModules)).isSymbolicLink(), true);
   assert.equal(await realpath(worktreeNodeModules), await realpath(sourceNodeModules));
+
+  const reusedExistingIndex = await createWorktree({
+    project,
+    jobId: "job-codegraph",
+    slug: "pipeline",
+    worktreesRoot,
+    initCodegraph,
+  });
+
+  assert.equal(reusedExistingIndex.path, created.path);
+  assert.deepEqual(initCalls, [created.path, created.path, created.path]);
+
+  const skippedCodegraph = await createWorktree({
+    project,
+    jobId: "job-no-codegraph",
+    slug: "pipeline",
+    worktreesRoot,
+    initCodegraph: async () => {
+      throw new Error("codegraph init should be skipped");
+    },
+    codegraphEnabled: false,
+  });
+
+  assert.deepEqual(initCalls, [created.path, created.path, created.path]);
+  await assert.rejects(lstat(path.join(skippedCodegraph.path, ".codegraph")), { code: "ENOENT" });
+  assert.equal((await lstat(path.join(skippedCodegraph.path, "node_modules"))).isSymbolicLink(), true);
 });

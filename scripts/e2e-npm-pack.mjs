@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { REQUIRED_EXECUTOR_FILES } from "../server/services/executor-root.js";
 
 const args = process.argv.slice(2);
 const KEEP_STATE = args.includes("--keep-state");
@@ -13,7 +14,6 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const CPB_ROOT = ROOT;
 const HUB_ROOT = path.join(homedir(), ".cpb");
 const PKG_NAME = "codepatchbay";
-const TGZ = `${PKG_NAME}-0.2.0.tgz`;
 const GITHUB_REPO = resolveGithubRepo({ env: process.env, root: ROOT });
 const AUTOMATION_LABEL = process.env.CPB_E2E_LABEL || "cpb";
 const TARGET_ISSUE_NUMBER = process.env.CPB_E2E_ISSUE_NUMBER
@@ -106,6 +106,16 @@ function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function assertPackedExecutorFiles(packEntry) {
+  const packedPaths = new Set((packEntry.files || []).map((file) => file.path).filter(Boolean));
+  const missing = REQUIRED_EXECUTOR_FILES.filter((required) => !packedPaths.has(required));
+  if (missing.length > 0) {
+    fail(`Pack is missing executor files: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  pass(`Pack contains ${REQUIRED_EXECUTOR_FILES.length} required executor files`);
+}
+
 function configureAgentRoute() {
   if (AGENT_MODE === "codex") {
     log("GITHUB", "Configuring deterministic ACP agent route (codex all phases)...");
@@ -179,7 +189,6 @@ function stepClean() {
     path.join(CPB_ROOT, "cpb-task", "jobs-index.json"),
     path.join(projectRuntime, "jobs-index.json"),
     path.join(HUB_ROOT, "github", "issues.json"),
-    path.join(ROOT, TGZ),
   ];
 
   for (const d of dirs) {
@@ -190,6 +199,13 @@ function stepClean() {
   for (const f of files) {
     if (existsSync(f)) rmSync(f, { force: true });
   }
+
+  // Remove stale tarballs from project root
+  try {
+    for (const entry of readdirSync(ROOT)) {
+      if (entry.endsWith(".tgz")) rmSync(path.join(ROOT, entry), { force: true });
+    }
+  } catch {}
 
   // Prune stale git worktrees so branches can be reused
   run("git worktree prune", { silent: true, allowFail: true });
@@ -209,13 +225,39 @@ function stepClean() {
 // ─── Step 3: npm pack + global install ─────────────────────────────
 function stepPack() {
   log("PACK", "Building and packing...");
-  const oldRootTgz = path.join(ROOT, TGZ);
-  if (existsSync(oldRootTgz)) rmSync(oldRootTgz, { force: true });
+  // Clean any stale tarballs from project root
+  try {
+    for (const entry of readdirSync(ROOT)) {
+      if (entry.endsWith(".tgz")) rmSync(path.join(ROOT, entry), { force: true });
+    }
+  } catch {}
 
   const packDir = mkdtempSync(path.join(tmpdir(), "cpb-e2e-pack-"));
-  const tgzPath = path.join(packDir, TGZ);
-  run(`npm pack --silent --pack-destination ${shellQuote(packDir)}`, { cwd: ROOT, timeout: 120_000 });
-  if (!existsSync(tgzPath)) { fail("Tarball not found"); process.exit(1); }
+  const packResult = run(`npm pack --json --pack-destination ${shellQuote(packDir)}`, {
+    cwd: ROOT,
+    timeout: 120_000,
+    silent: true,
+  });
+
+  let tgzFilename;
+  let packEntry;
+  try {
+    const packMeta = JSON.parse(packResult.stdout);
+    if (!Array.isArray(packMeta) || packMeta.length === 0 || !packMeta[0].filename) {
+      throw new Error("npm pack --json returned no filename");
+    }
+    packEntry = packMeta[0];
+    tgzFilename = packEntry.filename;
+  } catch (e) {
+    fail(`Could not parse npm pack output: ${e.message}`);
+    if (packResult.stdout) log("PACK", `stdout: ${packResult.stdout.substring(0, 500)}`);
+    process.exit(1);
+  }
+
+  assertPackedExecutorFiles(packEntry);
+
+  const tgzPath = path.join(packDir, tgzFilename);
+  if (!existsSync(tgzPath)) { fail(`Tarball not found: ${tgzPath}`); process.exit(1); }
 
   log("INSTALL", "Installing globally...");
   run(`npm install -g ${shellQuote(tgzPath)}`, { cwd: ROOT, timeout: 120_000 });

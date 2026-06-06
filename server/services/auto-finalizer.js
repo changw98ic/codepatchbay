@@ -373,6 +373,109 @@ function buildRoutingContext(entry, job, routeGuard = null) {
   };
 }
 
+function isInsideRoot(root, targetPath) {
+  if (!root || !targetPath || !path.isAbsolute(targetPath)) return false;
+  const relative = path.relative(path.resolve(root), path.resolve(targetPath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function displayArtifactPath(artifactPath, roots = []) {
+  if (!artifactPath) return null;
+  const value = String(artifactPath);
+  if (!path.isAbsolute(value)) return value;
+  for (const root of roots) {
+    if (isInsideRoot(root, value)) return path.relative(path.resolve(root), value);
+  }
+  return path.basename(value);
+}
+
+function artifactIdFromPath(artifactPath) {
+  const name = path.basename(String(artifactPath || "artifact"));
+  return name.replace(/\.(?:md|patch|diff|txt|json)$/i, "") || "artifact";
+}
+
+function artifactReferenceFromEntry(entry, roots) {
+  if (!entry || entry.broken) return null;
+  return {
+    id: entry.id || artifactIdFromPath(entry.path),
+    path: displayArtifactPath(entry.path, roots),
+  };
+}
+
+function artifactReferenceForKind(bundle, kind, roots) {
+  const matches = (bundle?.links?.artifacts || [])
+    .filter((entry) => entry?.kind === kind && !entry.broken);
+  if (matches.length === 0) return null;
+  const entry = kind === "verdict" ? matches[matches.length - 1] : matches[0];
+  return artifactReferenceFromEntry(entry, roots);
+}
+
+function pushEvidenceLine(lines, value) {
+  if (Array.isArray(value)) {
+    for (const item of value) pushEvidenceLine(lines, item);
+    return;
+  }
+  if (value === null || value === undefined) return;
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (text) lines.push(text);
+}
+
+function testEvidenceFromVerdict(verdict) {
+  const lines = [];
+  pushEvidenceLine(lines, verdict?.tests);
+  pushEvidenceLine(lines, verdict?.basis?.tests);
+  if (verdict?.layers && typeof verdict.layers === "object") {
+    for (const [name, layer] of Object.entries(verdict.layers)) {
+      if (!layer?.detail) continue;
+      pushEvidenceLine(lines, `${name}: ${layer.detail}`);
+    }
+  }
+  return [...new Set(lines)].slice(0, 8);
+}
+
+function verdictEvidenceForBody(verdict) {
+  if (!verdict || typeof verdict !== "object") {
+    return { status: "pass", reason: "No structured verdict evidence was found" };
+  }
+  return {
+    ...verdict,
+    status: verdict.status || verdict.verdict || "unavailable",
+    blockingCount: verdict.blockingCount ?? verdict.blocking?.length ?? verdict.blockingMissingInputs?.length ?? undefined,
+  };
+}
+
+export function buildPrEvidenceFromReviewBundle(bundle, {
+  cpbRoot = null,
+  dataRoot = null,
+  hubRoot = null,
+} = {}) {
+  const roots = [hubRoot, dataRoot, cpbRoot].filter(Boolean);
+  const artifacts = {
+    plan: artifactReferenceForKind(bundle, "plan", roots),
+    deliverable: artifactReferenceForKind(bundle, "deliverable", roots),
+    review: artifactReferenceForKind(bundle, "review", roots),
+    verdict: artifactReferenceForKind(bundle, "verdict", roots),
+    diff: artifactReferenceForKind(bundle, "diff", roots),
+  };
+  if (!artifacts.diff && bundle?.evidence?.diffStat) {
+    artifacts.diff = {
+      id: "worktree-diff",
+      path: `${bundle.evidence.changedFiles?.length || 0} changed files`,
+    };
+  }
+
+  const artifactCount = Array.isArray(bundle?.links?.artifacts) ? bundle.links.artifacts.length : 0;
+  return {
+    artifacts,
+    tests: testEvidenceFromVerdict(bundle?.evidence?.verdict || null),
+    audit: {
+      eventLog: bundle?.links?.eventLog || null,
+      artifactIndex: artifactCount > 0 ? `${artifactCount} artifact references` : null,
+    },
+    verdictDetail: verdictEvidenceForBody(bundle?.evidence?.verdict || null),
+  };
+}
+
 function commitMessage({ jobId, issueNumber }) {
   return [
     `Finalize CPB job ${jobId} for issue #${issueNumber}`,
@@ -682,6 +785,19 @@ export async function finalizeSuccessfulQueueEntry({
       },
     };
     const agents = await resolveAgentsFromEvents(cpbRoot, projectId, job.jobId, { dataRoot });
+    let prEvidence = {};
+    try {
+      const bundle = await buildReviewBundle(cpbRoot, projectId, job.jobId, {
+        entry,
+        job: prJob,
+        sourcePath: canonicalSourcePath,
+        worktreePath: canonicalWorktreePath,
+        dataRoot,
+      });
+      prEvidence = buildPrEvidenceFromReviewBundle(bundle, { cpbRoot, dataRoot, hubRoot });
+    } catch {
+      prEvidence = {};
+    }
     const pr = await openDraftPullRequest({
       job: prJob,
       verdict: "PASS",
@@ -691,6 +807,7 @@ export async function finalizeSuccessfulQueueEntry({
       pushToken,
       agents,
       routingContext: buildRoutingContext(entry, job, routeGuard),
+      ...prEvidence,
     });
     if (pr.status !== "pr.opened") {
       return reject("PR_FINALIZE_FAILED", {

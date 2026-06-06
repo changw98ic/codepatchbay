@@ -68,7 +68,7 @@ async function stopOrchestrator(hubRoot) {
 }
 
 async function listWorkers(hubRoot) {
-  const { WorkerStore } = await import("../../server/orchestrator/worker-store.js");
+  const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
   const store = new WorkerStore(hubRoot);
   await store.init();
   const workers = await store.listWorkers();
@@ -83,7 +83,7 @@ async function listWorkers(hubRoot) {
 }
 
 async function listAssignments(hubRoot) {
-  const { AssignmentStore } = await import("../../server/orchestrator/assignment-store.js");
+  const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
   const store = new AssignmentStore(hubRoot);
   await store.init();
   const assignments = await store.listAssignments();

@@ -3,8 +3,8 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeDataPath, cpbHome, projectRuntimeRoot } from "../server/services/runtime-root.js";
-import { listProjects, loadRegistry, resolveHubRoot } from "../server/services/hub-registry.js";
+import { listProjects, loadRegistry, resolveHubRoot } from "../bridges/runtime-services.js";
+import { cpbHome, projectRuntimeRoot, runtimeDataPath } from "../core/paths.js";
 
 async function exists(file) {
   try {

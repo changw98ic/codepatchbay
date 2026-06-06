@@ -36,7 +36,25 @@ function normalizeHubConfig(data) {
     delete next.acpPool.total;
     if (Object.keys(next.acpPool).length === 0) delete next.acpPool;
   }
+  if (next.scheduler && typeof next.scheduler === "object" && !Array.isArray(next.scheduler)) {
+    next.scheduler = { ...next.scheduler };
+  } else {
+    delete next.scheduler;
+  }
   return next;
+}
+
+const VALID_SCHEDULER_MODES = new Set(["default", "smart"]);
+
+export function isValidSchedulerMode(mode) {
+  return VALID_SCHEDULER_MODES.has(mode);
+}
+
+export function readSchedulerConfig(hubConfig) {
+  const scheduler = hubConfig?.scheduler;
+  if (!scheduler || typeof scheduler !== "object") return { mode: "default" };
+  const mode = VALID_SCHEDULER_MODES.has(scheduler.mode) ? scheduler.mode : "default";
+  return { mode };
 }
 
 // ── Hub config (~/.cpb/config.json) ──

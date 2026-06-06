@@ -148,9 +148,11 @@ export function selectAgentWithFallback({
   fallbackAgent = null,
   agentAvailability = null,
   allowFallback = true,
+  policyAllowsFallback = true,
 } = {}) {
   const preferred = preferredAgent || null;
   const fallback = fallbackAgent || null;
+  const fallbackPermitted = allowFallback !== false && policyAllowsFallback !== false;
   const preferredStatus = availabilityFor(agentAvailability, preferred);
 
   if (!preferred || preferredStatus.available) {
@@ -159,13 +161,13 @@ export function selectAgentWithFallback({
       preferredAgent: preferred,
       selectedAgent: preferred,
       fallbackAgent: fallback,
-      fallbackAllowed: allowFallback !== false,
+      fallbackAllowed: fallbackPermitted,
       fallbackApplied: false,
       reason: preferred ? "preferred agent available" : "no preferred agent",
     };
   }
 
-  if (allowFallback === false) {
+  if (!fallbackPermitted) {
     return {
       role,
       preferredAgent: preferred,
@@ -173,7 +175,7 @@ export function selectAgentWithFallback({
       fallbackAgent: fallback,
       fallbackAllowed: false,
       fallbackApplied: false,
-      reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; fallbackAllowed=false`,
+      reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; fallback forbidden by policy`,
     };
   }
 
@@ -199,6 +201,65 @@ export function selectAgentWithFallback({
     fallbackApplied: false,
     reason: `preferred unavailable: ${preferredStatus.reason || "unknown"}; fallback unavailable: ${fallbackStatus.reason || "missing"}`,
   };
+}
+
+export function healthToAvailability(agentHealth) {
+  if (!agentHealth || typeof agentHealth !== "object") return null;
+  const result = {};
+  for (const [agent, health] of Object.entries(agentHealth)) {
+    if (health === true) {
+      result[agent] = { available: true };
+    } else if (health === false) {
+      result[agent] = { available: false, status: "unavailable", reason: "health check failed" };
+    } else if (health && typeof health === "object") {
+      const unavailable = health.healthy === false
+        || ["unavailable", "offline", "rate_limited"].includes(health.status);
+      result[agent] = unavailable
+        ? { available: false, status: health.status || "unavailable", reason: health.reason || null }
+        : { available: true };
+    } else {
+      result[agent] = { available: true };
+    }
+  }
+  return result;
+}
+
+export function resolvePhaseAgentWithFallback({
+  routing,
+  phase,
+  role,
+  agentAvailability = null,
+  agentHealth = null,
+  teamPolicy = null,
+}) {
+  const effectiveRole = role || ROUTING_PHASE_ROLES[phase];
+  if (!effectiveRole) {
+    return {
+      phase,
+      role: null,
+      preferredAgent: null,
+      selectedAgent: null,
+      fallbackAgent: null,
+      fallbackAllowed: false,
+      fallbackApplied: false,
+      reason: "unknown phase or role",
+    };
+  }
+
+  const availability = agentHealth
+    ? { ...(agentAvailability || {}), ...healthToAvailability(agentHealth) }
+    : agentAvailability;
+
+  const selection = selectAgentWithFallback({
+    role: effectiveRole,
+    preferredAgent: agentForRoutingPhase(routing, phase, effectiveRole),
+    fallbackAgent: fallbackAgentForRole(routing, effectiveRole),
+    agentAvailability: availability,
+    allowFallback: routing?.allowFallback !== false,
+    policyAllowsFallback: teamPolicy?.routing?.allowFallback !== false,
+  });
+
+  return { ...selection, phase };
 }
 
 export function validateRoutingRules(routing, { isWorkflowName } = {}) {

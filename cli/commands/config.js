@@ -5,6 +5,7 @@ import {
   readProjectJsonFromRoots,
   writeProjectJson,
   mergeAgentConfig,
+  isValidSchedulerMode,
 } from "../../server/services/agent-config.js";
 
 function optionValue(args, name) {
@@ -122,6 +123,8 @@ export async function run(args, { cpbRoot } = {}) {
   cpb config --hub --verify-variant <variant>    Set global variant for verify phase
   cpb config --hub --agents                      Show global agent config
   cpb config --hub --show-concurrency            Show global concurrency config
+  cpb config --hub --show-scheduler              Show scheduler mode
+  cpb config --hub --scheduler-mode <default|smart>  Set scheduler mode
   cpb config --hub --max-active-per-project <n>  Set default project mutating task cap
   cpb config --hub --acp-provider-max <n>        Set per-provider ACP connection cap
   cpb config --hub --unset-agent                 Remove global agent overrides
@@ -180,6 +183,24 @@ export async function run(args, { cpbRoot } = {}) {
       return 0;
     }
 
+    if (args.includes("--show-scheduler")) {
+      const mode = hubConfig.scheduler?.mode || "default";
+      console.log(`Scheduler mode: ${mode}`);
+      return 0;
+    }
+
+    const schedulerMode = optionValue(args, "--scheduler-mode");
+    if (schedulerMode) {
+      if (!isValidSchedulerMode(schedulerMode)) {
+        console.error(`Invalid scheduler mode '${schedulerMode}'. Must be 'default' or 'smart'.`);
+        return 1;
+      }
+      hubConfig.scheduler = { ...(hubConfig.scheduler || {}), mode: schedulerMode };
+      await writeHubConfig(hubRoot, hubConfig);
+      console.log(`Scheduler mode set to '${schedulerMode}'.`);
+      return 0;
+    }
+
     const applied = await applyAgentUpdates(args, hubConfig, "agents", async (data) => {
       await writeHubConfig(hubRoot, data);
       console.log("Updated global agent config.");
@@ -215,7 +236,7 @@ export async function run(args, { cpbRoot } = {}) {
       return 0;
     }
 
-    console.error("No configuration option specified. Use --agent, --*-variant, --agents, --show-concurrency, --max-active-per-project, --acp-provider-max, or --unset-agent.");
+    console.error("No configuration option specified. Use --agent, --*-variant, --agents, --show-concurrency, --show-scheduler, --scheduler-mode, --max-active-per-project, --acp-provider-max, or --unset-agent.");
     return 1;
   }
 

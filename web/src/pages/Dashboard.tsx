@@ -148,7 +148,7 @@ export default function Dashboard() {
   const allProjects = [...primaryProjects, ...secondaryProjects];
 
   const activeTasksCount = taskList.filter(t => t.status === 'running' || t.progress?.stage === 'running').length;
-  const failedRunsCount = (dispatchObs?.dispatchSummary?.failed ?? 0) + (queueStatus?.failed ?? 0);
+  const failedRunsCount = (dispatchObs?.dispatchSummary?.failed ?? 0) + (queueStatus?.unretriedFailedTargets ?? queueStatus?.failed ?? 0);
   const blockedProjectsCount = allProjects.filter(projectAttentionStatus).length;
   const completedRunsCount = dispatchObs?.dispatchSummary?.completed ?? 0;
 

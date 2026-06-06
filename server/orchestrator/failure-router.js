@@ -6,6 +6,7 @@ const MAX_RETRIES = {
   agent_contract_invalid: 1,
   worker_crashed: 2,
   worker_heartbeat_lost: 2,
+  assignment_progress_stale: 2,
   agent_rate_limited: 0,
   verification_failed: 2,
 };
@@ -17,12 +18,33 @@ const SUPERVISOR_ELIGIBLE_KINDS = new Set([
   FailureKind.ARTIFACT_INVALID,
 ]);
 
+// Additional kinds eligible for supervisor diagnosis in smart mode
+const SMART_MODE_SUPERVISOR_KINDS = new Set([
+  FailureKind.VERIFICATION_FAILED,
+  FailureKind.ASSIGNMENT_PROGRESS_STALE,
+  FailureKind.TIMEOUT,
+]);
+
 export class FailureRouter {
   /**
    * @param {object} [supervisor] - AcpSupervisor instance (optional, P1-2)
+   * @param {object} [opts]
+   * @param {Function} [opts.readModeFn] - async () => "default"|"smart"
    */
-  constructor(supervisor = null) {
+  constructor(supervisor = null, opts = {}) {
     this.supervisor = supervisor;
+    this.readModeFn = opts.readModeFn || null;
+  }
+
+  async _shouldConsultSupervisor(failureKind) {
+    if (!this.supervisor) return false;
+    if (SUPERVISOR_ELIGIBLE_KINDS.has(failureKind)) return true;
+    // Smart mode extends eligibility
+    if (this.readModeFn) {
+      const mode = await this.readModeFn();
+      if (mode === "smart" && SMART_MODE_SUPERVISOR_KINDS.has(failureKind)) return true;
+    }
+    return false;
   }
 
   /**
@@ -66,7 +88,7 @@ export class FailureRouter {
     }
 
     // P1-2: Complex failures → consult supervisor if available
-    if (this.supervisor && SUPERVISOR_ELIGIBLE_KINDS.has(failure.kind)) {
+    if (await this._shouldConsultSupervisor(failure.kind)) {
       try {
         const decision = await this.supervisor.diagnoseFailure({ assignment, attempt, result });
         if (decision && typeof decision.action === "string") {
@@ -82,6 +104,7 @@ export class FailureRouter {
       case FailureKind.RUNTIME_INTERRUPTED:
       case FailureKind.WORKER_CRASHED:
       case FailureKind.WORKER_HEARTBEAT_LOST:
+      case FailureKind.ASSIGNMENT_PROGRESS_STALE:
         return {
           action: "restart_worker_and_retry",
           reason: `${failure.kind}: ${failure.reason}`,

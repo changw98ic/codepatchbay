@@ -99,10 +99,20 @@ export interface AcpStatus {
 }
 
 export interface QueueStatus {
+  total?: number;
   pending: number;
+  scheduled?: number;
+  inProgress?: number;
   running: number;
   completed: number;
   failed: number;
+  failedEntries?: number;
+  failedTargets?: number;
+  retryingFailedTargets?: number;
+  repairedFailedTargets?: number;
+  unretriedFailedTargets?: number;
+  blocked?: number;
+  cancelled?: number;
 }
 
 export interface QueueEntry {
@@ -150,6 +160,55 @@ export interface Artifact {
   type: string;
   path: string;
   verdict?: 'PASS' | 'FAIL' | 'PARTIAL';
+}
+
+export interface ArtifactIndexEntry {
+  id: string;
+  kind: string;
+  phase: string | null;
+  path: string;
+  sha256: string | null;
+  createdAt: string | null;
+  producerAgent: string | null;
+  exists: boolean;
+  broken: boolean;
+  reason: string | null;
+  eventType: string | null;
+}
+
+export interface ArtifactIndex {
+  schemaVersion: number;
+  project: string;
+  jobId: string;
+  generatedAt?: string;
+  entries: ArtifactIndexEntry[];
+  brokenReferences: ArtifactIndexEntry[];
+}
+
+export interface VerdictDetail {
+  status: string;
+  confidence: string | number | null;
+  reason: string | null;
+  blockingCount: number;
+  fixScope: string[];
+  path: string;
+  artifactId: string | null;
+  source: string | null;
+}
+
+export interface ArtifactWarning {
+  kind: string;
+  id: string | null;
+  path: string | null;
+  message: string;
+}
+
+export interface JobArtifactDetailResponse {
+  project: string;
+  jobId: string;
+  artifactIndex: ArtifactIndex;
+  verdict: VerdictDetail | null;
+  warnings: ArtifactWarning[];
 }
 
 export interface Agent {

@@ -1,12 +1,12 @@
 import { LeaderLock, readLeaderStatus } from "./leader-lock.js";
-import { AssignmentStore } from "./assignment-store.js";
-import { WorkerStore } from "./worker-store.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { Scheduler } from "./scheduler.js";
 import { WorkerSupervisor } from "./worker-supervisor.js";
 import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
-import { createLogger } from "../services/logger.js";
+import { createLogger } from "../../shared/logger.js";
 import { resolveExecutorRoot } from "../services/executor-root.js";
 
 const TICK_MS = 2_000;
@@ -102,11 +102,16 @@ export class HubOrchestrator {
 
     // P1-2: supervisor gets lazy pool — only used when pool is actually available
     const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot });
-    const failureRouter = new FailureRouter(acpSupervisor);
+    const readModeFn = async () => {
+      const { readHubConfig: rhc, readSchedulerConfig: rsc } = await import("../services/agent-config.js");
+      return rsc(await rhc(hubRoot)).mode;
+    };
+    const failureRouter = new FailureRouter(acpSupervisor, { readModeFn });
 
     this.reconciler = new Reconciler(hubRoot, {
       assignmentStore: this.assignmentStore,
       workerStore: this.workerStore,
+      workerSupervisor: this.workerSupervisor,
       leaderLock: this.leaderLock,
       failureRouter,
       hubRoot,

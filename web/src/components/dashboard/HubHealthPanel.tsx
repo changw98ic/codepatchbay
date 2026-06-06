@@ -64,7 +64,7 @@ const sectionGap = style({
 interface HubHealthPanelProps {
   hubStatus: { projectCount: number } | null;
   hubProjects: Array<{ id: string; name: string; workerDerivedStatus?: string; worker?: { status: string } }>;
-  hubAcp?: { pools?: Record<string, { mode?: string; active?: number; limit?: number; queued?: number }>; rateLimits?: Record<string, { untilTs?: number }> } | null;
+  hubAcp?: { pools?: Record<string, { mode?: string; active?: number; limit?: number; queued?: number }>; providerQuotas?: Record<string, { untilTs?: number }> } | null;
   knowledgePolicy?: { automaticWrites?: unknown[]; forbiddenMarkdownState?: unknown[] } | null;
   observability?: {
     pools?: Record<string, { requestCount?: number; errorCount?: number; recycleCount?: number; processAgeMs?: number; rateLimitedUntil?: number }>;
@@ -72,7 +72,7 @@ interface HubHealthPanelProps {
     workers?: { details: Array<{ id: string; ageMs: number }> };
   } | null;
   projects: Array<{ inbox?: number; outputs?: number }>;
-  queueStatus?: { total?: number; pending?: number; inProgress?: number; failed?: number; activeProjects?: Array<{ projectId: string; busyReason?: string; workerId?: string }>; eligibleQueued?: number; eligibleProjects?: string[] } | null;
+  queueStatus?: { total?: number; pending?: number; inProgress?: number; failed?: number; failedEntries?: number; failedTargets?: number; retryingFailedTargets?: number; repairedFailedTargets?: number; unretriedFailedTargets?: number; activeProjects?: Array<{ projectId: string; busyReason?: string; workerId?: string }>; eligibleQueued?: number; eligibleProjects?: string[] } | null;
   queueEntries?: Array<{ id: string; projectId: string; status: string }>;
 }
 
@@ -130,7 +130,12 @@ export function HubHealthPanel({ hubStatus, hubProjects, hubAcp, knowledgePolicy
       {queueStatus && queueStatus.total && queueStatus.total > 0 && (
         <div className={`${pillRow} ${sectionGap}`}>
           <Badge variant="muted">Queue: {queueStatus.pending} pending · {queueStatus.inProgress} active</Badge>
-          {queueStatus.failed ? <Badge variant="error">{queueStatus.failed} failed</Badge> : null}
+          {queueStatus.unretriedFailedTargets ? <Badge variant="error">{queueStatus.unretriedFailedTargets} unretried failed targets</Badge> : null}
+          {queueStatus.retryingFailedTargets ? <Badge variant="warning">{queueStatus.retryingFailedTargets} failed targets retrying</Badge> : null}
+          {queueStatus.repairedFailedTargets ? <Badge variant="muted">{queueStatus.repairedFailedTargets} failed targets repaired</Badge> : null}
+          {queueStatus.failedEntries && !queueStatus.unretriedFailedTargets && !queueStatus.retryingFailedTargets && !queueStatus.repairedFailedTargets ? (
+            <Badge variant="muted">{queueStatus.failedEntries} historical failed entries</Badge>
+          ) : null}
         </div>
       )}
 

@@ -9,7 +9,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   if (sub === "status") {
     const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
-    const { WorkerStore, summarizeWorkers } = await import("../../server/orchestrator/worker-store.js");
+    const { WorkerStore, summarizeWorkers } = await import("../../shared/orchestrator/worker-store.js");
     const { queueStatus } = await import("../../server/services/hub-queue.js");
     const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
     const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
@@ -47,7 +47,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log(`Server: ${liveTag}`);
       console.log(`Orchestrator: ${orchestratorTag}`);
       console.log(`Projects: ${status.enabledProjectCount}/${status.projectCount} enabled`);
-      console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} blocked:${queue.blocked || 0} failed:${queue.failed}`);
+      console.log(`Queue: ${queue.total} entries pending:${queue.pending} scheduled:${queue.scheduled || 0} running:${queue.inProgress} completed:${queue.completed} blocked:${queue.blocked || 0} ${formatFailedSummary(queue)}`);
       console.log(`Workers: ${formatManagedWorkerSummary(managedWorkers)}`);
       const defaultLimit = pool.providerConnectionLimit;
       const knownKeys = await pool.getKnownProviderKeys();
@@ -84,13 +84,13 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
     const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
     const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
-    const status = { ...pool.status(), rateLimits: await pool.readDurableRateLimits() };
+    const status = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
     if (json) {
       console.log(JSON.stringify(status, null, 2));
     } else {
       console.log("ACP pools:");
       for (const [agent, info] of Object.entries(status.pools || {})) {
-        const limit = status.rateLimits?.[agent];
+        const limit = status.providerQuotas?.[agent];
         const backoff = limit?.untilTs ? ` backoff:${limit.untilTs}` : "";
         console.log(`  ${agent}\tmode:${info.mode} limit:${info.limit} active:${info.active} queued:${info.queued}${backoff}`);
       }
@@ -102,7 +102,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       if (json) console.log(JSON.stringify(qs, null, 2));
       else {
         console.log(`Queue: ${qs.total} entries`);
-        console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} blocked:${qs.blocked || 0} failed:${qs.failed} cancelled:${qs.cancelled}`);
+        console.log(`  pending:${qs.pending} scheduled:${qs.scheduled || 0} in_progress:${qs.inProgress} completed:${qs.completed} blocked:${qs.blocked || 0} ${formatFailedSummary(qs)} cancelled:${qs.cancelled}`);
         console.log(`  active-mutating:${qs.activeMutatingTotal || 0}`);
         if (qs.eligibleQueued > 0) {
           console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects?.join(",") || ""}`);
@@ -113,7 +113,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
             if (ps.maxActivePerProject) line += ` cap:${ps.activeMutating}/${ps.maxActivePerProject}`;
             if (ps.eligiblePending > 0) line += ` eligible:${ps.eligiblePending}`;
             if (ps.blocked > 0) line += ` blocked:${ps.blocked}`;
-            if (ps.failed > 0) line += ` failed:${ps.failed}`;
+            if ((ps.failedEntries || ps.failed) > 0) line += ` ${formatFailedSummary(ps)}`;
             if (ps.busy) {
               line += ` BUSY`;
               if (ps.busyReason) line += `(${ps.busyReason})`;
@@ -260,4 +260,11 @@ function formatManagedWorkerSummary(counts) {
     if (!preferred.includes(status) && count > 0) parts.push(`${status}:${count}`);
   }
   return parts.join(" ");
+}
+
+function formatFailedSummary(queue) {
+  if (queue?.failedTargets !== undefined) {
+    return `failedEntries:${queue.failedEntries ?? queue.failed ?? 0} failedTargets:${queue.failedTargets || 0} retryingTargets:${queue.retryingFailedTargets || 0} repairedTargets:${queue.repairedFailedTargets || 0} unretriedTargets:${queue.unretriedFailedTargets || 0}`;
+  }
+  return `failed:${queue?.failed || 0}`;
 }

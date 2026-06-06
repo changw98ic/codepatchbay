@@ -13,32 +13,8 @@ import { resolvePhases } from "./workflow-runner.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
+import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
-
-// Lazy imports to avoid hard dependency on server/ from core/
-let _providerQuota = null;
-async function getProviderQuota() {
-  if (!_providerQuota) {
-    try { _providerQuota = await import("../../server/services/provider-quota.js"); } catch { _providerQuota = null; }
-  }
-  return _providerQuota;
-}
-
-let _providerAdapters = null;
-async function getProviderAdapters() {
-  if (!_providerAdapters) {
-    try { _providerAdapters = await import("../../server/services/provider-adapters.js"); } catch { _providerAdapters = null; }
-  }
-  return _providerAdapters;
-}
-
-let _delegateClient = null;
-async function getDelegateClient() {
-  if (!_delegateClient) {
-    try { _delegateClient = await import("../../server/services/quota-delegate-client.js"); } catch { _delegateClient = null; }
-  }
-  return _delegateClient;
-}
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
@@ -57,6 +33,15 @@ const PHASE_CORRECTABLE_KINDS = new Set([
 
 function ts() {
   return new Date().toISOString();
+}
+
+async function reportProgress(ctx, event) {
+  if (typeof ctx.onProgress !== "function") return;
+  try {
+    await ctx.onProgress({ ts: ts(), ...event });
+  } catch {
+    // Progress reporting must not change job execution outcome.
+  }
 }
 
 function extractArtifactId(artifact) {
@@ -95,6 +80,28 @@ function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
   };
 }
 
+function normalizeProviderServices(services = {}) {
+  const source = services && typeof services === "object" ? services : {};
+  return {
+    assertProviderAvailable:
+      source.assertProviderAvailable ||
+      source.providerQuota?.assertProviderAvailable ||
+      null,
+    getProviderAdapter:
+      source.getProviderAdapter ||
+      source.providerAdapters?.getProviderAdapter ||
+      null,
+    delegateMarkProviderUnavailable:
+      source.delegateMarkProviderUnavailable ||
+      source.quotaDelegate?.delegateMarkProviderUnavailable ||
+      null,
+    delegateEnqueueProviderUsage:
+      source.delegateEnqueueProviderUsage ||
+      source.quotaDelegate?.delegateEnqueueProviderUsage ||
+      null,
+  };
+}
+
 /**
  * @param {object} ctx
  * @param {string} ctx.cpbRoot
@@ -114,6 +121,7 @@ function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
  * @param {Function} ctx.failJob
  * @param {Function} ctx.appendEvent
  * @param {Function} ctx.getPool
+ * @param {object} [ctx.providerServices]
  * @returns {Promise<{status: string, jobId: string, exitCode: number, failure?: object}>}
  */
 export async function runJob(ctx) {
@@ -137,6 +145,7 @@ export async function runJob(ctx) {
     appendEvent,
     getPool,
   } = ctx;
+  const providerServices = normalizeProviderServices(ctx.providerServices);
 
   process.env.CPB_ROOT = cpbRoot;
   if (hubRoot) process.env.CPB_HUB_ROOT = hubRoot;
@@ -162,6 +171,7 @@ export async function runJob(ctx) {
     planMode,
     ts: ts(),
   });
+  await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
   // 2. Resolve phases
   const phases = resolvePhases(workflow, planMode);
@@ -180,33 +190,80 @@ export async function runJob(ctx) {
   const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
 
   for (const phase of phases) {
+    const role = phaseRoleMap[phase] || phase;
+    const phaseAgents = { ...(ctx.agents || {}) };
+    const phaseRoutingDecision = ctx.routing
+      ? resolvePhaseAgentWithFallback({
+        routing: ctx.routing,
+        phase,
+        role,
+        agentAvailability: ctx.agentAvailability,
+        agentHealth: ctx.agentHealth,
+        teamPolicy: ctx.teamPolicy,
+      })
+      : null;
+
+    if (phaseRoutingDecision?.selectedAgent) {
+      phaseAgents[role] = phaseRoutingDecision.selectedAgent;
+    }
+
     if (typeof startPhase === "function") {
-      await startPhase(cpbRoot, project, jobId, { phase });
+      await startPhase(cpbRoot, project, jobId, {
+        phase,
+        agent: phaseRoutingDecision?.selectedAgent || null,
+        role,
+      });
     } else {
       await appendEvent(cpbRoot, project, jobId, {
         type: "phase_started",
         jobId,
         project,
         phase,
+        agent: phaseRoutingDecision?.selectedAgent || null,
+        ts: ts(),
+      });
+    }
+    await reportProgress(ctx, {
+      type: "phase_started",
+      jobId,
+      project,
+      phase,
+      role,
+      agent: phaseRoutingDecision?.selectedAgent || null,
+    });
+
+    if (phaseRoutingDecision?.role) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "agent_routing_decision",
+        jobId,
+        project,
+        phase,
+        role: phaseRoutingDecision.role,
+        preferredAgent: phaseRoutingDecision.preferredAgent,
+        selectedAgent: phaseRoutingDecision.selectedAgent,
+        fallbackAgent: phaseRoutingDecision.fallbackAgent,
+        fallbackAllowed: phaseRoutingDecision.fallbackAllowed,
+        fallbackApplied: phaseRoutingDecision.fallbackApplied,
+        reason: phaseRoutingDecision.reason,
         ts: ts(),
       });
     }
 
-    // Provider selection + fallback for this phase
-    const role = phaseRoleMap[phase] || phase;
-    const phaseAgents = { ...ctx.agents };
-    let handoffCount = 0;
-    let handoffReason = null;
+    // Provider selection + fallback for this phase — consolidated handoff state
+    const handoffState = { count: 0, from: null, to: null, reason: null };
     const providerAttempts = [];
 
     // Pre-flight: check if preferred provider is available
     if (hubRoot && pool) {
       const preflight = await preflightProvider({
-        hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
+        providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
       }).catch(() => null);
       if (preflight?.switched) {
         phaseAgents[role] = preflight.selectedAgent;
-        handoffReason = preflight.reason;
+        handoffState.count += 1;
+        handoffState.from = preflight.from;
+        handoffState.to = preflight.selectedProviderKey;
+        handoffState.reason = preflight.reason;
         await appendEvent(cpbRoot, project, jobId, {
           type: "provider_handoff",
           jobId,
@@ -217,6 +274,16 @@ export async function runJob(ctx) {
           to: preflight.selectedProviderKey,
           reason: preflight.reason,
           ts: ts(),
+        });
+        await reportProgress(ctx, {
+          type: "provider_handoff",
+          jobId,
+          project,
+          phase,
+          role,
+          from: preflight.from,
+          to: preflight.selectedProviderKey,
+          reason: preflight.reason,
         });
       }
     }
@@ -251,10 +318,12 @@ export async function runJob(ctx) {
       !isPhasePassed(result) &&
       result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
       result.failure?.retryable &&
-      handoffCount < HANDOFF_MAX_PER_PHASE
+      handoffState.count < HANDOFF_MAX_PER_PHASE
     ) {
-      handoffCount += 1;
+      handoffState.count += 1;
       const quotaCause = result.failure.cause || {};
+      handoffState.from = handoffState.from || quotaCause.providerKey;
+      handoffState.to = null; // reset; set below when fallback applied
 
       // Mark the failed provider as unavailable (via delegate client, fail closed)
       const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
@@ -263,13 +332,12 @@ export async function runJob(ctx) {
       // Mark failed provider unavailable via delegate (fail closed)
       let delegateFailure = null;
       try {
-        const dc = await getDelegateClient();
-        if (!dc) {
+        if (typeof providerServices.delegateMarkProviderUnavailable !== "function") {
           const err = new Error("quota delegate client unavailable; provider state not recorded");
           err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
           throw err;
         }
-        await dc.delegateMarkProviderUnavailable(hubRoot, {
+        await providerServices.delegateMarkProviderUnavailable(hubRoot, {
           providerKey: failedProviderKey,
           agent: failedAgent,
           variant: failedVariant,
@@ -295,7 +363,7 @@ export async function runJob(ctx) {
             cause: {
               code: delegateFailure.code || "QUOTA_DELEGATE_WRITE_FAILED",
               providerKey: failedProviderKey,
-              fallbackCount: handoffCount,
+              fallbackCount: handoffState.count,
               providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
             },
           }),
@@ -314,14 +382,14 @@ export async function runJob(ctx) {
 
       // Select fallback provider
       const fallback = await preflightProvider({
-        hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
+        providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
         excludeProvider: quotaCause.providerKey,
       }).catch(() => null);
 
       if (!fallback || !fallback.available) {
         // Ensure fallbackCount is in failure cause before breaking
         if (result.failure?.cause) {
-          result.failure.cause.fallbackCount = handoffCount;
+          result.failure.cause.fallbackCount = handoffState.count;
           if (providerAttempts.length > 0) {
             result.failure.cause.providerAttempts = providerAttempts;
           }
@@ -335,14 +403,24 @@ export async function runJob(ctx) {
           reason: "all fallback providers unavailable",
           ts: ts(),
         });
+        await reportProgress(ctx, {
+          type: "provider_quota_blocked",
+          jobId,
+          project,
+          phase,
+          role,
+          reason: "all fallback providers unavailable",
+        });
         break;
       }
 
-      // Apply fallback agent
+      // Apply fallback agent and update handoff tracking
       phaseAgents[role] = fallback.selectedAgent;
+      handoffState.to = fallback.selectedProviderKey;
+      handoffState.reason = result.failure.reason;
 
       // Write fallbackCount into failure cause for orchestrator consumption
-      result.failure.cause = { ...result.failure.cause, fallbackCount: handoffCount };
+      result.failure.cause = { ...result.failure.cause, fallbackCount: handoffState.count };
 
       await appendEvent(cpbRoot, project, jobId, {
         type: "provider_handoff",
@@ -354,8 +432,18 @@ export async function runJob(ctx) {
         to: fallback.selectedProviderKey,
         reason: result.failure.reason,
         midRun: true,
-        attempt: handoffCount,
+        attempt: handoffState.count,
         ts: ts(),
+      });
+      await reportProgress(ctx, {
+        type: "provider_handoff",
+        jobId,
+        project,
+        phase,
+        role,
+        from: quotaCause.providerKey,
+        to: fallback.selectedProviderKey,
+        reason: result.failure.reason,
       });
 
       // Generate handoff context for continuation prompt (execute phase only)
@@ -403,8 +491,8 @@ export async function runJob(ctx) {
     }
 
     // Ensure fallbackCount and providerAttempts are in the failure cause
-    if (handoffCount > 0 && result.failure?.cause) {
-      result.failure.cause.fallbackCount = handoffCount;
+    if (handoffState.count > 0 && result.failure?.cause) {
+      result.failure.cause.fallbackCount = handoffState.count;
       if (providerAttempts.length > 0) {
         result.failure.cause.providerAttempts = providerAttempts;
       }
@@ -426,6 +514,16 @@ export async function runJob(ctx) {
             failureKind: result.failure?.kind,
             reason: result.failure?.reason,
             ts: ts(),
+          });
+          await reportProgress(ctx, {
+            type: "phase_retry",
+            jobId,
+            project,
+            phase,
+            attempt: phaseRetry,
+            maxAttempts: PHASE_RETRY_MAX,
+            failureKind: result.failure?.kind,
+            reason: result.failure?.reason,
           });
           await new Promise((r) => setTimeout(r, PHASE_RETRY_BASE_DELAY_MS * phaseRetry));
           result = await runPhase({
@@ -474,6 +572,16 @@ export async function runJob(ctx) {
           failureKind: correction.failureKind,
           reason: correction.failureReason,
           ts: ts(),
+        });
+        await reportProgress(ctx, {
+          type: "phase_correction",
+          jobId,
+          project,
+          phase,
+          attempt: correctionAttempt,
+          maxAttempts: PHASE_CORRECTION_MAX,
+          failureKind: correction.failureKind,
+          reason: correction.failureReason,
         });
         result = await runPhase({
           phase,
@@ -537,16 +645,28 @@ export async function runJob(ctx) {
         : null,
       ts: ts(),
     });
+    await reportProgress(ctx, {
+      type: "phase_result",
+      jobId,
+      project,
+      phase,
+      agent: agentName,
+      status: result.status,
+      artifact: result.artifact?.name || null,
+      failure: result.failure
+        ? { kind: result.failure.kind, reason: result.failure.reason }
+        : null,
+    });
 
     // Enqueue phase-level provider usage (via delegate client, best-effort)
     if (hubRoot) {
       try {
-        const dc = await getDelegateClient();
-        if (dc) {
+        if (typeof providerServices.delegateEnqueueProviderUsage === "function") {
           const { agent: resolvedAgent, variant } = resolveRawAgent(phaseAgents, ctx.agent, role, phase);
           const providerKey = resolveProviderKey(pool, phaseAgents[role], ctx.agent);
-          const pa = await getProviderAdapters();
-          const adapter = pa?.getProviderAdapter(providerKey);
+          const adapter = typeof providerServices.getProviderAdapter === "function"
+            ? providerServices.getProviderAdapter(providerKey)
+            : null;
           const failCause = result.failure?.cause || {};
           const diag = result.diagnostics || {};
 
@@ -556,7 +676,7 @@ export async function runJob(ctx) {
             if (hardGateFailed) {
               usageStatus = "hard_gate_failed";
             } else if (result.failure?.kind === FailureKind.AGENT_RATE_LIMITED) {
-              usageStatus = handoffCount > 0 ? "fallback" : "rate_limited";
+              usageStatus = handoffState.count > 0 ? "fallback" : "rate_limited";
             } else if (result.failure?.kind === FailureKind.TIMEOUT) {
               usageStatus = "timeout";
             } else {
@@ -564,7 +684,7 @@ export async function runJob(ctx) {
             }
           }
 
-          await dc.delegateEnqueueProviderUsage(hubRoot, {
+          await providerServices.delegateEnqueueProviderUsage(hubRoot, {
             project,
             issueNumber: sourceContext?.issueNumber ?? sourceContext?.github?.issueNumber ?? job?.issueNumber ?? null,
             source: sourceContext?.source || null,
@@ -589,12 +709,12 @@ export async function runJob(ctx) {
               weeklyResetAt: failCause.weeklyResetAt ?? null,
               reason: failCause.reason || null,
             },
-            fallback: handoffCount > 0 || Boolean(handoffReason) ? {
+            fallback: handoffState.count > 0 ? {
               used: true,
-              fromProviderKey: failCause.providerKey || null,
-              toProviderKey: diag.providerKey || providerKey,
-              count: handoffCount,
-              reason: handoffReason || result.failure?.reason || null,
+              fromProviderKey: handoffState.from || failCause.providerKey || null,
+              toProviderKey: handoffState.to || diag.providerKey || providerKey,
+              count: handoffState.count,
+              reason: handoffState.reason || result.failure?.reason || null,
             } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
             usage: normalizePhaseUsage(diag.usage, { hardGateFailed }),
@@ -610,6 +730,14 @@ export async function runJob(ctx) {
         code: fail.kind || "fatal",
         phase,
         cause: fail,
+      });
+      await reportProgress(ctx, {
+        type: "job_failed",
+        jobId,
+        project,
+        phase,
+        failureKind: fail.kind || null,
+        reason: fail.reason || `${phase} phase failed`,
       });
 
       return {
@@ -629,6 +757,7 @@ export async function runJob(ctx) {
 
   // 5. Complete job
   await completeJob(cpbRoot, project, jobId);
+  await reportProgress(ctx, { type: "job_completed", jobId, project });
 
   return {
     status: "completed",
@@ -660,9 +789,9 @@ function resolveProviderKey(pool, rawAgent, defaultAgent) {
  * Pre-flight provider availability check.
  * Returns { available, switched, selectedAgent, selectedProviderKey, reason, from } or null.
  */
-async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, excludeProvider = null }) {
-  const pq = await getProviderQuota();
-  if (!pq || !hubRoot) return null;
+async function preflightProvider({ providerServices, hubRoot, pool, phase, role, agents, agent, excludeProvider = null }) {
+  const assertProviderAvailable = providerServices?.assertProviderAvailable;
+  if (typeof assertProviderAvailable !== "function" || !hubRoot) return null;
 
   const { agent: resolvedAgent, variant } = resolveRawAgent(agents, agent, role, phase);
   const providerKey = resolveProviderKey(pool, agents?.[role], agent);
@@ -670,7 +799,7 @@ async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, ex
   // Check preferred provider
   if (providerKey !== excludeProvider) {
     try {
-      await pq.assertProviderAvailable(hubRoot, {
+      await assertProviderAvailable(hubRoot, {
         providerKey,
         agent: resolvedAgent,
         variant,
@@ -694,7 +823,7 @@ async function preflightProvider({ hubRoot, pool, phase, role, agents, agent, ex
   const fallbackCandidates = getFallbackCandidates(pool, resolvedAgent, variant, excludeProvider || providerKey);
   for (const candidate of fallbackCandidates) {
     try {
-      await pq.assertProviderAvailable(hubRoot, {
+      await assertProviderAvailable(hubRoot, {
         providerKey: candidate.providerKey,
         agent: candidate.agent,
         variant: candidate.variant,

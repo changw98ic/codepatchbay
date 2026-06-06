@@ -6,11 +6,15 @@ import {
   claimEligible,
   enqueue,
   listQueue,
+  queueStatus,
   updateEntry,
 } from "../server/services/hub-queue.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/concurrency-limits.js";
 import { tempRoot, oldIso, readJson } from "./helpers.mjs";
+
+// Mock assignmentStore: always returns null (no active assignment)
+const noAssignmentStore = { getAssignment: async () => null };
 
 test("enqueue dedupes pending entries and requires UI lane reason", async () => {
   const hubRoot = await tempRoot("cpb-queue");
@@ -45,12 +49,57 @@ test("claimEligible reports provider slot exhaustion without mutating pending qu
   const result = await claimEligible(hubRoot, {
     workerId: "w-provider",
     providerSlotsAvailable: false,
+    assignmentStore: noAssignmentStore,
   });
 
   assert.equal(result.entry, null);
   assert.equal(result.reason, "provider-slots-exhausted");
   assert.equal((await listQueue(hubRoot))[0].id, entry.id);
   assert.equal((await listQueue(hubRoot))[0].status, "pending");
+});
+
+test("queueStatus separates historical failed entries from failed targets still needing retry", async () => {
+  const hubRoot = await tempRoot("cpb-queue-failed-targets");
+  const original = await enqueue(hubRoot, { projectId: "proj", description: "original failed job" });
+  await updateEntry(hubRoot, original.id, { status: "failed" });
+  const failedRepair = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${original.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${original.id}` },
+  });
+  await updateEntry(hubRoot, failedRepair.id, { status: "failed" });
+  await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${original.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${original.id}` },
+  });
+  const unretried = await enqueue(hubRoot, { projectId: "proj", description: "unretried failed job" });
+  await updateEntry(hubRoot, unretried.id, { status: "failed" });
+  const repaired = await enqueue(hubRoot, { projectId: "proj", description: "repaired failed job" });
+  await updateEntry(hubRoot, repaired.id, { status: "failed" });
+  const completedRepair = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: `Repair job job-${repaired.id}`,
+    type: "cli_repair",
+    metadata: { repairJobId: `job-${repaired.id}` },
+  });
+  await updateEntry(hubRoot, completedRepair.id, { status: "completed" });
+
+  const status = await queueStatus(hubRoot);
+
+  assert.equal(status.failed, 4);
+  assert.equal(status.failedEntries, 4);
+  assert.equal(status.failedTargets, 3);
+  assert.equal(status.retryingFailedTargets, 1);
+  assert.equal(status.repairedFailedTargets, 1);
+  assert.equal(status.unretriedFailedTargets, 1);
+  assert.equal(status.projects.proj.failedEntries, 4);
+  assert.equal(status.projects.proj.failedTargets, 3);
+  assert.equal(status.projects.proj.retryingFailedTargets, 1);
+  assert.equal(status.projects.proj.repairedFailedTargets, 1);
+  assert.equal(status.projects.proj.unretriedFailedTargets, 1);
 });
 
 test("claimEligible recovers stale in_progress entries and reclaims them", async () => {
@@ -66,6 +115,7 @@ test("claimEligible recovers stale in_progress entries and reclaims them", async
   const result = await claimEligible(hubRoot, {
     workerId: "w-new",
     claimTimeoutMs: 1,
+    assignmentStore: noAssignmentStore,
   });
 
   assert.equal(result.entry.id, entry.id);
@@ -78,7 +128,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
   const hubRoot = await tempRoot("cpb-queue-concurrency");
   const removedHubTotalOption = ["maxActive", "Total"].join("");
   const active = await enqueue(hubRoot, { projectId: "proj-a", description: "active" });
-  await claimEligible(hubRoot, { workerId: "w-active" });
+  await claimEligible(hubRoot, { workerId: "w-active", assignmentStore: noAssignmentStore });
   await enqueue(hubRoot, { projectId: "proj-a", description: "same project pending" });
   await enqueue(hubRoot, { projectId: "proj-b", description: "other project pending" });
 
@@ -87,6 +137,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
     maxActivePerProject: 1,
     [removedHubTotalOption]: 99,
     projectId: "proj-a",
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(sameProject.entry, null);
   assert.equal(sameProject.reason, "all-projects-busy");
@@ -96,6 +147,7 @@ test("claimEligible enforces per-project concurrency without any Hub-wide active
     workerId: "w-global",
     maxActivePerProject: 1,
     [removedHubTotalOption]: 1,
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(otherProject.entry.projectId, "proj-b");
 
@@ -157,6 +209,7 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   const issueGate = await claimEligible(hubRoot, {
     workerId: "w-linked",
     requireIssueLink: true,
+    assignmentStore: noAssignmentStore,
   });
   assert.equal(issueGate.entry.id, linked.id);
   assert.equal((await listQueue(hubRoot)).find((entry) => entry.id === unlinked.id).status, "pending");
@@ -165,6 +218,7 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   const staleIndex = await enqueue(indexHubRoot, { projectId: "indexed", description: "needs index" });
   const indexGate = await claimEligible(indexHubRoot, {
     workerId: "w-index",
+    assignmentStore: noAssignmentStore,
     getProjectFn: async (_hubRoot, projectId) => (
       projectId === "indexed"
         ? { id: projectId, sourcePath: null, projectRuntimeRoot: null }

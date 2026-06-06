@@ -131,6 +131,7 @@ export async function createJob(
       fallbackAgent: fallbackAgentForRole(routingSelection, "executor"),
       agentAvailability,
       allowFallback: routingSelection.allowFallback,
+      policyAllowsFallback: teamPolicy?.routing?.allowFallback !== false,
     });
     selectedExecutor = executorSelection.selectedAgent || null;
     executorSelection = {
@@ -148,6 +149,13 @@ export async function createJob(
         throw new Error(`job is terminal: ${existing.status}`);
       }
       throw new Error(`job already exists: ${providedJobId}`);
+    }
+  }
+
+  if (queueEntryId) {
+    const existingForQueue = await getJobByQueueEntryId(cpbRoot, project, queueEntryId, { dataRoot });
+    if (existingForQueue) {
+      return existingForQueue;
     }
   }
 
@@ -765,6 +773,12 @@ export async function listJobs(cpbRoot, options = {}) {
   const { dataRoot, ...rest } = options;
   const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+}
+
+export async function getJobByQueueEntryId(cpbRoot, project, queueEntryId, { dataRoot } = {}) {
+  if (!queueEntryId) return null;
+  const jobs = await listJobs(cpbRoot, { project, dataRoot });
+  return jobs.find((job) => job.queueEntryId === queueEntryId) || null;
 }
 
 export async function listJobsAcrossRuntimeRoots(cpbRoot, options = {}) {

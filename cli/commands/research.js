@@ -5,7 +5,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.error("Usage: cpb research <project> '<task>'");
     process.exit(1);
   }
-  const { runResearch } = await import("../../bridges/dual-research.mjs");
+  const { runResearch } = await import("../../server/services/dual-research.mjs");
   const code = await runResearch({ project, task, executorRoot, cpbRoot });
   return Number.isInteger(code) ? code : 0;
 }

@@ -90,9 +90,9 @@ function stripInvocation(tokens) {
   return null;
 }
 
-function extractRoutingOptions(tokens, defaultWorkflow = "standard") {
+function extractRoutingOptions(tokens) {
   const positional = [];
-  let workflow = defaultWorkflow;
+  let workflow = null;
   let planMode = null;
   let triage = null;
   let workflowRequested = false;
@@ -208,7 +208,7 @@ function parseRun(command, tokens) {
     planModeRequested,
     triageRequested,
     error,
-  } = extractRoutingOptions(tokens, "standard");
+  } = extractRoutingOptions(tokens);
   if (error) return errorResult("INVALID_COMMAND", error, { command });
 
   const [project, ...taskParts] = positional;
@@ -239,7 +239,7 @@ function parseIssue(command, tokens) {
     planModeRequested,
     triageRequested,
     error,
-  } = extractRoutingOptions(tokens, "standard");
+  } = extractRoutingOptions(tokens);
   if (error) return errorResult("INVALID_COMMAND", error, { command });
 
   const [project, issueValue] = positional;

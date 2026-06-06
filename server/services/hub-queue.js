@@ -10,6 +10,14 @@ import {
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
 } from "./concurrency-limits.js";
+import {
+  priorityScore,
+  isMutatingEntry,
+  isActiveEntry,
+  clearClaim,
+  recoverStaleInProgressAsync,
+  recoverIndexUnavailable,
+} from "./queue-rules.js";
 
 
 export const QUEUE_VERSION = 1;
@@ -134,13 +142,6 @@ function generateId() {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function priorityScore(priority) {
-  if (priority === "P0") return 0;
-  if (priority === "P1") return 1;
-  if (priority === "P2") return 2;
-  return 3;
-}
-
 function hasIssueLink(metadata) {
   if (!metadata || typeof metadata !== "object") return false;
   return Boolean(metadata.issueNumber || metadata.issueUrl);
@@ -226,25 +227,6 @@ export async function enqueue(hubRoot, input = {}) {
   });
 }
 
-// Legacy low-level helper: claims the highest-priority pending entry without
-// index freshness gating. Public surfaces (routes, worker dispatch) should
-// use claimEligible() with getProjectFn to gate on ensureIndexFresh().
-export async function dequeue(hubRoot) {
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
-    const pending = queue.entries.filter((e) => e.status === "pending");
-    if (pending.length === 0) return null;
-
-    pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt));
-    const entry = pending[0];
-    entry.status = "in_progress";
-    entry.claimedAt = nowIso();
-    entry.updatedAt = entry.claimedAt;
-    await saveQueue(hubRoot, queue);
-    return entry;
-  });
-}
-
 export async function peekQueue(hubRoot) {
   const queue = await loadQueue(hubRoot);
   const pending = queue.entries.filter((e) => e.status === "pending");
@@ -318,6 +300,7 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 
 export async function queueStatus(hubRoot) {
   const queue = await loadQueue(hubRoot);
+  const failedTargetStatus = summarizeFailedTargets(queue.entries);
   const counts = {
     total: queue.entries.length,
     pending: 0,
@@ -329,6 +312,7 @@ export async function queueStatus(hubRoot) {
     cancelled: 0,
     needsIssueLink: 0,
     indexUnavailable: 0,
+    ...failedTargetStatus,
   };
   for (const e of queue.entries) {
     if (e.status === "pending") counts.pending++;
@@ -366,18 +350,61 @@ export async function queueStatus(hubRoot) {
   return counts;
 }
 
-export function isMutatingEntry(entry) {
-  return entry.metadata?.mutating !== false;
+const ACTIVE_REPAIR_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
+
+function failedTargetKey(entry) {
+  const targetJobId = entry.type === "cli_repair"
+    ? entry.metadata?.repairJobId
+    : `job-${entry.id}`;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
 }
 
-function isActiveEntry(entry) {
-  return entry.status === "in_progress" || entry.status === "scheduled";
+function activeRepairTargetKey(entry) {
+  if (entry.type !== "cli_repair" || !ACTIVE_REPAIR_STATUSES.has(entry.status)) return null;
+  const targetJobId = entry.metadata?.repairJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
 }
 
-function clearClaim(entry) {
-  entry.claimedBy = null;
-  entry.claimedAt = null;
-  entry.workerId = null;
+function completedRepairTargetKey(entry) {
+  if (entry.type !== "cli_repair" || entry.status !== "completed") return null;
+  const targetJobId = entry.metadata?.repairJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+export function summarizeFailedTargets(entries = []) {
+  const failedTargets = new Set();
+  const activeRepairTargets = new Set();
+  const completedRepairTargets = new Set();
+  for (const entry of entries) {
+    const activeRepair = activeRepairTargetKey(entry);
+    if (activeRepair) activeRepairTargets.add(activeRepair);
+    const completedRepair = completedRepairTargetKey(entry);
+    if (completedRepair) completedRepairTargets.add(completedRepair);
+    if (entry.status === "failed") {
+      const failedTarget = failedTargetKey(entry);
+      if (failedTarget) failedTargets.add(failedTarget);
+    }
+  }
+
+  let retryingFailedTargets = 0;
+  let repairedFailedTargets = 0;
+  for (const target of failedTargets) {
+    if (activeRepairTargets.has(target)) {
+      retryingFailedTargets++;
+    } else if (completedRepairTargets.has(target)) {
+      repairedFailedTargets++;
+    }
+  }
+  return {
+    failedEntries: entries.filter((entry) => entry.status === "failed").length,
+    failedTargets: failedTargets.size,
+    retryingFailedTargets,
+    repairedFailedTargets,
+    unretriedFailedTargets: failedTargets.size - retryingFailedTargets - repairedFailedTargets,
+  };
 }
 
 function limitForProject(projectLimits, projectId, fallback) {
@@ -423,6 +450,12 @@ export function buildProjectQueueStatus(entries, {
       ps.workerId = e.workerId;
     }
   }
+  for (const [projectId, ps] of Object.entries(byProject)) {
+    Object.assign(
+      ps,
+      summarizeFailedTargets(entries.filter((entry) => entry.projectId === projectId)),
+    );
+  }
   // Second pass: compute eligible pending entries
   for (const e of entries) {
     if (e.status !== "pending") continue;
@@ -443,38 +476,6 @@ export function buildProjectQueueStatus(entries, {
   return byProject;
 }
 
-function recoverStaleInProgress(entries, claimTimeoutMs) {
-  if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [] };
-  const now = Date.now();
-  const recovered = [];
-  for (const e of entries) {
-    if (e.status !== "in_progress") continue;
-    const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
-    if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
-    e.status = "pending";
-    clearClaim(e);
-    e.updatedAt = nowIso();
-    recovered.push(e.id);
-  }
-  return { recovered };
-}
-
-function recoverIndexUnavailable(entries, retryMs) {
-  if (!retryMs || retryMs <= 0) return { recovered: [] };
-  const now = Date.now();
-  const recovered = [];
-  for (const e of entries) {
-    if (e.status !== "index_unavailable") continue;
-    const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
-    if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
-    e.status = "pending";
-    e.updatedAt = nowIso();
-    if (e.metadata) delete e.metadata.indexFreshness;
-    recovered.push(e.id);
-  }
-  return { recovered };
-}
-
 export async function claimEligible(hubRoot, opts = {}) {
   const {
     workerId = `worker-${process.pid}`,
@@ -485,6 +486,7 @@ export async function claimEligible(hubRoot, opts = {}) {
     requireIssueLink = false,
     getProjectFn = null,
     indexUnavailableRetryMs = 300_000,
+    assignmentStore = null,
   } = opts;
 
   if (!providerSlotsAvailable) {
@@ -493,12 +495,12 @@ export async function claimEligible(hubRoot, opts = {}) {
 
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);
-    const { recovered } = recoverStaleInProgress(queue.entries, claimTimeoutMs);
+    const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, { claimTimeoutMs, assignmentStore });
     const { recovered: recoveredIdx } = recoverIndexUnavailable(queue.entries, indexUnavailableRetryMs);
     if (recoveredIdx.length > 0) {
       recovered.push(...recoveredIdx);
     }
-    if (recovered.length > 0) {
+    if (recovered.length > 0 || refreshed.length > 0) {
       await saveQueue(hubRoot, queue);
     }
 

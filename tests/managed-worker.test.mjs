@@ -5,15 +5,13 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import {
-  createIsolatedWorktreeWithRetry,
-  finalizeAndWriteSuccessfulResult,
-} from "../runtime/worker/managed-worker.js";
+import { createIsolatedWorktreeWithRetry } from "../runtime/worker/worktree-manager.js";
+import { finalizeAndWriteSuccessfulResult } from "../runtime/worker/assignment-finalizer.js";
 import { readJson, tempRoot, writeJson } from "./helpers.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const workerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
-const testAgentScript = path.join(repoRoot, "bridges", "test-acp-agent.mjs");
+const testAgentScript = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 
 function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
@@ -279,14 +277,17 @@ test("managed worker atomically claims and removes malformed inbox payloads", as
   });
 
   const worker = spawnWorker({ workerId, hubRoot, cpbRoot, timeoutMs: 10_000 });
-  await waitFor(async () => {
-    const pending = await listJsonFiles(inboxDir);
-    const processing = await listJsonFiles(path.join(inboxDir, "processing"));
-    return pending.length === 0 && processing.length === 0;
-  });
-
-  worker.child.kill("SIGTERM");
-  const stopped = await worker.done;
+  let stopped = null;
+  try {
+    await waitFor(async () => {
+      const pending = await listJsonFiles(inboxDir);
+      const processing = await listJsonFiles(path.join(inboxDir, "processing"));
+      return pending.length === 0 && processing.length === 0;
+    }, { timeoutMs: 20_000 });
+  } finally {
+    worker.child.kill("SIGTERM");
+    stopped = await worker.done.catch((err) => ({ error: err }));
+  }
 
   assert.ok(stopped.code === 0 || stopped.signal === "SIGTERM", `unexpected exit: ${JSON.stringify(stopped)}`);
   assert.match(worker.stderr, /malformed inbox file/);
@@ -342,6 +343,9 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(heartbeat.workerId, workerId);
   assert.equal(heartbeat.status, "running");
   assert.equal(heartbeat.executionBoundary, "worktree");
+  assert.equal(heartbeat.activeJobId, "job-managed-success");
+  assert.ok(heartbeat.progressUpdatedAt);
+  assert.ok(heartbeat.lastProgressType);
 
   const worktree = await readJson(path.join(attemptDir, "worktree.json"));
   assert.equal(worktree.sourcePath, sourcePath);
@@ -371,7 +375,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   await rm(root, { recursive: true, force: true });
 });
 
-test("managed worker persistent ACP reuses one provider process while isolating worktree sessions", async () => {
+test("managed worker releases persistent ACP provider resources between assignments", async () => {
   const root = await tempRoot("cpb-managed-persistent");
   const hubRoot = path.join(root, "hub");
   const cpbRoot = path.join(root, "cpb");
@@ -441,8 +445,9 @@ test("managed worker persistent ACP reuses one provider process while isolating 
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    assert.equal(transcript.filter((event) => event.event === "initialize").length, 1);
+    assert.equal(transcript.filter((event) => event.event === "initialize").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/close").length, 2);
     assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 2);
 
     const firstAuditFile = firstResult.jobResult.phaseResults[0].diagnostics.acpAuditFile;

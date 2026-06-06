@@ -4,13 +4,14 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
-import { AcpPool, readAcpUsageFromAudit } from "../server/services/acp-pool.js";
+import { runAgent } from "../core/agents/agent-runner.js";
+import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../server/services/acp-pool.js";
 import { buildAcpPoolEnv } from "../core/policy/child-env.js";
-import { AcpClient, resolveAgentCommand } from "../runtime/acp-client-core.mjs";
+import { AcpClient, resolveAgentCommand } from "../server/services/acp-client-core.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const acpClient = path.join(repoRoot, "runtime", "acp-client.mjs");
-const testAgent = path.join(repoRoot, "bridges", "test-acp-agent.mjs");
+const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.mjs");
+const testAgent = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 
 async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {
   return new Promise((resolve, reject) => {
@@ -247,6 +248,44 @@ test("ACP terminal commands launch through RTK when available", async () => {
   assert.equal(launch?.rtkEnabled, true);
 });
 
+test("ACP client close terminates registered terminal processes", async () => {
+  const tmp = await tempRoot("cpb-acp-terminal-cleanup");
+  const client = new AcpClient({
+    agent: "fake-acp",
+    cwd: tmp,
+    prompt: "",
+    env: {
+      ...process.env,
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+    },
+  });
+
+  const created = await client.createTerminal({
+    command: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    cwd: tmp,
+    outputByteLimit: 4096,
+  });
+  const terminal = client.terminals.get(created.terminalId);
+  const exited = new Promise((resolve) => {
+    terminal.child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
+  });
+
+  await client.close();
+  const exitStatus = await Promise.race([
+    exited,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("terminal did not exit after client close")), 2_000);
+      timer.unref();
+    }),
+  ]);
+
+  assert.equal(client.terminals.has(created.terminalId), false);
+  assert.ok(["SIGTERM", "SIGKILL"].includes(exitStatus.signal), JSON.stringify(exitStatus));
+});
+
 test("AcpPool passes job metadata and reports the automatic ACP audit file", async () => {
   const tmp = await tempRoot("cpb-acp-pool-audit");
   const cpbRoot = path.join(tmp, "cpb");
@@ -347,6 +386,67 @@ test("AcpPool ignores removed total connection cap and only reports provider lim
   }
 });
 
+test("AcpPool waits indefinitely for provider slots by default", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-wait-default");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  assert.equal(resolvePoolWaitTimeoutMs(undefined), 0);
+  assert.equal(resolvePoolWaitTimeoutMs(""), 0);
+  assert.equal(resolvePoolWaitTimeoutMs("1200"), 1200);
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    providerConnectionLimit: 1,
+  });
+
+  const first = await pool.acquire("codex");
+  const second = pool.acquire("codex");
+
+  try {
+    const stillQueued = await Promise.race([
+      second.then(() => false, () => false),
+      new Promise((resolve) => setTimeout(() => resolve(true), 25)),
+    ]);
+    assert.equal(stillQueued, true);
+
+    first.release();
+    const acquired = await second;
+    acquired.release();
+  } finally {
+    first.release();
+    await pool.stop();
+  }
+});
+
+test("AcpPool still honors explicit provider slot wait timeouts", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-wait-timeout");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    providerConnectionLimit: 1,
+  });
+
+  const first = await pool.acquire("codex");
+  try {
+    await assert.rejects(
+      pool.acquire("codex", { waitTimeoutMs: 10 }),
+      /ACP pool exhausted: codex\/codex waited/,
+    );
+  } finally {
+    first.release();
+    await pool.stop();
+  }
+});
+
 test("ACP audit usage rollup can be scoped to a single phase", async () => {
   const tmp = await tempRoot("cpb-acp-usage-scope");
   const auditPath = path.join(tmp, "audit.jsonl");
@@ -369,6 +469,41 @@ test("ACP audit usage rollup can be scoped to a single phase", async () => {
   assert.equal(executorUsage.outputTokens, 8);
   assert.equal(executorUsage.totalTokens, 28);
   assert.equal(executorUsage.events, 1);
+});
+
+test("runAgent passes cwd while persistent ACP process keys stay reusable", async () => {
+  const cwd = path.join(repoRoot, ".tmp-worktree");
+  let observed = null;
+  const pool = {
+    async execute(agent, prompt, execCwd, timeoutMs, options) {
+      observed = { agent, prompt, execCwd, timeoutMs, options };
+      return { output: "ok", providerKey: "fake-acp", variant: null };
+    },
+  };
+
+  const result = await runAgent({
+    role: "executor",
+    agent: "fake-acp",
+    project: "proj",
+    jobId: "job-run-agent-cwd",
+    prompt: "hello",
+    cwd,
+    pool,
+    timeoutMs: 123,
+    scope: { workspaceId: "workspace-a", policyHash: "policy-a" },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(observed.execCwd, cwd);
+  assert.equal(observed.options.cwd, cwd);
+  assert.equal(
+    poolClientKey("fake-acp", { role: "executor", projectId: "proj", cwd: "/tmp/worktree-a" }),
+    poolClientKey("fake-acp", { role: "executor", projectId: "proj", cwd: "/tmp/worktree-b" }),
+  );
+  assert.notEqual(
+    poolClientKey("codex", { projectId: "proj", cwd: "/tmp/worktree-a", processCwd: "/tmp/worktree-a" }),
+    poolClientKey("codex", { projectId: "proj", cwd: "/tmp/worktree-b", processCwd: "/tmp/worktree-b" }),
+  );
 });
 
 test("AcpPool persistent ACP reuses one provider process while keeping per-job audit files", async () => {
@@ -409,6 +544,7 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
@@ -455,6 +591,177 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
     assert.ok(secondAudit.some((event) => event.event === "session_reuse"));
     assert.ok(secondAudit.every((event) => event.event !== "session_new"));
     assert.ok(secondAudit.every((event) => event.jobId === "job-persistent-two"));
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("AcpPool closeProvider worktree release frees persistent provider lease", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-phase-release");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const worktree = path.join(tmp, "worktree");
+  const scenarioPath = path.join(tmp, "scenario.json");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await mkdir(worktree, { recursive: true });
+  await writeFile(
+    scenarioPath,
+    JSON.stringify({
+      responses: [
+        { match: "first phase", output: "first-phase-response" },
+        { match: "second phase", output: "second-phase-response" },
+      ],
+    }),
+    "utf8",
+  );
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--scenario-file",
+        scenarioPath,
+        "--transcript-file",
+        transcriptPath,
+      ]),
+    },
+  });
+
+  try {
+    const first = await pool.execute("fake-acp", "first phase", worktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-phase-one",
+      phase: "plan",
+      role: "planner",
+    });
+
+    assert.equal(first.output, "first-phase-response");
+    assert.equal(pool.persistentClients.size, 1);
+
+    const released = await pool.releaseWorktree(worktree, "phase_plan_complete", { closeProvider: true });
+    assert.equal(released, true);
+    assert.equal(pool.persistentClients.size, 0);
+    assert.equal(pool.activeProviders.get("fake-acp") || 0, 0);
+
+    const second = await pool.execute("fake-acp", "second phase", worktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-phase-two",
+      phase: "execute",
+      role: "executor",
+    });
+
+    assert.equal(second.output, "second-phase-response");
+    const transcript = await readJsonl(transcriptPath);
+    assert.equal(transcript.filter((event) => event.event === "initialize").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("AcpPool persistent ACP reuses the provider process across isolated worktrees", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-cwd");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const firstWorktree = path.join(tmp, "worktree-a");
+  const secondWorktree = path.join(tmp, "worktree-b");
+  const scenarioPath = path.join(tmp, "scenario.json");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await mkdir(firstWorktree, { recursive: true });
+  await mkdir(secondWorktree, { recursive: true });
+  await writeFile(
+    scenarioPath,
+    JSON.stringify({
+      responses: [
+        { match: "first worktree", output: "first-cwd-response" },
+        { match: "second worktree", output: "second-cwd-response" },
+      ],
+    }),
+    "utf8",
+  );
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--scenario-file",
+        scenarioPath,
+        "--transcript-file",
+        transcriptPath,
+      ]),
+    },
+  });
+
+  try {
+    const first = await pool.execute("fake-acp", "first worktree prompt", firstWorktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-cwd-one",
+      phase: "execute",
+      role: "executor",
+    });
+    const persistent = [...pool.persistentClients.values()][0];
+    const createdTerminal = await persistent.client.createTerminal({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: firstWorktree,
+      outputByteLimit: 4096,
+    });
+    const terminal = persistent.client.terminals.get(createdTerminal.terminalId);
+    const terminalExited = new Promise((resolve) => {
+      terminal.child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
+    });
+    const released = await pool.releaseWorktree(firstWorktree);
+    const second = await pool.execute("fake-acp", "second worktree prompt", secondWorktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-cwd-two",
+      phase: "execute",
+      role: "executor",
+    });
+
+    assert.equal(first.output, "first-cwd-response");
+    assert.equal(released, true);
+    assert.equal(persistent.client.terminals.has(createdTerminal.terminalId), false);
+    const terminalExitStatus = await Promise.race([
+      terminalExited,
+      new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("terminal node did not exit after worktree release")), 2_000);
+        timer.unref();
+      }),
+    ]);
+    assert.ok(["SIGTERM", "SIGKILL"].includes(terminalExitStatus.signal), JSON.stringify(terminalExitStatus));
+    assert.equal(second.output, "second-cwd-response");
+
+    const transcript = await readJsonl(transcriptPath);
+    assert.equal(transcript.filter((event) => event.event === "initialize").length, 1);
+    assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/close").length, 1);
+    assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 2);
+
+    const firstAudit = await readJsonl(first.acpAuditFile);
+    const secondAudit = await readJsonl(second.acpAuditFile);
+    assert.ok(firstAudit.some((event) => event.event === "session_close" && event.reason === "worktree_release"));
+    assert.ok(firstAudit.some((event) => event.event === "terminal_cleanup" && event.reason === "worktree_release"));
+    assert.ok(secondAudit.some((event) => event.event === "session_new"));
+    assert.ok(secondAudit.every((event) => event.event !== "session_reuse"));
   } finally {
     await pool.stop();
   }

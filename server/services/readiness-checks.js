@@ -19,7 +19,7 @@ import { hubStatus, loadRegistry, resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { runtimeDataPath } from "./runtime-root.js";
-import { WorkerStore } from "../orchestrator/worker-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 
 import { sanitizeProviderReason } from "./acp-pool.js";
 import { scanHubPollution } from "./project-pollution.js";

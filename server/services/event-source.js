@@ -3,6 +3,7 @@ import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
 import { getProject } from "./hub-registry.js";
+import { createJob as createJobStore } from "./job-store.js";
 import {
   triageChannelCommand,
   triageChannelCommandWithAcp,
@@ -426,6 +427,7 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
       issueUrl: payload.url,
       repo: payload.repo,
       issueTitle: payload.title,
+      issueBody: payload.body || "",
       actor: payload.actor,
       delivery: payload.delivery,
       commandText: payload.commandText,
@@ -635,13 +637,37 @@ export async function createGithubIssueQueueJob(
     reason: `queued hub entry ${queueEntry.id}`,
   });
 
+  let job = null;
+  if (!sddAutomation?.requiresApproval) {
+    const effective = effectiveRoute(route);
+    job = await createJobStore(cpbRoot, {
+      project: event.projectId,
+      task: payload.title || `GitHub issue #${payload.issueNumber}`,
+      workflow: effective.workflow || match.workflow || "standard",
+      planMode: match.planMode || effective.planMode || "full",
+      queueEntryId: queueEntry.id,
+      sourceContext: {
+        source: "github",
+        issueNumber: payload.issueNumber,
+        repo: payload.repo,
+        issueTitle: payload.title,
+        issueBody: payload.body || "",
+        issueUrl: payload.url,
+        actor: payload.actor,
+        delivery: event.delivery,
+        triggerReason: payload.triggerReason,
+        candidateEntryId: entry.id,
+      },
+    });
+  }
+
   return {
     status: "created",
     entry: updated || entry,
     candidateEntry: updated || entry,
     queueEntry,
     sddTaskQueueEntries,
-    job: null,
+    job,
   };
 }
 
@@ -733,6 +759,7 @@ export async function createChannelQueueJob(
   {
     hubRoot = cpbRoot,
     enqueueFn = enqueueHubQueue,
+    createJobFn = createJobStore,
     sourcePath = context.sourcePath || null,
     getProjectFn = getProject,
     triageMode = null,
@@ -789,12 +816,38 @@ export async function createChannelQueueJob(
     reason: `queued hub entry ${queueEntry.id}`,
   });
 
+  let job = null;
+  if (command.type === "run" && createJobFn) {
+    try {
+      job = await createJobFn(cpbRoot, {
+        project: command.project,
+        task: payload.task || command.task,
+        workflow: payload.workflow || "standard",
+        planMode: payload.planMode || null,
+        queueEntryId: queueEntry.id,
+        sourceContext: {
+          source,
+          channel: source,
+          actor: context.actor || null,
+          actorName: context.actorName || null,
+          teamId: context.teamId || null,
+          channelId: context.channelId || null,
+          channelName: context.channelName || null,
+          candidateEntryId: entry.id,
+          queueEntryId: queueEntry.id,
+        },
+      });
+    } catch {
+      // Queue creation is the durable handoff; job creation is an immediate status convenience.
+    }
+  }
+
   return {
     status: "created",
     entry: updated || entry,
     candidateEntry: updated || entry,
     queueEntry,
-    job: null,
+    job,
   };
 }
 

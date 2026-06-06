@@ -26,6 +26,7 @@ import { registerProject, updateProject } from "../server/services/hub-registry.
 import { tempRoot, writeJson } from "./helpers.mjs";
 
 const execFile = promisify(execFileCb);
+const repoRoot = path.resolve(import.meta.dirname, "..");
 const gitEnv = {
   ...process.env,
   GIT_AUTHOR_NAME: "CPB Test",
@@ -275,12 +276,10 @@ test("inbox route aggregates jobs, queue entries, and reviews with filters and p
 test("review routes are idempotent and update queue, cleanup, merge success, and merge failure state", async () => {
   const cpbRoot = await tempRoot("cpb-api-review-cpb");
   const hubRoot = await tempRoot("cpb-api-review-hub");
-  await mkdir(path.join(cpbRoot, "bridges"), { recursive: true });
-  await writeFile(path.join(cpbRoot, "bridges", "review-dispatch.mjs"), "process.exit(0);\n", "utf8");
   const sourcePath = await makeGitRepo("cpb-api-review-source");
   await registerProject(hubRoot, { id: "proj", sourcePath });
   await writeJson(path.join(cpbRoot, "wiki", "projects", "proj", "project.json"), { sourcePath });
-  const app = await makeApp(reviewRoutes, { cpbRoot, hubRoot });
+  const app = await makeApp(reviewRoutes, { cpbRoot, hubRoot, opts: { executorRoot: repoRoot, startRunner: false } });
 
   const created = bodyOf(await app.inject({
     method: "POST",
@@ -429,6 +428,24 @@ test("GitHub webhook route rejects bad inputs, returns 202 for unsupported/unreg
   assert.match(bodyOf(deniedIssue).error, /issue/);
 
   await updateEntry(hubRoot, approval.id, { status: "waiting.approval", metadata: { repo: "owner/repo", issueNumber: 5 } });
+  const policyApp = await makeApp(githubRoutes, {
+    cpbRoot,
+    hubRoot,
+    opts: {
+      githubDryRun: true,
+      channelPolicy: {
+        enabled: true,
+        default: "deny",
+        allow: [{ channel: "github", action: "status", project: "proj" }],
+      },
+    },
+  });
+  const deniedPolicy = await policyApp.inject({ method: "POST", url: "/github/webhook", headers: signedHeaders(member, secret, "issue_comment"), payload: member });
+  assert.equal(deniedPolicy.statusCode, 403);
+  assert.equal(bodyOf(deniedPolicy).code, "CHANNEL_POLICY_DENIED");
+  assert.match(bodyOf(deniedPolicy).error, /not allowed/);
+  await policyApp.close();
+
   const approved = await app.inject({ method: "POST", url: "/github/webhook", headers: signedHeaders(member, secret, "issue_comment"), payload: member });
   assert.equal(approved.statusCode, 202);
   assert.equal(bodyOf(approved).commandHandled, "approve");

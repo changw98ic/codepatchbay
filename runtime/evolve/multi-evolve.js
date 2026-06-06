@@ -4,31 +4,31 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { AcpPool, RateLimitError } from "../../server/services/acp-pool.js";
-import { getManagedAcpPool } from "../../server/services/acp-pool.js";
-import { AssignmentStore } from "../../server/orchestrator/assignment-store.js";
-import { WorkerStore } from "../../server/orchestrator/worker-store.js";
-import { listProjects, resolveHubRoot } from "../../server/services/hub-registry.js";
 import {
+  AcpPool,
   appendHistory,
+  checkPolicy,
   claimIssue,
   completeIssue,
+  getManagedAcpPool,
+  hubEnqueue,
+  hubListQueue,
+  hubQueueStatus,
+  hubSyncBacklogResult,
+  hubUpdateEntry,
+  listProjects,
   loadBacklog,
   loadProjectState,
   pushIssues,
+  RateLimitError,
+  resolveHubRoot,
   updateIssueStatus,
-} from "../../server/services/multi-evolve-state.js";
-import { checkPolicy } from "../../server/services/evolve-policy.js";
+} from "../../bridges/runtime-services.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { closeBudget, consume, createBudget } from "../../core/evolve/budget.js";
 import { isWorkflowName } from "../../core/workflow/definition.js";
 import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
-import {
-  enqueue as hubEnqueue,
-  listQueue as hubListQueue,
-  queueStatus as hubQueueStatus,
-  syncBacklogResult,
-  updateEntry as hubUpdateEntry,
-} from "../../server/services/hub-queue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -108,7 +108,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node bridges/multi-evolve.mjs [mode] [options]
+  return `Usage: node runtime/evolve/multi-evolve.js [mode] [options]
 
 Modes:
   (default)           dry-run read of existing backlogs
@@ -489,7 +489,7 @@ export class MultiEvolveController {
   async completeIssueAndSync(issue, result) {
     await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
     if (!this.hubRoot) return;
-    await syncBacklogResult(this.hubRoot, {
+    await hubSyncBacklogResult(this.hubRoot, {
       projectId: issue.project,
       description: issue.description,
       result: {
