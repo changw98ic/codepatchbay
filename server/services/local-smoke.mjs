@@ -195,7 +195,7 @@ export async function runFakeAcpSmoke({
       CPB_ACP_PHASE_TIMEOUT_MS: "30000",
       CPB_ACP_POOL_TIMEOUT_MS: "30000",
       CPB_PHASE_RETRY_MAX: "0",
-      CPB_PHASE_CORRECTION_MAX: "0",
+      CPB_PHASE_FEEDBACK_RETRY_MAX: "0",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: testAgentArgs,
       CPB_USE_WORKTREE: "0",

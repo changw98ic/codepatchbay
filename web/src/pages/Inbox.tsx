@@ -556,9 +556,9 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
                   {round.verdict}
                 </Badge>
                 <span style={{ marginLeft: space[2] }}>R{round.round}</span>
-                {round.correctionQueueEntryId && (
+                {round.retryQueueEntryId && (
                   <span style={{ marginLeft: space[2], color: theme.textMuted, fontFamily: 'monospace' }}>
-                    {round.correctionQueueEntryId}
+                    {round.retryQueueEntryId}
                   </span>
                 )}
                 {round.feedback && <div className={detailValue}>{round.feedback}</div>}

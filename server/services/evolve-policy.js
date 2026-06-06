@@ -9,7 +9,7 @@ const HIGH_RISK_PATTERNS = [
 ];
 
 /**
- * Check whether an issue passes all guarded-repair policy checks.
+ * Check whether an issue passes all guarded-run policy checks.
  *
  * @param {object} issue - The issue to validate
  * @param {string} issue.description - Issue description text

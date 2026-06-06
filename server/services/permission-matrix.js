@@ -3,7 +3,7 @@ import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { appendEvent } from "./event-store.js";
 import { runtimeDataPath } from "./runtime-root.js";
 
-const ROLES = new Set(["planner", "executor", "verifier", "repairer", "reviewer"]);
+const ROLES = new Set(["planner", "executor", "verifier", "remediator", "reviewer"]);
 const READ_ALLOWED_PATHS = Object.freeze(["*"]);
 
 export const INFRA_FAILURE = "INFRA_FAILURE";
@@ -38,7 +38,7 @@ const WRITE_SCOPES = {
       (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
     ],
   },
-  repairer: {
+  remediator: {
     allowed: [
       (cpbRoot) => path.resolve(cpbRoot),
     ],
@@ -76,7 +76,7 @@ const OBSERVATION_PATHS = {
     (cpbRoot) => path.resolve(cpbRoot, "profiles"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
-  repairer: [
+  remediator: [
     (cpbRoot) => path.resolve(cpbRoot),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
@@ -397,7 +397,7 @@ export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = 
     };
   }
 
-  if (canonicalRole === "executor" || canonicalRole === "repairer") {
+  if (canonicalRole === "executor" || canonicalRole === "remediator") {
     if (isKnownUnsafeCommand(commandLine)) {
       return {
         allowed: false,

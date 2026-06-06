@@ -216,7 +216,7 @@ export async function taskRoutes(fastify, opts) {
       project: name,
       jobId,
       round: result.round,
-      correctionQueueEntryId: result.correctionQueueEntry?.id,
+      retryQueueEntryId: result.retryQueueEntry?.id,
     });
     return result;
   });

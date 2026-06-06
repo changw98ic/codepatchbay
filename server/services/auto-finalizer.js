@@ -18,7 +18,7 @@ import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "./review-
 
 const execFileAsync = promisify(execFile);
 
-const PHASE_ROLE_MAP = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+const PHASE_ROLE_MAP = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
 
 async function resolveAgentsFromEvents(cpbRoot, projectId, jobId, { dataRoot } = {}) {
   try {

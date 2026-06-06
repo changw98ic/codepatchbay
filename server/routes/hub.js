@@ -175,7 +175,7 @@ export async function hubRoutes(fastify) {
     }
 
     // Stale index detection: check BEFORE dispatch to gate on stale HEAD drift
-    let indexRepair = null;
+    let indexRecovery = null;
     const projectId = result.entry.projectId;
     const projectIdx = await readProjectIndex(hubRoot(req), req.cpbRoot, projectId);
     if (projectIdx && projectIdx.state === "indexed" && projectIdx.gitHead && result.entry.sourcePath) {
@@ -198,14 +198,14 @@ export async function hubRoutes(fastify) {
             timestamp: new Date().toISOString(),
             error: `HEAD drift: indexed ${projectIdx.gitHead.slice(0, 12)} but current is ${currentHead.slice(0, 12)}`,
           });
-          indexRepair = { detected: "stale", reason: "HEAD drift detected", previousGitHead: projectIdx.gitHead, currentHead };
+          indexRecovery = { detected: "stale", reason: "HEAD drift detected", previousGitHead: projectIdx.gitHead, currentHead };
 
           // Block: release claim back to pending and return without dispatching
           await updateEntry(hubRoot(req), result.entry.id, { status: "pending", workerId: null });
           return {
             claimed: false,
             reason: "project-index-stale",
-            indexRepair,
+            indexRecovery,
             blockedEntryId: result.entry.id,
             recovered: result.recovered,
             activeProjects: result.activeProjects,
@@ -227,7 +227,7 @@ export async function hubRoutes(fastify) {
       });
     }
 
-    return { claimed: true, entry: result.entry, dispatch, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy, indexRepair };
+    return { claimed: true, entry: result.entry, dispatch, recovered: result.recovered, activeProjects: result.activeProjects, skippedBusy: result.skippedBusy, indexRecovery };
   });
 
   fastify.patch("/hub/queue/:entryId", async (req) => {

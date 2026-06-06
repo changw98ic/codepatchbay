@@ -109,7 +109,7 @@ export interface QueueStatus {
   failedEntries?: number;
   failedTargets?: number;
   retryingFailedTargets?: number;
-  repairedFailedTargets?: number;
+  retriedFailedTargets?: number;
   unretriedFailedTargets?: number;
   blocked?: number;
   cancelled?: number;
@@ -373,7 +373,7 @@ export interface ReviewLoopRound {
   round: number;
   verdict: 'accepted' | 'rejected' | string;
   feedback?: string | null;
-  correctionQueueEntryId?: string | null;
+  retryQueueEntryId?: string | null;
   bundleId?: string | null;
   actor?: string | null;
   createdAt?: string | null;

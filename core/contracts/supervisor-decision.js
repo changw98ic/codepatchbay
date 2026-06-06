@@ -25,7 +25,7 @@ const ACTION_SCHEMAS = {
     params: {
       required: ["role", "agent"],
       properties: {
-        role: { type: "enum", values: ["planner", "executor", "verifier", "reviewer", "repairer"] },
+        role: { type: "enum", values: ["planner", "executor", "verifier", "reviewer", "remediator"] },
         agent: { type: "string" },
       },
     },

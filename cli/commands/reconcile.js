@@ -49,15 +49,15 @@ export async function run(args, { cpbRoot }) {
     console.log(`\nExited workers pruned: ${report.workers.pruned}`);
   }
 
-  if (report.streamRepairs.length > 0) {
-    console.log(`\nRepaired event streams (${report.streamRepairs.length}):`);
-    for (const s of report.streamRepairs) {
+  if (report.streamRecoveries.length > 0) {
+    console.log(`\nRecovered event streams (${report.streamRecoveries.length}):`);
+    for (const s of report.streamRecoveries) {
       console.log(`  ${s.project}/${s.jobId}`);
     }
   }
 
   if (report.streamErrors.length > 0) {
-    console.log(`\nUnrepairable event stream errors (${report.streamErrors.length}):`);
+    console.log(`\nUnrecoverable event stream errors (${report.streamErrors.length}):`);
     for (const e of report.streamErrors) {
       console.log(`  FAIL ${e.project}/${e.jobId}: ${e.reason} at line ${e.lineNumber}`);
     }

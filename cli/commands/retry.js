@@ -13,7 +13,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const project = filtered[0];
   const jobId = filtered[1];
   if (!project || !jobId) {
-    console.error("Usage: cpb repair <project> <job-id> [--agent <name>]");
+    console.error("Usage: cpb retry <project> <job-id> [--agent <name>]");
     process.exit(1);
   }
 
@@ -23,17 +23,17 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const entry = await enqueue(hubRoot, {
     projectId: project,
     priority: "P1",
-    description: `Repair job ${jobId}`,
-    type: "cli_repair",
+    description: `Retry job ${jobId}`,
+    type: "cli_retry",
     metadata: {
       source: "cli",
-      repairJobId: jobId,
-      repairAgent: agent || undefined,
+      retryJobId: jobId,
+      retryAgent: agent || undefined,
       actor: "cli",
       requestedAt: new Date().toISOString(),
     },
   });
 
-  console.log(`Enqueued repair ${entry.id} for job ${jobId} (project=${project})`);
+  console.log(`Enqueued retry ${entry.id} for job ${jobId} (project=${project})`);
   return 0;
 }

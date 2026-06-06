@@ -350,39 +350,39 @@ export async function queueStatus(hubRoot) {
   return counts;
 }
 
-const ACTIVE_REPAIR_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
+const ACTIVE_RETRY_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
 
 function failedTargetKey(entry) {
-  const targetJobId = entry.type === "cli_repair"
-    ? entry.metadata?.repairJobId
+  const targetJobId = entry.type === "cli_retry"
+    ? entry.metadata?.retryJobId
     : `job-${entry.id}`;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function activeRepairTargetKey(entry) {
-  if (entry.type !== "cli_repair" || !ACTIVE_REPAIR_STATUSES.has(entry.status)) return null;
-  const targetJobId = entry.metadata?.repairJobId;
+function activeRetryTargetKey(entry) {
+  if (entry.type !== "cli_retry" || !ACTIVE_RETRY_STATUSES.has(entry.status)) return null;
+  const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function completedRepairTargetKey(entry) {
-  if (entry.type !== "cli_repair" || entry.status !== "completed") return null;
-  const targetJobId = entry.metadata?.repairJobId;
+function completedRetryTargetKey(entry) {
+  if (entry.type !== "cli_retry" || entry.status !== "completed") return null;
+  const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
 export function summarizeFailedTargets(entries = []) {
   const failedTargets = new Set();
-  const activeRepairTargets = new Set();
-  const completedRepairTargets = new Set();
+  const activeRetryTargets = new Set();
+  const completedRetryTargets = new Set();
   for (const entry of entries) {
-    const activeRepair = activeRepairTargetKey(entry);
-    if (activeRepair) activeRepairTargets.add(activeRepair);
-    const completedRepair = completedRepairTargetKey(entry);
-    if (completedRepair) completedRepairTargets.add(completedRepair);
+    const activeRetry = activeRetryTargetKey(entry);
+    if (activeRetry) activeRetryTargets.add(activeRetry);
+    const completedRetry = completedRetryTargetKey(entry);
+    if (completedRetry) completedRetryTargets.add(completedRetry);
     if (entry.status === "failed") {
       const failedTarget = failedTargetKey(entry);
       if (failedTarget) failedTargets.add(failedTarget);
@@ -390,20 +390,20 @@ export function summarizeFailedTargets(entries = []) {
   }
 
   let retryingFailedTargets = 0;
-  let repairedFailedTargets = 0;
+  let retriedFailedTargets = 0;
   for (const target of failedTargets) {
-    if (activeRepairTargets.has(target)) {
+    if (activeRetryTargets.has(target)) {
       retryingFailedTargets++;
-    } else if (completedRepairTargets.has(target)) {
-      repairedFailedTargets++;
+    } else if (completedRetryTargets.has(target)) {
+      retriedFailedTargets++;
     }
   }
   return {
     failedEntries: entries.filter((entry) => entry.status === "failed").length,
     failedTargets: failedTargets.size,
     retryingFailedTargets,
-    repairedFailedTargets,
-    unretriedFailedTargets: failedTargets.size - retryingFailedTargets - repairedFailedTargets,
+    retriedFailedTargets,
+    unretriedFailedTargets: failedTargets.size - retryingFailedTargets - retriedFailedTargets,
   };
 }
 

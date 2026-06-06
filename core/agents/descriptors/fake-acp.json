@@ -5,7 +5,7 @@
   "fallbackCommand": "node",
   "fallbackArgs": ["server/services/test-acp-agent.mjs"],
   "args": [],
-  "capabilities": ["plan", "execute", "verify", "review", "repair"],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
   "defaultRoles": [],
   "stability": "test",
   "envPrefix": "CPB_ACP_FAKE_ACP",

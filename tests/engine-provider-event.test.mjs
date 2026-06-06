@@ -20,7 +20,7 @@ import { tempRoot } from "./helpers.mjs";
 
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
-process.env.CPB_PHASE_CORRECTION_MAX = "1";
+process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
 process.env.CPB_DELEGATE_ACK_POLL_MS = "10";
 process.env.CPB_DELEGATE_ACK_TIMEOUT_MS = "80";
 
@@ -470,6 +470,34 @@ test("runJob preserves verifier provider diagnostics on successful verify", asyn
   assert.ok(verifyResult.diagnostics.promptArtifact?.name);
 });
 
+test("runJob returns verifier verdict cause for failed verification retry", async () => {
+  const { result } = await runEngine({
+    pool: makePool({
+      onExecute: async ({ meta }) => {
+        if (meta.role !== "verifier") return undefined;
+        return {
+          output: phaseOutput("verifier", {
+            verdict: "fail",
+            reason: "unit tests failed",
+            details: "src/api.js still returns the wrong value.",
+            confidence: 0.82,
+          }),
+          providerKey: "fake-primary",
+          variant: null,
+        };
+      },
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure.kind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(result.failure.phase, "verify");
+  assert.equal(result.failure.cause.verdict.status, "fail");
+  assert.equal(result.failure.cause.verdict.reason, "unit tests failed");
+  assert.equal(result.failure.cause.artifact.kind, "verdict");
+  assert.match(result.failure.cause.artifact.path, /verdict-/);
+});
+
 test("runJob records ACP token usage in phase events and provider usage commands", async () => {
   const hubRoot = await tempRoot("cpb-engine-hub-usage");
   const events = [];
@@ -612,7 +640,7 @@ test("runJob retries transient phase failures and corrects artifact validation f
   assert.equal(planAttempts, 2);
   assert.equal(executeAttempts, 2);
   assert.ok(events.some((event) => event.type === "phase_retry" && event.phase === "plan"));
-  assert.ok(events.some((event) => event.type === "phase_correction" && event.phase === "execute"));
+  assert.ok(events.some((event) => event.type === "phase_feedback_retry" && event.phase === "execute"));
 });
 
 test("event store seals terminal jobs and blocks or redacts secret-like artifacts", async () => {

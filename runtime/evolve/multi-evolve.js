@@ -41,7 +41,7 @@ function parseArgs(argv) {
     once: false,
     scan: false,
     continuous: false,
-    guardedRepair: false,
+    guardedRun: false,
     intervalMs: Number(process.env.CPB_MULTI_EVOLVE_INTERVAL_MS || 60_000),
     explicitInterval: false,
     maxRounds: Number(process.env.CPB_MULTI_EVOLVE_MAX_ROUNDS || 0),
@@ -73,7 +73,7 @@ function parseArgs(argv) {
     else if (arg === "--once") opts.once = true;
     else if (arg === "--scan") opts.scan = true;
     else if (arg === "--continuous") opts.continuous = true;
-    else if (arg === "--guarded-repair") opts.guardedRepair = true;
+    else if (arg === "--guarded-run") opts.guardedRun = true;
     else if (arg === "--interval") {
       opts.intervalMs = Number(valueAfter(i++, arg));
       opts.explicitInterval = true;
@@ -94,7 +94,7 @@ function parseArgs(argv) {
   if (!isWorkflowName(opts.workflow)) {
     throw new Error(`invalid workflow: ${opts.workflow}`);
   }
-  if (opts.guardedRepair) {
+  if (opts.guardedRun) {
     opts.dryRun = false;
     opts.once = false;
     opts.continuous = false;
@@ -116,16 +116,16 @@ Modes:
   --once              execute one issue then exit (defaults to live execution)
   --continuous        run in a loop until max-rounds or signal
                       defaults to dry-run; add --once for live execution
-  --guarded-repair    policy-gated loop: each issue must pass safety checks
+  --guarded-run       policy-gated loop: each issue must pass safety checks
                       before execution. Always live (never dry-run).
                       Stops on budget exhaustion or signal.
 
 Options:
   --interval <ms>     sleep between rounds
   --max-rounds <n>    stop after N rounds in loop modes (0 = unlimited)
-  --max-issues <n>    budget ceiling for guarded-repair (0 = unlimited)
-  --allowlist <a,b>   comma-separated project IDs allowed in guarded-repair
-  --no-clean-check    skip dirty-worktree check in guarded-repair
+  --max-issues <n>    budget ceiling for guarded-run (0 = unlimited)
+  --allowlist <a,b>   comma-separated project IDs allowed in guarded-run
+  --no-clean-check    skip dirty-worktree check in guarded-run
   --project <id>      restrict to a single project
   --agent codex|claude
   --workflow standard|complex|blocked
@@ -622,7 +622,7 @@ export class MultiEvolveController {
     };
   }
 
-  async runGuardedRepair(opts = {}) {
+  async runGuardedRun(opts = {}) {
     const {
       maxRounds = 0,
       intervalMs = 0,
@@ -650,7 +650,7 @@ export class MultiEvolveController {
           try {
             await this.scanProject(project, opts);
           } catch {
-            // Rate-limited or transient scans should not stop a guarded repair pass.
+            // Rate-limited or transient scans should not stop a guarded run.
           }
         }
       }
@@ -709,7 +709,7 @@ export class MultiEvolveController {
 
     budget = closeBudget(budget, this._stopRequested ? "signal" : "backlog_empty");
     return {
-      mode: "guarded_repair",
+      mode: "guarded_run",
       totalRounds,
       issuesExecuted,
       policyBlocked,
@@ -732,11 +732,11 @@ export async function main() {
     controller.requestStop();
   };
 
-  if (opts.guardedRepair) {
+  if (opts.guardedRun) {
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
 
-    const result = await controller.runGuardedRepair({
+    const result = await controller.runGuardedRun({
       maxRounds: opts.maxRounds,
       intervalMs: opts.intervalMs,
       scan: opts.scan,

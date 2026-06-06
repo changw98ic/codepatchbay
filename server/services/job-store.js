@@ -406,7 +406,7 @@ function buildRecoverySourceContext(originalJob, { fromPhase, trigger, recoveryR
     : {};
   const failureKind = originalJob?.failureCause?.kind || originalJob?.failureCode || "unknown";
   const failureReason = originalJob?.blockedReason || originalJob?.failureCause?.reason || recoveryReason || "recovery requested";
-  const correction = {
+  const retry = {
     failureKind,
     failureReason,
     previousOutput: recoveryPreviousOutput(originalJob),
@@ -420,14 +420,14 @@ function buildRecoverySourceContext(originalJob, { fromPhase, trigger, recoveryR
   };
   return {
     ...base,
-    correction,
+    retry,
     previousFailure: {
       kind: failureKind,
       reason: failureReason,
       jobId: originalJob?.jobId || null,
-      phase: correction.previousPhase,
-      retryCount: correction.retryCount,
-      maxRetries: correction.maxRetries,
+      phase: retry.previousPhase,
+      retryCount: retry.retryCount,
+      maxRetries: retry.maxRetries,
     },
   };
 }

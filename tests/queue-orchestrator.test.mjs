@@ -62,30 +62,30 @@ test("queueStatus separates historical failed entries from failed targets still 
   const hubRoot = await tempRoot("cpb-queue-failed-targets");
   const original = await enqueue(hubRoot, { projectId: "proj", description: "original failed job" });
   await updateEntry(hubRoot, original.id, { status: "failed" });
-  const failedRepair = await enqueue(hubRoot, {
+  const failedRetry = await enqueue(hubRoot, {
     projectId: "proj",
-    description: `Repair job job-${original.id}`,
-    type: "cli_repair",
-    metadata: { repairJobId: `job-${original.id}` },
+    description: `Retry job job-${original.id}`,
+    type: "cli_retry",
+    metadata: { retryJobId: `job-${original.id}` },
   });
-  await updateEntry(hubRoot, failedRepair.id, { status: "failed" });
+  await updateEntry(hubRoot, failedRetry.id, { status: "failed" });
   await enqueue(hubRoot, {
     projectId: "proj",
-    description: `Repair job job-${original.id}`,
-    type: "cli_repair",
-    metadata: { repairJobId: `job-${original.id}` },
+    description: `Retry job job-${original.id}`,
+    type: "cli_retry",
+    metadata: { retryJobId: `job-${original.id}` },
   });
   const unretried = await enqueue(hubRoot, { projectId: "proj", description: "unretried failed job" });
   await updateEntry(hubRoot, unretried.id, { status: "failed" });
-  const repaired = await enqueue(hubRoot, { projectId: "proj", description: "repaired failed job" });
-  await updateEntry(hubRoot, repaired.id, { status: "failed" });
-  const completedRepair = await enqueue(hubRoot, {
+  const retried = await enqueue(hubRoot, { projectId: "proj", description: "retried failed job" });
+  await updateEntry(hubRoot, retried.id, { status: "failed" });
+  const completedRetry = await enqueue(hubRoot, {
     projectId: "proj",
-    description: `Repair job job-${repaired.id}`,
-    type: "cli_repair",
-    metadata: { repairJobId: `job-${repaired.id}` },
+    description: `Retry job job-${retried.id}`,
+    type: "cli_retry",
+    metadata: { retryJobId: `job-${retried.id}` },
   });
-  await updateEntry(hubRoot, completedRepair.id, { status: "completed" });
+  await updateEntry(hubRoot, completedRetry.id, { status: "completed" });
 
   const status = await queueStatus(hubRoot);
 
@@ -93,12 +93,12 @@ test("queueStatus separates historical failed entries from failed targets still 
   assert.equal(status.failedEntries, 4);
   assert.equal(status.failedTargets, 3);
   assert.equal(status.retryingFailedTargets, 1);
-  assert.equal(status.repairedFailedTargets, 1);
+  assert.equal(status.retriedFailedTargets, 1);
   assert.equal(status.unretriedFailedTargets, 1);
   assert.equal(status.projects.proj.failedEntries, 4);
   assert.equal(status.projects.proj.failedTargets, 3);
   assert.equal(status.projects.proj.retryingFailedTargets, 1);
-  assert.equal(status.projects.proj.repairedFailedTargets, 1);
+  assert.equal(status.projects.proj.retriedFailedTargets, 1);
   assert.equal(status.projects.proj.unretriedFailedTargets, 1);
 });
 

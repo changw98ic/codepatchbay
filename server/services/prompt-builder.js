@@ -173,7 +173,7 @@ function buildSubagentGuidance(phase, profile) {
   const maxConcurrency = profileApplies && profileGuidance?.maxConcurrency
     ? profileGuidance.maxConcurrency
     : (wfConfig?.maxConcurrency ?? 3);
-  const isClaudePhase = phase === "execute" || phase === "repair";
+  const isClaudePhase = phase === "execute" || phase === "remediate";
   const runtimeLine = isClaudePhase
     ? "This phase runs under Claude ACP. You MUST use Claude Code native subagents / Task tool for parallel work."
     : "This phase runs under Codex. You MUST use Codex native subagents for parallel work.";
@@ -212,7 +212,7 @@ function executionIntensitySection(phase) {
     execute: "Implement only the approved file-scoped path; do not re-plan the product or broaden scope unless a verifier-blocking issue proves it is required.",
     verify: "Verify the task-specific acceptance criteria before broad regression; do not pass a task on generic test success alone.",
     review: "Review the delivered change and evidence only; do not restart implementation.",
-    repair: "Repair the CPB/runtime fault only; do not redo the original product task.",
+    remediate: "Remediate the CPB/runtime fault only; do not redo the original product task.",
   }[phase] || "Stay inside this phase boundary.";
 
   return `\n## Execution Intensity Contract (MANDATORY)
@@ -546,7 +546,7 @@ Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-f
 Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "inconclusive" (cannot determine), "infra_error" (infrastructure prevents verification).
 Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
 "blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
-"fix_scope" lists files that need changes for the next repair attempt.
+"fix_scope" lists files that need changes for the next retry attempt.
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
@@ -635,15 +635,15 @@ Write ONLY a JSON object to the verdict file. No markdown, no headers, no free-f
 Status values: "pass" (all criteria met), "fail" (correctness/quality issues), "inconclusive" (cannot determine), "infra_error" (infrastructure prevents verification).
 Every layer MUST be present. Use "not_run" or "skipped" if a layer was not executed.
 "blocking" is REQUIRED when status is "fail". Each entry must have criterion, evidence, and file.
-"fix_scope" lists files that need changes for the next repair attempt.
+"fix_scope" lists files that need changes for the next retry attempt.
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
-  const roleTitle = await readRoleTitle(executorRoot, "repairer");
-  const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
+export async function buildRemediatorPrompt(executorRoot, cpbRoot, project, jobId, remediationFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "remediator");
+  const skillsSection = await buildSkillsSection(executorRoot, "remediator", { phase: "remediate" });
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const profile = await loadProfile(executorRoot, "repairer", { projectWikiDir: wikiDir });
+  const profile = await loadProfile(executorRoot, "remediator", { projectWikiDir: wikiDir });
   const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -653,21 +653,21 @@ export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId,
     : `## Scope
 - Work in the CodePatchbay executor root: ${executorRoot}
 - Use the target project only for direct inspection when needed: ${projectCwd || "[missing project root]"}
-- Write the repair report only to: ${repairFile}
-- Leave verifier, retry, recover, and pipeline execution paths outside this repair run.`;
+- Write the remediation report only to: ${remediationFile}
+- Leave verifier, retry, recover, and pipeline execution paths outside this remediation run.`;
 
-  return `You are CodePatchbay Repairer. Role: ${roleTitle}
+  return `You are CodePatchbay Remediator. Role: ${roleTitle}
 
 ${skillsSection}
 
-Your job is to repair CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
+Your job is to remediate CodePatchbay executor/runtime code when a CPB job failed because CPB itself behaved incorrectly.
 
 ${constraints}
-${buildSubagentGuidance("repair", profile)}
+${buildSubagentGuidance("remediate", profile)}
 
 ${headlessEscalationSection()}
 
-${executionIntensitySection("repair")}
+${executionIntensitySection("remediate")}
 
 ## Locators
 - CPB executor root: ${executorRoot}
@@ -683,16 +683,16 @@ ${executionIntensitySection("repair")}
 ## Instructions
 1. Read the logs and code from the locators above. Treat copied summaries as stale.
 2. Diagnose whether the failure is caused by CPB executor/runtime logic.
-3. If it is a CPB self-bug, make the smallest code change that repairs that bug.
-4. After a successful repair, the execution channel points to a new task carrying repair lineage metadata; the original failed job remains an audit record.
-5. Write the repair report at the path below.
+3. If it is a CPB self-bug, make the smallest code change that remediates that bug.
+4. After successful remediation, the execution channel points to a new task carrying remediation lineage metadata; the original failed job remains an audit record.
+5. Write the remediation report at the path below.
 
-Write the repair report to: ${repairFile}
+Write the remediation report to: ${remediationFile}
 
 The report's first line MUST be exactly one of:
-REPAIR: FIXED
-REPAIR: NOOP
-REPAIR: BLOCKED
+REMEDIATION: FIXED
+REMEDIATION: NOOP
+REMEDIATION: BLOCKED
 
 After the first line, include concise findings, changed files, and verification you ran.${await projectInstructionsSection(wikiDir)}`;
 }

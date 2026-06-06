@@ -156,35 +156,35 @@ export async function listEventFiles(cpbRoot, opts = {}) {
   return allFiles.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-export async function repairEventFile(cpbRoot, project, jobId, opts = {}) {
+export async function recoverEventFile(cpbRoot, project, jobId, opts = {}) {
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   try {
     const raw = await readFile(file, "utf8");
     if (raw.endsWith("\n") || raw.length === 0) {
-      return { repaired: false, removedBytes: 0 };
+      return { recovered: false, removedBytes: 0 };
     }
 
     const lines = raw.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length === 0) {
       await writeFile(file, "", "utf8");
-      return { repaired: true, removedBytes: Buffer.byteLength(raw) };
+      return { recovered: true, removedBytes: Buffer.byteLength(raw) };
     }
 
     const lastLine = lines[lines.length - 1];
     try {
       JSON.parse(lastLine);
       await writeFile(file, raw + "\n", "utf8");
-      return { repaired: true, removedBytes: 0, addedNewline: true };
+      return { recovered: true, removedBytes: 0, addedNewline: true };
     } catch {
       const lastNewline = raw.lastIndexOf("\n");
       const trimmed = lastNewline === -1 ? "" : raw.substring(0, lastNewline + 1);
       const removedBytes = Buffer.byteLength(raw) - Buffer.byteLength(trimmed);
       await writeFile(file, trimmed, "utf8");
-      return { repaired: true, removedBytes };
+      return { recovered: true, removedBytes };
     }
   } catch (err) {
     if (err && err.code === "ENOENT") {
-      return { repaired: false, removedBytes: 0 };
+      return { recovered: false, removedBytes: 0 };
     }
     throw err;
   }
@@ -338,7 +338,7 @@ export async function readEventsReadOnly(cpbRoot, project, jobId, opts = {}) {
 const POST_TERMINAL_ALLOWED = new Set([
   "job_redirect_consumed", "phase_activity",
   "permission_denied",
-  "external_repair_started", "external_repair_completed", "external_repair_failed",
+  "external_remediation_started", "external_remediation_completed", "external_remediation_failed",
   "process_stop_skipped", "process_marked_orphan", "process_stop_requested", "process_stopped",
   "finalizer_result",
   "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
@@ -427,10 +427,10 @@ export function materializeJob(events) {
     consumedRedirectIds: [],
     lastActivityAt: null,
     lastActivityMessage: null,
-    externalRepairStatus: null,
-    externalRepairArtifact: null,
-    externalRepairAt: null,
-    externalRepairError: null,
+    externalRemediationStatus: null,
+    externalRemediationArtifact: null,
+    externalRemediationAt: null,
+    externalRemediationError: null,
     lineage: null,
     recoveryOf: null,
     sourceContext: null,
@@ -732,7 +732,7 @@ export function materializeJob(events) {
         break;
       case "job_superseded":
         state.status = "superseded";
-        state.blockedReason = event.reason ?? "superseded by repair lineage";
+        state.blockedReason = event.reason ?? "superseded by remediation lineage";
         terminal = true;
         break;
       case "approval_required":
@@ -775,7 +775,7 @@ export function materializeJob(events) {
           round: event.round ?? state.reviewLoop.rounds.length + 1,
           verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
           feedback: event.feedback ?? null,
-          correctionQueueEntryId: event.correctionQueueEntryId ?? null,
+          retryQueueEntryId: event.retryQueueEntryId ?? null,
           bundleId: event.bundleId ?? null,
           actor: event.actor ?? null,
           createdAt: event.ts ?? null,
@@ -897,23 +897,23 @@ export function materializeJob(events) {
         state.lastActivityAt = event.ts ?? state.lastActivityAt;
         state.lastActivityMessage = event.message ?? state.lastActivityMessage;
         break;
-      case "external_repair_started":
-        state.externalRepairStatus = "STARTED";
-        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
-        state.externalRepairAt = event.ts ?? state.externalRepairAt;
-        state.externalRepairError = null;
+      case "external_remediation_started":
+        state.externalRemediationStatus = "STARTED";
+        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
+        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
+        state.externalRemediationError = null;
         break;
-      case "external_repair_completed":
-        state.externalRepairStatus = event.repairStatus ?? "UNKNOWN";
-        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
-        state.externalRepairAt = event.ts ?? state.externalRepairAt;
-        state.externalRepairError = null;
+      case "external_remediation_completed":
+        state.externalRemediationStatus = event.remediationStatus ?? "UNKNOWN";
+        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
+        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
+        state.externalRemediationError = null;
         break;
-      case "external_repair_failed":
-        state.externalRepairStatus = "FAILED";
-        state.externalRepairArtifact = event.artifact ?? state.externalRepairArtifact;
-        state.externalRepairAt = event.ts ?? state.externalRepairAt;
-        state.externalRepairError = event.error ?? event.reason ?? null;
+      case "external_remediation_failed":
+        state.externalRemediationStatus = "FAILED";
+        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
+        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
+        state.externalRemediationError = event.error ?? event.reason ?? null;
         break;
       case "finalizer_result":
         state.finalizer = {

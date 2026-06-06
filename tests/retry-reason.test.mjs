@@ -13,7 +13,7 @@ test("retry input never retries pass inconclusive or infra_error verdicts", () =
   assert.equal(buildRetryInputFromVerdict({ status: "infra_error", reason: "disk full" }).shouldRetry, false);
 });
 
-test("retry input summarizes failing checks and repair scope", () => {
+test("retry input summarizes failing checks and retry scope", () => {
   const result = buildRetryInputFromVerdict({
     status: "fail",
     reason: "tests failed",
@@ -31,7 +31,8 @@ test("retry input summarizes failing checks and repair scope", () => {
   assert.ok(result.prompt.includes("Retry 2"));
   assert.ok(result.prompt.includes("input validation"));
   assert.ok(result.prompt.includes("src/api.js"));
-  assert.ok(result.repairScope.includes("src/types.ts"));
+  assert.ok(result.prompt.includes("Expected retry scope"));
+  assert.ok(result.retryScope.includes("src/types.ts"));
 });
 
 test("normalizeRetryReason parses fenced and legacy verdict content", () => {
@@ -44,7 +45,7 @@ test("normalizeRetryReason parses fenced and legacy verdict content", () => {
   const normalized = normalizeRetryReason(fenced, { previousVerdictId: "v-1" });
   assert.equal(normalized.shouldRetry, true);
   assert.equal(normalized.previousVerdictId, "v-1");
-  assert.ok(normalized.repairScope.includes("src/api.js"));
+  assert.ok(normalized.retryScope.includes("src/api.js"));
 
   assert.equal(normalizeRetryReason("VERDICT: PASS\nAll good").shouldRetry, false);
   assert.equal(normalizeRetryReason("VERDICT: FAIL\nRejected").shouldRetry, true);

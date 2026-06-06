@@ -12,7 +12,7 @@ Example response:
 \`\`\`json
 {
   "status": "ok",
-  "repairStatus": "FIXED",
+  "remediationStatus": "FIXED",
   "summary": "Added try-catch around database query and proper error response",
   "changes": ["src/routes/api.js", "src/models/user.js"]
 }
@@ -21,31 +21,31 @@ Example response:
 Rules:
 - The response MUST be valid JSON inside a \`\`\`json code block
 - Do NOT include any text outside the code block
-- repairStatus MUST be exactly "FIXED", "UNFIXABLE", or "NEEDS_RETRY"
-- Do NOT write any artifact files yourself. The system will persist the repair report.`;
+- remediationStatus MUST be exactly "FIXED", "UNFIXABLE", or "NEEDS_RETRY"
+- Do NOT write any artifact files yourself. The system will persist the remediation report.`;
 
-export async function runRepair(ctx) {
+export async function runRemediate(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
 
-  const prompt = await buildRepairPrompt(ctx) + JSON_INSTRUCTION;
+  const prompt = await buildRemediatePrompt(ctx) + JSON_INSTRUCTION;
 
   const agentResult = await runAgent({
-    role: "repairer",
+    role: "remediator",
     ...resolveAgent(ctx, "claude"),
     project,
     jobId,
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.repair ?? 0,
+    timeoutMs: ctx.timeouts?.remediate ?? 0,
   });
 
   if (!agentResult.ok) {
     return phaseFailed({
-      phase: "repair",
+      phase: "remediate",
       failure: failure({
         kind: agentResult.kind,
-        phase: "repair",
+        phase: "remediate",
         reason: agentResult.reason,
         retryable: agentResult.retryable,
         cause: agentResult.cause || {},
@@ -57,10 +57,10 @@ export async function runRepair(ctx) {
   const parsed = parseAgentJson(agentResult.output);
   if (!parsed.ok) {
     return phaseFailed({
-      phase: "repair",
+      phase: "remediate",
       failure: failure({
         kind: FailureKind.AGENT_CONTRACT_INVALID,
-        phase: "repair",
+        phase: "remediate",
         reason: parsed.reason,
         retryable: true,
       }),
@@ -68,43 +68,43 @@ export async function runRepair(ctx) {
     });
   }
 
-  const status = parsed.data.repairStatus || "UNFIXABLE";
-  const content = renderRepairMarkdown(parsed.data);
+  const status = parsed.data.remediationStatus || "UNFIXABLE";
+  const content = renderRemediationMarkdown(parsed.data);
 
   const artifact = await writeArtifact(cpbRoot, {
     project,
     jobId,
-    kind: "repair",
+    kind: "remediation",
     content,
-    metadata: { repairStatus: status },
+    metadata: { remediationStatus: status },
   });
 
   if (status !== "FIXED") {
     return phaseFailed({
-      phase: "repair",
+      phase: "remediate",
       failure: failure({
         kind: FailureKind.VERIFICATION_FAILED,
-        phase: "repair",
-        reason: `repair status: ${status}`,
+        phase: "remediate",
+        reason: `remediation status: ${status}`,
         retryable: status === "NEEDS_RETRY",
-        cause: { repairStatus: status, artifact },
+        cause: { remediationStatus: status, artifact },
       }),
       diagnostics: { artifact },
     });
   }
 
   return phasePassed({
-    phase: "repair",
+    phase: "remediate",
     artifact,
     diagnostics: agentResult.diagnostics,
   });
 }
 
-function renderRepairMarkdown(data) {
-  return `# Repair Report
+function renderRemediationMarkdown(data) {
+  return `# Remediation Report
 
 ## Status
-${data.repairStatus || "UNKNOWN"}
+${data.remediationStatus || "UNKNOWN"}
 
 ## Summary
 ${data.summary || "N/A"}
@@ -114,11 +114,11 @@ ${(data.changes || []).map((c) => `- ${c}`).join("\n") || "- None"}
 `;
 }
 
-async function buildRepairPrompt(ctx) {
+async function buildRemediatePrompt(ctx) {
   if (typeof ctx.buildPrompt === "function") {
-    return ctx.buildPrompt("repair", ctx);
+    return ctx.buildPrompt("remediate", ctx);
   }
-  return `You are a repair agent. Fix the issues from the failed job:
+  return `You are a remediation agent. Fix the CPB/runtime issues from the failed job:
 
 Task: ${ctx.task}
 Project: ${ctx.project}
@@ -128,7 +128,7 @@ Analyze the failure and apply fixes.`;
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.repairer || ctx.agent || fallback;
+  const raw = ctx.agents?.remediator || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

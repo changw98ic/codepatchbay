@@ -164,7 +164,7 @@ The plan should include:
 - Files that need to be modified or created
 - Implementation steps in order
 - Testing strategy
-- Potential risks and mitigations${buildCorrectionSection(ctx.sourceContext)}`;
+- Potential risks and mitigations${buildRetrySection(ctx.sourceContext)}`;
 }
 
 function resolveAgent(ctx, fallback) {
@@ -173,15 +173,15 @@ function resolveAgent(ctx, fallback) {
   return { agent: raw, variant: null };
 }
 
-function buildCorrectionSection(sourceContext) {
-  const correction = sourceContext?.correction;
-  if (!correction) return "";
+function buildRetrySection(sourceContext) {
+  const retry = sourceContext?.retry;
+  if (!retry || typeof retry !== "object") return "";
   return `
 
 ## Previous Attempt Failed
 Your previous plan was rejected. Fix the issue and provide a corrected response.
 
-Error type: ${correction.failureKind}
-Error: ${correction.failureReason}
-${correction.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${correction.previousOutput}\n\`\`\`` : ""}`;
+Error type: ${retry.failureKind}
+Error: ${retry.failureReason}
+${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`;
 }

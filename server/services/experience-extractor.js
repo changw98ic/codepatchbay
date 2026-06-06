@@ -1,7 +1,7 @@
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-const FIX_SIGNALS = /\b(fix|bug|workaround|race|regression|repair|prevented|patch|hotfix|broken|crash|deadlock|leak|orphan|zombie|stale)\b/i;
+const FIX_SIGNALS = /\b(fix|bug|workaround|race|regression|remediation|prevented|patch|hotfix|broken|crash|deadlock|leak|orphan|zombie|stale)\b/i;
 
 const TERMINAL_GOTCHA_EVENTS = new Set([
   "pool_exhausted",

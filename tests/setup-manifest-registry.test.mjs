@@ -48,7 +48,7 @@ describe("D40 manifest registry layout", () => {
     binary: "claude",
     tier: 1,
     recommended: true,
-    roles: ["executor", "repairer"],
+    roles: ["executor", "remediator"],
     capabilities: ["repo_inspect", "file_edit", "shell", "large_context"],
     sourceUrl: "https://code.claude.com/docs/en/installation",
     install: {

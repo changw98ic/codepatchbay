@@ -70,8 +70,8 @@ export function reviewFilePath(cpbRoot, project, deliverableId) {
   return path.join(cpbRoot, "wiki", "projects", project, "outputs", `review-${deliverableId}.md`);
 }
 
-export function repairFilePath(cpbRoot, project, jobId) {
-  return path.join(cpbRoot, "wiki", "projects", project, "outputs", `repair-${jobId}.md`);
+export function remediationFilePath(cpbRoot, project, jobId) {
+  return path.join(cpbRoot, "wiki", "projects", project, "outputs", `remediation-${jobId}.md`);
 }
 
 export function wikiLogPath(cpbRoot, project) {
