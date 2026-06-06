@@ -626,7 +626,6 @@ export class AcpPool {
           const elapsed = Date.now() - start;
           reject(new PoolExhaustedError(agent, providerKey, elapsed));
         }, timeoutMs);
-        timer.unref();
         entry._timer = timer;
       }
     });
