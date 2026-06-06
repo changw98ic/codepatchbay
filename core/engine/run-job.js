@@ -25,8 +25,8 @@ const PHASE_RETRYABLE_KINDS = new Set([
   FailureKind.TIMEOUT,
   FailureKind.RUNTIME_INTERRUPTED,
 ]);
-const PHASE_CORRECTION_MAX = Number(process.env.CPB_PHASE_CORRECTION_MAX || 1);
-const PHASE_CORRECTABLE_KINDS = new Set([
+const PHASE_FEEDBACK_RETRY_MAX = Number(process.env.CPB_PHASE_FEEDBACK_RETRY_MAX || 1);
+const PHASE_FEEDBACK_RETRY_KINDS = new Set([
   FailureKind.ARTIFACT_INVALID,
   FailureKind.AGENT_CONTRACT_INVALID,
 ]);
@@ -77,6 +77,24 @@ function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
     tokenSource: usage?.tokenSource || "acp_not_reported",
     toolCalls: usage?.toolCalls ?? null,
     functionCalls: usage?.functionCalls ?? null,
+  };
+}
+
+function retryFailureCause(fail) {
+  if (fail?.kind !== FailureKind.VERIFICATION_FAILED) return undefined;
+  const cause = fail.cause || {};
+  return {
+    verdict: cause.verdict || null,
+    artifact: cause.artifact
+      ? {
+          kind: cause.artifact.kind || null,
+          id: cause.artifact.id || null,
+          name: cause.artifact.name || null,
+          path: cause.artifact.path || null,
+          bytes: cause.artifact.bytes ?? null,
+          sha256: cause.artifact.sha256 || null,
+        }
+      : null,
   };
 }
 
@@ -187,7 +205,7 @@ export async function runJob(ctx) {
   // Explicit timeoutMin takes priority, then env var, then disabled
   const phaseTimeout = timeoutMin != null ? (timeoutMin > 0 ? timeoutMin * 60_000 : 0) : envTimeout;
 
-  const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+  const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
 
   for (const phase of phases) {
     const role = phaseRoleMap[phase] || phase;
@@ -308,7 +326,7 @@ export async function runJob(ctx) {
         execute: phaseTimeout,
         verify: phaseTimeout,
         review: phaseTimeout,
-        repair: phaseTimeout,
+        remediate: phaseTimeout,
       },
     });
 
@@ -485,7 +503,7 @@ export async function runJob(ctx) {
           execute: phaseTimeout,
           verify: phaseTimeout,
           review: phaseTimeout,
-          repair: phaseTimeout,
+          remediate: phaseTimeout,
         },
       });
     }
@@ -545,7 +563,7 @@ export async function runJob(ctx) {
               execute: phaseTimeout,
               verify: phaseTimeout,
               review: phaseTimeout,
-              repair: phaseTimeout,
+              remediate: phaseTimeout,
             },
           });
           if (isPhasePassed(result)) break;
@@ -553,35 +571,35 @@ export async function runJob(ctx) {
       }
     }
 
-    // Phase correction: validation failures retry with error feedback appended
-    if (!isPhasePassed(result) && PHASE_CORRECTION_MAX > 0 && PHASE_CORRECTABLE_KINDS.has(result.failure?.kind)) {
-      for (let correctionAttempt = 1; correctionAttempt <= PHASE_CORRECTION_MAX; correctionAttempt++) {
-        const correction = {
+    // Phase feedback retry: validation failures retry with error feedback appended
+    if (!isPhasePassed(result) && PHASE_FEEDBACK_RETRY_MAX > 0 && PHASE_FEEDBACK_RETRY_KINDS.has(result.failure?.kind)) {
+      for (let retryAttempt = 1; retryAttempt <= PHASE_FEEDBACK_RETRY_MAX; retryAttempt++) {
+        const retry = {
           failureKind: result.failure.kind,
           failureReason: result.failure.reason,
           previousOutput: result.failure.stderrSnippet || result.failure.cause?.rawOutput || "",
-          attempt: correctionAttempt,
+          attempt: retryAttempt,
         };
         await appendEvent(cpbRoot, project, jobId, {
-          type: "phase_correction",
+          type: "phase_feedback_retry",
           jobId,
           project,
           phase,
-          attempt: correctionAttempt,
-          maxAttempts: PHASE_CORRECTION_MAX,
-          failureKind: correction.failureKind,
-          reason: correction.failureReason,
+          attempt: retryAttempt,
+          maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
+          failureKind: retry.failureKind,
+          reason: retry.failureReason,
           ts: ts(),
         });
         await reportProgress(ctx, {
-          type: "phase_correction",
+          type: "phase_feedback_retry",
           jobId,
           project,
           phase,
-          attempt: correctionAttempt,
-          maxAttempts: PHASE_CORRECTION_MAX,
-          failureKind: correction.failureKind,
-          reason: correction.failureReason,
+          attempt: retryAttempt,
+          maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
+          failureKind: retry.failureKind,
+          reason: retry.failureReason,
         });
         result = await runPhase({
           phase,
@@ -591,7 +609,7 @@ export async function runJob(ctx) {
           job,
           cpbRoot,
           sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-          sourceContext: { ...sourceContext, correction },
+          sourceContext: { ...sourceContext, retry },
           pool,
           state,
           previousResults: phaseResults,
@@ -602,7 +620,7 @@ export async function runJob(ctx) {
             execute: phaseTimeout,
             verify: phaseTimeout,
             review: phaseTimeout,
-            repair: phaseTimeout,
+            remediate: phaseTimeout,
           },
         });
         if (isPhasePassed(result)) break;
@@ -725,6 +743,7 @@ export async function runJob(ctx) {
 
     if (!isPhasePassed(result)) {
       const fail = result.failure || {};
+      const retryCause = retryFailureCause(fail);
       await failJob(cpbRoot, project, jobId, {
         reason: fail.reason || `${phase} phase failed`,
         code: fail.kind || "fatal",
@@ -749,6 +768,7 @@ export async function runJob(ctx) {
           phase,
           reason: fail.reason,
           retryable: fail.retryable,
+          ...(retryCause ? { cause: retryCause } : {}),
         },
         phaseResults,
       };

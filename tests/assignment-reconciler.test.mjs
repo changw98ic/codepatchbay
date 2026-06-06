@@ -4,8 +4,9 @@ import { test } from "node:test";
 
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import { WorkerStore } from "../shared/orchestrator/worker-store.js";
+import { FailureKind } from "../core/contracts/failure.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
-import { Reconciler } from "../server/orchestrator/reconciler.js";
+import { Reconciler, buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
 import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.mjs";
 
@@ -29,6 +30,127 @@ function reconciler(hubRoot, assignments, workers, failureRouter = {}, options =
     ...options,
   });
 }
+
+test("buildRetrySourceContext carries verifier verdict into retry metadata", () => {
+  const result = {
+    jobResult: {
+      jobId: "job-verify",
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: "acceptance failed",
+        retryable: true,
+        cause: {
+          verdict: {
+            status: "fail",
+            confidence: 0.84,
+            reason: "missing validation",
+            summary: "The API still accepts null input.",
+            layers: {
+              acceptance: { status: "fail", detail: "null input was accepted" },
+            },
+            blocking: [
+              {
+                criterion: "input validation",
+                file: "src/api.js",
+                evidence: "null accepted",
+                fix_hint: "add guard",
+              },
+            ],
+            fix_scope: ["src/api.js"],
+          },
+          artifact: {
+            kind: "verdict",
+            id: "123456",
+            name: "verdict-123456",
+            path: "/tmp/verdict-123456.md",
+            bytes: 321,
+            sha256: "abc123",
+          },
+        },
+      },
+    },
+  };
+
+  const sourceContext = buildRetrySourceContext(
+    {
+      attempts: 1,
+      metadata: { failureCount: 1 },
+      sourceContext: { issueNumber: 42 },
+    },
+    { attempt: 1 },
+    result,
+    { action: "retry_same_worker", reason: "verification failed: acceptance failed", retryable: true },
+  );
+
+  assert.equal(sourceContext.issueNumber, 42);
+  assert.equal(sourceContext.retry.failureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(sourceContext.retry.failureReason, "acceptance failed");
+  assert.equal(sourceContext.retry.retryAction, "retry_same_worker");
+  assert.equal(sourceContext.retry.failureCount, 2);
+  assert.equal(sourceContext.retry.verification.verdict.status, "fail");
+  assert.equal(sourceContext.retry.verification.verdict.reason, "missing validation");
+  assert.deepEqual(sourceContext.retry.verification.retryScope, ["src/api.js"]);
+  assert.equal(sourceContext.retry.verification.artifact.path, "/tmp/verdict-123456.md");
+  assert.match(sourceContext.retry.previousOutput, /Verifier verdict:/);
+  assert.match(sourceContext.retry.previousOutput, /src\/api\.js/);
+  assert.equal(sourceContext.previousFailure.verification.verdict.status, "fail");
+});
+
+test("Reconciler requeues verification failures with verifier retry context", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-verifier-retry");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "retry after verifier" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress", claimedBy: "w-verify", workerId: "w-verify" });
+  await workers.registerWorker("w-verify", { status: "running", currentAssignmentId: `a-${entry.id}` });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "retry after verifier",
+    metadata: { failureCount: 0 },
+  });
+  const attempt = await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-verify",
+    orchestratorEpoch: 1,
+  });
+
+  await reconciler(hubRoot, assignments, workers, new FailureRouter())._finalizeQueue(assignment, attempt, {
+    status: "failed",
+    jobResult: {
+      status: "failed",
+      jobId: "job-verify",
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: "tests failed",
+        retryable: true,
+        cause: {
+          verdict: {
+            status: "fail",
+            reason: "test expectation failed",
+            blocking: [{ criterion: "unit test", file: "src/api.js", evidence: "expected 2 got 1" }],
+            fix_scope: ["src/api.js"],
+          },
+          artifact: { kind: "verdict", id: "654321", name: "verdict-654321", path: "/tmp/verdict-654321.md" },
+        },
+      },
+    },
+  });
+
+  const [queued] = await listQueue(hubRoot);
+  assert.equal(queued.status, "pending");
+  assert.equal(queued.metadata.lastFailureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(queued.metadata.failureCount, 1);
+  assert.equal(queued.metadata.retryDecision.action, "retry_same_worker");
+  assert.equal(queued.metadata.sourceContext.retry.failureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(queued.metadata.sourceContext.retry.verification.verdict.status, "fail");
+  assert.deepEqual(queued.metadata.sourceContext.retry.verification.retryScope, ["src/api.js"]);
+  assert.match(queued.metadata.sourceContext.retry.previousOutput, /Verifier verdict:/);
+  assert.match(queued.metadata.sourceContext.retry.previousOutput, /test expectation failed/);
+});
 
 test("AssignmentStore idempotently rebuilds assignments without losing attempt history", async () => {
   const hubRoot = await tempRoot("cpb-assignment");

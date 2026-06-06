@@ -193,7 +193,7 @@ const PHASE_TO_ROLE = {
   execute: "executor",
   verify: "verifier",
   review: "reviewer",
-  repair: "repairer",
+  remediate: "remediator",
 };
 
 /**

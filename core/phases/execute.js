@@ -182,16 +182,16 @@ async function buildExecutePrompt(ctx, planArtifact) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("execute", ctx, { planArtifact });
   }
-  const correction = ctx.sourceContext?.correction;
-  const correctionSection = correction
+  const retry = ctx.sourceContext?.retry;
+  const retrySection = retry && typeof retry === "object"
     ? `
 
 ## Previous Attempt Failed
 Your previous execution was rejected. Fix the issue and provide a corrected response.
 
-Error type: ${correction.failureKind}
-Error: ${correction.failureReason}
-${correction.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${correction.previousOutput}\n\`\`\`` : ""}`
+Error type: ${retry.failureKind}
+Error: ${retry.failureReason}
+${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`
     : "";
   return `You are a software execution agent. Implement the following task:
 
@@ -200,7 +200,7 @@ ${phaseExecutionContract("execute")}
 Task: ${ctx.task}
 Project: ${ctx.project}
 ${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : ""}
-Execute the implementation. Make code changes as needed.${correctionSection}`;
+Execute the implementation. Make code changes as needed.${retrySection}`;
 }
 
 function resolveAgent(ctx, fallback) {

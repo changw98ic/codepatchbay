@@ -106,8 +106,7 @@ Pipeline 通过 grep 此行决定下一步。
 ./cpb pipeline my-project "Add unit tests" 3
 ./cpb research my-project "Investigate auth patterns"
 ./cpb evolve-multi --once --project my-project
-./cpb repair my-project <job-id> [--agent codex]
-./cpb index refresh my-project
+./cpb retry my-project <job-id> [--agent codex]
 ./cpb status my-project
 ./cpb list
 ./cpb jobs

@@ -17,21 +17,21 @@ function validateId(name, value) {
   }
 }
 
-async function acquireRepairLock(cpbRoot, project, jobId) {
-  const lockDir = path.join(dataRoot(cpbRoot), "repair-locks", project, `${jobId}.lock`);
+async function acquireRemediationLock(cpbRoot, project, jobId) {
+  const lockDir = path.join(dataRoot(cpbRoot), "remediation-locks", project, `${jobId}.lock`);
   await mkdir(path.dirname(lockDir), { recursive: true });
   try {
     await mkdir(lockDir);
   } catch (err) {
     if (err.code === "EEXIST") {
-      throw new Error(`Repair already running for ${project}/${jobId}`);
+      throw new Error(`Remediation already running for ${project}/${jobId}`);
     }
     throw err;
   }
   return lockDir;
 }
 
-async function releaseRepairLock(lockDir) {
+async function releaseRemediationLock(lockDir) {
   try {
     await rmdir(lockDir);
   } catch {}
@@ -44,7 +44,7 @@ async function recordEvent(cpbRoot, project, jobId, event) {
   await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
 }
 
-export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
+export async function runRemediation(cpbRoot, { project, jobId, executorRoot }) {
   validateId("project", project);
   validateId("jobId", jobId);
 
@@ -62,9 +62,9 @@ export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
   }
   const job = materializeJob(events);
 
-  const repairId = await allocateArtifactId(outputsDir, "repair");
-  const repairFile = path.join(outputsDir, `repair-${repairId}.md`);
-  const repairArtifact = `repair-${repairId}`;
+  const remediationId = await allocateArtifactId(outputsDir, "remediation");
+  const remediationFile = path.join(outputsDir, `remediation-${remediationId}.md`);
+  const remediationArtifact = `remediation-${remediationId}`;
 
   let sourcePath = "";
   try {
@@ -73,74 +73,74 @@ export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
     sourcePath = meta.sourcePath || "";
   } catch {}
 
-  return { repairId, repairFile, repairArtifact, workflow: job?.workflow || "", sourcePath };
+  return { remediationId, remediationFile, remediationArtifact, workflow: job?.workflow || "", sourcePath };
 }
 
-export async function completeRepair(cpbRoot, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot }) {
+export async function completeRemediation(cpbRoot, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot }) {
   if (status === "failed") {
     await recordEvent(cpbRoot, project, jobId, {
-      type: "external_repair_failed",
+      type: "external_remediation_failed",
       jobId,
       project,
-      artifact: repairArtifact,
-      file: repairFile,
+      artifact: remediationArtifact,
+      file: remediationFile,
       error: error || "unknown error",
       ts: new Date().toISOString(),
     });
     return;
   }
 
-  let repairContent;
+  let remediationContent;
   try {
-    repairContent = await readFile(repairFile, "utf8");
+    remediationContent = await readFile(remediationFile, "utf8");
   } catch {
     await recordEvent(cpbRoot, project, jobId, {
-      type: "external_repair_failed",
+      type: "external_remediation_failed",
       jobId,
       project,
-      artifact: repairArtifact,
-      file: repairFile,
-      error: "repair report not created",
+      artifact: remediationArtifact,
+      file: remediationFile,
+      error: "remediation report not created",
       ts: new Date().toISOString(),
     });
-    throw new Error("repair report not created");
+    throw new Error("remediation report not created");
   }
 
-  const repairStatus = parseRepairStatus(repairContent);
-  if (!repairStatus) {
+  const remediationStatus = parseRemediationStatus(remediationContent);
+  if (!remediationStatus) {
     await recordEvent(cpbRoot, project, jobId, {
-      type: "external_repair_failed",
+      type: "external_remediation_failed",
       jobId,
       project,
-      artifact: repairArtifact,
-      file: repairFile,
-      error: `invalid repair status: ${repairStatus === null ? "missing" : repairStatus}`,
+      artifact: remediationArtifact,
+      file: remediationFile,
+      error: `invalid remediation status: ${remediationStatus === null ? "missing" : remediationStatus}`,
       ts: new Date().toISOString(),
     });
-    throw new Error("invalid repair status");
+    throw new Error("invalid remediation status");
   }
 
   await recordEvent(cpbRoot, project, jobId, {
-    type: "external_repair_completed",
+    type: "external_remediation_completed",
     jobId,
     project,
-    artifact: repairArtifact,
-    file: repairFile,
-    repairStatus,
+    artifact: remediationArtifact,
+    file: remediationFile,
+    remediationStatus,
     ts: new Date().toISOString(),
   });
 
-  if (repairStatus === "FIXED") {
+  if (remediationStatus === "FIXED") {
     await markJobSuperseded(cpbRoot, project, jobId);
-    await createLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot });
+    await createLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot });
   }
 
-  return repairStatus;
+  return remediationStatus;
 }
 
-function parseRepairStatus(content) {
+function parseRemediationStatus(content) {
   const firstLine = content.split(/\r?\n/)[0] || "";
-  const match = firstLine.match(/^REPAIR:\s*([A-Z_]+)/);
+  const match = firstLine.match(/^REMEDIATION:\s*([A-Z_]+)/);
   const status = match ? match[1] : null;
   if (status === "FIXED" || status === "NOOP" || status === "BLOCKED") return status;
   return null;
@@ -151,7 +151,7 @@ async function markJobSuperseded(cpbRoot, project, jobId) {
     type: "job_superseded",
     jobId,
     project,
-    reason: "external_repair_fixed",
+    reason: "external_remediation_fixed",
     ts: new Date().toISOString(),
   });
   const state = materializeJob(await readEvents(cpbRoot, project, jobId));
@@ -161,7 +161,7 @@ async function markJobSuperseded(cpbRoot, project, jobId) {
   }
 }
 
-async function createLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot }) {
+async function createLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot }) {
   const job = materializeJob(await readEvents(cpbRoot, project, jobId));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
@@ -211,25 +211,25 @@ async function createLineageTask(cpbRoot, { project, jobId, repairArtifact, repa
       ...(origin?.metadata || {}),
       originJobId: jobId,
       originQueueEntryId: origin?.id || null,
-      repairArtifact,
-      repairStatus,
-      lineageReason: "external_repair_fixed_cpb_self_bug",
+      remediationArtifact,
+      remediationStatus,
+      lineageReason: "external_remediation_fixed_cpb_self_bug",
       sourceContext: {
         ...(origin?.metadata?.sourceContext || job.sourceContext || {}),
-        repair: {
+        remediation: {
           previousJobId: jobId,
           previousQueueEntryId: origin?.id || null,
-          repairArtifact,
-          repairStatus,
-          lineageReason: "external_repair_fixed_cpb_self_bug",
+          remediationArtifact,
+          remediationStatus,
+          lineageReason: "external_remediation_fixed_cpb_self_bug",
           failureReason: job.blockedReason || null,
           failurePhase: job.failurePhase || null,
           failureCode: job.failureCode || null,
           artifacts: job.artifacts || {},
         },
-        correction: {
-          failureKind: job.failureCode || "external_repair",
-          failureReason: job.blockedReason || "external repair requested",
+        retry: {
+          failureKind: job.failureCode || "external_remediation",
+          failureReason: job.blockedReason || "external remediation requested",
           previousJobId: jobId,
           previousPhase: job.failurePhase || null,
           previousOutput: "",

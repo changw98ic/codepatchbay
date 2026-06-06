@@ -71,7 +71,7 @@ function reviewLoopState(events) {
         round: event.round ?? rounds.length + 1,
         verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
         feedback: event.feedback ?? null,
-        correctionQueueEntryId: event.correctionQueueEntryId ?? null,
+        retryQueueEntryId: event.retryQueueEntryId ?? null,
         bundleId: event.bundleId ?? null,
         actor: event.actor ?? null,
         createdAt: event.ts ?? null,
@@ -81,7 +81,7 @@ function reviewLoopState(events) {
   return { rounds, nextRound: rounds.length + 1, latest: rounds[rounds.length - 1] ?? null };
 }
 
-function correctionPreviousOutput(bundle) {
+function retryPreviousOutput(bundle) {
   const chunks = [];
   if (bundle?.evidence?.verdict) {
     chunks.push(`Previous verdict:\n${typeof bundle.evidence.verdict === "string" ? bundle.evidence.verdict : JSON.stringify(bundle.evidence.verdict, null, 2)}`);
@@ -98,13 +98,13 @@ function correctionPreviousOutput(bundle) {
   return trimText(chunks.join("\n\n"), 8000);
 }
 
-function buildCorrectionSourceContext(job, bundle, { round, feedback, actor, ts, correctionQueueEntryId }) {
+function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retryQueueEntryId }) {
   const base = job?.sourceContext && typeof job.sourceContext === "object" ? { ...job.sourceContext } : {};
   const bundleId = bundleIdFor(job.project, job.jobId);
-  const correction = {
+  const retry = {
     failureKind: "human_rejected_review_bundle",
     failureReason: feedback,
-    previousOutput: correctionPreviousOutput(bundle),
+    previousOutput: retryPreviousOutput(bundle),
     previousJobId: job.jobId,
     previousPhase: job.failurePhase || job.phase || null,
     previousQueueEntryId: job.queueEntryId || base.queueEntryId || null,
@@ -113,23 +113,24 @@ function buildCorrectionSourceContext(job, bundle, { round, feedback, actor, ts,
     trigger: "review_bundle_rejected",
     actor,
     rejectedAt: ts,
+    retryQueueEntryId,
     artifacts: job.artifacts || {},
   };
   return {
     ...base,
-    type: base.type || "review_bundle_correction",
-    correction,
+    type: base.type || "review_bundle_retry",
+    retry,
     reviewLoop: {
       originalJobId: job.jobId,
       originalBundleId: bundleId,
       round,
-      correctionQueueEntryId,
+      retryQueueEntryId,
     },
     previousFailure: {
-      kind: correction.failureKind,
-      reason: correction.failureReason,
+      kind: retry.failureKind,
+      reason: retry.failureReason,
       jobId: job.jobId,
-      phase: correction.previousPhase,
+      phase: retry.previousPhase,
     },
   };
 }
@@ -205,20 +206,20 @@ export async function rejectReviewBundle(cpbRoot, project, jobId, {
   const bundleId = bundleIdFor(project, jobId);
   const queueDedupeKey = `review-loop:${project}:${jobId}:${round}`;
 
-  const sourceContext = buildCorrectionSourceContext(job, bundle, {
+  const sourceContext = buildRetrySourceContext(job, bundle, {
     round,
     feedback: normalizedFeedback,
     actor,
     ts,
-    correctionQueueEntryId: null,
+    retryQueueEntryId: null,
   });
 
   const entry = await enqueue(hubRoot, {
     projectId: project,
     sourcePath,
     priority,
-    description: job.task || bundle.request?.task || `Correct rejected review bundle ${jobId}`,
-    type: "review_bundle_correction",
+    description: job.task || bundle.request?.task || `Retry rejected review bundle ${jobId}`,
+    type: "review_bundle_retry",
     metadata: {
       source: "review_bundle_rejection",
       sourceType: "review_bundle_rejection",
@@ -236,8 +237,8 @@ export async function rejectReviewBundle(cpbRoot, project, jobId, {
     },
   });
 
-  sourceContext.reviewLoop.correctionQueueEntryId = entry.id;
-  sourceContext.correction.correctionQueueEntryId = entry.id;
+  sourceContext.reviewLoop.retryQueueEntryId = entry.id;
+  sourceContext.retry.retryQueueEntryId = entry.id;
   const updatedEntry = await updateEntry(hubRoot, entry.id, {
     metadata: { sourceContext },
   });
@@ -251,7 +252,7 @@ export async function rejectReviewBundle(cpbRoot, project, jobId, {
     verdict: "rejected",
     feedback: normalizedFeedback,
     actor,
-    correctionQueueEntryId: entry.id,
+    retryQueueEntryId: entry.id,
     ts,
   }, { dataRoot });
   await refreshJobIndex(cpbRoot, project, jobId, { dataRoot });
@@ -262,6 +263,6 @@ export async function rejectReviewBundle(cpbRoot, project, jobId, {
     project,
     round,
     bundleId,
-    correctionQueueEntry: updatedEntry || entry,
+    retryQueueEntry: updatedEntry || entry,
   };
 }

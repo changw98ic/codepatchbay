@@ -15,7 +15,7 @@ Make CodePatchbay capable of running long-lived project tasks with durable recov
 role-based phases, and optional multi-agent escalation while keeping task state
 simple and auditable.
 
-The central correction is namespace ownership:
+The central clarification is namespace ownership:
 
 ```text
 .omc/  belongs to oh-my-claudecode

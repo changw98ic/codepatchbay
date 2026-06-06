@@ -45,15 +45,9 @@
     "settings": "Settings",
     "notFound": "Project not found",
     "narrative": "Project Narrative",
-    "codebaseIndex": "Codebase Index",
     "liveActivity": "Live Activity",
-    "indexInfo": "has codebase index data for the {{branch}} branch. Status: {{state}}.",
-    "noIndex": "does not have codebase index data available yet.",
     "fileCountInfo": "There are {{count}} active files in the inbox/outputs queue.",
     "state": "State",
-    "branch": "Branch",
-    "filesIndexed": "Files indexed",
-    "noIndexAvailable": "No codebase index available. This project has not been indexed yet.",
     "noLogs": "No logs available",
     "open": "Open",
     "inProgress": "In Progress",
@@ -87,8 +81,7 @@
     "initPath": "Project Path",
     "initSuccess": "Project initialized successfully!",
     "runPipeline": "Run Pipeline",
-    "planOnly": "Plan Only",
-    "refreshIndex": "Refresh Index"
+    "planOnly": "Plan Only"
   },
   "review": {
     "title": "Review Inbox",

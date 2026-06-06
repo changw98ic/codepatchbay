@@ -162,10 +162,10 @@ write-permission boundary (verifier agents write only to `outputs/verdict-*`).
 
 ### Role-Based Permission Matrix
 
-All agent roles (planner, executor, verifier, repairer, reviewer) are subject
+All agent roles (planner, executor, verifier, remediator, reviewer) are subject
 to a per-role permission matrix (`server/services/permission-matrix.js`):
 
-| Scope | Planner | Executor | Verifier | Repairer | Reviewer |
+| Scope | Planner | Executor | Verifier | Remediator | Reviewer |
 |--------|---------|----------|----------|----------|----------|
 | **Write** | `inbox/` only | `outputs/` + source | `outputs/` only | all under `cpbRoot` | `outputs/` only |
 | **Execute** | read-only inspection | all except unsafe cmds | read-only + validation | all except unsafe cmds | read-only + validation |

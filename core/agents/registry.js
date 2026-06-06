@@ -161,7 +161,7 @@ export function resolveAgentCommand(name) {
 
 /**
  * Default agent for a given role, based on descriptor defaultRoles.
- * Falls back to legacy mapping: planner/verifier/reviewer -> codex, executor/repairer -> claude.
+ * Falls back to default mapping: planner/verifier/reviewer -> codex, executor/remediator -> claude.
  */
 export function defaultAgentForRole(role) {
   ensureLoaded();
@@ -187,7 +187,7 @@ export function legacyAgentForPhase(phase) {
     case "review":
       return "codex";
     case "execute":
-    case "repair":
+    case "remediate":
       return "claude";
     default:
       return "codex";

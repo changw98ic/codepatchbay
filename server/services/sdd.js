@@ -5,7 +5,6 @@ import {
   sddDir,
   sddTracePath,
 } from "../../core/sdd/trace.js";
-import { generateContextPack } from "./repo-graph.js";
 
 const ARTIFACTS = {
   spec: "spec.md",
@@ -105,18 +104,9 @@ export async function verifySddProject(cpbRoot, project) {
   };
 }
 
-function combinedArtifactText(cpbRoot, project) {
-  return Promise.all(Object.values(ARTIFACTS).map(async (file) => {
-    const text = await readText(path.join(sddDir(cpbRoot, project), file));
-    return text || "";
-  })).then((parts) => parts.join("\n").toLowerCase());
-}
-
-export async function analyzeSddDrift({ cpbRoot, projectRecord, hubRoot, task = "" }) {
+export async function analyzeSddDrift({ cpbRoot, projectRecord, task = "" }) {
   const project = projectRecord.id;
   const verification = await verifySddProject(cpbRoot, project);
-  const context = await generateContextPack(projectRecord, { hubRoot, task });
-  const artifactText = await combinedArtifactText(cpbRoot, project);
 
   const findings = [];
   if (verification.status !== "pass") {
@@ -124,17 +114,6 @@ export async function analyzeSddDrift({ cpbRoot, projectRecord, hubRoot, task = 
       severity: "error",
       kind: "sdd_verification_failed",
       message: "SDD artifacts or trace are incomplete.",
-    });
-  }
-
-  const unmentionedFiles = context.contextPack.files
-    .filter((file) => !artifactText.includes(file.toLowerCase()) && !artifactText.includes(path.basename(file).toLowerCase()));
-  if (unmentionedFiles.length > 0) {
-    findings.push({
-      severity: "warning",
-      kind: "context_not_reflected",
-      message: "Context pack files are not explicitly referenced by SDD planning artifacts.",
-      files: unmentionedFiles,
     });
   }
 
@@ -151,12 +130,6 @@ export async function analyzeSddDrift({ cpbRoot, projectRecord, hubRoot, task = 
     task,
     reportPath,
     sdd: verification,
-    graph: {
-      status: "ready",
-      path: context.graphPath,
-      stats: context.stats,
-    },
-    contextPack: context.contextPack,
     findings,
     checkedAt: new Date().toISOString(),
   };

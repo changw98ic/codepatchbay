@@ -79,7 +79,7 @@ session updates, response parsing, and artifact persistence.
 
 ## Headless vs UI ACP Lanes
 
-All normal code phases (plan, execute, verify, review, repair, retries, fixes)
+All normal code phases (plan, execute, verify, review, remediation, retries, fixes)
 resolve to `acpProfile: "headless"` unless explicitly configured as `ui`.
 
 Headless `codex-acp` launches receive process-local config overrides that

@@ -1,5 +1,5 @@
 /**
- * Per-run budget tracker for guarded-repair mode.
+ * Per-run budget tracker for guarded-run mode.
  *
  * Tracks issue count against a configurable ceiling.  The tracker is a
  * plain object so it can be serialized into history entries and result

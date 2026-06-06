@@ -41,9 +41,114 @@ function truncateText(value, maxChars = PREVIOUS_OUTPUT_MAX) {
   return text.length > maxChars ? text.slice(-maxChars) : text;
 }
 
+function compactText(value, maxChars = 500) {
+  if (value === undefined || value === null) return "";
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function compactStructuredValue(value, { maxItems = 8, maxChars = 500 } = {}) {
+  if (value === undefined || value === null) return value;
+  if (typeof value === "string") return compactText(value, maxChars);
+  if (typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, maxItems).map((item) => compactStructuredValue(item, { maxItems, maxChars }));
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, maxItems)
+      .map(([key, item]) => [key, compactStructuredValue(item, { maxItems, maxChars })]),
+  );
+}
+
+function compactVerifierArtifact(artifact) {
+  if (!artifact || typeof artifact !== "object") return null;
+  return {
+    kind: artifact.kind || null,
+    id: artifact.id || null,
+    name: artifact.name || null,
+    path: artifact.path || null,
+    bytes: artifact.bytes ?? null,
+    sha256: artifact.sha256 || null,
+  };
+}
+
+function compactVerifierVerdict(verdict) {
+  if (!verdict || typeof verdict !== "object") return null;
+  const blocking = Array.isArray(verdict.blocking)
+    ? compactStructuredValue(verdict.blocking, { maxItems: 8, maxChars: 500 })
+    : [];
+  const retryScope = Array.isArray(verdict.fix_scope)
+    ? compactStructuredValue(verdict.fix_scope, { maxItems: 8, maxChars: 500 })
+    : [];
+  return {
+    status: verdict.status || null,
+    confidence: verdict.confidence ?? null,
+    reason: compactText(verdict.reason),
+    summary: compactText(verdict.summary),
+    taskGoal: compactText(verdict.task_goal),
+    executorSummary: compactText(verdict.executor_summary),
+    diffSummary: compactText(verdict.diff_summary),
+    layers: verdict.layers && typeof verdict.layers === "object"
+      ? compactStructuredValue(verdict.layers, { maxItems: 8, maxChars: 500 })
+      : null,
+    blocking,
+    retryScope,
+    blockingMissingInputs: Array.isArray(verdict.blockingMissingInputs)
+      ? compactStructuredValue(verdict.blockingMissingInputs, { maxItems: 8, maxChars: 500 })
+      : [],
+  };
+}
+
+function verificationRetryContext(failure) {
+  const cause = failure?.cause || {};
+  const verdict = compactVerifierVerdict(cause.verdict || failure?.verdict);
+  const artifact = compactVerifierArtifact(cause.artifact || failure?.artifact);
+  if (!verdict && !artifact) return null;
+  return {
+    verdict,
+    artifact,
+    retryScope: verdict?.retryScope || [],
+  };
+}
+
+function summarizeBlockingForRetry(blocking) {
+  if (!Array.isArray(blocking) || blocking.length === 0) return [];
+  return blocking.map((entry) => {
+    if (typeof entry === "string") return `- ${entry}`;
+    if (!entry || typeof entry !== "object") return `- ${String(entry)}`;
+    const parts = [];
+    if (entry.criterion) parts.push(entry.criterion);
+    if (entry.file) parts.push(`file: ${entry.file}`);
+    if (entry.evidence) parts.push(`evidence: ${entry.evidence}`);
+    if (entry.fix_hint || entry.fixHint) parts.push(`hint: ${entry.fix_hint || entry.fixHint}`);
+    return `- ${parts.join(" | ") || JSON.stringify(entry)}`;
+  });
+}
+
+function verifierRetryOutputChunk(failure) {
+  const verification = verificationRetryContext(failure);
+  if (!verification) return "";
+  const verdict = verification.verdict || {};
+  const lines = [
+    "Verifier verdict:",
+    verdict.status ? `status: ${verdict.status}` : "",
+    verdict.reason ? `reason: ${verdict.reason}` : "",
+    verdict.summary ? `summary: ${verdict.summary}` : "",
+  ];
+  const blocking = summarizeBlockingForRetry(verdict.blocking);
+  if (blocking.length) lines.push("blocking:", ...blocking);
+  if (verification.retryScope.length) lines.push("retry scope:", ...verification.retryScope.map((scope) => `- ${scope}`));
+  if (verification.artifact?.path) lines.push(`verdict artifact: ${verification.artifact.path}`);
+  return lines.filter(Boolean).join("\n");
+}
+
 function extractPreviousOutput(failure) {
   const cause = failure?.cause || {};
   const chunks = [];
+  const verifierChunk = verifierRetryOutputChunk(failure);
+  if (verifierChunk) chunks.push(verifierChunk);
   if (failure?.stderrSnippet) chunks.push(`stderr snippet:\n${failure.stderrSnippet}`);
   if (cause.rawOutput) chunks.push(`raw output:\n${cause.rawOutput}`);
   if (cause.stdoutTail) chunks.push(`stdout tail:\n${cause.stdoutTail}`);
@@ -60,13 +165,28 @@ function extractPreviousOutput(failure) {
   return truncateText(chunks.filter(Boolean).join("\n\n"));
 }
 
+function previousFailureCount(assignment, base) {
+  const candidates = [
+    assignment?.metadata?.failureCount,
+    assignment?.failureCount,
+    base?.retry?.failureCount,
+    base?.previousFailure?.retryCount,
+  ];
+  for (const value of candidates) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 0;
+}
+
 export function buildRetrySourceContext(assignment, attempt, result, decision) {
   const failure = result?.jobResult?.failure || result?.failure || {};
   const base = assignment.sourceContext && typeof assignment.sourceContext === "object"
     ? { ...assignment.sourceContext }
     : {};
   const previousOutput = extractPreviousOutput(failure);
-  const correction = {
+  const retryCount = previousFailureCount(assignment, base) + 1;
+  const retry = {
     failureKind: failure.kind || "unknown",
     failureReason: failure.reason || decision?.reason || "retry requested",
     previousOutput,
@@ -76,17 +196,22 @@ export function buildRetrySourceContext(assignment, attempt, result, decision) {
     retryAction: decision?.action || null,
     retryReason: decision?.reason || null,
     retryable: decision?.retryable ?? failure.retryable ?? null,
+    retryCount,
+    failureCount: retryCount,
     retryQueuedAt: new Date().toISOString(),
+    verification: verificationRetryContext(failure),
   };
   return {
     ...base,
-    correction,
+    retry,
     previousFailure: {
-      kind: correction.failureKind,
-      reason: correction.failureReason,
-      jobId: correction.previousJobId,
-      phase: correction.previousPhase,
-      attempt: correction.previousAttempt,
+      kind: retry.failureKind,
+      reason: retry.failureReason,
+      jobId: retry.previousJobId,
+      phase: retry.previousPhase,
+      attempt: retry.previousAttempt,
+      retryCount,
+      verification: retry.verification,
     },
   };
 }
@@ -627,12 +752,15 @@ export class Reconciler {
           if (decision.action === "restart_worker_and_retry") {
             await this._stopWorkerForRestart(assignment, attempt, decision.reason);
           }
+          const retrySourceContext = buildRetrySourceContext(assignment, attempt, result, decision);
           await updateEntry(this.hubRoot, assignment.entryId, {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
             metadata: {
-              sourceContext: buildRetrySourceContext(assignment, attempt, result, decision),
+              sourceContext: retrySourceContext,
+              lastFailureKind: retrySourceContext.retry?.failureKind || "unknown",
+              failureCount: retrySourceContext.retry?.failureCount || 1,
               retryDecision: {
                 action: decision.action,
                 reason: decision.reason,

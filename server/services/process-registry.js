@@ -323,7 +323,7 @@ export async function inspectProcess(cpbRoot, jobId) {
   if (job) {
     try {
       const { getPhasePolicy } = await import("./permission-matrix.js");
-      const role = entry?.phase ? { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" }[entry.phase] : null;
+      const role = entry?.phase ? { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" }[entry.phase] : null;
       if (role) {
         const sp = job.worktree || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
         let profileConfig = null;

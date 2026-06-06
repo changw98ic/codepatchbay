@@ -45,15 +45,9 @@
     "settings": "设置",
     "notFound": "项目未找到",
     "narrative": "项目概述",
-    "codebaseIndex": "代码库索引",
     "liveActivity": "实时活动",
-    "indexInfo": "在 {{branch}} 分支上有代码库索引数据，状态：{{state}}。",
-    "noIndex": "尚无代码库索引数据。",
     "fileCountInfo": "收件箱/输出队列中共有 {{count}} 个活跃文件。",
     "state": "状态",
-    "branch": "分支",
-    "filesIndexed": "已索引文件",
-    "noIndexAvailable": "暂无代码库索引，该项目尚未被索引。",
     "noLogs": "暂无日志",
     "open": "待处理",
     "inProgress": "进行中",
@@ -87,8 +81,7 @@
     "initPath": "项目路径",
     "initSuccess": "项目初始化成功！",
     "runPipeline": "执行流水线",
-    "planOnly": "仅规划",
-    "refreshIndex": "刷新索引"
+    "planOnly": "仅规划"
   },
   "review": {
     "title": "审查收件箱",

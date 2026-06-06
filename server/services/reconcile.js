@@ -1,7 +1,7 @@
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
-import { listEventFiles, readEvents, materializeJob, repairEventFile } from "./event-store.js";
+import { listEventFiles, readEvents, materializeJob, recoverEventFile } from "./event-store.js";
 import { appendEvent } from "./event-store.js";
 import { readLease, releaseLease, isLeaseStale } from "./lease-manager.js";
 import { listJobs, failJob, blockJob } from "./job-store.js";
@@ -52,13 +52,13 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
     raw = await readFile(file, "utf8");
   } catch (err) {
     if (err && err.code === "ENOENT") {
-      return { valid: true, events: [], repaired: false, error: null };
+      return { valid: true, events: [], recovered: false, error: null };
     }
     throw err;
   }
 
   if (raw.length === 0) {
-    return { valid: true, events: [], repaired: false, error: null };
+    return { valid: true, events: [], recovered: false, error: null };
   }
 
   const hasTrailingNewline = raw.endsWith("\n");
@@ -74,29 +74,29 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
       event = JSON.parse(line);
     } catch {
       if (isLast && !hasTrailingNewline) {
-        const repairedEvents = nonEmpty.slice(0, i).map(({ line: l }) => JSON.parse(l));
+        const recoveredEvents = nonEmpty.slice(0, i).map(({ line: l }) => JSON.parse(l));
         if (dryRun) {
           return {
             valid: true,
-            events: repairedEvents,
-            repaired: false,
-            wouldRepair: true,
+            events: recoveredEvents,
+            recovered: false,
+            wouldRecover: true,
             error: null,
           };
         }
-        const repairResult = await repairEventFile(cpbRoot, project, jobId);
+        const recoveryResult = await recoverEventFile(cpbRoot, project, jobId);
         return {
           valid: true,
-          events: repairedEvents,
-          repaired: true,
-          repairResult,
+          events: recoveredEvents,
+          recovered: true,
+          recoveryResult,
           error: null,
         };
       }
       return {
         valid: false,
         events: null,
-        repaired: false,
+        recovered: false,
         error: { file, lineNumber, reason: "malformed JSON" },
       };
     }
@@ -104,21 +104,21 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
       return {
         valid: false,
         events: null,
-        repaired: false,
+        recovered: false,
         error: { file, lineNumber, reason: "event must be a non-null object" },
       };
     }
     events.push(event);
   }
 
-  return { valid: true, events, repaired: false, error: null };
+  return { valid: true, events, recovered: false, error: null };
 }
 
 export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   const report = {
     staleJobs: [],
     orphanLeases: [],
-    streamRepairs: [],
+    streamRecoveries: [],
     streamErrors: [],
     indexRebuilt: false,
     workers: { stale: [] },
@@ -434,7 +434,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     }
   } catch { /* hub not initialized */ }
 
-  // 4. Validate and repair JSONL event streams
+  // 4. Validate and recover JSONL event streams
   const eventFiles = await listEventFiles(cpbRoot);
   for (const { project, jobId } of eventFiles) {
     const result = await validateEventStream(cpbRoot, project, jobId, { dryRun });
@@ -446,8 +446,8 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         lineNumber: result.error.lineNumber,
         reason: result.error.reason,
       });
-    } else if (result.repaired || result.wouldRepair) {
-      report.streamRepairs.push({ project, jobId, wouldRepair: result.wouldRepair || false });
+    } else if (result.recovered || result.wouldRecover) {
+      report.streamRecoveries.push({ project, jobId, wouldRecover: result.wouldRecover || false });
     }
   }
 

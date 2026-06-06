@@ -72,7 +72,7 @@ interface HubHealthPanelProps {
     workers?: { details: Array<{ id: string; ageMs: number }> };
   } | null;
   projects: Array<{ inbox?: number; outputs?: number }>;
-  queueStatus?: { total?: number; pending?: number; inProgress?: number; failed?: number; failedEntries?: number; failedTargets?: number; retryingFailedTargets?: number; repairedFailedTargets?: number; unretriedFailedTargets?: number; activeProjects?: Array<{ projectId: string; busyReason?: string; workerId?: string }>; eligibleQueued?: number; eligibleProjects?: string[] } | null;
+  queueStatus?: { total?: number; pending?: number; inProgress?: number; failed?: number; failedEntries?: number; failedTargets?: number; retryingFailedTargets?: number; retriedFailedTargets?: number; unretriedFailedTargets?: number; activeProjects?: Array<{ projectId: string; busyReason?: string; workerId?: string }>; eligibleQueued?: number; eligibleProjects?: string[] } | null;
   queueEntries?: Array<{ id: string; projectId: string; status: string }>;
 }
 
@@ -132,8 +132,8 @@ export function HubHealthPanel({ hubStatus, hubProjects, hubAcp, knowledgePolicy
           <Badge variant="muted">Queue: {queueStatus.pending} pending · {queueStatus.inProgress} active</Badge>
           {queueStatus.unretriedFailedTargets ? <Badge variant="error">{queueStatus.unretriedFailedTargets} unretried failed targets</Badge> : null}
           {queueStatus.retryingFailedTargets ? <Badge variant="warning">{queueStatus.retryingFailedTargets} failed targets retrying</Badge> : null}
-          {queueStatus.repairedFailedTargets ? <Badge variant="muted">{queueStatus.repairedFailedTargets} failed targets repaired</Badge> : null}
-          {queueStatus.failedEntries && !queueStatus.unretriedFailedTargets && !queueStatus.retryingFailedTargets && !queueStatus.repairedFailedTargets ? (
+          {queueStatus.retriedFailedTargets ? <Badge variant="muted">{queueStatus.retriedFailedTargets} failed targets retried</Badge> : null}
+          {queueStatus.failedEntries && !queueStatus.unretriedFailedTargets && !queueStatus.retryingFailedTargets && !queueStatus.retriedFailedTargets ? (
             <Badge variant="muted">{queueStatus.failedEntries} historical failed entries</Badge>
           ) : null}
         </div>

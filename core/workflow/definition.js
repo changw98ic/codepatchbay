@@ -43,7 +43,7 @@ const WORKCPBS = {
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-    requireSubagents: { plan: true, execute: true, verify: true, repair: true },
+    requireSubagents: { plan: true, execute: true, verify: true, remediate: true },
     subagentConfig: { maxConcurrency: 3 },
     verificationLayers: ["fast", "changed", "regression", "acceptance"],
   },

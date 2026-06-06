@@ -1,6 +1,6 @@
 ---
 name: codepatchbay
-description: Use CodePatchBay, the published npm package and `cpb` CLI for local-first verified AI coding workflows. Trigger when the user asks to install or run CodePatchBay/CPB, route a coding task through plan -> execute -> verify, inspect CPB artifacts or verdicts, set up CPB agents, run CPB demo/doctor/status/repair/cancel, or configure CPB GitHub issue-to-PR automation.
+description: Use CodePatchBay, the published npm package and `cpb` CLI for local-first verified AI coding workflows. Trigger when the user asks to install or run CodePatchBay/CPB, route a coding task through plan -> execute -> verify, inspect CPB artifacts or verdicts, set up CPB agents, run CPB demo/doctor/status/retry/cancel, or configure CPB GitHub issue-to-PR automation.
 ---
 
 # CodePatchBay
@@ -79,17 +79,17 @@ cpb artifacts <job-id> --json
 cpb verdict <job-id> --json
 ```
 
-When the user asks for narrower follow-up, inspect or repair the durable job instead of routing through removed phase-specific entrypoints:
+When the user asks for narrower follow-up, inspect or retry the durable job instead of routing through removed phase-specific entrypoints:
 
 ```bash
 cpb status <project-id>
 cpb artifacts <job-id> --json
-cpb repair <project-id> <job-id>
+cpb retry <project-id> <job-id>
 ```
 
 ## Operational Tasks
 
-- Use `cpb repair <project-id> <job-id>` to retry a failed phase.
+- Use `cpb retry <project-id> <job-id>` to retry a failed phase.
 - Use `cpb cancel <project-id> <job-id> [reason]` when the user asks to stop a running job.
 - Use `cpb redirect <project-id> <job-id> "<message>" [reason]` when the job needs new instructions.
 - Use `cpb diff <project-id>` and `cpb audit <project-id> <job-id> --json` to review changes and export evidence.

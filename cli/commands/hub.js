@@ -264,7 +264,7 @@ function formatManagedWorkerSummary(counts) {
 
 function formatFailedSummary(queue) {
   if (queue?.failedTargets !== undefined) {
-    return `failedEntries:${queue.failedEntries ?? queue.failed ?? 0} failedTargets:${queue.failedTargets || 0} retryingTargets:${queue.retryingFailedTargets || 0} repairedTargets:${queue.repairedFailedTargets || 0} unretriedTargets:${queue.unretriedFailedTargets || 0}`;
+    return `failedEntries:${queue.failedEntries ?? queue.failed ?? 0} failedTargets:${queue.failedTargets || 0} retryingTargets:${queue.retryingFailedTargets || 0} retriedTargets:${queue.retriedFailedTargets || 0} unretriedTargets:${queue.unretriedFailedTargets || 0}`;
   }
   return `failed:${queue?.failed || 0}`;
 }

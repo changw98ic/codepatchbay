@@ -1,7 +1,7 @@
 /**
  * runSinglePhase — run exactly one phase outside of a full pipeline.
  *
- * Used by repair/review flows and internal single-phase callers. Creates a job,
+ * Used by remediation/review flows and internal single-phase callers. Creates a job,
  * runs the phase, writes events, and returns an exit code.
  *
  * All infrastructure services injected via opts.services — no server/ imports.
@@ -78,7 +78,7 @@ async function buildPreviousResults(cpbRoot, project, { planId, deliverableId })
 }
 
 /**
- * @param {string} phase - plan | execute | verify | repair | review
+ * @param {string} phase - plan | execute | verify | remediate | review
  * @param {object} opts
  * @param {string} opts.cpbRoot
  * @param {string} opts.project
@@ -189,7 +189,7 @@ export async function runSinglePhase(phase, opts) {
       execute: envTimeout,
       verify: envTimeout,
       review: envTimeout,
-      repair: envTimeout,
+      remediate: envTimeout,
     },
   });
 

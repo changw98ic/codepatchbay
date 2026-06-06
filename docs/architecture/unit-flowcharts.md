@@ -349,7 +349,7 @@ flowchart TD
   O -->|"是"| P["phase_retry 循环"]
   P --> J
   O -->|"否"| Q{"可修正的 artifact/contract 失败？"}
-  Q -->|"是"| R["带反馈执行 phase_correction 循环"]
+  Q -->|"是"| R["带反馈执行 phase_feedback_retry 循环"]
   R --> J
   Q -->|"否"| S["failJob 并返回 failed"]
   L --> T["append phase_result 与 provider usage"]
@@ -371,7 +371,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   A["runPhase(ctx.phase)"] --> B["动态导入 ../phases/{phase}.js"]
-  B --> C["解析 runPlan/runExecute/runReview/runVerify/runRepair"]
+  B --> C["解析 runPlan/runExecute/runReview/runVerify/runRemediate"]
   C --> D["调用 adapter"]
   D --> E{"adapter 抛错？"}
   E -->|"是"| F["phaseFailed UNKNOWN；PoolExhaustedError 例外重抛"]
@@ -393,8 +393,8 @@ flowchart TD
     V2 --> V3["collectVerificationEvidence + verifier agent"]
     V3 --> V4["writeArtifact kind=verdict"]
 
-    X1["runRepair"] --> X2["repairStatus 为 FIXED 才通过"]
-    X2 --> X3["writeArtifact kind=repair"]
+    X1["runRemediate"] --> X2["remediationStatus 为 FIXED 才通过"]
+    X2 --> X3["writeArtifact kind=remediation"]
   end
 ```
 
@@ -405,7 +405,7 @@ flowchart TD
 - `core/phases/execute.js`
 - `core/phases/review.js`
 - `core/phases/verify.js`
-- `core/phases/repair.js`
+- `core/phases/remediate.js`
 - `core/artifacts/artifact-store.js`
 - `core/artifacts/validators.js`
 - `core/agents/response-parser.js`
@@ -605,10 +605,8 @@ flowchart TD
   J --> K["GET /api/projects/:name/files/:path"]
   H --> L["Run pipeline 按钮"]
   H --> M["Plan-only 按钮"]
-  H --> N["Refresh index 按钮"]
   L --> O["POST /api/tasks/:name/pipeline planMode full"]
   M --> P["POST /api/tasks/:name/pipeline planMode light"]
-  N --> Q["POST /api/hub/projects/:name/index/refresh"]
 
   R["用户打开 /new-task"] --> S["fetchProjects 填充下拉选项"]
   S --> T["提交 description + mode"]

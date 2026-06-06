@@ -310,7 +310,7 @@ export function inboxRoutes(fastify) {
       project: job.project,
       jobId: job.jobId,
       round: result.round,
-      correctionQueueEntryId: result.correctionQueueEntry?.id,
+      retryQueueEntryId: result.retryQueueEntry?.id,
     });
     return result;
   });

@@ -121,7 +121,7 @@ function failedLayerChecks(envelope) {
     .map(([name, layer]) => truncate(`${name}: ${layer?.detail || "failed"}`));
 }
 
-function repairScopeFromEnvelope(envelope) {
+function retryScopeFromEnvelope(envelope) {
   const explicit = Array.isArray(envelope?.fix_scope) ? envelope.fix_scope : [];
   const blockingFiles = Array.isArray(envelope?.blocking)
     ? envelope.blocking.map((entry) => typeof entry === "object" && entry ? entry.file || entry.path : "")
@@ -159,7 +159,7 @@ export function buildRetryInputFromVerdict(envelope, {
     previousVerdictPath,
     reason: oneLine(envelope?.reason),
     failingChecks: [],
-    repairScope: [],
+    retryScope: [],
     prompt: "",
   };
 
@@ -178,7 +178,7 @@ export function buildRetryInputFromVerdict(envelope, {
   ]);
   const failingChecks = (structuredChecks.length ? structuredChecks : uniqueNonEmpty([envelope?.reason])).slice(0, maxItems);
 
-  const repairScope = repairScopeFromEnvelope(envelope).slice(0, maxItems);
+  const retryScope = retryScopeFromEnvelope(envelope).slice(0, maxItems);
   const reason = oneLine(envelope?.reason) || "verifier rejected the previous deliverable";
   const verdictLabel = previousVerdictId || "previous verifier verdict";
   const lines = [
@@ -189,10 +189,10 @@ export function buildRetryInputFromVerdict(envelope, {
     "Failing checks:",
     ...(failingChecks.length ? failingChecks.map((check) => `- ${check}`) : ["- Verifier reported a failure without structured blocking details."]),
     "",
-    "Expected repair scope:",
-    ...(repairScope.length ? repairScope.map((scope) => `- ${scope}`) : ["- Keep changes limited to the failing behavior and directly related tests."]),
+    "Expected retry scope:",
+    ...(retryScope.length ? retryScope.map((scope) => `- ${scope}`) : ["- Keep changes limited to the failing behavior and directly related tests."]),
     "",
-    "Repair only the failing checks above unless local evidence proves a smaller adjacent change is required.",
+    "Retry only the failing checks above unless local evidence proves a smaller adjacent change is required.",
   ].filter((line) => line !== "");
 
   return {
@@ -200,7 +200,7 @@ export function buildRetryInputFromVerdict(envelope, {
     shouldRetry: true,
     reason,
     failingChecks,
-    repairScope,
+    retryScope,
     prompt: lines.join("\n"),
   };
 }

@@ -158,20 +158,17 @@ cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
 cpb pipeline <project> "<task>" [retries]  # 完整流程（显式项目）
 cpb research <project> "<task>"    # 双 agent 研究
 cpb review <project> [id]          # 审查交付物
-cpb repair <project> <job-id>      # 修复失败任务
+cpb retry <project> <job-id>       # 重试失败任务
 
 # 多阶段与 SDD
 cpb evolve-multi [--once|--scan|--continuous]  # 多阶段进化
 cpb sdd <init|bootstrap|verify|drift> <project> # 规格驱动开发
 
-# 代码索引
-cpb index <status|refresh|graph|impact|context-pack> <project>
-
 # 任务管理
 cpb jobs [reconcile|cleanup|report]
 cpb artifacts <job-id> [--json]
 cpb verdict <job-id> [--json]
-cpb repair <project> <job-id> [--agent <name>]
+cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
