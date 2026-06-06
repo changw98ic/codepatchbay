@@ -605,10 +605,8 @@ flowchart TD
   J --> K["GET /api/projects/:name/files/:path"]
   H --> L["Run pipeline 按钮"]
   H --> M["Plan-only 按钮"]
-  H --> N["Refresh index 按钮"]
   L --> O["POST /api/tasks/:name/pipeline planMode full"]
   M --> P["POST /api/tasks/:name/pipeline planMode light"]
-  N --> Q["POST /api/hub/projects/:name/index/refresh"]
 
   R["用户打开 /new-task"] --> S["fetchProjects 填充下拉选项"]
   S --> T["提交 description + mode"]

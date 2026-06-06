@@ -11,7 +11,6 @@ import {
   triageGithubIssueWithAcp,
 } from "./issue-triage.js";
 import { bootstrapSddFromIssue } from "./sdd-automation.js";
-import { generateContextPack } from "./repo-graph.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -390,13 +389,7 @@ function sourcePathForQueue(explicitSourcePath, project) {
 }
 
 async function maybeGenerateQueueContextPack(project, hubRoot, task) {
-  if (!project?.sourcePath) return null;
-  try {
-    const result = await generateContextPack(project, { hubRoot, task });
-    return { contextPack: result.contextPack, error: null };
-  } catch (error) {
-    return { contextPack: null, error: error.message };
-  }
+  return null;
 }
 
 function isSddRoute(route) {

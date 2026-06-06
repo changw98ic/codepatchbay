@@ -40,7 +40,6 @@ function usage() {
   console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
-  console.log(`  ${CYAN}index${NC} <status|refresh|graph|impact|context-pack> <project> [args] [--json]  Project code index and graph`);
   console.log(`  ${CYAN}sdd${NC} <init|bootstrap|verify|drift> <project> [--json]  Spec-driven development skeleton`);
   console.log(`  ${CYAN}repair${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
@@ -111,7 +110,6 @@ const COMMANDS = {
   artifacts: "artifacts.js",
   verdict: "verdict.js",
   "evolve-multi": "evolve-multi.js",
-  index: "index.js",
   sdd: "sdd.js",
   repair: "repair.js",
   diff: "diff.js",
@@ -180,7 +178,7 @@ async function main() {
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "index", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "repair", "diff", "review", "inbox", "outputs", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally

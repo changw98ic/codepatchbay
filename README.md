@@ -164,9 +164,6 @@ cpb repair <project> <job-id>      # 修复失败任务
 cpb evolve-multi [--once|--scan|--continuous]  # 多阶段进化
 cpb sdd <init|bootstrap|verify|drift> <project> # 规格驱动开发
 
-# 代码索引
-cpb index <status|refresh|graph|impact|context-pack> <project>
-
 # 任务管理
 cpb jobs [reconcile|cleanup|report]
 cpb artifacts <job-id> [--json]

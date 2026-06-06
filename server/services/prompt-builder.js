@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   getWorkflow,
@@ -7,9 +7,7 @@ import {
   getSubagentConfig,
 } from "../../core/workflow/definition.js";
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
-import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { getJob } from "./job-store.js";
-import { readCompactProjectCodeIndexSummary, readFilteredCodeIndexSummary, readProjectCodeIndexStatus } from "./project-code-index.js";
 import { runtimeDataRoot } from "./runtime-root.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../core/workflow/verdict.js";
 import { DISPATCH_FEEDBACK_SCHEMA_VERSION, dispatchFeedbackPath } from "../../core/workflow/dispatch-feedback.js";
@@ -78,27 +76,6 @@ Produce a complete plan with explicit risks, acceptance criteria, and verificati
   return "";
 }
 
-async function latestContextPackPath(cpbRoot) {
-  const dir = path.join(dataRoot(cpbRoot), "context-packs");
-  let entries;
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return null;
-  }
-  const candidates = [];
-  for (const name of entries) {
-    if (!/^context-pack-.*\.md$/.test(name)) continue;
-    const fullPath = path.join(dir, name);
-    try {
-      const info = await stat(fullPath);
-      if (info.isFile()) candidates.push({ path: fullPath, mtimeMs: info.mtimeMs });
-    } catch {}
-  }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
-  return candidates[0]?.path || null;
-}
-
 function contextPackPathFromSourceContext(sourceContext = null) {
   if (!sourceContext || typeof sourceContext !== "object") return null;
   return sourceContext.contextPackPath || sourceContext.contextPack?.path || null;
@@ -128,26 +105,7 @@ async function resolveContextPackLocator(cpbRoot, project, jobId) {
   const envPath = process.env.CPB_CONTEXT_PACK_PATH || null;
   if (envPath) return { path: envPath, source: "job" };
 
-  const latestPath = await latestContextPackPath(cpbRoot);
-  if (latestPath) return { path: latestPath, source: "latest" };
   return null;
-}
-
-export async function buildProjectCodeIndexSection(cpbRoot, project, taskDescription) {
-  try {
-    const hubRoot = resolveHubRoot(cpbRoot);
-    const registered = await getProject(hubRoot, project);
-    if (!registered || !registered.sourcePath) return "";
-    const idxStatus = await readProjectCodeIndexStatus(registered, { hubRoot });
-    if (idxStatus.status !== "ready") return "";
-    const summary = taskDescription
-      ? await readFilteredCodeIndexSummary(registered, { hubRoot, taskDescription })
-      : await readCompactProjectCodeIndexSummary(registered, { hubRoot });
-    if (!summary) return "";
-    return `## Project Code Index\n${summary}`;
-  } catch {
-    return "";
-  }
 }
 
 export async function buildSkillsSection(executorRoot, role, context = {}, options = {}) {
@@ -259,7 +217,7 @@ function executionIntensitySection(phase) {
 
   return `\n## Execution Intensity Contract (MANDATORY)
 ${phaseLine}
-- Start with indexed lookup: use codegraph/code index/project index if available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
+- Start with CodeGraph lookup when available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
 - If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.
 - First-pass source inspection budget: max 5 files or 3 symbol/index lookups before naming the concrete files you will touch or verify.
 - Prefer loaded role skills/profile guidance when relevant; record which index/skill path you used in the artifact.
@@ -288,7 +246,6 @@ export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, p
   const decisions = await preRead(path.join(wikiDir, "decisions.md"));
   const handshake = await preRead(path.join(executorRoot, "wiki", "system", "handshake-protocol.md"));
   const planTpl = await preRead(path.join(executorRoot, "templates", "handoff", "plan-to-execute.md"));
-  const indexSection = await buildProjectCodeIndexSection(cpbRoot, project, task);
   const planModeGuidance = plannerModeSection();
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
@@ -319,8 +276,6 @@ ${projContext}
 
 ## Existing Decisions
 ${decisions}
-
-${indexSection}
 
 ## Handshake Protocol
 ${handshake}
@@ -435,10 +390,9 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
   const stateRoot = dataRoot(cpbRoot);
   const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
   const contextPack = await resolveContextPackLocator(cpbRoot, project, jobId);
-  const contextPackLabel = contextPack?.source === "job" ? "Job context pack" : "Latest context pack";
   const contextPackLocator = contextPack?.path
-    ? `- ${contextPackLabel}: ${contextPack.path}`
-    : `- Latest context pack: ${path.join(stateRoot, "context-packs")} (none found)`;
+    ? `- Job context pack: ${contextPack.path}`
+    : "";
 
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
@@ -496,7 +450,7 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 
 ## Instructions
 1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}
-2. ${contextPack?.source === "job" ? "Read the job-specific context pack locator above before selecting files to inspect." : (contextPack?.path ? "Read the latest context pack locator above before selecting files to inspect." : "If a context pack appears under the context-packs directory, read it before selecting files to inspect.")}
+2. ${contextPack?.path ? "Read the job-specific context pack locator above before selecting files to inspect." : "Use CodeGraph or focused repository inspection before selecting files to inspect."}
 3. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
 4. Verify current job/task state from the locators above.
 5. Implement the requested code changes.

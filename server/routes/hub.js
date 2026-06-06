@@ -34,7 +34,6 @@ import {
   markDispatchFailed,
   recordDispatch,
 } from "../services/worker-dispatch.js";
-import { readProjectCodeIndexStatus, refreshProjectCodeIndex } from "../services/project-code-index.js";
 import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
 
 function hubRoot(req) {
@@ -83,19 +82,8 @@ export async function hubRoutes(fastify) {
     const visible = filterVisibleProjects(allProjects, { includeTest, hubRoot: hr });
     const results = [];
     for (const project of visible) {
-      const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr });
       const entry = {
         ...project,
-        indexStatus: {
-          status: idx.status,
-          updatedAt: idx.updatedAt,
-          fileCount: idx.fileCount,
-          symbolCount: idx.symbolCount,
-          commandCount: idx.commandCount,
-          branch: idx.branch,
-          headShort: idx.headShort,
-          contentHash: idx.contentHash,
-        },
       };
       if (includeTest) {
         entry._pollution = classifyProject(project, { hubRoot: hr });
@@ -429,23 +417,6 @@ export async function hubRoutes(fastify) {
     return { failed: true, dispatch };
   });
 
-  // Project code index endpoints
-  fastify.get("/hub/projects/:id/index", async (req) => {
-    const hr = hubRoot(req);
-    const project = await getProject(hr, req.params.id);
-    if (!project) throw fastify.httpErrors.notFound(`Project '${req.params.id}' not found`);
-    if (!project.sourcePath) throw fastify.httpErrors.badRequest(`Project '${req.params.id}' has no sourcePath`);
-    return await readProjectCodeIndexStatus(project, { hubRoot: hr });
-  });
-
-  fastify.post("/hub/projects/:id/index/refresh", async (req) => {
-    const hr = hubRoot(req);
-    const project = await getProject(hr, req.params.id);
-    if (!project) throw fastify.httpErrors.notFound(`Project '${req.params.id}' not found`);
-    if (!project.sourcePath) throw fastify.httpErrors.badRequest(`Project '${req.params.id}' has no sourcePath`);
-    return await refreshProjectCodeIndex(project, { hubRoot: hr });
-  });
-
   fastify.get("/hub/dashboard-summary", async (req) => {
     const hr = hubRoot(req);
     const cr = req.cpbRoot;
@@ -484,19 +455,8 @@ export async function hubRoutes(fastify) {
     const visible = filterVisibleProjects(allProjects || [], { includeTest, hubRoot: hr });
     const registryProjects = [];
     for (const project of visible) {
-      const idx = await readProjectCodeIndexStatus(project, { hubRoot: hr }).catch(() => ({ status: "unknown" }));
       const entry = {
         ...project,
-        indexStatus: {
-          status: idx.status,
-          updatedAt: idx.updatedAt,
-          fileCount: idx.fileCount,
-          symbolCount: idx.symbolCount,
-          commandCount: idx.commandCount,
-          branch: idx.branch,
-          headShort: idx.headShort,
-          contentHash: idx.contentHash,
-        },
       };
       if (includeTest) {
         entry._pollution = classifyProject(project, { hubRoot: hr });

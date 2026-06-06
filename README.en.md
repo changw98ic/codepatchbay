@@ -164,9 +164,6 @@ cpb repair <project> <job-id>      # Repair a failed job
 cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution
 cpb sdd <init|bootstrap|verify|drift> <project> # Spec-driven development
 
-# Code index
-cpb index <status|refresh|graph|impact|context-pack> <project>
-
 # Job management
 cpb jobs [reconcile|cleanup|report]
 cpb artifacts <job-id> [--json]

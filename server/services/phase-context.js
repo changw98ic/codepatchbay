@@ -2,7 +2,6 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event-store.js";
-import { readFilteredCodeIndexSummary } from "./project-code-index.js";
 
 const DEFAULT_MAX_BYTES = 8192;
 
@@ -10,7 +9,7 @@ const DEFAULT_MAX_BYTES = 8192;
  * Build a compact phase context packet for agent prompts.
  *
  * Contains locators (file paths) instead of full plan/deliverable content,
- * plus budget-controlled optional sections (code index summary, event tail).
+ * plus budget-controlled optional sections (event tail).
  *
  * @param {string} cpbRoot
  * @param {string} project
@@ -71,33 +70,9 @@ export async function buildPhaseContextPacket(
   // Compute mandatory skeleton size
   let usedBytes = measureUtf8Bytes(packet);
 
-  // 7. Optional: code index summary (budget-gated)
-  let indexSummary = null;
-  if (sourceContext && maxBytes > usedBytes) {
-    const indexBudget = maxBytes - usedBytes;
-    try {
-      const summary = await readFilteredCodeIndexSummary(
-        { id: project, sourcePath: sourceContext },
-        {
-          hubRoot: options.hubRoot,
-          taskDescription: job.task || "",
-          maxBytes: indexBudget,
-        },
-      );
-      if (summary) {
-        const summaryBytes = measureUtf8Bytes(summary);
-        if (usedBytes + summaryBytes <= maxBytes) {
-          indexSummary = summary;
-          usedBytes += summaryBytes;
-        }
-      }
-    } catch {
-      // Index not available — skip silently
-    }
-  }
-  packet.indexSummary = indexSummary;
+  packet.indexSummary = null;
 
-  // 8. Optional: event tail summary (budget-gated)
+  // 7. Optional: event tail summary (budget-gated)
   let eventTailSummary = null;
   if (events.length > 0 && maxBytes > usedBytes) {
     const tailBudget = maxBytes - usedBytes;
@@ -110,7 +85,7 @@ export async function buildPhaseContextPacket(
   }
   packet.eventTailSummary = eventTailSummary;
 
-  // 9. Finalize budget
+  // 8. Finalize budget
   packet.budget.actualBytes = usedBytes;
   packet.budget.clipped = usedBytes > maxBytes;
 

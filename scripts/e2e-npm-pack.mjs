@@ -179,8 +179,6 @@ function stepClean() {
     path.join(projectRuntime, "jobs"),
     path.join(projectRuntime, "agent-homes"),
     path.join(projectRuntime, "worktrees"),
-    path.join(projectRuntime, "context-packs"),
-    path.join(projectRuntime, "graph"),
     path.join(CPB_ROOT, "cpb-task", "event-sources"),
     path.join(CPB_ROOT, "cpb-task", "codegraph-state.json"),
     path.join(CPB_ROOT, "cpb-task", "worktrees"),

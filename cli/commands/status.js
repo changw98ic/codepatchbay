@@ -11,7 +11,7 @@ export async function run(args, { cpbRoot }) {
     process.exit(1);
   }
   const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
-  const { readProjectCodeIndexStatus, formatProjectIndexLine } = await import("../../server/services/project-code-index.js");
+  const { readProjectIndex, formatProjectIndexLine } = await import("../../server/services/project-index.js");
   const { listJobs } = await import("../../server/services/job-store.js");
   const { readLease, isLeaseStale } = await import("../../server/services/lease-manager.js");
   const hubRoot = resolveHubRoot(cpbRoot);
@@ -68,9 +68,10 @@ export async function run(args, { cpbRoot }) {
     }
   } catch {}
 
-  // Index status
+  // Project merge/index state
   try {
-    const idx = await readProjectCodeIndexStatus(registered, { hubRoot });
-    if (idx) console.log(`${CYAN}${formatProjectIndexLine(idx)}${NC}`);
+    const idx = await readProjectIndex(hubRoot, cpbRoot, project);
+    const line = formatProjectIndexLine(idx);
+    if (line) console.log(`${CYAN}${line}${NC}`);
   } catch {}
 }

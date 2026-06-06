@@ -35,25 +35,6 @@ const overviewGrid = style({
   marginBottom: space[6],
 });
 
-const indexInfoGrid = style({
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-  gap: space[3],
-});
-
-const indexInfoItem = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: space[1],
-});
-
-const indexLabel = style({
-  fontSize: fontSize.xs,
-  color: theme.textMuted,
-  textTransform: 'uppercase' as const,
-  letterSpacing: '0.05em',
-});
-
 const workflowBoard = style({
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
@@ -522,9 +503,6 @@ export default function Project() {
   if (loading) return <div className={mutedStyle}>{t('app.loading')}</div>;
   if (!project) return <div className={emptyStyle}>{t('project.notFound')}</div>;
 
-  const idxState = project.projectIndex?.state;
-  const idxBranch = project.projectIndex?.branch;
-
   return (
     <div>
       <Breadcrumb items={[
@@ -533,11 +511,6 @@ export default function Project() {
       ]} />
       <div className={headerStyle}>
         <h2 className={titleStyle}>{name}</h2>
-        {project.projectIndex && (
-          <Badge variant={idxState === 'indexed' ? 'success' : idxState === 'error' ? 'error' : 'muted'}>
-            idx:{idxState}{idxBranch ? ` (${idxBranch})` : ''}
-          </Badge>
-        )}
       </div>
 
       {project.pipelineState && (
@@ -580,12 +553,6 @@ export default function Project() {
         }}>
           📋 {t('project.planOnly')}
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => {
-          fetch(`/api/hub/projects/${name}/index/refresh`, { method: 'POST' })
-            .then(() => useProjectsStore.getState().fetchProjects());
-        }}>
-          🔄 {t('project.refreshIndex')}
-        </Button>
       </div>
 
       <Tabs items={tabItems} active={tab} onChange={setTab} />
@@ -597,42 +564,12 @@ export default function Project() {
               <h4 style={{ marginBottom: 8, fontWeight: 600 }}>{t('project.narrative')}</h4>
               <p className={mutedStyle}>
                 <strong>{name}</strong>
-                {project.projectIndex ? (
-                  <> {t('project.indexInfo', { branch: idxBranch || 'unknown', state: idxState || 'unknown' })}</>
-                ) : (
-                  <> {t('project.noIndex')}</>
-                )}
               </p>
               <p className={mutedStyle}>
                 {t('project.fileCountInfo', { count: files.length })}
               </p>
             </GlassPanel>
 
-            <GlassPanel depth="shallow" padding="md">
-              <h4 style={{ marginBottom: 12, fontWeight: 600 }}>{t('project.codebaseIndex')}</h4>
-              {project.projectIndex ? (
-                <div className={indexInfoGrid}>
-                  <div className={indexInfoItem}>
-                    <span className={indexLabel}>{t('project.state')}</span>
-                    <Badge variant={idxState === 'indexed' ? 'success' : 'muted'}>
-                      {idxState || 'unknown'}
-                    </Badge>
-                  </div>
-                  <div className={indexInfoItem}>
-                    <span className={indexLabel}>{t('project.branch')}</span>
-                    <code style={{ fontSize: fontSize.xs }}>{idxBranch || 'unknown'}</code>
-                  </div>
-                  {project.projectIndex.fileCount != null && (
-                    <div className={indexInfoItem}>
-                      <span className={indexLabel}>{t('project.filesIndexed')}</span>
-                      <span style={{ fontSize: fontSize.sm }}>{project.projectIndex.fileCount}</span>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className={mutedStyle}>{t('project.noIndexAvailable')}</p>
-              )}
-            </GlassPanel>
           </div>
 
           <GlassPanel depth="shallow" padding="md">
