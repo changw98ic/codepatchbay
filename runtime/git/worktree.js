@@ -403,7 +403,12 @@ async function ensureSharedNodeModules(project, worktreePath) {
 }
 
 async function prepareWorktreeRuntime(project, worktreePath, options = {}) {
-  await ensureIsolatedCodegraph(worktreePath, options);
+  const codegraphEnabled = options.codegraphEnabled ?? (process.env.CPB_CODEGRAPH_ENABLED !== "0");
+  if (codegraphEnabled) {
+    await ensureIsolatedCodegraph(worktreePath, options);
+  } else {
+    await ensureLocalGitExclude(worktreePath, ".codegraph");
+  }
   await ensureSharedNodeModules(project, worktreePath);
 }
 
@@ -433,7 +438,7 @@ async function existingWorktreePath(project, branch) {
   return null;
 }
 
-export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph } = {}) {
+export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled } = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
   validateComponent("job-id", jobId);
@@ -451,7 +456,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot, init
   const existingPath = await existingWorktreePath(path.resolve(project), branch);
   if (existingPath !== null) {
     if ((await pathExists(worktreePath)) && (await samePath(existingPath, worktreePath))) {
-      await prepareWorktreeRuntime(project, worktreePath, { initCodegraph });
+      await prepareWorktreeRuntime(project, worktreePath, { initCodegraph, codegraphEnabled });
       return { branch, path: worktreePath };
     }
     throw new Error(`branch already has a different worktree: ${branch}`);
@@ -464,7 +469,10 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot, init
   }
 
   await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-  await prepareWorktreeRuntime(project, worktreePath, { initCodegraph });
+  await prepareWorktreeRuntime(project, worktreePath, {
+    initCodegraph,
+    codegraphEnabled,
+  });
 
   return { branch, path: worktreePath };
 }

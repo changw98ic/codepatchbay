@@ -84,4 +84,19 @@ test("createWorktree initializes isolated codegraph while reusing installed depe
 
   assert.equal(reusedExistingIndex.path, created.path);
   assert.deepEqual(initCalls, [created.path, created.path, created.path]);
+
+  const skippedCodegraph = await createWorktree({
+    project,
+    jobId: "job-no-codegraph",
+    slug: "pipeline",
+    worktreesRoot,
+    initCodegraph: async () => {
+      throw new Error("codegraph init should be skipped");
+    },
+    codegraphEnabled: false,
+  });
+
+  assert.deepEqual(initCalls, [created.path, created.path, created.path]);
+  await assert.rejects(lstat(path.join(skippedCodegraph.path, ".codegraph")), { code: "ENOENT" });
+  assert.equal((await lstat(path.join(skippedCodegraph.path, "node_modules"))).isSymbolicLink(), true);
 });
