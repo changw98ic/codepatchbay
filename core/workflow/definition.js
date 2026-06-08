@@ -6,7 +6,7 @@ import {
   resolveEffectiveRouting,
 } from "../agents/routing.js";
 
-const WORKCPBS = {
+const WORKFLOWS = {
   standard: {
     name: "standard",
     phases: ["plan", "execute", "verify"],
@@ -53,7 +53,7 @@ const WORKCPBS = {
 const _dagCache = new Map();
 
 export function getWorkflow(name) {
-  return WORKCPBS[name] ?? WORKCPBS.standard;
+  return WORKFLOWS[name] ?? WORKFLOWS.standard;
 }
 
 export function nextPhase(workflow, currentPhase) {
@@ -86,11 +86,11 @@ export function getSubagentConfig(workflow) {
 }
 
 export function listWorkflows() {
-  return Object.keys(WORKCPBS).filter((k) => !WORKCPBS[k].stub);
+  return Object.keys(WORKFLOWS).filter((k) => !WORKFLOWS[k].stub);
 }
 
 export function isWorkflowName(name) {
-  return Object.hasOwn(WORKCPBS, name) && !WORKCPBS[name].stub;
+  return Object.hasOwn(WORKFLOWS, name) && !WORKFLOWS[name].stub;
 }
 
 // --- DAG support ---
@@ -227,7 +227,7 @@ export function registerDagWorkflow(name, { nodes, maxConcurrentNodes = 2 }) {
   if (!validation.valid) {
     throw new Error(`invalid DAG: ${validation.errors.join(", ")}`);
   }
-  WORKCPBS[name] = {
+  WORKFLOWS[name] = {
     name,
     phases: nodes.map((n) => n.phase),
     roleForPhase: Object.fromEntries(nodes.map((n) => [n.phase, n.role || "executor"])),

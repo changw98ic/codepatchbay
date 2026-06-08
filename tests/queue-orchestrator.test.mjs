@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -11,10 +12,30 @@ import {
 } from "../server/services/hub-queue.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/concurrency-limits.js";
-import { tempRoot, oldIso, readJson } from "./helpers.mjs";
+import { registerProject } from "../server/services/hub-registry.js";
+import { tempRoot, oldIso, readJson, writeJson } from "./helpers.mjs";
 
 // Mock assignmentStore: always returns null (no active assignment)
 const noAssignmentStore = { getAssignment: async () => null };
+
+function highConfidenceCapabilityMetadata() {
+  const projectCapabilityMap = {
+    confidence: "high",
+    coreModules: ["server/orchestrator/scheduler.js"],
+    testSurfaces: ["tests/queue-orchestrator.test.mjs"],
+  };
+  return {
+    capabilityMapConfidence: "high",
+    project_capability_map: projectCapabilityMap,
+  };
+}
+
+async function sourceWithCodeGraphIndexButNoLiveState(prefix) {
+  const sourcePath = await tempRoot(prefix);
+  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
+  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(2048, 1));
+  return sourcePath;
+}
 
 test("enqueue dedupes pending entries and requires UI lane reason", async () => {
   const hubRoot = await tempRoot("cpb-queue");
@@ -228,9 +249,103 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   assert.equal(indexGate.entry, null);
 
   const gated = (await listQueue(indexHubRoot)).find((entry) => entry.id === staleIndex.id);
-  assert.equal(gated.status, "index_unavailable");
+  assert.equal(gated.status, "codegraph_unavailable");
   assert.equal(gated.metadata.indexFreshness.available, false);
   assert.deepEqual(gated.metadata.indexFreshness.dirtyReasons, ["missing_source_or_runtime_root"]);
+});
+
+test("claimEligible blocks registered projects without high-confidence capability maps", async () => {
+  const hubRoot = await tempRoot("cpb-queue-capability-map");
+  const sourcePath = await tempRoot("cpb-queue-capability-source");
+  const projectRuntimeRoot = await tempRoot("cpb-queue-capability-runtime");
+  const pending = await enqueue(hubRoot, {
+    projectId: "flow",
+    description: "needs Project Capability Map",
+  });
+
+  const result = await claimEligible(hubRoot, {
+    workerId: "w-capability-map",
+    assignmentStore: noAssignmentStore,
+    getProjectFn: async (_hubRoot, projectId) => (
+      projectId === "flow"
+        ? { id: "flow", sourcePath, projectRuntimeRoot, metadata: {} }
+        : null
+    ),
+  });
+
+  assert.equal(result.entry, null);
+  const gated = (await listQueue(hubRoot)).find((entry) => entry.id === pending.id);
+  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.metadata.capabilityMap.available, false);
+  assert.equal(gated.metadata.capabilityMap.reason, "missing_project_capability_map");
+});
+
+test("claimEligible blocks high-confidence projects when live CodeGraph readiness is missing", async () => {
+  const hubRoot = await tempRoot("cpb-queue-live-codegraph");
+  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState("cpb-queue-live-codegraph-source");
+  const projectRuntimeRoot = await tempRoot("cpb-queue-live-codegraph-runtime");
+  const pending = await enqueue(hubRoot, {
+    projectId: "flow",
+    sourcePath,
+    description: "needs live CodeGraph",
+  });
+
+  const result = await claimEligible(hubRoot, {
+    workerId: "w-live-codegraph",
+    assignmentStore: noAssignmentStore,
+    getProjectFn: async (_hubRoot, projectId) => (
+      projectId === "flow"
+        ? {
+          id: "flow",
+          sourcePath,
+          projectRuntimeRoot,
+          metadata: highConfidenceCapabilityMetadata(),
+        }
+        : null
+    ),
+  });
+
+  assert.equal(result.entry, null);
+  const gated = (await listQueue(hubRoot)).find((entry) => entry.id === pending.id);
+  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.metadata.codegraphReadiness.available, false);
+  assert.equal(gated.metadata.codegraphReadiness.reason, "missing_codegraph_state");
+  assert.deepEqual(gated.metadata.indexFreshness.dirtyReasons, ["missing_codegraph_state"]);
+});
+
+test("codegraph unavailable counters and recovery accept legacy index_unavailable rows", async () => {
+  const hubRoot = await tempRoot("cpb-queue-codegraph-legacy");
+  const current = await enqueue(hubRoot, { projectId: "proj", description: "current codegraph gate" });
+  await updateEntry(hubRoot, current.id, {
+    status: "codegraph_unavailable",
+    updatedAt: oldIso(),
+    metadata: { indexFreshness: { available: false } },
+  });
+  const legacy = await enqueue(hubRoot, { projectId: "proj", description: "legacy index gate" });
+  await updateEntry(hubRoot, legacy.id, {
+    status: "index_unavailable",
+    updatedAt: oldIso(),
+    metadata: { indexFreshness: { available: false } },
+  });
+
+  const status = await queueStatus(hubRoot);
+  assert.equal(status.indexUnavailable, 2);
+  assert.equal(status.codegraphUnavailable, 2);
+  assert.equal(status.projects.proj.indexUnavailable, 2);
+  assert.equal(status.projects.proj.codegraphUnavailable, 2);
+
+  const first = await claimEligible(hubRoot, {
+    workerId: "w-legacy",
+    indexUnavailableRetryMs: 1,
+    assignmentStore: noAssignmentStore,
+  });
+
+  assert.equal(first.entry.id, current.id);
+  assert.deepEqual(first.recovered, [current.id, legacy.id]);
+  const recovered = await listQueue(hubRoot);
+  assert.equal(recovered.find((entry) => entry.id === current.id).status, "in_progress");
+  assert.equal(recovered.find((entry) => entry.id === legacy.id).status, "pending");
+  assert.equal(recovered.find((entry) => entry.id === legacy.id).metadata.indexFreshness, undefined);
 });
 
 test("HubOrchestrator.tick stops on leader lock loss", async () => {
@@ -249,6 +364,179 @@ test("HubOrchestrator.tick stops on leader lock loss", async () => {
   assert.deepEqual(result, { stopped: true, reason: "leader lock lost" });
   assert.equal(orchestrator.running, false);
   assert.equal(released, true);
+});
+
+test("HubOrchestrator scheduler applies provider capacity per provider", async () => {
+  const hubRoot = await tempRoot("cpb-orch-provider-capacity");
+  const cpbRoot = await tempRoot("cpb-orch-provider-capacity-cpb");
+  await writeJson(path.join(hubRoot, "config.json"), {
+    scheduler: { mode: "default" },
+    acpPool: { providerMax: 1 },
+  });
+  const activeCodex = await enqueue(hubRoot, {
+    projectId: "proj-a",
+    description: "active codex",
+    metadata: { agents: { executor: { agent: "codex" } } },
+  });
+  await updateEntry(hubRoot, activeCodex.id, {
+    status: "in_progress",
+    claimedBy: "w-codex",
+    claimedAt: new Date().toISOString(),
+  });
+  await enqueue(hubRoot, {
+    projectId: "proj-b",
+    description: "pending codex",
+    priority: "P0",
+    metadata: { agents: { executor: { agent: "codex" } } },
+  });
+  const pendingClaude = await enqueue(hubRoot, {
+    projectId: "proj-c",
+    description: "pending claude",
+    priority: "P1",
+    metadata: { agents: { executor: { agent: "claude" } } },
+  });
+
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  await orchestrator.assignmentStore.init();
+  await orchestrator.workerStore.init();
+
+  const candidates = await orchestrator.scheduler.nextCandidates(10);
+
+  assert.deepEqual(candidates.map((entry) => entry.id), [pendingClaude.id]);
+});
+
+test("HubOrchestrator scheduler gates missing project capability maps before dispatch", async () => {
+  const hubRoot = await tempRoot("cpb-orch-capability-gate");
+  const cpbRoot = await tempRoot("cpb-orch-capability-gate-cpb");
+  const sourcePath = await tempRoot("cpb-orch-capability-source");
+  await registerProject(hubRoot, { id: "flow", sourcePath, skipCodeGraphGate: true });
+  const entry = await enqueue(hubRoot, {
+    projectId: "flow",
+    sourcePath,
+    description: "must not dispatch without capability maps",
+  });
+
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  await orchestrator.assignmentStore.init();
+  await orchestrator.workerStore.init();
+  await orchestrator.workerStore.registerWorker("w-capability", {
+    projectId: "flow",
+    status: "ready",
+  });
+  orchestrator.running = true;
+  orchestrator.leaderLock = {
+    stillHeld: async () => true,
+    getEpoch: () => 7,
+    release: async () => {},
+  };
+  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+
+  const result = await orchestrator.tick();
+
+  assert.deepEqual(result, { idle: true });
+  assert.equal(await orchestrator.assignmentStore.getAssignment(`a-${entry.id}`), null);
+  const gated = (await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id);
+  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.metadata.capabilityMap.available, false);
+  assert.equal(gated.metadata.capabilityMap.reason, "missing_project_capability_map");
+});
+
+test("HubOrchestrator scheduler gates missing live CodeGraph readiness before dispatch", async () => {
+  const hubRoot = await tempRoot("cpb-orch-live-codegraph");
+  const cpbRoot = await tempRoot("cpb-orch-live-codegraph-cpb");
+  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState("cpb-orch-live-codegraph-source");
+  await registerProject(hubRoot, {
+    id: "flow",
+    sourcePath,
+    skipCodeGraphGate: true,
+    metadata: highConfidenceCapabilityMetadata(),
+  });
+  const entry = await enqueue(hubRoot, {
+    projectId: "flow",
+    sourcePath,
+    description: "must not dispatch without live CodeGraph",
+  });
+
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  await orchestrator.assignmentStore.init();
+  await orchestrator.workerStore.init();
+  await orchestrator.workerStore.registerWorker("w-live-codegraph", {
+    projectId: "flow",
+    status: "ready",
+  });
+  orchestrator.running = true;
+  orchestrator.leaderLock = {
+    stillHeld: async () => true,
+    getEpoch: () => 9,
+    release: async () => {},
+  };
+  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+
+  const result = await orchestrator.tick();
+
+  assert.deepEqual(result, { idle: true });
+  assert.equal(await orchestrator.assignmentStore.getAssignment(`a-${entry.id}`), null);
+  const gated = (await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id);
+  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.metadata.codegraphReadiness.available, false);
+  assert.equal(gated.metadata.codegraphReadiness.reason, "missing_codegraph_state");
+});
+
+test("HubOrchestrator scheduler does not oversubscribe one provider in a single tick", async () => {
+  const hubRoot = await tempRoot("cpb-orch-provider-same-tick");
+  const cpbRoot = await tempRoot("cpb-orch-provider-same-tick-cpb");
+  await writeJson(path.join(hubRoot, "config.json"), {
+    scheduler: { mode: "default" },
+    acpPool: { providerMax: 1 },
+  });
+  const sourcePath = await tempRoot("cpb-orch-provider-same-tick-source");
+  const mapMetadata = {
+    project_capability_map: { capabilities: [{ name: "queue", files: ["server/orchestrator/scheduler.js"] }] },
+    safety_boundary_map: { boundaries: ["provider_pool"] },
+    high_risk_area_map: { areas: [] },
+    capabilityMapConfidence: "high",
+  };
+  const first = await enqueue(hubRoot, {
+    projectId: "flow",
+    sourcePath,
+    description: "first codex task",
+    metadata: {
+      ...mapMetadata,
+      agents: { executor: { agent: "codex" } },
+    },
+  });
+  const second = await enqueue(hubRoot, {
+    projectId: "flow",
+    sourcePath,
+    description: "second codex task",
+    metadata: {
+      ...mapMetadata,
+      agents: { executor: { agent: "codex" } },
+    },
+  });
+
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  await orchestrator.assignmentStore.init();
+  await orchestrator.workerStore.init();
+  await orchestrator.workerStore.registerWorker("w-one", { projectId: "flow", status: "ready" });
+  await orchestrator.workerStore.registerWorker("w-two", { projectId: "flow", status: "ready" });
+  orchestrator.running = true;
+  orchestrator.leaderLock = {
+    stillHeld: async () => true,
+    getEpoch: () => 8,
+    release: async () => {},
+  };
+  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+
+  const result = await orchestrator.tick();
+  const entries = await listQueue(hubRoot);
+  const scheduled = entries.filter((entry) => entry.status === "scheduled");
+  const pending = entries.filter((entry) => entry.status === "pending");
+
+  assert.equal(result.dispatched.length, 1);
+  assert.equal(scheduled.length, 1);
+  assert.equal(pending.length, 1);
+  assert.deepEqual(new Set(entries.map((entry) => entry.id)), new Set([first.id, second.id]));
 });
 
 test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker state aligned", async () => {
@@ -276,6 +564,7 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
     release: async () => {},
   };
   orchestrator.scheduler = {
+    nextCandidates: async () => [entry],
     nextCandidate: async () => entry,
     findIdleWorker: async () => worker,
   };

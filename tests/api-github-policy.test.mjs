@@ -69,6 +69,17 @@ function bodyOf(response) {
   return JSON.parse(response.body);
 }
 
+function highConfidenceCapabilityMetadata() {
+  return {
+    capabilityMapConfidence: "high",
+    project_capability_map: {
+      confidence: "high",
+      coreModules: ["README.md"],
+      testSurfaces: [],
+    },
+  };
+}
+
 function signedHeaders(body, secret, event = "issues") {
   const raw = Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8");
   const signature = createHmac("sha256", secret).update(raw).digest("hex");
@@ -132,7 +143,12 @@ test("hub routes gate stale index claims and reject disabled dispatch records", 
   const hubRoot = await tempRoot("cpb-api-hub");
   const sourcePath = await makeGitRepo("cpb-api-hub-source");
   const oldHead = await git(sourcePath, ["rev-parse", "HEAD"]);
-  await registerProject(hubRoot, { id: "proj", sourcePath });
+  await registerProject(hubRoot, {
+    id: "proj",
+    sourcePath,
+    skipCodeGraphGate: true,
+    metadata: highConfidenceCapabilityMetadata(),
+  });
   await writeProjectIndex(hubRoot, cpbRoot, "proj", {
     state: "merged_indexed",
     branch: await git(sourcePath, ["branch", "--show-current"]),
@@ -182,7 +198,7 @@ test("task pipeline route validates project, task, and ACP lane before queueing"
   const cpbRoot = await tempRoot("cpb-api-task-cpb");
   const hubRoot = await tempRoot("cpb-api-task-hub");
   const sourcePath = await tempRoot("cpb-api-task-source");
-  await registerProject(hubRoot, { id: "proj", sourcePath });
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
   const app = await makeApp(taskRoutes, { cpbRoot, hubRoot });
 
   assert.equal((await app.inject({ method: "POST", url: "/tasks/bad_name/pipeline", payload: { task: "x" } })).statusCode, 400);
@@ -237,6 +253,22 @@ test("inbox route aggregates jobs, queue entries, and reviews with filters and p
     workflow: "standard",
     jobId: "job-api-inbox",
   });
+  await appendEvent(cpbRoot, "proj-job", "job-api-inbox", {
+    type: "riskmap_generated",
+    jobId: "job-api-inbox",
+    project: "proj-job",
+    phase: "prepare_task",
+    riskLevel: "high",
+    verificationDepth: "strict",
+    adversarialRequired: true,
+    riskMap: {
+      riskLevel: "high",
+      domains: ["provider_pool"],
+      verificationDepth: "strict",
+      adversarialRequired: true,
+    },
+    ts: new Date().toISOString(),
+  });
   await completeJob(cpbRoot, "proj-job", "job-api-inbox");
   const queueEntry = await enqueue(hubRoot, {
     projectId: "proj-queue",
@@ -253,6 +285,10 @@ test("inbox route aggregates jobs, queue entries, and reviews with filters and p
   assert.deepEqual(new Set(all.items.map((item) => item.type)), new Set(["pipeline", "queued", "review"]));
   assert.deepEqual(all.projects, ["proj-job", "proj-queue", "proj-review"]);
   assert.equal(all.items[0].priority, "P0");
+  const jobRow = all.items.find((item) => item.id === "job-api-inbox");
+  assert.equal(jobRow.riskLevel, "high");
+  assert.equal(jobRow.verificationDepth, "strict");
+  assert.equal(jobRow.adversarialRequired, true);
 
   const filtered = bodyOf(await app.inject({ method: "GET", url: "/inbox?type=queued&status=queued" }));
   assert.equal(filtered.total, 1);
@@ -277,7 +313,7 @@ test("review routes are idempotent and update queue, cleanup, merge success, and
   const cpbRoot = await tempRoot("cpb-api-review-cpb");
   const hubRoot = await tempRoot("cpb-api-review-hub");
   const sourcePath = await makeGitRepo("cpb-api-review-source");
-  await registerProject(hubRoot, { id: "proj", sourcePath });
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
   await writeJson(path.join(cpbRoot, "wiki", "projects", "proj", "project.json"), { sourcePath });
   const app = await makeApp(reviewRoutes, { cpbRoot, hubRoot, opts: { executorRoot: repoRoot, startRunner: false } });
 
@@ -387,7 +423,7 @@ test("GitHub webhook route rejects bad inputs, returns 202 for unsupported/unreg
   assert.equal(bodyOf(unregistered).accepted, true);
   assert.deepEqual(await listQueue(hubRoot), []);
 
-  await registerProject(hubRoot, { id: "proj", sourcePath });
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
   await updateProject(hubRoot, "proj", { github: { fullName: "owner/repo", triggers: [{ event: "issues.labeled", label: "cpb", workflow: "standard" }] } });
   const unsupported = await app.inject({
     method: "POST",

@@ -252,6 +252,8 @@ function acpMetadataEnv(options = {}) {
   if (options.jobId) meta.CPB_ACP_JOB_ID = options.jobId;
   if (options.phase) meta.CPB_ACP_PHASE = options.phase;
   if (options.role) meta.CPB_ACP_ROLE = options.role;
+  if (options.poolScope) meta.CPB_ACP_POOL_SCOPE = options.poolScope;
+  if (options.controlPlane) meta.CPB_ACP_CONTROL_PLANE = "1";
   return meta;
 }
 
@@ -580,12 +582,16 @@ export class AcpPool {
     return poolClientKey(agent, { ...options, processCwd });
   }
 
+  #providerKeyForRequest(agent, options = {}) {
+    return options.providerKey || this.providerKey(agent, options.variant);
+  }
+
   _nextId(agent) {
     return `${agent}-${Date.now()}-${++this._seq}`;
   }
 
   acquire(agent, options = {}) {
-    const providerKey = this.providerKey(agent, options.variant);
+    const providerKey = this.#providerKeyForRequest(agent, options);
     const limit = this.#providerConnectionLimit(providerKey);
     // Count all agents sharing the same provider key
     const active = this.#providerActiveCount(providerKey);
@@ -771,6 +777,8 @@ export class AcpPool {
         providerKey,
         phase: options.phase || null,
         role: options.role || null,
+        poolScope: options.poolScope || null,
+        controlPlane: Boolean(options.controlPlane || options.poolScope === "control-plane"),
         acquiredAt: new Date().toISOString(),
       };
       const filePath = path.join(this.#connectionLeasesDir(), `${lease.leaseId}.json`);
@@ -953,7 +961,7 @@ export class AcpPool {
       const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
       return { output, providerKey: null, agent, variant: null };
     }
-    const providerKey = this.providerKey(agent, scopedOptions.variant);
+    const providerKey = this.#providerKeyForRequest(agent, scopedOptions);
     const acpAuditFile = resolveAcpAuditFile(this.#executionEnv(agent, scopedOptions));
 
     // Pre-flight quota gate (replaces old assertNotRateLimited)
@@ -967,7 +975,7 @@ export class AcpPool {
       });
     }
 
-    const session = await this.acquire(agent);
+    const session = await this.acquire(agent, scopedOptions);
     const lifecycle = await this.#prepareSession(agent);
     if (session.requestId) {
       const entry = this.liveRequests.get(session.requestId);
@@ -1051,7 +1059,7 @@ export class AcpPool {
 
   async #run(agent, prompt, cwd, timeoutMs, options = {}) {
     if (this.runner) {
-      const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
+      const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
       try {
         return await this.runner({ agent, prompt, cwd, timeoutMs });
       } finally {
@@ -1064,7 +1072,7 @@ export class AcpPool {
   }
 
   async #runOneShot(agent, prompt, cwd, timeoutMs, options = {}) {
-    const lease = await this.#acquireConnectionLease(agent, this.providerKey(agent, options.variant), options);
+    const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
     const customClient = this.env.CPB_ACP_CLIENT;
     const clientPath = customClient || path.join(__dirname, "acp-client-core.mjs");
     const command = customClient ? clientPath : process.execPath;
@@ -1118,7 +1126,7 @@ export class AcpPool {
   #runPersistent(agent, prompt, cwd, timeoutMs, options = {}) {
     const key = this.#persistentClientKey(agent, { ...options, cwd });
     const prior = this.persistentChains.get(key) || Promise.resolve();
-    const providerKey = this.providerKey(agent, options.variant);
+    const providerKey = this.#providerKeyForRequest(agent, options);
     const waitTimeout = numericOption(this.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS, DEFAULT_POOL_WAIT_TIMEOUT_MS);
     const warnInterval = POOL_WAIT_WARN_INTERVAL_MS;
 
@@ -1209,9 +1217,8 @@ export class AcpPool {
       if (cached?.sessionId) resumeSessionId = cached.sessionId;
     }
 
-    const variant = options.variant || null;
-    const providerKey = this.providerKey(agent, variant);
-    const lease = await this.#acquireConnectionLease(agent, providerKey);
+    const providerKey = this.#providerKeyForRequest(agent, options);
+    const lease = await this.#acquireConnectionLease(agent, providerKey, options);
     const launchScopedMcp = this.#usesLaunchScopedMcp(agent, { ...options, cwd });
     const client = new AcpClient({
       agent,

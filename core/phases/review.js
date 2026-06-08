@@ -29,12 +29,13 @@ Rules:
 
 export async function runReview(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const role = ctx.role || "reviewer";
   const deliverableArtifact = getRequiredArtifact(ctx.previousResults, "deliverable");
 
   const prompt = await buildReviewPrompt(ctx, deliverableArtifact) + JSON_INSTRUCTION;
 
   const agentResult = await runAgent({
-    role: "reviewer",
+    role,
     ...resolveAgent(ctx, "codex"),
     project,
     jobId,
@@ -121,7 +122,8 @@ ${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}`;
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.reviewer || ctx.agent || fallback;
+  const role = ctx.role || "reviewer";
+  const raw = ctx.agents?.[role] || ctx.agents?.reviewer || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

@@ -297,7 +297,7 @@ export function snapshotForJob(result) {
         indexDirty: result?.indexDirty ?? true,
         indexStale: result?.indexStale ?? false,
         worktreeDirty: result?.worktreeDirty ?? false,
-        dirtyReasons: result?.dirtyReasons ?? ["index_unavailable"],
+        dirtyReasons: result?.dirtyReasons ?? ["codegraph_unavailable"],
       },
     };
   }

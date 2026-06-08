@@ -31,9 +31,15 @@ const focusedTests = [
   "tests/pr-body.test.mjs",
   "tests/retry-reason.test.mjs",
   "tests/engine-provider-event.test.mjs",
-  "tests/managed-worker.test.mjs",
   "tests/queue-orchestrator.test.mjs",
+  "tests/acp-supervisor.test.mjs",
+  "tests/dw-codegraph-gate.test.mjs",
+  "tests/dw08-acceptance.test.mjs",
   "tests/release-pack-smoke.test.mjs",
+];
+
+const isolatedFocusedTests = [
+  "tests/managed-worker.test.mjs",
 ];
 
 function commandText(command, commandArgs) {
@@ -90,6 +96,11 @@ const checks = [];
 
 checks.push(await run("static: git diff --check", "git", ["diff", "--check"]));
 checks.push(await run("focused P0/P1 node tests", process.execPath, ["--test", ...focusedTests]));
+checks.push(await run("focused P0/P1 isolated node tests", process.execPath, [
+  "--test-concurrency=1",
+  "--test",
+  ...isolatedFocusedTests,
+]));
 checks.push(await run("CLI smoke", process.execPath, ["scripts/ci-smoke.mjs"]));
 checks.push(await runLiveChecks());
 

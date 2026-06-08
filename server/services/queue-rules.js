@@ -28,6 +28,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+export function isCodegraphUnavailableStatus(status) {
+  return status === "codegraph_unavailable" || status === "index_unavailable";
+}
+
 /**
  * Recover stale in_progress / scheduled entries (sync variant).
  *
@@ -112,14 +116,14 @@ export async function recoverStaleInProgressAsync(entries, opts) {
 }
 
 /**
- * Recover index_unavailable entries whose retry window has elapsed.
+ * Recover codegraph_unavailable entries whose retry window has elapsed.
  */
-export function recoverIndexUnavailable(entries, retryMs) {
+export function recoverCodegraphUnavailable(entries, retryMs) {
   if (!retryMs || retryMs <= 0) return { recovered: [] };
   const now = Date.now();
   const recovered = [];
   for (const e of entries) {
-    if (e.status !== "index_unavailable") continue;
+    if (!isCodegraphUnavailableStatus(e.status)) continue;
     const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
     if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
     e.status = "pending";

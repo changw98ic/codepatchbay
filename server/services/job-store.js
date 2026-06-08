@@ -306,7 +306,7 @@ export async function blockJob(
   cpbRoot,
   project,
   jobId,
-  { reason, ts = nowIso(), dataRoot }
+  { reason, code, kind, cause, ts = nowIso(), dataRoot }
 ) {
   await requireNotTerminal(cpbRoot, project, jobId, { allowMissing: true, dataRoot });
   await appendEvent(cpbRoot, project, jobId, {
@@ -314,6 +314,9 @@ export async function blockJob(
     jobId,
     project,
     reason,
+    code,
+    kind,
+    cause,
     ts,
   }, { dataRoot });
   await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});

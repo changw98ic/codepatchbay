@@ -45,6 +45,9 @@ function requestRowFromJob(job) {
     failurePhase: row.failurePhase,
     cancelRequested: row.cancelRequested,
     redirectContext: row.redirectContext,
+    riskLevel: row.riskLevel,
+    verificationDepth: row.verificationDepth,
+    adversarialRequired: row.adversarialRequired,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastActivityAt: row.lastActivityAt,
@@ -53,6 +56,7 @@ function requestRowFromJob(job) {
 }
 
 function requestRowFromQueueEntry(entry) {
+  const riskMap = entry.metadata?.riskMap || entry.metadata?.riskmap || {};
   const status = entry.status === "in_progress" ? "running"
     : entry.status === "scheduled" ? "queued"
     : entry.status || "pending";
@@ -75,6 +79,9 @@ function requestRowFromQueueEntry(entry) {
     failurePhase: null,
     cancelRequested: false,
     redirectContext: null,
+    riskLevel: entry.metadata?.riskLevel ?? riskMap.riskLevel ?? null,
+    verificationDepth: entry.metadata?.verificationDepth ?? riskMap.verificationDepth ?? null,
+    adversarialRequired: entry.metadata?.adversarialRequired ?? riskMap.adversarialRequired ?? false,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     lastActivityAt: null,
@@ -108,6 +115,9 @@ function requestRowFromReview(session) {
     failurePhase: null,
     cancelRequested: false,
     redirectContext: null,
+    riskLevel: null,
+    verificationDepth: null,
+    adversarialRequired: false,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     lastActivityAt: session.updatedAt,
@@ -201,6 +211,9 @@ export function inboxRoutes(fastify) {
         failurePhase: row.failurePhase,
         cancelRequested: row.cancelRequested,
         redirectContext: row.redirectContext,
+        riskLevel: row.riskLevel,
+        verificationDepth: row.verificationDepth,
+        adversarialRequired: row.adversarialRequired,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
         lastActivityAt: row.lastActivityAt,

@@ -17,11 +17,13 @@ const ALLOWED_ASSETS = [
   "bridges",
   "cli",
   "core",
+  "shared",
   "runtime",
   "server",
   "profiles",
   "skills",
   "templates",
+  "scripts",
   "package.json",
   "package-lock.json",
   "cpb",
@@ -142,8 +144,12 @@ export async function installRelease({ sourceRoot, destRoot, name, now = new Dat
     await mkdir(tmpPath, { recursive: true });
 
     for (const item of ALLOWED_ASSETS) {
+      const sourcePath = path.join(resolvedSource, item);
+      if (!(await exists(sourcePath)) && item === "package-lock.json") {
+        continue;
+      }
       await cp(
-        path.join(resolvedSource, item),
+        sourcePath,
         path.join(tmpPath, item),
         { recursive: true, verbatimSymlinks: true, filter: copyFilter },
       );

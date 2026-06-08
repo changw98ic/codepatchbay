@@ -32,19 +32,6 @@ function resolveVariant(env = process.env) {
   return "none";
 }
 
-function applyKimi(env = process.env) {
-  const variant = "kimi-k2.6";
-  const baseUrl = envFirst(env, "OLLAMA_CLOUD_URL", "OLLAMA_CLOUD_BASE_URL", "OLLAMACLOUD_BASE_URL", "OLLAMACLOUD_URL", "KIMI_BASE_URL", "MOONSHOT_BASE_URL");
-  const authToken = envFirst(env, "OLLAMA_CLOUD_KEY", "OLLAMA_CLOUD_API_KEY", "OLLAMACLOUD_API_KEY", "OLLAMACLOUD_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY");
-  const model = envFirst(env, "OLLAMA_CLOUD_MODEL", "OLLAMACLOUD_MODEL", "KIMI_MODEL", "MOONSHOT_MODEL") || "kimi-k2.6";
-
-  if (!baseUrl || !authToken) {
-    throw new Error(`Missing base URL or API key for variant '${variant}'. Set OLLAMA_CLOUD_URL + OLLAMA_CLOUD_KEY (or KIMI_BASE_URL + KIMI_API_KEY).`);
-  }
-
-  return { variant, displayName: "Kimi K2.6", baseUrl, authToken, model };
-}
-
 function applyXiaomi(env = process.env) {
   const variant = "mimo-v2.5pro";
   const baseUrl = envFirst(env, "XIAOMI_BASE_URL", "MIMO_BASE_URL");
@@ -69,20 +56,13 @@ function resolveConfig(env = process.env) {
     case "claude":
       return { variant: "none" };
 
-    case "kimi":
-    case "kimi-k2.6":
-    case "ollama":
-    case "ollamacloud":
-    case "ollama-cloud":
-      return applyKimi(env);
-
     case "xiaomi":
     case "mimo":
     case "mimo-v2.5pro":
       return applyXiaomi(env);
 
     default:
-      throw new Error(`Unknown Claude variant: '${normalized}'. Use kimi-k2.6, mimo-v2.5pro, or none.`);
+      throw new Error(`Unknown Claude variant: '${normalized}'. Use mimo-v2.5pro, or none.`);
   }
 }
 

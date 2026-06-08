@@ -36,6 +36,51 @@ import {
 } from "../services/worker-dispatch.js";
 import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
 
+async function currentGitHead(sourcePath) {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+    cwd: sourcePath,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  return stdout.trim();
+}
+
+async function findStaleProjectIndexBlock(hubRoot, cpbRoot, { projectId = null } = {}) {
+  const pending = await listQueue(hubRoot, { status: "pending" });
+  for (const entry of pending) {
+    if (projectId && entry.projectId !== projectId) continue;
+    const projectIdx = await readProjectIndex(hubRoot, cpbRoot, entry.projectId);
+    if (!(projectIdx && projectIdx.state === "indexed" && projectIdx.gitHead && entry.sourcePath)) continue;
+    try {
+      const currentHead = await currentGitHead(entry.sourcePath);
+      if (currentHead === projectIdx.gitHead) continue;
+      await writeProjectIndex(hubRoot, cpbRoot, entry.projectId, {
+        state: "merged_index_stale",
+        branch: projectIdx.branch,
+        gitHead: projectIdx.gitHead,
+        indexedFrom: projectIdx.indexedFrom,
+        timestamp: new Date().toISOString(),
+        error: `HEAD drift: indexed ${projectIdx.gitHead.slice(0, 12)} but current is ${currentHead.slice(0, 12)}`,
+      });
+      return {
+        entry,
+        indexRecovery: {
+          detected: "stale",
+          reason: "HEAD drift detected",
+          previousGitHead: projectIdx.gitHead,
+          currentHead,
+        },
+      };
+    } catch {
+      // Non-git or unreachable source; let the normal claim path decide.
+    }
+  }
+  return null;
+}
+
 function hubRoot(req) {
   return req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
 }
@@ -158,6 +203,21 @@ export async function hubRoutes(fastify) {
   fastify.post("/hub/queue/claim", async (req) => {
     const body = req.body || {};
     const hr = hubRoot(req);
+    const staleBlock = await findStaleProjectIndexBlock(hr, req.cpbRoot, {
+      projectId: body.projectId || null,
+    });
+    if (staleBlock) {
+      return {
+        claimed: false,
+        reason: "project-index-stale",
+        indexRecovery: staleBlock.indexRecovery,
+        blockedEntryId: staleBlock.entry.id,
+        recovered: [],
+        activeProjects: [],
+        skippedBusy: [],
+      };
+    }
+
     const assignmentStore = new AssignmentStore(hr);
     await assignmentStore.init();
     const result = await claimEligible(hr, {
@@ -180,15 +240,7 @@ export async function hubRoutes(fastify) {
     const projectIdx = await readProjectIndex(hubRoot(req), req.cpbRoot, projectId);
     if (projectIdx && projectIdx.state === "indexed" && projectIdx.gitHead && result.entry.sourcePath) {
       try {
-        const { execFile } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        const execFileAsync = promisify(execFile);
-        const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
-          cwd: result.entry.sourcePath,
-          encoding: "utf8",
-          timeout: 5000,
-        });
-        const currentHead = stdout.trim();
+        const currentHead = await currentGitHead(result.entry.sourcePath);
         if (currentHead !== projectIdx.gitHead) {
           await writeProjectIndex(hubRoot(req), req.cpbRoot, projectId, {
             state: "merged_index_stale",

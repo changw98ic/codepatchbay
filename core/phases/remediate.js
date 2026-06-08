@@ -26,11 +26,12 @@ Rules:
 
 export async function runRemediate(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const role = ctx.role || "remediator";
 
   const prompt = await buildRemediatePrompt(ctx) + JSON_INSTRUCTION;
 
   const agentResult = await runAgent({
-    role: "remediator",
+    role,
     ...resolveAgent(ctx, "claude"),
     project,
     jobId,
@@ -128,7 +129,8 @@ Analyze the failure and apply fixes.`;
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.remediator || ctx.agent || fallback;
+  const role = ctx.role || "remediator";
+  const raw = ctx.agents?.[role] || ctx.agents?.remediator || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

@@ -272,7 +272,7 @@ test("/cpb run comment webhook queues a job through trigger matching", async () 
   const hubRoot = await tempRoot("cpb-d24-run-hub");
   const sourcePath = await makeGitRepo("cpb-d24-run-src");
   const secret = await configureGithubWebhook(hubRoot);
-  await registerProject(hubRoot, { id: "proj", sourcePath });
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
   await updateProject(hubRoot, "proj", {
     github: { fullName: "owner/repo", triggers: [{ event: "issue_comment.created", command: "/cpb run", workflow: "standard" }] },
   });
@@ -305,7 +305,7 @@ test("non-matching comment webhook does not queue a job", async () => {
   const hubRoot = await tempRoot("cpb-d24-nocmdp-hub");
   const sourcePath = await makeGitRepo("cpb-d24-nocmdp-src");
   const secret = await configureGithubWebhook(hubRoot);
-  await registerProject(hubRoot, { id: "proj2", sourcePath });
+  await registerProject(hubRoot, { id: "proj2", sourcePath, skipCodeGraphGate: true });
   await updateProject(hubRoot, "proj2", {
     github: { fullName: "owner/repo", triggers: DEFAULT_GITHUB_TRIGGERS },
   });
@@ -335,7 +335,7 @@ test("issues.labeled with cpb webhook queues a job", async () => {
   const hubRoot = await tempRoot("cpb-d24-label-hub");
   const sourcePath = await makeGitRepo("cpb-d24-label-src");
   const secret = await configureGithubWebhook(hubRoot);
-  await registerProject(hubRoot, { id: "proj3", sourcePath });
+  await registerProject(hubRoot, { id: "proj3", sourcePath, skipCodeGraphGate: true });
   await updateProject(hubRoot, "proj3", {
     github: { fullName: "owner/repo", triggers: [{ event: "issues.labeled", label: "cpb", workflow: "standard" }] },
   });
@@ -368,7 +368,7 @@ test("issues.labeled with non-cpb label webhook does not queue", async () => {
   const hubRoot = await tempRoot("cpb-d24-nolbl-hub");
   const sourcePath = await makeGitRepo("cpb-d24-nolbl-src");
   const secret = await configureGithubWebhook(hubRoot);
-  await registerProject(hubRoot, { id: "proj4", sourcePath });
+  await registerProject(hubRoot, { id: "proj4", sourcePath, skipCodeGraphGate: true });
   await updateProject(hubRoot, "proj4", {
     github: { fullName: "owner/repo", triggers: [{ event: "issues.labeled", label: "cpb", workflow: "standard" }] },
   });

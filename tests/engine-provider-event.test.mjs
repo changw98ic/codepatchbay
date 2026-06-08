@@ -99,9 +99,24 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] } 
       jobId: job.jobId || "job-engine",
       status: "running",
     }),
+    prepareTask: async () => ({
+      riskMap: {
+        riskLevel: "medium",
+        domains: ["test_fixture"],
+        highRiskFiles: [],
+        safetyBoundaries: [],
+        verificationDepth: "standard",
+        adversarialRequired: false,
+        adversarialFocus: [],
+        confidence: "high",
+      },
+    }),
     startPhase: async (_cpbRoot, project, jobId, { phase }) => {
       starts.push(phase);
       events.push({ type: "phase_started", project, jobId, phase });
+    },
+    blockJob: async (_cpbRoot, project, jobId, failure) => {
+      events.push({ type: "job_blocked", project, jobId, ...failure });
     },
     completePhase: async (_cpbRoot, project, jobId, { phase, artifact }) => {
       completed.push(phase);
@@ -198,6 +213,7 @@ async function runEngine({
   cpbRoot = null,
   hubRoot = null,
   sourcePath = null,
+  sourceContext = {},
   workflow = "standard",
   planMode = "full",
   servicesState = {},
@@ -229,7 +245,7 @@ async function runEngine({
     workflow,
     planMode,
     sourcePath: source,
-    sourceContext: {},
+    sourceContext,
     agents: agents || {
       planner: "fake-primary",
       executor: "fake-primary",
@@ -274,6 +290,90 @@ test("runJob preserves phase order and switches unavailable providers during pre
   assert.deepEqual(result.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
   assert.ok(calls.every((call) => call.agent === "fake-secondary"));
   assert.ok(events.some((event) => event.type === "provider_handoff" && event.phase === "plan" && event.from === "fake-primary" && event.to === "fake-secondary"));
+});
+
+test("runJob does not invent provider fallbacks when the pool has none", async () => {
+  const hubRoot = await tempRoot("cpb-engine-hub-no-dynamic-fallback");
+  const events = [];
+  const failed = [];
+  const calls = [];
+  await _internalMarkProviderUnavailable(hubRoot, {
+    providerKey: "fake-primary",
+    agent: "fake-primary",
+    status: QuotaStatus.RATE_LIMITED,
+    nextEligibleAt: Date.now() + 60_000,
+    source: "test",
+    reason: "preflight saturated",
+  });
+
+  const pool = makePool({ calls });
+  pool.fallbackCandidates = () => [];
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events, failed },
+    pool,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure.kind, FailureKind.AGENT_RATE_LIMITED);
+  assert.equal(result.failure.phase, "plan");
+  assert.match(result.failure.reason, /all providers unavailable for planner/);
+  assert.equal(calls.length, 0);
+  assert.ok(!events.some((event) => event.type === "provider_handoff"));
+});
+
+test("runJob applies dynamic agent plan config before provider execution", async () => {
+  const calls = [];
+
+  const { result } = await runEngine({
+    pool: makePool({ calls }),
+    sourceContext: {
+      dynamicAgentPlan: {
+        agentConfig: {
+          executor: { agent: "fake-secondary" },
+        },
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "fake-secondary");
+  assert.equal(calls.find((call) => call.meta.role === "planner")?.agent, "fake-primary");
+});
+
+test("runJob blocks required dynamic roles as agent_unavailable when provider preflight fails", async () => {
+  const hubRoot = await tempRoot("cpb-engine-hub-required-dynamic-unavailable");
+  const events = [];
+  const calls = [];
+  await _internalMarkProviderUnavailable(hubRoot, {
+    providerKey: "fake-primary",
+    agent: "fake-primary",
+    status: QuotaStatus.RATE_LIMITED,
+    nextEligibleAt: Date.now() + 60_000,
+    source: "test",
+    reason: "required dynamic planner unavailable",
+  });
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events },
+    pool: makePool({ calls }),
+    sourceContext: {
+      dynamicAgentPlan: {
+        agentConfig: {
+          planner: { agent: "fake-primary", required: true },
+        },
+      },
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure.kind, FailureKind.AGENT_UNAVAILABLE);
+  assert.equal(result.failure.phase, "plan");
+  assert.equal(result.failure.cause.requiredDynamicRole, true);
+  assert.equal(calls.length, 0);
+  assert.ok(!events.some((event) => event.type === "provider_handoff"));
 });
 
 test("runJob applies configured phase fallback before provider execution", async () => {

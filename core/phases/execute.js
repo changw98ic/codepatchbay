@@ -32,6 +32,7 @@ Rules:
 
 export async function runExecute(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const role = ctx.role || "executor";
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
   const cwd = sourcePath || cpbRoot;
 
@@ -48,13 +49,13 @@ export async function runExecute(ctx) {
     project,
     jobId,
     phase: "execute",
-    role: "executor",
+    role,
     agent: resolvedAgent.agent,
     prompt,
   });
 
   const agentResult = await runAgent({
-    role: "executor",
+    role,
     ...resolvedAgent,
     project,
     jobId,
@@ -204,7 +205,8 @@ Execute the implementation. Make code changes as needed.${retrySection}`;
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.executor || ctx.agent || fallback;
+  const role = ctx.role || "executor";
+  const raw = ctx.agents?.[role] || ctx.agents?.executor || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

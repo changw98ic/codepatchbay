@@ -92,6 +92,13 @@ export function jobToPipelineState(job) {
     runningNodes: job.runningNodes ?? [],
     blockedNodes: job.blockedNodes ?? [],
     nodes: projectDagNodes(job),
+    workflowDag: job.workflowDag ?? null,
+    riskMap: job.riskMap ?? null,
+    riskLevel: job.riskLevel ?? job.riskMap?.riskLevel ?? null,
+    verificationDepth: job.verificationDepth ?? job.riskMap?.verificationDepth ?? null,
+    adversarialRequired: job.adversarialRequired ?? job.riskMap?.adversarialRequired ?? false,
+    dynamicAgentPlan: job.dynamicAgentPlan ?? null,
+    adversarialVerdict: job.adversarialVerdict ?? null,
   };
 }
 
@@ -205,6 +212,9 @@ export function jobToQueueRow(job) {
     redirectContext: job.redirectContext ?? null,
     failureCode: job.failureCode ?? null,
     failurePhase: job.failurePhase ?? null,
+    riskLevel: job.riskLevel ?? job.riskMap?.riskLevel ?? null,
+    verificationDepth: job.verificationDepth ?? job.riskMap?.verificationDepth ?? null,
+    adversarialRequired: job.adversarialRequired ?? job.riskMap?.adversarialRequired ?? false,
   };
 }
 

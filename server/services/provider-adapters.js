@@ -45,37 +45,6 @@ register("claude", {
   parseResetTime: (msg) => parseResetTime(msg, "UTC"),
 });
 
-register("claude:kimi-k2.6", {
-  region: "cn",
-  timezone: "Asia/Shanghai",
-  quotaPolicy: {
-    type: "5h-window",
-    description: "Kimi 5-hour usage window, weekly cap",
-    windowHours: 5,
-  },
-  parseLimitError({ error, stderr }) {
-    const msg = `${error?.message || ""}\n${stderr || ""}`;
-    if (/weekly|week.?limit/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "weekly_exhausted",
-        confidence: 0.9,
-        reason: msg.slice(0, 200),
-      };
-    }
-    if (/window|quota|exhaust|5.?hour/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "window_exhausted",
-        confidence: 0.9,
-        reason: msg.slice(0, 200),
-      };
-    }
-    return null;
-  },
-  parseResetTime: (msg) => parseResetTime(msg, "Asia/Shanghai"),
-});
-
 register("claude:mimo-v2.5pro", {
   region: "cn",
   timezone: "Asia/Shanghai",
@@ -121,12 +90,12 @@ register("generic", {
  * Get the adapter for a provider key.
  * Tries exact match first, then falls back to "generic".
  *
- * @param {string} providerKey - e.g. "claude", "claude:kimi-k2.6", "codex"
+ * @param {string} providerKey - e.g. "claude", "claude:mimo-v2.5pro", "codex"
  * @returns {object} adapter
  */
 export function getProviderAdapter(providerKey) {
   if (adapters.has(providerKey)) return adapters.get(providerKey);
-  // Try agent-level fallback (e.g. "claude:kimi-k2.6" → "claude")
+  // Try agent-level fallback (e.g. "claude:mimo-v2.5pro" -> "claude")
   const agent = providerKey.split(":")[0];
   if (adapters.has(agent)) return adapters.get(agent);
   return adapters.get("generic");

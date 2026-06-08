@@ -8,12 +8,13 @@
 
 Claude Dynamic Workflows 的关键启发是：workflow 不应该是静态 prompt 串，而应该在运行时根据任务、项目结构、风险和验证结果动态生成执行图。
 
-CPB 当前已经具备队列、provider 池、workflow phase、retry/remediation、verify verdict、event store 和 CodeGraph 注入基础，但还缺四件事：
+CPB 当前已经具备队列、provider 池、workflow phase、retry/remediation、verify verdict、event store 和 CodeGraph 注入基础，但还缺五件事：
 
 1. 项目注册时形成稳定的代码理解基线。
 2. 每个任务执行前生成 task-level RiskMap。
 3. 用 DAG 表达任务依赖和可并行节点，而不是固定 phase 数组。
 4. 在 `verify` 之后根据风险执行 `adversarial_verify`。
+5. 让 orchestrator 拥有常驻 control-plane ACP，用于维护调度语境、失败诊断和 provider 健康摘要。
 
 ## 已确认决策
 
@@ -128,6 +129,26 @@ orchestrator 的职责边界：
 
 风险判断属于 `prepare_task` / RiskMap service。验证深度属于 DAG node metadata。
 
+### 8. Orchestrator 常驻 control-plane ACP
+
+orchestrator 应该拥有一个常驻的 supervisor ACP session，但它不是 worker，也不直接执行代码修改。
+
+这个 resident supervisor 的职责是维护控制面语境，而不是替代确定性调度：
+
+1. 解释 Project Capability Map、RiskMap、DAG 和 Dynamic Agent Plan 的控制面含义。
+2. 维护 provider health、rate-limit、stale worker、失败模式和 retry/remediation 建议的摘要。
+3. 在复杂失败、长时间无进展、provider 退化、adversarial fail 或人类 reject 后给出诊断建议。
+4. 为 `prepare_task`、scheduler、reconciler 提供缓存的 advisory state。
+5. 将 supervisor 决策写入 durable state，便于审查和回放。
+
+边界要求：
+
+1. deterministic scheduler 仍然负责最终调度决定。
+2. resident supervisor 不在每个 tick 上同步调用，不阻塞普通 claim hot path。
+3. supervisor ACP 必须和 worker ACP pool 隔离，不默认占用 planner/executor/verifier 的 provider slot。
+4. supervisor 输出必须经过 schema 校验；无效、超时或不可用时系统走确定性 fallback。
+5. supervisor 不能修改 RiskMap 或代码，只能写控制面建议、诊断和健康摘要。
+
 ## 目标架构产物
 
 | 产物 | 存储/暴露建议 | 用途 |
@@ -137,6 +158,7 @@ orchestrator 的职责边界：
 | Workflow DAG | job metadata + event store | 节点依赖、ready 状态、重试路径 |
 | Dynamic Agent Plan | job metadata | agent role/provider/model/independence 要求 |
 | Adversarial Verdict | artifact + event store | 独立对抗性验证结果 |
+| Orchestrator Supervisor State | hub runtime state + supervisor decisions | 常驻控制面语境、provider 健康、失败诊断和 advisory 调度建议 |
 
 ## PR 拆分
 
@@ -278,6 +300,30 @@ orchestrator 的职责边界：
 2. 一次 CodeGraph unavailable 任务被阻断。
 3. 一次 adversarial fail 成功进入 retry/remediation。
 
+Runbook: [DW-08 Migration Runbook](dw08-migration-runbook.md) covers the `index_unavailable` to `codegraph_unavailable` and `WORKCPBS` to `WORKFLOWS` migration.
+
+### DW-09: Resident orchestrator supervisor ACP
+
+目标：让常驻 orchestrator 拥有一个 control-plane ACP session，用于维护调度语境、provider 健康、失败诊断和 retry/remediation/adversarial 的 advisory state。
+
+范围：
+
+1. 将现有 lazy `AcpSupervisor` 提升为 resident supervisor lifecycle。
+2. orchestrator 启动时初始化 supervisor ACP，并记录 heartbeat、session id、provider key、健康状态和最近活动。
+3. supervisor ACP 使用独立 control-plane budget / lease，不默认占用 worker provider pool 的 planner/executor/verifier slots。
+4. supervisor 定期或事件驱动刷新 provider health、stale worker、failed target、RiskMap/DAG/adversarial 摘要。
+5. FailureRouter / Reconciler / prepare_task 读取 supervisor advisory state，但最终执行必须经过 deterministic policy 和 schema 校验。
+6. supervisor 决策、失败诊断、invalid output、timeout 和 fallback 都写入 durable state。
+
+验收：
+
+1. `hub-orch start` 后能看到 resident supervisor ACP health，不需要等失败发生才 lazy init。
+2. supervisor down / timeout / invalid JSON 时，orchestrator 继续 deterministic 调度并记录 fallback。
+3. control-plane ACP 不减少 worker provider pool 可用 slot。
+4. 复杂失败会保存 supervisor decision，并能被 Reconciler 用作 retry/remediation/adversarial context。
+5. provider health 摘要来自真实 ACP pool / quota / lease 状态，不靠静态配置猜测。
+6. tests 覆盖 lifecycle、fallback、schema validation、provider-slot isolation 和 failure diagnosis handoff。
+
 ## 入队 CPB 任务口径
 
 每个 CPB 任务都应包含以下约束：
@@ -288,6 +334,7 @@ orchestrator 的职责边界：
 4. 不恢复 `project-code-index` / `repo-graph`。
 5. 不用 fake ACP/provider 成功作为产品验收。
 6. 添加聚焦测试，并报告未覆盖风险。
+7. 对 control-plane ACP 和 worker ACP pool 做资源隔离，不让 supervisor 吞掉 worker 并发。
 
 ## 里程碑顺序
 
@@ -297,5 +344,6 @@ orchestrator 的职责边界：
 2. DW-03 和 DW-04 建立 DAG runtime。
 3. DW-05 和 DW-06 建立动态 agent 与对抗性验证。
 4. DW-07 和 DW-08 做可观测性和真实验收。
+5. DW-09 建立 resident orchestrator supervisor ACP。它可以在 DW-01/DW-02 后并行推进，但不能替代 `prepare_task`、RiskMap 或 deterministic scheduler。
 
 DW-04 之前不追求 provider 池吃满。没有足够 ready nodes 时，DAG 本身不会产生并行度。真正目标是：有并行节点时 provider 上限成为唯一调度瓶颈。

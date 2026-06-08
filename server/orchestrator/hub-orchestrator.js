@@ -8,11 +8,18 @@ import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
 import { createLogger } from "../../shared/logger.js";
 import { resolveExecutorRoot } from "../services/executor-root.js";
+import { resolveHubConcurrencyLimits } from "../services/concurrency-limits.js";
+import { getProject } from "../services/hub-registry.js";
 
 const TICK_MS = 2_000;
 const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+
+function providerAgentForEntry(entry) {
+  const agentSpec = entry?.metadata?.agents?.executor || entry?.metadata?.agents?.default || {};
+  return agentSpec.agent || "claude";
+}
 
 export function normalizedSourceContext(candidate) {
   const metadata = candidate?.metadata || {};
@@ -80,7 +87,7 @@ export function normalizedSourceContext(candidate) {
 }
 
 export class HubOrchestrator {
-  constructor(hubRoot, cpbRoot, { executorRoot } = {}) {
+  constructor(hubRoot, cpbRoot, { executorRoot, acpSupervisor = null } = {}) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.executorRoot = executorRoot || resolveExecutorRoot({ env: process.env, fallbackRoot: cpbRoot });
@@ -94,19 +101,21 @@ export class HubOrchestrator {
     this.scheduler = new Scheduler(hubRoot, {
       assignmentStore: this.assignmentStore,
       workerStore: this.workerStore,
+      cpbRoot,
+      getProjectFn: getProject,
+      providerCapacityFn: (agentKey, entry) => this._providerCapacity(agentKey, entry),
     });
     this.workerSupervisor = new WorkerSupervisor(hubRoot, cpbRoot, {
       workerStore: this.workerStore,
       executorRoot: this.executorRoot,
     });
 
-    // P1-2: supervisor gets lazy pool — only used when pool is actually available
-    const acpSupervisor = new AcpSupervisor({ cpbRoot, hubRoot });
+    this.acpSupervisor = acpSupervisor || new AcpSupervisor({ cpbRoot, hubRoot });
     const readModeFn = async () => {
       const { readHubConfig: rhc, readSchedulerConfig: rsc } = await import("../services/agent-config.js");
       return rsc(await rhc(hubRoot)).mode;
     };
-    const failureRouter = new FailureRouter(acpSupervisor, { readModeFn });
+    const failureRouter = new FailureRouter(this.acpSupervisor, { readModeFn });
 
     this.reconciler = new Reconciler(hubRoot, {
       assignmentStore: this.assignmentStore,
@@ -138,6 +147,7 @@ export class HubOrchestrator {
     // Init stores
     await this.assignmentStore.init();
     await this.workerStore.init();
+    await this._startSupervisor();
 
     // Full reconciliation on startup
     await this.reconciler.recoverRuntime();
@@ -162,6 +172,16 @@ export class HubOrchestrator {
    */
   async waitUntilStopped() {
     if (this._stopped) await this._stopped;
+  }
+
+  async _startSupervisor() {
+    if (!this.acpSupervisor || typeof this.acpSupervisor.start !== "function") return null;
+    try {
+      return await this.acpSupervisor.start();
+    } catch (err) {
+      this.log.warn(`resident supervisor start failed: ${err.message}`);
+      return null;
+    }
   }
 
   _scheduleTick() {
@@ -205,88 +225,147 @@ export class HubOrchestrator {
     // Reconcile existing assignments (includes finalize for completed attempts)
     await this.reconciler.reconcileAssignments();
 
-    // Try to schedule new work
-    const candidate = await this.scheduler.nextCandidate();
-    if (!candidate) return { idle: true };
-    const sLog = this.log.child({ traceId: candidate.id });
-    sLog.info(`scheduling entry ${candidate.id} for project ${candidate.projectId}`);
+    // Try to schedule new work — batch of candidates for parallel dispatch
+    const candidates = await this.scheduler.nextCandidates(Infinity);
+    if (candidates.length === 0) return { idle: true };
 
-    // Full dispatch chain: create assignment → ensure worker → create attempt → write inbox
-    // Fence: ensure lock still held before scheduling
-    if (!(await this.leaderLock.stillHeld())) {
-      this.log.warn("leader lock lost before schedule");
-      await this.stop();
-      return { stopped: true, reason: "leader lock lost" };
+    const dispatched = [];
+    const dispatchFailures = [];
+
+    for (const candidate of candidates) {
+      const sLog = this.log.child({ traceId: candidate.id });
+      sLog.info(`scheduling entry ${candidate.id} for project ${candidate.projectId}`);
+
+      try {
+        // Fence: ensure lock still held before scheduling
+        if (!(await this.leaderLock.stillHeld())) {
+          this.log.warn("leader lock lost before schedule");
+          await this.stop();
+          return { stopped: true, reason: "leader lock lost", dispatched };
+        }
+
+        const assignment = await this.assignmentStore.getOrCreateAssignmentForEntry({
+          entryId: candidate.id,
+          projectId: candidate.projectId,
+          task: candidate.description || candidate.metadata?.task || "",
+          sourcePath: candidate.sourcePath || candidate.metadata?.sourcePath,
+          workflow: candidate.metadata?.workflow || "standard",
+          planMode: candidate.metadata?.planMode || "full",
+          sourceContext: normalizedSourceContext(candidate),
+          metadata: candidate.metadata || {},
+        });
+
+        // Find idle worker or start a new one
+        const existingWorker = await this.scheduler.findIdleWorker(candidate.projectId);
+        const worker = await this.workerSupervisor.ensureWorkerFor(assignment, existingWorker);
+
+        // Create attempt with real epoch
+        const epoch = this.leaderLock.getEpoch();
+        const attempt = await this.assignmentStore.createAttempt(assignment.assignmentId, {
+          workerId: worker.workerId,
+          orchestratorEpoch: epoch,
+        });
+
+        // Fence: ensure lock still held before writing inbox
+        if (!(await this.leaderLock.stillHeld())) {
+          this.log.warn("leader lock lost before write inbox");
+          await this.stop();
+          return { stopped: true, reason: "leader lock lost", dispatched };
+        }
+
+        // Write flattened inbox payload
+        await this.workerStore.writeInbox(worker.workerId, {
+          assignmentId: assignment.assignmentId,
+          entryId: assignment.entryId,
+          projectId: assignment.projectId,
+          task: assignment.task,
+          sourcePath: assignment.sourcePath,
+          workflow: assignment.workflow,
+          planMode: assignment.planMode,
+          sourceContext: assignment.sourceContext,
+          metadata: assignment.metadata || {},
+          attempt: attempt.attempt,
+          attemptToken: attempt.attemptToken,
+          orchestratorEpoch: attempt.orchestratorEpoch,
+        });
+
+        // Fence: ensure lock still held before updating queue
+        if (!(await this.leaderLock.stillHeld())) {
+          this.log.warn("leader lock lost before queue update");
+          await this.stop();
+          return { stopped: true, reason: "leader lock lost", dispatched };
+        }
+
+        // Update queue entry
+        const { updateEntry } = await import("../services/hub-queue.js");
+        await updateEntry(this.hubRoot, candidate.id, {
+          status: "scheduled",
+          claimedBy: worker.workerId,
+          claimedAt: new Date().toISOString(),
+        });
+
+        // Update worker
+        await this.workerStore.updateWorker(worker.workerId, {
+          status: "assigned",
+          currentAssignmentId: assignment.assignmentId,
+        });
+
+        sLog.info(`dispatched ${assignment.assignmentId} to worker ${worker.workerId}`);
+        dispatched.push({ entryId: candidate.id, assignmentId: assignment.assignmentId });
+      } catch (err) {
+        sLog.error(`dispatch failed for ${candidate.id}: ${err.message}`);
+        dispatchFailures.push({
+          entryId: candidate.id,
+          error: err.message,
+          retryable: true,
+          timestamp: new Date().toISOString(),
+        });
+        // Attach dispatch failure metadata to the entry so it's visible
+        try {
+          const { updateEntry } = await import("../services/hub-queue.js");
+          await updateEntry(this.hubRoot, candidate.id, {
+            metadata: {
+              dispatchFailure: {
+                error: err.message,
+                retryable: true,
+                timestamp: new Date().toISOString(),
+              },
+            },
+          });
+        } catch { /* best-effort metadata write */ }
+      }
     }
 
-    const assignment = await this.assignmentStore.getOrCreateAssignmentForEntry({
-      entryId: candidate.id,
-      projectId: candidate.projectId,
-      task: candidate.description || candidate.metadata?.task || "",
-      sourcePath: candidate.sourcePath || candidate.metadata?.sourcePath,
-      workflow: candidate.metadata?.workflow || "standard",
-      planMode: candidate.metadata?.planMode || "full",
-      sourceContext: normalizedSourceContext(candidate),
-      metadata: candidate.metadata || {},
-    });
-
-    // Find idle worker or start a new one (P0-1 fix: always proceeds even if no idle worker)
-    const existingWorker = await this.scheduler.findIdleWorker(candidate.projectId);
-    const worker = await this.workerSupervisor.ensureWorkerFor(assignment, existingWorker);
-
-    // Create attempt with real epoch
-    const epoch = this.leaderLock.getEpoch();
-    const attempt = await this.assignmentStore.createAttempt(assignment.assignmentId, {
-      workerId: worker.workerId,
-      orchestratorEpoch: epoch,
-    });
-
-    // Fence: ensure lock still held before writing inbox
-    if (!(await this.leaderLock.stillHeld())) {
-      this.log.warn("leader lock lost before write inbox");
-      await this.stop();
-      return { stopped: true, reason: "leader lock lost" };
+    if (dispatched.length > 0) {
+      return { scheduled: true, dispatched, dispatchFailures };
     }
-
-    // Write flattened inbox payload (P0-2 fix: attempt is number, attemptToken is top-level)
-    await this.workerStore.writeInbox(worker.workerId, {
-      assignmentId: assignment.assignmentId,
-      entryId: assignment.entryId,
-      projectId: assignment.projectId,
-      task: assignment.task,
-      sourcePath: assignment.sourcePath,
-      workflow: assignment.workflow,
-      planMode: assignment.planMode,
-      sourceContext: assignment.sourceContext,
-      metadata: assignment.metadata || {},
-      attempt: attempt.attempt,
-      attemptToken: attempt.attemptToken,
-      orchestratorEpoch: attempt.orchestratorEpoch,
-    });
-
-    // Fence: ensure lock still held before updating queue
-    if (!(await this.leaderLock.stillHeld())) {
-      this.log.warn("leader lock lost before queue update");
-      await this.stop();
-      return { stopped: true, reason: "leader lock lost" };
+    if (dispatchFailures.length > 0) {
+      return { scheduled: false, dispatched: [], dispatchFailures };
     }
+    return { idle: true };
+  }
 
-    // Update queue entry
-    const { updateEntry } = await import("../services/hub-queue.js");
-    await updateEntry(this.hubRoot, candidate.id, {
-      status: "scheduled",
-      claimedBy: worker.workerId,
-      claimedAt: new Date().toISOString(),
-    });
-
-    // Update worker
-    await this.workerStore.updateWorker(worker.workerId, {
-      status: "assigned",
-      currentAssignmentId: assignment.assignmentId,
-    });
-
-    sLog.info(`dispatched ${assignment.assignmentId} to worker ${worker.workerId}`);
-    return { scheduled: true, assignmentId: assignment.assignmentId };
+  /**
+   * Provider capacity for one candidate provider.
+   * Returns provider-scoped slots so Scheduler can project same-tick
+   * dispatches before queue status writes make capacity visible.
+   */
+  async _providerCapacity(agentKey, entry = null) {
+    const providerKey = agentKey || providerAgentForEntry(entry);
+    const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot);
+    const total = hubLimits.acpProviderMax;
+    const { listQueue } = await import("../services/hub-queue.js");
+    const entries = await listQueue(this.hubRoot);
+    const active = entries.filter((e) => (
+      (e.status === "in_progress" || e.status === "scheduled") &&
+      providerAgentForEntry(e) === providerKey
+    )).length;
+    return {
+      providerKey,
+      active,
+      total,
+      available: Math.max(0, total - active),
+    };
   }
 
   _recordError(err) {
@@ -366,6 +445,9 @@ export class HubOrchestrator {
         unhealthy: workers.filter(w => w.status === "unhealthy").length,
         exited: workers.filter(w => w.status === "exited").length,
       },
+      supervisor: this.acpSupervisor && typeof this.acpSupervisor.status === "function"
+        ? this.acpSupervisor.status()
+        : null,
     };
   }
 }

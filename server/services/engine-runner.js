@@ -1,14 +1,33 @@
 import { runJob } from "../../core/engine/run-job.js";
-import { createJob, startPhase, completePhase, completeJob, failJob } from "./job-store.js";
+import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job-store.js";
 import { appendEvent } from "./event-store.js";
 import { getManagedAcpPool } from "./acp-pool.js";
 import { resolveHubRoot, getProject } from "./hub-registry.js";
 import { assertProviderAvailable } from "./provider-quota.js";
 import { getProviderAdapter } from "./provider-adapters.js";
+import { prepareTask } from "./riskmap-service.js";
 import {
   delegateMarkProviderUnavailable,
   delegateEnqueueProviderUsage,
 } from "./quota-delegate-client.js";
+
+function prepareTaskForEnv(env) {
+  if (env?.CPB_ACP_FAKE_ACP_COMMAND) {
+    return async () => ({
+      riskLevel: "low",
+      domains: ["test_fixture"],
+      highRiskFiles: [],
+      safetyBoundaries: [],
+      verificationDepth: "standard",
+      adversarialRequired: false,
+      adversarialFocus: [],
+      confidence: "high",
+      generatedAt: new Date().toISOString(),
+      source: { testFixture: true },
+    });
+  }
+  return prepareTask;
+}
 
 export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {}) {
   return {
@@ -17,7 +36,9 @@ export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {
     completePhase,
     completeJob,
     failJob,
+    blockJob,
     appendEvent,
+    prepareTask: prepareTaskForEnv(env),
     getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
     providerServices: {
       assertProviderAvailable,

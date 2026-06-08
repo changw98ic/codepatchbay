@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { defaultProjectRuntimeRoot, projectRuntimeRoot as resolveProjectRuntimeRoot } from "./runtime-root.js";
+import { generateProjectCapabilityMaps } from "./project-capability-map.js";
 
 const REGISTRY_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -166,6 +167,12 @@ function resolveProjectId(registry, preferredId, sourcePath) {
 
 export async function registerProject(hubRoot, input = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
+  const generatedMetadata = input.skipCodeGraphGate
+    ? {}
+    : await generateProjectCapabilityMaps({
+      cpbRoot: input.cpbRoot || sourcePath,
+      sourcePath,
+    });
   return await withRegistryLock(hubRoot, async () => {
     const registry = await loadRegistry(hubRoot);
     const id = resolveProjectId(registry, input.id || input.name, sourcePath);
@@ -191,6 +198,7 @@ export async function registerProject(hubRoot, input = {}) {
       metadata: {
         ...(existing.metadata || {}),
         ...(input.metadata || {}),
+        ...generatedMetadata,
       },
     };
 

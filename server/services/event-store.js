@@ -447,6 +447,14 @@ export function materializeJob(events) {
     sourceFingerprint: null,
     indexFreshness: null,
     planCache: null,
+    workflowDag: null,
+    dynamicAgentPlan: null,
+    adversarialVerdict: null,
+    riskMap: null,
+    riskLevel: null,
+    riskMapGeneratedAt: null,
+    verificationDepth: null,
+    adversarialRequired: false,
     routingFeedback: null,
     phaseAgentSelections: [],
     approval: null,
@@ -503,6 +511,62 @@ export function materializeJob(events) {
         state.planCache = {
           ...(state.planCache || {}),
           ...event,
+        };
+        break;
+      case "riskmap_generated":
+        state.riskMap = event.riskMap ?? {
+          riskLevel: event.riskLevel ?? null,
+          domains: event.domains ?? [],
+          highRiskFiles: event.highRiskFiles ?? [],
+          verificationDepth: event.verificationDepth ?? null,
+          adversarialRequired: Boolean(event.adversarialRequired),
+          adversarialFocus: event.adversarialFocus ?? [],
+          confidence: event.confidence ?? null,
+        };
+        state.riskLevel = event.riskLevel ?? state.riskMap?.riskLevel ?? null;
+        state.verificationDepth = event.verificationDepth ?? state.riskMap?.verificationDepth ?? null;
+        state.adversarialRequired = event.adversarialRequired ?? state.riskMap?.adversarialRequired ?? false;
+        state.riskMapGeneratedAt = event.ts ?? state.riskMap?.generatedAt ?? state.riskMapGeneratedAt;
+        break;
+      case "workflow_dag_materialized":
+        state.workflow = event.workflow ?? state.workflow;
+        state.planMode = event.planMode ?? state.planMode;
+        state.workflowDag = event.workflowDag ?? {
+          name: event.workflow ?? state.workflow,
+          nodes: event.nodes ?? [],
+          edges: event.edges ?? [],
+        };
+        {
+          const nodeIds = new Set(
+            (Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : [])
+              .map((node) => node?.id)
+              .filter(Boolean),
+          );
+          state.completedNodes = state.completedNodes.filter((nodeId) => nodeIds.has(nodeId));
+          state.runningNodes = state.runningNodes.filter((nodeId) => nodeIds.has(nodeId));
+          state.blockedNodes = state.blockedNodes.filter((nodeId) => nodeIds.has(nodeId));
+        }
+        for (const node of Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []) {
+          if (node?.id && !state.nodeStates[node.id]) {
+            _updateNodeState(state, node.id, {
+              status: "pending",
+              phase: node.phase ?? node.id,
+            });
+          }
+        }
+        break;
+      case "dynamic_agent_plan_generated":
+        state.dynamicAgentPlan = event.dynamicAgentPlan ?? state.dynamicAgentPlan;
+        state.riskLevel = event.riskLevel ?? state.dynamicAgentPlan?.riskLevel ?? state.riskLevel;
+        state.adversarialRequired = event.adversarialRequired ?? state.dynamicAgentPlan?.adversarialRequired ?? state.adversarialRequired;
+        break;
+      case "adversarial_verdict":
+        state.adversarialVerdict = {
+          verdict: event.verdict ?? null,
+          artifact: event.artifact ?? null,
+          status: event.status ?? event.verdict?.status ?? null,
+          reason: event.reason ?? event.verdict?.reason ?? null,
+          at: event.ts ?? null,
         };
         break;
       case "executor_routing_feedback":
@@ -707,6 +771,8 @@ export function materializeJob(events) {
         state.status = "blocked";
         state.leaseId = null;
         state.blockedReason = event.reason ?? event.blockedReason ?? null;
+        state.failureCode = event.code ?? event.kind ?? state.failureCode;
+        state.failureCause = event.cause ?? state.failureCause;
         terminal = true;
         break;
       case "job_failed":

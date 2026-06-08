@@ -19,6 +19,7 @@ const INITIAL_SUM_SOURCE = "export function sum(a, b) {\n  return a - b;\n}\n";
 const FIXED_SUM_SOURCE = "export function sum(a, b) {\n  return a + b;\n}\n";
 const SUM_TEST_SOURCE = "import assert from 'node:assert/strict';\nimport { sum } from './sum.js';\n\nassert.equal(sum(2, 3), 5);\nassert.equal(sum(-1, 4), 3);\nconsole.log('ok - sum handles positive and negative integers');\n";
 const STORY_ORDER = ["plan", "diff", "tests", "verdict", "risk"];
+const DEMO_TEST_TIMEOUT_MS = Number(process.env.CPB_DEMO_TEST_TIMEOUT_MS || 30_000);
 
 function nowSafe() {
   return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -88,7 +89,7 @@ async function runToyTests(sourcePath) {
   try {
     const result = await execFileAsync(process.execPath, ["src/sum.test.js"], {
       cwd: sourcePath,
-      timeout: 10_000,
+      timeout: DEMO_TEST_TIMEOUT_MS,
     });
     return {
       command,

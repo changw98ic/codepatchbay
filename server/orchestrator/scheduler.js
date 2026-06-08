@@ -12,21 +12,48 @@ import {
   recoverStaleInProgressAsync,
 } from "../services/queue-rules.js";
 import { readHubConfig, readSchedulerConfig } from "../services/agent-config.js";
+import { ensureIndexFresh } from "../services/index-freshness.js";
+import { projectCapabilityMapGate } from "../services/project-capability-map.js";
+import { checkCodeGraphReady } from "../services/codegraph-readiness.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function providerAgentForEntry(entry) {
+  const agentSpec = entry.metadata?.agents?.executor || entry.metadata?.agents?.default || {};
+  return agentSpec.agent || "claude";
+}
+
 export class Scheduler {
+  /**
+   * @param {string} hubRoot
+   * @param {object} opts
+   * @param {object} opts.assignmentStore
+   * @param {object} opts.workerStore
+   * @param {string} [opts.cpbRoot]
+   * @param {number} [opts.maxActivePerProject]
+   * @param {Function} [opts.getProjectFn]
+   * @param {Function} [opts.providerCapacityFn] - async (agentKey?, entry?) => { available: number, total: number } | boolean
+   *   Object return values apply aggregate provider capacity; boolean return values filter per entry/provider.
+   */
   constructor(hubRoot, {
     assignmentStore,
     workerStore,
+    cpbRoot = null,
     maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
     getProjectFn = null,
+    providerCapacityFn = null,
   }) {
     this.hubRoot = hubRoot;
+    this.cpbRoot = cpbRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
     this.maxActivePerProject = positiveInt(maxActivePerProject, DEFAULT_MAX_ACTIVE_PER_PROJECT);
     this.getProjectFn = getProjectFn;
+    this.providerCapacityFn = providerCapacityFn;
   }
 
   async _readMode() {
@@ -35,14 +62,13 @@ export class Scheduler {
   }
 
   /**
-   * Find the next eligible pending queue entry.
-   * Stale recovery goes through shared queue-rules (assignment-aware).
+   * Recover stale entries and collect the pending pool.
+   * Shared by nextCandidate() and nextCandidates().
    */
-  async nextCandidate() {
+  async _preparePendingPool() {
     const { listQueue, updateEntry } = await import("../services/hub-queue.js");
     const allEntries = await listQueue(this.hubRoot);
 
-    // Recover stale entries — shared rule checks assignment state before resetting
     const { recovered, refreshed } = await recoverStaleInProgressAsync(allEntries, {
       claimTimeoutMs: CLAIM_TIMEOUT_MS,
       assignmentStore: this.assignments,
@@ -55,50 +81,283 @@ export class Scheduler {
       if (entry) await updateEntry(this.hubRoot, id, { claimedAt: entry.claimedAt });
     }
 
-    const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
-      maxActivePerProject: this.maxActivePerProject,
+    return allEntries;
+  }
+
+  /**
+   * Filter pending entries by DAG dependencies.
+   * An entry is DAG-ready when all its declared dependencies are completed.
+   */
+  _filterDagReady(pending, allEntries) {
+    const completedIds = new Set(
+      allEntries.filter(e => e.status === "completed").map(e => e.id),
+    );
+    return pending.filter(entry => {
+      const deps = entry.metadata?.dependsOn;
+      if (!deps || !Array.isArray(deps) || deps.length === 0) return true;
+      return deps.every(depId => completedIds.has(depId));
     });
+  }
 
-    // Compute active mutating count per project
-    const activeMutatingByProject = {};
-    for (const entry of allEntries) {
-      if (isActiveEntry(entry) && isMutatingEntry(entry)) {
-        activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
-      }
-    }
+  /**
+   * Filter by provider capacity when providerCapacityFn is configured.
+   * Returns entries that fit within remaining provider slots.
+   * When provider is full, returns empty — queue, don't fail.
+   */
+  _filterByProviderCapacity(pending) {
+    return pending;
+  }
 
-    const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
-
-    // Filter eligible pending entries
-    const pending = allEntries
-      .filter(e => e.status === "pending")
-      .filter(e => {
-        if (isMutatingEntry(e)) {
-          const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
-          if (projectLimit > 0 && (activeMutatingByProject[e.projectId] || 0) >= projectLimit) {
-            return false;
-          }
+  /**
+   * Filter by per-project limits when NOT using provider-only capacity.
+   */
+  _filterByProjectCapacity(pending, activeMutatingByProject, projectLimits, hubLimits) {
+    return pending.filter(e => {
+      if (isMutatingEntry(e)) {
+        const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
+        if (projectLimit > 0 && (activeMutatingByProject[e.projectId] || 0) >= projectLimit) {
+          return false;
         }
-        return true;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Find the next eligible pending queue entry.
+   * Stale recovery goes through shared queue-rules (assignment-aware).
+   */
+  async nextCandidate() {
+    const candidates = await this.nextCandidates(1);
+    return candidates[0] || null;
+  }
+
+  /**
+   * Find up to `batchSize` eligible pending queue entries.
+   * DAG-ready: entries with unmet dependencies are excluded.
+   * Provider-only capacity: when providerCapacityFn is set, scheduling
+   * is gated by provider slots, not per-project caps.
+   */
+  async nextCandidates(batchSize = Infinity) {
+    const allEntries = await this._preparePendingPool();
+    let pending = allEntries.filter(e => e.status === "pending");
+
+    // DAG dependency gate
+    pending = this._filterDagReady(pending, allEntries);
+    if (pending.length === 0) return [];
+
+    pending = await this._applyProjectReadinessGate(pending);
+    if (pending.length === 0) return [];
+
+    if (!this.providerCapacityFn) {
+      const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
+        maxActivePerProject: this.maxActivePerProject,
       });
-
-    if (pending.length === 0) return null;
-
-    const mode = await this._readMode();
-
-    if (mode === "smart") {
-      return this._smartSelect(pending, { activeMutatingByProject, projectLimits, hubLimits, allEntries });
+      const activeMutatingByProject = {};
+      for (const entry of allEntries) {
+        if (isActiveEntry(entry) && isMutatingEntry(entry)) {
+          activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
+        }
+      }
+      const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
+      pending = this._filterByProjectCapacity(pending, activeMutatingByProject, projectLimits, hubLimits);
     }
 
-    // Default mode: sort by priority, then by creation time
-    pending.sort((a, b) => {
-      const pa = priorityScore(a.priority);
-      const pb = priorityScore(b.priority);
-      if (pa !== pb) return pa - pb;
-      return a.createdAt.localeCompare(b.createdAt);
-    });
+    if (pending.length === 0) return [];
 
-    return pending[0];
+    // Sort
+    const mode = await this._readMode();
+    if (mode === "smart") {
+      const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
+        maxActivePerProject: this.maxActivePerProject,
+      });
+      const activeMutatingByProject = {};
+      for (const entry of allEntries) {
+        if (isActiveEntry(entry) && isMutatingEntry(entry)) {
+          activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
+        }
+      }
+      const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
+      const selected = await this._smartSelect(pending, { activeMutatingByProject, projectLimits, hubLimits, allEntries });
+      pending = selected ? [selected] : [];
+    } else {
+      pending.sort((a, b) => {
+        const pa = priorityScore(a.priority);
+        const pb = priorityScore(b.priority);
+        if (pa !== pb) return pa - pb;
+        return a.createdAt.localeCompare(b.createdAt);
+      });
+    }
+
+    if (this.providerCapacityFn) {
+      pending = await this._applyProviderCapacityGate(pending, allEntries, batchSize);
+    }
+
+    return pending.slice(0, batchSize);
+  }
+
+  async _applyProjectReadinessGate(pending) {
+    if (!this.getProjectFn) return pending;
+    const eligible = [];
+    for (const entry of pending) {
+      const project = await this.getProjectFn(this.hubRoot, entry.projectId);
+      if (!project) {
+        eligible.push(entry);
+        continue;
+      }
+
+      if (!project.sourcePath || !project.projectRuntimeRoot) {
+        await this._markCodegraphUnavailable(entry, {
+          indexFreshness: {
+            available: false,
+            indexDirty: true,
+            indexStale: false,
+            worktreeDirty: false,
+            dirtyReasons: ["missing_source_or_runtime_root"],
+          },
+        });
+        continue;
+      }
+
+      const capabilityGate = projectCapabilityMapGate(project);
+      if (!capabilityGate.available) {
+        await this._markCodegraphUnavailable(entry, {
+          capabilityMap: capabilityGate,
+          indexFreshness: {
+            available: false,
+            indexDirty: true,
+            indexStale: false,
+            worktreeDirty: false,
+            dirtyReasons: [capabilityGate.reason],
+          },
+        });
+        continue;
+      }
+
+      let codegraphReadiness;
+      try {
+        codegraphReadiness = await checkCodeGraphReady({
+          cpbRoot: this.cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
+          sourcePath: project.sourcePath,
+        });
+      } catch (err) {
+        const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
+        await this._markCodegraphUnavailable(entry, {
+          codegraphReadiness: {
+            available: false,
+            reason,
+            details: err?.details || null,
+          },
+          indexFreshness: {
+            available: false,
+            indexDirty: true,
+            indexStale: false,
+            worktreeDirty: false,
+            dirtyReasons: [reason],
+          },
+        });
+        continue;
+      }
+
+      const fresh = await ensureIndexFresh(project);
+      if (!fresh.available) {
+        await this._markCodegraphUnavailable(entry, {
+          indexFreshness: {
+            available: false,
+            indexDirty: fresh.indexDirty ?? true,
+            indexStale: fresh.indexStale ?? false,
+            worktreeDirty: fresh.worktreeDirty ?? false,
+            dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
+          },
+        });
+        continue;
+      }
+
+      const nextMetadata = {
+        ...entry.metadata,
+        codegraphReadiness: {
+          available: true,
+          sourcePath: codegraphReadiness.sourcePath,
+          indexFile: codegraphReadiness.indexFile,
+        },
+        indexSnapshot: {
+          indexSnapshotId: fresh.indexSnapshotId,
+          sourceFingerprint: fresh.sourceFingerprint,
+          indexFreshness: {
+            available: true,
+            indexDirty: false,
+            indexStale: false,
+            worktreeDirty: fresh.worktreeDirty ?? false,
+            dirtyReasons: [],
+          },
+        },
+      };
+      const { updateEntry } = await import("../services/hub-queue.js");
+      await updateEntry(this.hubRoot, entry.id, { metadata: nextMetadata });
+      entry.metadata = nextMetadata;
+      entry.indexSnapshotId = fresh.indexSnapshotId;
+      eligible.push(entry);
+    }
+    return eligible;
+  }
+
+  async _markCodegraphUnavailable(entry, metadataPatch) {
+    const metadata = { ...(entry.metadata || {}), ...metadataPatch };
+    const { updateEntry } = await import("../services/hub-queue.js");
+    await updateEntry(this.hubRoot, entry.id, {
+      status: "codegraph_unavailable",
+      updatedAt: nowIso(),
+      metadata,
+    });
+    entry.status = "codegraph_unavailable";
+    entry.updatedAt = nowIso();
+    entry.metadata = metadata;
+  }
+
+  /**
+   * Apply provider capacity gate.
+   * Supports the aggregate capacity contract and a per-entry boolean contract.
+   * Returns up to `batchSize` eligible entries across all providers.
+   */
+  async _applyProviderCapacityGate(pending, allEntries, batchSize) {
+    const first = pending[0];
+    if (!first) return [];
+
+    const capacity = await this.providerCapacityFn(providerAgentForEntry(first), first);
+    if (typeof capacity === "boolean") {
+      const eligible = [];
+      if (capacity) eligible.push(first);
+      for (const entry of pending.slice(1)) {
+        if (eligible.length >= batchSize) break;
+        if (await this.providerCapacityFn(providerAgentForEntry(entry), entry)) {
+          eligible.push(entry);
+        }
+      }
+      return eligible.slice(0, batchSize);
+    }
+
+    const eligible = [];
+    const projectedByProvider = new Map();
+    const fits = async (entry, prechecked = null) => {
+      const provider = providerAgentForEntry(entry);
+      const cap = prechecked || await this.providerCapacityFn(provider, entry);
+      if (!cap || typeof cap !== "object") return false;
+      const providerKey = cap.providerKey || provider;
+      const available = Number(cap.available ?? cap.total ?? 0);
+      const total = Number(cap.total ?? available);
+      const projected = projectedByProvider.get(providerKey) || 0;
+      const remaining = Math.min(available, total) - projected;
+      if (remaining <= 0) return false;
+      projectedByProvider.set(providerKey, projected + 1);
+      return true;
+    };
+
+    if (await fits(first, capacity)) eligible.push(first);
+    for (const entry of pending.slice(1)) {
+      if (eligible.length >= batchSize) break;
+      if (await fits(entry)) eligible.push(entry);
+    }
+    return eligible.slice(0, batchSize);
   }
 
   /**

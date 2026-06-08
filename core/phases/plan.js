@@ -27,6 +27,7 @@ Rules:
 
 export async function runPlan(ctx) {
   const { task, project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const role = ctx.role || "planner";
 
   // Build prompt — reuse existing prompt-builder if available, else minimal
   const prompt = await buildPlanPrompt(ctx) + JSON_INSTRUCTION;
@@ -35,13 +36,13 @@ export async function runPlan(ctx) {
     project,
     jobId,
     phase: "plan",
-    role: "planner",
+    role,
     agent: resolvedAgent.agent,
     prompt,
   });
 
   const agentResult = await runAgent({
-    role: "planner",
+    role,
     ...resolvedAgent,
     project,
     jobId,
@@ -168,7 +169,8 @@ The plan should include:
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.planner || ctx.agent || fallback;
+  const role = ctx.role || "planner";
+  const raw = ctx.agents?.[role] || ctx.agents?.planner || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

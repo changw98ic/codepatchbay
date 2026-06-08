@@ -1,14 +1,67 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+const DEFAULT_SUPERVISOR_AGENT = "codex";
+const DEFAULT_SUPERVISOR_TIMEOUT_MS = 120_000;
+const SUPERVISOR_POOL_SCOPE = "control-plane";
+
+function resolveSupervisorAgent(env = process.env) {
+  return (
+    env.CPB_ACP_SUPERVISOR_AGENT ||
+    env.CPB_SUPERVISOR_AGENT ||
+    DEFAULT_SUPERVISOR_AGENT
+  );
+}
+
+function resolveSupervisorProviderKey(agent, env = process.env) {
+  return (
+    env.CPB_ACP_SUPERVISOR_PROVIDER_KEY ||
+    env.CPB_SUPERVISOR_PROVIDER_KEY ||
+    `${agent}:${SUPERVISOR_POOL_SCOPE}`
+  );
+}
+
 export class AcpSupervisor {
-  constructor({ cpbRoot, hubRoot, pool }) {
+  constructor({ cpbRoot, hubRoot, pool, supervisorAgent, supervisorProviderKey, timeoutMs, env = process.env }) {
     this.cpbRoot = cpbRoot;
     this.hubRoot = hubRoot;
     this.pool = pool || null;
+    this.supervisorAgent = supervisorAgent || resolveSupervisorAgent(env);
+    this.supervisorProviderKey = supervisorProviderKey || resolveSupervisorProviderKey(this.supervisorAgent, env);
+    this.timeoutMs = timeoutMs || DEFAULT_SUPERVISOR_TIMEOUT_MS;
     this._poolPromise = null;
     this.decisionsDir = path.join(hubRoot, "supervisor", "decisions");
+    this.statePath = path.join(hubRoot, "supervisor", "state.json");
+    this.state = this._baseState("not_started");
+  }
+
+  _baseState(status = "not_started") {
+    return {
+      kind: "resident_supervisor",
+      status,
+      healthy: status === "healthy",
+      agent: this.supervisorAgent,
+      providerKey: this.supervisorProviderKey,
+      poolScope: SUPERVISOR_POOL_SCOPE,
+      cpbRoot: this.cpbRoot,
+      hubRoot: this.hubRoot,
+      decisionsDir: this.decisionsDir,
+      statePath: this.statePath,
+    };
+  }
+
+  async _writeState(nextState) {
+    this.state = {
+      ...this.state,
+      ...nextState,
+      updatedAt: new Date().toISOString(),
+    };
+    await mkdir(path.dirname(this.statePath), { recursive: true });
+    const tmp = `${this.statePath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmp, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
+    await rename(tmp, this.statePath);
+    return this.state;
   }
 
   async _ensurePool() {
@@ -27,6 +80,102 @@ export class AcpSupervisor {
     return this._poolPromise;
   }
 
+  async start() {
+    const startedAt = new Date().toISOString();
+    const pool = await this._ensurePool();
+    if (!pool) {
+      return this._writeState({
+        ...this._baseState("unavailable"),
+        healthy: false,
+        startedAt,
+        heartbeatAt: startedAt,
+        lastActivityAt: startedAt,
+        lastActivity: "pool_unavailable",
+        error: "managed ACP pool unavailable",
+      });
+    }
+
+    try {
+      if (typeof pool.start === "function") await pool.start();
+      return await this.refreshAdvisoryState({ reason: "start", startedAt });
+    } catch (err) {
+      return this._writeState({
+        ...this._baseState("degraded"),
+        healthy: false,
+        startedAt,
+        heartbeatAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        lastActivity: "start_failed",
+        error: err.message,
+      });
+    }
+  }
+
+  async refreshAdvisoryState({ reason = "refresh", startedAt = this.state.startedAt, lastDecision = null, lastFallback = null } = {}) {
+    const pool = await this._ensurePool();
+    if (!pool) {
+      return this._writeState({
+        ...this._baseState("unavailable"),
+        healthy: false,
+        startedAt,
+        heartbeatAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        lastActivity: reason,
+        error: "managed ACP pool unavailable",
+      });
+    }
+
+    let poolStatus = null;
+    let providerQuotas = {};
+    let connectionLeases = null;
+    try {
+      poolStatus = typeof pool.status === "function" ? pool.status() : null;
+    } catch (err) {
+      poolStatus = { error: err.message };
+    }
+    try {
+      providerQuotas = typeof pool.readProviderQuotas === "function" ? await pool.readProviderQuotas() : {};
+    } catch (err) {
+      providerQuotas = { error: err.message };
+    }
+    try {
+      connectionLeases = typeof pool.connectionLeaseStatus === "function" ? await pool.connectionLeaseStatus() : null;
+    } catch (err) {
+      connectionLeases = { error: err.message };
+    }
+
+    const providerHealth = buildProviderHealth({
+      providerKey: this.supervisorProviderKey,
+      poolStatus,
+      providerQuotas,
+      connectionLeases,
+    });
+    const supervisorPool = poolStatus?.pools?.[this.supervisorAgent] || null;
+    const heartbeatAt = new Date().toISOString();
+    return this._writeState({
+      ...this._baseState("healthy"),
+      healthy: true,
+      startedAt,
+      heartbeatAt,
+      lastActivityAt: heartbeatAt,
+      lastActivity: reason,
+      sessionId: supervisorPool?.sessionId || null,
+      providerProcessPid: supervisorPool?.providerProcessPid || null,
+      providerProcessHealthy: supervisorPool?.providerProcessHealthy ?? null,
+      providerHealth,
+      poolStatus,
+      providerQuotas,
+      connectionLeases,
+      ...(lastDecision ? { lastDecision } : {}),
+      ...(lastFallback ? { lastFallback } : {}),
+      error: null,
+    });
+  }
+
+  status() {
+    return { ...this.state };
+  }
+
   async diagnoseFailure({ assignment, attempt, result }) {
     const pool = await this._ensurePool();
     if (!pool) {
@@ -37,26 +186,76 @@ export class AcpSupervisor {
 
     try {
       const { output } = await pool.execute(
-        "supervisor",
+        this.supervisorAgent,
         prompt,
         this.cpbRoot,
-        120_000,
-        { phase: "diagnose", role: "supervisor" },
+        this.timeoutMs,
+        {
+          phase: "supervisor_diagnose",
+          role: "supervisor",
+          poolScope: SUPERVISOR_POOL_SCOPE,
+          controlPlane: true,
+          providerKey: this.supervisorProviderKey,
+          workspaceId: SUPERVISOR_POOL_SCOPE,
+          projectId: assignment.projectId,
+          jobId: `supervisor-${assignment.entryId || assignment.assignmentId || Date.now()}`,
+        },
       );
 
-      const rawDecision = parseDecisionOutput(output);
-      const validation = validateSupervisorDecision(rawDecision);
+      const parsed = parseDecisionOutput(output);
+      const rawDecision = parsed.decision || {
+        action: null,
+        reason: parsed.error || "invalid supervisor output",
+        params: {},
+      };
+      const validation = parsed.decision
+        ? validateSupervisorDecision(rawDecision)
+        : { valid: false, errors: [parsed.error || "invalid supervisor output"] };
 
       // Save decision for audit
       await this.saveDecision(assignment, rawDecision, validation);
 
       if (!validation.valid) {
-        return { action: "mark_failed", reason: `supervisor decision invalid: ${validation.errors.join("; ")}`, params: {} };
+        await this.refreshAdvisoryState({
+          reason: "diagnose_fallback",
+          lastFallback: {
+            reason: `invalid supervisor decision: ${validation.errors.join("; ")}`,
+            assignmentId: assignment.assignmentId,
+            entryId: assignment.entryId,
+            at: new Date().toISOString(),
+          },
+        }).catch(() => {});
+        return null;
       }
 
+      await this.refreshAdvisoryState({
+        reason: "diagnose_decision",
+        lastDecision: {
+          action: rawDecision.action,
+          reason: rawDecision.reason,
+          confidence: rawDecision.confidence ?? null,
+          assignmentId: assignment.assignmentId,
+          entryId: assignment.entryId,
+          at: new Date().toISOString(),
+        },
+      }).catch(() => {});
       return rawDecision;
     } catch (err) {
-      return { action: "mark_failed", reason: `supervisor failed: ${err.message}`, params: {} };
+      await this.saveDecision(
+        assignment,
+        { action: null, reason: `supervisor failed: ${err.message}`, params: {} },
+        { valid: false, errors: [`supervisor failed: ${err.message}`] },
+      ).catch(() => {});
+      await this.refreshAdvisoryState({
+        reason: "diagnose_fallback",
+        lastFallback: {
+          reason: `supervisor failed: ${err.message}`,
+          assignmentId: assignment.assignmentId,
+          entryId: assignment.entryId,
+          at: new Date().toISOString(),
+        },
+      }).catch(() => {});
+      return null;
     }
   }
 
@@ -72,6 +271,52 @@ export class AcpSupervisor {
       createdAt: new Date().toISOString(),
     }, null, 2) + "\n", "utf8");
   }
+}
+
+function buildProviderHealth({ providerKey, poolStatus, providerQuotas, connectionLeases }) {
+  const health = {};
+  const pools = poolStatus?.pools && typeof poolStatus.pools === "object" ? poolStatus.pools : {};
+  for (const [agent, state] of Object.entries(pools)) {
+    const key = state.providerKey || agent;
+    health[key] = {
+      providerKey: key,
+      status: "available",
+      active: state.active ?? 0,
+      limit: state.limit ?? null,
+      queued: state.queued ?? 0,
+      sessionId: state.sessionId || null,
+      providerProcessHealthy: state.providerProcessHealthy ?? null,
+      source: "acp-pool",
+    };
+  }
+  if (providerQuotas && typeof providerQuotas === "object" && !providerQuotas.error) {
+    for (const [key, quota] of Object.entries(providerQuotas)) {
+      health[key] = {
+        ...(health[key] || { providerKey: key }),
+        status: quota.status || health[key]?.status || "unknown",
+        nextEligibleAt: quota.nextEligibleAt ?? null,
+        reason: quota.reason || "",
+        source: quota.source || health[key]?.source || "provider-quota",
+        updatedAt: quota.updatedAt || null,
+      };
+    }
+  }
+  if (connectionLeases?.providers && typeof connectionLeases.providers === "object") {
+    for (const [key, count] of Object.entries(connectionLeases.providers)) {
+      health[key] = {
+        ...(health[key] || { providerKey: key, status: "unknown" }),
+        activeLeases: count,
+      };
+    }
+  }
+  if (!health[providerKey]) {
+    health[providerKey] = {
+      providerKey,
+      status: "unknown",
+      source: "resident-supervisor",
+    };
+  }
+  return health;
 }
 
 function buildDiagnosisPrompt({ assignment, attempt, result }) {
@@ -120,13 +365,13 @@ For wait_for_rate_limit, params must include: { "untilTs": "<ISO datetime>" }`;
 
 function parseDecisionOutput(output) {
   if (!output || typeof output !== "string") {
-    return { action: "mark_failed", reason: "empty supervisor output" };
+    return { decision: null, error: "empty supervisor output" };
   }
   try {
     const match = output.match(/```json\s*\n?([\s\S]*?)\n?```/);
     const jsonStr = match ? match[1].trim() : output.trim();
-    return JSON.parse(jsonStr);
+    return { decision: JSON.parse(jsonStr), error: null };
   } catch {
-    return { action: "mark_failed", reason: "supervisor output not valid JSON" };
+    return { decision: null, error: "supervisor output not valid JSON" };
   }
 }

@@ -59,6 +59,17 @@ export interface PipelineState {
   runningNodes?: string[];
   blockedNodes?: string[];
   nodes?: PipelineNode[];
+  workflowDag?: {
+    name?: string;
+    nodes?: Array<Record<string, unknown>>;
+    edges?: Array<Record<string, unknown>>;
+  } | null;
+  riskMap?: Record<string, unknown> | null;
+  riskLevel?: string | null;
+  verificationDepth?: string | null;
+  adversarialRequired?: boolean;
+  dynamicAgentPlan?: Record<string, unknown> | null;
+  adversarialVerdict?: Record<string, unknown> | null;
 }
 
 export interface ProjectIndex {
@@ -297,6 +308,9 @@ export interface InboxRequestRow {
   failurePhase: string | null;
   cancelRequested: boolean;
   redirectContext: unknown;
+  riskLevel: string | null;
+  verificationDepth: string | null;
+  adversarialRequired: boolean;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;

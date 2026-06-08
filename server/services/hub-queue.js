@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildMeta, REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { ensureIndexFresh } from "./index-freshness.js";
+import { projectCapabilityMapGate } from "./project-capability-map.js";
+import { checkCodeGraphReady } from "./codegraph-readiness.js";
 import { resolveAgentsForEntry } from "./agent-config.js";
 import { getProject } from "./hub-registry.js";
 import {
@@ -16,7 +18,8 @@ import {
   isActiveEntry,
   clearClaim,
   recoverStaleInProgressAsync,
-  recoverIndexUnavailable,
+  recoverCodegraphUnavailable,
+  isCodegraphUnavailableStatus,
 } from "./queue-rules.js";
 
 
@@ -250,7 +253,7 @@ export async function updateEntry(hubRoot, entryId, patch = {}) {
     if (patch.reason !== undefined) entry.reason = patch.reason;
     if (patch.completedAt !== undefined) entry.completedAt = patch.completedAt;
     if (entry.status === "pending") clearClaim(entry);
-    entry.updatedAt = nowIso();
+    entry.updatedAt = patch.updatedAt !== undefined ? patch.updatedAt : nowIso();
 
     await saveQueue(hubRoot, queue);
     return entry;
@@ -312,6 +315,7 @@ export async function queueStatus(hubRoot) {
     cancelled: 0,
     needsIssueLink: 0,
     indexUnavailable: 0,
+    codegraphUnavailable: 0,
     ...failedTargetStatus,
   };
   for (const e of queue.entries) {
@@ -323,7 +327,10 @@ export async function queueStatus(hubRoot) {
     else if (e.status === "blocked") counts.blocked++;
     else if (e.status === "cancelled") counts.cancelled++;
     else if (e.status === "needs_issue_link") counts.needsIssueLink++;
-    else if (e.status === "index_unavailable") counts.indexUnavailable++;
+    else if (isCodegraphUnavailableStatus(e.status)) {
+      counts.indexUnavailable++;
+      counts.codegraphUnavailable++;
+    }
   }
   const hubLimits = await resolveHubConcurrencyLimits(hubRoot);
   const projectLimits = await resolveProjectConcurrencyLimits(
@@ -423,7 +430,7 @@ export function buildProjectQueueStatus(entries, {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
       byProject[e.projectId] = {
-        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0,
+        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0, codegraphUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         maxActivePerProject: limit,
         claimedBy: null, claimedAt: null, workerId: null,
@@ -439,7 +446,10 @@ export function buildProjectQueueStatus(entries, {
     else if (e.status === "failed") ps.failed++;
     else if (e.status === "blocked") ps.blocked++;
     else if (e.status === "cancelled") ps.cancelled++;
-    else if (e.status === "index_unavailable") ps.indexUnavailable++;
+    else if (isCodegraphUnavailableStatus(e.status)) {
+      ps.indexUnavailable++;
+      ps.codegraphUnavailable++;
+    }
     if (isActiveEntry(e) && isMutatingEntry(e)) {
       ps.activeMutating++;
       ps.activeEntryIds.push(e.id);
@@ -485,6 +495,7 @@ export async function claimEligible(hubRoot, opts = {}) {
     providerSlotsAvailable = true,
     requireIssueLink = false,
     getProjectFn = null,
+    cpbRoot = null,
     indexUnavailableRetryMs = 300_000,
     assignmentStore = null,
   } = opts;
@@ -496,7 +507,7 @@ export async function claimEligible(hubRoot, opts = {}) {
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);
     const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, { claimTimeoutMs, assignmentStore });
-    const { recovered: recoveredIdx } = recoverIndexUnavailable(queue.entries, indexUnavailableRetryMs);
+    const { recovered: recoveredIdx } = recoverCodegraphUnavailable(queue.entries, indexUnavailableRetryMs);
     if (recoveredIdx.length > 0) {
       recovered.push(...recoveredIdx);
     }
@@ -554,7 +565,7 @@ export async function claimEligible(hubRoot, opts = {}) {
       if (getProjectFn) {
         const project = await getProjectFn(hubRoot, candidate.projectId);
         if (project && (!project.sourcePath || !project.projectRuntimeRoot)) {
-          candidate.status = "index_unavailable";
+          candidate.status = "codegraph_unavailable";
           candidate.updatedAt = nowIso();
           candidate.metadata = {
             ...candidate.metadata,
@@ -570,9 +581,57 @@ export async function claimEligible(hubRoot, opts = {}) {
           continue;
         }
         if (project?.sourcePath && project.projectRuntimeRoot) {
+          const capabilityGate = projectCapabilityMapGate(project);
+          if (!capabilityGate.available) {
+            candidate.status = "codegraph_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              capabilityMap: capabilityGate,
+              indexFreshness: {
+                available: false,
+                indexDirty: true,
+                indexStale: false,
+                worktreeDirty: false,
+                dirtyReasons: [capabilityGate.reason],
+              },
+            };
+            indexUnavailableIds.push(candidate.id);
+            continue;
+          }
+
+          let codegraphReadiness;
+          try {
+            codegraphReadiness = await checkCodeGraphReady({
+              cpbRoot: cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
+              sourcePath: project.sourcePath,
+            });
+          } catch (err) {
+            const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
+            candidate.status = "codegraph_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              codegraphReadiness: {
+                available: false,
+                reason,
+                details: err?.details || null,
+              },
+              indexFreshness: {
+                available: false,
+                indexDirty: true,
+                indexStale: false,
+                worktreeDirty: false,
+                dirtyReasons: [reason],
+              },
+            };
+            indexUnavailableIds.push(candidate.id);
+            continue;
+          }
+
           const fresh = await ensureIndexFresh(project);
           if (!fresh.available) {
-            candidate.status = "index_unavailable";
+            candidate.status = "codegraph_unavailable";
             candidate.updatedAt = nowIso();
             candidate.metadata = {
               ...candidate.metadata,
@@ -581,7 +640,7 @@ export async function claimEligible(hubRoot, opts = {}) {
                 indexDirty: fresh.indexDirty ?? true,
                 indexStale: fresh.indexStale ?? false,
                 worktreeDirty: fresh.worktreeDirty ?? false,
-                dirtyReasons: fresh.dirtyReasons ?? ["index_unavailable"],
+                dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
               },
             };
             indexUnavailableIds.push(candidate.id);
@@ -590,6 +649,11 @@ export async function claimEligible(hubRoot, opts = {}) {
           candidate.indexSnapshotId = fresh.indexSnapshotId;
           candidate.metadata = {
             ...candidate.metadata,
+            codegraphReadiness: {
+              available: true,
+              sourcePath: codegraphReadiness.sourcePath,
+              indexFile: codegraphReadiness.indexFile,
+            },
             indexSnapshot: {
               indexSnapshotId: fresh.indexSnapshotId,
               sourceFingerprint: fresh.sourceFingerprint,

@@ -15,6 +15,8 @@ import { FailureKind, failure } from "../contracts/failure.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
 import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
+import { normalizeWorkflow } from "../workflow/definition.js";
+import { generateDynamicAgentPlan } from "../agents/dynamic-agent-plan.js";
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
@@ -33,6 +35,17 @@ const PHASE_FEEDBACK_RETRY_KINDS = new Set([
 
 function ts() {
   return new Date().toISOString();
+}
+
+function numericEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function phaseRetryBaseDelayMs() {
+  return numericEnv("CPB_PHASE_RETRY_BASE_DELAY_MS", PHASE_RETRY_BASE_DELAY_MS);
 }
 
 async function reportProgress(ctx, event) {
@@ -120,6 +133,144 @@ function normalizeProviderServices(services = {}) {
   };
 }
 
+function normalizePrepareFailure(err) {
+  const code = err?.kind || err?.code || "prepare_task_unavailable";
+  const reason = err?.reason || err?.message || "prepareTask service is unavailable";
+  return failure({
+    kind: code === FailureKind.CODEGRAPH_UNAVAILABLE
+      ? FailureKind.CODEGRAPH_UNAVAILABLE
+      : FailureKind.UNKNOWN,
+    phase: "prepare_task",
+    reason,
+    retryable: false,
+    cause: {
+      code,
+      details: err?.details || null,
+    },
+  });
+}
+
+async function blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail }) {
+  const reason = fail.cause?.code || fail.reason;
+  if (typeof blockJob === "function") {
+    await blockJob(cpbRoot, project, jobId, {
+      reason,
+      code: fail.kind,
+      kind: fail.kind,
+      cause: fail.cause,
+    });
+    return;
+  }
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "job_blocked",
+    jobId,
+    project,
+    reason,
+    code: fail.kind,
+    kind: fail.kind,
+    cause: fail.cause,
+    ts: ts(),
+  });
+}
+
+function normalizeRiskMapResult(result) {
+  return result?.riskMap || result?.riskmap || result;
+}
+
+function normalizeDynamicAgentEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    return { selectedAgent: entry, required: false };
+  }
+  if (typeof entry !== "object") return null;
+  const selectedAgent = entry.agent || entry.name || entry.selectedAgent || null;
+  if (!selectedAgent) return null;
+  const normalizedAgent = entry.variant
+    ? { agent: selectedAgent, variant: entry.variant }
+    : selectedAgent;
+  return {
+    selectedAgent: normalizedAgent,
+    required: Boolean(entry.required || entry.requiredDynamicRole),
+  };
+}
+
+function dynamicAgentPlanFrom(ctx, phaseSourceContext) {
+  return ctx.dynamicAgentPlan
+    || phaseSourceContext?.dynamicAgentPlan
+    || ctx.sourceContext?.dynamicAgentPlan
+    || null;
+}
+
+function dynamicAgentForRole(plan, role, phase) {
+  const agentConfig = plan?.agentConfig || plan?.agents || {};
+  return normalizeDynamicAgentEntry(agentConfig?.[role] || agentConfig?.[phase]);
+}
+
+function dagForRun(workflow, phases, phaseRoleMap) {
+  const base = normalizeWorkflow(workflow);
+  const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
+  const phaseBudget = new Map();
+  for (const phase of phases) {
+    phaseBudget.set(phase, (phaseBudget.get(phase) || 0) + 1);
+  }
+
+  const nodes = [];
+  for (const existing of baseNodes) {
+    const phase = existing.phase || existing.id;
+    if (!phaseBudget.has(phase)) continue;
+    const remaining = phaseBudget.get(phase);
+    if (remaining <= 0) continue;
+    phaseBudget.set(phase, remaining - 1);
+    nodes.push({
+      ...existing,
+      id: existing.id || phase,
+      phase,
+      role: existing.role || phaseRoleMap[phase] || phase,
+      dependsOn: Array.isArray(existing.dependsOn) ? [...existing.dependsOn] : [],
+    });
+  }
+
+  for (const [phase, remaining] of phaseBudget.entries()) {
+    for (let idx = 0; idx < remaining; idx++) {
+      const previous = nodes[nodes.length - 1];
+      nodes.push({
+        id: idx === 0 ? phase : `${phase}_${idx + 1}`,
+        phase,
+        role: phaseRoleMap[phase] || phase,
+        dependsOn: previous ? [previous.id] : [],
+      });
+    }
+  }
+
+  const includedIds = new Set(nodes.map((node) => node.id));
+  const normalizedNodes = nodes.map((node) => ({
+    ...node,
+    dependsOn: (node.dependsOn || []).filter((depId) => includedIds.has(depId)),
+  }));
+  return {
+    name: base?.name || workflow || "standard",
+    nodes: normalizedNodes,
+    edges: normalizedNodes.flatMap((node) => (
+      (node.dependsOn || []).map((depId) => ({ from: depId, to: node.id }))
+    )),
+    maxConcurrentNodes: base?.maxConcurrentNodes || 1,
+    isDag: normalizedNodes.length > 0,
+    source: "runtime_phase_projection",
+  };
+}
+
+function phasesWithAdversarialVerify(phases, riskMap) {
+  if (!riskMap?.adversarialRequired || !phases.includes("verify") || phases.includes("adversarial_verify")) {
+    return phases;
+  }
+  const result = [];
+  for (const phase of phases) {
+    result.push(phase);
+    if (phase === "verify") result.push("adversarial_verify");
+  }
+  return result;
+}
+
 /**
  * @param {object} ctx
  * @param {string} ctx.cpbRoot
@@ -137,8 +288,10 @@ function normalizeProviderServices(services = {}) {
  * @param {Function} ctx.completePhase
  * @param {Function} ctx.completeJob
  * @param {Function} ctx.failJob
+ * @param {Function} [ctx.blockJob]
  * @param {Function} ctx.appendEvent
  * @param {Function} ctx.getPool
+ * @param {Function} ctx.prepareTask
  * @param {object} [ctx.providerServices]
  * @returns {Promise<{status: string, jobId: string, exitCode: number, failure?: object}>}
  */
@@ -160,8 +313,10 @@ export async function runJob(ctx) {
     completePhase,
     completeJob,
     failJob,
+    blockJob,
     appendEvent,
     getPool,
+    prepareTask,
   } = ctx;
   const providerServices = normalizeProviderServices(ctx.providerServices);
 
@@ -191,25 +346,170 @@ export async function runJob(ctx) {
   });
   await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
-  // 2. Resolve phases
-  const phases = resolvePhases(workflow, planMode);
+  let riskMap = null;
+  let phaseSourceContext = sourceContext || {};
+  let dynamicAgentPlan = dynamicAgentPlanFrom(ctx, phaseSourceContext);
+  try {
+    if (typeof prepareTask !== "function") {
+      const err = new Error("prepareTask service is unavailable");
+      err.code = "prepare_task_unavailable";
+      throw err;
+    }
+
+    const prepareResult = await prepareTask(cpbRoot, {
+      hubRoot,
+      project,
+      task,
+      jobId,
+      sourcePath,
+      sourceContext: sourceContext || {},
+      workflow,
+      planMode,
+    });
+    riskMap = normalizeRiskMapResult(prepareResult);
+    dynamicAgentPlan = prepareResult?.dynamicAgentPlan || dynamicAgentPlanFrom(ctx, { ...(sourceContext || {}), riskMap });
+    phaseSourceContext = { ...(sourceContext || {}), riskMap, ...(dynamicAgentPlan ? { dynamicAgentPlan } : {}) };
+
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_started",
+      jobId,
+      project,
+      phase: "prepare_task",
+      ts: ts(),
+    });
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "riskmap_generated",
+      jobId,
+      project,
+      phase: "prepare_task",
+      riskMap,
+      riskLevel: riskMap?.riskLevel ?? null,
+      domains: riskMap?.domains ?? [],
+      highRiskFiles: riskMap?.highRiskFiles ?? [],
+      verificationDepth: riskMap?.verificationDepth ?? null,
+      adversarialRequired: Boolean(riskMap?.adversarialRequired),
+      adversarialFocus: riskMap?.adversarialFocus ?? [],
+      confidence: riskMap?.confidence ?? null,
+      ts: ts(),
+    });
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_completed",
+      jobId,
+      project,
+      phase: "prepare_task",
+      artifact: "riskmap_generated",
+      ts: ts(),
+    });
+    await reportProgress(ctx, {
+      type: "riskmap_generated",
+      jobId,
+      project,
+      phase: "prepare_task",
+      riskLevel: riskMap?.riskLevel ?? null,
+      verificationDepth: riskMap?.verificationDepth ?? null,
+      adversarialRequired: Boolean(riskMap?.adversarialRequired),
+    });
+  } catch (err) {
+    const fail = normalizePrepareFailure(err);
+    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+    await reportProgress(ctx, {
+      type: "job_blocked",
+      jobId,
+      project,
+      phase: "prepare_task",
+      reason: fail.cause?.code || fail.reason,
+      failure: { kind: fail.kind, reason: fail.reason },
+    });
+    return { status: "blocked", jobId, exitCode: 2, failure: fail };
+  }
+
+  const phaseRoleMap = {
+    plan: "planner",
+    execute: "executor",
+    verify: "verifier",
+    adversarial_verify: "adversarial_verifier",
+    review: "reviewer",
+    remediate: "remediator",
+  };
+
+  // 2. Resolve phases and materialize a DAG for this run.
+  const phases = phasesWithAdversarialVerify(resolvePhases(workflow, planMode), riskMap);
+  const workflowDag = dagForRun(workflow, phases, phaseRoleMap);
+  const dagNodesByPhase = new Map();
+  for (const node of workflowDag.nodes) {
+    const list = dagNodesByPhase.get(node.phase) || [];
+    list.push(node);
+    dagNodesByPhase.set(node.phase, list);
+  }
+  const dagNodeCursorByPhase = new Map();
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "workflow_dag_materialized",
+    jobId,
+    project,
+    workflow,
+    planMode,
+    workflowDag,
+    nodes: workflowDag.nodes,
+    edges: workflowDag.edges,
+    ts: ts(),
+  });
+  await reportProgress(ctx, {
+    type: "workflow_dag_materialized",
+    jobId,
+    project,
+    workflow,
+    planMode,
+    nodeCount: workflowDag.nodes.length,
+  });
+  if (!dynamicAgentPlan) {
+    dynamicAgentPlan = generateDynamicAgentPlan({ riskMap, workflowDag, workflow, planMode });
+    phaseSourceContext = { ...phaseSourceContext, dynamicAgentPlan };
+  }
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "dynamic_agent_plan_generated",
+    jobId,
+    project,
+    workflow,
+    planMode,
+    dynamicAgentPlan,
+    riskLevel: dynamicAgentPlan?.riskLevel ?? riskMap?.riskLevel ?? null,
+    adversarialRequired: dynamicAgentPlan?.adversarialRequired ?? Boolean(riskMap?.adversarialRequired),
+    independentVerifierRequired: Boolean(dynamicAgentPlan?.independentVerifierRequired),
+    ts: ts(),
+  });
+  await reportProgress(ctx, {
+    type: "dynamic_agent_plan_generated",
+    jobId,
+    project,
+    riskLevel: dynamicAgentPlan?.riskLevel ?? null,
+    independentVerifierRequired: Boolean(dynamicAgentPlan?.independentVerifierRequired),
+  });
 
   // 3. Get ACP pool
   const pool = getPool();
 
   // 4. Execute phases sequentially
   const phaseResults = [];
-  const state = { planId: null, deliverableId: null };
+  const state = { planId: null, deliverableId: null, riskMap };
 
   const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
   // Explicit timeoutMin takes priority, then env var, then disabled
   const phaseTimeout = timeoutMin != null ? (timeoutMin > 0 ? timeoutMin * 60_000 : 0) : envTimeout;
 
-  const phaseRoleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
-
   for (const phase of phases) {
-    const role = phaseRoleMap[phase] || phase;
+    const fallbackRole = phaseRoleMap[phase] || phase;
+    const dagNodes = dagNodesByPhase.get(phase) || [];
+    const dagNodeCursor = dagNodeCursorByPhase.get(phase) || 0;
+    const dagNode = dagNodes[dagNodeCursor] || dagNodes[dagNodes.length - 1] || { id: phase, phase, role: fallbackRole };
+    dagNodeCursorByPhase.set(phase, dagNodeCursor + 1);
+    const nodeId = dagNode.id || phase;
+    const role = dagNode.role || fallbackRole;
     const phaseAgents = { ...(ctx.agents || {}) };
+    const activeDynamicAgentPlan = dynamicAgentPlanFrom(ctx, phaseSourceContext);
+    const dynamicAgent = dynamicAgentForRole(activeDynamicAgentPlan, role, phase);
+    if (dynamicAgent?.selectedAgent) {
+      phaseAgents[role] = dynamicAgent.selectedAgent;
+    }
     const phaseRoutingDecision = ctx.routing
       ? resolvePhaseAgentWithFallback({
         routing: ctx.routing,
@@ -221,7 +521,7 @@ export async function runJob(ctx) {
       })
       : null;
 
-    if (phaseRoutingDecision?.selectedAgent) {
+    if (!dynamicAgent?.selectedAgent && phaseRoutingDecision?.selectedAgent) {
       phaseAgents[role] = phaseRoutingDecision.selectedAgent;
     }
 
@@ -241,6 +541,16 @@ export async function runJob(ctx) {
         ts: ts(),
       });
     }
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "dag_node_started",
+      jobId,
+      project,
+      nodeId,
+      phase,
+      role,
+      attempt: 1,
+      ts: ts(),
+    });
     await reportProgress(ctx, {
       type: "phase_started",
       jobId,
@@ -270,6 +580,7 @@ export async function runJob(ctx) {
     // Provider selection + fallback for this phase — consolidated handoff state
     const handoffState = { count: 0, from: null, to: null, reason: null };
     const providerAttempts = [];
+    let result = null;
 
     // Pre-flight: check if preferred provider is available
     if (hubRoot && pool) {
@@ -277,45 +588,122 @@ export async function runJob(ctx) {
         providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
       }).catch(() => null);
       if (preflight?.switched) {
-        phaseAgents[role] = preflight.selectedAgent;
-        handoffState.count += 1;
-        handoffState.from = preflight.from;
-        handoffState.to = preflight.selectedProviderKey;
-        handoffState.reason = preflight.reason;
+        if (dynamicAgent?.required) {
+          result = phaseFailed({
+            phase,
+            failure: failure({
+              kind: FailureKind.AGENT_UNAVAILABLE,
+              phase,
+              reason: `required dynamic agent unavailable for ${role}`,
+              retryable: false,
+              cause: {
+                providerKey: preflight.from,
+                selectedFallbackProviderKey: preflight.selectedProviderKey,
+                role,
+                phase,
+                requiredDynamicRole: true,
+                dynamicAgentPlan: true,
+              },
+            }),
+          });
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "provider_quota_blocked",
+            jobId,
+            project,
+            phase,
+            role,
+            reason: result.failure.reason,
+            ts: ts(),
+          });
+          await reportProgress(ctx, {
+            type: "provider_quota_blocked",
+            jobId,
+            project,
+            phase,
+            role,
+            reason: result.failure.reason,
+        });
+      } else {
+          phaseAgents[role] = preflight.selectedAgent;
+          handoffState.count += 1;
+          handoffState.from = preflight.from;
+          handoffState.to = preflight.selectedProviderKey;
+          handoffState.reason = preflight.reason;
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "provider_handoff",
+            jobId,
+            project,
+            phase,
+            role,
+            from: preflight.from,
+            to: preflight.selectedProviderKey,
+            reason: preflight.reason,
+            ts: ts(),
+          });
+          await reportProgress(ctx, {
+            type: "provider_handoff",
+            jobId,
+            project,
+            phase,
+            role,
+            from: preflight.from,
+            to: preflight.selectedProviderKey,
+            reason: preflight.reason,
+          });
+        }
+      } else if (preflight && preflight.available === false) {
+        const unavailableKind = dynamicAgent?.required
+          ? FailureKind.AGENT_UNAVAILABLE
+          : FailureKind.AGENT_RATE_LIMITED;
+        result = phaseFailed({
+          phase,
+          failure: failure({
+            kind: unavailableKind,
+            phase,
+            reason: preflight.reason,
+            retryable: false,
+            cause: {
+              providerKey: preflight.from,
+              hardGate: true,
+              role,
+              requiredDynamicRole: Boolean(dynamicAgent?.required),
+              dynamicAgentPlan: Boolean(dynamicAgent),
+            },
+          }),
+        });
         await appendEvent(cpbRoot, project, jobId, {
-          type: "provider_handoff",
+          type: "provider_quota_blocked",
           jobId,
           project,
           phase,
           role,
-          from: preflight.from,
-          to: preflight.selectedProviderKey,
           reason: preflight.reason,
           ts: ts(),
         });
         await reportProgress(ctx, {
-          type: "provider_handoff",
+          type: "provider_quota_blocked",
           jobId,
           project,
           phase,
           role,
-          from: preflight.from,
-          to: preflight.selectedProviderKey,
           reason: preflight.reason,
         });
       }
     }
 
     // Run phase (with mid-run quota fallback)
-    let result = await runPhase({
+    result ||= await runPhase({
       phase,
+      role,
+      nodeId,
+      dagNode,
       project,
       task,
       jobId,
       job,
       cpbRoot,
       sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-      sourceContext,
+      sourceContext: phaseSourceContext,
       pool,
       state,
       previousResults: phaseResults,
@@ -325,6 +713,7 @@ export async function runJob(ctx) {
         plan: phaseTimeout,
         execute: phaseTimeout,
         verify: phaseTimeout,
+        adversarial_verify: phaseTimeout,
         review: phaseTimeout,
         remediate: phaseTimeout,
       },
@@ -336,6 +725,7 @@ export async function runJob(ctx) {
       !isPhasePassed(result) &&
       result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
       result.failure?.retryable &&
+      result.failure?.cause?.hardGate !== true &&
       handoffState.count < HANDOFF_MAX_PER_PHASE
     ) {
       handoffState.count += 1;
@@ -484,6 +874,9 @@ export async function runJob(ctx) {
       // Retry the phase with fallback provider
       result = await runPhase({
         phase,
+        role,
+        nodeId,
+        dagNode,
         project,
         task,
         jobId,
@@ -491,8 +884,8 @@ export async function runJob(ctx) {
         cpbRoot,
         sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
         sourceContext: continuationContext
-          ? { ...sourceContext, handoff: continuationContext }
-          : sourceContext,
+          ? { ...phaseSourceContext, handoff: continuationContext }
+          : phaseSourceContext,
         pool,
         state,
         previousResults: phaseResults,
@@ -502,6 +895,7 @@ export async function runJob(ctx) {
           plan: phaseTimeout,
           execute: phaseTimeout,
           verify: phaseTimeout,
+          adversarial_verify: phaseTimeout,
           review: phaseTimeout,
           remediate: phaseTimeout,
         },
@@ -543,16 +937,19 @@ export async function runJob(ctx) {
             failureKind: result.failure?.kind,
             reason: result.failure?.reason,
           });
-          await new Promise((r) => setTimeout(r, PHASE_RETRY_BASE_DELAY_MS * phaseRetry));
+          await new Promise((r) => setTimeout(r, phaseRetryBaseDelayMs() * phaseRetry));
           result = await runPhase({
             phase,
+            role,
+            nodeId,
+            dagNode,
             project,
             task,
             jobId,
             job,
             cpbRoot,
             sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-            sourceContext,
+            sourceContext: phaseSourceContext,
             pool,
             state,
             previousResults: phaseResults,
@@ -562,6 +959,7 @@ export async function runJob(ctx) {
               plan: phaseTimeout,
               execute: phaseTimeout,
               verify: phaseTimeout,
+              adversarial_verify: phaseTimeout,
               review: phaseTimeout,
               remediate: phaseTimeout,
             },
@@ -603,13 +1001,16 @@ export async function runJob(ctx) {
         });
         result = await runPhase({
           phase,
+          role,
+          nodeId,
+          dagNode,
           project,
           task,
           jobId,
           job,
           cpbRoot,
           sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-          sourceContext: { ...sourceContext, retry },
+          sourceContext: { ...phaseSourceContext, retry },
           pool,
           state,
           previousResults: phaseResults,
@@ -619,6 +1020,7 @@ export async function runJob(ctx) {
             plan: phaseTimeout,
             execute: phaseTimeout,
             verify: phaseTimeout,
+            adversarial_verify: phaseTimeout,
             review: phaseTimeout,
             remediate: phaseTimeout,
           },
@@ -647,6 +1049,33 @@ export async function runJob(ctx) {
       });
     }
 
+    if (isPhasePassed(result)) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "dag_node_completed",
+        jobId,
+        project,
+        nodeId,
+        phase,
+        role,
+        artifact: result.artifact?.name || null,
+        ts: ts(),
+      });
+    }
+
+    if (phase === "adversarial_verify" && result.diagnostics?.verdict) {
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "adversarial_verdict",
+        jobId,
+        project,
+        phase,
+        verdict: result.diagnostics.verdict,
+        artifact: result.artifact?.name || null,
+        status: result.diagnostics.verdict.status || null,
+        reason: result.diagnostics.verdict.reason || null,
+        ts: ts(),
+      });
+    }
+
     await appendEvent(cpbRoot, project, jobId, {
       type: "phase_result",
       jobId,
@@ -659,7 +1088,7 @@ export async function runJob(ctx) {
       acpAuditFile: result.diagnostics?.acpAuditFile || null,
       usage: result.diagnostics?.usage || null,
       failure: result.failure
-        ? { kind: result.failure.kind, reason: result.failure.reason }
+        ? { kind: result.failure.kind, reason: result.failure.reason, cause: result.failure.cause || null }
         : null,
       ts: ts(),
     });
@@ -672,7 +1101,7 @@ export async function runJob(ctx) {
       status: result.status,
       artifact: result.artifact?.name || null,
       failure: result.failure
-        ? { kind: result.failure.kind, reason: result.failure.reason }
+        ? { kind: result.failure.kind, reason: result.failure.reason, cause: result.failure.cause || null }
         : null,
     });
 
@@ -704,9 +1133,9 @@ export async function runJob(ctx) {
 
           await providerServices.delegateEnqueueProviderUsage(hubRoot, {
             project,
-            issueNumber: sourceContext?.issueNumber ?? sourceContext?.github?.issueNumber ?? job?.issueNumber ?? null,
-            source: sourceContext?.source || null,
-            attempt: sourceContext?.attempt ?? null,
+            issueNumber: phaseSourceContext?.issueNumber ?? phaseSourceContext?.github?.issueNumber ?? job?.issueNumber ?? null,
+            source: phaseSourceContext?.source || null,
+            attempt: phaseSourceContext?.attempt ?? null,
             phase,
             role,
             providerKey: diag.providerKey || providerKey,
@@ -744,11 +1173,23 @@ export async function runJob(ctx) {
     if (!isPhasePassed(result)) {
       const fail = result.failure || {};
       const retryCause = retryFailureCause(fail);
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "dag_node_failed",
+        jobId,
+        project,
+        nodeId,
+        phase,
+        role,
+        code: fail.kind || "fatal",
+        reason: fail.reason || `${phase} phase failed`,
+        error: fail.reason || `${phase} phase failed`,
+        ts: ts(),
+      });
       await failJob(cpbRoot, project, jobId, {
         reason: fail.reason || `${phase} phase failed`,
         code: fail.kind || "fatal",
         phase,
-        cause: fail,
+        cause: { ...fail, nodeId },
       });
       await reportProgress(ctx, {
         type: "job_failed",
@@ -766,9 +1207,10 @@ export async function runJob(ctx) {
         failure: {
           kind: fail.kind,
           phase,
+          nodeId,
           reason: fail.reason,
           retryable: fail.retryable,
-          ...(retryCause ? { cause: retryCause } : {}),
+          ...(retryCause || fail.cause ? { cause: retryCause || fail.cause } : {}),
         },
         phaseResults,
       };
@@ -839,7 +1281,7 @@ async function preflightProvider({ providerServices, hubRoot, pool, phase, role,
     }
   }
 
-  // Try fallback candidates: other known variants (pool-configurable)
+  // Try fallback candidates supplied by the runtime pool/configuration.
   const fallbackCandidates = getFallbackCandidates(pool, resolvedAgent, variant, excludeProvider || providerKey);
   for (const candidate of fallbackCandidates) {
     try {
@@ -877,31 +1319,13 @@ async function preflightProvider({ providerServices, hubRoot, pool, phase, role,
 }
 
 function getFallbackCandidates(pool, agent, currentVariant, excludeKey) {
-  // Pool-provided candidates take precedence (runtime-configurable)
   if (pool?.fallbackCandidates) {
     try {
       const poolCandidates = pool.fallbackCandidates(agent, currentVariant, excludeKey);
-      if (Array.isArray(poolCandidates) && poolCandidates.length > 0) return poolCandidates;
-    } catch { /* fall through to defaults */ }
-  }
-
-  // Hardcoded defaults
-  const candidates = [];
-  if (agent === "claude") {
-    const variants = ["kimi-k2.6", "mimo-v2.5pro"];
-    for (const v of variants) {
-      const key = `claude:${v}`;
-      if (key !== excludeKey && v !== currentVariant) {
-        candidates.push({ agent: "claude", variant: v, providerKey: key });
-      }
-    }
-    // Also try plain claude if currently on a variant
-    if (currentVariant && "claude" !== excludeKey) {
-      candidates.push({ agent: "claude", variant: null, providerKey: "claude" });
+      return Array.isArray(poolCandidates) ? poolCandidates : [];
+    } catch {
+      return [];
     }
   }
-  if (agent === "codex" && "codex" !== excludeKey) {
-    candidates.push({ agent: "codex", variant: null, providerKey: "codex" });
-  }
-  return candidates;
+  return [];
 }

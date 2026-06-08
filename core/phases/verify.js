@@ -174,6 +174,7 @@ function formatCommandFailure(command, err) {
 
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const role = ctx.role || "verifier";
   const cwd = sourcePath || cpbRoot;
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
   const planEvidence = await collectPlanEvidence(planArtifact);
@@ -221,13 +222,13 @@ export async function runVerify(ctx) {
     project,
     jobId,
     phase: "verify",
-    role: "verifier",
+    role,
     agent: resolvedAgent.agent,
     prompt,
   });
 
   const agentResult = await runAgent({
-    role: "verifier",
+    role,
     ...resolvedAgent,
     project,
     jobId,
@@ -452,7 +453,8 @@ ${JSON.stringify(verificationEvidence, null, 2)}
 }
 
 function resolveAgent(ctx, fallback) {
-  const raw = ctx.agents?.verifier || ctx.agent || fallback;
+  const role = ctx.role || "verifier";
+  const raw = ctx.agents?.[role] || ctx.agents?.verifier || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }

@@ -90,7 +90,7 @@ test("issueToNormalizedEvent preserves issue data", () => {
 });
 
 async function setupProjectWithAutomation(hubRoot, cpbRoot, projectId, automationConfig) {
-  await registerProject(hubRoot, { id: projectId, sourcePath: cpbRoot });
+  await registerProject(hubRoot, { id: projectId, sourcePath: cpbRoot, skipCodeGraphGate: true });
   await bindProjectGithub(hubRoot, projectId, "acme/app");
   await updateProject(hubRoot, projectId, {
     github: {
@@ -132,7 +132,7 @@ test("autoEnqueueSyncedIssues skips when automation disabled", async (t) => {
   const hubRoot = await tempRoot("cpb-proactive-no-auto");
   const cpbRoot = await tempRoot("cpb-proactive-no-auto-cpb");
 
-  await registerProject(hubRoot, { id: "no-auto", sourcePath: cpbRoot });
+  await registerProject(hubRoot, { id: "no-auto", sourcePath: cpbRoot, skipCodeGraphGate: true });
   await bindProjectGithub(hubRoot, "no-auto", "acme/app");
 
   await writeGithubIssues(hubRoot, {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -8,6 +9,10 @@ import {
   REQUIRED_EXECUTOR_FILES,
   assertExecutorRoot,
 } from "../server/services/executor-root.js";
+import {
+  checkReleaseCompatibility,
+  installRelease,
+} from "../server/services/release-store.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const REQUIRED_SHARED_FILES = [
@@ -32,6 +37,12 @@ function listFiles(dir) {
 
 function relativeRepoPath(file) {
   return path.relative(ROOT, file).split(path.sep).join("/");
+}
+
+function writeStubFile(root, relativePath, content = "// stub\n") {
+  const file = path.join(root, relativePath);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content);
 }
 
 test("executor manifest lists the exact shared layer file set", () => {
@@ -96,6 +107,49 @@ test("assertExecutorRoot reports which file is missing", async () => {
       () => assertExecutorRoot(tmp),
       /executor root is missing bridges\/engine-bridge\.js/,
     );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release install tolerates npm package executor roots without package-lock", async () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "cpb-release-no-lock-"));
+  const sourceRoot = path.join(tmp, "source");
+  const destRoot = path.join(tmp, "releases");
+
+  try {
+    for (const dir of ["profiles", "skills", "templates"]) {
+      mkdirSync(path.join(sourceRoot, dir), { recursive: true });
+    }
+    writeStubFile(sourceRoot, "package.json", JSON.stringify({
+      name: "codepatchbay",
+      version: "0.0.0-test",
+      type: "module",
+    }, null, 2));
+    writeStubFile(sourceRoot, "cpb", "#!/usr/bin/env node\n");
+    for (const required of REQUIRED_EXECUTOR_FILES) {
+      writeStubFile(sourceRoot, required);
+    }
+
+    const manifest = await installRelease({
+      sourceRoot,
+      destRoot,
+      name: "no-lock",
+    });
+
+    assert.equal(manifest.releaseId, "no-lock");
+    assert.equal(manifest.codeVersion, "0.0.0-test");
+    await assert.rejects(
+      () => access(path.join(manifest.installedPath, "package-lock.json")),
+      /ENOENT/,
+    );
+
+    const compatibility = await checkReleaseCompatibility({
+      releaseId: "no-lock",
+      destRoot,
+    });
+    assert.deepEqual(compatibility.failures, []);
+    assert.equal(compatibility.ok, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

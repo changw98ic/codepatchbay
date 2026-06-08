@@ -52,7 +52,13 @@ if (allFiles.length === 0) {
 
 const browserFiles = allFiles.filter((f) => f.startsWith("tests/browser/"));
 const otherFiles = allFiles.filter((f) => !f.startsWith("tests/browser/"));
-const isolatedUnitFiles = otherFiles.filter((f) => f === "tests/quota-delegate.test.mjs");
+const isolatedUnitTestFiles = new Set([
+  "tests/acp-test-agent.test.mjs",
+  "tests/managed-worker.test.mjs",
+  "tests/quota-delegate.test.mjs",
+  "tests/worker-supervisor.test.mjs",
+]);
+const isolatedUnitFiles = otherFiles.filter((f) => isolatedUnitTestFiles.has(f));
 const parallelUnitFiles = otherFiles.filter((f) => !isolatedUnitFiles.includes(f));
 
 try {
