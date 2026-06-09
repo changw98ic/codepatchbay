@@ -62,9 +62,9 @@ async function readDaemonState(sourceRoot) {
   if (!state?.pid) return null;
   return {
     pid: state.pid,
-    codebaseRoot: sourceRoot,
+    codebaseRoot: state.codebaseRoot || sourceRoot,
     socketPath: state.socketPath || null,
-    source: "codegraph_daemon",
+    source: state.source || "codegraph_daemon",
   };
 }
 
@@ -79,7 +79,8 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath } = {}) {
 
   const statePath = path.join(path.resolve(cpbRoot || sourceRoot), "cpb-task", "codegraph-state.json");
   const stateFile = await readJson(statePath);
-  const state = stateFile?.pid ? stateFile : await readDaemonState(sourceRoot);
+  const daemonState = await readDaemonState(sourceRoot);
+  let state = stateFile?.pid ? stateFile : daemonState;
 
   const indexFile = await firstUsableIndexFile(sourceRoot);
   if (!indexFile) {
@@ -96,6 +97,9 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath } = {}) {
       indexFile,
     });
   }
+  if (!isAlive(state.pid) && daemonState?.pid && isAlive(daemonState.pid)) {
+    state = daemonState;
+  }
   if (!isAlive(state.pid)) {
     throw new CodeGraphUnavailableError("CodeGraph process is not running", {
       reason: "dead_codegraph_process",
@@ -104,7 +108,14 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath } = {}) {
     });
   }
 
-  const stateRoot = await canonicalDir(state.codebaseRoot);
+  let stateRoot = await canonicalDir(state.codebaseRoot);
+  if (stateRoot && stateRoot !== sourceRoot && daemonState?.pid && isAlive(daemonState.pid)) {
+    const daemonRoot = await canonicalDir(daemonState.codebaseRoot);
+    if (daemonRoot === sourceRoot) {
+      state = daemonState;
+      stateRoot = daemonRoot;
+    }
+  }
   if (!stateRoot || stateRoot !== sourceRoot) {
     throw new CodeGraphUnavailableError("CodeGraph state does not match sourcePath", {
       reason: "codegraph_root_mismatch",

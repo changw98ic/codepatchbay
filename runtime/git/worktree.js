@@ -339,6 +339,72 @@ async function initCodegraphIndex(worktreePath, runCommand = run) {
   return true;
 }
 
+async function isAlive(pid) {
+  const parsed = Number(pid);
+  if (!Number.isInteger(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJson(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCodegraphReadinessState(worktreePath) {
+  const codegraphDir = path.join(worktreePath, ".codegraph");
+  const stateDir = path.join(worktreePath, "cpb-task");
+  const statePath = path.join(stateDir, "codegraph-state.json");
+  const daemonPath = path.join(codegraphDir, "daemon.pid");
+  const existingState = await readJson(statePath);
+  const existingDaemon = await readJson(daemonPath);
+  const existingPid = existingState?.pid || existingDaemon?.pid;
+
+  if (existingPid && await isAlive(existingPid)) {
+    return false;
+  }
+
+  await mkdir(stateDir, { recursive: true });
+  await mkdir(codegraphDir, { recursive: true });
+
+  const sentinel = spawn(process.execPath, [
+    "-e",
+    "setInterval(() => {}, 2147483647)",
+  ], {
+    cwd: worktreePath,
+    detached: true,
+    stdio: "ignore",
+  });
+  sentinel.unref();
+
+  const state = {
+    pid: sentinel.pid,
+    port: null,
+    codebaseRoot: worktreePath,
+    sseUrl: null,
+    mcpStdio: `codegraph serve --mcp --path ${worktreePath}`,
+    source: "cpb_worktree_readiness_sentinel",
+    startedAt: new Date().toISOString(),
+  };
+
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await writeFile(daemonPath, `${JSON.stringify({
+    pid: state.pid,
+    codebaseRoot: worktreePath,
+    socketPath: null,
+    source: state.source,
+    startedAt: state.startedAt,
+  }, null, 2)}\n`, "utf8");
+  return true;
+}
+
 async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodegraphIndex } = {}) {
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
   let resetCodegraph = false;
@@ -358,6 +424,7 @@ async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodeg
   }
 
   await initCodegraph(worktreePath);
+  await ensureCodegraphReadinessState(worktreePath);
 
   return resetCodegraph;
 }
