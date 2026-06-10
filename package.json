@@ -1,6 +1,6 @@
 {
   "name": "codepatchbay",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -36,7 +36,10 @@
     "web/dist/",
     "scripts/",
     "README.md",
-    "docs/"
+    "docs/",
+    "!core/**/*.tmp",
+    "!runtime/cpb-runtime/",
+    "!*.tgz"
   ],
   "engines": {
     "node": ">=20.0.0"
