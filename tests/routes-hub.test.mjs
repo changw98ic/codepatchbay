@@ -109,6 +109,42 @@ describe('Hub routes', () => {
     assert.equal(acpBody.rateLimits.codex.reason, '429');
   });
 
+  it('rejects queue enqueue for unknown projects through HTTP routes', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/hub/queue/enqueue',
+      payload: { projectId: 'missing-project', description: 'should not enqueue' },
+    });
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message || res.json().error || '', /project/i);
+  });
+
+  it('rejects queue enqueue when sourcePath differs from the registered project source', async () => {
+    const otherRoot = path.join(cpbRoot, 'other-project');
+    await mkdir(otherRoot, { recursive: true });
+
+    const attach = await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: projectRoot, name: 'bounded-project' },
+    });
+    assert.equal(attach.statusCode, 200);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/hub/queue/enqueue',
+      payload: {
+        projectId: 'bounded-project',
+        sourcePath: otherRoot,
+        description: 'should not cross project boundary',
+      },
+    });
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message || res.json().error || '', /sourcePath/i);
+  });
+
   it('shares the same pool instance across /api/hub/acp calls', async () => {
     const first = await app.inject({ method: 'GET', url: '/api/hub/acp' });
     const second = await app.inject({ method: 'GET', url: '/api/hub/acp' });

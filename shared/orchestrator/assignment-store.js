@@ -5,6 +5,12 @@ import { writeJsonAtomic, writeJsonOnce } from "../fs-utils.js";
 
 const ASSIGNMENTS_DIR = "assignments";
 
+function terminalStatusFromResult(status) {
+  if (status === "completed") return "completed";
+  if (status === "cancelled") return "cancelled";
+  return "failed";
+}
+
 export class AssignmentStore {
   constructor(hubRoot) {
     this.baseDir = path.join(hubRoot, ASSIGNMENTS_DIR);
@@ -139,12 +145,13 @@ export class AssignmentStore {
       throw new Error(`attempt token mismatch for ${assignmentId} attempt ${attemptNum}`);
     }
 
-    attempt.status = result.status === "completed" ? "completed" : "failed";
+    const terminalStatus = terminalStatusFromResult(result.status);
+    attempt.status = terminalStatus;
     attempt.completedAt = new Date().toISOString();
     await this._writeAttempt(assignmentId, attemptNum, attempt);
 
     const state = await this._readState(assignmentId);
-    state.status = result.status === "completed" ? "completed" : "failed";
+    state.status = terminalStatus;
     state.completedAt = new Date().toISOString();
     state.resultWrittenAt = new Date().toISOString();
     // P0-3: reset finalization tracking — reconciler will finalize

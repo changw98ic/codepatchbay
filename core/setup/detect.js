@@ -72,7 +72,7 @@ async function probeTool(name, args, runCommand) {
 }
 
 async function probeAgent(agent, runCommand) {
-  return {
+  const result = {
     ...normalizeProbe(await runCommand(agent.binary, ["--version"])),
     id: agent.id,
     displayName: agent.displayName,
@@ -82,7 +82,22 @@ async function probeAgent(agent, runCommand) {
     roles: agent.roles,
     capabilities: agent.capabilities,
     installMethods: Object.keys(agent.install || {}),
+    adapter: agent.adapter || null,
   };
+
+  // Probe adapter availability when adapter command differs from agent binary
+  if (agent.adapter?.command && agent.adapter.command !== agent.binary) {
+    const adapterArgs = agent.adapter.args?.length ? agent.adapter.args : ["--help"];
+    const adapterProbe = normalizeProbe(await runCommand(agent.adapter.command, adapterArgs));
+    result.adapterInstalled = adapterProbe.installed;
+    result.adapterCommand = agent.adapter.command;
+  } else if (agent.adapter?.command && agent.adapter.command === agent.binary) {
+    // Adapter is the same binary (e.g. Reasonix) — already probed above
+    result.adapterInstalled = result.installed;
+    result.adapterCommand = agent.adapter.command;
+  }
+
+  return result;
 }
 
 export async function detectSetupEnvironment({

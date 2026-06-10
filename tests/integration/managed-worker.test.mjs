@@ -376,6 +376,55 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   await rm(root, { recursive: true, force: true });
 });
 
+test("managed worker completes blocked workflow without creating a worktree", async () => {
+  const root = await tempRoot("cpb-managed-blocked");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  const sourcePath = path.join(root, "source");
+  const workerId = "w-blocked";
+  await mkdir(sourcePath, { recursive: true });
+  await writeFile(path.join(sourcePath, "README.md"), "# Managed Worker Blocked Fixture\n", "utf8");
+  const { attemptDir } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    assignmentId: "a-managed-blocked",
+    entryId: "managed-blocked",
+    task: "blocked workflow should not need a worktree",
+    workflow: "blocked",
+    planMode: "none",
+    attemptToken: "attempt-token-blocked",
+  });
+
+  try {
+    const worker = spawnWorker({
+      workerId,
+      hubRoot,
+      cpbRoot,
+      env: {
+        CPB_ROOT: cpbRoot,
+        CPB_HUB_ROOT: hubRoot,
+        CPB_EXECUTOR_ROOT: repoRoot,
+        CPB_PROJECT_ROOTS: root,
+      },
+      timeoutMs: 20_000,
+    });
+
+    const finished = await worker.done;
+    assert.equal(finished.code, 0, finished.stderr);
+
+    const result = await readJson(path.join(attemptDir, "result.json"));
+    assert.equal(result.status, "blocked");
+    assert.equal(result.attemptToken, "attempt-token-blocked");
+    assert.equal(result.jobResult.status, "blocked");
+    assert.equal(result.jobResult.failure.cause.code, "workflow_blocked");
+    assert.equal(existsSync(path.join(attemptDir, "worktree.json")), false);
+    assert.equal(existsSync(path.join(hubRoot, "worktrees")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("managed worker stops an active assignment when its cancel control file appears", async () => {
   const root = await tempRoot("cpb-managed-cancel");
   const hubRoot = path.join(root, "hub");
@@ -447,8 +496,9 @@ test("managed worker stops an active assignment when its cancel control file app
       async () => readJson(path.join(attemptDir, "result.json")),
       { timeoutMs: 8_000 },
     );
-    assert.equal(result.status, "failed");
+    assert.equal(result.status, "cancelled");
     assert.equal(result.attemptToken, "attempt-token-cancel");
+    assert.equal(result.jobResult.status, "cancelled");
     assert.equal(result.jobResult.failure.kind, "runtime_interrupted");
     assert.equal(result.jobResult.failure.retryable, false);
     assert.match(result.jobResult.failure.reason, /cancel/i);

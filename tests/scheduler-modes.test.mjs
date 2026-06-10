@@ -261,6 +261,27 @@ test("FailureRouter does not consult supervisor for timeout in default mode", as
   assert.equal(result.action, "restart_worker_and_retry");
 });
 
+test("FailureRouter marks non-retryable rate limits as failed", async () => {
+  const router = new FailureRouter();
+
+  const result = await router.route({
+    assignment: { attempts: 0 },
+    attempt: { attempt: 1 },
+    result: {
+      failure: {
+        kind: FailureKind.AGENT_RATE_LIMITED,
+        reason: "provider unavailable by hard gate",
+        retryable: false,
+        cause: { hardGate: true, nextEligibleAt: Date.now() + 60_000 },
+      },
+    },
+  });
+
+  assert.equal(result.action, "mark_failed");
+  assert.equal(result.retryable, false);
+  assert.match(result.reason, /non-retryable/);
+});
+
 // ── Scheduler mode config persistence ──
 
 test("scheduler mode persists through config.json", async () => {
@@ -294,6 +315,47 @@ test("smart mode returns null when no pending entries", async () => {
   const hubRoot = await hubWithSchedulerMode("smart");
   const store = new AssignmentStore(hubRoot);
   await store.init();
+
+  const scheduler = new Scheduler(hubRoot, {
+    assignmentStore: store,
+    workerStore: { findIdleWorker: async () => null },
+  });
+
+  const candidate = await scheduler.nextCandidate();
+  assert.equal(candidate, null);
+});
+
+test("scheduler skips pending entries whose registered project is missing", async () => {
+  const hubRoot = await hubWithSchedulerMode("default");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  await enqueue(hubRoot, { projectId: "missing-project", description: "should not schedule" });
+
+  const scheduler = new Scheduler(hubRoot, {
+    assignmentStore: store,
+    workerStore: { findIdleWorker: async () => null },
+    getProjectFn: async () => null,
+  });
+
+  const candidate = await scheduler.nextCandidate();
+  assert.equal(candidate, null);
+});
+
+test("scheduler skips entries with future retryDecision untilTs", async () => {
+  const hubRoot = await hubWithSchedulerMode("default");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  const futureUntilTs = Date.now() + 60_000;
+  await enqueue(hubRoot, {
+    projectId: "proj",
+    description: "rate limited task",
+    metadata: {
+      retryDecision: {
+        action: "wait_for_rate_limit",
+        untilTs: futureUntilTs,
+      },
+    },
+  });
 
   const scheduler = new Scheduler(hubRoot, {
     assignmentStore: store,

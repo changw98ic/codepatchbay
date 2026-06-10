@@ -212,8 +212,8 @@ function parseCli(argv) {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
-  if (!["codex", "claude"].includes(result.agent)) {
-    throw new Error("--agent must be codex or claude");
+  if (!["codex", "claude", "reasonix"].includes(result.agent)) {
+    throw new Error("--agent must be codex, claude, or reasonix");
   }
   result.cwd = path.resolve(result.cwd || process.cwd());
   return result;
@@ -279,14 +279,19 @@ function parseEnvArgs(value) {
   return splitWords(trimmed);
 }
 
-function defaultAgentCommand(agent) {
-  if (agent === "codex") {
-    if (commandExists("codex-acp")) return { command: "codex-acp", args: [] };
-    return { command: "npx", args: ["-y", "@zed-industries/codex-acp"] };
-  }
+// ACP adapter lookup table — mirrors acp-client-core.mjs
+const ACP_ADAPTERS = {
+  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
+  claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
+  reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
+};
 
-  if (commandExists("claude-agent-acp")) return { command: "claude-agent-acp", args: [] };
-  return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
+function defaultAgentCommand(agent) {
+  const entry = ACP_ADAPTERS[agent];
+  if (!entry) throw new Error(`Unknown agent: '${agent}'. Set CPB_ACP_${agent.toUpperCase()}_COMMAND.`);
+  if (commandExists(entry.command)) return { command: entry.command, args: entry.args };
+  if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
+  return { command: entry.command, args: entry.args };
 }
 
 export function resolveAgentCommand(agent) {

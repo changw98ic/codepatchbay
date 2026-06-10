@@ -1,4 +1,5 @@
 import path from "node:path";
+import { realpath } from "node:fs/promises";
 import {
   deriveWorkerStatus,
   getProject,
@@ -84,6 +85,39 @@ async function findStaleProjectIndexBlock(hubRoot, cpbRoot, { projectId = null }
 
 function hubRoot(req) {
   return req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
+}
+
+async function canonicalDir(fastify, input, label) {
+  try {
+    return await realpath(path.resolve(input));
+  } catch {
+    throw fastify.httpErrors.badRequest(`${label} is not a readable directory: ${input}`);
+  }
+}
+
+async function validateQueueProjectBoundary(fastify, req, input) {
+  if (!input.projectId) {
+    throw fastify.httpErrors.badRequest("projectId is required");
+  }
+
+  const project = await getProject(hubRoot(req), input.projectId);
+  if (!project) {
+    throw fastify.httpErrors.badRequest(`Project '${input.projectId}' not found`);
+  }
+
+  const registeredSourcePath = await canonicalDir(fastify, project.sourcePath, "registered sourcePath");
+  if (input.sourcePath) {
+    const requestedSourcePath = await canonicalDir(fastify, input.sourcePath, "sourcePath");
+    if (requestedSourcePath !== registeredSourcePath) {
+      throw fastify.httpErrors.badRequest(`sourcePath must match registered project '${input.projectId}' sourcePath`);
+    }
+  }
+
+  return {
+    ...input,
+    sourcePath: registeredSourcePath,
+    cwd: registeredSourcePath,
+  };
 }
 
 export async function hubRoutes(fastify) {
@@ -200,7 +234,8 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.post("/hub/queue/enqueue", async (req) => {
-    const entry = await enqueue(hubRoot(req), req.body || {});
+    const input = await validateQueueProjectBoundary(fastify, req, req.body || {});
+    const entry = await enqueue(hubRoot(req), input);
     return { enqueued: true, entry };
   });
 

@@ -9,6 +9,7 @@
   "defaultRoles": ["executor", "remediator"],
   "stability": "stable",
   "envPrefix": "CPB_ACP_CLAUDE",
+  "protocol": "acp",
   "description": "Anthropic Claude Code in ACP mode",
   "lifecycle": "one-shot",
   "resumeCommand": "claude",

@@ -47,6 +47,7 @@
   },
   "adapter": {
     "protocol": "acp",
-    "command": "claude-agent-acp"
+    "command": "claude-agent-acp",
+    "npxPkg": "@agentclientprotocol/claude-agent-acp"
   }
 }
