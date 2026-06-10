@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildPredictions, collectOnce } from "../scripts/swebench-lite/collect.mjs";
+import { buildPredictions, collectOnce } from "../../scripts/swebench-lite/collect.mjs";
 import {
   loadDatasetInstances,
   parseEnqueueOutput,
@@ -14,8 +14,8 @@ import {
   runCommand,
   writeJson,
   writeJsonLines,
-} from "../scripts/swebench-lite/lib.mjs";
-import { tempRoot } from "./helpers.mjs";
+} from "../../scripts/swebench-lite/lib.mjs";
+import { tempRoot } from "../helpers.mjs";
 
 test("SWE-bench helper parses CPB enqueue output and derives bounded project ids", () => {
   const parsed = parseEnqueueOutput("Enqueued q-mq157asf-97lu (project=swelite-run-psf-requests-1963)\n");
