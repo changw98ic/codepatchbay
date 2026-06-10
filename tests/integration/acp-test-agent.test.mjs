@@ -3,13 +3,13 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { tempRoot } from "./helpers.mjs";
-import { runAgent } from "../core/agents/agent-runner.js";
-import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../server/services/acp-pool.js";
-import { buildAcpPoolEnv } from "../core/policy/child-env.js";
-import { AcpClient, resolveAgentCommand } from "../server/services/acp-client-core.mjs";
+import { tempRoot } from "../helpers.mjs";
+import { runAgent } from "../../core/agents/agent-runner.js";
+import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../../server/services/acp-pool.js";
+import { buildAcpPoolEnv } from "../../core/policy/child-env.js";
+import { AcpClient, resolveAgentCommand } from "../../server/services/acp-client-core.mjs";
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.mjs");
 const testAgent = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 

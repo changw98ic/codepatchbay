@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { runDemo } from "../server/services/demo-runner.js";
+import { runDemo } from "../../server/services/demo-runner.js";
 
 test("demo produces all required artifacts and a passing verdict", async () => {
   const result = await runDemo();
@@ -55,7 +55,7 @@ test("demo produces all required artifacts and a passing verdict", async () => {
 
 test("demo --json via CLI completes without real API keys", async () => {
   const { spawn } = await import("node:child_process");
-  const repoRoot = path.resolve(import.meta.dirname, "..");
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
   const cli = path.join(repoRoot, "cli", "cpb.mjs");
 
   const child = spawn(process.execPath, [cli, "demo", "--json"], {

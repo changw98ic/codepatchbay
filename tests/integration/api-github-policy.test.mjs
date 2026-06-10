@@ -9,24 +9,24 @@ import Fastify from "fastify";
 import sensible from "@fastify/sensible";
 import { test } from "node:test";
 
-import { githubRoutes } from "../server/routes/github.js";
-import { hubRoutes } from "../server/routes/hub.js";
-import { inboxRoutes } from "../server/routes/inbox.js";
-import { reviewRoutes } from "../server/routes/review.js";
-import { taskRoutes } from "../server/routes/tasks.js";
-import { parseChannelCommand } from "../server/services/channel-commands.js";
-import { evaluateChannelPolicy } from "../server/services/channel-policy.js";
-import { appendEvent } from "../server/services/event-store.js";
-import { saveGithubAppConfig } from "../server/services/github-app.js";
-import { createJob, completeJob } from "../server/services/job-store.js";
-import { readProjectIndex, writeProjectIndex } from "../server/services/project-index.js";
-import { createSession, getSession, updateSession } from "../server/services/review-session.js";
-import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
-import { registerProject, updateProject } from "../server/services/hub-registry.js";
-import { tempRoot, writeJson } from "./helpers.mjs";
+import { githubRoutes } from "../../server/routes/github.js";
+import { hubRoutes } from "../../server/routes/hub.js";
+import { inboxRoutes } from "../../server/routes/inbox.js";
+import { reviewRoutes } from "../../server/routes/review.js";
+import { taskRoutes } from "../../server/routes/tasks.js";
+import { parseChannelCommand } from "../../server/services/channel-commands.js";
+import { evaluateChannelPolicy } from "../../server/services/channel-policy.js";
+import { appendEvent } from "../../server/services/event-store.js";
+import { saveGithubAppConfig } from "../../server/services/github-app.js";
+import { createJob, completeJob } from "../../server/services/job-store.js";
+import { readProjectIndex, writeProjectIndex } from "../../server/services/project-index.js";
+import { createSession, getSession, updateSession } from "../../server/services/review-session.js";
+import { enqueue, listQueue, updateEntry } from "../../server/services/hub-queue.js";
+import { registerProject, updateProject } from "../../server/services/hub-registry.js";
+import { tempRoot, writeJson } from "../helpers.mjs";
 
 const execFile = promisify(execFileCb);
-const repoRoot = path.resolve(import.meta.dirname, "..");
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const gitEnv = {
   ...process.env,
   GIT_AUTHOR_NAME: "CPB Test",

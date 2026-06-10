@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { tempRoot } from "./helpers.mjs";
-import { createWorktree } from "../runtime/git/worktree.js";
+import { tempRoot } from "../helpers.mjs";
+import { createWorktree } from "../../runtime/git/worktree.js";
 
 function git(cwd, args) {
   const result = spawnSync("git", args, {

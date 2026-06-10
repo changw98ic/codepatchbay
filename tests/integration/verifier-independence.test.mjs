@@ -8,11 +8,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { bridgeForPhase } from "../server/services/supervisor.js";
-import { collectVerifierEvidence } from "../server/services/verifier-evidence.js";
-import { createJob, startPhase, completePhase } from "../server/services/job-store.js";
-import { wikiProjectDir, outputsDir, contextPath } from "../server/services/phase-locator.js";
-import { parseVerdict } from "../bridges/run-pipeline.mjs";
+import { bridgeForPhase } from "../../server/services/supervisor.js";
+import { collectVerifierEvidence } from "../../server/services/verifier-evidence.js";
+import { createJob, startPhase, completePhase } from "../../server/services/job-store.js";
+import { wikiProjectDir, outputsDir, contextPath } from "../../server/services/phase-locator.js";
+import { parseVerdict } from "../../bridges/run-pipeline.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(".");

@@ -9,12 +9,12 @@ import {
   reconcileJobs,
   cleanupDryRun,
   cleanupJobs,
-} from "../server/services/reconcile.js";
-import { appendEvent } from "../server/services/runtime-events.js";
-import { createJob, failJob, completeJob } from "../server/services/job-store.js";
-import { acquireLease } from "../server/services/lease-manager.js";
-import { rebuildJobsIndex, readJobsIndex } from "../server/services/jobs-index.js";
-import { resolveHubRoot } from "../server/services/hub-registry.js";
+} from "../../server/services/reconcile.js";
+import { appendEvent } from "../../server/services/event-store.js";
+import { createJob, failJob, completeJob } from "../../server/services/job-store.js";
+import { acquireLease } from "../../server/services/lease-manager.js";
+import { rebuildJobsIndex, readJobsIndex } from "../../server/services/jobs-index.js";
+import { resolveHubRoot } from "../../server/services/hub-registry.js";
 
 function mkdtemp(prefix) {
   const dir = path.join(os.tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -513,7 +513,7 @@ describe("job-runner - signal handling", () => {
     const waitScript = "setTimeout(function(){},10000)";
 
     const bridgePath = path.resolve(
-      path.join(import.meta.dirname, "..", "bridges", "job-runner.mjs")
+      path.join(import.meta.dirname, "..", "..", "bridges", "job-runner.mjs")
     );
 
     const child = spawn(process.execPath, [

@@ -12,10 +12,10 @@ import {
   extractDeliverableId,
   extractArtifactId,
   dispatchPhase,
-} from "../server/services/phase-runner.js";
-import { createJob, getJob } from "../server/services/job-store.js";
-import { wikiProjectDir } from "../server/services/phase-locator.js";
-import { readEvents } from "../server/services/event-store.js";
+} from "../../server/services/phase-runner.js";
+import { createJob, getJob } from "../../server/services/job-store.js";
+import { wikiProjectDir } from "../../server/services/phase-locator.js";
+import { readEvents } from "../../server/services/event-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-runner-"));
 const project = "runner-test";

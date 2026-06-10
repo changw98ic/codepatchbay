@@ -5,12 +5,12 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createIsolatedWorktreeWithRetry } from "../runtime/worker/worktree-manager.js";
-import { finalizeAndWriteSuccessfulResult } from "../runtime/worker/assignment-finalizer.js";
-import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
-import { readJson, tempRoot, writeJson } from "./helpers.mjs";
+import { createIsolatedWorktreeWithRetry } from "../../runtime/worker/worktree-manager.js";
+import { finalizeAndWriteSuccessfulResult } from "../../runtime/worker/assignment-finalizer.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { readJson, tempRoot, writeJson } from "../helpers.mjs";
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
 const testAgentScript = path.join(repoRoot, "server", "services", "test-acp-agent.mjs");
 

@@ -21,10 +21,10 @@ import {
   checkReleaseCompatibility,
   selectRelease,
   ReleaseCompatibilityError,
-} from "../server/services/release-store.js";
+} from "../../server/services/release-store.js";
 
 const execFileAsync = promisify(execFile);
-const CPB_ROOT = path.resolve(import.meta.dirname, "..");
+const CPB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const CPB_BIN = path.join(CPB_ROOT, "cpb");
 
 async function pathExists(p) {
@@ -32,9 +32,13 @@ async function pathExists(p) {
 }
 
 async function buildFixtureSource(root) {
+  const { REQUIRED_EXECUTOR_FILES } = await import("../server/services/executor-root.js");
+
   const dirs = [
-    "bridges", "server/services", "profiles", "templates",
+    "bridges", "cli", "server/services", "profiles", "templates",
     "wiki/system", "wiki/projects/_template", "wiki/projects/flow",
+    "core/workflow", "shared/orchestrator", "scripts",
+    "runtime/evolve", "runtime/worker", "skills",
   ];
   for (const dir of dirs) await mkdir(path.join(root, dir), { recursive: true });
 
@@ -49,16 +53,27 @@ async function buildFixtureSource(root) {
     "wiki/system/.keep": "",
     "wiki/projects/_template/.keep": "",
     "wiki/projects/flow/context.md": "# flow context",
+    "skills/.keep": "",
   };
   for (const [rel, content] of Object.entries(files)) {
     await writeFile(path.join(root, rel), content, "utf8");
   }
+
+  // Create all REQUIRED_EXECUTOR_FILES so assertExecutorRoot passes
+  for (const rel of REQUIRED_EXECUTOR_FILES) {
+    const abs = path.join(root, rel);
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, "", "utf8");
+  }
+
   await writeFile(
     path.join(root, "package.json"),
     JSON.stringify({ name: "codepatchbay", version: "0.2.0" }),
     "utf8",
   );
   await writeFile(path.join(root, "cpb"), "#!/bin/bash\necho cpb\n", "utf8");
+  const { chmod: chmodP } = await import("node:fs/promises");
+  await chmodP(path.join(root, "cpb"), 0o755);
 }
 
 async function installTestRelease(sourceRoot, destRoot, name, now) {
@@ -123,7 +138,8 @@ describe("listReleases", () => {
   });
 
   test("returns empty array when store root is absent", async () => {
-    const result = await listReleases({ destRoot: "/nonexistent/path" });
+    const isolatedEnv = { ...process.env, CPB_HOME: "/nonexistent/cpb-home" };
+    const result = await listReleases({ destRoot: "/nonexistent/path", env: isolatedEnv });
     assert.equal(result.releaseStoreRoot, path.resolve("/nonexistent/path"));
     assert.equal(result.current, null);
     assert.equal(result.releases.length, 0);
@@ -575,14 +591,19 @@ describe("cpb release list CLI", () => {
   });
 
   test("list --json returns parseable JSON with empty releases", async () => {
-    const { stdout } = await execFileAsync(CPB_BIN, [
-      "release", "list", "--json", "--dest-root", destRoot,
-    ], { env: { ...process.env, CPB_ROOT: CPB_ROOT, CPB_EXECUTOR_ROOT: CPB_ROOT } });
+    const emptyHome = await mkdtemp(path.join(tmpdir(), "cpb-list-cli-home-"));
+    try {
+      const { stdout } = await execFileAsync(CPB_BIN, [
+        "release", "list", "--json", "--dest-root", destRoot,
+      ], { env: { ...process.env, CPB_ROOT: CPB_ROOT, CPB_EXECUTOR_ROOT: CPB_ROOT, CPB_HOME: emptyHome } });
 
-    const parsed = JSON.parse(stdout);
-    assert.ok(parsed.releaseStoreRoot);
-    assert.equal(parsed.current, null);
-    assert.ok(Array.isArray(parsed.releases));
+      const parsed = JSON.parse(stdout);
+      assert.ok(parsed.releaseStoreRoot);
+      assert.equal(parsed.current, null);
+      assert.ok(Array.isArray(parsed.releases));
+    } finally {
+      await rm(emptyHome, { recursive: true, force: true });
+    }
   });
 
   test("list --json returns installed releases", async () => {

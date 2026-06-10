@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-const root = path.resolve(import.meta.dirname, "..");
+const root = path.resolve(import.meta.dirname, "..", "..");
 const client = path.join(root, "bridges", "acp-client.mjs");
 const fakeAgent = path.join(root, "tests", "fixtures", "fake-acp-agent.mjs");
 const fakeActiveAgent = path.join(root, "tests", "fixtures", "fake-active-acp-agent.mjs");

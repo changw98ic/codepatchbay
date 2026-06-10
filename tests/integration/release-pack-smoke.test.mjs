@@ -8,13 +8,13 @@ import { test } from "node:test";
 import {
   REQUIRED_EXECUTOR_FILES,
   assertExecutorRoot,
-} from "../server/services/executor-root.js";
+} from "../../server/services/executor-root.js";
 import {
   checkReleaseCompatibility,
   installRelease,
-} from "../server/services/release-store.js";
+} from "../../server/services/release-store.js";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const REQUIRED_SHARED_FILES = [
   "shared/fs-utils.js",
   "shared/logger.js",

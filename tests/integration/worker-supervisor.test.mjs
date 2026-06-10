@@ -3,10 +3,10 @@ import { mkdir, readFile, rm, writeFile, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
-import { WorkerSupervisor } from "../server/orchestrator/worker-supervisor.js";
-import { WorkerStore } from "../shared/orchestrator/worker-store.js";
+import { WorkerSupervisor } from "../../server/orchestrator/worker-supervisor.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
 async function tempRoot(label) {
   const dir = path.join(repoRoot, ".test-tmp", `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`);

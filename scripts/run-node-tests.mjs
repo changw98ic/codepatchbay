@@ -51,34 +51,66 @@ if (allFiles.length === 0) {
 }
 
 const browserFiles = allFiles.filter((f) => f.startsWith("tests/browser/"));
-const otherFiles = allFiles.filter((f) => !f.startsWith("tests/browser/"));
-const isolatedUnitTestFiles = new Set([
-  "tests/acp-test-agent.test.mjs",
-  "tests/managed-worker.test.mjs",
-  "tests/quota-delegate.test.mjs",
-  "tests/worker-supervisor.test.mjs",
+const integrationFiles = allFiles.filter((f) => f.startsWith("tests/integration/"));
+const unitFiles = allFiles.filter((f) => !f.startsWith("tests/browser/") && !f.startsWith("tests/integration/"));
+
+const isolatedIntegrationFiles = new Set([
+  "tests/integration/acp-test-agent.test.mjs",
+  "tests/integration/managed-worker.test.mjs",
+  "tests/integration/worker-supervisor.test.mjs",
 ]);
-const isolatedUnitFiles = otherFiles.filter((f) => isolatedUnitTestFiles.has(f));
-const parallelUnitFiles = otherFiles.filter((f) => !isolatedUnitFiles.includes(f));
+const isolatedFiles = integrationFiles.filter((f) => isolatedIntegrationFiles.has(f));
+const parallelIntegrationFiles = integrationFiles.filter((f) => !isolatedFiles.includes(f));
+
+// When --unit flag is passed, only run unit tests (fast, <15s)
+const unitOnly = process.argv.includes("--unit");
+// When --integration flag is passed, only run integration tests
+const integrationOnly = process.argv.includes("--integration");
 
 try {
-  // Browser E2E tests: run serially to avoid concurrent Chromium contention
-  if (browserFiles.length > 0) {
-    await runTests(browserFiles, {
-      concurrency: 1,
-      env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
-      label: "browser E2E tests",
-    });
-  }
-
-  // Other unit tests: run in parallel (default Node concurrency).
-  if (parallelUnitFiles.length > 0) {
-    await runTests(parallelUnitFiles, { label: "unit tests" });
-  }
-
-  // Real-process delegate integration tests need isolation from parallel load.
-  if (isolatedUnitFiles.length > 0) {
-    await runTests(isolatedUnitFiles, { concurrency: 1, label: "isolated unit tests" });
+  if (unitOnly) {
+    if (unitFiles.length > 0) {
+      await runTests(unitFiles, { label: "unit tests" });
+    }
+  } else if (integrationOnly) {
+    // Browser E2E tests: run serially to avoid concurrent Chromium contention
+    if (browserFiles.length > 0) {
+      await runTests(browserFiles, {
+        concurrency: 1,
+        env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
+        label: "browser E2E tests",
+      });
+    }
+    // Parallel-safe integration tests
+    if (parallelIntegrationFiles.length > 0) {
+      await runTests(parallelIntegrationFiles, { label: "integration tests" });
+    }
+    // Real-process integration tests need isolation from parallel load.
+    if (isolatedFiles.length > 0) {
+      await runTests(isolatedFiles, { concurrency: 1, label: "isolated integration tests" });
+    }
+  } else {
+    // Default: run everything
+    // Browser E2E tests: run serially
+    if (browserFiles.length > 0) {
+      await runTests(browserFiles, {
+        concurrency: 1,
+        env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
+        label: "browser E2E tests",
+      });
+    }
+    // Unit tests: run in parallel (fast)
+    if (unitFiles.length > 0) {
+      await runTests(unitFiles, { label: "unit tests" });
+    }
+    // Parallel-safe integration tests
+    if (parallelIntegrationFiles.length > 0) {
+      await runTests(parallelIntegrationFiles, { label: "integration tests" });
+    }
+    // Isolated integration tests (serial)
+    if (isolatedFiles.length > 0) {
+      await runTests(isolatedFiles, { concurrency: 1, label: "isolated integration tests" });
+    }
   }
 } catch (err) {
   console.error(err.message);

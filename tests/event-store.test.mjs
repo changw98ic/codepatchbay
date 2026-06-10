@@ -23,11 +23,12 @@ describe("external_repair events in materializeJob", () => {
   });
 
   it("external_repair_completed sets externalRepair status to completed", () => {
+    const t = ts(200);
     const state = materialize(
       { type: "external_repair_started", reason: "fix", ts: ts(100) },
-      { type: "external_repair_completed", result: { ok: true }, ts: ts(200) },
+      { type: "external_repair_completed", result: { ok: true }, ts: t },
     );
-    assert.deepStrictEqual(state.externalRepair, { status: "completed", result: { ok: true }, ts: ts(200) });
+    assert.deepStrictEqual(state.externalRepair, { status: "completed", result: { ok: true }, ts: t });
   });
 
   it("external_repair_failed sets externalRepair status to failed", () => {

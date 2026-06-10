@@ -11,10 +11,10 @@ const EVENT_STORE = readFileSync(
 
 const EVENT_REGISTRY = {
   job_created:            { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_created', 'createJob'] },
-  worktree_created:       { class: 'state',    consumer: 'job-store, worktree-manager', testFile: 'worktree-manager.test.mjs', testMatch: ['worktree'] },
+  worktree_created:       { class: 'state',    consumer: 'job-store, worktree-manager', testFile: 'integration/worktree-manager.test.mjs', testMatch: ['worktree'] },
   phase_started:          { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['phase_started', 'startPhase'] },
   phase_completed:        { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['phase_completed', 'completePhase'] },
-  phase_failed:           { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'phase-runner.test.mjs', testMatch: ['phase_failed'] },
+  phase_failed:           { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'integration/phase-runner.test.mjs', testMatch: ['phase_failed'] },
   budget_exceeded:        { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['budget_exceeded', 'budgetExceeded'] },
   job_blocked:            { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_blocked', 'blockJob'] },
   job_failed:             { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.mjs', testMatch: ['job_failed', 'failJob'] },
@@ -33,7 +33,7 @@ const EVENT_REGISTRY = {
   plan_decision:          { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'engine-provider-event.test.mjs', testMatch: ['planMode'] },
   plan_cache_decision:    { class: 'state',    consumer: 'job-store, plan-cache',     testFile: 'event-store.test.mjs', testMatch: ['plan_cache_decision'] },
   plan_cache_updated:     { class: 'state',    consumer: 'job-store, plan-cache',     testFile: 'event-store.test.mjs', testMatch: ['plan_cache_updated'] },
-  phase_activity:         { class: 'activity', consumer: 'job-projection, dashboard', testFile: 'reconcile.test.mjs', testMatch: ['phase_activity'] },
+  phase_activity:         { class: 'activity', consumer: 'job-projection, dashboard', testFile: 'integration/reconcile.test.mjs', testMatch: ['phase_activity'] },
   pool_exhausted:         { class: 'control',  consumer: 'acp-pool, supervisor',      testFile: 'event-store.test.mjs', testMatch: ['pool_exhausted'] },
   riskmap_generated:      { class: 'state',    consumer: 'risk-engine, supervisor',   testFile: 'dw08-acceptance.test.mjs', testMatch: ['riskmap_generated'] },
   dynamic_agent_plan_generated: { class: 'state', consumer: 'planner, supervisor',    testFile: 'dw08-acceptance.test.mjs', testMatch: ['dynamic_agent_plan_generated'] },

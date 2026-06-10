@@ -18,7 +18,7 @@ describe("ProjectWorker", () => {
   beforeEach(async () => {
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
     sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
-    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir, skipCodeGraphGate: true });
     projectId = project.id;
   });
 
@@ -28,13 +28,15 @@ describe("ProjectWorker", () => {
   });
 
   function makeWorker(opts = {}) {
-    return new ProjectWorker({
+    const w = new ProjectWorker({
       projectId,
       hubRoot,
       once: true,
       runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
       ...opts,
     });
+    if (activeWorkers) activeWorkers.push(w);
+    return w;
   }
 
   test("init resolves project from registry", async () => {
@@ -87,7 +89,7 @@ describe("ProjectWorker", () => {
 
   test("claimNext ignores entries for other projects", async () => {
     const otherDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-other-"));
-    const other = await registerProject(hubRoot, { name: "other-proj", sourcePath: otherDir });
+    const other = await registerProject(hubRoot, { name: "other-proj", sourcePath: otherDir, skipCodeGraphGate: true });
     await enqueue(hubRoot, { projectId: other.id, description: "other task" });
 
     const worker = makeWorker();
@@ -456,18 +458,20 @@ describe("ProjectWorker stale queue recovery", () => {
   beforeEach(async () => {
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
     sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
-    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir, skipCodeGraphGate: true });
     projectId = project.id;
   });
 
   function makeWorker(opts = {}) {
-    return new ProjectWorker({
+    const w = new ProjectWorker({
       projectId,
       hubRoot,
       once: true,
       runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
       ...opts,
     });
+    if (activeWorkers) activeWorkers.push(w);
+    return w;
   }
 
   async function claimAs(workerId, entryId, claimedAtIso) {
@@ -534,7 +538,7 @@ describe("ProjectWorker stale queue recovery", () => {
 
   test("recoverStaleEntries does not touch other project entries", async () => {
     const otherDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-other-"));
-    const other = await registerProject(hubRoot, { name: "other-proj", sourcePath: otherDir });
+    const other = await registerProject(hubRoot, { name: "other-proj", sourcePath: otherDir, skipCodeGraphGate: true });
     const otherEntry = await enqueue(hubRoot, { projectId: other.id, description: "other-stale" });
     const oldTime = new Date(Date.now() - 200_000).toISOString();
     await claimAs("worker-x", otherEntry.id, oldTime);
@@ -653,22 +657,34 @@ describe("ProjectWorker crash and reconnect resilience", () => {
   let hubRoot;
   let sourceDir;
   let projectId;
+  let activeWorkers = [];
 
   beforeEach(async () => {
     hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
     sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
-    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir });
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir, skipCodeGraphGate: true });
     projectId = project.id;
+    activeWorkers = [];
+  });
+
+  afterEach(() => {
+    for (const w of activeWorkers) {
+      try { w.requestStop(); } catch {}
+      try { w.stopHeartbeat?.(); } catch {}
+    }
+    activeWorkers = [];
   });
 
   function makeWorker(opts = {}) {
-    return new ProjectWorker({
+    const w = new ProjectWorker({
       projectId,
       hubRoot,
       once: true,
       runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
       ...opts,
     });
+    if (activeWorkers) activeWorkers.push(w);
+    return w;
   }
 
   test("heartbeat suppresses transient errors and worker continues processing", async () => {
@@ -682,6 +698,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
       heartbeatMs: 10,
       runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" }),
     });
+    activeWorkers.push(worker);
 
     // Monkey-patch init to intercept heartbeat: after init, sabotage the hubRoot
     // so the first heartbeat fails, then restore it.
@@ -736,6 +753,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
         return Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" });
       },
     });
+    activeWorkers.push(worker);
 
     // Enqueue one entry
     await enqueue(hubRoot, { projectId, description: "resilient-task", sourcePath: sourceDir });
@@ -792,6 +810,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
       once: true,
       runPipelineFn: () => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" }),
     });
+    activeWorkers.push(workerB);
     await workerB.init();
     await workerB.heartbeat();
     const result = await workerB.run();

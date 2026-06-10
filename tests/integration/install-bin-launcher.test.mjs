@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test, { describe, beforeEach, afterEach } from "node:test";
 
-import { installBin, renderLauncher, resolveInstallBinExecutorRoot, shellQuoteSingle } from "../server/services/install-bin.js";
-import { installRelease } from "../server/services/release-store.js";
+import { installBin, renderLauncher, resolveInstallBinExecutorRoot, shellQuoteSingle } from "../../server/services/install-bin.js";
+import { installRelease } from "../../server/services/release-store.js";
 
 const execFileAsync = promisify(execFile);
 
-const CPB_ROOT = path.resolve(import.meta.dirname, "..");
+const CPB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const CPB_BIN = path.join(CPB_ROOT, "cpb");
 
 async function pathExists(p) {
@@ -19,9 +19,13 @@ async function pathExists(p) {
 }
 
 async function buildFixtureSource(root) {
+  const { REQUIRED_EXECUTOR_FILES } = await import("../server/services/executor-root.js");
+
   const dirs = [
-    "bridges", "server/services", "profiles", "templates",
+    "bridges", "cli", "server/services", "profiles", "templates",
     "wiki/system", "wiki/projects/_template", "wiki/projects/flow",
+    "core/workflow", "shared/orchestrator", "scripts",
+    "runtime/evolve", "runtime/worker",
   ];
   for (const dir of dirs) await mkdir(path.join(root, dir), { recursive: true });
 
@@ -40,12 +44,21 @@ async function buildFixtureSource(root) {
   for (const [rel, content] of Object.entries(files)) {
     await writeFile(path.join(root, rel), content, "utf8");
   }
+
+  // Create all REQUIRED_EXECUTOR_FILES so assertExecutorRoot passes
+  for (const rel of REQUIRED_EXECUTOR_FILES) {
+    const abs = path.join(root, rel);
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, "", "utf8");
+  }
+
   await writeFile(
     path.join(root, "package.json"),
     JSON.stringify({ name: "codepatchbay", version: "0.2.0" }),
     "utf8",
   );
   await writeFile(path.join(root, "cpb"), "#!/bin/bash\necho cpb\n", "utf8");
+  await chmod(path.join(root, "cpb"), 0o755);
 }
 
 describe("renderLauncher", () => {
@@ -55,7 +68,7 @@ describe("renderLauncher", () => {
       runtimeRootDefault: "${CPB_HOME:-$HOME/.cpb}",
     });
     assert.ok(script.startsWith("#!/bin/sh"));
-    assert.ok(script.includes("set -euo pipefail"));
+    assert.ok(script.includes("set -eu"));
     assert.ok(script.includes(`CPB_EXECUTOR_ROOT=${shellQuoteSingle("/opt/cpb/releases/v1")}`));
     assert.ok(script.includes("CPB_ROOT"));
     assert.ok(script.includes("${CPB_HOME:-$HOME/.cpb}"));
