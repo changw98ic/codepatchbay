@@ -200,6 +200,8 @@ export function isAllowedChildEnvKey(key, options = {}) {
   return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key) || isDynamicAcpPoolEnvKey(key);
 }
 
+const RUNTIME_ALLOWED = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
+
 function _filterEnv(parentEnv, extra, predicate) {
   const env = {};
   for (const [k, v] of Object.entries(parentEnv || {})) { if (predicate(k, v)) env[k] = v; }
@@ -212,8 +214,7 @@ export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
 }
 
 export function buildRuntimeEnv(parentEnv = {}, extra = {}) {
-  const allowed = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
-  return _filterEnv(parentEnv, extra, (k) => allowed.has(k));
+  return _filterEnv(parentEnv, extra, (k) => RUNTIME_ALLOWED.has(k));
 }
 
 export function buildAcpPoolEnv(parentEnv = {}, extra = {}) {
