@@ -38,6 +38,7 @@ describe('Hub routes', () => {
   let app;
 
   beforeEach(async () => {
+    resetAllPoolRuntimes();
     cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-cpb-'));
     hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-hub-'));
     projectRoot = await mkdtemp(path.join(tmpdir(), 'cpb-route-project-'));
@@ -58,7 +59,7 @@ describe('Hub routes', () => {
       url: '/api/hub/projects/attach',
       payload: { sourcePath: projectRoot, name: 'route-project' },
     });
-    assert.equal(attach.statusCode, 200);
+    if (attach.statusCode !== 200) { console.error("attach failed:", attach.json()); } assert.equal(attach.statusCode, 200);
     assert.equal(attach.json().project.id, 'route-project');
 
     const heartbeat = await app.inject({
@@ -213,13 +214,65 @@ describe('Hub routes', () => {
     assert.ok(body.generatedAt);
     assert.equal(body.workers.online, 1);
     assert.equal(body.workers.details.length, 1);
-    assert.equal(body.workers.details[0].id, 'obs-route-project');
+    assert.equal(body.workers.details[0].id, 'obs-worker');
+    assert.equal(body.workers.details[0].projectId, 'obs-route-project');
     assert.equal(body.workers.details[0].status, 'online');
     assert.ok(typeof body.workers.details[0].ageMs === 'number');
     assert.ok(body.queue);
     assert.ok(body.pools);
     assert.ok(body.dispatchSummary);
     assert.equal(body.dispatchSummary.total, 0);
+  });
+
+  it('deduplicates registry heartbeats against managed workers in observability', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: projectRoot, name: 'dedupe-route-project' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/dedupe-route-project/heartbeat',
+      payload: { workerId: 'dedupe-worker', status: 'online', capabilities: ['scan'] },
+    });
+    const { WorkerStore } = await import('../shared/orchestrator/worker-store.js');
+    const workerStore = new WorkerStore(hubRoot);
+    await workerStore.init();
+    await workerStore.registerWorker('dedupe-worker', {
+      projectId: 'dedupe-route-project',
+      status: 'ready',
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/hub/observability' });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.workers.details.length, 1);
+    assert.equal(body.workers.details[0].id, 'dedupe-worker');
+    assert.equal(body.workers.details[0].projectId, 'dedupe-route-project');
+    assert.equal(body.workers.ready, 1);
+    assert.equal(body.workers.online, 0);
+  });
+
+  it('counts unknown worker statuses in Hub status', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/attach',
+      payload: { sourcePath: projectRoot, name: 'unknown-worker-project' },
+    });
+    const heartbeat = await app.inject({
+      method: 'POST',
+      url: '/api/hub/projects/unknown-worker-project/heartbeat',
+      payload: { workerId: 'unknown-worker', status: 'paused' },
+    });
+    assert.equal(heartbeat.statusCode, 200);
+
+    const status = await app.inject({ method: 'GET', url: '/api/hub/status' });
+    assert.equal(status.statusCode, 200);
+    const body = status.json();
+    assert.equal(body.workersOnline, 0);
+    assert.equal(body.workersStale, 0);
+    assert.equal(body.workersOffline, 0);
+    assert.equal(body.workersUnknown, 1);
   });
 
   it('returns UI-readable task history via /api/hub/task-history', async () => {
