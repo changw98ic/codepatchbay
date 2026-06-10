@@ -8,7 +8,16 @@ import { getWorkflow, isWorkflowName } from "../workflow/definition.js";
  * @param {string}   planMode - One of: full, light, none, parent.
  * @returns {{ phases: string[], warning?: string }}
  */
-function applyPlanMode(phases, planMode) {
+function applyPlanMode(phases, planMode, workflowName) {
+  if (workflowName === "direct" && (planMode === "light" || planMode === "none")) {
+    return {
+      phases: phases.filter((p) => p === "execute"),
+      ...(planMode === "none" && {
+        warning: 'planMode "none" is an escape hatch — do not use for normal durable mutating jobs',
+      }),
+    };
+  }
+
   switch (planMode) {
     case "full":
       return { phases };
@@ -38,7 +47,7 @@ export function resolveSemanticPhases({ workflow = "standard", planMode = "auto"
   const resolvedPlanMode = planMode === "auto"
     ? defaultPlanModeForWorkflow(workflowName)
     : planMode || "full";
-  const result = applyPlanMode(wf.phases, resolvedPlanMode);
+  const result = applyPlanMode(wf.phases, resolvedPlanMode, workflowName);
   return {
     phases: result.phases,
     resolvedPlanMode,

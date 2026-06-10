@@ -52,13 +52,13 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
     raw = await readFile(file, "utf8");
   } catch (err) {
     if (err && err.code === "ENOENT") {
-      return { valid: true, events: [], recovered: false, error: null };
+      return { valid: true, events: [], recovered: false, repaired: false, wouldRepair: false, error: null };
     }
     throw err;
   }
 
   if (raw.length === 0) {
-    return { valid: true, events: [], recovered: false, error: null };
+    return { valid: true, events: [], recovered: false, repaired: false, wouldRepair: false, error: null };
   }
 
   const hasTrailingNewline = raw.endsWith("\n");
@@ -80,7 +80,9 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
             valid: true,
             events: recoveredEvents,
             recovered: false,
+            repaired: false,
             wouldRecover: true,
+            wouldRepair: true,
             error: null,
           };
         }
@@ -89,6 +91,8 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
           valid: true,
           events: recoveredEvents,
           recovered: true,
+          repaired: true,
+          wouldRepair: false,
           recoveryResult,
           error: null,
         };
@@ -97,6 +101,8 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
         valid: false,
         events: null,
         recovered: false,
+        repaired: false,
+        wouldRepair: false,
         error: { file, lineNumber, reason: "malformed JSON" },
       };
     }
@@ -105,20 +111,24 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
         valid: false,
         events: null,
         recovered: false,
+        repaired: false,
+        wouldRepair: false,
         error: { file, lineNumber, reason: "event must be a non-null object" },
       };
     }
     events.push(event);
   }
 
-  return { valid: true, events, recovered: false, error: null };
+  return { valid: true, events, recovered: false, repaired: false, wouldRepair: false, error: null };
 }
 
 export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
+  const streamRecoveries = [];
   const report = {
     staleJobs: [],
     orphanLeases: [],
-    streamRecoveries: [],
+    streamRecoveries,
+    streamRepairs: streamRecoveries,
     streamErrors: [],
     indexRebuilt: false,
     workers: { stale: [] },
@@ -446,8 +456,14 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         lineNumber: result.error.lineNumber,
         reason: result.error.reason,
       });
-    } else if (result.recovered || result.wouldRecover) {
-      report.streamRecoveries.push({ project, jobId, wouldRecover: result.wouldRecover || false });
+    } else if (result.recovered || result.wouldRecover || result.wouldRepair) {
+      report.streamRecoveries.push({
+        project,
+        jobId,
+        wouldRecover: result.wouldRecover || false,
+        wouldRepair: result.wouldRepair || false,
+        repaired: result.repaired || false,
+      });
     }
   }
 

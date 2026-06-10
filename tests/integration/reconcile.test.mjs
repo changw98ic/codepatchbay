@@ -127,7 +127,7 @@ describe("reconcileJobs - stale jobs", () => {
     assert.match(found.reason, /owner process dead|no lease|expired/);
 
     // Dry-run: job should still be running
-    const { listJobs } = await import("../server/services/job-store.js");
+    const { listJobs } = await import("../../server/services/job-store.js");
     const jobs = await listJobs(cpbRoot);
     const afterDryRun = jobs.find((j) => j.jobId === job.jobId);
     assert.equal(afterDryRun.status, "running");
@@ -269,7 +269,7 @@ describe("cleanupJobs", () => {
     const result = await cleanupJobs(cpbRoot);
     assert.ok(result.cleaned >= 1, "should clean at least the completed job's lease");
 
-    const { readLease } = await import("../server/services/lease-manager.js");
+    const { readLease } = await import("../../server/services/lease-manager.js");
     const runningLease = await readLease(cpbRoot, runningLeaseId);
     assert.ok(runningLease, "running job's lease should NOT be cleaned");
 

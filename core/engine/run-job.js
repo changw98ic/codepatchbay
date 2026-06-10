@@ -324,6 +324,35 @@ export async function runJob(ctx) {
   });
   await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
+  if (workflow === "blocked") {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "workflow_selected",
+      jobId,
+      project,
+      workflow,
+      default: false,
+      reason: "blocked by operator",
+      ts: ts(),
+    });
+    const fail = failure({
+      kind: FailureKind.UNKNOWN,
+      phase: "workflow",
+      reason: "blocked by operator",
+      retryable: false,
+      cause: { code: "workflow_blocked" },
+    });
+    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+    await reportProgress(ctx, {
+      type: "job_blocked",
+      jobId,
+      project,
+      phase: "workflow",
+      reason: "blocked by operator",
+      failure: { kind: fail.kind, reason: fail.reason },
+    });
+    return { status: "blocked", jobId, exitCode: 2, failure: fail };
+  }
+
   let riskMap = null;
   let phaseSourceContext = sourceContext || {};
   let dynamicAgentPlan = dynamicAgentPlanFrom(ctx, phaseSourceContext);
@@ -714,6 +743,8 @@ export async function runJob(ctx) {
       task,
       jobId,
       job,
+      workflow,
+      planMode,
       cpbRoot,
       sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
       sourceContext: phaseSourceContext,
@@ -894,6 +925,8 @@ export async function runJob(ctx) {
         task,
         jobId,
         job,
+        workflow,
+        planMode,
         cpbRoot,
         sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
         sourceContext: continuationContext
@@ -1021,6 +1054,8 @@ export async function runJob(ctx) {
           task,
           jobId,
           job,
+          workflow,
+          planMode,
           cpbRoot,
           sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
           sourceContext: { ...phaseSourceContext, retry },

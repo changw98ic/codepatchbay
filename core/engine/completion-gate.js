@@ -64,6 +64,7 @@ export function isMutatingJob(job) {
   if (mode === "parent" || mode === "none") return false
   // Explicitly non-mutating workflows (docs-only, read-only) skip verify gate
   const workflow = job.workflow
+  if (workflow === "direct" && mode === "light") return false
   if (workflow === "docs" || workflow === "readonly") return false
   return true
 }

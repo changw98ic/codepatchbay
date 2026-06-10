@@ -102,7 +102,7 @@ export async function runExecute(ctx) {
 
   const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
-  const validation = validateDeliverable(deliverable, ctx);
+  const validation = validateDeliverable(deliverable, { ...ctx, changedFiles });
   if (!validation.ok) {
     return phaseFailed({
       phase: "execute",

@@ -32,7 +32,7 @@ async function pathExists(p) {
 }
 
 async function buildFixtureSource(root) {
-  const { REQUIRED_EXECUTOR_FILES } = await import("../server/services/executor-root.js");
+  const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/executor-root.js");
 
   const dirs = [
     "bridges", "cli", "server/services", "profiles", "templates",

@@ -17,6 +17,7 @@ import {
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
 import { executorEnv, resolveExecutorRoot } from "../server/services/executor-root.js";
+import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -138,6 +139,7 @@ export function parseArgs(argv) {
     pollMs: 5_000,
     claimTimeoutMs: 120_000,
     maxActivePerProject: 1,
+    requireIssueLink: process.env.CPB_WORKER_REQUIRE_ISSUE_LINK === "1",
     agentPreflightRetries: numericOption(process.env.CPB_AGENT_PREFLIGHT_RETRIES, 3),
     agentPreflightBackoffMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_BACKOFF_MS, 30_000),
     agentPreflightTimeoutMs: numericOption(process.env.CPB_AGENT_PREFLIGHT_TIMEOUT_MS, 60_000),
@@ -161,6 +163,7 @@ export function parseArgs(argv) {
     else if (arg === "--poll-ms") opts.pollMs = Number(valueAfter(i++, "--poll-ms"));
     else if (arg === "--claim-timeout-ms") opts.claimTimeoutMs = Number(valueAfter(i++, "--claim-timeout-ms"));
     else if (arg === "--max-active-per-project") opts.maxActivePerProject = Number(valueAfter(i++, "--max-active-per-project"));
+    else if (arg === "--require-issue-link") opts.requireIssueLink = true;
     else if (arg === "--agent-preflight-retries") opts.agentPreflightRetries = Number(valueAfter(i++, "--agent-preflight-retries"));
     else if (arg === "--agent-preflight-backoff-ms") opts.agentPreflightBackoffMs = Number(valueAfter(i++, "--agent-preflight-backoff-ms"));
     else if (arg === "--agent-preflight-timeout-ms") opts.agentPreflightTimeoutMs = Number(valueAfter(i++, "--agent-preflight-timeout-ms"));
@@ -187,10 +190,12 @@ export class ProjectWorker {
     this.pollMs = opts.pollMs || 5_000;
     this.claimTimeoutMs = opts.claimTimeoutMs ?? 120_000;
     this.maxActivePerProject = opts.maxActivePerProject ?? 1;
+    this.requireIssueLink = opts.requireIssueLink ?? false;
     this.agentPreflightRetries = numericOption(opts.agentPreflightRetries, 3);
     this.agentPreflightBackoffMs = numericOption(opts.agentPreflightBackoffMs, 30_000);
     this.agentPreflightTimeoutMs = numericOption(opts.agentPreflightTimeoutMs, 60_000);
     this.workflow = opts.workflow || "standard";
+    this.assignmentStore = opts.assignmentStore || null;
     this._runPipelineFn = opts.runPipelineFn || null;
     this._agentHealthFn = opts.agentHealthFn || (opts.runPipelineFn
       ? async () => ({ codex: true, claude: true, checks: {} })
@@ -206,6 +211,10 @@ export class ProjectWorker {
   }
 
   async init() {
+    if (!this.assignmentStore) {
+      this.assignmentStore = new AssignmentStore(this.hubRoot);
+      await this.assignmentStore.init();
+    }
     if (this.pool) {
       this.project = null;
       return null;
@@ -295,7 +304,8 @@ export class ProjectWorker {
       projectId: this.pool ? null : this.project?.id || null,
       maxActivePerProject: this.maxActivePerProject,
       claimTimeoutMs: this.claimTimeoutMs,
-      requireIssueLink: true,
+      requireIssueLink: this.requireIssueLink,
+      assignmentStore: this.assignmentStore,
     });
     return result.entry;
   }
@@ -509,6 +519,7 @@ Options:
   --poll-ms <n>              Queue poll interval in ms (default: 5000)
   --claim-timeout-ms <n>     Stale claim timeout in ms (default: 120000, 0 to disable)
   --max-active-per-project <n> Max concurrent mutating tasks per project (default: 1)
+  --require-issue-link       Only claim entries linked to a GitHub issue
   --agent-preflight-retries <n>    Agent health retries before shutdown (default: 3)
   --agent-preflight-backoff-ms <n> Backoff between failed health retries (default: 30000)
   --agent-preflight-timeout-ms <n> Per-agent smoke timeout (default: 60000)

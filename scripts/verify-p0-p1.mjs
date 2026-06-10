@@ -20,7 +20,7 @@ const focusedTests = [
   "tests/github-issue-queue.test.mjs",
   "tests/github-comments.test.mjs",
   "tests/github-pr.test.mjs",
-  "tests/api-github-policy.test.mjs",
+  "tests/integration/api-github-policy.test.mjs",
   "tests/channel-parser.test.mjs",
   "tests/channel-policy.test.mjs",
   "tests/channel-slack-commands.test.mjs",
@@ -35,11 +35,11 @@ const focusedTests = [
   "tests/acp-supervisor.test.mjs",
   "tests/dw-codegraph-gate.test.mjs",
   "tests/dw08-acceptance.test.mjs",
-  "tests/release-pack-smoke.test.mjs",
+  "tests/integration/release-pack-smoke.test.mjs",
 ];
 
 const isolatedFocusedTests = [
-  "tests/managed-worker.test.mjs",
+  "tests/integration/managed-worker.test.mjs",
 ];
 
 function commandText(command, commandArgs) {

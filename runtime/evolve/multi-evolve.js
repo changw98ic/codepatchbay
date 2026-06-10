@@ -180,7 +180,9 @@ function sourceContextForQueueEntry(entry) {
 
 function resultFromManagedWorkerResult(result) {
   const jobResult = result?.jobResult || {};
-  const completed = result?.status === "completed" || jobResult.status === "completed";
+  const workflowBlockedNoop = jobResult.status === "blocked"
+    && jobResult.failure?.cause?.code === "workflow_blocked";
+  const completed = result?.status === "completed" || jobResult.status === "completed" || workflowBlockedNoop;
   return {
     ok: completed,
     code: completed ? 0 : 1,

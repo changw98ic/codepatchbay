@@ -9,6 +9,8 @@ import { registerProject, heartbeatWorker, getProject } from "../server/services
 import { enqueue, listQueue, queueStatus } from "../server/services/hub-queue.js";
 import { listDispatches } from "../server/services/dispatch-state.js";
 
+let activeWorkers;
+
 describe("ProjectWorker", () => {
   let hubRoot;
   let sourceDir;
@@ -139,7 +141,7 @@ describe("ProjectWorker", () => {
       path.join(executorRoot, "bridges", "run-pipeline.mjs"),
       [
         "import { writeFile } from 'node:fs/promises';",
-        "await writeFile(process.env.CAPTURE_PATH, JSON.stringify({",
+        `await writeFile(${JSON.stringify(capturePath)}, JSON.stringify({`,
         "  cwd: process.cwd(),",
         "  cpbRoot: process.env.CPB_ROOT,",
         "  executorRoot: process.env.CPB_EXECUTOR_ROOT,",
@@ -155,24 +157,17 @@ describe("ProjectWorker", () => {
       sourcePath: sourceDir,
       description: "executor root run",
     });
-    const previousCapturePath = process.env.CAPTURE_PATH;
-    process.env.CAPTURE_PATH = capturePath;
-    try {
-      const worker = new ProjectWorker({
-        projectId,
-        hubRoot,
-        cpbRoot,
-        executorRoot,
-        once: true,
-        agentHealthFn: async () => ({ codex: true, claude: true }),
-      });
-      await worker.init();
-      const result = await worker.executeEntry(queued);
-      assert.equal(result.ok, true);
-    } finally {
-      if (previousCapturePath === undefined) delete process.env.CAPTURE_PATH;
-      else process.env.CAPTURE_PATH = previousCapturePath;
-    }
+    const worker = new ProjectWorker({
+      projectId,
+      hubRoot,
+      cpbRoot,
+      executorRoot,
+      once: true,
+      agentHealthFn: async () => ({ codex: true, claude: true }),
+    });
+    await worker.init();
+    const result = await worker.executeEntry(queued);
+    assert.equal(result.ok, true);
 
     const capture = JSON.parse(await readFile(capturePath, "utf8"));
     assert.equal(capture.cwd, await realpath(cpbRoot));
@@ -786,7 +781,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
   test("worker A crash does not affect project B queue or state", async () => {
     // Set up two projects
     const sourceDirB = await mkdtemp(path.join(tmpdir(), "cpb-pw-srcB-"));
-    const projectB = await registerProject(hubRoot, { name: "proj-b", sourcePath: sourceDirB });
+    const projectB = await registerProject(hubRoot, { name: "proj-b", sourcePath: sourceDirB, skipCodeGraphGate: true });
 
     // Both projects have pending entries
     const entryA = await enqueue(hubRoot, { projectId, description: "proj-a-task", sourcePath: sourceDir });

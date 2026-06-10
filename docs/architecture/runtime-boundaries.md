@@ -44,7 +44,7 @@
 - `runtime/evolve/multi-evolve.js` 是 multi-evolve 的 canonical 可执行入口。
 - `cli/commands/*` 直接调用 canonical `server/services/*` 与 `server/orchestrator/*`。
 - ACP client core、delete guard、variant overlay 的服务级实现已迁入 `server/services/`；旧 runtime 入口已删除，不作为长期设计。
-- `runtime/` 不再直接导入 `server/`。运行时需要的 server 协作者集中由 `bridges/runtime-services.js` 注入，这是显式装配点，不是旧路径兼容入口；见 `docs/architecture/system-risk-register.md` 的 `RISK-012`。
+- `runtime/` 不再直接导入 `server/`。运行时需要的 server 协作者集中由 `bridges/runtime-services.js` 注入，这是显式装配点，不是旧路径兼容入口。
 
 ## 新代码放置规则
 

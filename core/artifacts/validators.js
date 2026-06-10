@@ -16,7 +16,12 @@ export function validateDeliverable(content, ctx) {
     return { ok: false, reason: "deliverable content is too short", kind: "artifact_invalid" };
   }
   const sourceFileReference = /\b[\w./-]+\.(?:c|cc|cpp|cxx|css|go|h|hpp|html|java|js|json|jsx|kt|md|mjs|py|rb|rs|scss|sh|sql|swift|toml|ts|tsx|txt|yaml|yml)\b/;
-  if (!sourceFileReference.test(content)) {
+  const noChangeDirectDeliverable = ctx?.workflow === "direct"
+    && (ctx?.planMode === "light" || ctx?.planMode === "none")
+    && Array.isArray(ctx?.changedFiles)
+    && ctx.changedFiles.length === 0
+    && /\bNo file changes detected\b/.test(content);
+  if (!sourceFileReference.test(content) && !noChangeDirectDeliverable) {
     return {
       ok: false,
       reason: "deliverable content must reference at least one changed source file",

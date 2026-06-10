@@ -66,6 +66,7 @@ function usage() {
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
+  console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
@@ -138,6 +139,7 @@ const COMMANDS = {
   quickstart: "quickstart.js",
   "model-profile": "model-profile.js",
   "install-bin": "install-bin.js",
+  install: "install-bin.js",
   audit: "audit.js",
   "review-bundle": "review-bundle.js",
   "backlog-hygiene": "backlog-hygiene.js",
