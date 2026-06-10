@@ -22,7 +22,7 @@ const CPB_RUNTIME_ENV = new Set([
   "CPB_GITHUB_PR_AFTER_PASS", "CPB_GITHUB_PR_DRY_RUN", "CPB_GITHUB_BRANCH_PUSHED",
   "CPB_TEAM_POLICY_JSON", "CPB_APPROVAL_POLL_MS", "CPB_APPROVAL_TIMEOUT_MS",
   "CPB_VERSION", "CPB_DANGEROUS",
-  "CPB_CODEGRAPH_ENABLED", "CPB_CODEGRAPH_PORT", "CPB_CODEGRAPH_MCP_STDIO", "CPB_PERMISSION_MODE",
+  "CPB_CODEGRAPH_ENABLED", "CPB_CODEGRAPH_PORT", "CPB_CODEGRAPH_MCP_STDIO", "CPB_CODEGRAPH_INDEX_ONLY_OK", "CPB_PERMISSION_MODE",
   "CPB_STALE_GRACE_COUNT", "CPB_ACTIVITY_STALE_MS", "CPB_PROJECT_CACHE",
   "CPB_RETRY_COUNT", "CPB_PREVIOUS_VERDICT_ID", "CPB_PREVIOUS_VERDICT_PATH",
   "CPB_LEASE_TTL_MS", "CPB_LEASE_RENEW_INTERVAL_MS",
@@ -181,18 +181,16 @@ function allowedProviderCredentialsForOptions(options = {}) {
   return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;
 }
 
+function isAcpPoolNumericEntry(key, value) {
+  return (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) && isNumericEnvValue(value);
+}
+
 function shouldCopyAcpPoolEnvEntry(key, value) {
-  if (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) {
-    return isNumericEnvValue(value);
-  }
-  return isAllowedChildEnvKey(key);
+  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key);
 }
 
 function shouldCopyChildEnvEntry(key, value, options = {}) {
-  if (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) {
-    return isNumericEnvValue(value);
-  }
-  return isAllowedChildEnvKey(key, options);
+  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, options);
 }
 
 export function isAllowedChildEnvKey(key, options = {}) {
@@ -202,38 +200,24 @@ export function isAllowedChildEnvKey(key, options = {}) {
   return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key) || isDynamicAcpPoolEnvKey(key);
 }
 
-export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
+function _filterEnv(parentEnv, extra, predicate) {
   const env = {};
-  for (const [key, value] of Object.entries(parentEnv || {})) {
-    if (shouldCopyChildEnvEntry(key, value, options)) env[key] = value;
-  }
-  for (const [key, value] of Object.entries(extra || {})) {
-    if (shouldCopyChildEnvEntry(key, value, options)) env[key] = value;
-  }
+  for (const [k, v] of Object.entries(parentEnv || {})) { if (predicate(k, v)) env[k] = v; }
+  for (const [k, v] of Object.entries(extra || {})) { if (predicate(k, v)) env[k] = v; }
   return env;
+}
+
+export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
+  return _filterEnv(parentEnv, extra, (k, v) => shouldCopyChildEnvEntry(k, v, options));
 }
 
 export function buildRuntimeEnv(parentEnv = {}, extra = {}) {
-  const env = {};
   const allowed = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
-  for (const [key, value] of Object.entries(parentEnv || {})) {
-    if (allowed.has(key)) env[key] = value;
-  }
-  for (const [key, value] of Object.entries(extra || {})) {
-    if (allowed.has(key)) env[key] = value;
-  }
-  return env;
+  return _filterEnv(parentEnv, extra, (k) => allowed.has(k));
 }
 
 export function buildAcpPoolEnv(parentEnv = {}, extra = {}) {
-  const env = {};
-  for (const [key, value] of Object.entries(parentEnv || {})) {
-    if (shouldCopyAcpPoolEnvEntry(key, value)) env[key] = value;
-  }
-  for (const [key, value] of Object.entries(extra || {})) {
-    if (shouldCopyAcpPoolEnvEntry(key, value)) env[key] = value;
-  }
-  return env;
+  return _filterEnv(parentEnv, extra, (k, v) => shouldCopyAcpPoolEnvEntry(k, v));
 }
 
 export {

@@ -1,6 +1,13 @@
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataRoot, runtimeDataPath } from "./runtime-root.js";
+import {
+  isSecretArtifact,
+  isSecretContent,
+  isSecretPath,
+  makeSecretBlockedEvent,
+  redactSecrets,
+} from "./secret-policy.js";
 
 const EVENT_LOCK_TTL_MS = 30_000;
 
@@ -34,14 +41,6 @@ async function withEventLock(eventFile, callback) {
     try { await rm(lockDir, { recursive: true, force: true }); } catch {}
   }
 }
-
-import {
-  isSecretArtifact,
-  isSecretContent,
-  isSecretPath,
-  makeSecretBlockedEvent,
-  redactSecrets,
-} from "./secret-policy.js";
 
 export const JOBS_EVENTS_FORMAT_VERSION = 1;
 
@@ -249,39 +248,6 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
   });
 }
 
-async function _parseEventFile(file) {
-  try {
-    const raw = await readFile(file, "utf8");
-    const hasTrailingNewline = raw.endsWith("\n");
-    const lines = raw
-      .split("\n")
-      .map((line, index) => ({ line, lineNumber: index + 1 }))
-      .filter(({ line }) => line.trim().length > 0);
-
-    const events = [];
-    for (const { line, lineNumber } of lines) {
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch (err) {
-        if (lineNumber === lines[lines.length - 1].lineNumber && !hasTrailingNewline) {
-          await truncateCorruptJsonlTail(file, raw);
-          break;
-        }
-        throw new Error(`malformed event JSON in ${file} at line ${lineNumber}: ${err.message}`);
-      }
-      if (event === null || typeof event !== "object" || Array.isArray(event)) {
-        throw malformedEventError(file, lineNumber, "expected a non-null object");
-      }
-      events.push(event);
-    }
-    return events;
-  } catch (err) {
-    if (err && err.code === "ENOENT") return null;
-    throw err;
-  }
-}
-
 async function _parseEventFileReadOnly(file) {
   try {
     const raw = await readFile(file, "utf8");
@@ -306,6 +272,21 @@ async function _parseEventFileReadOnly(file) {
     return events;
   } catch (err) {
     if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+async function _parseEventFile(file) {
+  try {
+    return await _parseEventFileReadOnly(file);
+  } catch (err) {
+    if (err && err.message && err.message.includes("malformed event JSON")) {
+      const raw = await readFile(file, "utf8");
+      if (!raw.endsWith("\n")) {
+        await truncateCorruptJsonlTail(file, raw);
+        return await _parseEventFileReadOnly(file);
+      }
+    }
     throw err;
   }
 }
@@ -432,6 +413,7 @@ export function materializeJob(events) {
     externalRemediationArtifact: null,
     externalRemediationAt: null,
     externalRemediationError: null,
+    externalRepair: null,
     lineage: null,
     recoveryOf: null,
     sourceContext: null,
@@ -937,6 +919,15 @@ export function materializeJob(events) {
           },
         ];
         state.infraStatus = "blocked";
+        break;
+      case "external_repair_started":
+        state.externalRepair = { status: "started", reason: event.reason ?? null, ts: event.ts ?? null };
+        break;
+      case "external_repair_completed":
+        state.externalRepair = { status: "completed", result: event.result ?? null, ts: event.ts ?? null };
+        break;
+      case "external_repair_failed":
+        state.externalRepair = { status: "failed", error: event.error ?? null, ts: event.ts ?? null };
         break;
       case "job_redirect_requested":
         if (!terminal) {
