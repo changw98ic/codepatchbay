@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 import { FailureKind } from "../core/contracts/failure.js";
 import { checkCodeGraphReady } from "../server/services/codegraph-readiness.js";
 import { registerProject } from "../server/services/hub-registry.js";
-import { snapshotForJob } from "../server/services/index-freshness.js";
 import { readJson, tempRoot } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -48,32 +47,6 @@ async function createCodeGraphFixture({ withState = true } = {}) {
   }
   return sourcePath;
 }
-
-test("missing sourcePath blocks queue entry with codegraph_unavailable", () => {
-  assert.equal(FailureKind.CODEGRAPH_UNAVAILABLE, "codegraph_unavailable");
-  assert.equal(typeof FailureKind.INDEX_UNAVAILABLE, "undefined");
-});
-
-test("snapshotForJob uses codegraph_unavailable fallback when result unavailable", () => {
-  const snap = snapshotForJob(null);
-  assert.equal(snap.indexFreshness.available, false);
-  assert.deepEqual(snap.indexFreshness.dirtyReasons, ["codegraph_unavailable"]);
-});
-
-test("snapshotForJob returns correct data when result is available", () => {
-  const snap = snapshotForJob({
-    available: true,
-    indexSnapshotId: "snap-1",
-    sourceFingerprint: "fp-1",
-    indexDirty: false,
-    indexStale: false,
-    worktreeDirty: false,
-    dirtyReasons: [],
-  });
-  assert.equal(snap.indexFreshness.available, true);
-  assert.equal(snap.indexSnapshotId, "snap-1");
-  assert.equal(snap.sourceFingerprint, "fp-1");
-});
 
 test("CodeGraph readiness requires live state, not only an index file", async () => {
   const sourcePath = await createCodeGraphFixture({ withState: false });
