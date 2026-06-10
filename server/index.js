@@ -59,9 +59,58 @@ await app.register(cors, { origin: corsOrigins });
 await app.register(sensible);
 await app.register(websocket);
 
+// API key authentication (gate behind CPB_API_KEYS env var)
+const apiKeys = process.env.CPB_API_KEYS
+  ? new Set(process.env.CPB_API_KEYS.split(',').map(k => k.trim()).filter(Boolean))
+  : null;
+
+function parseCookieHeader(header) {
+  const cookies = {};
+  for (const part of String(header || '').split(';')) {
+    const index = part.indexOf('=');
+    if (index === -1) continue;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!key) continue;
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch {
+      cookies[key] = value;
+    }
+  }
+  return cookies;
+}
+
+function extractApiKey(req) {
+  const headerKey = Array.isArray(req.headers['x-api-key'])
+    ? req.headers['x-api-key'][0]
+    : req.headers['x-api-key'];
+  if (headerKey) return headerKey;
+  const cookieKey = parseCookieHeader(req.headers.cookie).cpb_api_key;
+  if (cookieKey) return cookieKey;
+  return req.query?.api_key;
+}
+
+function hasValidApiKey(req) {
+  if (!apiKeys || apiKeys.size === 0) return true;
+  const key = extractApiKey(req);
+  return Boolean(key && apiKeys.has(key));
+}
+
+function requireApiKey(req, reply, done) {
+  if (hasValidApiKey(req)) {
+    done();
+    return;
+  }
+  reply.code(401).send({ error: 'Unauthorized: valid x-api-key required' });
+}
+
 // WebSocket endpoint
 app.register(async function (fastify) {
-  fastify.get('/ws', { websocket: true }, (socket) => {
+  fastify.get('/ws', {
+    websocket: true,
+    preValidation: requireApiKey,
+  }, (socket) => {
     addClient(socket);
     socket.on('close', () => removeClient(socket));
     socket.on('message', (raw) => {
@@ -81,18 +130,10 @@ app.addHook('onRequest', (req, _res, done) => {
   done();
 });
 
-// API key authentication (gate behind CPB_API_KEYS env var)
-const apiKeys = process.env.CPB_API_KEYS
-  ? new Set(process.env.CPB_API_KEYS.split(',').map(k => k.trim()).filter(Boolean))
-  : null;
 if (apiKeys && apiKeys.size > 0) {
   app.addHook('onRequest', (req, res, done) => {
-    if (req.url.startsWith('/ws') || req.url === '/api/health') return done();
-    const key = req.headers['x-api-key'] || req.query?.api_key;
-    if (!key || !apiKeys.has(key)) {
-      res.code(401).send({ error: 'Unauthorized: valid x-api-key required' });
-      return;
-    }
+    if (req.url === '/api/health') return done();
+    if (!hasValidApiKey(req)) return res.code(401).send({ error: 'Unauthorized: valid x-api-key required' });
     done();
   });
 }

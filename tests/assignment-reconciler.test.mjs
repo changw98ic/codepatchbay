@@ -338,6 +338,48 @@ test("Reconciler finalizes completed result files into queue and worker state", 
   assert.equal(worker.currentAssignmentId, null);
 });
 
+test("Reconciler finalizes cancelled result files as cancelled queue entries", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-cancelled");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "cancel me" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress", claimedBy: "w-1", workerId: "w-1" });
+  await workers.registerWorker("w-1", {
+    status: "running",
+    currentAssignmentId: `a-${entry.id}`,
+  });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "cancel me",
+  });
+  const attempt = await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-1",
+    orchestratorEpoch: 1,
+  });
+
+  await reconciler(hubRoot, assignments, workers)._finalizeQueue(assignment, attempt, {
+    assignmentId: assignment.assignmentId,
+    attempt: 1,
+    attemptToken: attempt.attemptToken,
+    status: "cancelled",
+    jobResult: {
+      status: "cancelled",
+      failure: {
+        kind: FailureKind.RUNTIME_INTERRUPTED,
+        reason: "assignment cancelled: user requested",
+        retryable: false,
+      },
+    },
+  });
+
+  const [queued] = await listQueue(hubRoot);
+  assert.equal(queued.status, "cancelled");
+  assert.match(queued.metadata.cancelReason, /user requested/);
+});
+
 test("Reconciler writes synthetic failure for stale assignment heartbeat", async () => {
   const hubRoot = await tempRoot("cpb-reconciler-heartbeat");
   const assignments = new AssignmentStore(hubRoot);

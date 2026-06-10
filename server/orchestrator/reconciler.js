@@ -718,6 +718,18 @@ export class Reconciler {
         completedAt: new Date().toISOString(),
       });
       this.failureRouter.resetBudget(assignment.entryId);
+    } else if (result && result.status === "cancelled") {
+      const reason = result.jobResult?.failure?.reason || result.failure?.reason || "assignment cancelled";
+      this.log.info(`entry ${assignment.entryId} cancelled`);
+      await updateEntry(this.hubRoot, assignment.entryId, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+        metadata: {
+          cancelReason: reason,
+          cancelledAt: new Date().toISOString(),
+        },
+      });
+      this.failureRouter.resetBudget(assignment.entryId);
     } else if (result) {
       const decision = await this.failureRouter.route({ assignment, attempt, result });
 

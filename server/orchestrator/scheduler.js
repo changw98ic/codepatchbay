@@ -27,6 +27,18 @@ function providerAgentForEntry(entry) {
   return agentSpec.agent || "claude";
 }
 
+function parseRetryUntilMs(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
 export class Scheduler {
   /**
    * @param {string} hubRoot
@@ -123,6 +135,14 @@ export class Scheduler {
     });
   }
 
+  _filterByRetryDecisionDue(pending) {
+    const now = Date.now();
+    return pending.filter((entry) => {
+      const untilMs = parseRetryUntilMs(entry.metadata?.retryDecision?.untilTs);
+      return untilMs === null || untilMs <= now;
+    });
+  }
+
   /**
    * Find the next eligible pending queue entry.
    * Stale recovery goes through shared queue-rules (assignment-aware).
@@ -141,6 +161,9 @@ export class Scheduler {
   async nextCandidates(batchSize = Infinity) {
     const allEntries = await this._preparePendingPool();
     let pending = allEntries.filter(e => e.status === "pending");
+
+    pending = this._filterByRetryDecisionDue(pending);
+    if (pending.length === 0) return [];
 
     // DAG dependency gate
     pending = this._filterDagReady(pending, allEntries);
@@ -202,7 +225,22 @@ export class Scheduler {
     for (const entry of pending) {
       const project = await this.getProjectFn(this.hubRoot, entry.projectId);
       if (!project) {
-        eligible.push(entry);
+        const { updateEntry } = await import("../services/hub-queue.js");
+        const metadata = {
+          ...(entry.metadata || {}),
+          projectReadiness: {
+            available: false,
+            reason: "project_not_found",
+          },
+        };
+        await updateEntry(this.hubRoot, entry.id, {
+          status: "blocked",
+          reason: `Project '${entry.projectId}' not found`,
+          metadata,
+        });
+        entry.status = "blocked";
+        entry.reason = `Project '${entry.projectId}' not found`;
+        entry.metadata = metadata;
         continue;
       }
 

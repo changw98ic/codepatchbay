@@ -37,6 +37,27 @@ async function sourceWithCodeGraphIndexButNoLiveState(prefix) {
   return sourcePath;
 }
 
+async function sourceWithLiveCodeGraphState(prefix) {
+  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState(prefix);
+  await writeJson(path.join(sourcePath, ".codegraph", "daemon.pid"), {
+    pid: process.pid,
+    codebaseRoot: sourcePath,
+    source: "test",
+  });
+  return sourcePath;
+}
+
+async function registerReadyProject(hubRoot, id, prefix) {
+  const sourcePath = await sourceWithLiveCodeGraphState(prefix);
+  await registerProject(hubRoot, {
+    id,
+    sourcePath,
+    skipCodeGraphGate: true,
+    metadata: highConfidenceCapabilityMetadata(),
+  });
+  return sourcePath;
+}
+
 test("enqueue dedupes pending entries and requires UI lane reason", async () => {
   const hubRoot = await tempRoot("cpb-queue");
   const first = await enqueue(hubRoot, {
@@ -373,6 +394,9 @@ test("HubOrchestrator scheduler applies provider capacity per provider", async (
     scheduler: { mode: "default" },
     acpPool: { providerMax: 1 },
   });
+  await registerReadyProject(hubRoot, "proj-a", "cpb-orch-provider-a-source");
+  await registerReadyProject(hubRoot, "proj-b", "cpb-orch-provider-b-source");
+  await registerReadyProject(hubRoot, "proj-c", "cpb-orch-provider-c-source");
   const activeCodex = await enqueue(hubRoot, {
     projectId: "proj-a",
     description: "active codex",
@@ -489,19 +513,12 @@ test("HubOrchestrator scheduler does not oversubscribe one provider in a single 
     scheduler: { mode: "default" },
     acpPool: { providerMax: 1 },
   });
-  const sourcePath = await tempRoot("cpb-orch-provider-same-tick-source");
-  const mapMetadata = {
-    project_capability_map: { capabilities: [{ name: "queue", files: ["server/orchestrator/scheduler.js"] }] },
-    safety_boundary_map: { boundaries: ["provider_pool"] },
-    high_risk_area_map: { areas: [] },
-    capabilityMapConfidence: "high",
-  };
+  const sourcePath = await registerReadyProject(hubRoot, "flow", "cpb-orch-provider-same-tick-source");
   const first = await enqueue(hubRoot, {
     projectId: "flow",
     sourcePath,
     description: "first codex task",
     metadata: {
-      ...mapMetadata,
       agents: { executor: { agent: "codex" } },
     },
   });
@@ -510,7 +527,6 @@ test("HubOrchestrator scheduler does not oversubscribe one provider in a single 
     sourcePath,
     description: "second codex task",
     metadata: {
-      ...mapMetadata,
       agents: { executor: { agent: "codex" } },
     },
   });

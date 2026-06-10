@@ -77,16 +77,6 @@ export class FailureRouter {
     const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
 
-    // Rate limit → wait (mid-run fallback handled at engine level in run-job.js)
-    if (failure.kind === FailureKind.AGENT_RATE_LIMITED) {
-      return {
-        action: "wait_for_rate_limit",
-        reason: failure.reason,
-        untilTs: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
-        retryable: true,
-      };
-    }
-
     if (
       failure.retryable === false &&
       failure.kind !== FailureKind.PERMISSION_DENIED &&
@@ -96,6 +86,16 @@ export class FailureRouter {
         action: "mark_failed",
         reason: `${failure.kind} is non-retryable: ${failure.reason}`,
         retryable: false,
+      };
+    }
+
+    // Rate limit → wait (mid-run fallback handled at engine level in run-job.js)
+    if (failure.kind === FailureKind.AGENT_RATE_LIMITED) {
+      return {
+        action: "wait_for_rate_limit",
+        reason: failure.reason,
+        untilTs: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
+        retryable: true,
       };
     }
 

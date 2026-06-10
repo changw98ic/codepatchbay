@@ -219,7 +219,7 @@ export async function main() {
       function buildCancelledResult(cancel) {
         const reason = cancel?.reason || "assignment cancelled";
         return {
-          status: "failed",
+          status: "cancelled",
           failure: {
             kind: FailureKind.RUNTIME_INTERRUPTED,
             phase: heartbeatState.activePhase || heartbeatState.phase || null,

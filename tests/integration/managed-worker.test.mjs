@@ -447,8 +447,9 @@ test("managed worker stops an active assignment when its cancel control file app
       async () => readJson(path.join(attemptDir, "result.json")),
       { timeoutMs: 8_000 },
     );
-    assert.equal(result.status, "failed");
+    assert.equal(result.status, "cancelled");
     assert.equal(result.attemptToken, "attempt-token-cancel");
+    assert.equal(result.jobResult.status, "cancelled");
     assert.equal(result.jobResult.failure.kind, "runtime_interrupted");
     assert.equal(result.jobResult.failure.retryable, false);
     assert.match(result.jobResult.failure.reason, /cancel/i);
