@@ -448,562 +448,324 @@ export function materializeJob(events) {
     completionGate: null,
   };
 
-  let terminal = false;
+  const ctx = { terminal: false };
 
   for (const event of events) {
-    const isPostTerminalEvent = terminal;
-    if (isPostTerminalEvent && !POST_TERMINAL_ALLOWED.has(event.type)) {
-      continue;
-    }
+    const isPostTerminal = ctx.terminal;
+    if (isPostTerminal && !POST_TERMINAL_ALLOWED.has(event.type)) continue;
 
     if (event.jobId !== undefined) state.jobId = event.jobId;
     if (event.project !== undefined) state.project = event.project;
-    if (!isPostTerminalEvent && event.attempt !== undefined) state.attempt = event.attempt;
-    if (!isPostTerminalEvent && event.workflow !== undefined) state.workflow = event.workflow;
-    if (!isPostTerminalEvent && event.planMode !== undefined) state.planMode = event.planMode;
+    if (!isPostTerminal && event.attempt !== undefined) state.attempt = event.attempt;
+    if (!isPostTerminal && event.workflow !== undefined) state.workflow = event.workflow;
+    if (!isPostTerminal && event.planMode !== undefined) state.planMode = event.planMode;
     if (event.ts !== undefined) state.updatedAt = event.ts;
 
-    switch (event.type) {
-      case "job_created":
-        state.task = event.task ?? state.task;
-        state.executor = event.executor ?? state.executor;
-        state.executorSelection = event.executorSelection ?? state.executorSelection;
-        state.status = "running";
-        state.createdAt = event.ts ?? state.createdAt;
-        state.blockedReason = null;
-        state.queueEntryId = event.queueEntryId ?? state.queueEntryId;
-        if (event.sourceContext) state.sourceContext = event.sourceContext;
-        if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
-        if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
-        if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
-        if (event.planCache !== undefined) state.planCache = event.planCache;
-        terminal = false;
-        break;
-      case "plan_decision":
-        state.planMode = event.planMode ?? state.planMode;
-        state.planDecision = {
-          workflow: event.workflow ?? state.workflow,
-          planMode: event.planMode ?? null,
-          runPlan: event.runPlan ?? null,
-          reason: event.reason ?? null,
-          decidedAt: event.ts ?? null,
-          parentPlanCache: event.parentPlanCache ?? null,
-        };
-        break;
-      case "plan_cache_decision":
-      case "plan_cache_updated":
-        state.planCache = {
-          ...(state.planCache || {}),
-          ...event,
-        };
-        break;
-      case "riskmap_generated":
-        state.riskMap = event.riskMap ?? {
-          riskLevel: event.riskLevel ?? null,
-          domains: event.domains ?? [],
-          highRiskFiles: event.highRiskFiles ?? [],
-          verificationDepth: event.verificationDepth ?? null,
-          adversarialRequired: Boolean(event.adversarialRequired),
-          adversarialFocus: event.adversarialFocus ?? [],
-          confidence: event.confidence ?? null,
-        };
-        state.riskLevel = event.riskLevel ?? state.riskMap?.riskLevel ?? null;
-        state.verificationDepth = event.verificationDepth ?? state.riskMap?.verificationDepth ?? null;
-        state.adversarialRequired = event.adversarialRequired ?? state.riskMap?.adversarialRequired ?? false;
-        state.riskMapGeneratedAt = event.ts ?? state.riskMap?.generatedAt ?? state.riskMapGeneratedAt;
-        break;
-      case "workflow_dag_materialized":
-        state.workflow = event.workflow ?? state.workflow;
-        state.planMode = event.planMode ?? state.planMode;
-        state.workflowDag = event.workflowDag ?? {
-          name: event.workflow ?? state.workflow,
-          nodes: event.nodes ?? [],
-          edges: event.edges ?? [],
-        };
-        {
-          const nodeIds = new Set(
-            (Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : [])
-              .map((node) => node?.id)
-              .filter(Boolean),
-          );
-          state.completedNodes = state.completedNodes.filter((nodeId) => nodeIds.has(nodeId));
-          state.runningNodes = state.runningNodes.filter((nodeId) => nodeIds.has(nodeId));
-          state.blockedNodes = state.blockedNodes.filter((nodeId) => nodeIds.has(nodeId));
-        }
-        for (const node of Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []) {
-          if (node?.id && !state.nodeStates[node.id]) {
-            _updateNodeState(state, node.id, {
-              status: "pending",
-              phase: node.phase ?? node.id,
-            });
-          }
-        }
-        break;
-      case "dynamic_agent_plan_generated":
-        state.dynamicAgentPlan = event.dynamicAgentPlan ?? state.dynamicAgentPlan;
-        state.riskLevel = event.riskLevel ?? state.dynamicAgentPlan?.riskLevel ?? state.riskLevel;
-        state.adversarialRequired = event.adversarialRequired ?? state.dynamicAgentPlan?.adversarialRequired ?? state.adversarialRequired;
-        break;
-      case "adversarial_verdict":
-        state.adversarialVerdict = {
-          verdict: event.verdict ?? null,
-          artifact: event.artifact ?? null,
-          status: event.status ?? event.verdict?.status ?? null,
-          reason: event.reason ?? event.verdict?.reason ?? null,
-          at: event.ts ?? null,
-        };
-        break;
-      case "executor_routing_feedback":
-        state.routingFeedback = {
-          phase: event.phase ?? null,
-          requested: event.requested ?? null,
-          reason: event.reason ?? null,
-          confidence: event.confidence ?? null,
-          signals: event.signals ?? [],
-          upgradedQueueEntryId: event.upgradedQueueEntryId ?? null,
-          feedbackPath: event.feedbackPath ?? null,
-          at: event.ts ?? null,
-        };
-        break;
-      case "agent_routing_decision":
-        {
-          const selection = event.executorSelection ?? {
-            role: event.role ?? null,
-            category: event.category ?? null,
-            workflow: event.workflow ?? null,
-            preferredAgent: event.preferredAgent ?? null,
-            selectedAgent: event.selectedAgent ?? null,
-            fallbackAgent: event.fallbackAgent ?? null,
-            fallbackAllowed: event.fallbackAllowed ?? null,
-            fallbackApplied: event.fallbackApplied ?? null,
-            reason: event.reason ?? null,
-          };
-          if (event.phase) {
-            state.phaseAgentSelections = [
-              ...state.phaseAgentSelections,
-              {
-                phase: event.phase,
-                ...selection,
-                ts: event.ts ?? null,
-              },
-            ];
-            break;
-          }
-          state.executorSelection = selection;
-          if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
-        }
-        break;
-      case "worktree_created":
-        state.worktree = event.worktree ?? event.path ?? state.worktree;
-        state.worktreeBranch = event.branch ?? event.worktreeBranch ?? state.worktreeBranch;
-        state.worktreeBaseBranch = event.baseBranch ?? event.worktreeBaseBranch ?? state.worktreeBaseBranch;
-        break;
-      case "phase_started":
-        state.phase = event.phase ?? state.phase;
-        state.leaseId = event.leaseId ?? null;
-        state.status = "running";
-        state.blockedReason = null;
-        if (event.phase && !state.runningNodes.includes(event.phase)) {
-          state.runningNodes = [...state.runningNodes, event.phase];
-        }
-        break;
-      case "phase_completed":
-        state.phase = event.phase ?? state.phase;
-        state.leaseId = null;
-        state.status = "running";
-        if (event.phase !== undefined) {
-          state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
-          if (!state.completedPhases.includes(event.phase)) {
-            state.completedPhases = [...state.completedPhases, event.phase];
-          }
-          if (!state.completedNodes.includes(event.phase)) {
-            state.completedNodes = [...state.completedNodes, event.phase];
-          }
-        }
-        if (event.phase !== undefined && event.artifact !== undefined) {
-          state.artifacts[event.phase] = event.artifact;
-        }
-        break;
-      case "dag_node_started":
-        if (event.nodeId && !state.runningNodes.includes(event.nodeId)) {
-          state.runningNodes = [...state.runningNodes, event.nodeId];
-        }
-        state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
-        _updateNodeState(state, event.nodeId, {
-          status: "running",
-          phase: event.phase,
-          attempt: event.attempt,
-          startedAt: event.ts,
-          completedAt: null,
-          failedAt: null,
-          skippedAt: null,
-          cancelledAt: null,
-          blockedAt: null,
-          durationMs: null,
-        });
-        break;
-      case "dag_node_completed":
-        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-        if (event.nodeId && !state.completedNodes.includes(event.nodeId)) {
-          state.completedNodes = [...state.completedNodes, event.nodeId];
-        }
-        if (event.phase !== undefined && event.artifact !== undefined) {
-          state.artifacts[event.phase] = event.artifact;
-        }
-        if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) {
-          state.completedPhases = [...state.completedPhases, event.phase];
-        }
-        _updateNodeState(state, event.nodeId, {
-          status: "completed",
-          phase: event.phase,
-          artifact: event.artifact,
-          completedAt: event.ts,
-        });
-        break;
-      case "dag_node_failed":
-        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-        state.failureCode = event.code ?? state.failureCode;
-        state.failurePhase = event.phase ?? state.failurePhase;
-        _updateNodeState(state, event.nodeId, {
-          status: "failed",
-          phase: event.phase,
-          error: event.error ?? event.reason,
-          reason: event.reason,
-          failedAt: event.ts,
-        });
-        break;
-      case "dag_node_blocked":
-        state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-        if (event.nodeId && !state.blockedNodes.includes(event.nodeId)) {
-          state.blockedNodes = [...state.blockedNodes, event.nodeId];
-        }
-        _updateNodeState(state, event.nodeId, {
-          status: "blocked",
-          reason: event.reason,
-          blockedAt: event.ts,
-        });
-        break;
-      case "dag_node_retrying":
-        if (event.nodeId) {
-          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-          state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
-          state.completedNodes = state.completedNodes.filter((n) => n !== event.nodeId);
-        }
-        if (event.phase !== undefined) {
-          state.completedPhases = state.completedPhases.filter((p) => p !== event.phase);
-        }
-        _updateNodeState(state, event.nodeId, {
-          status: "retrying",
-          phase: event.phase,
-          attempt: event.attempt,
-          artifact: null,
-          reason: event.reason,
-          retryingAt: event.ts,
-          completedAt: null,
-          failedAt: null,
-          skippedAt: null,
-          cancelledAt: null,
-          blockedAt: null,
-          durationMs: null,
-        });
-        break;
-      case "dag_node_skipped":
-        if (event.nodeId) {
-          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-        }
-        _updateNodeState(state, event.nodeId, {
-          status: "skipped",
-          phase: event.phase,
-          reason: event.reason,
-          skippedAt: event.ts,
-        });
-        break;
-      case "dag_node_cancelled":
-        if (event.nodeId) {
-          state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
-        }
-        _updateNodeState(state, event.nodeId, {
-          status: "cancelled",
-          phase: event.phase,
-          reason: event.reason,
-          cancelledAt: event.ts,
-        });
-        break;
-      case "phase_failed":
-        state.phase = event.phase ?? state.phase;
-        state.leaseId = null;
-        state.status = "failed";
-        state.blockedReason = event.error ?? event.reason ?? null;
-        state.failureCode = event.code ?? state.failureCode;
-        state.failurePhase = event.phase ?? state.failurePhase;
-        state.retryable = event.retryable ?? state.retryable;
-        state.retryCount = event.retryCount ?? state.retryCount;
-        state.maxRetries = event.maxRetries ?? state.maxRetries;
-        state.failureCause = event.cause ?? state.failureCause;
-        if (event.phase !== undefined) {
-          state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
-        }
-        terminal = true;
-        break;
-      case "budget_exceeded":
-        state.status = "blocked";
-        state.leaseId = null;
-        state.blockedReason = event.reason ?? "budget exceeded";
-        terminal = true;
-        break;
-      case "job_blocked":
-        state.status = "blocked";
-        state.leaseId = null;
-        state.blockedReason = event.reason ?? event.blockedReason ?? null;
-        state.failureCode = event.code ?? event.kind ?? state.failureCode;
-        state.failureCause = event.cause ?? state.failureCause;
-        terminal = true;
-        break;
-      case "job_failed":
-        state.status = "failed";
-        state.leaseId = null;
-        state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
-        state.failureCode = event.code ?? state.failureCode;
-        state.failurePhase = event.phase ?? state.failurePhase;
-        state.retryable = event.retryable ?? state.retryable;
-        state.retryCount = event.retryCount ?? state.retryCount;
-        state.maxRetries = event.maxRetries ?? state.maxRetries;
-        state.failureCause = event.cause ?? state.failureCause;
-        terminal = true;
-        break;
-      case "pool_exhausted":
-        state.status = "failed";
-        state.leaseId = null;
-        state.blockedReason = event.reason ?? "ACP pool exhausted";
-        state.failureCode = "pool_exhausted";
-        state.failurePhase = event.phase ?? state.phase;
-        state.retryable = true;
-        terminal = true;
-        break;
-      case "job_superseded":
-        state.status = "superseded";
-        state.blockedReason = event.reason ?? "superseded by remediation lineage";
-        terminal = true;
-        break;
-      case "approval_required":
-        state.status = "waiting.approval";
-        state.phase = event.phase ?? state.phase;
-        state.blockedReason = event.reason ?? "approval required";
-        state.approval = {
-          operation: event.operation ?? null,
-          phase: event.phase ?? null,
-          channels: Array.isArray(event.channels) ? event.channels : [],
-          reason: event.reason ?? null,
-          requestedAt: event.ts ?? null,
-          timeoutAt: event.timeoutAt ?? null,
-        };
-        if (event.phase) {
-          state.runningNodes = state.runningNodes.filter((node) => node !== event.phase);
-          if (!state.blockedNodes.includes(event.phase)) {
-            state.blockedNodes = [...state.blockedNodes, event.phase];
-          }
-        }
-        break;
-      case "job_approved":
-        state.status = state.approval?.operation === "PR" ? "completed" : "running";
-        state.blockedReason = null;
-        state.approval = null;
-        if (state.phase) {
-          state.blockedNodes = state.blockedNodes.filter((node) => node !== state.phase);
-        }
-        break;
-      case "approval_timed_out":
-        state.status = "blocked";
-        state.leaseId = null;
-        state.blockedReason = event.reason ?? "approval timed out";
-        state.approval = state.approval ? { ...state.approval, timedOutAt: event.ts ?? null } : null;
-        terminal = true;
-        break;
-      case "review_bundle_accepted":
-      case "review_bundle_rejected": {
-        const round = {
-          round: event.round ?? state.reviewLoop.rounds.length + 1,
-          verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
-          feedback: event.feedback ?? null,
-          retryQueueEntryId: event.retryQueueEntryId ?? null,
-          bundleId: event.bundleId ?? null,
-          actor: event.actor ?? null,
-          createdAt: event.ts ?? null,
-        };
-        state.reviewLoop = {
-          rounds: [...state.reviewLoop.rounds, round],
-          latest: round,
-        };
-        break;
-      }
-      case "job_completed":
-        state.status = "completed";
-        state.phase = "completed";
-        state.leaseId = null;
-        state.blockedReason = null;
-        state.failureCode = null;
-        state.failurePhase = null;
-        state.retryable = false;
-        state.retryCount = 0;
-        state.failureCause = null;
-        terminal = true;
-        break;
-      case "pr_opened":
-        state.pr = {
-          url: event.prUrl || event.pullRequestUrl || event.url || null,
-          number: event.prNumber || event.number || null,
-          artifact: event.artifact || null,
-          openedAt: event.ts || null,
-        };
-        if (event.artifact) state.artifacts.pr = event.artifact;
-        break;
-      case "job_cancel_requested":
-        state.cancelRequested = true;
-        state.cancelReason = event.reason ?? null;
-        break;
-      case "job_cancelled":
-        state.cancelRequested = true;
-        state.cancelReason = event.reason ?? state.cancelReason;
-        state.status = "cancelled";
-        state.leaseId = null;
-        terminal = true;
-        break;
-      case "job_retried":
-        state.status = "running";
-        state.phase = event.fromPhase ?? state.phase;
-        state.leaseId = null;
-        state.blockedReason = null;
-        state.failureCode = null;
-        state.failurePhase = null;
-        state.retryable = false;
-        state.retryCount = event.retryCount ?? state.retryCount + 1;
-        state.maxRetries = event.maxRetries ?? state.maxRetries;
-        state.failureCause = null;
-        for (const artifactPhase of event.clearArtifacts ?? []) {
-          delete state.artifacts[artifactPhase];
-        }
-        terminal = false;
-        break;
-      case "recovery_created":
-        state.recoveryOf = event.recoveryOf ?? null;
-        state.retryCount = event.retryCount ?? state.retryCount;
-        state.maxRetries = event.maxRetries ?? state.maxRetries;
-        state.lineage = {
-          parentJobId: event.lineage?.parentJobId ?? null,
-          parentStatus: event.lineage?.parentStatus ?? null,
-          parentFailureCode: event.lineage?.parentFailureCode ?? null,
-          parentFailurePhase: event.lineage?.parentFailurePhase ?? null,
-          parentBlockedReason: event.lineage?.parentBlockedReason ?? null,
-          recoveryReason: event.recoveryReason ?? null,
-          trigger: event.trigger ?? null,
-          executorSelection: event.executorSelection ?? null,
-          retryCount: event.retryCount ?? null,
-          maxRetries: event.maxRetries ?? null,
-        };
-        if (event.sourceContext) state.sourceContext = event.sourceContext;
-        break;
-      case "permission_denied":
-        state.permissionDenials = [
-          ...state.permissionDenials,
-          {
-            category: event.category ?? "infra",
-            phase: event.phase ?? null,
-            role: event.role ?? null,
-            action: event.action ?? null,
-            deniedOperation: event.deniedOperation ?? event.action ?? null,
-            targetPath: event.targetPath ?? "",
-            reason: event.reason ?? "permission denied",
-            allowedBoundary: event.allowedBoundary ?? "",
-            recoveryGuidance: event.recoveryGuidance ?? "",
-            ts: event.ts ?? null,
-          },
-        ];
-        state.infraStatus = "blocked";
-        break;
-      case "external_repair_started":
-        state.externalRepair = { status: "started", reason: event.reason ?? null, ts: event.ts ?? null };
-        break;
-      case "external_repair_completed":
-        state.externalRepair = { status: "completed", result: event.result ?? null, ts: event.ts ?? null };
-        break;
-      case "external_repair_failed":
-        state.externalRepair = { status: "failed", error: event.error ?? null, ts: event.ts ?? null };
-        break;
-      case "job_redirect_requested":
-        if (!terminal) {
-          state.redirectContext = event.instructions ?? null;
-          state.redirectReason = event.reason ?? null;
-          state.redirectEventId = event.redirectEventId ?? null;
-        }
-        break;
-      case "job_redirect_consumed":
-        if (event.redirectEventId !== undefined) {
-          state.consumedRedirectIds = [
-            ...state.consumedRedirectIds,
-            event.redirectEventId,
-          ];
-        }
-        if (state.redirectEventId === event.redirectEventId) {
-          state.redirectContext = null;
-          state.redirectReason = null;
-          state.redirectEventId = null;
-        }
-        break;
-      case "workflow_selected":
-        state.workflow = event.workflow ?? state.workflow;
-        break;
-      case "phase_activity":
-        state.lastActivityAt = event.ts ?? state.lastActivityAt;
-        state.lastActivityMessage = event.message ?? state.lastActivityMessage;
-        break;
-      case "external_remediation_started":
-        state.externalRemediationStatus = "STARTED";
-        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
-        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
-        state.externalRemediationError = null;
-        break;
-      case "external_remediation_completed":
-        state.externalRemediationStatus = event.remediationStatus ?? "UNKNOWN";
-        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
-        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
-        state.externalRemediationError = null;
-        break;
-      case "external_remediation_failed":
-        state.externalRemediationStatus = "FAILED";
-        state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact;
-        state.externalRemediationAt = event.ts ?? state.externalRemediationAt;
-        state.externalRemediationError = event.error ?? event.reason ?? null;
-        break;
-      case "finalizer_result":
-        state.finalizer = {
-          ok: Boolean(event.result?.ok),
-          status: event.result?.status ?? null,
-          code: event.result?.code ?? null,
-          commit: event.result?.commit ?? null,
-          closed: event.result?.closed ?? null,
-          mode: event.result?.mode ?? null,
-          ts: event.ts ?? null,
-        };
-        break;
-      case "merge_index_status":
-        state.mergeIndexStatus = event.indexState ?? event.mergeIndexStatus ?? state.mergeIndexStatus;
-        state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch;
-        state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead;
-        state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom;
-        break;
-      case "completion_gate_evaluated":
-        state.completionGate = {
-          outcome: event.outcome ?? null,
-          reason: event.reason ?? null,
-          missingGates: Array.isArray(event.missingGates) ? event.missingGates : [],
-          evaluatedAt: event.ts ?? null,
-        };
-        break;
-    }
+    EVENT_HANDLERS[event.type]?.(state, event, ctx);
   }
 
   return state;
 }
+
+// ── Event handler lookup table ────────────────────────────
+// Each handler mutates state in-place. ctx.terminal controls the post-terminal gate.
+// Shared handlers use the same function reference for multiple event types.
+
+const _handlePlanCache = (state, event) => {
+  state.planCache = { ...(state.planCache || {}), ...event };
+};
+
+const _handleReviewBundle = (state, event) => {
+  const round = {
+    round: event.round ?? state.reviewLoop.rounds.length + 1,
+    verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
+    feedback: event.feedback ?? null,
+    retryQueueEntryId: event.retryQueueEntryId ?? null,
+    bundleId: event.bundleId ?? null,
+    actor: event.actor ?? null,
+    createdAt: event.ts ?? null,
+  };
+  state.reviewLoop = { rounds: [...state.reviewLoop.rounds, round], latest: round };
+};
+
+const EVENT_HANDLERS = {
+  job_created(state, event, ctx) {
+    state.task = event.task ?? state.task;
+    state.executor = event.executor ?? state.executor;
+    state.executorSelection = event.executorSelection ?? state.executorSelection;
+    state.status = "running";
+    state.createdAt = event.ts ?? state.createdAt;
+    state.blockedReason = null;
+    state.queueEntryId = event.queueEntryId ?? state.queueEntryId;
+    if (event.sourceContext) state.sourceContext = event.sourceContext;
+    if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
+    if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
+    if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
+    if (event.planCache !== undefined) state.planCache = event.planCache;
+    ctx.terminal = false;
+  },
+  plan_decision(state, event) {
+    state.planMode = event.planMode ?? state.planMode;
+    state.planDecision = {
+      workflow: event.workflow ?? state.workflow,
+      planMode: event.planMode ?? null,
+      runPlan: event.runPlan ?? null,
+      reason: event.reason ?? null,
+      decidedAt: event.ts ?? null,
+      parentPlanCache: event.parentPlanCache ?? null,
+    };
+  },
+  plan_cache_decision: _handlePlanCache,
+  plan_cache_updated: _handlePlanCache,
+  riskmap_generated(state, event) {
+    state.riskMap = event.riskMap ?? {
+      riskLevel: event.riskLevel ?? null, domains: event.domains ?? [],
+      highRiskFiles: event.highRiskFiles ?? [], verificationDepth: event.verificationDepth ?? null,
+      adversarialRequired: Boolean(event.adversarialRequired), adversarialFocus: event.adversarialFocus ?? [],
+      confidence: event.confidence ?? null,
+    };
+    state.riskLevel = event.riskLevel ?? state.riskMap?.riskLevel ?? null;
+    state.verificationDepth = event.verificationDepth ?? state.riskMap?.verificationDepth ?? null;
+    state.adversarialRequired = event.adversarialRequired ?? state.riskMap?.adversarialRequired ?? false;
+    state.riskMapGeneratedAt = event.ts ?? state.riskMap?.generatedAt ?? state.riskMapGeneratedAt;
+  },
+  workflow_dag_materialized(state, event) {
+    state.workflow = event.workflow ?? state.workflow;
+    state.planMode = event.planMode ?? state.planMode;
+    state.workflowDag = event.workflowDag ?? { name: event.workflow ?? state.workflow, nodes: event.nodes ?? [], edges: event.edges ?? [] };
+    {
+      const nodeIds = new Set((Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []).map((n) => n?.id).filter(Boolean));
+      state.completedNodes = state.completedNodes.filter((id) => nodeIds.has(id));
+      state.runningNodes = state.runningNodes.filter((id) => nodeIds.has(id));
+      state.blockedNodes = state.blockedNodes.filter((id) => nodeIds.has(id));
+    }
+    for (const node of Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []) {
+      if (node?.id && !state.nodeStates[node.id]) _updateNodeState(state, node.id, { status: "pending", phase: node.phase ?? node.id });
+    }
+  },
+  dynamic_agent_plan_generated(state, event) {
+    state.dynamicAgentPlan = event.dynamicAgentPlan ?? state.dynamicAgentPlan;
+    state.riskLevel = event.riskLevel ?? state.dynamicAgentPlan?.riskLevel ?? state.riskLevel;
+    state.adversarialRequired = event.adversarialRequired ?? state.dynamicAgentPlan?.adversarialRequired ?? state.adversarialRequired;
+  },
+  adversarial_verdict(state, event) {
+    state.adversarialVerdict = { verdict: event.verdict ?? null, artifact: event.artifact ?? null, status: event.status ?? event.verdict?.status ?? null, reason: event.reason ?? event.verdict?.reason ?? null, at: event.ts ?? null };
+  },
+  executor_routing_feedback(state, event) {
+    state.routingFeedback = { phase: event.phase ?? null, requested: event.requested ?? null, reason: event.reason ?? null, confidence: event.confidence ?? null, signals: event.signals ?? [], upgradedQueueEntryId: event.upgradedQueueEntryId ?? null, feedbackPath: event.feedbackPath ?? null, at: event.ts ?? null };
+  },
+  agent_routing_decision(state, event) {
+    const selection = event.executorSelection ?? { role: event.role ?? null, category: event.category ?? null, workflow: event.workflow ?? null, preferredAgent: event.preferredAgent ?? null, selectedAgent: event.selectedAgent ?? null, fallbackAgent: event.fallbackAgent ?? null, fallbackAllowed: event.fallbackAllowed ?? null, fallbackApplied: event.fallbackApplied ?? null, reason: event.reason ?? null };
+    if (event.phase) { state.phaseAgentSelections = [...state.phaseAgentSelections, { phase: event.phase, ...selection, ts: event.ts ?? null }]; return; }
+    state.executorSelection = selection;
+    if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
+  },
+  worktree_created(state, event) {
+    state.worktree = event.worktree ?? event.path ?? state.worktree;
+    state.worktreeBranch = event.branch ?? event.worktreeBranch ?? state.worktreeBranch;
+    state.worktreeBaseBranch = event.baseBranch ?? event.worktreeBaseBranch ?? state.worktreeBaseBranch;
+  },
+  phase_started(state, event) {
+    state.phase = event.phase ?? state.phase;
+    state.leaseId = event.leaseId ?? null;
+    state.status = "running";
+    state.blockedReason = null;
+    if (event.phase && !state.runningNodes.includes(event.phase)) state.runningNodes = [...state.runningNodes, event.phase];
+  },
+  phase_completed(state, event) {
+    state.phase = event.phase ?? state.phase;
+    state.leaseId = null;
+    state.status = "running";
+    if (event.phase !== undefined) {
+      state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
+      if (!state.completedPhases.includes(event.phase)) state.completedPhases = [...state.completedPhases, event.phase];
+      if (!state.completedNodes.includes(event.phase)) state.completedNodes = [...state.completedNodes, event.phase];
+    }
+    if (event.phase !== undefined && event.artifact !== undefined) state.artifacts[event.phase] = event.artifact;
+  },
+  dag_node_started(state, event) {
+    if (event.nodeId && !state.runningNodes.includes(event.nodeId)) state.runningNodes = [...state.runningNodes, event.nodeId];
+    state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId);
+    _updateNodeState(state, event.nodeId, { status: "running", phase: event.phase, attempt: event.attempt, startedAt: event.ts, completedAt: null, failedAt: null, skippedAt: null, cancelledAt: null, blockedAt: null, durationMs: null });
+  },
+  dag_node_completed(state, event) {
+    state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+    if (event.nodeId && !state.completedNodes.includes(event.nodeId)) state.completedNodes = [...state.completedNodes, event.nodeId];
+    if (event.phase !== undefined && event.artifact !== undefined) state.artifacts[event.phase] = event.artifact;
+    if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) state.completedPhases = [...state.completedPhases, event.phase];
+    _updateNodeState(state, event.nodeId, { status: "completed", phase: event.phase, artifact: event.artifact, completedAt: event.ts });
+  },
+  dag_node_failed(state, event) {
+    state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+    state.failureCode = event.code ?? state.failureCode;
+    state.failurePhase = event.phase ?? state.failurePhase;
+    _updateNodeState(state, event.nodeId, { status: "failed", phase: event.phase, error: event.error ?? event.reason, reason: event.reason, failedAt: event.ts });
+  },
+  dag_node_blocked(state, event) {
+    state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+    if (event.nodeId && !state.blockedNodes.includes(event.nodeId)) state.blockedNodes = [...state.blockedNodes, event.nodeId];
+    _updateNodeState(state, event.nodeId, { status: "blocked", reason: event.reason, blockedAt: event.ts });
+  },
+  dag_node_retrying(state, event) {
+    if (event.nodeId) { state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId); state.blockedNodes = state.blockedNodes.filter((n) => n !== event.nodeId); state.completedNodes = state.completedNodes.filter((n) => n !== event.nodeId); }
+    if (event.phase !== undefined) state.completedPhases = state.completedPhases.filter((p) => p !== event.phase);
+    _updateNodeState(state, event.nodeId, { status: "retrying", phase: event.phase, attempt: event.attempt, artifact: null, reason: event.reason, retryingAt: event.ts, completedAt: null, failedAt: null, skippedAt: null, cancelledAt: null, blockedAt: null, durationMs: null });
+  },
+  dag_node_skipped(state, event) {
+    if (event.nodeId) state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+    _updateNodeState(state, event.nodeId, { status: "skipped", phase: event.phase, reason: event.reason, skippedAt: event.ts });
+  },
+  dag_node_cancelled(state, event) {
+    if (event.nodeId) state.runningNodes = state.runningNodes.filter((n) => n !== event.nodeId);
+    _updateNodeState(state, event.nodeId, { status: "cancelled", phase: event.phase, reason: event.reason, cancelledAt: event.ts });
+  },
+  phase_failed(state, event, ctx) {
+    state.phase = event.phase ?? state.phase;
+    state.leaseId = null;
+    state.status = "failed";
+    state.blockedReason = event.error ?? event.reason ?? null;
+    state.failureCode = event.code ?? state.failureCode;
+    state.failurePhase = event.phase ?? state.failurePhase;
+    state.retryable = event.retryable ?? state.retryable;
+    state.retryCount = event.retryCount ?? state.retryCount;
+    state.maxRetries = event.maxRetries ?? state.maxRetries;
+    state.failureCause = event.cause ?? state.failureCause;
+    if (event.phase !== undefined) state.runningNodes = state.runningNodes.filter((n) => n !== event.phase);
+    ctx.terminal = true;
+  },
+  budget_exceeded(state, event, ctx) {
+    state.status = "blocked";
+    state.leaseId = null;
+    state.blockedReason = event.reason ?? "budget exceeded";
+    ctx.terminal = true;
+  },
+  job_blocked(state, event, ctx) {
+    state.status = "blocked";
+    state.leaseId = null;
+    state.blockedReason = event.reason ?? event.blockedReason ?? null;
+    state.failureCode = event.code ?? event.kind ?? state.failureCode;
+    state.failureCause = event.cause ?? state.failureCause;
+    ctx.terminal = true;
+  },
+  job_failed(state, event, ctx) {
+    state.status = "failed";
+    state.leaseId = null;
+    state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
+    state.failureCode = event.code ?? state.failureCode;
+    state.failurePhase = event.phase ?? state.failurePhase;
+    state.retryable = event.retryable ?? state.retryable;
+    state.retryCount = event.retryCount ?? state.retryCount;
+    state.maxRetries = event.maxRetries ?? state.maxRetries;
+    state.failureCause = event.cause ?? state.failureCause;
+    ctx.terminal = true;
+  },
+  pool_exhausted(state, event, ctx) {
+    state.status = "failed";
+    state.leaseId = null;
+    state.blockedReason = event.reason ?? "ACP pool exhausted";
+    state.failureCode = "pool_exhausted";
+    state.failurePhase = event.phase ?? state.phase;
+    state.retryable = true;
+    ctx.terminal = true;
+  },
+  job_superseded(state, event, ctx) {
+    state.status = "superseded";
+    state.blockedReason = event.reason ?? "superseded by remediation lineage";
+    ctx.terminal = true;
+  },
+  approval_required(state, event) {
+    state.status = "waiting.approval";
+    state.phase = event.phase ?? state.phase;
+    state.blockedReason = event.reason ?? "approval required";
+    state.approval = { operation: event.operation ?? null, phase: event.phase ?? null, channels: Array.isArray(event.channels) ? event.channels : [], reason: event.reason ?? null, requestedAt: event.ts ?? null, timeoutAt: event.timeoutAt ?? null };
+    if (event.phase) { state.runningNodes = state.runningNodes.filter((n) => n !== event.phase); if (!state.blockedNodes.includes(event.phase)) state.blockedNodes = [...state.blockedNodes, event.phase]; }
+  },
+  job_approved(state) {
+    state.status = state.approval?.operation === "PR" ? "completed" : "running";
+    state.blockedReason = null;
+    state.approval = null;
+    if (state.phase) state.blockedNodes = state.blockedNodes.filter((n) => n !== state.phase);
+  },
+  approval_timed_out(state, event, ctx) {
+    state.status = "blocked";
+    state.leaseId = null;
+    state.blockedReason = event.reason ?? "approval timed out";
+    state.approval = state.approval ? { ...state.approval, timedOutAt: event.ts ?? null } : null;
+    ctx.terminal = true;
+  },
+  review_bundle_accepted: _handleReviewBundle,
+  review_bundle_rejected: _handleReviewBundle,
+  job_completed(state, event, ctx) {
+    state.status = "completed";
+    state.phase = "completed";
+    state.leaseId = null;
+    state.blockedReason = null;
+    state.failureCode = null;
+    state.failurePhase = null;
+    state.retryable = false;
+    state.retryCount = 0;
+    state.failureCause = null;
+    ctx.terminal = true;
+  },
+  pr_opened(state, event) {
+    state.pr = { url: event.prUrl || event.pullRequestUrl || event.url || null, number: event.prNumber || event.number || null, artifact: event.artifact || null, openedAt: event.ts || null };
+    if (event.artifact) state.artifacts.pr = event.artifact;
+  },
+  job_cancel_requested(state, event) {
+    state.cancelRequested = true;
+    state.cancelReason = event.reason ?? null;
+  },
+  job_cancelled(state, event, ctx) {
+    state.cancelRequested = true;
+    state.cancelReason = event.reason ?? state.cancelReason;
+    state.status = "cancelled";
+    state.leaseId = null;
+    ctx.terminal = true;
+  },
+  job_retried(state, event, ctx) {
+    state.status = "running";
+    state.phase = event.fromPhase ?? state.phase;
+    state.leaseId = null;
+    state.blockedReason = null;
+    state.failureCode = null;
+    state.failurePhase = null;
+    state.retryable = false;
+    state.retryCount = event.retryCount ?? state.retryCount + 1;
+    state.maxRetries = event.maxRetries ?? state.maxRetries;
+    state.failureCause = null;
+    for (const p of event.clearArtifacts ?? []) delete state.artifacts[p];
+    ctx.terminal = false;
+  },
+  recovery_created(state, event) {
+    state.recoveryOf = event.recoveryOf ?? null;
+    state.retryCount = event.retryCount ?? state.retryCount;
+    state.maxRetries = event.maxRetries ?? state.maxRetries;
+    state.lineage = { parentJobId: event.lineage?.parentJobId ?? null, parentStatus: event.lineage?.parentStatus ?? null, parentFailureCode: event.lineage?.parentFailureCode ?? null, parentFailurePhase: event.lineage?.parentFailurePhase ?? null, parentBlockedReason: event.lineage?.parentBlockedReason ?? null, recoveryReason: event.recoveryReason ?? null, trigger: event.trigger ?? null, executorSelection: event.executorSelection ?? null, retryCount: event.retryCount ?? null, maxRetries: event.maxRetries ?? null };
+    if (event.sourceContext) state.sourceContext = event.sourceContext;
+  },
+  permission_denied(state, event) {
+    state.permissionDenials = [...state.permissionDenials, { category: event.category ?? "infra", phase: event.phase ?? null, role: event.role ?? null, action: event.action ?? null, deniedOperation: event.deniedOperation ?? event.action ?? null, targetPath: event.targetPath ?? "", reason: event.reason ?? "permission denied", allowedBoundary: event.allowedBoundary ?? "", recoveryGuidance: event.recoveryGuidance ?? "", ts: event.ts ?? null }];
+    state.infraStatus = "blocked";
+  },
+  external_repair_started(state, event) { state.externalRepair = { status: "started", reason: event.reason ?? null, ts: event.ts ?? null }; },
+  external_repair_completed(state, event) { state.externalRepair = { status: "completed", result: event.result ?? null, ts: event.ts ?? null }; },
+  external_repair_failed(state, event) { state.externalRepair = { status: "failed", error: event.error ?? null, ts: event.ts ?? null }; },
+  job_redirect_requested(state, event, ctx) {
+    if (!ctx.terminal) { state.redirectContext = event.instructions ?? null; state.redirectReason = event.reason ?? null; state.redirectEventId = event.redirectEventId ?? null; }
+  },
+  job_redirect_consumed(state, event) {
+    if (event.redirectEventId !== undefined) state.consumedRedirectIds = [...state.consumedRedirectIds, event.redirectEventId];
+    if (state.redirectEventId === event.redirectEventId) { state.redirectContext = null; state.redirectReason = null; state.redirectEventId = null; }
+  },
+  workflow_selected(state, event) { state.workflow = event.workflow ?? state.workflow; },
+  phase_activity(state, event) { state.lastActivityAt = event.ts ?? state.lastActivityAt; state.lastActivityMessage = event.message ?? state.lastActivityMessage; },
+  external_remediation_started(state, event) { state.externalRemediationStatus = "STARTED"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = null; },
+  external_remediation_completed(state, event) { state.externalRemediationStatus = event.remediationStatus ?? "UNKNOWN"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = null; },
+  external_remediation_failed(state, event) { state.externalRemediationStatus = "FAILED"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = event.error ?? event.reason ?? null; },
+  finalizer_result(state, event) { state.finalizer = { ok: Boolean(event.result?.ok), status: event.result?.status ?? null, code: event.result?.code ?? null, commit: event.result?.commit ?? null, closed: event.result?.closed ?? null, mode: event.result?.mode ?? null, ts: event.ts ?? null }; },
+  merge_index_status(state, event) { state.mergeIndexStatus = event.indexState ?? event.mergeIndexStatus ?? state.mergeIndexStatus; state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch; state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead; state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom; },
+  completion_gate_evaluated(state, event) { state.completionGate = { outcome: event.outcome ?? null, reason: event.reason ?? null, missingGates: Array.isArray(event.missingGates) ? event.missingGates : [], evaluatedAt: event.ts ?? null }; },
+};
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
 

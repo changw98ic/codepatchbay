@@ -68,8 +68,8 @@ const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);
 describe('R4: event extension gate', () => {
   it('every event type has a materialization rule', () => {
     for (const [eventType] of Object.entries(EVENT_REGISTRY)) {
-      const hasCase = EVENT_STORE.includes(`case "${eventType}":`);
-      assert.ok(hasCase, `${eventType} missing materialization rule in materializeJob`);
+      const hasHandler = EVENT_STORE.includes(`${eventType}(state`) || EVENT_STORE.includes(`${eventType}: `);
+      assert.ok(hasHandler, `${eventType} missing handler in EVENT_HANDLERS`);
     }
   });
 
@@ -100,14 +100,16 @@ describe('R4: event extension gate', () => {
   });
 
   it('no materialized event type is missing from registry', () => {
-    const caseRegex = /case "([^"]+)":/g;
+    // Scan EVENT_HANDLERS keys from the source by finding lines like:
+    //   event_name(state, ...) {   or   event_name: _sharedRef,
+    const handlerKeyRegex = /^  ([a-z_]+)\(state|^  ([a-z_]+): _/gm;
     const materialized = new Set();
     let match;
-    while ((match = caseRegex.exec(EVENT_STORE)) !== null) {
-      materialized.add(match[1]);
+    while ((match = handlerKeyRegex.exec(EVENT_STORE)) !== null) {
+      materialized.add(match[1] || match[2]);
     }
     for (const eventType of materialized) {
-      assert.ok(EVENT_REGISTRY[eventType], `${eventType} in materializeJob but missing from EVENT_REGISTRY`);
+      assert.ok(EVENT_REGISTRY[eventType], `${eventType} in EVENT_HANDLERS but missing from EVENT_REGISTRY`);
     }
   });
 });
