@@ -20,6 +20,8 @@ import chokidar from "chokidar";
 import { poolExhaustedJob, releaseManagedAcpWorktree, stopManagedAcpPool } from "../../bridges/runtime-services.js";
 import { createLogger } from "../../shared/logger.js";
 import { writeJsonAtomic, writeJsonOnce } from "../../shared/fs-utils.js";
+import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { FailureKind } from "../../core/contracts/failure.js";
 import { createIsolatedWorktreeWithRetry } from "./worktree-manager.js";
 import { finalizeAndWriteSuccessfulResult } from "./assignment-finalizer.js";
 
@@ -27,6 +29,7 @@ const execFileAsync = promisify(_execFile);
 
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
+const CANCEL_POLL_MS = 1_000;
 
 function parseArgs(argv) {
   const opts = {};
@@ -50,6 +53,8 @@ export async function main() {
   const log = createLogger(`worker-${workerId}`);
   const inboxDir = path.join(hubRoot, "workers", "inbox", workerId);
   await mkdir(inboxDir, { recursive: true });
+  const assignmentStore = new AssignmentStore(hubRoot);
+  await assignmentStore.init();
 
   // Register self
   const registryFile = path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`);
@@ -203,6 +208,59 @@ export async function main() {
           await writeAssignmentHeartbeat({ status: "running" });
         } catch { /* ignore */ }
       }, HEARTBEAT_MS);
+      assignmentHeartbeat.unref();
+
+      let cancelRequested = null;
+      let resolveCancel = null;
+      const cancelPromise = new Promise((resolve) => {
+        resolveCancel = resolve;
+      });
+
+      function buildCancelledResult(cancel) {
+        const reason = cancel?.reason || "assignment cancelled";
+        return {
+          status: "failed",
+          failure: {
+            kind: FailureKind.RUNTIME_INTERRUPTED,
+            phase: heartbeatState.activePhase || heartbeatState.phase || null,
+            reason: `assignment cancelled: ${reason}`,
+            retryable: false,
+            cause: {
+              cancel: {
+                reason,
+                requestedAt: cancel?.requestedAt || null,
+                requestedBy: cancel?.requestedBy || null,
+              },
+            },
+          },
+        };
+      }
+
+      async function requestCancel(cancel) {
+        if (cancelRequested) return;
+        cancelRequested = cancel || { reason: "assignment cancelled" };
+        await writeAssignmentHeartbeat({
+          status: "cancelling",
+          phase: "cancelled",
+          activePhase: null,
+          progressKind: "cancel_requested",
+          lastProgressType: "cancel_requested",
+        }, { progress: true }).catch(() => {});
+        resolveCancel(buildCancelledResult(cancelRequested));
+        void stopWorkerAcpPool(jobLog);
+      }
+
+      async function pollCancel() {
+        const cancel = await assignmentStore.readCancel(assignmentId, attemptNum);
+        if (cancel) await requestCancel(cancel);
+      }
+
+      const cancelTimer = setInterval(async () => {
+        try {
+          await pollCancel();
+        } catch { /* ignore */ }
+      }, CANCEL_POLL_MS);
+      cancelTimer.unref();
 
       // Create worktree for isolation. Managed pipeline execution must never
       // fall back to the source checkout.
@@ -213,6 +271,7 @@ export async function main() {
 
       // Run job via bridge (service injection + sourcePath resolution)
       try {
+        await pollCancel();
         worktreeInfo = await createIsolatedWorktreeWithRetry({
           hubRoot,
           sourcePath: assignment.sourcePath,
@@ -239,7 +298,8 @@ export async function main() {
           createdAt: new Date().toISOString(),
         }, null, 2) + "\n", "utf8");
 
-        const result = await runJobWithServices({
+        await pollCancel();
+        const jobPromise = runJobWithServices({
           cpbRoot,
           hubRoot,
           project: assignment.projectId,
@@ -271,8 +331,17 @@ export async function main() {
             }, { progress: true });
           },
         });
+        jobPromise.catch((err) => {
+          if (cancelRequested) {
+            jobLog.warn(`cancelled job settled after cancellation: ${err.message}`);
+          }
+        });
+        const result = cancelRequested
+          ? buildCancelledResult(cancelRequested)
+          : await Promise.race([jobPromise, cancelPromise]);
 
         clearInterval(assignmentHeartbeat);
+        clearInterval(cancelTimer);
 
         // Finalize: create PR/review bundle if autoFinalize and job succeeded
         if (autoFinalize && result.status === "completed" && worktreeInfo) {
@@ -302,6 +371,7 @@ export async function main() {
         });
       } catch (err) {
         clearInterval(assignmentHeartbeat);
+        clearInterval(cancelTimer);
         const isPoolExhausted = err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError";
         const isWorktreeUnavailable = err.code === "WORKTREE_UNAVAILABLE";
         const failureKind = isPoolExhausted ? "pool_exhausted" : (isWorktreeUnavailable ? "worktree_unavailable" : "worker_crashed");
@@ -329,6 +399,7 @@ export async function main() {
           writtenAt: new Date().toISOString(),
         });
       } finally {
+        clearInterval(cancelTimer);
         await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
         // Cleanup worktree regardless of outcome
         if (worktreeInfo && assignment.sourcePath) {

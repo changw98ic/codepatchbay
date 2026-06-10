@@ -6,7 +6,7 @@ function phasesForPlanMode(phases, planMode) {
     case "full":
       return phases;
     case "light":
-      return phases.filter((phase) => phase !== "review" && phase !== "verify");
+      return phases.filter((phase) => phase !== "plan" && phase !== "review");
     case "none":
       return phases.filter((phase) => phase !== "plan" && phase !== "review");
     case "parent":

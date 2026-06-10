@@ -354,6 +354,7 @@ const POST_TERMINAL_ALLOWED = new Set([
   "approval_required", "job_approved", "approval_timed_out",
   "job_superseded",
   "review_bundle_accepted", "review_bundle_rejected",
+  "completion_gate_evaluated",
 ]);
 
 const NODE_STATE_DEFAULTS = {
@@ -462,6 +463,7 @@ export function materializeJob(events) {
       rounds: [],
       latest: null,
     },
+    completionGate: null,
   };
 
   let terminal = false;
@@ -997,6 +999,14 @@ export function materializeJob(events) {
         state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch;
         state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead;
         state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom;
+        break;
+      case "completion_gate_evaluated":
+        state.completionGate = {
+          outcome: event.outcome ?? null,
+          reason: event.reason ?? null,
+          missingGates: Array.isArray(event.missingGates) ? event.missingGates : [],
+          evaluatedAt: event.ts ?? null,
+        };
         break;
     }
   }

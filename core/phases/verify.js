@@ -294,6 +294,7 @@ export async function runVerify(ctx) {
 
   return phasePassed({
     phase: "verify",
+    verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, verdict, verificationEvidence }, promptArtifact),
   });
@@ -409,10 +410,13 @@ function getRequiredArtifact(previousResults, kind) {
 }
 
 function renderVerdictMarkdown(verdict) {
+  const statusUpper = verdict.status.toUpperCase();
   return `# Verdict
 
+VERDICT: ${statusUpper}
+
 ## Status
-${verdict.status.toUpperCase()}
+${statusUpper}
 
 ## Reason
 ${verdict.reason}

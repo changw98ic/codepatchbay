@@ -65,6 +65,17 @@ export async function run(args, { cpbRoot }) {
         }
       }
       console.log(`${CYAN}Latest job:${NC} ${latest.status} ${latest.phase || "-"} lease:${leaseState} ${(latest.task || "").slice(0, 60)}`);
+      // Show retry context if present
+      const retryCtx = latest.sourceContext?.retryContext || latest.failureCause?.cause?.retryContext || null;
+      const retryInfo = latest.sourceContext?.retry || latest.sourceContext?.previousFailure || null;
+      if (retryCtx || retryInfo) {
+        if (retryInfo?.failureKind) console.log(`  ${CYAN}Retry reason:${NC} ${retryInfo.failureKind} — ${(retryInfo.failureReason || "").slice(0, 80)}`);
+        if (retryInfo?.retryCount != null) console.log(`  ${CYAN}Retry attempt:${NC} ${retryInfo.retryCount}${retryInfo.maxRetries != null ? `/${retryInfo.maxRetries}` : ""}`);
+        const fixScope = retryCtx?.fix_scope || retryInfo?.fix_scope;
+        if (Array.isArray(fixScope) && fixScope.length > 0) {
+          console.log(`  ${CYAN}Fix scope:${NC} ${fixScope.join(", ")}`);
+        }
+      }
     }
   } catch {}
 

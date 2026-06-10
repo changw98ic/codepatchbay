@@ -125,16 +125,20 @@ export async function runAdversarialVerify(ctx) {
 
   return phasePassed({
     phase: "adversarial_verify",
+    verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics,
   });
 }
 
 function renderAdversarialVerdictMarkdown(verdict, riskMap = null) {
+  const statusUpper = String(verdict.status || "unknown").toUpperCase();
   return `# Adversarial Verdict
 
+VERDICT: ${statusUpper}
+
 ## Status
-${String(verdict.status || "unknown").toUpperCase()}
+${statusUpper}
 
 ## Risk
 ${riskMap?.riskLevel || "unknown"}

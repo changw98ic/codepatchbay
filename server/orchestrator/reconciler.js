@@ -757,6 +757,7 @@ export class Reconciler {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
+            workerId: null,
             metadata: {
               sourceContext: retrySourceContext,
               lastFailureKind: retrySourceContext.retry?.failureKind || "unknown",
@@ -787,6 +788,7 @@ export class Reconciler {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
+            workerId: null,
             metadata: {
               ...(assignment.sourceContext || {}),
               workflow: decision.params?.workflow || assignment.workflow,
@@ -806,6 +808,7 @@ export class Reconciler {
             status: "pending",
             claimedBy: null,
             claimedAt: null,
+            workerId: null,
             metadata: {
               ...(assignment.sourceContext || {}),
               agentsOverride: decision.params || {},

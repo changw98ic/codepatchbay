@@ -71,6 +71,7 @@ function usage() {
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
   console.log(`  ${CYAN}logs${NC} [--follow] [--worker <id>] [--job <id>] [--level <lvl>] [--since <5m|1h|1d>]  View logs`);
+  console.log(`  ${CYAN}dw-status${NC}                              Dynamic Workflow readiness check`);
   console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
@@ -143,6 +144,7 @@ const COMMANDS = {
   codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
   logs: "logs.js",
+  "dw-status": "dw-status.js",
 };
 
 // --- Main ---

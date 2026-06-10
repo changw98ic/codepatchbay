@@ -25,6 +25,27 @@ const SMART_MODE_SUPERVISOR_KINDS = new Set([
   FailureKind.TIMEOUT,
 ]);
 
+function collectVerificationRetryScope(failure = {}) {
+  const verdict = failure.cause?.verdict || {};
+  const scope = new Set();
+  const add = (value) => {
+    if (typeof value === "string" && value.trim()) scope.add(value.trim());
+  };
+  const addMany = (values) => {
+    if (Array.isArray(values)) values.forEach(add);
+  };
+
+  addMany(verdict.fix_scope);
+  addMany(verdict.fixScope);
+  for (const blocking of Array.isArray(verdict.blocking) ? verdict.blocking : []) {
+    add(blocking?.file);
+    add(blocking?.path);
+    addMany(blocking?.files);
+    addMany(blocking?.paths);
+  }
+  return [...scope];
+}
+
 export class FailureRouter {
   /**
    * @param {object} [supervisor] - AcpSupervisor instance (optional, P1-2)
@@ -74,6 +95,17 @@ export class FailureRouter {
       return {
         action: "mark_failed",
         reason: `${failure.kind} is non-retryable: ${failure.reason}`,
+        retryable: false,
+      };
+    }
+
+    if (
+      failure.kind === FailureKind.VERIFICATION_FAILED &&
+      collectVerificationRetryScope(failure).length === 0
+    ) {
+      return {
+        action: "mark_failed",
+        reason: `verification failed without actionable retry scope: ${failure.reason}`,
         retryable: false,
       };
     }

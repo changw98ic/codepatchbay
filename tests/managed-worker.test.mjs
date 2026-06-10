@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { createIsolatedWorktreeWithRetry } from "../runtime/worker/worktree-manager.js";
 import { finalizeAndWriteSuccessfulResult } from "../runtime/worker/assignment-finalizer.js";
+import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import { readJson, tempRoot, writeJson } from "./helpers.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -373,6 +374,94 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.match(transcript, /software verification agent/);
 
   await rm(root, { recursive: true, force: true });
+});
+
+test("managed worker stops an active assignment when its cancel control file appears", async () => {
+  const root = await tempRoot("cpb-managed-cancel");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  const sourcePath = path.join(root, "source");
+  const workerId = "w-cancel";
+  await mkdir(sourcePath, { recursive: true });
+  await writeFile(path.join(sourcePath, "README.md"), "# Managed Worker Cancel Fixture\n", "utf8");
+  await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-cancel", private: true }, null, 2)}\n`, "utf8");
+  const scenarioPath = path.join(root, "cancel-scenario.json");
+  await writeJson(scenarioPath, {
+    responses: [
+      {
+        name: "execute",
+        matchRegex: "software execution agent",
+        delayMs: 30_000,
+        output: jsonEnvelope({
+          status: "ok",
+          summary: "This delayed response should be cancelled before completion.",
+          tests: [],
+          risks: [],
+        }),
+      },
+    ],
+  });
+  const transcriptPath = path.join(root, "cancel-transcript.jsonl");
+  const { assignmentId, attemptDir } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    assignmentId: "a-managed-cancel",
+    entryId: "managed-cancel",
+    workflow: "direct",
+    planMode: "light",
+    attemptToken: "attempt-token-cancel",
+    metadata: { agents: { executor: "fake-acp" } },
+  });
+
+  const worker = spawnWorker({
+    workerId,
+    hubRoot,
+    cpbRoot,
+    env: {
+      CPB_ROOT: cpbRoot,
+      CPB_HUB_ROOT: hubRoot,
+      CPB_EXECUTOR_ROOT: repoRoot,
+      CPB_PROJECT_ROOTS: root,
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgentScript,
+        "--scenario-file", scenarioPath,
+        "--transcript-file", transcriptPath,
+      ]),
+    },
+    timeoutMs: 40_000,
+  });
+
+  try {
+    await waitFor(async () => {
+      const raw = await readFile(transcriptPath, "utf8").catch(() => "");
+      return raw.includes("session/prompt");
+    }, { timeoutMs: 20_000 });
+
+    const store = new AssignmentStore(hubRoot);
+    await store.init();
+    await store.writeCancel(assignmentId, 1, "test requested cancellation");
+
+    const result = await waitFor(
+      async () => readJson(path.join(attemptDir, "result.json")),
+      { timeoutMs: 8_000 },
+    );
+    assert.equal(result.status, "failed");
+    assert.equal(result.attemptToken, "attempt-token-cancel");
+    assert.equal(result.jobResult.failure.kind, "runtime_interrupted");
+    assert.equal(result.jobResult.failure.retryable, false);
+    assert.match(result.jobResult.failure.reason, /cancel/i);
+
+    const worktree = await readJson(path.join(attemptDir, "worktree.json"));
+    const finished = await worker.done;
+    assert.equal(finished.code, 0, finished.stderr);
+    assert.equal(existsSync(worktree.worktreePath), false);
+  } finally {
+    worker.child.kill("SIGTERM");
+    await worker.done.catch(() => null);
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("managed worker releases persistent ACP provider resources between assignments", async () => {

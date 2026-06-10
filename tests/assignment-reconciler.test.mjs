@@ -152,6 +152,54 @@ test("Reconciler requeues verification failures with verifier retry context", as
   assert.match(queued.metadata.sourceContext.retry.previousOutput, /test expectation failed/);
 });
 
+test("Reconciler marks verification failures without actionable retry scope as failed", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-verifier-no-scope");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "do not retry verifier pollution" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress", claimedBy: "w-verify", workerId: "w-verify" });
+  await workers.registerWorker("w-verify", { status: "running", currentAssignmentId: `a-${entry.id}` });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "do not retry verifier pollution",
+    metadata: { failureCount: 0 },
+  });
+  const attempt = await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-verify",
+    orchestratorEpoch: 1,
+  });
+
+  await reconciler(hubRoot, assignments, workers, new FailureRouter())._finalizeQueue(assignment, attempt, {
+    status: "failed",
+    jobResult: {
+      status: "failed",
+      jobId: "job-verify",
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: "runtime-only files changed: .claude/settings.local.json, cpb-task/codegraph-state.json",
+        retryable: true,
+        cause: {
+          verdict: {
+            status: "fail",
+            reason: "runtime-only files changed",
+            blocking: [],
+            fix_scope: [],
+          },
+          artifact: { kind: "verdict", id: "777777", name: "verdict-777777", path: "/tmp/verdict-777777.md" },
+        },
+      },
+    },
+  });
+
+  const [queued] = await listQueue(hubRoot);
+  assert.equal(queued.status, "failed");
+  assert.match(queued.metadata.failureReason, /without actionable retry scope/);
+});
+
 test("AssignmentStore idempotently rebuilds assignments without losing attempt history", async () => {
   const hubRoot = await tempRoot("cpb-assignment");
   const store = new AssignmentStore(hubRoot);

@@ -99,6 +99,7 @@ export function jobToPipelineState(job) {
     adversarialRequired: job.adversarialRequired ?? job.riskMap?.adversarialRequired ?? false,
     dynamicAgentPlan: job.dynamicAgentPlan ?? null,
     adversarialVerdict: job.adversarialVerdict ?? null,
+    completionGate: job.completionGate ?? null,
   };
 }
 
@@ -215,6 +216,7 @@ export function jobToQueueRow(job) {
     riskLevel: job.riskLevel ?? job.riskMap?.riskLevel ?? null,
     verificationDepth: job.verificationDepth ?? job.riskMap?.verificationDepth ?? null,
     adversarialRequired: job.adversarialRequired ?? job.riskMap?.adversarialRequired ?? false,
+    completionGate: job.completionGate ?? null,
   };
 }
 

@@ -14,6 +14,15 @@ const REQUIRED_IGNORES = [
   "cpb-task/worktrees/",
 ];
 
+const WORKTREE_LOCAL_EXCLUDES = [
+  ".codegraph",
+  ".claude/",
+  ".codex/",
+  "cpb-task/",
+  "node_modules",
+  "node_modules/",
+];
+
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const BASELINE_ENV = {
   GIT_AUTHOR_NAME: "CodePatchbay Supervisor",
@@ -324,6 +333,12 @@ async function ensureLocalGitExclude(worktreePath, pattern) {
   return true;
 }
 
+async function ensureWorktreeLocalExcludes(worktreePath) {
+  for (const pattern of WORKTREE_LOCAL_EXCLUDES) {
+    await ensureLocalGitExclude(worktreePath, pattern);
+  }
+}
+
 function commandFailureMessage(command, args, result) {
   const output = `${result.stderr || ""}${result.stdout || ""}`.trim();
   const suffix = output.length > 0 ? `: ${output}` : "";
@@ -409,7 +424,6 @@ async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodeg
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
   let resetCodegraph = false;
 
-  await ensureLocalGitExclude(worktreePath, ".codegraph");
   try {
     const existing = await lstat(worktreeCodegraph);
     if (existing.isSymbolicLink() || !existing.isDirectory()) {
@@ -432,8 +446,6 @@ async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodeg
 async function ensureSharedNodeModules(project, worktreePath) {
   const sourceNodeModules = path.join(path.resolve(project), "node_modules");
   const worktreeNodeModules = path.join(worktreePath, "node_modules");
-
-  await ensureLocalGitExclude(worktreePath, "node_modules/");
 
   try {
     const sourceStats = await stat(sourceNodeModules);
@@ -471,10 +483,9 @@ async function ensureSharedNodeModules(project, worktreePath) {
 
 async function prepareWorktreeRuntime(project, worktreePath, options = {}) {
   const codegraphEnabled = options.codegraphEnabled ?? (process.env.CPB_CODEGRAPH_ENABLED !== "0");
+  await ensureWorktreeLocalExcludes(worktreePath);
   if (codegraphEnabled) {
     await ensureIsolatedCodegraph(worktreePath, options);
-  } else {
-    await ensureLocalGitExclude(worktreePath, ".codegraph");
   }
   await ensureSharedNodeModules(project, worktreePath);
 }

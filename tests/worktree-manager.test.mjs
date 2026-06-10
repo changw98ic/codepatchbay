@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "./helpers.mjs";
@@ -56,6 +56,24 @@ test("createWorktree initializes isolated codegraph while reusing installed depe
   assert.notEqual(await realpath(worktreeCodegraph), await realpath(path.join(project, ".codegraph")));
   assert.equal((await lstat(worktreeNodeModules)).isSymbolicLink(), true);
   assert.equal(await realpath(worktreeNodeModules), await realpath(sourceNodeModules));
+
+  const excludePathResult = git(created.path, ["rev-parse", "--git-path", "info/exclude"]);
+  const excludePath = path.isAbsolute(excludePathResult.stdout.trim())
+    ? excludePathResult.stdout.trim()
+    : path.join(created.path, excludePathResult.stdout.trim());
+  const exclude = await readFile(excludePath, "utf8");
+  assert.match(exclude, /^\.codegraph$/m);
+  assert.match(exclude, /^\.claude\/$/m);
+  assert.match(exclude, /^\.codex\/$/m);
+  assert.match(exclude, /^cpb-task\/$/m);
+  assert.match(exclude, /^node_modules$/m);
+  assert.match(exclude, /^node_modules\/$/m);
+
+  await mkdir(path.join(created.path, ".claude"), { recursive: true });
+  await mkdir(path.join(created.path, "cpb-task"), { recursive: true });
+  await writeFile(path.join(created.path, ".claude", "settings.local.json"), "{}\n", "utf8");
+  await writeFile(path.join(created.path, "cpb-task", "codegraph-state.json"), "{}\n", "utf8");
+  assert.equal(git(created.path, ["status", "--short", "--untracked-files=all"]).stdout.trim(), "");
 
   await rm(worktreeCodegraph, { recursive: true, force: true });
   await symlink(path.join(project, ".codegraph"), worktreeCodegraph, "dir");

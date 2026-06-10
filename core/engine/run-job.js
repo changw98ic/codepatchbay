@@ -9,14 +9,16 @@
  */
 
 import { runPhase } from "./run-phase.js";
-import { resolvePhases } from "./workflow-runner.js";
+import { resolveSemanticPhases } from "./phase-policy.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
 import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
-import { normalizeWorkflow } from "../workflow/definition.js";
-import { generateDynamicAgentPlan } from "../agents/dynamic-agent-plan.js";
+import { buildWorkflowDag, insertAdversarialVerify } from "./dag-builder.js";
+import { generateDynamicAgentPlan, validateDynamicAgentPlan } from "../agents/dynamic-agent-plan.js";
+import { evaluateCompletionGate, parseVerdict, completionGateEvent } from "./completion-gate.js";
+import { validateScopeConstraint, stripGitStatusPrefix } from "./scope-guard.js";
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
@@ -206,69 +208,45 @@ function dynamicAgentForRole(plan, role, phase) {
   return normalizeDynamicAgentEntry(agentConfig?.[role] || agentConfig?.[phase]);
 }
 
-function dagForRun(workflow, phases, phaseRoleMap) {
-  const base = normalizeWorkflow(workflow);
-  const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
-  const phaseBudget = new Map();
-  for (const phase of phases) {
-    phaseBudget.set(phase, (phaseBudget.get(phase) || 0) + 1);
-  }
+// dagForRun and phasesWithAdversarialVerify extracted to dag-builder.js
+// (buildWorkflowDag and insertAdversarialVerify)
 
-  const nodes = [];
-  for (const existing of baseNodes) {
-    const phase = existing.phase || existing.id;
-    if (!phaseBudget.has(phase)) continue;
-    const remaining = phaseBudget.get(phase);
-    if (remaining <= 0) continue;
-    phaseBudget.set(phase, remaining - 1);
-    nodes.push({
-      ...existing,
-      id: existing.id || phase,
-      phase,
-      role: existing.role || phaseRoleMap[phase] || phase,
-      dependsOn: Array.isArray(existing.dependsOn) ? [...existing.dependsOn] : [],
-    });
+/**
+ * Extract fix scope from phase results and risk map for adversarial retry context.
+ */
+function extractFixScope(phaseResults, riskMap) {
+  const adversarialResult = phaseResults.find(r => r?.phase === "adversarial_verify");
+  const advCause = adversarialResult?.failure?.cause || {};
+  if (Array.isArray(advCause.fix_scope) && advCause.fix_scope.length > 0) return advCause.fix_scope;
+  if (Array.isArray(riskMap?.adversarialFocus) && riskMap.adversarialFocus.length > 0) return riskMap.adversarialFocus;
+  if (Array.isArray(riskMap?.highRiskFiles) && riskMap.highRiskFiles.length > 0) return riskMap.highRiskFiles;
+  const executeResult = phaseResults.find(r => r?.phase === "execute");
+  const executeArtifact = executeResult?.artifact;
+  if (executeArtifact) {
+    const paths = [];
+    if (executeArtifact.path) paths.push(executeArtifact.path);
+    if (Array.isArray(executeArtifact.files)) paths.push(...executeArtifact.files);
+    if (paths.length > 0) return paths;
   }
-
-  for (const [phase, remaining] of phaseBudget.entries()) {
-    for (let idx = 0; idx < remaining; idx++) {
-      const previous = nodes[nodes.length - 1];
-      nodes.push({
-        id: idx === 0 ? phase : `${phase}_${idx + 1}`,
-        phase,
-        role: phaseRoleMap[phase] || phase,
-        dependsOn: previous ? [previous.id] : [],
-      });
-    }
-  }
-
-  const includedIds = new Set(nodes.map((node) => node.id));
-  const normalizedNodes = nodes.map((node) => ({
-    ...node,
-    dependsOn: (node.dependsOn || []).filter((depId) => includedIds.has(depId)),
-  }));
-  return {
-    name: base?.name || workflow || "standard",
-    nodes: normalizedNodes,
-    edges: normalizedNodes.flatMap((node) => (
-      (node.dependsOn || []).map((depId) => ({ from: depId, to: node.id }))
-    )),
-    maxConcurrentNodes: base?.maxConcurrentNodes || 1,
-    isDag: normalizedNodes.length > 0,
-    source: "runtime_phase_projection",
-  };
+  return [];
 }
 
-function phasesWithAdversarialVerify(phases, riskMap) {
-  if (!riskMap?.adversarialRequired || !phases.includes("verify") || phases.includes("adversarial_verify")) {
-    return phases;
-  }
-  const result = [];
-  for (const phase of phases) {
-    result.push(phase);
-    if (phase === "verify") result.push("adversarial_verify");
-  }
-  return result;
+/**
+ * Build adversarial retry context from gate result, phase results, and risk map.
+ */
+function buildAdversarialRetryContext(gateResult, phaseResults, riskMap) {
+  if (gateResult.outcome !== "adversarial_failed") return null;
+  const adversarialResult = phaseResults.find(r => r?.phase === "adversarial_verify");
+  const advCause = adversarialResult?.failure?.cause || {};
+  const advVerdict = advCause.verdict || {};
+  return {
+    reason: "adversarial_verification_failed",
+    adversarialFocus: Array.isArray(advCause.focus) ? advCause.focus
+      : (Array.isArray(riskMap?.adversarialFocus) ? riskMap.adversarialFocus : []),
+    verdictReason: advVerdict.reason || gateResult.reason,
+    blockingEvidence: advVerdict.details || gateResult.reason,
+    fix_scope: extractFixScope(phaseResults, riskMap),
+  };
 }
 
 /**
@@ -433,8 +411,9 @@ export async function runJob(ctx) {
   };
 
   // 2. Resolve phases and materialize a DAG for this run.
-  const phases = phasesWithAdversarialVerify(resolvePhases(workflow, planMode), riskMap);
-  const workflowDag = dagForRun(workflow, phases, phaseRoleMap);
+  const { phases: resolvedPhases } = resolveSemanticPhases({ workflow, planMode });
+  const phases = insertAdversarialVerify(resolvedPhases, riskMap);
+  const workflowDag = buildWorkflowDag({ workflow, phases, phaseRoleMap });
   const dagNodesByPhase = new Map();
   for (const node of workflowDag.nodes) {
     const list = dagNodesByPhase.get(node.phase) || [];
@@ -485,6 +464,40 @@ export async function runJob(ctx) {
     independentVerifierRequired: Boolean(dynamicAgentPlan?.independentVerifierRequired),
   });
 
+
+  // Fail closed: validate dynamic agent plan before execution
+  const planValidation = validateDynamicAgentPlan(dynamicAgentPlan, workflowDag);
+  if (!planValidation.valid) {
+    const blockFail = failure({
+      kind: FailureKind.AGENT_CONTRACT_INVALID,
+      phase: "dynamic_agent_plan",
+      reason: planValidation.reason,
+      retryable: false,
+      cause: {
+        code: "dynamic_agent_plan_validation_failed",
+        missingRoles: planValidation.missingRoles,
+        planSource: dynamicAgentPlan?.source || null,
+      },
+    });
+    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: blockFail });
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "dynamic_agent_plan_invalid",
+      jobId,
+      project,
+      reason: planValidation.reason,
+      missingRoles: planValidation.missingRoles,
+      ts: ts(),
+    });
+    await reportProgress(ctx, {
+      type: "job_blocked",
+      jobId,
+      project,
+      phase: "dynamic_agent_plan",
+      reason: planValidation.reason,
+      failure: { kind: blockFail.kind, reason: blockFail.reason },
+    });
+    return { status: "blocked", jobId, exitCode: 2, failure: blockFail };
+  }
   // 3. Get ACP pool
   const pool = getPool();
 
@@ -1029,6 +1042,86 @@ export async function runJob(ctx) {
       }
     }
 
+    // Scope guard: evaluate changed files against fix_scope in retry scenarios
+    if (phase === "execute" && isPhasePassed(result)) {
+      const retryFixScope = phaseSourceContext?.retryContext?.fix_scope
+        || phaseSourceContext?.retry?.fix_scope
+        || null;
+      if (Array.isArray(retryFixScope) && retryFixScope.length > 0) {
+        const rawChangedFiles = result.artifact?.metadata?.changedFiles
+          || result.artifact?.files
+          || [];
+        const cleanPaths = rawChangedFiles
+          .map(f => stripGitStatusPrefix(String(f)))
+          .filter(Boolean);
+        const scopeResult = validateScopeConstraint({
+          diffPaths: cleanPaths,
+          fixScope: retryFixScope,
+        });
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "scope_guard_evaluated",
+          jobId,
+          project,
+          phase,
+          withinScope: scopeResult.withinScope,
+          violations: scopeResult.violations,
+          fixScope: retryFixScope,
+          changedFiles: cleanPaths,
+          ts: ts(),
+        });
+        if (!scopeResult.withinScope) {
+          await reportProgress(ctx, {
+            type: "scope_guard_violation",
+            jobId,
+            project,
+            phase,
+            violations: scopeResult.violations,
+            fixScope: retryFixScope,
+          });
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "dag_node_failed",
+            jobId,
+            project,
+            nodeId,
+            phase,
+            role,
+            code: "scope_guard_violation",
+            reason: `Scope guard violation: changed files outside fix_scope: ${scopeResult.violations.join(", ")}`,
+            error: `Scope guard violation: ${scopeResult.violations.join(", ")}`,
+            ts: ts(),
+          });
+          await failJob(cpbRoot, project, jobId, {
+            reason: `Scope guard violation: changed files outside fix_scope: ${scopeResult.violations.join(", ")}`,
+            code: "scope_guard_violation",
+            phase,
+            cause: { violations: scopeResult.violations, fixScope: retryFixScope },
+          });
+          await reportProgress(ctx, {
+            type: "job_failed",
+            jobId,
+            project,
+            phase,
+            failureKind: "scope_guard_violation",
+            reason: `Scope guard violation: ${scopeResult.violations.join(", ")}`,
+          });
+          return {
+            status: "failed",
+            jobId,
+            exitCode: 1,
+            failure: {
+              kind: "scope_guard_violation",
+              phase,
+              nodeId,
+              reason: `Changed files outside fix_scope: ${scopeResult.violations.join(", ")}`,
+              violations: scopeResult.violations,
+              fixScope: retryFixScope,
+            },
+            phaseResults,
+          };
+        }
+      }
+    }
+
     phaseResults.push(result);
 
     // Resolve agent name for this phase (use potentially handoff-modified phaseAgents)
@@ -1217,7 +1310,65 @@ export async function runJob(ctx) {
     }
   }
 
-  // 5. Complete job
+  // 5. Evaluate completion gate before completing
+  const verifyResult = phaseResults.find(r => r?.phase === "verify");
+  const adversarialResult = phaseResults.find(r => r?.phase === "adversarial_verify");
+  const verdictText = verifyResult?.verdict || verifyResult?.artifact?.content || verifyResult?.artifact?.metadata || null;
+  const adversarialVerdictText = adversarialResult?.verdict || adversarialResult?.artifact?.content || adversarialResult?.artifact?.metadata || null;
+  const parsedVerdict = parseVerdict(verdictText);
+  const parsedAdversarialVerdict = parseVerdict(adversarialVerdictText);
+
+  const completedPhases = phaseResults.filter(r => r && isPhasePassed(r)).map(r => r.phase);
+  const jobForGate = { ...job, completedPhases };
+
+  const gateResult = evaluateCompletionGate({
+    job: jobForGate,
+    workflowDag,
+    riskMap,
+    dynamicAgentPlan,
+    artifactIndex: null,
+    parsedVerdict,
+    parsedAdversarialVerdict,
+  });
+
+  await appendEvent(cpbRoot, project, jobId, completionGateEvent(jobId, project, gateResult));
+
+  if (gateResult.outcome !== "complete") {
+    const adversarialRetryContext = buildAdversarialRetryContext(gateResult, phaseResults, riskMap);
+    const failCause = {
+      gateOutcome: gateResult.outcome,
+      missingGates: gateResult.missingGates,
+      details: gateResult.details,
+    };
+    if (adversarialRetryContext) {
+      failCause.retryContext = adversarialRetryContext;
+    }
+
+    await reportProgress(ctx, {
+      type: "completion_gate_blocked",
+      jobId,
+      project,
+      outcome: gateResult.outcome,
+      reason: gateResult.reason,
+    });
+    await failJob(cpbRoot, project, jobId, {
+      reason: gateResult.reason,
+      code: gateResult.outcome,
+      phase: "completion_gate",
+      cause: failCause,
+    });
+    return {
+      status: "failed",
+      jobId,
+      exitCode: 1,
+      failure: { kind: gateResult.outcome, phase: "completion_gate", reason: gateResult.reason, details: gateResult.details },
+      phaseResults,
+    };
+  }
+
+  await reportProgress(ctx, { type: "completion_gate_passed", jobId, project });
+
+  // 6. Complete job
   await completeJob(cpbRoot, project, jobId);
   await reportProgress(ctx, { type: "job_completed", jobId, project });
 

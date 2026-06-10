@@ -193,6 +193,8 @@ export async function buildReviewBundle(cpbRoot, project, jobId, {
 
     timeline,
 
+    dw: buildDwSection(jobState),
+
     promptAudit,
 
     links: {
@@ -217,6 +219,40 @@ export async function writeReviewBundle(outputDir, bundle) {
   await mkdir(outputDir, { recursive: true });
   await writeFile(filePath, JSON.stringify(bundle, null, 2), "utf8");
   return filePath;
+}
+
+/**
+ * Build the DW (Dynamic Workflow) evidence section from materialized job state.
+ *
+ * @param {object} jobState — materialized job from event-store
+ * @returns {object} dw section for the review bundle
+ */
+function buildDwSection(jobState) {
+  const dag = jobState.workflowDag;
+  const dagNodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
+  const dagEdges = Array.isArray(dag?.edges) ? dag.edges : [];
+
+  return {
+    riskMap: jobState.riskMap ?? null,
+    workflowDag: dag
+      ? {
+          name: dag.name ?? jobState.workflow ?? null,
+          nodeCount: dagNodes.length,
+          edgeCount: dagEdges.length,
+          nodes: dagNodes.map((n) => ({
+            id: n.id ?? null,
+            phase: n.phase ?? n.id ?? null,
+            role: n.role ?? null,
+          })),
+        }
+      : null,
+    dynamicAgentPlan: jobState.dynamicAgentPlan ?? null,
+    verdict: jobState.artifacts?.verdict
+      ? { status: jobState.verdict ?? null, artifact: jobState.artifacts.verdict }
+      : null,
+    adversarialVerdict: jobState.adversarialVerdict ?? null,
+    completionGate: jobState.completionGate ?? null,
+  };
 }
 
 export function reviewBundleDir(hubRoot, project, jobId) {
