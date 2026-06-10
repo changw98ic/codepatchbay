@@ -24,12 +24,10 @@ const DELETED_RUNTIME_ENTRIES = [
 const FORBIDDEN_RUNTIME_IMPORTS = new Set(["server"]);
 const BRIDGE_ENTRY_FILES = [
   "bridges/acp-client.mjs",
+  "bridges/common.sh",
   "bridges/engine-bridge.js",
-  "bridges/executor.sh",
   "bridges/job-runner.mjs",
-  "bridges/planner.sh",
   "bridges/project-worker.mjs",
-  "bridges/reviewer.sh",
   "bridges/run-phase.mjs",
   "bridges/run-pipeline.mjs",
   "bridges/run-pipeline.sh",

@@ -295,7 +295,7 @@ async function main() {
       runnerPid: process.pid,
       treeId: null,
       leaseId,
-      command: `${script} ${scriptArgs.join(" ")}`,
+      command: `${script} ${phase} ${scriptArgs.join(" ")}`,
     }).then(() => {
       processRegistered = true;
     }).catch((err) => {
@@ -324,7 +324,7 @@ async function main() {
       CPB_ACP_CPB_ROOT: cpbRoot,
     };
     const activity = createActivityTracker(cpbRoot, project, jobId);
-    childResult = await runChild(script, scriptArgs, cpbRoot, (output) => {
+    childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output) => {
       const line = output.trim();
       if (line) activity.track(line);
     }, {

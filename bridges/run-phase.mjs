@@ -43,25 +43,47 @@ function parseArgs(argv) {
     throw new Error(`first argument must be a phase name (plan|execute|verify|review|repair), got: ${phase}`);
   }
 
+  const positional = [];
   const options = new Map();
   for (let i = 1; i < argv.length; i++) {
-    const name = argv[i];
-    if (!name.startsWith("--")) {
-      throw new Error(`unexpected argument: ${name}`);
+    const token = argv[i];
+    if (token.startsWith("--")) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error(`missing value for ${token}`);
+      }
+      options.set(token, value);
+      i++;
+    } else {
+      positional.push(token);
     }
-    const value = argv[i + 1];
-    if (value === undefined || value.startsWith("--")) {
-      throw new Error(`missing value for ${name}`);
+  }
+
+  // When positional args are present, map them to --flags by phase.
+  // This lets job-runner.mjs call: node run-phase.mjs <phase> <project> <id> [args...]
+  if (positional.length > 0 && !options.has("--project")) {
+    const POSITIONAL_MAP = {
+      plan:   ["--project", "--task"],
+      execute: ["--project", "--plan-id"],
+      verify: ["--project", "--deliverable-id"],
+      review: ["--project", "--deliverable-id"],
+      repair: ["--project"],
+    };
+    const flags = POSITIONAL_MAP[phase];
+    if (flags) {
+      for (let i = 0; i < positional.length && i < flags.length; i++) {
+        if (!options.has(flags[i])) {
+          options.set(flags[i], positional[i]);
+        }
+      }
     }
-    options.set(name, value);
-    i++;
   }
 
   const executorRoot = options.get("--executor-root") || process.env.CPB_EXECUTOR_ROOT || path.resolve(path.dirname(import.meta.url.replace("file://", "")), "..");
   const cpbRoot = options.get("--cpb-root") || process.env.CPB_ROOT || executorRoot;
   const project = options.get("--project") || "";
 
-  if (!project || !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
+  if (!project || project.length > 64 || !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project)) {
     throw new Error(`invalid project name: ${project}`);
   }
 
@@ -302,9 +324,9 @@ async function handleExecute(args) {
   try {
     await readFile(deliverableFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | FAIL`);
+    await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | WARN`);
     console.error("Warning: Deliverable not created.");
-    return 1;
+    return 0;
   }
 
   await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`);

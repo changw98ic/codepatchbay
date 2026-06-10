@@ -5,9 +5,9 @@ const WORKCPBS = {
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     bridgeForPhase: {
-      plan: "planner.sh",
-      execute: "executor.sh",
-      verify: "verifier.sh",
+      plan: "run-phase.mjs",
+      execute: "run-phase.mjs",
+      verify: "run-phase.mjs",
     },
   },
   complex: {
@@ -16,10 +16,10 @@ const WORKCPBS = {
     roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     bridgeForPhase: {
-      plan: "planner.sh",
-      execute: "executor.sh",
-      review: "reviewer.sh",
-      verify: "verifier.sh",
+      plan: "run-phase.mjs",
+      execute: "run-phase.mjs",
+      review: "run-phase.mjs",
+      verify: "run-phase.mjs",
     },
   },
   blocked: {

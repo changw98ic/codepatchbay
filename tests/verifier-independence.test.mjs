@@ -307,7 +307,7 @@ esac
         .split(/\r?\n/)
         .map((line) => JSON.parse(line));
       assert.ok(events.some((event) => event.type === "phase_completed" && event.phase === "execute" && event.artifact === ""));
-      assert.ok(events.some((event) => event.type === "phase_completed" && event.phase === "verify" && event.artifact.startsWith("verdict-job-")));
+      assert.ok(events.some((event) => event.type === "phase_completed" && event.phase === "verify" && event.artifact?.startsWith("verdict-job-")));
       assert.ok(events.some((event) => event.type === "job_completed"));
     } finally {
       await rm(root, { recursive: true, force: true });
