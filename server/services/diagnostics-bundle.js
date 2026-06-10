@@ -66,15 +66,17 @@ export async function gatherDiagnostics({
   let acp;
   try {
     if (acpPool) {
-      acp = { ...acpPool.status(), providerQuotas: await acpPool.readProviderQuotas() };
+      const providerQuotas = await acpPool.readProviderQuotas();
+      acp = { ...acpPool.status(), providerQuotas, rateLimits: providerQuotas };
     } else {
       const { AcpPool } = await import("./acp-pool.js");
       const pool = new AcpPool({ cpbRoot, hubRoot });
-      acp = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
+      const providerQuotas = await pool.readProviderQuotas();
+      acp = { ...pool.status(), providerQuotas, rateLimits: providerQuotas };
     }
   } catch (e) {
     errors.push({ source: "acp-pool", message: e.message });
-    acp = { pools: {}, providerQuotas: {} };
+    acp = { pools: {}, providerQuotas: {}, rateLimits: {} };
   }
 
   let knowledgePolicy;

@@ -19,7 +19,10 @@ export function getRunningTasks() {
   }));
 }
 
-export async function getDurableTasks(cpbRoot) {
-  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
+export async function getDurableTasks(cpbRoot, { hubRoot } = {}) {
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, {
+    hubRoot,
+    includeHubProjects: Boolean(hubRoot),
+  });
   return jobs.map((job) => ({ ...job, ...jobToQueueRow(job) }));
 }

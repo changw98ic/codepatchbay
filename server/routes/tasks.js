@@ -50,7 +50,7 @@ export async function taskRoutes(fastify, opts) {
 
   // Get durable tasks
   fastify.get('/tasks/durable', async (req) => {
-    return getDurableTasks(req.cpbRoot);
+    return getDurableTasks(req.cpbRoot, { hubRoot: req.cpbHubRoot });
   });
 
   registerJobArtifactDetailRoute(fastify, '/tasks/:name/jobs/:jobId/artifacts', {

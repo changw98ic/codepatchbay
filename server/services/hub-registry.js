@@ -287,6 +287,33 @@ export async function heartbeatWorker(hubRoot, id, worker = {}) {
   return updateProject(hubRoot, id, { worker: heartbeat });
 }
 
+export function deriveWorkerStatus(worker) {
+  const status = worker?.status || null;
+  if (!status) return "offline";
+  if (["online", "idle", "busy", "ready", "running", "starting"].includes(status)) return "online";
+  if (["stale", "unhealthy"].includes(status)) return "stale";
+  if (["offline", "exited"].includes(status)) return "offline";
+  return status;
+}
+
+function summarizeProjectWorkers(projects) {
+  const summary = {
+    workersOnline: 0,
+    workersStale: 0,
+    workersOffline: 0,
+    workersUnknown: 0,
+  };
+  for (const project of projects) {
+    if (!project.worker) continue;
+    const derived = deriveWorkerStatus(project.worker);
+    if (derived === "online") summary.workersOnline += 1;
+    else if (derived === "stale") summary.workersStale += 1;
+    else if (derived === "offline") summary.workersOffline += 1;
+    else summary.workersUnknown += 1;
+  }
+  return summary;
+}
+
 export async function hubStatus(hubRoot) {
   const registry = await loadRegistry(hubRoot);
   const projects = Object.values(registry.projects);
@@ -295,6 +322,7 @@ export async function hubStatus(hubRoot) {
     registryPath: registryPath(hubRoot),
     projectCount: projects.length,
     enabledProjectCount: projects.filter((project) => project.enabled !== false).length,
+    ...summarizeProjectWorkers(projects),
     updatedAt: registry.updatedAt,
   };
 }

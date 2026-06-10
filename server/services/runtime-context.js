@@ -25,8 +25,9 @@ export async function resolveProjectDataRoot(cpbRoot, project, { hubRoot, dataRo
   return runtimeDataRoot(cpbRoot);
 }
 
-export async function listRuntimeDataRoots(cpbRoot, { hubRoot } = {}) {
+export async function listRuntimeDataRoots(cpbRoot, { hubRoot, includeHubProjects = true } = {}) {
   const entries = [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
+  if (!includeHubProjects) return uniqueRoots(entries);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
   try {
     const projects = await listProjects(resolvedHubRoot);

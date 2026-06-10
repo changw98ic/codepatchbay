@@ -75,9 +75,10 @@ export function classifyProject(project, { hubRoot, skipPathChecks = false } = {
 export function filterVisibleProjects(projects, opts = {}) {
   const { includeTest = false } = opts;
   if (includeTest) return projects;
+  const skipPathChecks = opts.skipPathChecks || isUnderTestPath(opts.hubRoot);
 
   return projects.filter((project) => {
-    const { visibility } = classifyProject(project, { hubRoot: opts.hubRoot });
+    const { visibility } = classifyProject(project, { hubRoot: opts.hubRoot, skipPathChecks });
     return visibility === "production";
   });
 }

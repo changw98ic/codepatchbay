@@ -9,6 +9,7 @@ import {
   _internalMarkProviderUnavailable,
   assertProviderAvailable,
   QuotaStatus,
+  readProviderQuotas,
 } from "../server/services/provider-quota.js";
 import { getProviderAdapter } from "../server/services/provider-adapters.js";
 import {
@@ -23,6 +24,21 @@ process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
 process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
 process.env.CPB_DELEGATE_ACK_POLL_MS = "10";
 process.env.CPB_DELEGATE_ACK_TIMEOUT_MS = "80";
+
+test("readProviderQuotas only falls back to legacy rate-limits when quotas file is missing", async () => {
+  const hubRoot = await tempRoot("cpb-provider-quota-fallback");
+  await mkdir(path.join(hubRoot, "providers"), { recursive: true });
+  await writeFile(
+    path.join(hubRoot, "providers", "rate-limits.json"),
+    `${JSON.stringify({ legacy: { reason: "old" } })}\n`,
+    "utf8",
+  );
+
+  assert.deepEqual(await readProviderQuotas(hubRoot), { legacy: { reason: "old" } });
+
+  await writeFile(path.join(hubRoot, "providers", "quotas.json"), "{bad json", "utf8");
+  assert.deepEqual(await readProviderQuotas(hubRoot), {});
+});
 
 let runJobPromise = null;
 async function loadRunJob() {

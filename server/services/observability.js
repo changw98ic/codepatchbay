@@ -1,5 +1,5 @@
 import { sanitizeProviderReason, getManagedAcpPool } from "./acp-pool.js";
-import { hubStatus, listProjects } from "./hub-registry.js";
+import { deriveWorkerStatus, hubStatus, listProjects } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { knowledgePolicySummary } from "./knowledge-policy.js";
 import { listDispatches } from "./dispatch-state.js";
@@ -26,7 +26,23 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     workerStore.listWorkers(),
   ]);
 
-  const workerDetails = workers.map((worker) => {
+  const registryWorkers = projects
+    .filter((project) => project.worker)
+    .map((project) => ({
+      workerId: project.worker.workerId || project.id,
+      projectId: project.id,
+      pid: project.worker.pid || null,
+      status: deriveWorkerStatus(project.worker),
+      currentAssignmentId: project.worker.currentAssignmentId || null,
+      startedAt: project.worker.startedAt || null,
+      lastHeartbeatAt: project.worker.lastSeenAt || null,
+    }));
+  const workerIds = new Set(workers.map((worker) => worker.workerId));
+  const allWorkers = [
+    ...workers,
+    ...registryWorkers.filter((worker) => !workerIds.has(worker.workerId)),
+  ];
+  const workerDetails = allWorkers.map((worker) => {
     const lastSeen = worker.lastHeartbeatAt || worker.startedAt || null;
     const ageMs = lastSeen ? now - new Date(lastSeen).getTime() : null;
     return {
@@ -39,6 +55,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
       ageMs,
     };
   });
+  const workerSummary = summarizeWorkers(allWorkers);
 
   const pools = {};
   const acpPoolSummary = {
@@ -122,13 +139,17 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
       projectRuntimeRoots,
     },
     workers: {
-      ...summarizeWorkers(workers),
+      ...workerSummary,
+      online: workerSummary.online || 0,
+      stale: workerSummary.stale || 0,
+      offline: workerSummary.offline || 0,
       details: workerDetails,
     },
     queue,
     pools,
     acpPool: acpPoolSummary,
     providerQuotas,
+    rateLimits: providerQuotas,
     dispatchSummary,
     observerBlockedChains,
     observerStaleProcesses,
@@ -160,6 +181,7 @@ export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) 
     acp: {
       ...pool.status(),
       providerQuotas,
+      rateLimits: providerQuotas,
     },
     knowledgePolicy: knowledgePolicySummary(),
   });

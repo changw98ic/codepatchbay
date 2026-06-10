@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  deriveWorkerStatus,
   getProject,
   heartbeatWorker,
   hubStatus,
@@ -116,6 +117,7 @@ export async function hubRoutes(fastify) {
     return {
       ...pool.status(),
       providerQuotas: quotas,
+      rateLimits: quotas,
     };
   });
 
@@ -129,6 +131,7 @@ export async function hubRoutes(fastify) {
     for (const project of visible) {
       const entry = {
         ...project,
+        workerDerivedStatus: deriveWorkerStatus(project.worker),
       };
       if (includeTest) {
         entry._pollution = classifyProject(project, { hubRoot: hr });
@@ -148,6 +151,7 @@ export async function hubRoutes(fastify) {
       enabled: body.enabled,
       weight: body.weight,
       metadata: body.metadata,
+      skipCodeGraphGate: body.skipCodeGraphGate !== false,
     });
     return { attached: true, project };
   });
@@ -226,7 +230,7 @@ export async function hubRoutes(fastify) {
       maxActivePerProject: body.maxActivePerProject ?? 2,
       claimTimeoutMs: body.claimTimeoutMs ?? 120_000,
       providerSlotsAvailable: body.providerSlotsAvailable !== false,
-      requireIssueLink: body.requireIssueLink !== false,
+      requireIssueLink: body.requireIssueLink === true,
       getProjectFn: getProject,
       assignmentStore,
     });
@@ -494,6 +498,7 @@ export async function hubRoutes(fastify) {
         return {
           ...pool.status(),
           providerQuotas,
+          rateLimits: providerQuotas,
         };
       })().catch(() => null),
       Promise.resolve(knowledgePolicySummary()).catch(() => null),
@@ -509,6 +514,7 @@ export async function hubRoutes(fastify) {
     for (const project of visible) {
       const entry = {
         ...project,
+        workerDerivedStatus: deriveWorkerStatus(project.worker),
       };
       if (includeTest) {
         entry._pollution = classifyProject(project, { hubRoot: hr });

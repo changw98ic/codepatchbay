@@ -111,7 +111,7 @@ const execWrite = await checkPhasePermissions(root, project, job.jobId, "execute
 assert.equal(execWrite.allowed, true);
 
 // --- dispatchPhase: delegates to job-runner.mjs for full lifecycle ---
-const realProjectRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const realProjectRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
 
 // dispatchPhase returns error when job-runner.mjs is missing
 const noRunnerRoot = await mkdtemp(path.join(tmpdir(), "cpb-no-runner-"));

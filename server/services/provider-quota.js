@@ -78,11 +78,20 @@ function quotasFilePath(hubRoot) {
   return path.join(hubRoot, "providers", "quotas.json");
 }
 
+function legacyRateLimitsFilePath(hubRoot) {
+  return path.join(hubRoot, "providers", "rate-limits.json");
+}
+
 export async function readProviderQuotas(hubRoot) {
   try {
     return JSON.parse(await readFile(quotasFilePath(hubRoot), "utf8"));
-  } catch {
-    return {};
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") return {};
+    try {
+      return JSON.parse(await readFile(legacyRateLimitsFilePath(hubRoot), "utf8"));
+    } catch {
+      return {};
+    }
   }
 }
 

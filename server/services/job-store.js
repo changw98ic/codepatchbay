@@ -714,7 +714,16 @@ export async function cancelJob(
   jobId,
   { reason, ts = nowIso(), dataRoot } = {}
 ) {
-  await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
+  const existing = await getJob(cpbRoot, project, jobId, { dataRoot });
+  if (!existing?.jobId) {
+    throw new Error(`job not found: ${jobId}`);
+  }
+  if (existing.status === "cancelled") {
+    return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
+  }
+  if (TERMINAL_STATUSES.has(existing.status)) {
+    throw new Error(`job is terminal: ${existing.status}`);
+  }
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_cancelled",
     jobId,
