@@ -20,21 +20,29 @@ function commandExists(cmd) {
   return spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", cmd]).status === 0;
 }
 
+// ACP adapter lookup table — mirrors acp-client-core.mjs
+const ACP_ADAPTERS = {
+  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
+  claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
+  reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
+};
+
 function resolveAgentCommand(agent, env = process.env) {
   const upper = agent.toUpperCase();
   const envCmd = env[`CPB_ACP_${upper}_COMMAND`];
   if (envCmd) {
-    const envArgs = env[`CPB_ACP_${upper}_ARGS`];
-    return { command: envCmd, args: envArgs ? JSON.parse(envArgs) : [] };
+    const raw = env[`CPB_ACP_${upper}_ARGS`];
+    let args = [];
+    if (raw) {
+      try { args = JSON.parse(raw); } catch { args = raw.split(/\s+/).filter(Boolean); }
+    }
+    return { command: envCmd, args };
   }
-  if (agent === "codex") {
-    return commandExists("codex-acp")
-      ? { command: "codex-acp", args: [] }
-      : { command: "npx", args: ["-y", "@zed-industries/codex-acp"] };
-  }
-  return commandExists("claude-agent-acp")
-    ? { command: "claude-agent-acp", args: [] }
-    : { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
+  const entry = ACP_ADAPTERS[agent];
+  if (!entry) throw new Error(`Unknown agent: '${agent}'. Set CPB_ACP_${upper}_COMMAND.`);
+  if (commandExists(entry.command)) return { command: entry.command, args: [...entry.args] };
+  if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
+  return { command: entry.command, args: [...entry.args] };
 }
 
 class PersistentAcp {

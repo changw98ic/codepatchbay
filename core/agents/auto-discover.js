@@ -5,20 +5,21 @@ import path from "node:path";
 // Known ACP-compatible agent binary names from the ACP Registry
 // https://agentclientprotocol.com/get-started/agents
 const KNOWN_AGENTS = [
-  { name: "codex", command: "codex-acp", displayName: "Codex CLI", envPrefix: "CPB_ACP_CODEX" },
-  { name: "claude", command: "claude-agent-acp", displayName: "Claude Code", envPrefix: "CPB_ACP_CLAUDE" },
-  { name: "opencode", command: "opencode", displayName: "OpenCode", envPrefix: "CPB_ACP_OPENCODE" },
-  { name: "augment", command: "auggie", displayName: "Augment Code", envPrefix: "CPB_ACP_AUGMENT" },
-  { name: "copilot", command: "copilot", displayName: "GitHub Copilot", envPrefix: "CPB_ACP_COPILOT" },
-  { name: "openclaw", command: "openclaw", displayName: "OpenClaw", envPrefix: "CPB_ACP_OPENCLAW" },
-  { name: "hermes", command: "hermes", displayName: "Hermes Agent", envPrefix: "CPB_ACP_HERMES" },
-  { name: "kimi", command: "kimi", displayName: "Kimi CLI", envPrefix: "CPB_ACP_KIMI" },
-  { name: "kiro", command: "kiro-cli", displayName: "Kiro CLI", envPrefix: "CPB_ACP_KIRO" },
-  { name: "cursor", command: "cursor-agent", displayName: "Cursor Agent", envPrefix: "CPB_ACP_CURSOR" },
-  { name: "qwen", command: "qwen-code", displayName: "Qwen Code", envPrefix: "CPB_ACP_QWEN" },
-  { name: "goose", command: "goose", displayName: "Goose", envPrefix: "CPB_ACP_GOOSE" },
-  { name: "cline", command: "cline", displayName: "Cline", envPrefix: "CPB_ACP_CLINE" },
-  { name: "pi", command: "pi", displayName: "Pi", envPrefix: "CPB_ACP_PI" },
+  { name: "codex", command: "codex-acp", displayName: "Codex CLI", envPrefix: "CPB_ACP_CODEX", protocol: "acp" },
+  { name: "claude", command: "claude-agent-acp", displayName: "Claude Code", envPrefix: "CPB_ACP_CLAUDE", protocol: "acp" },
+  { name: "reasonix", command: "reasonix", displayName: "Reasonix", envPrefix: "CPB_ACP_REASONIX", protocol: "acp", args: ["acp"] },
+  { name: "opencode", command: "opencode", displayName: "OpenCode", envPrefix: "CPB_ACP_OPENCODE", protocol: "cli" },
+  { name: "augment", command: "auggie", displayName: "Augment Code", envPrefix: "CPB_ACP_AUGMENT", protocol: "unknown" },
+  { name: "copilot", command: "copilot", displayName: "GitHub Copilot", envPrefix: "CPB_ACP_COPILOT", protocol: "unknown" },
+  { name: "openclaw", command: "openclaw", displayName: "OpenClaw", envPrefix: "CPB_ACP_OPENCLAW", protocol: "unknown" },
+  { name: "hermes", command: "hermes", displayName: "Hermes Agent", envPrefix: "CPB_ACP_HERMES", protocol: "unknown" },
+  { name: "kimi", command: "kimi", displayName: "Kimi CLI", envPrefix: "CPB_ACP_KIMI", protocol: "unknown" },
+  { name: "kiro", command: "kiro-cli", displayName: "Kiro CLI", envPrefix: "CPB_ACP_KIRO", protocol: "unknown" },
+  { name: "cursor", command: "cursor-agent", displayName: "Cursor Agent", envPrefix: "CPB_ACP_CURSOR", protocol: "cli" },
+  { name: "qwen", command: "qwen-code", displayName: "Qwen Code", envPrefix: "CPB_ACP_QWEN", protocol: "unknown" },
+  { name: "goose", command: "goose", displayName: "Goose", envPrefix: "CPB_ACP_GOOSE", protocol: "unknown" },
+  { name: "cline", command: "cline", displayName: "Cline", envPrefix: "CPB_ACP_CLINE", protocol: "unknown" },
+  { name: "pi", command: "pi", displayName: "Pi", envPrefix: "CPB_ACP_PI", protocol: "unknown" },
 ];
 
 /**
@@ -63,6 +64,7 @@ export async function autoDiscoverAgents() {
         defaultRoles: [],
         stability: "discovered",
         envPrefix: ka.envPrefix,
+        protocol: ka.protocol || "unknown",
         source: "auto-discovered",
       });
     }

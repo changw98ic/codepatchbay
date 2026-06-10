@@ -152,13 +152,13 @@ describe("D40 manifest registry layout", () => {
     const { listSetupAgents } = await import("../core/setup/agent-catalog.js");
     const agents = listSetupAgents();
     const ids = agents.map((a) => a.id);
-    assert.deepEqual(ids, ["codex", "claude", "opencode", "cursor"]);
+    assert.deepEqual(ids, ["codex", "claude", "opencode", "cursor", "reasonix"]);
   });
 
   it("listSetupAgents preserves current commands from built-in manifests", async () => {
     const { listSetupAgents, getSetupAgent } = await import("../core/setup/agent-catalog.js");
     const agents = listSetupAgents();
-    assert.equal(agents.length, 4);
+    assert.equal(agents.length, 5);
     assert.equal(getSetupAgent("codex").install.npm.command, "npm i -g @openai/codex");
     assert.equal(getSetupAgent("claude").install.brew.command, "brew install --cask claude-code");
     assert.equal(getSetupAgent("opencode").install.npm.command, "npm install -g opencode-ai");

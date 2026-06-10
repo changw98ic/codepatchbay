@@ -496,20 +496,20 @@ function usageDelta(before, after) {
   return delta;
 }
 
+// ACP adapter lookup table — replaces hardcoded per-agent resolution
+const ACP_ADAPTERS = {
+  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
+  claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
+  reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
+};
+
 function defaultAgentCommand(agent) {
-  // Legacy hardcoded fallback for codex/claude when registry is unavailable
-  if (agent === "codex") {
-    if (commandExists("codex-acp")) return { command: "codex-acp", args: [] };
-    return { command: "npx", args: ["-y", "@zed-industries/codex-acp"] };
-  }
-
-  if (agent === "claude") {
-    if (commandExists("claude-agent-acp")) return { command: "claude-agent-acp", args: [] };
-    return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"] };
-  }
-
-  // For other agents, try to use descriptor command directly
-  return null;
+  const entry = ACP_ADAPTERS[agent];
+  if (!entry) return null;
+  if (commandExists(entry.command)) return { command: entry.command, args: entry.args };
+  if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
+  // Reasonix-style: binary itself is the adapter, return as-is
+  return { command: entry.command, args: entry.args };
 }
 
 export async function resolveAgentCommand(agent, env = process.env) {

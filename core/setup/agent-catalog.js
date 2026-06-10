@@ -8,6 +8,7 @@ const BUILTIN_ORDER = new Map([
   ["claude", 20],
   ["opencode", 30],
   ["cursor", 40],
+  ["reasonix", 50],
 ]);
 
 function clone(value) {

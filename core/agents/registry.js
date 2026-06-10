@@ -160,11 +160,29 @@ export function resolveAgentCommand(name) {
 }
 
 /**
+ * List only agents with a specific protocol.
+ * Useful for pipeline routing: only ACP agents can participate in ACP spawn.
+ */
+export function listAgentsByProtocol(protocol) {
+  ensureLoaded();
+  return [..._registry.values(), ..._discovered.values()]
+    .filter((d) => (d.protocol || "unknown") === protocol);
+}
+
+/**
  * Default agent for a given role, based on descriptor defaultRoles.
+ * Prefers ACP-protocol agents for pipeline routing.
  * Falls back to default mapping: planner/verifier/reviewer -> codex, executor/remediator -> claude.
  */
 export function defaultAgentForRole(role) {
   ensureLoaded();
+  // Prefer registered ACP agents with matching role
+  for (const d of _registry.values()) {
+    if (d.defaultRoles && d.defaultRoles.includes(role) && (d.protocol || "unknown") === "acp") {
+      return d.name;
+    }
+  }
+  // Try any registered agent with matching role
   for (const d of _registry.values()) {
     if (d.defaultRoles && d.defaultRoles.includes(role)) {
       return d.name;

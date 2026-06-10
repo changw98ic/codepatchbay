@@ -36,7 +36,10 @@ export async function run(args = []) {
       console.log(JSON.stringify({ agents }, null, 2));
     } else {
       for (const agent of agents) {
-        console.log(`${agent.id}\t${agent.displayName}`);
+        const adapter = agent.adapter;
+        const protocol = adapter?.protocol || "unknown";
+        const adapterCmd = adapter?.command || "-";
+        console.log(`${agent.id}\t${agent.displayName}\t${protocol}\t${adapterCmd}`);
       }
     }
     return 0;

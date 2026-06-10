@@ -800,12 +800,14 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
       );
     }
   } catch {
-    // Registry unavailable, fall back to hardcoded codex/claude
+    // Registry unavailable, fall back to hardcoded ACP adapters
     const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: ["--help"] };
     const claudeAdapter = adapterOverrides?.claude || { command: "claude-agent-acp", args: ["--help"] };
+    const reasonixAdapter = adapterOverrides?.reasonix || { command: "reasonix", args: ["acp"] };
     adapterChecks = [
       checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args, { npxPkg: "@zed-industries/codex-acp" }),
       checkAcpAdapter("claude", claudeAdapter.command, claudeAdapter.args, { npxPkg: "@agentclientprotocol/claude-agent-acp" }),
+      checkAcpAdapter("reasonix", reasonixAdapter.command, reasonixAdapter.args, { stability: "discovered" }),
     ];
   }
 

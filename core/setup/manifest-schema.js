@@ -80,6 +80,27 @@ export function validateSetupAgentManifest(manifest) {
   validateInstall(errors, manifest.install);
   validateUpgrade(errors, manifest.upgrade);
 
+  // Optional adapter field validation
+  if (manifest.adapter !== undefined) {
+    if (!manifest.adapter || typeof manifest.adapter !== "object" || Array.isArray(manifest.adapter)) {
+      errors.push("adapter must be an object when present");
+    } else {
+      const validProtocols = new Set(["acp", "cli", "unknown"]);
+      if (!validProtocols.has(manifest.adapter.protocol)) {
+        errors.push("adapter.protocol must be one of: acp, cli, unknown");
+      }
+      if (typeof manifest.adapter.command !== "string" || !manifest.adapter.command.trim()) {
+        errors.push("adapter.command must be a non-empty string");
+      }
+      if (manifest.adapter.npxPkg !== undefined && typeof manifest.adapter.npxPkg !== "string") {
+        errors.push("adapter.npxPkg must be a string when present");
+      }
+      if (manifest.adapter.args !== undefined && !Array.isArray(manifest.adapter.args)) {
+        errors.push("adapter.args must be an array when present");
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
