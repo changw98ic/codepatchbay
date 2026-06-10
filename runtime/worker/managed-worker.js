@@ -143,6 +143,8 @@ export async function main() {
       const assignmentId = assignment.assignmentId;
       const attemptNum = assignment.attempt;
       const jobLog = log.child({ traceId: assignment.entryId });
+      const worktreeRequired = assignment.workflow !== "blocked";
+      const executionBoundary = worktreeRequired ? "worktree" : "none";
       const attemptDir = path.join(
         hubRoot, "assignments", assignmentId, "attempts", String(attemptNum).padStart(3, "0"),
       );
@@ -159,7 +161,7 @@ export async function main() {
         assignmentId,
         attempt: attemptNum,
         attemptToken: assignment.attemptToken,
-        executionBoundary: "worktree",
+        executionBoundary,
         sourcePath: assignment.sourcePath,
         acceptedAt: new Date().toISOString(),
         pid: process.pid,
@@ -174,7 +176,7 @@ export async function main() {
         activePhase: null,
         activeJobId: null,
         status: "running",
-        executionBoundary: "worktree",
+        executionBoundary,
         sourcePath: assignment.sourcePath,
         pid: process.pid,
         progressKind: "accepted",
@@ -272,31 +274,41 @@ export async function main() {
       // Run job via bridge (service injection + sourcePath resolution)
       try {
         await pollCancel();
-        worktreeInfo = await createIsolatedWorktreeWithRetry({
-          hubRoot,
-          sourcePath: assignment.sourcePath,
-          entryId: assignment.entryId,
-          log: jobLog,
-        });
-        jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
-        await writeAssignmentHeartbeat({
-          phase: "worktree",
-          activePhase: null,
-          worktreePath: worktreeInfo.path,
-          worktreeBranch: worktreeInfo.branch,
-          progressKind: "worktree_created",
-          lastProgressType: "worktree_created",
-        }, { progress: true });
-        await writeFile(path.join(attemptDir, "worktree.json"), JSON.stringify({
-          assignmentId,
-          attempt: attemptNum,
-          attemptToken: assignment.attemptToken,
-          executionBoundary: "worktree",
-          sourcePath: assignment.sourcePath,
-          worktreePath: worktreeInfo.path,
-          worktreeBranch: worktreeInfo.branch,
-          createdAt: new Date().toISOString(),
-        }, null, 2) + "\n", "utf8");
+        if (worktreeRequired) {
+          worktreeInfo = await createIsolatedWorktreeWithRetry({
+            hubRoot,
+            sourcePath: assignment.sourcePath,
+            entryId: assignment.entryId,
+            log: jobLog,
+          });
+          jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
+          await writeAssignmentHeartbeat({
+            phase: "worktree",
+            activePhase: null,
+            worktreePath: worktreeInfo.path,
+            worktreeBranch: worktreeInfo.branch,
+            progressKind: "worktree_created",
+            lastProgressType: "worktree_created",
+          }, { progress: true });
+          await writeFile(path.join(attemptDir, "worktree.json"), JSON.stringify({
+            assignmentId,
+            attempt: attemptNum,
+            attemptToken: assignment.attemptToken,
+            executionBoundary,
+            sourcePath: assignment.sourcePath,
+            worktreePath: worktreeInfo.path,
+            worktreeBranch: worktreeInfo.branch,
+            createdAt: new Date().toISOString(),
+          }, null, 2) + "\n", "utf8");
+        } else {
+          jobLog.info("blocked workflow: skipping worktree creation");
+          await writeAssignmentHeartbeat({
+            phase: "workflow",
+            activePhase: null,
+            progressKind: "worktree_skipped",
+            lastProgressType: "worktree_skipped",
+          }, { progress: true });
+        }
 
         await pollCancel();
         const jobPromise = runJobWithServices({
@@ -307,7 +319,7 @@ export async function main() {
           jobId,
           workflow: assignment.workflow || "standard",
           planMode: assignment.planMode || "full",
-          sourcePath: worktreeInfo.path,
+          sourcePath: worktreeInfo?.path || assignment.sourcePath,
           sourceContext: assignment.sourceContext,
           maxRetries: 3,
           agent: metadata.agent || null,
