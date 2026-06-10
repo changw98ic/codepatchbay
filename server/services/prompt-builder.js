@@ -461,6 +461,47 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
+export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
+  const roleTitle = await readRoleTitle(executorRoot, "repairer");
+  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+
+  const profile = await loadProfile(executorRoot, "repairer", { projectWikiDir: wikiDir });
+  const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
+
+  const dangerous = process.env.CPB_DANGEROUS === "1";
+  const constraints = dangerous
+    ? ""
+    : `## Constraints
+- ONLY write the repair output to: ${repairFile}
+- You may modify project code to fix the reported issues.
+- Do NOT modify wiki inputs, inbox files, or verdict files.`;
+
+  return `You are CodePatchbay Repairer. Role: ${roleTitle}
+
+${skillsSection}
+
+${constraints}
+
+${headlessEscalationSection()}
+
+${executionIntensitySection("repair")}
+
+## Repair locators
+- Repair output file: ${repairFile}
+- Job ID: ${jobId}
+- Outputs directory: ${path.join(wikiDir, "outputs")}
+- Project context: ${path.join(wikiDir, "context.md")}
+- Decisions: ${path.join(wikiDir, "decisions.md")}
+- Project metadata: ${path.join(wikiDir, "project.json")}
+
+## Instructions
+1. Read the deliverable and verdict files from the outputs directory to understand what failed.
+2. Identify the root cause of the failure.
+3. Apply the minimal fix to resolve the reported issues.
+4. Write the repair summary to: ${repairFile}
+5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
+}
+
 export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId } = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);

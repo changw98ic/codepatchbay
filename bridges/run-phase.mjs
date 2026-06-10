@@ -27,12 +27,12 @@ import {
   deliverableFilePath,
   verdictFilePath,
   reviewFilePath,
-  repairFilePath,
+  remediationFilePath,
   wikiLogPath,
   dashboardPath,
 } from "../server/services/artifact-locator.js";
-import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
-import { applyVariant } from "./apply-variant.mjs";
+import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
+import { applyVariant } from "../server/services/apply-variant.js";
 import { runRepair, completeRepair } from "../server/services/repair-handler.js";
 
 // --- CLI arg parsing ---

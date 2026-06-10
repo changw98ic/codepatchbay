@@ -9,7 +9,7 @@ import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "./delete-guard.mjs";
+} from "../server/services/delete-guard.js";
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck = null;

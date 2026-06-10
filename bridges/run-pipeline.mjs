@@ -8,9 +8,9 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runtimeDataPath } from "../server/services/runtime-root.js";
-import { appendEvent } from "../server/services/runtime-events.js";
+import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
-import { parseVerdictEnvelope } from "../server/services/verdict-envelope.js";
+import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
   completeJob,
   completePhase,
@@ -32,7 +32,7 @@ import {
   markDispatchStarted,
   recordDispatch,
 } from "../server/services/worker-dispatch.js";
-import { buildMeta, executionBoundaryEvent } from "../server/services/execution-meta.js";
+import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
 
 // ─── CLI arg parsing ───

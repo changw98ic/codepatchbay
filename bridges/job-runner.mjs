@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { appendEvent } from "../server/services/runtime-events.js";
+import { appendEvent } from "../server/services/event-store.js";
 import {
   acquireLease,
   releaseLease,
@@ -12,7 +12,7 @@ import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "./delete-guard.mjs";
+} from "../server/services/delete-guard.js";
 import {
   registerProcess,
   updateHeartbeat as updateProcessHeartbeat,
