@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { hubRoutes } from '../server/routes/hub.js';
-import { resetAllPoolRuntimes } from '../server/services/acp-pool-runtime.js';
+import { resetAllPoolRuntimes } from '../server/services/acp-pool.js';
 import { getHubRuntime, resetInstances as resetHubRuntimeInstances } from '../server/services/hub-runtime.js';
 import { enqueue, updateEntry } from '../server/services/hub-queue.js';
 
@@ -120,7 +120,7 @@ describe('Hub routes', () => {
   });
 
   it('reflects pool singleton state changes through /api/hub/acp', async () => {
-    const { getPoolRuntime } = await import('../server/services/acp-pool-runtime.js');
+    const { getPoolRuntime } = await import('../server/services/acp-pool.js');
     const pool = getPoolRuntime(hubRoot, cpbRoot);
 
     pool.requestCount.set('codex', 42);
@@ -292,7 +292,7 @@ describe('Hub routes', () => {
   });
 
   it('observability pool lifecycle includes requestCount and errorCount', async () => {
-    const { getPoolRuntime } = await import('../server/services/acp-pool-runtime.js');
+    const { getPoolRuntime } = await import('../server/services/acp-pool.js');
     const pool = getPoolRuntime(hubRoot, cpbRoot);
     pool.requestCount.set('codex', 10);
     pool.errorCount.set('codex', 1);

@@ -36,7 +36,7 @@ describe('profile-loader', () => {
     assert.equal(profile.role, 'verifier');
     assert.ok(profile.soulMd);
     assert.ok(profile.soulMd.includes('Verifier'));
-    assert.deepEqual(profile.permissions.deny_tools, []);
+    assert.deepEqual(profile.permissions.deny_tools, ["text_edit", "text-edit"]);
     assert.equal(profile.agent.command, 'codex-acp');
   });
 
@@ -139,7 +139,7 @@ describe('role-bridge with profile', () => {
   it('bridgeEnvFromProfile does not reuse planner terminal denial for verifier', async () => {
     const cpbRoot = path.resolve('.');
     const env = await bridgeEnvFromProfile(cpbRoot, 'verifier');
-    assert.equal(env.CPB_ACP_DENY_TOOLS, undefined);
+    assert.equal(env.CPB_ACP_DENY_TOOLS, 'text_edit,text-edit');
   });
 
   it('bridgeEnvFromProfile does not accept provider profile aliases', async () => {

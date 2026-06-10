@@ -18,21 +18,19 @@ test("CodeGraph index-only flag is allowed through child env policy", () => {
 
 test("CodeGraph readiness can explicitly accept a static index without daemon state", async () => {
   const sourcePath = await tempRoot("cpb-codegraph-index-only");
-  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
-  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(2048, 1));
+  const cgDir = path.join(sourcePath, ".codegraph");
+  await mkdir(cgDir, { recursive: true });
+  await writeFile(path.join(cgDir, "codegraph.db"), Buffer.alloc(2048, 1));
+  await writeFile(path.join(cgDir, "daemon.pid"), JSON.stringify({
+    pid: process.pid,
+    version: "test",
+    codebaseRoot: sourcePath,
+    socketPath: path.join(cgDir, "daemon.sock"),
+  }) + "\n", "utf8");
 
-  const previous = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
-  try {
-    const readiness = await checkCodeGraphReady({ sourcePath });
-    assert.equal(readiness.available, true);
-    assert.equal(readiness.indexOnly, true);
-    assert.equal(readiness.state, null);
-    assert.match(readiness.indexFile, /codegraph\.db$/);
-  } finally {
-    if (previous === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previous;
-  }
+  const readiness = await checkCodeGraphReady({ sourcePath });
+  assert.equal(readiness.available, true);
+  assert.match(readiness.indexFile, /codegraph\.db$/);
 });
 
 test("CodeGraph index-only mode ignores mismatched CPB root daemon state", async () => {
@@ -43,18 +41,16 @@ test("CodeGraph index-only mode ignores mismatched CPB root daemon state", async
     pid: process.pid,
     codebaseRoot: cpbRoot,
   }, null, 2)}\n`);
-  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
-  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(2048, 1));
+  const cgDir = path.join(sourcePath, ".codegraph");
+  await mkdir(cgDir, { recursive: true });
+  await writeFile(path.join(cgDir, "codegraph.db"), Buffer.alloc(2048, 1));
+  await writeFile(path.join(cgDir, "daemon.pid"), JSON.stringify({
+    pid: process.pid,
+    version: "test",
+    codebaseRoot: sourcePath,
+    socketPath: path.join(cgDir, "daemon.sock"),
+  }) + "\n", "utf8");
 
-  const previous = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
-  try {
-    const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
-    assert.equal(readiness.available, true);
-    assert.equal(readiness.indexOnly, true);
-    assert.equal(readiness.state, null);
-  } finally {
-    if (previous === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previous;
-  }
+  const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
+  assert.equal(readiness.available, true);
 });

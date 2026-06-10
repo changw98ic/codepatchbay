@@ -44,7 +44,6 @@ describe("write-time terminal guards", () => {
   it("startPhase rejects on cancelled job", async () => {
     const job = await createJob(root, { project: P, task: "t", ts: ts(10) });
     await requestCancelJob(root, P, job.jobId, { reason: "stop", ts: ts(11) });
-    await cancelJob(root, P, job.jobId, { reason: "stop", ts: ts(12) });
     await assert.rejects(
       () => startPhase(root, P, job.jobId, { phase: "plan" }),
       /job is terminal: cancelled/,
@@ -83,7 +82,6 @@ describe("write-time terminal guards", () => {
   it("completePhase rejects on cancelled job", async () => {
     const job = await createJob(root, { project: P, task: "t", ts: ts(50) });
     await requestCancelJob(root, P, job.jobId, { reason: "x", ts: ts(51) });
-    await cancelJob(root, P, job.jobId, { reason: "x", ts: ts(52) });
     await assert.rejects(
       () => completePhase(root, P, job.jobId, { phase: "plan", artifact: "a.md" }),
       /job is terminal: cancelled/,
@@ -161,7 +159,6 @@ describe("event log immutability after recovery", () => {
     const job = await createJob(root, { project: P, task: "t", ts: ts(200) });
     await startPhase(root, P, job.jobId, { phase: "plan", leaseId: "l2", ts: ts(201) });
     await requestCancelJob(root, P, job.jobId, { reason: "user", ts: ts(202) });
-    await cancelJob(root, P, job.jobId, { reason: "user", ts: ts(203) });
 
     const eventsBefore = await readEvents(root, P, job.jobId);
     const countBefore = eventsBefore.length;

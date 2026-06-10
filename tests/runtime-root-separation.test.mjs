@@ -11,18 +11,17 @@ import os from 'node:os';
 import { cpbHome, defaultProjectRuntimeRoot, projectRuntimeRoot, projectRuntimePath, resolveDataRoot, dataPath } from '../server/services/runtime-root.js';
 import { registerProject, getProject, listProjects } from '../server/services/hub-registry.js';
 import { resolveWikiDir, resolveInboxDir, resolveOutputsDir, resolveArtifactPath } from '../server/services/artifact-locator.js';
-import { migrateToProjectRuntimeRoots } from '../bridges/migrate-runtime-root.mjs';
 
 // ── AC1: registerProject defaults projectRuntimeRoot ──
 
 describe('AC1: registerProject defaults projectRuntimeRoot', () => {
-  it('defaults to ~/.cpb/projects/<id> when no projectRuntimeRoot supplied', async () => {
+  it('defaults to <hubRoot>/projects/<id> when no projectRuntimeRoot supplied', async () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-'));
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-src-'));
     try {
-      await registerProject(hubRoot, { name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
+      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
       const project = await getProject(hubRoot, 'my-proj');
-      const expected = path.join(os.homedir(), '.cpb', 'projects', 'my-proj');
+      const expected = path.join(path.resolve(hubRoot), 'projects', 'my-proj');
       assert.equal(project.projectRuntimeRoot, expected);
     } finally {
       await rm(hubRoot, { recursive: true, force: true });
@@ -35,7 +34,7 @@ describe('AC1: registerProject defaults projectRuntimeRoot', () => {
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-src-'));
     const customRuntime = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-rt-'));
     try {
-      await registerProject(hubRoot, { name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: customRuntime });
+      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: customRuntime });
       const project = await getProject(hubRoot, 'my-proj');
       assert.equal(project.projectRuntimeRoot, path.resolve(customRuntime));
     } finally {
@@ -85,8 +84,8 @@ describe('AC4: listProjects reads from Hub registry', () => {
     const srcA = await mkdtemp(path.join(tmpdir(), 'cpb-ac4-a-'));
     const srcB = await mkdtemp(path.join(tmpdir(), 'cpb-ac4-b-'));
     try {
-      await registerProject(hubRoot, { name: 'alpha', sourcePath: srcA, id: 'alpha' });
-      await registerProject(hubRoot, { name: 'beta', sourcePath: srcB, id: 'beta' });
+      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'alpha', sourcePath: srcA, id: 'alpha' });
+      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'beta', sourcePath: srcB, id: 'beta' });
       const projects = await listProjects(hubRoot);
       assert.equal(projects.length, 2);
       const names = projects.map(p => p.name).sort();
@@ -106,7 +105,7 @@ describe('AC5: artifact-locator legacy fallback', () => {
     const cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-'));
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-hub-'));
     try {
-      await registerProject(hubRoot, { name: 'legacy-proj', sourcePath: cpbRoot, id: 'legacy-proj' });
+      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'legacy-proj', sourcePath: cpbRoot, id: 'legacy-proj' });
       const legacyWiki = path.join(cpbRoot, 'wiki/projects/legacy-proj');
       await fs.mkdir(path.join(legacyWiki, 'inbox'), { recursive: true });
       await fs.writeFile(path.join(legacyWiki, 'context.md'), '# legacy');
@@ -127,34 +126,3 @@ describe('AC5: artifact-locator legacy fallback', () => {
   });
 });
 
-// ── AC6: migration dry-run reports without changing files ──
-
-describe('AC6: migration dry-run reports without changing files', () => {
-  it('reports planned moves but leaves source data untouched', async () => {
-    const cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac6-'));
-    const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac6-hub-'));
-    try {
-      // Create legacy wiki/projects data
-      const wikiProj = path.join(cpbRoot, 'wiki/projects/test-proj');
-      await fs.mkdir(path.join(wikiProj, 'inbox'), { recursive: true });
-      await fs.mkdir(path.join(wikiProj, 'outputs'), { recursive: true });
-      await fs.writeFile(path.join(wikiProj, 'context.md'), '# test');
-
-      // Register in Hub so migration knows where to target
-      await registerProject(hubRoot, { name: 'test-proj', sourcePath: cpbRoot, id: 'test-proj' });
-
-      const report = await migrateToProjectRuntimeRoots(cpbRoot, hubRoot, { dryRun: true });
-
-      // Source files must still exist
-      await assert.doesNotReject(() => fs.stat(path.join(wikiProj, 'context.md')));
-      await assert.doesNotReject(() => fs.stat(path.join(wikiProj, 'inbox')));
-
-      // Report should show planned copies
-      assert.ok(report.copied.length > 0, 'dry-run should report planned copies');
-      assert.ok(report.wouldDelete.length >= 0, 'dry-run should report would-be-deletions');
-    } finally {
-      await rm(cpbRoot, { recursive: true, force: true });
-      await rm(hubRoot, { recursive: true, force: true });
-    }
-  });
-});

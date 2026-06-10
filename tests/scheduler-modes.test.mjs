@@ -193,7 +193,7 @@ test("FailureRouter skips supervisor for verification_failed in default mode", a
   const result = await router.route({
     assignment: { attempts: 0 },
     attempt: { attempt: 1 },
-    result: { failure: { kind: FailureKind.VERIFICATION_FAILED, reason: "bad output" } },
+    result: { failure: { kind: FailureKind.VERIFICATION_FAILED, reason: "bad output", cause: { verdict: { fix_scope: ["src/api.js"] } } } },
   });
   assert.equal(diagnosed, false);
   assert.equal(result.action, "retry_same_worker");
@@ -209,7 +209,7 @@ test("FailureRouter consults supervisor for verification_failed in smart mode", 
   const result = await router.route({
     assignment: { attempts: 0 },
     attempt: { attempt: 1 },
-    result: { failure: { kind: FailureKind.VERIFICATION_FAILED, reason: "bad" } },
+    result: { failure: { kind: FailureKind.VERIFICATION_FAILED, reason: "bad", cause: { verdict: { fix_scope: ["src/api.js"] } } } },
   });
   assert.equal(diagnosed, true);
   assert.equal(result.action, "restart_worker_and_retry");

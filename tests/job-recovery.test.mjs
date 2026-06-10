@@ -154,7 +154,6 @@ const cancelledJob = await createJob(root, {
   ts: "2026-05-20T03:00:00.000Z",
 });
 await requestCancelJob(root, project, cancelledJob.jobId, { reason: "user cancel" });
-await cancelJob(root, project, cancelledJob.jobId, { reason: "user cancel" });
 const cancelledRetry = await retryAsNewJob(root, project, cancelledJob.jobId);
 assert.notEqual(cancelledRetry.jobId, cancelledJob.jobId);
 assert.equal(cancelledRetry.task, "Test fresh retry for cancelled");
