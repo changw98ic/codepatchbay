@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -503,7 +502,7 @@ ${executionIntensitySection("repair")}
 5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId } = {}) {
+export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId }: Record<string, any> = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -592,7 +591,7 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId } = {}) {
+export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId }: Record<string, any> = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);

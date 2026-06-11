@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdtemp, realpath, rm } from "node:fs/promises";
@@ -183,7 +182,7 @@ function abortReasonsForSummary(changedSummary, conflictSummary, mergeStatus) {
   return reasons;
 }
 
-export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD", candidate } = {}) {
+export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD", candidate }: Record<string, any> = {}) {
   if (!candidate) throw new Error("candidate is required");
 
   const canonicalRepoRoot = await realpath(path.resolve(repoRoot));

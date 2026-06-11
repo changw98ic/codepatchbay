@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { triageByRules } from "../triage/rules.js";
 
 export function classifyRoute(input = {}) {

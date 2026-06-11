@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
@@ -167,6 +166,7 @@ export async function listJobsFromIndex(cpbRoot, opts = {}) {
   }
 
   return Object.values(index.jobs)
+    .map((job) => job as Record<string, any>)
     .filter((job) => job.createdAt && job.project && job.jobId)
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }

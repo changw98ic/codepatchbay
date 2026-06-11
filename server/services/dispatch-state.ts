@@ -1,8 +1,9 @@
-// @ts-nocheck
 import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { buildMeta } from "../../core/job/meta.js";
+
+type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
@@ -28,9 +29,9 @@ export function makeDispatchId(ts = nowIso(), suffix = randomBytes(3).toString("
   return `dispatch-${compact.slice(0, 8)}-${compact.slice(9, 15)}-${suffix}`;
 }
 
-const mutationChains = new Map();
+const mutationChains = new Map<string, Promise<any>>();
 
-async function withDispatchFileLock(hubRoot, dispatchId, fn) {
+async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
   const file = dispatchFile(hubRoot, dispatchId);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -42,7 +43,7 @@ async function withDispatchFileLock(hubRoot, dispatchId, fn) {
       acquired = true;
       break;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      if (!err || (err as AnyRecord).code !== "EEXIST") throw err;
       try {
         const info = await stat(lockDir);
         if (Date.now() - info.mtimeMs >= DISPATCH_LOCK_TTL_MS) {
@@ -65,7 +66,7 @@ async function withDispatchFileLock(hubRoot, dispatchId, fn) {
   }
 }
 
-function serialized(hubRoot, dispatchId, fn) {
+function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
   const key = `${path.resolve(hubRoot)}:${dispatchId}`;
   const prev = mutationChains.get(key) || Promise.resolve();
   const next = prev.then(() => fn());
@@ -88,7 +89,7 @@ const LEGAL_TRANSITIONS = {
   failed:    [],
 };
 
-function eventTypeToStatus(eventType) {
+function eventTypeToStatus(eventType: string) {
   switch (eventType) {
     case "dispatch_created":         return "pending";
     case "dispatch_worker_assigned": return "assigned";
@@ -99,7 +100,7 @@ function eventTypeToStatus(eventType) {
   }
 }
 
-function validateTransition(currentStatus, eventType) {
+function validateTransition(currentStatus: string | null, eventType: string) {
   const targetStatus = eventTypeToStatus(eventType);
   if (targetStatus === null) return;
 
@@ -118,13 +119,13 @@ function validateTransition(currentStatus, eventType) {
     throw new Error(`invalid transition: dispatch is ${currentStatus} (terminal)`);
   }
 
-  const allowed = LEGAL_TRANSITIONS[currentStatus];
+  const allowed = (LEGAL_TRANSITIONS as AnyRecord)[currentStatus];
   if (!allowed || !allowed.includes(targetStatus)) {
     throw new Error(`invalid transition: ${currentStatus} -> ${targetStatus} (via ${eventType})`);
   }
 }
 
-async function appendDispatchEvent(hubRoot, dispatchId, event) {
+async function appendDispatchEvent(hubRoot: string, dispatchId: string, event: AnyRecord) {
   return serialized(hubRoot, dispatchId, () => withDispatchFileLock(hubRoot, dispatchId, async () => {
     const file = dispatchFile(hubRoot, dispatchId);
     const existing = await readDispatchEvents(hubRoot, dispatchId);
@@ -139,19 +140,19 @@ async function appendDispatchEvent(hubRoot, dispatchId, event) {
   }));
 }
 
-async function readDispatchEvents(hubRoot, dispatchId) {
+async function readDispatchEvents(hubRoot: string, dispatchId: string): Promise<AnyRecord[]> {
   const file = dispatchFile(hubRoot, dispatchId);
   try {
     const raw = await readFile(file, "utf8");
     return raw.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
   } catch (err) {
-    if (err.code === "ENOENT") return [];
+    if ((err as AnyRecord).code === "ENOENT") return [];
     throw err;
   }
 }
 
-export function materializeDispatch(events) {
-  const state = {
+export function materializeDispatch(events: AnyRecord[]) {
+  const state: AnyRecord = {
     dispatchId: null,
     projectId: null,
     sourcePath: null,
@@ -204,7 +205,7 @@ export function materializeDispatch(events) {
   return state;
 }
 
-export async function createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId, ts = nowIso() } = {}) {
+export async function createDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId, ts = nowIso() }: AnyRecord = {}) {
   if (!projectId) throw new Error("projectId is required");
   const meta = buildMeta({ projectId, sourcePath, sessionId, workerId });
   const dispatchId = makeDispatchId(ts);
@@ -222,13 +223,13 @@ export async function createDispatch(hubRoot, { projectId, sourcePath, sessionId
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function getDispatch(hubRoot, dispatchId) {
+export async function getDispatch(hubRoot: string, dispatchId: string) {
   const events = await readDispatchEvents(hubRoot, dispatchId);
   if (events.length === 0) return null;
   return materializeDispatch(events);
 }
 
-export async function assignWorker(hubRoot, dispatchId, { workerId, ts = nowIso() } = {}) {
+export async function assignWorker(hubRoot: string, dispatchId: string, { workerId, ts = nowIso() }: AnyRecord = {}) {
   if (!workerId) throw new Error("workerId is required");
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_worker_assigned",
@@ -239,7 +240,7 @@ export async function assignWorker(hubRoot, dispatchId, { workerId, ts = nowIso(
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function startDispatch(hubRoot, dispatchId, { ts = nowIso() } = {}) {
+export async function startDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_started",
     dispatchId,
@@ -248,7 +249,7 @@ export async function startDispatch(hubRoot, dispatchId, { ts = nowIso() } = {})
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function completeDispatch(hubRoot, dispatchId, { ts = nowIso() } = {}) {
+export async function completeDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_completed",
     dispatchId,
@@ -257,7 +258,7 @@ export async function completeDispatch(hubRoot, dispatchId, { ts = nowIso() } = 
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function failDispatch(hubRoot, dispatchId, { ts = nowIso() } = {}) {
+export async function failDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_failed",
     dispatchId,
@@ -266,13 +267,13 @@ export async function failDispatch(hubRoot, dispatchId, { ts = nowIso() } = {}) 
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function listDispatches(hubRoot, { projectId, status } = {}) {
+export async function listDispatches(hubRoot: string, { projectId, status }: AnyRecord = {}) {
   const dir = dispatchDir(hubRoot);
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err) {
-    if (err.code === "ENOENT") return [];
+    if ((err as AnyRecord).code === "ENOENT") return [];
     throw err;
   }
 

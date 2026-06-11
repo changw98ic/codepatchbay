@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 
@@ -7,9 +6,10 @@ function installMethods(agent) {
 }
 
 function preferredMethod(agent, setupSnapshot = {}) {
+  const snapshot = setupSnapshot as Record<string, any>;
   const methods = installMethods(agent);
-  if (methods.includes("brew") && setupSnapshot.tools?.brew?.installed) return "brew";
-  if (methods.includes("npm") && setupSnapshot.tools?.npm?.installed) return "npm";
+  if (methods.includes("brew") && snapshot.tools?.brew?.installed) return "brew";
+  if (methods.includes("npm") && snapshot.tools?.npm?.installed) return "npm";
   return methods[0] || "manual";
 }
 
@@ -44,7 +44,7 @@ function buildNonExecutingPlan(agent, method) {
 export function buildAgentSetupReadiness({
   setupSnapshot = {},
   catalog = listSetupAgents(),
-} = {}) {
+}: Record<string, any> = {}) {
   const agents = catalog.map((agent) => {
     const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
     const installed = Boolean(probe.installed);
@@ -85,7 +85,7 @@ export function buildAgentSetupReadiness({
 export async function collectAgentSetupReadiness({
   detect = detectSetupEnvironment,
   catalog = listSetupAgents(),
-} = {}) {
+}: Record<string, any> = {}) {
   const setupSnapshot = await detect();
   return buildAgentSetupReadiness({ setupSnapshot, catalog });
 }

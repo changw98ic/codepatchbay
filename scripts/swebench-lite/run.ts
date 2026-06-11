@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 
@@ -17,6 +16,8 @@ import {
   usageError,
   writeJson,
 } from "./lib.js";
+
+type AnyRecord = Record<string, any>;
 
 function usage() {
   return `Usage: node scripts/swebench-lite/run.js --run-dir <dir> [options]
@@ -78,7 +79,7 @@ async function main(argv = process.argv.slice(2)) {
   const repoCacheDir = path.resolve(options.repoCacheDir || path.join(runDir, "repos"));
   const manifestPath = path.join(runDir, "manifest.json");
   const existingManifest = await loadExistingManifest(manifestPath);
-  const existingByInstance = new Map((existingManifest?.instances || []).map((entry) => [entry.instanceId, entry]));
+  const existingByInstance = new Map<string, AnyRecord>((existingManifest?.instances || []).map((entry: AnyRecord) => [entry.instanceId, entry]));
   const instances = await loadDatasetInstances({
     datasetName: options.datasetName,
     datasetPath: options.datasetPath,
@@ -173,7 +174,7 @@ async function prepareRepo(instance, repoDir, { force }) {
 async function initProject(cpbBin, repoDir, projectId) {
   try {
     await runCommand(cpbBin, ["init", repoDir, projectId], { cwd: repoRoot });
-  } catch (err) {
+  } catch (err: any) {
     const output = `${err.result?.stdout || ""}\n${err.result?.stderr || ""}`;
     if (output.includes(`'${projectId}' already exists`) || output.includes(`${projectId} already exists`)) {
       console.log(`Reusing existing CPB project ${projectId}`);
@@ -205,7 +206,7 @@ async function loadExistingManifest(manifestPath) {
 
 main().then((code) => {
   process.exitCode = code;
-}).catch((err) => {
+}).catch((err: any) => {
   console.error(err?.usage ? `${err.message}\n\n${usage()}` : err.stack || err.message || String(err));
   process.exitCode = 1;
 });

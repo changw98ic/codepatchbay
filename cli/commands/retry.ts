@@ -1,7 +1,6 @@
-// @ts-nocheck
 import path from "node:path";
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { executorRoot }: { cpbRoot?: string; executorRoot: string }) {
   let agent = "";
   const filtered = [];
   for (let i = 0; i < args.length; i++) {
@@ -35,6 +34,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
     },
   });
 
-  console.log(`Enqueued retry ${entry.id} for job ${jobId} (project=${project})`);
+  console.log(`Enqueued retry ${(entry as { id: string }).id} for job ${jobId} (project=${project})`);
   return 0;
 }

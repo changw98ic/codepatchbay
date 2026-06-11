@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +5,8 @@ import { defaultSddTrace, sddDir, sddQueueMetadata, sddTracePath } from "../../c
 
 const SDD_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
 const SDD_PLAN_MODES = new Set(["none", "light", "full", "parent"]);
+
+type LooseRecord = Record<string, any>;
 
 async function writeAtomic(filePath, content) {
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -18,7 +19,7 @@ async function writeIfMissing(filePath, content) {
   try {
     await readFile(filePath, "utf8");
     return { path: filePath, created: false };
-  } catch (error) {
+  } catch (error: any) {
     if (error.code !== "ENOENT") throw error;
   }
   await writeAtomic(filePath, content);
@@ -30,11 +31,11 @@ function clean(value, fallback = "") {
   return text || fallback;
 }
 
-function issueRef(event = {}) {
+function issueRef(event: LooseRecord = {}) {
   return event.issueNumber ? `#${event.issueNumber}` : "unlinked issue";
 }
 
-function issueHash(event = {}) {
+function issueHash(event: LooseRecord = {}) {
   const payload = {
     repo: event.repo || null,
     issueNumber: event.issueNumber ?? null,
@@ -57,7 +58,7 @@ function stripJsonFence(raw) {
     .trim();
 }
 
-function specFromIssue(project, event) {
+function specFromIssue(project, event: LooseRecord) {
   const title = clean(event.title, `SDD spec for ${project}`);
   const body = clean(event.body, "No issue body provided.");
   return [
@@ -78,7 +79,7 @@ function specFromIssue(project, event) {
   ].filter((line) => line !== null).join("\n");
 }
 
-function designFromIssue(project, event) {
+function designFromIssue(project, event: LooseRecord) {
   const title = clean(event.title, `SDD design for ${project}`);
   return [
     `# Design: ${title}`,
@@ -98,7 +99,7 @@ function designFromIssue(project, event) {
   ].join("\n");
 }
 
-function taskFromIssue(project, event) {
+function taskFromIssue(project, event: LooseRecord) {
   const title = clean(event.title, `SDD task for ${project}`);
   return [
     `# Tasks: ${title}`,
@@ -152,7 +153,7 @@ function metadataValue(line) {
 
 function parseChecklistTasks(markdown) {
   const lines = String(markdown || "").split(/\r?\n/);
-  const tasks = [];
+  const tasks: LooseRecord[] = [];
   let current = null;
   for (const line of lines) {
     const checklist = line.match(/^\s*[-*]\s+\[[ xX]\]\s+(.+?)\s*$/);
@@ -181,7 +182,7 @@ function normalizeTaskId(value, fallback) {
     || fallback;
 }
 
-function normalizeSddTask(task, index, project, event = {}, inherited = {}) {
+function normalizeSddTask(task: LooseRecord, index, project, event: LooseRecord = {}, inherited: LooseRecord = {}) {
   const workflow = normalizeWorkflow(task.workflow, inherited.workflow || "sdd-standard");
   const planMode = normalizePlanMode(task.planMode, workflow);
   const title = clean(task.title || task.name || task.description, `SDD implementation task ${index + 1}`);
@@ -199,7 +200,7 @@ function normalizeSddTask(task, index, project, event = {}, inherited = {}) {
   };
 }
 
-function stableSddPlanGroupId(project, event = {}) {
+function stableSddPlanGroupId(project, event: LooseRecord = {}) {
   const payload = JSON.stringify({
     project,
     repo: event.repo || null,
@@ -209,7 +210,7 @@ function stableSddPlanGroupId(project, event = {}) {
   return `sdd-plan-group-${digest.slice(0, 12)}`;
 }
 
-function parseTasksMarkdown(markdown, project, event = {}) {
+function parseTasksMarkdown(markdown, project, event: LooseRecord = {}) {
   const { frontmatter, body } = parseJsonFrontmatter(markdown);
   const inherited = {
     planGroupId: frontmatter?.planGroupId || stableSddPlanGroupId(project, event),
@@ -231,7 +232,7 @@ function parseTasksMarkdown(markdown, project, event = {}) {
   }, 0, project, event, inherited)];
 }
 
-function buildSddDrafterPrompt(project, event = {}) {
+function buildSddDrafterPrompt(project, event: LooseRecord = {}) {
   return [
     "You are the CodePatchBay SDD drafter.",
     "Return only JSON. Do not execute code or modify files.",
@@ -256,7 +257,7 @@ function parseSddDrafterResponse(raw) {
   const text = stripJsonFence(raw);
   if (!text) return { parsed: null, error: "empty ACP SDD response" };
   try {
-    const parsed = JSON.parse(text);
+    const parsed: LooseRecord = JSON.parse(text);
     return {
       parsed: {
         spec: clean(parsed.spec),
@@ -266,7 +267,7 @@ function parseSddDrafterResponse(raw) {
       },
       error: null,
     };
-  } catch (error) {
+  } catch (error: any) {
     return { parsed: null, error: `invalid ACP SDD JSON: ${error.message}` };
   }
 }
@@ -278,7 +279,7 @@ async function draftSddFiles(cpbRoot, project, event, {
   cwd = process.cwd(),
   agent = "claude",
   timeoutMs = 60_000,
-} = {}) {
+}: LooseRecord = {}) {
   const template = {
     spec: specFromIssue(project, event),
     design: designFromIssue(project, event),
@@ -296,7 +297,7 @@ async function draftSddFiles(cpbRoot, project, event, {
     const pool = acpPool || (await import("./acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
     const _r = await pool.execute(agent, prompt, cwd, timeoutMs);
     raw = _r.output;
-  } catch (err) {
+  } catch (err: any) {
     error = err.message;
   }
   const parsed = raw ? parseSddDrafterResponse(raw) : { parsed: null, error };
@@ -314,7 +315,7 @@ async function draftSddFiles(cpbRoot, project, event, {
   };
 }
 
-export async function bootstrapSddFromIssue(cpbRoot, project, event = {}, options = {}) {
+export async function bootstrapSddFromIssue(cpbRoot, project, event: LooseRecord = {}, options: LooseRecord = {}) {
   const dir = sddDir(cpbRoot, project);
   const draft = await draftSddFiles(cpbRoot, project, event, options);
   const trace = {

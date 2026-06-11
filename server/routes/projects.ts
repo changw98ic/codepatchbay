@@ -1,4 +1,3 @@
-// @ts-nocheck
 import fs from 'fs/promises';
 import path from 'path';
 import { execFile } from 'child_process';
@@ -21,6 +20,7 @@ const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 const BLOCKED_PATH_PREFIXES = [
   '/etc', '/usr', '/bin', '/sbin', '/var', '/sys', '/proc', '/dev', '/boot', '/lib', '/lib64', '/snap',
 ];
+type LooseRecord = Record<string, any>;
 
 function getProjectRoots() {
   const env = process.env.CPB_PROJECT_ROOTS;
@@ -116,20 +116,21 @@ export async function projectRoutes(fastify, opts) {
         try {
           const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, projectId);
           const [files, inboxEntries, outputEntries] = await Promise.all([
-            loadProjectFiles(wikiDir, { files: ['log'] }).catch(() => ({})),
+            loadProjectFiles(wikiDir, { files: ['log'] }).catch(() => ({} as LooseRecord)),
             fs.readdir(await resolveInboxDir(hubRoot, cpbRoot, projectId)).catch(() => []),
             fs.readdir(await resolveOutputsDir(hubRoot, cpbRoot, projectId)).catch(() => []),
           ]);
+          const fileMap = files as LooseRecord;
 
           return {
             name: project.name || project.id,
             id: project.id,
-            recentLog: extractLogTail(files.log),
+            recentLog: extractLogTail(fileMap.log),
             pipelineState: projectionStates[projectId] ?? null,
             projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: inboxEntries.filter(f => f.endsWith('.md')).length,
             outputs: outputEntries.filter(f => f.endsWith('.md')).length,
-            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot }) } : {}),
+            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot } as LooseRecord) } : {}),
           };
         } catch {
           return {
@@ -140,7 +141,7 @@ export async function projectRoutes(fastify, opts) {
             projectIndex: await readProjectIndex(hubRoot, cpbRoot, projectId),
             inbox: 0,
             outputs: 0,
-            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot }) } : {}),
+            ...(includeTest ? { _pollution: classifyProject(project, { hubRoot } as LooseRecord) } : {}),
           };
         }
       })
@@ -168,7 +169,7 @@ export async function projectRoutes(fastify, opts) {
       ? fieldsParam.split(',').filter(f => ALL_FILES.includes(f))
       : ALL_FILES;
 
-    const files = await loadProjectFiles(wikiDir, { files: requestedFiles });
+    const files = await loadProjectFiles(wikiDir, { files: requestedFiles }) as LooseRecord;
     const pipelineState = await projectPipelineState(cpbRoot, projectId);
     const projectIndex = await readProjectIndex(hubRoot, cpbRoot, projectId);
 

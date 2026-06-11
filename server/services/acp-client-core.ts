@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn, spawnSync } from "node:child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -21,14 +20,16 @@ import {
 import { buildChildEnv } from "../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../core/policy/agent-sandbox.js";
 
-// Permission matrix integration (Stage 3 / #13)
-let _permCheck = null;
-let _permEvaluate = null;
-let _permRecord = null;
-const DENIAL_HISTORY_MAX = 50;
-const denialHistory = [];
+type AnyRecord = Record<string, any>;
 
-function buildPermissionEnv(env = process.env) {
+// Permission matrix integration (Stage 3 / #13)
+let _permCheck: any = null;
+let _permEvaluate: any = null;
+let _permRecord: any = null;
+const DENIAL_HISTORY_MAX = 50;
+const denialHistory: AnyRecord[] = [];
+
+function buildPermissionEnv(env: any = process.env) {
   const permEnv = {
     role: env.CPB_ACP_ROLE || null,
     project: env.CPB_ACP_PROJECT || null,
@@ -40,7 +41,7 @@ function buildPermissionEnv(env = process.env) {
   return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
 }
 
-async function loadPermissionModules(env = process.env) {
+async function loadPermissionModules(env: any = process.env) {
   if (_permCheck !== null) return buildPermissionEnv(env);
   const executorRoot = env.CPB_EXECUTOR_ROOT;
   if (!executorRoot) return null;
@@ -56,7 +57,7 @@ async function loadPermissionModules(env = process.env) {
   return null;
 }
 
-function isRepeatedDenial(targetPath, action) {
+function isRepeatedDenial(targetPath: string, action: string) {
   const recent = denialHistory.slice(-3);
   let identicalCount = 0;
   for (const d of recent) {
@@ -65,7 +66,7 @@ function isRepeatedDenial(targetPath, action) {
   return identicalCount >= 3;
 }
 
-async function enforcePermission(action, targetPath, env = process.env) {
+async function enforcePermission(action: string, targetPath: string, env: any = process.env) {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = await loadPermissionModules(env);
   if (!_permCheck || !permEnv) return { allowed: true };
@@ -125,7 +126,7 @@ async function enforcePermission(action, targetPath, env = process.env) {
   return result;
 }
 
-function enforcePermissionSync(action, target, env = process.env) {
+function enforcePermissionSync(action: string, target: string, env: any = process.env) {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = buildPermissionEnv(env);
   if (!_permCheck || !permEnv) return { allowed: true };
@@ -176,7 +177,7 @@ function enforcePermissionSync(action, target, env = process.env) {
 
 const PROTOCOL_VERSION = 1;
 
-export async function parseToolPolicy(env = process.env) {
+export async function parseToolPolicy(env: AnyRecord = process.env) {
   const policyFilePath = env.CPB_ACP_TOOL_POLICY_FILE;
 
   // 1. Highest priority: JSON policy file
@@ -327,7 +328,7 @@ export function resolveAcpAuditFile(env = process.env) {
   );
 }
 
-function summarizeMcpServers(servers = []) {
+function summarizeMcpServers(servers: any[] = []): AnyRecord[] {
   if (!Array.isArray(servers)) return [];
   return servers.map((server) => ({
     name: server?.name || null,
@@ -338,7 +339,7 @@ function summarizeMcpServers(servers = []) {
   }));
 }
 
-function summarizeToolUpdate(update = {}) {
+function summarizeToolUpdate(update: AnyRecord = {}): AnyRecord {
   return {
     sessionUpdate: update.sessionUpdate || null,
     toolCallId: update.toolCallId || update.id || null,
@@ -350,12 +351,12 @@ function summarizeToolUpdate(update = {}) {
   };
 }
 
-function numberFrom(value) {
+function numberFrom(value: any): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
-function firstNumber(source, keys = []) {
+function firstNumber(source: any, keys: string[] = []): number | null {
   if (!source || typeof source !== "object") return null;
   for (const key of keys) {
     if (Object.hasOwn(source, key)) {
@@ -366,7 +367,7 @@ function firstNumber(source, keys = []) {
   return null;
 }
 
-function createUsageTotals() {
+function createUsageTotals(): AnyRecord {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -381,11 +382,11 @@ function createUsageTotals() {
   };
 }
 
-function cloneUsageTotals(totals) {
+function cloneUsageTotals(totals: any): AnyRecord {
   return { ...createUsageTotals(), ...(totals || {}) };
 }
 
-function normalizeAcpUsage(update = {}) {
+function normalizeAcpUsage(update: AnyRecord = {}): AnyRecord | null {
   const candidates = [
     ["usage", update.usage],
     ["tokenUsage", update.tokenUsage],
@@ -458,7 +459,7 @@ function normalizeAcpUsage(update = {}) {
   return null;
 }
 
-function addUsage(totals, usage) {
+function addUsage(totals: AnyRecord, usage: AnyRecord | null): void {
   if (!usage) return;
   for (const key of [
     "inputTokens",
@@ -477,7 +478,7 @@ function addUsage(totals, usage) {
   totals.tokenSource = usage.tokenSource || totals.tokenSource || "acp_session_update";
 }
 
-function usageDelta(before, after) {
+function usageDelta(before: AnyRecord, after: AnyRecord): AnyRecord | null {
   const delta = createUsageTotals();
   for (const key of [
     "inputTokens",
@@ -504,8 +505,8 @@ const ACP_ADAPTERS = {
   reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
 };
 
-function defaultAgentCommand(agent) {
-  const entry = ACP_ADAPTERS[agent];
+function defaultAgentCommand(agent: string): AnyRecord | null {
+  const entry = (ACP_ADAPTERS as AnyRecord)[agent];
   if (!entry) return null;
   if (commandExists(entry.command)) return { command: entry.command, args: entry.args };
   if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
@@ -513,11 +514,11 @@ function defaultAgentCommand(agent) {
   return { command: entry.command, args: entry.args };
 }
 
-export async function resolveAgentCommand(agent, env = process.env) {
+export async function resolveAgentCommand(agent: string, env: AnyRecord = process.env): Promise<AnyRecord> {
   // Try registry-based resolution first
   try {
     const { loadRegistry, getDescriptor, hasAgent } = await import("../../core/agents/registry.js");
-    await loadRegistry();
+    await (loadRegistry as any)();
     if (hasAgent(agent)) {
       const descriptor = getDescriptor(agent);
       if (descriptor) {
@@ -555,18 +556,18 @@ export async function resolveAgentCommand(agent, env = process.env) {
   return { command, args };
 }
 
-export function shouldIsolateAgentHome(agent, env = process.env) {
+export function shouldIsolateAgentHome(agent: string, env: AnyRecord = process.env): boolean {
   if (env.CPB_AGENT_ISOLATE_HOME === "0") return false;
   return agent !== "browser-agent";
 }
 
-function jsonRpcError(code, message, data) {
-  const err = { code, message };
+function jsonRpcError(code: number, message: string, data?: any): AnyRecord {
+  const err: AnyRecord = { code, message };
   if (data) err.data = data;
   return err;
 }
 
-export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
+export function resolveWriteAllowPaths(cwd = process.cwd(), env: AnyRecord = process.env): string[] | null {
   return env.CPB_ACP_WRITE_ALLOW
     ? env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
         p.trim().includes("*") ? path.resolve(cwd, p.trim()) : path.resolve(p.trim())
@@ -574,7 +575,7 @@ export function resolveWriteAllowPaths(cwd = process.cwd(), env = process.env) {
     : null;
 }
 
-function resolveCodegraphMcpServer(env) {
+function resolveCodegraphMcpServer(env: AnyRecord): AnyRecord | null {
   if (env.CPB_CODEGRAPH_ENABLED === "0") return null;
   const codebaseRoot = path.resolve(
     env.CPB_CODEGRAPH_ROOT ||
@@ -590,18 +591,18 @@ function resolveCodegraphMcpServer(env) {
   };
 }
 
-function codexCodegraphMcpServers(env) {
+function codexCodegraphMcpServers(env: AnyRecord): AnyRecord[] {
   const server = resolveCodegraphMcpServer(env);
   return server ? [server] : [];
 }
 
-function isCodexAcpCommand(command, args = []) {
+function isCodexAcpCommand(command: any, args: any[] = []): boolean {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return true;
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
 }
 
-function buildMcpServers(agent, env) {
+function buildMcpServers(agent: string, env: AnyRecord): AnyRecord[] {
   const server = resolveCodegraphMcpServer(env);
   if (!server) return [];
 
@@ -612,7 +613,7 @@ function buildMcpServers(agent, env) {
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
-function resolveTerminalLaunchCommand(command, args = [], env = process.env) {
+function resolveTerminalLaunchCommand(command: any, args: any[] = [], env: AnyRecord = process.env): AnyRecord {
   if (env.CPB_ACP_RTK_ENABLED === "0") {
     return { command, args, rtkEnabled: false };
   }
@@ -629,8 +630,8 @@ function resolveTerminalLaunchCommand(command, args = [], env = process.env) {
   };
 }
 
-function codexMcpConfigArgs(env) {
-  const args = [];
+function codexMcpConfigArgs(env: AnyRecord): string[] {
+  const args: string[] = [];
   for (const server of codexCodegraphMcpServers(env)) {
     if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
     const prefix = `mcp_servers.${server.name}`;
@@ -640,7 +641,7 @@ function codexMcpConfigArgs(env) {
   return args;
 }
 
-function appendCodexLaunchConfigArgs(agent, command, args, env) {
+function appendCodexLaunchConfigArgs(agent: string, command: any, args: any[], env: AnyRecord): void {
   if (agent !== "codex" || !isCodexAcpCommand(command, args)) return;
 
   if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
@@ -653,6 +654,35 @@ function appendCodexLaunchConfigArgs(agent, command, args, env) {
 }
 
 export class AcpClient {
+  agent: string;
+  cwd: string;
+  prompt: string;
+  writeAllowPaths: any;
+  terminalPolicy: string;
+  toolPolicy: any;
+  outputSink: (chunk: any) => any;
+  errorSink: (chunk: any) => any;
+  env: any;
+  resumeSessionId: any;
+  reuseSession: boolean;
+  nextId: number;
+  pending: Map<any, any>;
+  terminals: Map<any, any>;
+  nextTerminalId: number;
+  closed: boolean;
+  initialized: any;
+  child: any;
+  childEnv: any;
+  lineQueue: Promise<any>;
+  idleTimer: NodeJS.Timeout | null;
+  idleTimeoutMs: number;
+  auditEnv: any;
+  auditFile: any;
+  activeSessionId: any;
+  activeSessionCwd: any;
+  usageTotals: any;
+  lastPromptUsage: any;
+
   constructor({
     agent,
     cwd,
@@ -665,7 +695,7 @@ export class AcpClient {
     env = process.env,
     resumeSessionId = null,
     reuseSession = false,
-  }) {
+  }: Record<string, any>) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
@@ -696,7 +726,7 @@ export class AcpClient {
     this.lastPromptUsage = null;
   }
 
-  setAuditContext(envPatch = {}, { cwd = null, writeAllowPaths = undefined } = {}) {
+  setAuditContext(envPatch: AnyRecord = {}, { cwd = null, writeAllowPaths = undefined }: AnyRecord = {}) {
     this.env = { ...this.env, ...envPatch };
     if (cwd) this.env.CPB_ACP_CWD = cwd;
     this.auditEnv = { ...this.env };
@@ -705,7 +735,7 @@ export class AcpClient {
     if (writeAllowPaths !== undefined) this.writeAllowPaths = writeAllowPaths || null;
   }
 
-  async recordAudit(event, details = {}) {
+  async recordAudit(event: string, details: AnyRecord = {}) {
     if (!this.auditFile) return;
     const auditEnv = this.auditEnv || this.env;
     const entry = {
@@ -725,7 +755,7 @@ export class AcpClient {
   async start() {
     if (this.child && !this.closed && this.initialized) return this.initialized;
 
-    const env = buildChildEnv(this.env, {}, { agent: this.agent });
+    const env: AnyRecord = buildChildEnv(this.env, {}, { agent: this.agent });
     if (shouldIsolateAgentHome(this.agent, env)) {
       const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || this.cwd;
       const homeEnv = await createAgentHome(
@@ -792,7 +822,7 @@ export class AcpClient {
 
     this.markActivity();
 
-    const initialized = await this.request("initialize", {
+    const initialized: AnyRecord = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: {
@@ -820,7 +850,7 @@ export class AcpClient {
     const initialized = await this.start();
     const mcpServers = buildMcpServers(this.agent, this.env);
     const usageBefore = cloneUsageTotals(this.usageTotals);
-    const newSession = async (servers) => {
+    const newSession = async (servers: AnyRecord[]) => {
       await this.recordAudit("session_new_request", {
         cwd,
         mcpServers: summarizeMcpServers(servers),
@@ -979,7 +1009,7 @@ export class AcpClient {
     });
   }
 
-  request(method, params) {
+  request(method: string, params: any): Promise<any> {
     const id = this.nextId++;
     this.markActivity();
     this.write({ jsonrpc: "2.0", id, method, params });
@@ -988,17 +1018,17 @@ export class AcpClient {
     });
   }
 
-  respond(id, result) {
+  respond(id: any, result: any) {
     this.markActivity();
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  respondError(id, code, message, data) {
+  respondError(id: any, code: number, message: string, data?: any) {
     this.markActivity();
     this.write({ jsonrpc: "2.0", id, error: jsonRpcError(code, message, data) });
   }
 
-  write(message) {
+  write(message: any) {
     if (this.child.stdin.destroyed) {
       throw new Error("ACP agent stdin is closed");
     }
@@ -1104,7 +1134,7 @@ export class AcpClient {
   async handleLine(line) {
     if (!line.trim()) return;
 
-    let message;
+    let message: AnyRecord;
     try {
       message = JSON.parse(line);
     } catch (error) {
@@ -1117,7 +1147,7 @@ export class AcpClient {
       if (!pending) return;
       this.pending.delete(message.id);
       if (message.error) {
-        const error = new Error(message.error.message || `ACP error ${message.error.code}`);
+        const error: any = new Error(message.error.message || `ACP error ${message.error.code}`);
         error.code = message.error.code ?? null;
         error.data = message.error.data ?? null;
         error.acpError = message.error;
@@ -1133,7 +1163,7 @@ export class AcpClient {
     }
   }
 
-  async handleClientRequest(message) {
+  async handleClientRequest(message: AnyRecord) {
     try {
       await loadPermissionModules(this.env);
 
@@ -1209,24 +1239,25 @@ export class AcpClient {
           }
       }
     } catch (error) {
-      if (error.message?.startsWith("PERMISSION_FAIL_FAST:")) {
-        this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
+      const err = error as any;
+      if (err.message?.startsWith("PERMISSION_FAIL_FAST:")) {
+        this.errorSink(`[acp:${this.agent}] ${err.message}\n`);
         if (Object.hasOwn(message, "id")) {
-          this.respondError(message.id, -32000, error.message);
+          this.respondError(message.id, -32000, err.message);
         }
         // Abort the session; agent is stuck on repeated denials
         setImmediate(() => this.close());
         return;
       }
       if (Object.hasOwn(message, "id")) {
-        this.respondError(message.id, -32000, error.message, error.guardResult);
+        this.respondError(message.id, -32000, err.message, err.guardResult);
       } else {
-        this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
+        this.errorSink(`[acp:${this.agent}] ${err.message}\n`);
       }
     }
   }
 
-  async handleSessionUpdate(params) {
+  async handleSessionUpdate(params: AnyRecord) {
     const update = params?.update;
     if (!update) return;
 
@@ -1256,10 +1287,10 @@ export class AcpClient {
     }
   }
 
-  async readTextFile(params) {
+  async readTextFile(params: AnyRecord) {
     const permResult = await enforcePermission("read", params.path, this.env);
     if (!permResult.allowed) {
-      const err = new Error(`read denied: ${params.path} (${permResult.reason})`);
+      const err: any = new Error(`read denied: ${params.path} (${permResult.reason})`);
       err.classification = permResult.classification || "deny";
       throw err;
     }
@@ -1272,7 +1303,7 @@ export class AcpClient {
     return { content: lines.slice(start, end).join("\n") };
   }
 
-  validateWritePath(targetPath) {
+  validateWritePath(targetPath: string) {
     if (this.env.CPB_PERMISSION_MODE === "off") return;
     if (!this.writeAllowPaths) return;
     // Resolve symlinks to prevent escape via symlink chains
@@ -1298,7 +1329,7 @@ export class AcpClient {
     }
   }
 
-  async writeTextFile(params) {
+  async writeTextFile(params: AnyRecord) {
     const targetPath = params.path;
     this.validateWritePath(targetPath);
 
@@ -1309,11 +1340,11 @@ export class AcpClient {
         ? `write denied: ${targetPath} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `write denied: ${targetPath} (${permResult.reason})`;
       if (isRepeatedDenial(targetPath, "write")) {
-        const err = new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
+        const err: any = new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
         err.classification = classification;
         throw err;
       }
-      const err = new Error(msg);
+      const err: any = new Error(msg);
       err.classification = classification;
       throw err;
     }
@@ -1333,12 +1364,12 @@ export class AcpClient {
     return null;
   }
 
-  isWikiHandoffFile(filePath) {
+  isWikiHandoffFile(filePath: string) {
     const normalized = filePath.replace(/\\/g, "/");
     return /wiki\/projects\/[^/]+\/(inbox|outputs)\/(plan|deliverable)-\d+\.md$/.test(normalized);
   }
 
-  validateHandoffContent(content, filePath) {
+  validateHandoffContent(content: any, filePath: string) {
     if (!content || typeof content !== "string") return;
     const hasHeader = content.includes("## Handoff");
     const hasFooter = content.includes("## Acceptance-Criteria");
@@ -1350,7 +1381,7 @@ export class AcpClient {
     }
   }
 
-  permissionResponse(params) {
+  permissionResponse(params: AnyRecord) {
     const wantsReject = this.env.CPB_ACP_PERMISSION === "reject";
     const options = params?.options || [];
     const preferred = options.find((option) =>
@@ -1363,7 +1394,7 @@ export class AcpClient {
     return { outcome: { outcome: "selected", optionId: preferred.optionId } };
   }
 
-  async createTerminal(params) {
+  async createTerminal(params: AnyRecord) {
     if (this.terminalPolicy === "deny") {
       throw new Error("terminal access denied for this phase");
     }
@@ -1376,7 +1407,7 @@ export class AcpClient {
       const msg = permResult.recoveryGuidance
         ? `execute denied: ${commandLine} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `execute denied: ${commandLine} (${permResult.reason})`;
-      const err = new Error(msg);
+      const err: any = new Error(msg);
       err.classification = classification;
       throw err;
     }
@@ -1384,13 +1415,13 @@ export class AcpClient {
     const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });
     if (!guardResult.allowed) {
       logDeleteBlock(params.command, params.args || [], terminalCwd, guardResult, this.errorSink);
-      const err = new Error(formatDeleteBlockedMessage(guardResult));
+      const err: any = new Error(formatDeleteBlockedMessage(guardResult));
       err.guardResult = guardResult;
       throw err;
     }
 
     const terminalId = `term-${this.nextTerminalId++}`;
-    const extraEnv = {};
+    const extraEnv: AnyRecord = {};
     for (const item of params.env || []) {
       if (item?.name) extraEnv[item.name] = item.value;
     }
@@ -1521,7 +1552,7 @@ async function parseCli(argv) {
   if (result.agent !== "codex" && result.agent !== "claude") {
     try {
       const { loadRegistry, hasAgent } = await import("../../core/agents/registry.js");
-      await loadRegistry();
+      await (loadRegistry as any)();
       if (!hasAgent(result.agent)) {
         throw new Error(`unknown agent: ${result.agent}`);
       }

@@ -1,9 +1,10 @@
-// @ts-nocheck
+type LooseRecord = Record<string, any>;
+
 function valueOrUnavailable(value) {
   return value === null || value === undefined || value === "" ? "unavailable" : String(value);
 }
 
-function artifactRef(artifact) {
+function artifactRef(artifact: LooseRecord | null | undefined) {
   if (!artifact) return "unavailable";
   const id = artifact.id || artifact.artifactId || null;
   const path = artifact.path || null;
@@ -11,7 +12,7 @@ function artifactRef(artifact) {
   return id || path || "unavailable";
 }
 
-function agentValue(agents, key) {
+function agentValue(agents: LooseRecord, key) {
   return valueOrUnavailable(agents?.[key]);
 }
 
@@ -20,7 +21,7 @@ function testLines(tests) {
   return tests.map((test) => `- ${test}`);
 }
 
-function sddTraceLines(trace) {
+function sddTraceLines(trace: LooseRecord | null | undefined) {
   if (!trace) return [];
   const artifacts = trace.artifacts || {};
   return [
@@ -35,7 +36,7 @@ function sddTraceLines(trace) {
   ];
 }
 
-function routingDecisionLines(rc) {
+function routingDecisionLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
   const effective = r.effectiveRoute || r.effective || {};
@@ -55,7 +56,7 @@ function routingDecisionLines(rc) {
   ];
 }
 
-function triageStrategyLines(rc) {
+function triageStrategyLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
   const scopes = r.protectedScopes || [];
@@ -76,7 +77,7 @@ function triageStrategyLines(rc) {
   ];
 }
 
-function sddBootstrapLines(rc) {
+function sddBootstrapLines(rc: LooseRecord | null | undefined) {
   if (!rc?.sddBootstrap) return [];
   const bs = rc.sddBootstrap;
   const gen = bs.generationEvent || {};
@@ -93,7 +94,7 @@ function sddBootstrapLines(rc) {
   ];
 }
 
-function contextPackLines(rc) {
+function contextPackLines(rc: LooseRecord | null | undefined) {
   if (!rc?.contextPack?.path) return [];
   const cp = rc.contextPack;
   return [
@@ -105,7 +106,7 @@ function contextPackLines(rc) {
   ];
 }
 
-function childTaskLines(rc) {
+function childTaskLines(rc: LooseRecord | null | undefined) {
   if (!rc?.childTaskIds?.length) return [];
   return [
     "",
@@ -115,7 +116,7 @@ function childTaskLines(rc) {
   ];
 }
 
-function planCacheLines(rc) {
+function planCacheLines(rc: LooseRecord | null | undefined) {
   const cache = rc?.planCache;
   if (!cache) return [];
   return [
@@ -130,7 +131,7 @@ function planCacheLines(rc) {
   ];
 }
 
-function finalDiffGuardLines(rc) {
+function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   if (!rc?.finalDiffGuard) return [];
   const dg = rc.finalDiffGuard;
   const scopes = (dg.protectedScopes || []).map((s) => s.scope || s);
@@ -159,7 +160,7 @@ export function buildCodePatchBayPrBody({
   audit = {},
   sddTrace = null,
   routingContext = null,
-} = {}) {
+}: LooseRecord = {}) {
   const issue = job.sourceContext?.issueNumber ? `#${job.sourceContext.issueNumber}` : "unavailable";
   const repo = job.sourceContext?.repo || "unavailable";
   const status = verdict.status || "unavailable";

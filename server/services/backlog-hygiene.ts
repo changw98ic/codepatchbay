@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listJobs } from "./job-store.js";
@@ -159,11 +158,11 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
   };
 
   const targetIssues = repo
-    ? githubIssues.filter((i) => (i.repository || i.repo) === repo && i.state !== "CLOSED")
+    ? githubIssues.filter((i) => (i.repository || (i as Record<string, any>).repo) === repo && i.state !== "CLOSED")
     : githubIssues.filter((i) => i.state !== "CLOSED");
 
   for (const issue of targetIssues) {
-    const r = issue.repository || issue.repo;
+    const r = issue.repository || (issue as Record<string, any>).repo;
     const n = issue.number;
     if (!r || !n) continue;
 

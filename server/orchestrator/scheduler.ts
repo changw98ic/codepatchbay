@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
@@ -18,17 +17,18 @@ import { projectCapabilityMapGate } from "../services/project-capability-map.js"
 import { checkCodeGraphReady } from "../services/codegraph-readiness.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
+type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function providerAgentForEntry(entry) {
+function providerAgentForEntry(entry: AnyRecord) {
   const agentSpec = entry.metadata?.agents?.executor || entry.metadata?.agents?.default || {};
   return agentSpec.agent || "claude";
 }
 
-function parseRetryUntilMs(value) {
+function parseRetryUntilMs(value: any) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string") {
@@ -41,6 +41,14 @@ function parseRetryUntilMs(value) {
 }
 
 export class Scheduler {
+  hubRoot: string;
+  cpbRoot: string | null;
+  assignments: any;
+  workers: any;
+  maxActivePerProject: number;
+  getProjectFn: any;
+  providerCapacityFn: any;
+
   /**
    * @param {string} hubRoot
    * @param {object} opts
@@ -52,14 +60,14 @@ export class Scheduler {
    * @param {Function} [opts.providerCapacityFn] - async (agentKey?, entry?) => { available: number, total: number } | boolean
    *   Object return values apply aggregate provider capacity; boolean return values filter per entry/provider.
    */
-  constructor(hubRoot, {
+  constructor(hubRoot: string, {
     assignmentStore,
     workerStore,
     cpbRoot = null,
     maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
     getProjectFn = null,
     providerCapacityFn = null,
-  }) {
+  }: AnyRecord) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.assignments = assignmentStore;
@@ -101,7 +109,7 @@ export class Scheduler {
    * Filter pending entries by DAG dependencies.
    * An entry is DAG-ready when all its declared dependencies are completed.
    */
-  _filterDagReady(pending, allEntries) {
+  _filterDagReady(pending: AnyRecord[], allEntries: AnyRecord[]) {
     const completedIds = new Set(
       allEntries.filter(e => e.status === "completed").map(e => e.id),
     );
@@ -117,14 +125,14 @@ export class Scheduler {
    * Returns entries that fit within remaining provider slots.
    * When provider is full, returns empty — queue, don't fail.
    */
-  _filterByProviderCapacity(pending) {
+  _filterByProviderCapacity(pending: AnyRecord[]) {
     return pending;
   }
 
   /**
    * Filter by per-project limits when NOT using provider-only capacity.
    */
-  _filterByProjectCapacity(pending, activeMutatingByProject, projectLimits, hubLimits) {
+  _filterByProjectCapacity(pending: AnyRecord[], activeMutatingByProject: Record<string, number>, projectLimits: Map<string, number>, hubLimits: AnyRecord) {
     return pending.filter(e => {
       if (isMutatingEntry(e)) {
         const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
@@ -136,7 +144,7 @@ export class Scheduler {
     });
   }
 
-  _filterByRetryDecisionDue(pending) {
+  _filterByRetryDecisionDue(pending: AnyRecord[]) {
     const now = Date.now();
     return pending.filter((entry) => {
       const untilMs = parseRetryUntilMs(entry.metadata?.retryDecision?.untilTs);
@@ -177,7 +185,7 @@ export class Scheduler {
       const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
         maxActivePerProject: this.maxActivePerProject,
       });
-      const activeMutatingByProject = {};
+      const activeMutatingByProject: Record<string, number> = {};
       for (const entry of allEntries) {
         if (isActiveEntry(entry) && isMutatingEntry(entry)) {
           activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
@@ -195,7 +203,7 @@ export class Scheduler {
       const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
         maxActivePerProject: this.maxActivePerProject,
       });
-      const activeMutatingByProject = {};
+      const activeMutatingByProject: Record<string, number> = {};
       for (const entry of allEntries) {
         if (isActiveEntry(entry) && isMutatingEntry(entry)) {
           activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
@@ -220,7 +228,7 @@ export class Scheduler {
     return pending.slice(0, batchSize);
   }
 
-  async _applyProjectReadinessGate(pending) {
+  async _applyProjectReadinessGate(pending: AnyRecord[]) {
     if (!this.getProjectFn) return pending;
     const eligible = [];
     for (const entry of pending) {
@@ -279,7 +287,7 @@ export class Scheduler {
           cpbRoot: this.cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
           sourcePath: project.sourcePath,
         });
-      } catch (err) {
+      } catch (err: any) {
         const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
         await this._markCodegraphUnavailable(entry, {
           codegraphReadiness: {
@@ -340,7 +348,7 @@ export class Scheduler {
     return eligible;
   }
 
-  async _markCodegraphUnavailable(entry, metadataPatch) {
+  async _markCodegraphUnavailable(entry: AnyRecord, metadataPatch: AnyRecord) {
     const metadata = { ...(entry.metadata || {}), ...metadataPatch };
     const { updateEntry } = await import("../services/hub-queue.js");
     await updateEntry(this.hubRoot, entry.id, {
@@ -358,7 +366,7 @@ export class Scheduler {
    * Supports the aggregate capacity contract and a per-entry boolean contract.
    * Returns up to `batchSize` eligible entries across all providers.
    */
-  async _applyProviderCapacityGate(pending, allEntries, batchSize) {
+  async _applyProviderCapacityGate(pending: AnyRecord[], allEntries: AnyRecord[], batchSize: number) {
     const first = pending[0];
     if (!first) return [];
 
@@ -375,9 +383,9 @@ export class Scheduler {
       return eligible.slice(0, batchSize);
     }
 
-    const eligible = [];
-    const projectedByProvider = new Map();
-    const fits = async (entry, prechecked = null) => {
+    const eligible: AnyRecord[] = [];
+    const projectedByProvider = new Map<string, number>();
+    const fits = async (entry: AnyRecord, prechecked: any = null) => {
       const provider = providerAgentForEntry(entry);
       const cap = prechecked || await this.providerCapacityFn(provider, entry);
       if (!cap || typeof cap !== "object") return false;
@@ -404,18 +412,18 @@ export class Scheduler {
    * Considers priority, queue age/starvation, project pressure, failure metadata,
    * and provider quota state.
    */
-  async _smartSelect(pending, ctx) {
+  async _smartSelect(pending: AnyRecord[], ctx: AnyRecord) {
     const now = Date.now();
 
     // Gather provider quota state
-    let providerQuotas = {};
+    let providerQuotas: AnyRecord = {};
     try {
       const { readProviderQuotas } = await import("../services/provider-quota.js");
       providerQuotas = await readProviderQuotas(this.hubRoot);
     } catch { /* quotas unavailable — treat as all-available */ }
 
     // Count entries per project for pressure calculation
-    const pendingByProject = {};
+    const pendingByProject: Record<string, number> = {};
     for (const e of ctx.allEntries) {
       if (e.status === "pending") {
         pendingByProject[e.projectId] = (pendingByProject[e.projectId] || 0) + 1;
@@ -510,11 +518,11 @@ export class Scheduler {
     return winner.entry;
   }
 
-  async findIdleWorker(projectId) {
+  async findIdleWorker(projectId: string) {
     return this.workers.findIdleWorker(projectId);
   }
 
-  async #resolveProjectLimits(entries, maxActivePerProject) {
+  async #resolveProjectLimits(entries: AnyRecord[], maxActivePerProject: number) {
     const projectIds = [...new Set(entries.map((entry) => entry.projectId).filter(Boolean))];
     return resolveProjectConcurrencyLimits(this.hubRoot, projectIds, {
       maxActivePerProject,

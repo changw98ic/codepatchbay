@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
@@ -19,11 +18,11 @@ export function dispatchFeedbackPath(cpbRoot, project, jobId) {
   );
 }
 
-export function normalizeDispatchFeedback(input = {}, defaults = {}) {
+export function normalizeDispatchFeedback(input: Record<string, any> = {}, defaults: Record<string, any> = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("dispatch feedback must be an object");
   }
-  const requested = input.requested && typeof input.requested === "object" ? input.requested : {};
+  const requested: Record<string, any> = input.requested && typeof input.requested === "object" ? input.requested : {};
   const workflow = String(requested.workflow || input.workflow || "").trim();
   const planMode = String(requested.planMode || input.planMode || "").trim();
   const reason = String(input.reason || requested.reason || "").trim();
@@ -69,7 +68,8 @@ export async function readDispatchFeedbackFile(cpbRoot, project, jobId, { phase 
   };
 }
 
-export function buildRoutingFeedbackEvent(feedback, { jobId, project, phase, upgradedQueueEntryId = null } = {}) {
+export function buildRoutingFeedbackEvent(feedback, { jobId, project, phase, upgradedQueueEntryId = null }: Record<string, any> = {}) {
+  feedback = feedback as Record<string, any>;
   return {
     type: "executor_routing_feedback",
     jobId,

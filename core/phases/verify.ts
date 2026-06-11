@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -10,7 +9,7 @@ import { writeArtifact } from "../artifacts/artifact-store.js";
 import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
 
-const execFile = promisify(execFileCb);
+const execFile: any = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
 const PROMPT_PLAN_CHARS = 12_000;
 const PROMPT_DIFF_CHARS = 16_000;
@@ -230,7 +229,7 @@ export async function runVerify(ctx) {
     prompt,
   });
 
-  const agentResult = await runAgent({
+  const agentResult: Record<string, any> = await runAgent({
     role,
     ...resolvedAgent,
     project,
@@ -239,6 +238,8 @@ export async function runVerify(ctx) {
     cwd,
     pool,
     timeoutMs: ctx.timeouts?.verify ?? 0,
+    scope: ctx.scope,
+    env: ctx.env,
   });
 
   if (!agentResult.ok) {
@@ -257,7 +258,7 @@ export async function runVerify(ctx) {
     });
   }
 
-  const verdict = parseVerifierJson(agentResult.output);
+  const verdict: Record<string, any> = parseVerifierJson(agentResult.output) as any;
   if (!verdict.ok) {
     return phaseFailed({
       phase: "verify",
@@ -300,7 +301,7 @@ export async function runVerify(ctx) {
     verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, verdict, verificationEvidence }, promptArtifact),
-  });
+  } as any);
 }
 
 async function collectVerificationEvidence(cwd, planArtifact, hardGate, planEvidence = null) {
@@ -335,7 +336,7 @@ async function collectPlanEvidence(planArtifact, { required = true, workflow = n
     }
     return { available: false, reason: "verify requires a plan artifact in previous phase results" };
   }
-  const plan = {
+  const plan: Record<string, any> = {
     available: true,
     name: planArtifact.name || null,
     path: planArtifact.path || null,

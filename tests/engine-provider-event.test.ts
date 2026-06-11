@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,6 +18,8 @@ import {
 } from "../server/services/quota-delegate-client.js";
 import { resolveTaskRoute } from "../core/workflow/auto-route.js";
 import { tempRoot } from "./helpers.js";
+
+type AnyRecord = Record<string, any>;
 
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
@@ -41,17 +42,17 @@ test("readProviderQuotas only falls back to legacy rate-limits when quotas file 
   assert.deepEqual(await readProviderQuotas(hubRoot), {});
 });
 
-let runJobPromise = null;
+let runJobPromise: Promise<any> | null = null;
 async function loadRunJob() {
   runJobPromise ||= import("../core/engine/run-job.js").then((mod) => mod.runJob);
   return runJobPromise;
 }
 
-function jsonEnvelope(data) {
+function jsonEnvelope(data: AnyRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-function phaseOutput(role, overrides = {}) {
+function phaseOutput(role: string, overrides: AnyRecord = {}) {
   if (role === "planner") {
     return jsonEnvelope({
       status: "ok",
@@ -109,7 +110,7 @@ async function makeSourceRoot(prefix = "cpb-engine-source") {
   return sourcePath;
 }
 
-function makeServices({ events = [], starts = [], completed = [], failed = [] } = {}) {
+function makeServices({ events = [], starts = [], completed = [], failed = [] }: AnyRecord = {}) {
   return {
     createJob: async (_cpbRoot, job) => ({
       ...job,
@@ -153,7 +154,7 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] } 
   };
 }
 
-function makePool({ onExecute, calls = [], releases = [] } = {}) {
+function makePool({ onExecute, calls = [], releases = [] }: AnyRecord = {}) {
   return {
     providerKey(agent, variant) {
       return variant ? `${agent}:${variant}` : agent;
@@ -293,7 +294,7 @@ test("runJob preserves phase order and switches unavailable providers during pre
     nextEligibleAt: Date.now() + 60_000,
     source: "test",
     reason: "preflight saturated",
-  });
+  } as any);
 
   const { result } = await runEngine({
     hubRoot,
@@ -321,7 +322,7 @@ test("runJob does not invent provider fallbacks when the pool has none", async (
     nextEligibleAt: Date.now() + 60_000,
     source: "test",
     reason: "preflight saturated",
-  });
+  } as any);
 
   const pool = makePool({ calls });
   pool.fallbackCandidates = () => [];
@@ -370,7 +371,7 @@ test("runJob blocks required dynamic roles as agent_unavailable when provider pr
     nextEligibleAt: Date.now() + 60_000,
     source: "test",
     reason: "required dynamic planner unavailable",
-  });
+  } as any);
 
   const { result } = await runEngine({
     hubRoot,
@@ -458,7 +459,7 @@ test("materializeJob keeps phase fallback separate from job executor selection",
       reason: "preferred unavailable",
       ts: "2026-06-04T00:01:00.000Z",
     },
-  ]);
+  ]) as AnyRecord;
 
   assert.equal(job.executor, "claude");
   assert.equal(job.executorSelection, undefined);
@@ -661,7 +662,7 @@ test("runJob hands off mid-run rate limits to a fallback provider", async (t) =>
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
         executePrimaryFailed = true;
-        const err = new Error("429 rate limit from primary");
+        const err = new Error("429 rate limit from primary") as Error & AnyRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";
@@ -696,7 +697,7 @@ test("runJob turns quota delegate write failure into structured runtime failure"
   const pool = makePool({
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary") {
-        const err = new Error("429 rate limit without delegate");
+        const err = new Error("429 rate limit without delegate") as Error & AnyRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";
@@ -731,7 +732,7 @@ test("runJob retries transient phase failures and corrects artifact validation f
       if (meta.role === "planner") {
         planAttempts += 1;
         if (planAttempts === 1) {
-          const err = new Error("planner spawn failed");
+          const err = new Error("planner spawn failed") as Error & AnyRecord;
           err.code = "ENOENT";
           throw err;
         }
@@ -849,7 +850,7 @@ test("handoffState tracks consolidated from/to/reason/count for preflight switch
     nextEligibleAt: Date.now() + 60_000,
     source: "test",
     reason: "preflight saturated",
-  });
+  } as any);
 
   const { result } = await runEngine({
     hubRoot,
@@ -879,7 +880,7 @@ test("usage fallback record uses handoffState from/to/reason — not inferred fr
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
         executePrimaryFailed = true;
-        const err = new Error("429 rate limit from primary");
+        const err = new Error("429 rate limit from primary") as Error & AnyRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";

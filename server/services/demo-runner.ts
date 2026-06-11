@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -66,7 +65,7 @@ function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 20_000,
   child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
   child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
 
-  const done = new Promise((resolve, reject) => {
+  const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       reject(new Error(`managed worker timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
@@ -156,7 +155,18 @@ async function writeValidAssignment({
   workflow = "standard",
   planMode = "full",
   attemptToken = "attempt-token-1",
-} = {}) {
+}: {
+  hubRoot: string;
+  workerId: string;
+  sourcePath: string;
+  metadata?: Record<string, any>;
+  assignmentId?: string;
+  entryId?: string;
+  task?: string;
+  workflow?: string;
+  planMode?: string;
+  attemptToken?: string;
+}) {
   const attemptDir = path.join(hubRoot, "assignments", assignmentId, "attempts", "001");
   await mkdir(path.join(attemptDir, "control"), { recursive: true });
   await writeJson(path.join(attemptDir, "attempt.json"), {
@@ -215,7 +225,7 @@ test("createIsolatedWorktreeWithRetry refuses source checkout and cleans failed 
         removedPaths.push({ target, opts });
       },
     }),
-    (err) => {
+    (err: any) => {
       assert.equal(err.code, "WORKTREE_UNAVAILABLE");
       assert.match(err.message, /refusing to run against source checkout/);
       return true;

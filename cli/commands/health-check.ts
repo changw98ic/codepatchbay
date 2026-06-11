@@ -1,11 +1,21 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 // Health check: HTTP GET + test suite + frontend build
 // Exit 0 = healthy, exit 1 = unhealthy
 
 import { spawn } from "node:child_process";
 import path from "node:path";
+
+type CommandResult = { ok: boolean; output: string };
+type HealthCheckResult = {
+  name: string;
+  ok: boolean;
+  skipped?: boolean;
+  artifacts?: any;
+  error?: string;
+};
+type HealthOptions = ReturnType<typeof parseArgs>;
+type HealthContext = Record<string, any>;
 
 function usage() {
   return [
@@ -24,12 +34,12 @@ function usage() {
   ].join("\n");
 }
 
-function positiveInt(value, fallback) {
-  const parsed = parseInt(value, 10);
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function parseArgs(args = [], env = process.env) {
+export function parseArgs(args: string[] = [], env = process.env) {
   const options = {
     port: positiveInt(env.CPB_PORT || "3456", 3456),
     url: null,
@@ -82,7 +92,7 @@ export function parseArgs(args = [], env = process.env) {
   return options;
 }
 
-async function httpCheck(url, maxAttempts = 10, intervalMs = 3000) {
+async function httpCheck(url: string, maxAttempts = 10, intervalMs = 3000): Promise<boolean> {
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const res = await fetch(url);
@@ -93,7 +103,7 @@ async function httpCheck(url, maxAttempts = 10, intervalMs = 3000) {
   return false;
 }
 
-function runCmd(cmd, args, cwd = process.cwd()) {
+function runCmd(cmd: string, args: string[], cwd = process.cwd()): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, stdio: "pipe" });
     let output = "";
@@ -111,8 +121,15 @@ export async function check({
   httpCheckFn = httpCheck,
   runCmdFn = runCmd,
   fakeAcpSmokeFn = null,
+}: {
+  cpbRoot: string;
+  executorRoot: string;
+  options: HealthOptions;
+  httpCheckFn?: (url: string, maxAttempts?: number, intervalMs?: number) => Promise<boolean>;
+  runCmdFn?: (cmd: string, args: string[], cwd?: string) => Promise<CommandResult>;
+  fakeAcpSmokeFn?: ((args: Record<string, any>) => Promise<any>) | null;
 }) {
-  const checks = [];
+  const checks: HealthCheckResult[] = [];
 
   // Check 1: HTTP
   if (options.skipHttp) {
@@ -151,20 +168,21 @@ export async function check({
       checks.push({ name: "fake-acp-smoke", ok: smoke.ok, artifacts: smoke.artifacts });
       console.log(`PASS: fake-acp-smoke (${smoke.artifacts.inbox.length} inbox, ${smoke.artifacts.outputs.length} outputs)`);
     } catch (err) {
-      checks.push({ name: "fake-acp-smoke", ok: false, error: err.message });
-      console.log("FAIL: fake-acp-smoke\n" + err.message.slice(-1000));
+      const message = (err as Error).message;
+      checks.push({ name: "fake-acp-smoke", ok: false, error: message });
+      console.log("FAIL: fake-acp-smoke\n" + message.slice(-1000));
     }
   }
 
   return checks;
 }
 
-export async function run(args = [], { cpbRoot, executorRoot, httpCheckFn, runCmdFn, fakeAcpSmokeFn } = {}) {
+export async function run(args: string[] = [], { cpbRoot, executorRoot, httpCheckFn, runCmdFn, fakeAcpSmokeFn }: HealthContext = {}) {
   let options;
   try {
     options = parseArgs(args);
   } catch (err) {
-    console.error(err.message);
+    console.error((err as Error).message);
     console.error(usage());
     return 2;
   }

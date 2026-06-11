@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { readReleaseMetadata } from "../../server/services/release-store.js";
@@ -7,7 +6,7 @@ const CPB_VERSION = JSON.parse(readFileSync(new URL("../../package.json", import
 
 export { CPB_VERSION };
 
-async function activeReleaseIdFor(executorRoot) {
+async function activeReleaseIdFor(executorRoot?: string) {
   if (!executorRoot) return null;
   try {
     const metadata = await readReleaseMetadata(executorRoot);
@@ -17,7 +16,7 @@ async function activeReleaseIdFor(executorRoot) {
   }
 }
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot, executorRoot }: { cpbRoot: string; executorRoot: string }) {
   if (args.includes("--json")) {
     const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
     const result = {

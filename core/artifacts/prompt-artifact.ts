@@ -1,4 +1,3 @@
-// @ts-nocheck
 import crypto from "node:crypto";
 import { writeArtifact } from "./artifact-store.js";
 
@@ -6,7 +5,7 @@ const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
 const GITHUB_URL_TOKEN_PATTERN = /https:\/\/x-access-token:[^@\s"']+@github\.com\/[^\s"']*/gi;
 
-export async function writePromptArtifact(cpbRoot, { project, jobId, phase, role, agent, prompt }) {
+export async function writePromptArtifact(cpbRoot: string, { project, jobId, phase, role, agent, prompt }: { project: string; jobId: string; phase: string; role?: string; agent?: string; prompt: unknown }) {
   const rawContent = String(prompt);
   const content = redactPromptContent(rawContent);
   const rawSha256 = sha256(rawContent);
@@ -29,18 +28,18 @@ export async function writePromptArtifact(cpbRoot, { project, jobId, phase, role
   });
 }
 
-export function withPromptArtifactDiagnostics(diagnostics, promptArtifact) {
+export function withPromptArtifactDiagnostics(diagnostics: Record<string, unknown> | null | undefined, promptArtifact: unknown) {
   return {
     ...(diagnostics || {}),
     promptArtifact: promptArtifact || null,
   };
 }
 
-function sha256(content) {
+function sha256(content: string) {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-function redactPromptContent(value) {
+function redactPromptContent(value: unknown) {
   return String(value || "")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
     .replace(GITHUB_URL_TOKEN_PATTERN, "[REDACTED_URL]")

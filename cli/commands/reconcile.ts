@@ -1,11 +1,26 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 
-export async function run(args, { cpbRoot }) {
+type AnyRecord = Record<string, any>;
+
+type ReconcileReport = {
+  staleJobs: AnyRecord[];
+  orphanLeases: AnyRecord[];
+  streamRecoveries: AnyRecord[];
+  streamErrors: AnyRecord[];
+  indexRebuilt: boolean;
+  workers: {
+    stale: AnyRecord[];
+    pruned?: number;
+  };
+  pollution?: AnyRecord;
+  pollutionPreview?: AnyRecord;
+};
+
+export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const dryRun = args.includes("--dry-run");
   const { reconcileJobs } = await import("../../server/services/reconcile.js");
-  const report = await reconcileJobs(cpbRoot, { dryRun });
+  const report = await reconcileJobs(cpbRoot, { dryRun }) as ReconcileReport;
 
   if (dryRun) {
     console.log("=== Reconcile Dry-Run Report ===");

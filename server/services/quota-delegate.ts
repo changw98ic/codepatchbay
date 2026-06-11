@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 /**
  * Quota Delegate — long-running process for quota/usage writes.
  *

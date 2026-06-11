@@ -1,10 +1,23 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { listJobs } from "../../server/services/job-store.js";
 
+type ListedJob = {
+  jobId: string;
+  project?: string;
+  status?: string;
+  phase?: string;
+  task?: string;
+  lineage?: {
+    parentJobId?: string;
+    parentFailurePhase?: string;
+    parentFailureCode?: string;
+    parentStatus?: string;
+  };
+};
+
 const cpbRoot = path.resolve(process.env.CPB_ROOT || path.join(import.meta.dirname, ".."));
-const jobs = await listJobs(cpbRoot);
+const jobs = await listJobs(cpbRoot) as ListedJob[];
 
 for (const job of jobs) {
   let lineageTag = "-";

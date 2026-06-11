@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -139,7 +138,7 @@ export async function listSessions(cpbRoot) {
   return sessions;
 }
 
-export async function updateSession(cpbRoot, sessionId, patch, options = {}) {
+export async function updateSession(cpbRoot, sessionId, patch, options: Record<string, any> = {}) {
   const safeId = validateSessionId(sessionId);
   const { skipTransitionCheck = false } = options;
 

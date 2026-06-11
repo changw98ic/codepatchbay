@@ -1,5 +1,4 @@
-// @ts-nocheck
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot }: { cpbRoot: string; executorRoot?: string }) {
   const sub = args[0] || "";
   if (sub === "reconcile") {
     const mod = await import("./reconcile.js");
@@ -9,7 +8,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     await mod.run(args.slice(1), { cpbRoot });
   } else if (sub === "report") {
     const { buildJobRunReport, formatReportHuman } = await import("../../server/services/job-run-report.js");
-    const report = await buildJobRunReport({ cpbRoot });
+    const report = await (buildJobRunReport as any)({ cpbRoot });
     if (args.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else console.log(formatReportHuman(report));
   } else if (sub === "worktrees") {
@@ -27,7 +26,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     else console.log(formatWorktreeRetentionHuman(plan));
   } else {
     const { listJobs } = await import("../../server/services/job-store.js");
-    const jobs = await listJobs(cpbRoot);
+    const jobs = await listJobs(cpbRoot) as Array<Record<string, any>>;
     for (const job of jobs.slice(-20)) {
       console.log(`${job.jobId} ${job.status} ${job.project || "-"} ${job.phase || "-"}`);
     }

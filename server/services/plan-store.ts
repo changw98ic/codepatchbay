@@ -1,35 +1,34 @@
-// @ts-nocheck
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 
-export function parentPlanStoreDir(cpbRoot, project) {
+export function parentPlanStoreDir(cpbRoot: string, project: string) {
   return runtimeDataPath(cpbRoot, "plan-cache", project);
 }
 
-export function parentPlanRecordPath(cpbRoot, project, planCacheKey) {
+export function parentPlanRecordPath(cpbRoot: string, project: string, planCacheKey: string) {
   return path.join(parentPlanStoreDir(cpbRoot, project), `${planCacheKey}.json`);
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
 }
 
-export async function readParentPlanRecord(cpbRoot, project, planCacheKey) {
+export async function readParentPlanRecord(cpbRoot: string, project: string, planCacheKey?: string | null) {
   if (!planCacheKey) return null;
   const file = parentPlanRecordPath(cpbRoot, project, planCacheKey);
   try {
     return JSON.parse(await readFile(file, "utf8"));
-  } catch (error) {
+  } catch (error: any) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
 }
 
-export async function writeParentPlanRecord(cpbRoot, project, planCacheKey, record) {
+export async function writeParentPlanRecord(cpbRoot: string, project: string, planCacheKey: string, record: Record<string, any>) {
   if (!planCacheKey) throw new Error("planCacheKey is required");
   const file = parentPlanRecordPath(cpbRoot, project, planCacheKey);
   await writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
@@ -92,7 +91,7 @@ function generateSnapshotId() {
   return `idx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function checkIndexFreshness(project, opts = {}) {
+export async function checkIndexFreshness(project, opts: Record<string, any> = {}) {
   const { ttlMs = DEFAULT_INDEX_TTL_MS, now = Date.now() } = opts;
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
@@ -171,7 +170,7 @@ export async function checkIndexFreshness(project, opts = {}) {
   return result;
 }
 
-export async function refreshIndexManifest(project, opts = {}) {
+export async function refreshIndexManifest(project, opts: Record<string, any> = {}) {
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
   const resolvedSourcePath = await realpath(sourcePath).catch(() => sourcePath);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { loadConfig } from "./config.js";
 import * as feishu from "./channel-feishu.js";
 import * as dingtalk from "./channel-dingtalk.js";

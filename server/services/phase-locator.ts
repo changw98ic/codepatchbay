@@ -1,10 +1,11 @@
-// @ts-nocheck
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import { resolveProjectDataRoot } from "./runtime-context.js";
 import { getJob } from "./job-store.js";
 import { getWorkflow } from "../../core/workflow/definition.js";
+
+type AnyRecord = Record<string, any>;
 
 function validateName(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
@@ -51,11 +52,11 @@ export async function resolveProjectSourcePath(cpbRoot, project) {
   }
 }
 
-export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoot } = {}) {
+export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoot }: AnyRecord = {}) {
   validateName(project, "project");
   if (jobId) validateName(jobId, "jobId");
 
-  const locator = {
+  const locator: AnyRecord = {
     cpbRoot: path.resolve(cpbRoot),
     project,
     jobId: jobId || null,

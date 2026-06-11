@@ -1,4 +1,3 @@
-// @ts-nocheck
 function statusMark(installed) {
   return installed ? "OK" : "--";
 }
@@ -21,7 +20,7 @@ function recommendedInstallLines(snapshot, catalog) {
 
   return missingRecommended.map((agent) => {
     const [method, install] = pickPreferredInstall(agent, snapshot);
-    return `${agent.displayName}: cpb agents install ${agent.id} --method ${method}  # ${install.command}`;
+    return `${agent.displayName}: cpb agents install ${agent.id} --method ${method}  # ${(install as Record<string, any>).command}`;
   });
 }
 
@@ -87,7 +86,7 @@ function formatWizardHuman(result) {
   return lines.join("\n");
 }
 
-export async function run(args = [], { cpbRoot } = {}) {
+export async function run(args = [], { cpbRoot }: Record<string, any> = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage: cpb setup [--recommended|--interactive|--non-interactive --agents codex,claude] [--json] [--detect-only]");
     return 0;
@@ -111,7 +110,7 @@ export async function run(args = [], { cpbRoot } = {}) {
       runInstallPlanFn: runInstallPlanWithEvents,
       execute: !json || args.includes("--recommended") || args.includes("--non-interactive") || Boolean(agentsFlag),
       stdio: json ? "ignore" : "inherit",
-    });
+    }) as Record<string, any>;
     result.profilePath = setupProfilePath(cpbRoot);
     if (json) console.log(JSON.stringify(result, null, 2));
     else console.log(formatWizardHuman(result));

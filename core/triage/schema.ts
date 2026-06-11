@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
 export const PLAN_MODES = new Set(["none", "light", "full", "parent"]);
 
@@ -72,7 +71,7 @@ export function normalizeActorTrust({
   return { actor: name, level: "unknown", trusted: false, reason: "no trust signal" };
 }
 
-export function normalizeRoute(route = {}, defaults = {}) {
+export function normalizeRoute(route: Record<string, any> = {}, defaults: Record<string, any> = {}) {
   const fallbackWorkflow = defaults.workflow && WORKFLOWS.has(defaults.workflow)
     ? defaults.workflow
     : "standard";
@@ -145,7 +144,10 @@ export function mergeRoutePolicy({
   protectedScopes = [],
   actualDiffRisk = null,
   reasons = [],
-} = {}) {
+}: Record<string, any> = {}) {
+  ruleRoute = ruleRoute as Record<string, any> | undefined;
+  requestedRoute = requestedRoute as Record<string, any> | undefined;
+  actorTrust = actorTrust as Record<string, any> | undefined;
   const base = normalizeRoute(SAFE_DEFAULT_ROUTE);
   const rule = normalizeRoute(ruleRoute || base, {
     ...base,

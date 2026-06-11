@@ -1,8 +1,7 @@
-// @ts-nocheck
 import { defaultPlanModeForWorkflow } from "../triage/schema.js";
 import { getWorkflow, isWorkflowName } from "../workflow/definition.js";
 
-function phasesForPlanMode(phases, planMode, workflowName) {
+function phasesForPlanMode(phases: string[], planMode: string, workflowName: string) {
   if (workflowName === "direct" && planMode === "none") {
     return phases.filter((phase) => phase === "execute");
   }

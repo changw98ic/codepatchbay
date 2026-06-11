@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Engine Bridge — runtime-facing engine boundary.
  *
@@ -11,10 +10,10 @@ import {
   runJobWithServices as runJobWithServerServices,
 } from "../server/services/engine-runner.js";
 
-export function buildServices(cpbRoot, opts = {}) {
+export function buildServices(cpbRoot: string, opts: Record<string, unknown> = {}) {
   return buildServerServices(cpbRoot, opts);
 }
 
-export async function runJobWithServices(opts) {
+export async function runJobWithServices(opts: Record<string, unknown>) {
   return runJobWithServerServices(opts);
 }

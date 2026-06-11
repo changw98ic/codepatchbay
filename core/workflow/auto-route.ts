@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { classifyRoute } from "./triage.js";
 
 const AUTO_TRIAGE_MODES = new Set(["auto", "rules", "", null, undefined]);
@@ -24,7 +23,7 @@ export function resolveTaskRoute({
   body = null,
   commandText = null,
   trustedActors = LOCAL_TRUSTED_ACTORS,
-} = {}) {
+}: Record<string, any> = {}) {
   const requestedWorkflow = clean(workflow, "standard");
   const requestedPlanMode = clean(planMode, "auto");
   const normalizedTriage = triageMode == null ? "auto" : String(triageMode).trim().toLowerCase();

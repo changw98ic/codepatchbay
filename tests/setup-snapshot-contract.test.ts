@@ -1,10 +1,28 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   normalizeCommandProbe,
   detectSetupEnvironment,
 } from "../core/setup/detect.js";
+
+type ProbeError = Error & {
+  code?: string;
+  killed?: boolean;
+  signal?: string;
+};
+
+type ProbeRecord = {
+  installed: boolean;
+  status: string;
+  version: string | null;
+  error: {
+    kind: string;
+    code?: string | null;
+    signal?: string | null;
+  } | null;
+};
+
+type AgentProbeRecord = ProbeRecord & Record<string, unknown>;
 
 // --- normalizeCommandProbe ---
 
@@ -32,7 +50,7 @@ describe("normalizeCommandProbe", () => {
   });
 
   it("returns structured missing record for ENOENT (binary not found)", () => {
-    const error = new Error("spawn codex ENOENT");
+    const error: ProbeError = new Error("spawn codex ENOENT");
     error.code = "ENOENT";
     const result = normalizeCommandProbe({
       ok: false,
@@ -49,7 +67,7 @@ describe("normalizeCommandProbe", () => {
   });
 
   it("returns structured timeout record for killed process", () => {
-    const error = new Error("signal SIGTERM");
+    const error: ProbeError = new Error("signal SIGTERM");
     error.killed = true;
     error.signal = "SIGTERM";
     const result = normalizeCommandProbe({
@@ -67,7 +85,7 @@ describe("normalizeCommandProbe", () => {
   });
 
   it("returns structured timeout record for ETIMEDOUT code", () => {
-    const error = new Error("timed out");
+    const error: ProbeError = new Error("timed out");
     error.code = "ETIMEDOUT";
     const result = normalizeCommandProbe({
       ok: false,
@@ -82,7 +100,7 @@ describe("normalizeCommandProbe", () => {
   });
 
   it("returns generic error record for other failures", () => {
-    const error = new Error("EPERM");
+    const error: ProbeError = new Error("EPERM");
     error.code = "EPERM";
     const result = normalizeCommandProbe({
       ok: false,
@@ -108,8 +126,9 @@ describe("normalizeCommandProbe", () => {
 // --- detectSetupEnvironment snapshot contract ---
 
 describe("detectSetupEnvironment snapshot contract", () => {
-  const mockRunCommand = async (command, args) => {
-    const versions = {
+  const mockRunCommand = async (command: string, args: string[]) => {
+    void args;
+    const versions: Record<string, string> = {
       node: "v22.0.0",
       git: "git version 2.45.0",
       npm: "10.5.0",
@@ -123,7 +142,7 @@ describe("detectSetupEnvironment snapshot contract", () => {
     if (name === "codex") {
       return { ok: true, stdout: "1.0.0\n", stderr: "" };
     }
-    const error = new Error(`spawn ${name} ENOENT`);
+    const error: ProbeError = new Error(`spawn ${name} ENOENT`);
     error.code = "ENOENT";
     return { ok: false, stdout: "", stderr: "", error };
   };
@@ -164,7 +183,7 @@ describe("detectSetupEnvironment snapshot contract", () => {
     });
 
     for (const tool of ["node", "git", "npm", "brew"]) {
-      const probe = snapshot.tools[tool];
+      const probe = snapshot.tools[tool] as ProbeRecord;
       assert.ok(probe, `missing tool: ${tool}`);
       assert.equal(typeof probe.installed, "boolean", `${tool}.installed should be boolean`);
       assert.ok("status" in probe, `${tool} missing status`);
@@ -181,15 +200,16 @@ describe("detectSetupEnvironment snapshot contract", () => {
     assert.ok(Object.keys(snapshot.agents).length > 0, "agents should not be empty");
 
     for (const [id, agent] of Object.entries(snapshot.agents)) {
-      assert.equal(typeof agent.installed, "boolean", `${id}.installed should be boolean`);
-      assert.ok("status" in agent, `${id} missing status`);
-      assert.ok("version" in agent, `${id} missing version`);
-      assert.ok("error" in agent, `${id} missing error`);
-      assert.ok("id" in agent, `${id} missing id`);
-      assert.ok("displayName" in agent, `${id} missing displayName`);
-      assert.ok("binary" in agent, `${id} missing binary`);
-      assert.ok("roles" in agent, `${id} missing roles`);
-      assert.ok("capabilities" in agent, `${id} missing capabilities`);
+      const record = agent as AgentProbeRecord;
+      assert.equal(typeof record.installed, "boolean", `${id}.installed should be boolean`);
+      assert.ok("status" in record, `${id} missing status`);
+      assert.ok("version" in record, `${id} missing version`);
+      assert.ok("error" in record, `${id} missing error`);
+      assert.ok("id" in record, `${id} missing id`);
+      assert.ok("displayName" in record, `${id} missing displayName`);
+      assert.ok("binary" in record, `${id} missing binary`);
+      assert.ok("roles" in record, `${id} missing roles`);
+      assert.ok("capabilities" in record, `${id} missing capabilities`);
     }
   });
 
@@ -206,11 +226,12 @@ describe("detectSetupEnvironment snapshot contract", () => {
     });
 
     for (const [id, agent] of Object.entries(snapshot.agents)) {
-      assert.equal(agent.installed, false, `${id} should not be installed`);
-      assert.equal(agent.status, "missing", `${id} should have status=missing`);
-      assert.equal(agent.version, null, `${id} version should be null`);
-      assert.ok(agent.error, `${id} should have error record`);
-      assert.equal(agent.error.kind, "missing", `${id} error.kind should be missing`);
+      const record = agent as AgentProbeRecord;
+      assert.equal(record.installed, false, `${id} should not be installed`);
+      assert.equal(record.status, "missing", `${id} should have status=missing`);
+      assert.equal(record.version, null, `${id} version should be null`);
+      assert.ok(record.error, `${id} should have error record`);
+      assert.equal(record.error.kind, "missing", `${id} error.kind should be missing`);
     }
   });
 
@@ -227,10 +248,11 @@ describe("detectSetupEnvironment snapshot contract", () => {
     });
 
     for (const [id, agent] of Object.entries(snapshot.agents)) {
-      assert.equal(agent.installed, false, `${id} should not be installed`);
-      assert.equal(agent.status, "timeout", `${id} should have status=timeout`);
-      assert.ok(agent.error, `${id} should have error record`);
-      assert.equal(agent.error.kind, "timeout", `${id} error.kind should be timeout`);
+      const record = agent as AgentProbeRecord;
+      assert.equal(record.installed, false, `${id} should not be installed`);
+      assert.equal(record.status, "timeout", `${id} should have status=timeout`);
+      assert.ok(record.error, `${id} should have error record`);
+      assert.equal(record.error.kind, "timeout", `${id} error.kind should be timeout`);
     }
   });
 });

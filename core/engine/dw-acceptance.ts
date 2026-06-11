@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DW Acceptance Harness — validates that the Dynamic Workflow Strict
  * Completion spec's Definition of Done is met against real job artifacts.
@@ -239,7 +238,7 @@ export function evaluateDwAcceptance({
   workflowDag,
   dynamicAgentPlan,
   gateResult,
-} = {}) {
+}: Record<string, any> = {}) {
   const checks = [
     checkCodeGraphReady(events),
     checkRiskMapGenerated(riskMap),

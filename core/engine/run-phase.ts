@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 

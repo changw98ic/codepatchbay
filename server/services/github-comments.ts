@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { appendEvent, readEvents } from "./event-store.js";
@@ -6,6 +5,8 @@ import { jobToGithubStatusUpdate } from "./job-projection.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+type LooseRecord = Record<string, any>;
 
 function agentLine(label, value) {
   return `- ${label}: ${value || "not selected"}`;
@@ -37,7 +38,7 @@ function displaySddPath(filePath) {
   return parts.slice(-2).join("/") || normalized;
 }
 
-function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
+function buildSddApprovalComment({ queueEntry = null, agents = {} }: LooseRecord = {}) {
   const metadata = queueEntry?.metadata || {};
   const workflow = metadata.workflow || "sdd-standard";
   const taskCount = Array.isArray(metadata.sddTasks) ? metadata.sddTasks.length : 0;
@@ -66,7 +67,7 @@ function buildSddApprovalComment({ queueEntry = null, agents = {} } = {}) {
   ].filter((line) => line !== null).join("\n");
 }
 
-export function buildSddApprovedComment({ actor, childCount, queueEntryId } = {}) {
+export function buildSddApprovedComment({ actor, childCount, queueEntryId }: LooseRecord = {}) {
   return [
     "### SDD Draft Approved",
     "",
@@ -88,7 +89,7 @@ function responseSummary(response) {
   };
 }
 
-export async function postGithubCommentWithGh({ repo, issueNumber, body }, { runCommand = execFileAsync } = {}) {
+export async function postGithubCommentWithGh({ repo, issueNumber, body }: LooseRecord, { runCommand = execFileAsync }: LooseRecord = {}) {
   const result = await runCommand("gh", [
     "issue",
     "comment",
@@ -141,7 +142,7 @@ function statusDetailLines(projection) {
   return [`- Status: ${projection.status || "unknown"}`];
 }
 
-export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} } = {}) {
+export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} }: LooseRecord = {}) {
   if (isSddApprovalQueue(queueEntry)) {
     return buildSddApprovalComment({ queueEntry, agents });
   }
@@ -172,7 +173,7 @@ export async function postGithubQueuedComment({
   dryRun = false,
   postComment,
   transportMode = null,
-} = {}) {
+}: LooseRecord = {}) {
   const body = buildQueuedComment({ job, queueEntry, agents });
   const request = {
     repo,
@@ -218,7 +219,7 @@ export async function postGithubQueuedComment({
   }
 }
 
-export function buildGithubStatusComment({ projection, job } = {}) {
+export function buildGithubStatusComment({ projection, job }: LooseRecord = {}) {
   const update = projection || jobToGithubStatusUpdate(job);
   if (!update) {
     throw new Error("GitHub terminal status projection is required");
@@ -234,7 +235,7 @@ export function buildGithubStatusComment({ projection, job } = {}) {
   ].join("\n");
 }
 
-async function alreadyPostedStatusComment(cpbRoot, project, jobId, dedupeKey, { dataRoot } = {}) {
+async function alreadyPostedStatusComment(cpbRoot, project, jobId, dedupeKey, { dataRoot }: LooseRecord = {}) {
   if (!cpbRoot || !project || !jobId || !dedupeKey) return false;
   const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
   return events.some((event) => (
@@ -253,7 +254,7 @@ export async function postGithubStatusComment({
   postComment,
   dataRoot,
   transportMode = null,
-} = {}) {
+}: LooseRecord = {}) {
   const update = projection || jobToGithubStatusUpdate(job);
   if (!update) {
     return {

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import readline from "node:readline";
 
 const PROTOCOL_VERSION = 1;

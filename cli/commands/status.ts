@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 const CYAN = "\x1b[0;36m";

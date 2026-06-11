@@ -1,4 +1,3 @@
-// @ts-nocheck
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
 const KIND_RANK = {
   jobs_index_divergent: 0,
@@ -14,6 +13,7 @@ const PRIORITY_RANK = { P0: 0, P1: 1, P2: 2 };
 
 const CODEGRAPH_CODES = new Set(["codegraph_unavailable", "missing_codegraph_state", "missing_codegraph_index"]);
 const RATE_LIMIT_CODES = new Set(["agent_rate_limited", "rate_limited"]);
+type AnyRecord = Record<string, any>;
 
 function priorityRank(priority) {
   return PRIORITY_RANK[priority] ?? 9;
@@ -87,7 +87,7 @@ function ageMs(updatedAt) {
   return Math.max(0, Date.now() - time);
 }
 
-function evidence(type, id, path) {
+function evidence(type: string, id: string, path: string | null = null) {
   return {
     type,
     id: String(id),
@@ -210,7 +210,7 @@ function workflowFailedItem(job) {
 }
 
 function dagNodeFailedItems(job) {
-  const nodeStates = job.nodeStates || {};
+  const nodeStates = (job.nodeStates || {}) as Record<string, AnyRecord>;
   return Object.entries(nodeStates)
     .filter(([, node]) => node?.status === "failed")
     .map(([nodeId, node]) => item({

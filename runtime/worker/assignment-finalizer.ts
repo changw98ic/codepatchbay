@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Assignment Finalizer — PR/review bundle finalization after successful job.
  *
@@ -9,6 +8,7 @@
 import path from "node:path";
 import { finalizeSuccessfulQueueEntry, resolveGithubTransport } from "../../bridges/runtime-services.js";
 import { writeJsonOnce } from "../../shared/fs-utils.js";
+type AnyRecord = Record<string, any>;
 
 export async function maybeFinalizeSuccessfulAssignment({
   cpbRoot,
@@ -21,7 +21,7 @@ export async function maybeFinalizeSuccessfulAssignment({
   log = null,
   resolveTransport = resolveGithubTransport,
   finalizeQueueEntry = finalizeSuccessfulQueueEntry,
-} = {}) {
+}: AnyRecord = {}) {
   const metadata = assignment?.metadata || {};
   const autoFinalize = Boolean(metadata.autoFinalize && assignment?.sourcePath);
   if (!autoFinalize || result?.status !== "completed" || !worktreeInfo) return null;
@@ -46,7 +46,7 @@ export async function maybeFinalizeSuccessfulAssignment({
       planMode: assignment.planMode,
     };
 
-    const finalizeResult = await finalizeQueueEntry({
+    const finalizeResult: AnyRecord = await finalizeQueueEntry({
       cpbRoot,
       hubRoot,
       project: assignment.projectId,
@@ -67,7 +67,7 @@ export async function maybeFinalizeSuccessfulAssignment({
     }
 
     return finalizeResult;
-  } catch (err) {
+  } catch (err: any) {
     log?.warn?.(`finalize failed: ${err.message}`);
     return null;
   }
@@ -85,7 +85,7 @@ export async function finalizeAndWriteSuccessfulResult({
   worktreeInfo,
   log = null,
   writeResult = writeJsonOnce,
-} = {}) {
+}: AnyRecord = {}) {
   const finalizeResult = await maybeFinalizeSuccessfulAssignment({
     cpbRoot,
     hubRoot,

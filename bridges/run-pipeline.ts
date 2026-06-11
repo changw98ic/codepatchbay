@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // run-pipeline.js — Full automated pipeline using job-store as single source of truth
 // Usage: node bridges/run-pipeline.js --project <name> --task "<desc>" [--source-path <repo>] [--max-retries N] [--timeout-min M]
 
@@ -89,23 +88,23 @@ function tag(project) {
   return `${CYAN}[pipeline:${project}]${NC}`;
 }
 
-function log(project, msg) {
+function log(project: string, msg: string) {
   console.log(`${tag(project)} ${msg}`);
 }
 
-function ok(msg) {
+function ok(msg: string) {
   console.log(`${GREEN}[PASS]${NC} ${msg}`);
 }
 
-function fail(msg) {
+function fail(msg: string) {
   console.log(`${RED}[FAIL]${NC} ${msg}`);
 }
 
-function warn(msg) {
+function warn(msg: string) {
   console.log(`${YELLOW}[WARN]${NC} ${msg}`);
 }
 
-function failure(reason, { code = FAILURE_CODES.FATAL, phase, cause, retryable } = {}) {
+function failure(reason: any, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, any> = {}): any {
   return {
     reason,
     code,
@@ -115,7 +114,7 @@ function failure(reason, { code = FAILURE_CODES.FATAL, phase, cause, retryable }
   };
 }
 
-export async function canonicalSourcePath(sourcePath) {
+export async function canonicalSourcePath(sourcePath: string) {
   const canonical = await realpath(path.resolve(sourcePath));
   const info = await stat(canonical);
   if (!info.isDirectory()) {
@@ -124,7 +123,7 @@ export async function canonicalSourcePath(sourcePath) {
   return canonical;
 }
 
-function printFailureSummary(cpbRoot, project, jobId, { phase, reason, deliverableId, verdictFile }) {
+function printFailureSummary(cpbRoot: string, project: string, jobId: string, { phase, reason, deliverableId, verdictFile }: Record<string, any>) {
   console.log("");
   console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
   console.log(`${RED}  PIPELINE FAILED${NC}`);
@@ -192,13 +191,13 @@ function killChildProcess(proc) {
   }, 2_000).unref?.();
 }
 
-function runCommand(command, commandArgs, cwd, options = {}) {
+function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<any> {
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks = [];
+    const stdoutChunks: any[] = [];
     const detached = Boolean(options.signal) && process.platform !== "win32";
 
-    function finish(result) {
+    function finish(result: any) {
       if (settled) return;
       settled = true;
       if (options.signal && proc) {
@@ -207,7 +206,7 @@ function runCommand(command, commandArgs, cwd, options = {}) {
       resolve(result);
     }
 
-    let proc;
+    let proc: any;
     const onAbort = () => {
       if (!settled && proc) {
         killChildProcess(proc);
@@ -438,7 +437,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot, project, jobId, phase) {
+async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string): Promise<any> {
   const job = await getJob(cpbRoot, project, jobId);
   if (job.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });

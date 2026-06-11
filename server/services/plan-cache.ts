@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +9,8 @@ import {
 import { listJobsFromIndex } from "./jobs-index.js";
 
 const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+type AnyRecord = Record<string, any>;
 
 function normalizeWords(text = "") {
   return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
@@ -34,7 +35,7 @@ async function planFileExists(cpbRoot, project, planId) {
   }
 }
 
-function stablePayload({ project, task, sourceContext = {} } = {}) {
+function stablePayload({ project, task, sourceContext = {} }: AnyRecord = {}) {
   const planGroupId = sourceContext?.planGroupId || sourceContext?.sddTask?.planGroupId || null;
   if (planGroupId) {
     return {
@@ -64,7 +65,7 @@ function stablePayload({ project, task, sourceContext = {} } = {}) {
   };
 }
 
-function explicitParentPlanId(sourceContext = {}) {
+function explicitParentPlanId(sourceContext: AnyRecord = {}) {
   const value = sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null;
   return value ? String(value).replace(/^plan-/, "") : null;
 }
@@ -87,7 +88,7 @@ async function artifactExists(filePath) {
   }
 }
 
-export function parentPlanCacheIdentity({ project, task, sourceContext = {} } = {}) {
+export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: AnyRecord = {}) {
   const payload = stablePayload({ project, task, sourceContext });
   const digest = hashPayload(payload);
   return {
@@ -97,7 +98,7 @@ export function parentPlanCacheIdentity({ project, task, sourceContext = {} } = 
   };
 }
 
-export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {} } = {}) {
+export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {} }: AnyRecord = {}) {
   const identity = parentPlanCacheIdentity({ project, task, sourceContext });
   const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey);
   const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey);
@@ -134,7 +135,7 @@ export async function writeParentPlanCache(cpbRoot, {
   planId,
   planArtifact = null,
   mergedPlanIds = [],
-} = {}) {
+}: AnyRecord = {}) {
   if (!project) throw new Error("project is required");
   if (!planId) throw new Error("planId is required");
   const identity = planCacheKey && planGroupId
@@ -166,7 +167,7 @@ export async function writeParentPlanCache(cpbRoot, {
   };
 }
 
-function hitResult(identity, { source, planId, artifact, parentJobId = null, cachedAt = null }) {
+function hitResult(identity: AnyRecord, { source, planId, artifact, parentJobId = null, cachedAt = null }: AnyRecord) {
   return {
     schemaVersion: 2,
     cacheHit: true,
@@ -184,7 +185,7 @@ function hitResult(identity, { source, planId, artifact, parentJobId = null, cac
   };
 }
 
-function missResult(identity, stale = false, cachedAt = null) {
+function missResult(identity: AnyRecord, stale = false, cachedAt = null) {
   return {
     schemaVersion: 2,
     cacheHit: false,
@@ -202,10 +203,10 @@ function missResult(identity, stale = false, cachedAt = null) {
   };
 }
 
-async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot } = {}) {
+async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot }: AnyRecord = {}) {
   const allJobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   const cutoff = Date.now() - PARENT_PLAN_MAX_AGE_MS;
-  const candidates = allJobs
+  const candidates = (allJobs as AnyRecord[])
     .filter((j) => j.project === project)
     .filter((j) => j.completedPhases?.includes("plan"))
     .filter((j) => j.artifacts?.plan)
@@ -244,7 +245,7 @@ async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot
   return null;
 }
 
-export async function resolveParentPlan(cpbRoot, { project, task, sourceContext = {}, dataRoot } = {}) {
+export async function resolveParentPlan(cpbRoot, { project, task, sourceContext = {}, dataRoot }: AnyRecord = {}) {
   const identity = parentPlanCacheIdentity({ project, task, sourceContext });
 
   // Priority 1: explicit parentPlanId from sourceContext

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -35,9 +34,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKER_PATH = path.resolve(__dirname, "../worker/managed-worker.js");
+type AnyRecord = Record<string, any>;
 
-function parseArgs(argv) {
-  const opts = {
+function parseArgs(argv: string[]) {
+  const opts: AnyRecord = {
     dryRun: false,
     once: false,
     scan: false,
@@ -58,7 +58,7 @@ function parseArgs(argv) {
     explicitDryRun: false,
   };
   const args = argv.slice(2);
-  const valueAfter = (index, flag) => {
+  const valueAfter = (index: number, flag: string) => {
     const value = args[index + 1];
     if (value === undefined || value.startsWith("--")) {
       throw new Error(`missing value for ${flag}`);
@@ -135,11 +135,11 @@ Options:
   --local-acp-pool    bypass Hub managed pool for isolated debugging`;
 }
 
-function scanPrompt(project) {
+function scanPrompt(project: any) {
   return `You are CPB Multi-Evolve Scanner. Analyze this project for concrete improvement opportunities.\n\nProject: ${project.id}\nSource path: ${project.sourcePath}\n\nOutput at most 5 lines in this exact format:\n[ISSUE] <P0|P1|P2> <one-line description>\n\nFocus on real, actionable issues. Do not modify files.`;
 }
 
-export function parseScanResults(text) {
+export function parseScanResults(text: string) {
   const issues = [];
   const regex = /\[ISSUE\]\s*\[?(P[0-3])\]?\s+(.+)/g;
   let match;
@@ -149,20 +149,20 @@ export function parseScanResults(text) {
   return issues;
 }
 
-function priorityScore(priority) {
+function priorityScore(priority: string) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
   return 3;
 }
 
-function ageScore(issue) {
+function ageScore(issue: any) {
   const ts = Date.parse(issue.createdAt || "");
   if (!Number.isFinite(ts)) return 1;
   return Math.max(1, Date.now() - ts);
 }
 
-function sourceContextForQueueEntry(entry) {
+function sourceContextForQueueEntry(entry: any) {
   const metadata = entry?.metadata || {};
   const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
     ? { ...metadata.sourceContext }
@@ -179,7 +179,7 @@ function sourceContextForQueueEntry(entry) {
   };
 }
 
-function resultFromManagedWorkerResult(result) {
+function resultFromManagedWorkerResult(result: any) {
   const jobResult = result?.jobResult || {};
   const workflowBlockedNoop = jobResult.status === "blocked"
     && jobResult.failure?.cause?.code === "workflow_blocked";
@@ -195,7 +195,10 @@ function resultFromManagedWorkerResult(result) {
 }
 
 export class CrossProjectPriorityQueue {
-  constructor(projects, hubRoot = null) {
+  projects: any[];
+  hubRoot: string | null;
+
+  constructor(projects: any[], hubRoot: string | null = null) {
     this.projects = projects;
     this.hubRoot = hubRoot;
   }
@@ -255,7 +258,14 @@ export class CrossProjectPriorityQueue {
 }
 
 export class MultiEvolveController {
-  constructor(cpbRoot = CPB_ROOT, opts = {}) {
+  cpbRoot: string;
+  hubRoot: string;
+  pool: any;
+  projects: any[];
+  workerRunner: any;
+  _stopRequested: boolean;
+
+  constructor(cpbRoot = CPB_ROOT, opts: Record<string, any> = {}) {
     this.cpbRoot = path.resolve(cpbRoot);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(cpbRoot));
     this.pool = opts.pool || (opts.localAcpPool
@@ -270,13 +280,13 @@ export class MultiEvolveController {
     this._stopRequested = true;
   }
 
-  async init({ project } = {}) {
+  async init({ project }: Record<string, any> = {}) {
     const projects = await listProjects(this.hubRoot, { enabledOnly: true });
     this.projects = project ? projects.filter((item) => item.id === project || item.name === project) : projects;
     return this.projects;
   }
 
-  async scanProject(project, { agent = "codex", timeoutMs = 300_000 } = {}) {
+  async scanProject(project: any, { agent = "codex", timeoutMs = 300_000 }: Record<string, any> = {}) {
     const fixture = process.env.CPB_MULTI_EVOLVE_SCAN_FIXTURE;
     const output = fixture || (await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs)).output;
     const issues = parseScanResults(output);
@@ -303,7 +313,7 @@ export class MultiEvolveController {
     return { project: project.id, issues, ...result };
   }
 
-  async scanAll(opts = {}) {
+  async scanAll(opts: Record<string, any> = {}) {
     const results = [];
     for (const project of this.projects) {
       try {
@@ -350,7 +360,7 @@ export class MultiEvolveController {
     return new CrossProjectPriorityQueue(this.projects, this.hubRoot).dequeue();
   }
 
-  async runManagedWorker(issue, { workflow, queueEntry, timeoutMs = 300_000 } = {}) {
+  async runManagedWorker(issue: any, { workflow, queueEntry, timeoutMs = 300_000 }: Record<string, any> = {}) {
     if (this.workerRunner) {
       return this.workerRunner({
         issue,
@@ -502,14 +512,14 @@ export class MultiEvolveController {
     }).catch(() => {});
   }
 
-  async runOnce(opts = {}) {
+  async runOnce(opts: AnyRecord = {}) {
     await this.init(opts);
     if (opts.scan) await this.scanAll(opts);
     const queue = new CrossProjectPriorityQueue(this.projects, this.hubRoot);
     const candidates = await queue.candidates();
     const next = candidates[0] || null;
     if (opts.dryRun || !next) {
-      const response = { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
+      const response: AnyRecord = { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
       if (this.hubRoot) {
         try { response.hubQueue = await hubQueueStatus(this.hubRoot); } catch { /* non-blocking */ }
       }
@@ -533,7 +543,7 @@ export class MultiEvolveController {
     return { next: issue, result };
   }
 
-  async runContinuous(opts = {}) {
+  async runContinuous(opts: AnyRecord = {}) {
     const { maxRounds = 0, intervalMs = 60_000, scan = false, execute = false, maxDurationMs = 0 } = opts;
     this._stopRequested = false;
 
@@ -625,7 +635,7 @@ export class MultiEvolveController {
     };
   }
 
-  async runGuardedRun(opts = {}) {
+  async runGuardedRun(opts: AnyRecord = {}) {
     const {
       maxRounds = 0,
       intervalMs = 0,

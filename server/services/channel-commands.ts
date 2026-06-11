@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { detectSecretInput } from "./secret-policy.js";
 
 export const CHANNEL_COMMAND_HELP = [
@@ -27,7 +26,7 @@ function baseFields(extra = {}) {
   };
 }
 
-function errorResult(code, message, extra = {}) {
+function errorResult(code, message, extra: Record<string, any> = {}) {
   return {
     ok: false,
     type: "error",

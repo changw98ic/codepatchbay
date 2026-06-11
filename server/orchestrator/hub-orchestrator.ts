@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { LeaderLock, readLeaderStatus } from "./leader-lock.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
@@ -17,12 +16,12 @@ const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
-function providerAgentForEntry(entry) {
+function providerAgentForEntry(entry: any) {
   const agentSpec = entry?.metadata?.agents?.executor || entry?.metadata?.agents?.default || {};
   return agentSpec.agent || "claude";
 }
 
-export function normalizedSourceContext(candidate) {
+export function normalizedSourceContext(candidate: any) {
   const metadata = candidate?.metadata || {};
   const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
     ? { ...metadata.sourceContext }
@@ -88,7 +87,27 @@ export function normalizedSourceContext(candidate) {
 }
 
 export class HubOrchestrator {
-  constructor(hubRoot, cpbRoot, { executorRoot, acpSupervisor = null } = {}) {
+  hubRoot: string;
+  cpbRoot: string;
+  executorRoot: string;
+  running: boolean;
+  _stopped: Promise<void> | null;
+  _resolveStopped?: () => void;
+  log: any;
+  leaderLock: any;
+  assignmentStore: any;
+  workerStore: any;
+  scheduler: any;
+  workerSupervisor: any;
+  acpSupervisor: any;
+  reconciler: any;
+  failureRouter: any;
+  _tickTimer: NodeJS.Timeout | null;
+  _janitorTimer: NodeJS.Timeout | null;
+  _backoff: number;
+  _consecutiveErrors: number;
+
+  constructor(hubRoot: string, cpbRoot: string, { executorRoot, acpSupervisor = null }: Record<string, any> = {}) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.executorRoot = executorRoot || resolveExecutorRoot({ env: process.env, fallbackRoot: cpbRoot });

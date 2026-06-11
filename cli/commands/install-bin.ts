@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveInstallBinExecutorRoot, installBin } from "../../server/services/install-bin.js";
@@ -44,7 +43,7 @@ function parseArgs(argv) {
   return options;
 }
 
-async function main(args) {
+async function main(args = process.argv.slice(2)) {
   const options = parseArgs(args || process.argv.slice(2));
   if (options.help) {
     console.log(usage());

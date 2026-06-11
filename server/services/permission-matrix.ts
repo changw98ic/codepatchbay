@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { appendEvent } from "./event-store.js";
@@ -427,7 +426,7 @@ export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = 
   };
 }
 
-export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId } = {}) {
+export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
 
   if (action === "read") {
@@ -439,7 +438,7 @@ export function checkPermission(role, action, targetPath, cpbRoot, project, { so
   }
 
   if (action === "execute") {
-    return canExecute(canonicalRole, targetPath, cpbRoot, project, sourcePath, jobId);
+    return canExecute(canonicalRole, targetPath, cpbRoot, project, sourcePath);
   }
 
   return { allowed: false, reason: `unknown action: ${action}` };
@@ -461,7 +460,7 @@ export async function recordPermissionDenial(
   }
 ) {
   const eventRole = role ? validateRole(role) : null;
-  const event = {
+  const event: Record<string, any> = {
     type: "permission_denied",
     category: "infra",
     jobId,

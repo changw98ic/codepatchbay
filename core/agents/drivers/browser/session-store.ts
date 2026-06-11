@@ -1,10 +1,11 @@
-// @ts-nocheck
 import { chromium } from "playwright"
 import path from "node:path"
 import os from "node:os"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, rm } from "node:fs/promises"
 import { applyAuthStateToContext, loadAuthState, promoteContextAuthState } from "./auth-state.js"
+
+type BrowserSessionHandle = Record<string, any>
 
 const DEFAULT_PROFILE_ROOT = path.join(os.homedir(), ".cpb", "browser-agents")
 const BASE_PROFILE_DIR = "profile-0"
@@ -42,8 +43,11 @@ function shouldCopyProfilePath(profileDir, src) {
 }
 
 export class BrowserSessionManager {
+  _optsProfileRoot: string | null
+  contexts: Map<string, BrowserSessionHandle>
+
   constructor(opts = {}) {
-    this._optsProfileRoot = opts.profileRoot || null
+    this._optsProfileRoot = (opts as Record<string, any>).profileRoot || null
     this.contexts = new Map() // id -> { id, providerName, context, page, role, project, createdAt }
   }
 

@@ -1,7 +1,10 @@
-// @ts-nocheck
 import { buildJobArtifactDetail } from "../services/job-artifact-detail.js";
 
-export function registerJobArtifactDetailRoute(fastify, routePath, { projectParam, resolveDataRoot } = {}) {
+export function registerJobArtifactDetailRoute(
+  fastify: any,
+  routePath: string,
+  { projectParam = "project", resolveDataRoot }: { projectParam?: string; resolveDataRoot?: (req: any, project: string) => string | Promise<string> } = {},
+) {
   fastify.get(routePath, async (req) => {
     const project = req.params[projectParam];
     const { jobId } = req.params;

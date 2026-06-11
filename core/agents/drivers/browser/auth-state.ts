@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path"
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { setTimeout as delay } from "node:timers/promises"

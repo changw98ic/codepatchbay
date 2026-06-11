@@ -1,14 +1,13 @@
-// @ts-nocheck
 import path from "node:path";
 
 const CYAN = "\x1b[0;36m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
-export async function run(args, { cpbRoot }) {
+export async function run(_args: string[], { cpbRoot }: { cpbRoot: string }) {
   const { listProjects, resolveHubRoot } = await import("../../server/services/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
-  const projects = await listProjects(hubRoot);
+  const projects = await listProjects(hubRoot) as Array<Record<string, any>>;
 
   console.log(`${BOLD}CodePatchbay Projects:${NC}`);
   if (projects.length === 0) {

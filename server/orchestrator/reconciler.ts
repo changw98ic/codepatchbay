@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile as execFileCallback } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -17,9 +16,9 @@ const DEFAULT_PROGRESS_FORCE_RETRY_MS = 35 * 60_000;
 const NON_REUSABLE_WORKER_STATUSES = new Set(["dead", "exited", "unhealthy", "draining"]);
 const PREVIOUS_OUTPUT_MAX = 4000;
 const PROGRESS_PROBE_LOG_TAIL = 6000;
-const PROGRESS_ALERT_RANK = { info: 1, warn: 2, error: 3, force: 4 };
-const PROGRESS_PROBE_DEPTH = { info: "heartbeat", warn: "worker", error: "deep", force: "deep" };
-const PROGRESS_PROBE_INTERVAL_MS = { info: 5 * 60_000, warn: 60_000, error: 60_000, force: 0 };
+const PROGRESS_ALERT_RANK: Record<string, number> = { info: 1, warn: 2, error: 3, force: 4 };
+const PROGRESS_PROBE_DEPTH: Record<string, string> = { info: "heartbeat", warn: "worker", error: "deep", force: "deep" };
+const PROGRESS_PROBE_INTERVAL_MS: Record<string, number> = { info: 5 * 60_000, warn: 60_000, error: 60_000, force: 0 };
 const DEEP_PROGRESS_PROBE_LEVELS = new Set(["error", "force"]);
 const WAITLESS_LOG_PATTERNS = [
   /\bjob failed\b/i,
@@ -30,26 +29,28 @@ const WAITLESS_LOG_PATTERNS = [
   /\bENOENT\b/,
 ];
 
-function resolveProgressThresholdMs(value, fallback) {
+type AnyRecord = Record<string, any>;
+
+function resolveProgressThresholdMs(value: unknown, fallback: number) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(0, parsed);
 }
 
-function truncateText(value, maxChars = PREVIOUS_OUTPUT_MAX) {
+function truncateText(value: unknown, maxChars = PREVIOUS_OUTPUT_MAX) {
   const text = String(value || "");
   return text.length > maxChars ? text.slice(-maxChars) : text;
 }
 
-function compactText(value, maxChars = 500) {
+function compactText(value: unknown, maxChars = 500) {
   if (value === undefined || value === null) return "";
   const text = String(value).replace(/\s+/g, " ").trim();
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-function compactStructuredValue(value, { maxItems = 8, maxChars = 500 } = {}) {
+function compactStructuredValue(value: any, { maxItems = 8, maxChars = 500 }: Record<string, any> = {}): any {
   if (value === undefined || value === null) return value;
   if (typeof value === "string") return compactText(value, maxChars);
   if (typeof value !== "object") return value;
@@ -63,7 +64,7 @@ function compactStructuredValue(value, { maxItems = 8, maxChars = 500 } = {}) {
   );
 }
 
-function compactVerifierArtifact(artifact) {
+function compactVerifierArtifact(artifact: any) {
   if (!artifact || typeof artifact !== "object") return null;
   return {
     kind: artifact.kind || null,
@@ -75,7 +76,7 @@ function compactVerifierArtifact(artifact) {
   };
 }
 
-function compactVerifierVerdict(verdict) {
+function compactVerifierVerdict(verdict: any) {
   if (!verdict || typeof verdict !== "object") return null;
   const blocking = Array.isArray(verdict.blocking)
     ? compactStructuredValue(verdict.blocking, { maxItems: 8, maxChars: 500 })
@@ -102,7 +103,7 @@ function compactVerifierVerdict(verdict) {
   };
 }
 
-function verificationRetryContext(failure) {
+function verificationRetryContext(failure: any) {
   const cause = failure?.cause || {};
   const verdict = compactVerifierVerdict(cause.verdict || failure?.verdict);
   const artifact = compactVerifierArtifact(cause.artifact || failure?.artifact);
@@ -114,7 +115,7 @@ function verificationRetryContext(failure) {
   };
 }
 
-function summarizeBlockingForRetry(blocking) {
+function summarizeBlockingForRetry(blocking: any) {
   if (!Array.isArray(blocking) || blocking.length === 0) return [];
   return blocking.map((entry) => {
     if (typeof entry === "string") return `- ${entry}`;
@@ -128,10 +129,10 @@ function summarizeBlockingForRetry(blocking) {
   });
 }
 
-function verifierRetryOutputChunk(failure) {
+function verifierRetryOutputChunk(failure: any) {
   const verification = verificationRetryContext(failure);
   if (!verification) return "";
-  const verdict = verification.verdict || {};
+  const verdict: AnyRecord = verification.verdict || {};
   const lines = [
     "Verifier verdict:",
     verdict.status ? `status: ${verdict.status}` : "",
@@ -145,7 +146,7 @@ function verifierRetryOutputChunk(failure) {
   return lines.filter(Boolean).join("\n");
 }
 
-function extractPreviousOutput(failure) {
+function extractPreviousOutput(failure: any) {
   const cause = failure?.cause || {};
   const chunks = [];
   const verifierChunk = verifierRetryOutputChunk(failure);
@@ -166,7 +167,7 @@ function extractPreviousOutput(failure) {
   return truncateText(chunks.filter(Boolean).join("\n\n"));
 }
 
-function previousFailureCount(assignment, base) {
+function previousFailureCount(assignment: any, base: any) {
   const candidates = [
     assignment?.metadata?.failureCount,
     assignment?.failureCount,
@@ -180,7 +181,7 @@ function previousFailureCount(assignment, base) {
   return 0;
 }
 
-export function buildRetrySourceContext(assignment, attempt, result, decision) {
+export function buildRetrySourceContext(assignment: any, attempt: any, result: any, decision: any) {
   const failure = result?.jobResult?.failure || result?.failure || {};
   const base = assignment.sourceContext && typeof assignment.sourceContext === "object"
     ? { ...assignment.sourceContext }
@@ -218,7 +219,21 @@ export function buildRetrySourceContext(assignment, attempt, result, decision) {
 }
 
 export class Reconciler {
-  constructor(hubRoot, {
+  hubRoot: string;
+  assignments: any;
+  workers: any;
+  workerSupervisor: any;
+  leaderLock: any;
+  failureRouter: any;
+  progressInfoMs: number;
+  progressWarnMs: number;
+  progressErrorMs: number;
+  progressForceRetryMs: number;
+  progressAlertLevels: Map<any, any>;
+  progressProbeCheckedAt: Map<any, any>;
+  log: any;
+
+  constructor(hubRoot: string, {
     assignmentStore,
     workerStore,
     workerSupervisor,
@@ -230,7 +245,7 @@ export class Reconciler {
     progressErrorMs,
     progressForceRetryMs,
     progressStaleMs,
-  }) {
+  }: Record<string, any>) {
     this.hubRoot = hubRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
@@ -480,28 +495,29 @@ export class Reconciler {
     const detail = level === "force"
       ? `force retry threshold ${forceSec}s`
       : `${level} threshold ${thresholdSec}s; force retry at ${forceSec}s`;
+    const cause: AnyRecord = {
+      assignmentId: assignment.assignmentId,
+      entryId: assignment.entryId,
+      attempt: attempt?.attempt ?? null,
+      activeJobId: heartbeat.activeJobId || null,
+      activePhase: heartbeat.activePhase || null,
+      lastProgressAt: progressAt,
+      lastProgressType: heartbeat.lastProgressType || heartbeat.progressKind || null,
+      heartbeatAt: heartbeat.updatedAt || null,
+      worktreePath: heartbeat.worktreePath || null,
+      workerPid: heartbeat.pid || null,
+      ageMs,
+      infoThresholdMs: this.progressInfoMs,
+      warnThresholdMs: this.progressWarnMs,
+      errorThresholdMs: this.progressErrorMs,
+      forceRetryThresholdMs: this.progressForceRetryMs,
+    };
     return {
       level,
       shouldFail: level === "force",
       phase,
       reason: `${phaseLabel} made no progress for ${ageSec}s (${detail})`,
-      cause: {
-        assignmentId: assignment.assignmentId,
-        entryId: assignment.entryId,
-        attempt: attempt?.attempt ?? null,
-        activeJobId: heartbeat.activeJobId || null,
-        activePhase: heartbeat.activePhase || null,
-        lastProgressAt: progressAt,
-        lastProgressType: heartbeat.lastProgressType || heartbeat.progressKind || null,
-        heartbeatAt: heartbeat.updatedAt || null,
-        worktreePath: heartbeat.worktreePath || null,
-        workerPid: heartbeat.pid || null,
-        ageMs,
-        infoThresholdMs: this.progressInfoMs,
-        warnThresholdMs: this.progressWarnMs,
-        errorThresholdMs: this.progressErrorMs,
-        forceRetryThresholdMs: this.progressForceRetryMs,
-      },
+      cause,
     };
   }
 
@@ -650,7 +666,7 @@ export class Reconciler {
 
   async _probeWorktree(worktreePath) {
     if (!worktreePath) return null;
-    const info = { path: worktreePath, exists: false, gitStatus: null };
+    const info: AnyRecord = { path: worktreePath, exists: false, gitStatus: null };
     try {
       const pathStat = await stat(worktreePath);
       info.exists = pathStat.isDirectory();
@@ -881,7 +897,7 @@ export class Reconciler {
     const workerId = attempt?.workerId || assignment.workerId;
     if (workerId) {
       const worker = await this.workers.getWorker(workerId);
-      const updates = { currentAssignmentId: null };
+      const updates: AnyRecord = { currentAssignmentId: null };
       if (!NON_REUSABLE_WORKER_STATUSES.has(worker?.status)) {
         updates.status = "ready";
       }

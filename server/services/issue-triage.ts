@@ -1,6 +1,7 @@
-// @ts-nocheck
 import { mergeRoutePolicy, normalizeRoute } from "../../core/triage/schema.js";
 import { classifyIssueRules } from "../../core/triage/rules.js";
+
+type AnyRecord = Record<string, any>;
 
 function stripJsonFence(raw) {
   return String(raw || "")
@@ -10,7 +11,7 @@ function stripJsonFence(raw) {
     .trim();
 }
 
-function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null, source = "command" } = {}) {
+function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null, source = "command" }: AnyRecord = {}) {
   if (!workflow && !planMode) return null;
   return normalizeRoute({
     workflow: workflow || undefined,
@@ -20,14 +21,14 @@ function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null
   });
 }
 
-function withMode(decision, triageMode) {
+function withMode(decision: AnyRecord, triageMode) {
   return {
     ...decision,
     triageMode,
   };
 }
 
-function githubTriageInput(event = {}, requestedRoute = null) {
+function githubTriageInput(event: AnyRecord = {}, requestedRoute = null) {
   return {
     labels: event.labels,
     title: event.title,
@@ -38,7 +39,7 @@ function githubTriageInput(event = {}, requestedRoute = null) {
   };
 }
 
-function channelRequestedRoute(command = {}) {
+function channelRequestedRoute(command: AnyRecord = {}) {
   const hasRequestedRoute = Boolean(
     command.workflowRequested
       || command.planModeRequested
@@ -54,7 +55,7 @@ function channelRequestedRoute(command = {}) {
     : null;
 }
 
-function channelTriageInput(command = {}, context = {}, requested = null) {
+function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, requested = null) {
   return {
     title: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
     task: command.task,
@@ -66,7 +67,7 @@ function channelTriageInput(command = {}, context = {}, requested = null) {
   };
 }
 
-export function buildAcpTriagerPrompt(input = {}, ruleDecision = null) {
+export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision = null) {
   const rules = ruleDecision || classifyIssueRules(input);
   return [
     "You are the CodePatchBay issue routing triager.",
@@ -103,7 +104,7 @@ export function buildAcpTriagerPrompt(input = {}, ruleDecision = null) {
 export function parseAcpTriagerResponse(raw) {
   const text = stripJsonFence(raw);
   if (!text) return { requestedRoute: null, raw: "" };
-  let parsed;
+  let parsed: AnyRecord;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
@@ -118,7 +119,7 @@ export function parseAcpTriagerResponse(raw) {
   };
 }
 
-export function triageIssue(input = {}, { requestedRoute = null, acpRoute = null, acpResponse = null } = {}) {
+export function triageIssue(input: AnyRecord = {}, { requestedRoute = null, acpRoute = null, acpResponse = null }: AnyRecord = {}) {
   const rules = classifyIssueRules({
     ...input,
     requestedRoute: requestedRoute || input.requestedRoute,
@@ -135,7 +136,7 @@ export function triageIssue(input = {}, { requestedRoute = null, acpRoute = null
     protectedScopes: rules.protectedScopes,
     actualDiffRisk: rules.actualDiffRisk,
     reasons: rules.reasons,
-  });
+  } as AnyRecord);
 }
 
 export async function triageIssueWithAcp(input = {}, {
@@ -145,7 +146,7 @@ export async function triageIssueWithAcp(input = {}, {
   agent = "claude",
   timeoutMs = 60_000,
   acpPool = null,
-} = {}) {
+}: AnyRecord = {}) {
   const rules = classifyIssueRules(input);
   const prompt = buildAcpTriagerPrompt(input, rules);
   let acpResponse = null;
@@ -159,7 +160,7 @@ export async function triageIssueWithAcp(input = {}, {
     acpError = error.message;
   }
 
-  const parsed = acpResponse ? parseAcpTriagerResponse(acpResponse) : { requestedRoute: null };
+  const parsed: AnyRecord = acpResponse ? parseAcpTriagerResponse(acpResponse) : { requestedRoute: null };
   const decision = triageIssue(input, { acpRoute: parsed.requestedRoute });
   return {
     ...decision,
@@ -172,11 +173,11 @@ export async function triageIssueWithAcp(input = {}, {
   };
 }
 
-export function triageGithubIssue(event = {}, { requestedRoute = null, acpRoute = null } = {}) {
+export function triageGithubIssue(event: AnyRecord = {}, { requestedRoute = null, acpRoute = null }: AnyRecord = {}) {
   return withMode(triageIssue(githubTriageInput(event, requestedRoute), { requestedRoute, acpRoute }), "rules");
 }
 
-export async function triageGithubIssueWithAcp(event = {}, options = {}) {
+export async function triageGithubIssueWithAcp(event: AnyRecord = {}, options: AnyRecord = {}) {
   const requestedRoute = options.requestedRoute || null;
   const decision = await triageIssueWithAcp(githubTriageInput(event, requestedRoute), {
     ...options,
@@ -185,12 +186,12 @@ export async function triageGithubIssueWithAcp(event = {}, options = {}) {
   return withMode(decision, "acp");
 }
 
-export function triageChannelCommand(command = {}, context = {}) {
+export function triageChannelCommand(command: AnyRecord = {}, context: AnyRecord = {}) {
   const requested = channelRequestedRoute(command);
   return withMode(triageIssue(channelTriageInput(command, context, requested), { requestedRoute: requested }), command.triage || "rules");
 }
 
-export async function triageChannelCommandWithAcp(command = {}, context = {}, options = {}) {
+export async function triageChannelCommandWithAcp(command: AnyRecord = {}, context: AnyRecord = {}, options: AnyRecord = {}) {
   const requested = channelRequestedRoute(command);
   const decision = await triageIssueWithAcp(channelTriageInput(command, context, requested), {
     ...options,

@@ -1,11 +1,16 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listProjects, loadRegistry, resolveHubRoot } from "../bridges/runtime-services.js";
 import { cpbHome, projectRuntimeRoot, runtimeDataPath } from "../core/paths.js";
+
+type MigrationOptions = {
+  dryRun?: boolean;
+  quarantineNonCodePatchbay?: boolean;
+  quarantineNonFlow?: boolean;
+};
 
 async function exists(file) {
   try {
@@ -179,7 +184,7 @@ async function cleanupLegacyRoots(root, report, dryRun, {
 
 // --- Legacy .omc migration (original behavior) ---
 
-export async function migrateRuntimeRoot(cpbRoot, options = {}) {
+export async function migrateRuntimeRoot(cpbRoot, options: MigrationOptions = {}) {
   const root = path.resolve(cpbRoot);
   const dryRun = options.dryRun || false;
   const report = {
@@ -317,7 +322,7 @@ async function migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, report, dryRun) {
   }
 }
 
-export async function migrateToProjectRuntimeRoots(cpbRoot, hubRoot, options = {}) {
+export async function migrateToProjectRuntimeRoots(cpbRoot, hubRoot, options: MigrationOptions = {}) {
   const dryRun = options.dryRun || false;
   const report = {
     copied: [],

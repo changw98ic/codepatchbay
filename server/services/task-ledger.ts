@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { listDispatches } from "./dispatch-state.js";
 import { readGithubIssues } from "./github-issues.js";
 import { listQueue } from "./hub-queue.js";
@@ -135,7 +134,7 @@ function bodySummary(body, fallback) {
   return truncate(firstLine(content, fallback), 220);
 }
 
-function progressFor({ queueEntry, issue } = {}) {
+function progressFor({ queueEntry, issue }: Record<string, any> = {}) {
   const finalDisposition = queueEntry?.metadata?.finalDisposition || null;
   if (finalDisposition?.startsWith("superseded")) {
     return {
@@ -397,7 +396,7 @@ export async function buildTaskLedger({
   projectId,
   includeQueueOnly = false,
   includeArchived = false,
-} = {}) {
+}: Record<string, any> = {}) {
   const [queueEntries, githubIssues, jobs, dispatches] = await Promise.all([
     listQueue(hubRoot),
     readGithubIssues(hubRoot),

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,8 +22,9 @@ async function buildApp(cpbRoot, hubRoot) {
   await app.register(sensible);
   await app.register(cors, { origin: true });
   app.addHook('onRequest', (req, _res, done) => {
-    req.cpbRoot = cpbRoot;
-    req.cpbHubRoot = hubRoot;
+    const testReq = req as Record<string, any>;
+    testReq.cpbRoot = cpbRoot;
+    testReq.cpbHubRoot = hubRoot;
     done();
   });
   await app.register(taskRoutes, { prefix: '/api' });

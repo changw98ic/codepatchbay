@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { assertNoSecretInput } from "../../server/services/secret-policy.js";
+
+type LooseRecord = Record<string, any>;
 
 function usage() {
   return [
@@ -13,7 +14,7 @@ function usage() {
   ].join("\n");
 }
 
-function parseArgs(args = []) {
+function parseArgs(args: string[] = []) {
   assertNoSecretInput(args);
   const json = args.includes("--json");
   const filtered = args.filter((arg) => arg !== "--json");
@@ -25,10 +26,10 @@ function parseArgs(args = []) {
   };
 }
 
-function parseConnectArgs(args = []) {
+function parseConnectArgs(args: string[] = []) {
   assertNoSecretInput(args);
   const json = args.includes("--json");
-  const getFlag = (name) => {
+  const getFlag = (name: string): string | null => {
     const idx = args.indexOf(name);
     return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : null;
   };
@@ -41,7 +42,7 @@ function parseConnectArgs(args = []) {
   };
 }
 
-function formatBindHuman(project) {
+function formatBindHuman(project: LooseRecord) {
   return [
     `Bound ${project.id} to GitHub repo ${project.github.fullName}.`,
     "",
@@ -54,7 +55,7 @@ function formatBindHuman(project) {
   ].join("\n");
 }
 
-async function runConnect(args, { cpbRoot } = {}) {
+async function runConnect(args: string[], { cpbRoot }: LooseRecord = {}) {
   const parsed = parseConnectArgs(args);
 
   if (!parsed.appId || !parsed.webhookSecretRef) {
@@ -70,11 +71,11 @@ async function runConnect(args, { cpbRoot } = {}) {
     return 1;
   }
 
-  const { saveGithubAppConfig, loadGithubAppConfig, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
   const { saveGithubAppConfig: save } = await import("../../server/services/github-app.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
-  const raw = {
+  const raw: LooseRecord = {
     appId: parsed.appId,
     webhookSecretRef: parsed.webhookSecretRef,
   };
@@ -93,13 +94,14 @@ async function runConnect(args, { cpbRoot } = {}) {
     }
     return 0;
   } catch (error) {
-    if (parsed.json) console.log(JSON.stringify({ connected: false, error: error.message }, null, 2));
-    else console.error(`Error: ${error.message}`);
+    const message = (error as Error).message;
+    if (parsed.json) console.log(JSON.stringify({ connected: false, error: message }, null, 2));
+    else console.error(`Error: ${message}`);
     return 1;
   }
 }
 
-function buildTransportSummary(transport) {
+function buildTransportSummary(transport: LooseRecord | null) {
   if (!transport) {
     return { mode: "unknown", healthy: false, errors: ["Transport not checked"] };
   }
@@ -127,7 +129,7 @@ function buildTransportSummary(transport) {
   };
 }
 
-async function runDoctor(args, { cpbRoot } = {}) {
+async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   const json = args.includes("--json");
   const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
   const { loadGithubAppConfig, resolveGithubWebhookSecret } = await import("../../server/services/github-app.js");
@@ -137,11 +139,11 @@ async function runDoctor(args, { cpbRoot } = {}) {
   const execFileAsync = promisify(execFile);
   const hubRoot = resolveHubRoot(cpbRoot);
 
-  const layers = [];
-  let transportResult = null;
+  const layers: LooseRecord[] = [];
+  let transportResult: LooseRecord | null = null;
 
   // Layer 1: App config
-  let config = null;
+  let config: LooseRecord | null = null;
   try {
     config = await loadGithubAppConfig(hubRoot);
     layers.push({ id: "github-app-config", status: "ok", message: `App config: app ${config.appId} configured` });
@@ -195,7 +197,7 @@ async function runDoctor(args, { cpbRoot } = {}) {
       layers.push({ id: "github-transport", status: "error", message: "Transport: unavailable", mode: "unavailable" });
     }
   } catch (error) {
-    layers.push({ id: "github-transport", status: "error", message: `Transport: check failed (${error.message})`, mode: "unknown" });
+    layers.push({ id: "github-transport", status: "error", message: `Transport: check failed (${(error as Error).message})`, mode: "unknown" });
   }
 
   // Layer 6: Repo bindings
@@ -265,7 +267,7 @@ async function runDoctor(args, { cpbRoot } = {}) {
   return hasError ? 1 : 0;
 }
 
-export async function run(args = [], { cpbRoot } = {}) {
+export async function run(args: string[] = [], { cpbRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
     return 0;
@@ -275,7 +277,7 @@ export async function run(args = [], { cpbRoot } = {}) {
   try {
     parsed = parseArgs(args);
   } catch (error) {
-    console.error(error.message);
+    console.error((error as Error).message);
     return 1;
   }
 
@@ -310,7 +312,7 @@ export async function run(args = [], { cpbRoot } = {}) {
     else console.log(formatBindHuman(project));
     return 0;
   } catch (error) {
-    console.error(error.message);
+    console.error((error as Error).message);
     return 1;
   }
 }

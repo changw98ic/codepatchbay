@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
@@ -42,7 +41,7 @@ export async function runAdversarialVerify(ctx) {
     prompt,
   });
 
-  const agentResult = await runAgent({
+  const agentResult: Record<string, any> = await runAgent({
     role,
     ...resolvedAgent,
     project,
@@ -51,6 +50,8 @@ export async function runAdversarialVerify(ctx) {
     cwd: sourcePath || cpbRoot,
     pool,
     timeoutMs: ctx.timeouts?.adversarial_verify ?? 0,
+    scope: ctx.scope,
+    env: ctx.env,
   });
 
   if (!agentResult.ok) {
@@ -69,7 +70,7 @@ export async function runAdversarialVerify(ctx) {
     });
   }
 
-  const verdict = parseVerifierJson(agentResult.output);
+  const verdict: Record<string, any> = parseVerifierJson(agentResult.output) as any;
   if (!verdict.ok) {
     return phaseFailed({
       phase: "adversarial_verify",
@@ -129,7 +130,7 @@ export async function runAdversarialVerify(ctx) {
     verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics,
-  });
+  } as any);
 }
 
 function renderAdversarialVerdictMarkdown(verdict, riskMap = null) {

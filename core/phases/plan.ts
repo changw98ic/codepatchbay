@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
@@ -42,7 +41,7 @@ export async function runPlan(ctx) {
     prompt,
   });
 
-  const agentResult = await runAgent({
+  const agentResult: Record<string, any> = await runAgent({
     role,
     ...resolvedAgent,
     project,
@@ -51,6 +50,8 @@ export async function runPlan(ctx) {
     cwd: sourcePath || cpbRoot,
     pool,
     timeoutMs: ctx.timeouts?.plan ?? 0,
+    scope: ctx.scope,
+    env: ctx.env,
   });
 
   if (!agentResult.ok) {
@@ -69,7 +70,7 @@ export async function runPlan(ctx) {
     });
   }
 
-  const parsed = parsePlannerJson(agentResult.output);
+  const parsed: Record<string, any> = parsePlannerJson(agentResult.output) as any;
   if (!parsed.ok) {
     return phaseFailed({
       phase: "plan",

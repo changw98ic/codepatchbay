@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -7,7 +6,11 @@ import { writeJsonAtomic } from "../fs-utils.js";
 const WORKERS_DIR = "workers";
 
 export class WorkerStore {
-  constructor(hubRoot) {
+  baseDir: string;
+  registryDir: string;
+  inboxDir: string;
+
+  constructor(hubRoot: string) {
     this.baseDir = path.join(hubRoot, WORKERS_DIR);
     this.registryDir = path.join(this.baseDir, "registry");
     this.inboxDir = path.join(this.baseDir, "inbox");
@@ -18,7 +21,7 @@ export class WorkerStore {
     await mkdir(this.inboxDir, { recursive: true });
   }
 
-  async registerWorker(workerId, meta = {}) {
+  async registerWorker(workerId: string, meta: Record<string, any> = {}) {
     const file = path.join(this.registryDir, `worker-${workerId}.json`);
     const worker = {
       workerId,
@@ -36,7 +39,7 @@ export class WorkerStore {
     return worker;
   }
 
-  async updateWorker(workerId, updates) {
+  async updateWorker(workerId: string, updates: Record<string, any>) {
     const worker = await this.getWorker(workerId);
     if (!worker) return null;
     const updated = { ...worker, ...updates, lastHeartbeatAt: new Date().toISOString() };
@@ -47,13 +50,13 @@ export class WorkerStore {
     return updated;
   }
 
-  async getWorker(workerId) {
+  async getWorker(workerId: string) {
     try {
       return JSON.parse(await readFile(path.join(this.registryDir, `worker-${workerId}.json`), "utf8"));
     } catch { return null; }
   }
 
-  async listWorkers(filter = {}) {
+  async listWorkers(filter: Record<string, any> = {}) {
     const workers = [];
     try {
       const files = await readdir(this.registryDir);
@@ -69,7 +72,7 @@ export class WorkerStore {
     return workers;
   }
 
-  async findIdleWorker(projectId) {
+  async findIdleWorker(projectId?: string) {
     const workers = await this.listWorkers();
     for (const worker of workers) {
       if (worker.status !== "ready") continue;
@@ -81,9 +84,9 @@ export class WorkerStore {
     return null;
   }
 
-  async hasInboxWork(workerId) {
+  async hasInboxWork(workerId: string) {
     const inboxDir = path.join(this.inboxDir, workerId);
-    const hasJsonFile = async (dir) => {
+    const hasJsonFile = async (dir: string) => {
       try {
         return (await readdir(dir)).some((file) => file.endsWith(".json"));
       } catch {
@@ -93,7 +96,7 @@ export class WorkerStore {
     return await hasJsonFile(inboxDir) || await hasJsonFile(path.join(inboxDir, "processing"));
   }
 
-  async writeInbox(workerId, assignment) {
+  async writeInbox(workerId: string, assignment: Record<string, any>) {
     const dir = path.join(this.inboxDir, workerId);
     await mkdir(dir, { recursive: true });
     await writeJsonAtomic(
@@ -102,7 +105,7 @@ export class WorkerStore {
     );
   }
 
-  async readInbox(workerId) {
+  async readInbox(workerId: string) {
     const dir = path.join(this.inboxDir, workerId);
     const entries = [];
     try {
@@ -117,7 +120,7 @@ export class WorkerStore {
     return entries;
   }
 
-  async clearInboxEntry(workerId, assignmentId) {
+  async clearInboxEntry(workerId: string, assignmentId: string) {
     try {
       const { unlink } = await import("node:fs/promises");
       await unlink(path.join(this.inboxDir, workerId, `${assignmentId}.json`));
@@ -138,8 +141,8 @@ export class WorkerStore {
     return removed;
   }
 
-  _isAlive(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
+  _isAlive(pid: unknown) {
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
     try { process.kill(pid, 0); return true; } catch { return false; }
   }
 
@@ -148,8 +151,8 @@ export class WorkerStore {
   }
 }
 
-export function summarizeWorkers(workers = []) {
-  const counts = { ready: 0, running: 0, unhealthy: 0, exited: 0 };
+export function summarizeWorkers(workers: Array<Record<string, any>> = []) {
+  const counts: Record<string, number> = { ready: 0, running: 0, unhealthy: 0, exited: 0 };
   for (const worker of workers) {
     const status = worker.status || "unknown";
     counts[status] = (counts[status] || 0) + 1;

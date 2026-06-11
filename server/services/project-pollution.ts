@@ -1,10 +1,10 @@
-// @ts-nocheck
 import { readdir, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const TEST_VISIBILITY = new Set(["test", "fixture", "generated"]);
+type AnyRecord = Record<string, any>;
 const POLLUTION_NAME_PATTERNS = [
   { pattern: /fake-repo/i, reason: "fake-repo name" },
   { pattern: /-test$/i, reason: "test-suffix name" },
@@ -15,7 +15,7 @@ const POLLUTION_NAME_PATTERNS = [
   { pattern: /^calc-test/i, reason: "calc-test prefix" },
 ];
 
-export function isUnderTestPath(filePath) {
+export function isUnderTestPath(filePath: any) {
   if (!filePath || typeof filePath !== "string") return false;
   const tmpDir = realpathSync(os.tmpdir());
   try {
@@ -28,8 +28,8 @@ export function isUnderTestPath(filePath) {
   }
 }
 
-export function classifyProject(project, { hubRoot, skipPathChecks = false } = {}) {
-  const reasons = [];
+export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = false }: AnyRecord = {}) {
+  const reasons: string[] = [];
   const metadata = project.metadata || {};
 
   // Explicit visibility tags
@@ -73,7 +73,7 @@ export function classifyProject(project, { hubRoot, skipPathChecks = false } = {
   };
 }
 
-export function filterVisibleProjects(projects, opts = {}) {
+export function filterVisibleProjects(projects: AnyRecord[], opts: AnyRecord = {}) {
   const { includeTest = false } = opts;
   if (includeTest) return projects;
   const skipPathChecks = opts.skipPathChecks || isUnderTestPath(opts.hubRoot);
@@ -84,9 +84,9 @@ export function filterVisibleProjects(projects, opts = {}) {
   });
 }
 
-export async function scanHubPollution(hubRoot) {
-  const candidates = [];
-  const orphanRuntimeDirs = [];
+export async function scanHubPollution(hubRoot: string) {
+  const candidates: AnyRecord[] = [];
+  const orphanRuntimeDirs: AnyRecord[] = [];
 
   // Read registry
   let registry;
@@ -97,8 +97,8 @@ export async function scanHubPollution(hubRoot) {
     registry = { projects: {} };
   }
 
-  const projects = typeof registry.projects === "object" && registry.projects !== null
-    ? Object.values(registry.projects)
+  const projects: AnyRecord[] = typeof registry.projects === "object" && registry.projects !== null
+    ? Object.values(registry.projects) as AnyRecord[]
     : [];
   const registeredIds = new Set(projects.map((p) => p.id));
 

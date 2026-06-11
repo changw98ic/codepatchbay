@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { installRelease } from "../../server/services/release-store.js";
@@ -41,7 +40,7 @@ function parseArgs(argv) {
   return options;
 }
 
-async function main(args, context) {
+async function main(args, context: Record<string, any> = {}) {
   const options = parseArgs(args);
   if (options.help) {
     console.log(usage());

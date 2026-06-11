@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +12,9 @@ import {
 } from "../server/services/delete-guard.js";
 
 // Permission matrix integration (Stage 3 / #13)
-let _permCheck = null;
-let _permRecord = null;
-let _permEnv = null;
+let _permCheck: any = null;
+let _permRecord: any = null;
+let _permEnv: any = null;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory = [];
 
@@ -52,7 +51,7 @@ function isRepeatedDenial(targetPath, action) {
   return identicalCount >= 3;
 }
 
-async function enforcePermission(action, targetPath) {
+async function enforcePermission(action: string, targetPath: string) {
   await loadPermissionModules();
   if (!_permCheck || !_permEnv) return { allowed: true };
 
@@ -82,7 +81,7 @@ async function enforcePermission(action, targetPath) {
   return result;
 }
 
-function enforcePermissionSync(action, target) {
+function enforcePermissionSync(action: string, target: string) {
   if (!_permCheck || !_permEnv) return { allowed: true };
   const result = _permCheck(_permEnv.role, action, target, _permEnv.cpbRoot, _permEnv.project, {
     sourcePath: _permEnv.sourcePath,
@@ -312,7 +311,7 @@ async function readStdin() {
 }
 
 function jsonRpcError(code, message, data) {
-  const err = { code, message };
+  const err: Record<string, any> = { code, message };
   if (data) err.data = data;
   return err;
 }
@@ -326,6 +325,26 @@ export function resolveWriteAllowPaths(cwd = process.cwd()) {
 }
 
 export class AcpClient {
+  agent: string;
+  cwd: string;
+  prompt: string;
+  writeAllowPaths: any;
+  terminalPolicy: string;
+  toolPolicy: any;
+  outputSink: (chunk: any) => any;
+  errorSink: (chunk: any) => any;
+  env: any;
+  nextId: number;
+  pending: Map<any, any>;
+  terminals: Map<any, any>;
+  nextTerminalId: number;
+  closed: boolean;
+  initialized: any;
+  child: any;
+  lineQueue: Promise<any>;
+  idleTimer: NodeJS.Timeout | null;
+  idleTimeoutMs: number;
+
   constructor({
     agent,
     cwd,
@@ -336,7 +355,7 @@ export class AcpClient {
     outputSink = (chunk) => process.stdout.write(chunk),
     errorSink = (chunk) => process.stderr.write(chunk),
     env = process.env,
-  }) {
+  }: Record<string, any>) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
@@ -416,7 +435,7 @@ export class AcpClient {
         title: "CodePatchbay",
         version: "0.1.0",
       },
-    });
+    }) as Record<string, any>;
 
     if (initialized.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error(`unsupported ACP protocol version: ${initialized.protocolVersion}`);
@@ -431,7 +450,7 @@ export class AcpClient {
     const session = await this.request("session/new", {
       cwd,
       mcpServers: [],
-    });
+    }) as Record<string, any>;
 
     await this.request("session/prompt", {
       sessionId: session.sessionId,
@@ -610,14 +629,14 @@ export class AcpClient {
           break;
         default:
           if (Object.hasOwn(message, "id")) {
-            this.respondError(message.id, -32601, `method not found: ${message.method}`);
+            this.respondError(message.id, -32601, `method not found: ${message.method}`, undefined);
           }
       }
     } catch (error) {
       if (error.message?.startsWith("PERMISSION_FAIL_FAST:")) {
         this.errorSink(`[acp:${this.agent}] ${error.message}\n`);
         if (Object.hasOwn(message, "id")) {
-          this.respondError(message.id, -32000, error.message);
+          this.respondError(message.id, -32000, error.message, undefined);
         }
         // Abort the session; agent is stuck on repeated denials
         setImmediate(() => this.close());
@@ -749,7 +768,7 @@ export class AcpClient {
     const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });
     if (!guardResult.allowed) {
       logDeleteBlock(params.command, params.args || [], terminalCwd, guardResult, this.errorSink);
-      const err = new Error(formatDeleteBlockedMessage(guardResult));
+      const err = new Error(formatDeleteBlockedMessage(guardResult)) as Error & { guardResult?: any };
       err.guardResult = guardResult;
       throw err;
     }

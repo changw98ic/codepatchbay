@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
@@ -25,8 +24,8 @@ async function makeGithubApp(hubRoot, cpbRoot, opts = {}) {
   await app.register(sensible);
   app.decorate("notifBroadcast", async () => {});
   app.addHook("onRequest", (req, _reply, done) => {
-    req.cpbRoot = cpbRoot;
-    req.cpbHubRoot = hubRoot;
+    (req as any).cpbRoot = cpbRoot;
+    (req as any).cpbHubRoot = hubRoot;
     done();
   });
   await app.register(githubRoutes, opts);
@@ -94,7 +93,17 @@ function issuePayload({ repo = "owner/repo", action = "labeled", labels = ["cpb"
   };
 }
 
-function commentPayload({ repo = "owner/repo", issueNumber = 5, body, association = "MEMBER" } = {}) {
+function commentPayload({
+  repo = "owner/repo",
+  issueNumber = 5,
+  body,
+  association = "MEMBER",
+}: {
+  repo?: string;
+  issueNumber?: number;
+  body?: string;
+  association?: string;
+} = {}) {
   return {
     action: "created",
     repository: { full_name: repo },

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // provider-soak.js — Bounded operational soak harness for multi-project scan
 //
 // Proves:
@@ -34,7 +33,7 @@ const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, "..")
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 export function parseArgs(argv) {
-  const opts = {
+  const opts: Record<string, any> = {
     dryRun: true,
     maxRounds: Number(process.env.CPB_SOAK_MAX_ROUNDS || 0),
     maxDurationMs: Number(process.env.CPB_SOAK_MAX_DURATION_MS || 0),
@@ -92,7 +91,15 @@ export function countChildProcessesSync() {
 }
 
 export class SoakMonitor {
-  constructor(opts = {}) {
+  maxProcessCount: number;
+  statusIntervalMs: number;
+  onStatus: (sample: any) => void;
+  onViolation: (violation: any) => void;
+  samples: any[];
+  _timer: NodeJS.Timeout | null;
+  _violations: any[];
+
+  constructor(opts: Record<string, any> = {}) {
     this.maxProcessCount = opts.maxProcessCount || 10;
     this.statusIntervalMs = opts.statusIntervalMs || 60_000;
     this.onStatus = opts.onStatus || (() => {});
@@ -102,7 +109,7 @@ export class SoakMonitor {
     this._violations = [];
   }
 
-  start(controller, pool) {
+  start(controller: any, pool: any) {
     this._timer = setInterval(() => {
       const sample = this.snapshot(controller, pool);
       this.samples.push(sample);
@@ -129,7 +136,7 @@ export class SoakMonitor {
     }
   }
 
-  snapshot(controller, pool) {
+  snapshot(controller: any, pool: any) {
     const poolStatus = pool ? pool.status() : null;
     const processCount = countChildProcessesSync();
     const now = new Date().toISOString();
@@ -138,7 +145,7 @@ export class SoakMonitor {
     let queued = 0;
     let rateLimited = false;
     if (poolStatus && poolStatus.pools) {
-      for (const info of Object.values(poolStatus.pools)) {
+      for (const info of Object.values(poolStatus.pools) as Array<Record<string, any>>) {
         active += info.active || 0;
         queued += info.queued || 0;
         if (info.rateLimitedUntil && Date.now() < info.rateLimitedUntil) {
@@ -169,7 +176,21 @@ export class SoakMonitor {
 // ── Soak Harness ─────────────────────────────────────────────────────────────
 
 export class ProviderSoakHarness {
-  constructor(opts = {}) {
+  cpbRoot: string;
+  hubRoot: string;
+  dryRun: boolean;
+  maxRounds: number;
+  maxDurationMs: number;
+  intervalMs: number;
+  maxProcessCount: number;
+  statusIntervalMs: number;
+  agent: string;
+  project: any;
+  skipPreflight: boolean;
+  json: boolean;
+  verbose: boolean;
+
+  constructor(opts: Record<string, any> = {}) {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
     this.hubRoot = opts.hubRoot || resolveHubRoot(this.cpbRoot);
     this.dryRun = opts.dryRun !== false;

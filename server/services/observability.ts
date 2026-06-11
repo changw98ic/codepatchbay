@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { sanitizeProviderReason, getManagedAcpPool } from "./acp-pool.js";
 import { deriveWorkerStatus, hubStatus, listProjects } from "./hub-registry.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
@@ -8,11 +7,13 @@ import { redactSecrets } from "./secret-policy.js";
 import { buildChainSnapshot, analyzeChainSnapshot } from "./observer.js";
 import { WorkerStore, summarizeWorkers } from "../../shared/orchestrator/worker-store.js";
 
+type LooseRecord = Record<string, any>;
+
 export function redactDiagnostics(value, key = "") {
   return redactSecrets(value, key);
 }
 
-export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = {}) {
+export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool }: LooseRecord = {}) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
   const now = Date.now();
   const workerStore = new WorkerStore(hubRoot);
@@ -58,15 +59,15 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
   });
   const workerSummary = summarizeWorkers(allWorkers);
 
-  const pools = {};
+  const pools: LooseRecord = {};
   const acpPoolSummary = {
-    sessionAges: [],
-    requestCounts: {},
-    recycleCounts: {},
-    promptByteTotals: {},
+    sessionAges: [] as LooseRecord[],
+    requestCounts: {} as LooseRecord,
+    recycleCounts: {} as LooseRecord,
+    promptByteTotals: {} as LooseRecord,
   };
 
-  for (const [agent, state] of Object.entries(acpStatus.pools || {})) {
+  for (const [agent, state] of Object.entries(acpStatus.pools || {}) as [string, LooseRecord][]) {
     const spawnAge = state.lastSpawnAt ? now - new Date(state.lastSpawnAt).getTime() : null;
     pools[agent] = {
       active: state.active ?? 0,
@@ -98,7 +99,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     );
   }
 
-  const dispatchSummary = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
+  const dispatchSummary: LooseRecord = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
   for (const d of dispatches) {
     dispatchSummary.total++;
     if (dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
@@ -127,7 +128,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
     }
   } catch {}
 
-  const projectRuntimeRoots = projects.reduce((acc, p) => {
+  const projectRuntimeRoots = projects.reduce((acc: LooseRecord, p) => {
     if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
     return acc;
   }, {});
@@ -158,7 +159,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool } = 
   };
 }
 
-export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool } = {}) {
+export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool }: LooseRecord = {}) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
   const [hub, projects, queue, queueEntries, providerQuotas] = await Promise.all([
     hubStatus(hubRoot),

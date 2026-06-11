@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
@@ -23,7 +22,7 @@ export async function buildPhaseContextPacket(
   project,
   jobId,
   phase,
-  options = {},
+  options: Record<string, any> = {},
 ) {
   const maxBytes =
     options.maxBytes ??
@@ -53,7 +52,7 @@ export async function buildPhaseContextPacket(
   const readInstructions = buildReadInstructions(locator, job, phase);
 
   // --- Assemble the mandatory (never-clipped) skeleton ---
-  const packet = {
+  const packet: Record<string, any> = {
     schemaVersion: 1,
     project,
     jobId,

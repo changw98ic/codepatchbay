@@ -1,4 +1,3 @@
-// @ts-nocheck
 export async function run(args, { cpbRoot, executorRoot }) {
   const { runReadinessChecks, formatReadinessHuman, formatReadinessJson } = await import("../../server/services/readiness-checks.js");
   const result = await runReadinessChecks({ cpbRoot });

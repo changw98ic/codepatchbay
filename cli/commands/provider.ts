@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { readdir } from "node:fs";
 import { execFile as execFileCb } from "node:child_process";
@@ -7,23 +6,24 @@ import path from "node:path";
 
 const execFile = promisify(execFileCb);
 const TEMPLATES_DIR = path.join(import.meta.dirname, "..", "..", "core", "agents", "templates");
+type AnyRecord = Record<string, any>;
 
-function optionValue(args, name) {
+function optionValue(args: string[], name: string) {
   const idx = args.indexOf(name);
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
 }
 
-function optionValues(args, name) {
+function optionValues(args: string[], name: string) {
   return args
     .map((a, i) => (a === name && args[i + 1] ? args[i + 1] : null))
     .filter(Boolean);
 }
 
-function configDir(cpbRoot) {
+function configDir(cpbRoot: string) {
   return process.env.CPB_AGENTS_CONFIG_DIR || path.join(cpbRoot, "cpb-task", "agents");
 }
 
-function fillTemplate(template, vars) {
+function fillTemplate(template: string, vars: Record<string, string>) {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
     result = result.replaceAll(`{{${key}}}`, value || "");
@@ -31,21 +31,21 @@ function fillTemplate(template, vars) {
   return result;
 }
 
-function statusMark(ok) {
+function statusMark(ok: boolean) {
   return ok ? "OK" : "--";
 }
 
-function isCommandAvailable(command) {
+function isCommandAvailable(command: string) {
   return execFile("which", [command])
     .then(() => true)
     .catch(() => false);
 }
 
-function envVarSet(name) {
+function envVarSet(name: string) {
   return name ? !!process.env[name] : true;
 }
 
-async function loadTemplate(name) {
+async function loadTemplate(name: string) {
   try {
     return await readFile(path.join(TEMPLATES_DIR, `${name}.json`), "utf8");
   } catch {
@@ -54,7 +54,7 @@ async function loadTemplate(name) {
 }
 
 async function listTemplates() {
-  return new Promise((resolve) => {
+  return new Promise<string[]>((resolve) => {
     readdir(TEMPLATES_DIR, (err, files) => {
       if (err) return resolve([]);
       resolve(files.filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", "")));
@@ -64,7 +64,7 @@ async function listTemplates() {
 
 // ─── add ───
 
-async function addProvider(args, { cpbRoot }) {
+async function addProvider(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const name = optionValue(args, "--name");
   const command = optionValue(args, "--command");
   const template = optionValue(args, "--template") || "generic-cli";
@@ -102,11 +102,11 @@ async function addProvider(args, { cpbRoot }) {
   };
 
   const filled = fillTemplate(templateStr, vars);
-  let descriptor;
+  let descriptor: AnyRecord;
   try {
     descriptor = JSON.parse(filled);
   } catch (e) {
-    console.error(`Generated invalid JSON: ${e.message}`);
+    console.error(`Generated invalid JSON: ${(e as Error).message}`);
     return 1;
   }
 
@@ -133,10 +133,10 @@ async function addProvider(args, { cpbRoot }) {
 
 // ─── list ───
 
-async function listProviders(args, { cpbRoot }) {
+async function listProviders(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const { loadRegistry, listAgents } = await import("../../core/agents/registry.js");
   await loadRegistry(configDir(cpbRoot));
-  const agents = listAgents();
+  const agents = listAgents() as AnyRecord[];
 
   if (agents.length === 0) {
     console.log("No providers registered.");
@@ -170,7 +170,7 @@ async function listProviders(args, { cpbRoot }) {
 
 // ─── test ───
 
-async function testProvider(args, { cpbRoot }) {
+async function testProvider(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const name = args.find((a) => !a.startsWith("-"));
   if (!name) {
     console.error("Usage: cpb provider test <name>");
@@ -178,8 +178,8 @@ async function testProvider(args, { cpbRoot }) {
   }
 
   const { loadRegistry, getDescriptor } = await import("../../core/agents/registry.js");
-  await loadRegistry();
-  const descriptor = getDescriptor(name);
+  await (loadRegistry as (configDir?: string) => Promise<void>)();
+  const descriptor = getDescriptor(name) as AnyRecord | null;
 
   if (!descriptor) {
     console.error(`Provider '${name}' not found in registry.`);
@@ -250,7 +250,7 @@ async function listTemplatesCmd() {
 
 // ─── main ───
 
-export async function run(args, { cpbRoot } = {}) {
+export async function run(args: string[], { cpbRoot }: { cpbRoot?: string } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
   cpb provider add --name <name> --command <cmd> [--template <tpl>] [--display-name <name>] [--description <text>] [--api-key-env <VAR>] [--base-url <url>]

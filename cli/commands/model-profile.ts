@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -57,7 +56,7 @@ async function addProfile(args, { cpbRoot }) {
     return 1;
   }
 
-  const env = {};
+  const env: Record<string, any> = {};
   for (const pair of envPairs) {
     const parsed = parseEnvPair(pair);
     if (!parsed) {
@@ -181,7 +180,7 @@ export async function resolveModelProfileEnv(cpbRoot, profileName) {
 
 // ─── main ───
 
-export async function run(args, { cpbRoot } = {}) {
+export async function run(args, { cpbRoot }: Record<string, any> = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
   cpb model-profile add --name <name> --agent <agent> --env KEY=VALUE [--env KEY=VALUE ...]

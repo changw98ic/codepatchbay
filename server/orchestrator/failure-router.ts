@@ -1,7 +1,8 @@
-// @ts-nocheck
 import { FailureKind } from "../../core/contracts/failure.js";
 
-const MAX_RETRIES = {
+type AnyRecord = Record<string, any>;
+
+const MAX_RETRIES: Record<string, number> = {
   runtime_interrupted: 2,
   timeout: 1,
   agent_contract_invalid: 1,
@@ -13,26 +14,26 @@ const MAX_RETRIES = {
 };
 
 // Complex failures that benefit from supervisor diagnosis (P1-2)
-const SUPERVISOR_ELIGIBLE_KINDS = new Set([
+const SUPERVISOR_ELIGIBLE_KINDS = new Set<string>([
   FailureKind.AGENT_CONTRACT_INVALID,
   FailureKind.AGENT_EXIT_NONZERO,
   FailureKind.ARTIFACT_INVALID,
 ]);
 
 // Additional kinds eligible for supervisor diagnosis in smart mode
-const SMART_MODE_SUPERVISOR_KINDS = new Set([
+const SMART_MODE_SUPERVISOR_KINDS = new Set<string>([
   FailureKind.VERIFICATION_FAILED,
   FailureKind.ASSIGNMENT_PROGRESS_STALE,
   FailureKind.TIMEOUT,
 ]);
 
-function collectVerificationRetryScope(failure = {}) {
+function collectVerificationRetryScope(failure: AnyRecord = {}) {
   const verdict = failure.cause?.verdict || {};
-  const scope = new Set();
-  const add = (value) => {
+  const scope = new Set<string>();
+  const add = (value: any) => {
     if (typeof value === "string" && value.trim()) scope.add(value.trim());
   };
-  const addMany = (values) => {
+  const addMany = (values: any) => {
     if (Array.isArray(values)) values.forEach(add);
   };
 
@@ -48,17 +49,20 @@ function collectVerificationRetryScope(failure = {}) {
 }
 
 export class FailureRouter {
+  supervisor: any;
+  readModeFn: (() => Promise<string> | string) | null;
+
   /**
    * @param {object} [supervisor] - AcpSupervisor instance (optional, P1-2)
    * @param {object} [opts]
    * @param {Function} [opts.readModeFn] - async () => "default"|"smart"
    */
-  constructor(supervisor = null, opts = {}) {
+  constructor(supervisor: any = null, opts: AnyRecord = {}) {
     this.supervisor = supervisor;
     this.readModeFn = opts.readModeFn || null;
   }
 
-  async _shouldConsultSupervisor(failureKind) {
+  async _shouldConsultSupervisor(failureKind: string) {
     if (!this.supervisor) return false;
     if (SUPERVISOR_ELIGIBLE_KINDS.has(failureKind)) return true;
     // Smart mode extends eligibility
@@ -73,7 +77,7 @@ export class FailureRouter {
    * Route a failure. For complex failures, consult AcpSupervisor if available.
    * Reads retry budget from assignment.attempts (durable, P1-4).
    */
-  async route({ assignment, attempt, result }) {
+  async route({ assignment, attempt, result }: AnyRecord) {
     const failure = result.jobResult?.failure || result.failure || {};
     const attemptCount = assignment.attempts || 0;
     const maxRetries = MAX_RETRIES[failure.kind] ?? 0;

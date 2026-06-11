@@ -1,9 +1,8 @@
-// @ts-nocheck
 import { HubOrchestrator } from "../../server/orchestrator/hub-orchestrator.js";
 import { resolveHubRoot } from "../../server/services/hub-registry.js";
 
 export async function run(args, ctx) {
-  return handleHubOrchCommand(args, ctx);
+  return handleHubOrchCommand(args);
 }
 
 async function handleHubOrchCommand(args) {
@@ -111,7 +110,8 @@ async function retryJob([project, jobId, ...flags]) {
     const { getProject } = await import("../../server/services/hub-registry.js");
     const proj = await getProject(hubRoot, project);
     const dataRoot = proj?.projectRuntimeRoot || undefined;
-    const result = await doRetry(dataRoot, jobId, { force });
+    const cpbRoot = process.env.CPB_ROOT || process.cwd();
+    const result = await doRetry(cpbRoot, project, jobId, { force, dataRoot });
     console.log(JSON.stringify(result, null, 2));
     return 0;
   } catch (err) {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as agentRegistry from "../../core/agents/registry.js";
 import { listJobs } from "./job-store.js";
 import { getWorkflow, roleForPhase } from "../../core/workflow/definition.js";
@@ -123,7 +122,7 @@ function buildScoreInput(stats, performance, quality) {
 export async function collectAgentMetrics(cpbRoot) {
   let descriptors = [];
   try {
-    await agentRegistry.loadRegistry();
+    await agentRegistry.loadRegistry(undefined);
     descriptors = agentRegistry.listAgents();
   } catch {
     return { agents: [], timestamp: new Date().toISOString() };
@@ -206,7 +205,7 @@ export async function getAgentDetail(cpbRoot, agentName) {
   return metrics.agents.find((a) => a.name === agentName) || null;
 }
 
-export async function getAgentJobs(cpbRoot, agentName, opts = {}) {
+export async function getAgentJobs(cpbRoot, agentName, opts: Record<string, any> = {}) {
   const limit = opts.limit ?? 50;
   const allJobs = await listJobs(cpbRoot).catch(() => []);
   return allJobs

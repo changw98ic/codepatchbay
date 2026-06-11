@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -130,7 +129,7 @@ export async function collectOnce(manifest, runDir, options) {
       await writeFile(updated.patchPath, prediction.model_patch || "", "utf8");
       await mkdir(path.dirname(updated.tracePath), { recursive: true });
       await writeFile(updated.tracePath, publicTraceFromBundle(bundle, updated), "utf8");
-    } catch (err) {
+    } catch (err: any) {
       updated.status = updated.status || "pending";
       updated.collectError = err?.message || String(err);
     }
@@ -167,7 +166,7 @@ async function readReviewBundle(cpbBin, projectId, jobIds) {
         bundle: await readReviewBundleForJobId(cpbBin, projectId, jobId),
         jobId,
       };
-    } catch (err) {
+    } catch (err: any) {
       lastError = err;
     }
   }
@@ -269,7 +268,7 @@ function summarizeCollection(manifest, predictions) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().then((code) => {
     process.exitCode = code;
-  }).catch((err) => {
+  }).catch((err: any) => {
     console.error(err?.usage ? `${err.message}\n\n${usage()}` : err.stack || err.message || String(err));
     process.exitCode = 1;
   });

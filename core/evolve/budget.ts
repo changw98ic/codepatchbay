@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Per-run budget tracker for guarded-run mode.
  *
@@ -14,7 +13,9 @@
  * @param {number} [opts.maxIssues=0] - Max issues allowed (0 = unlimited)
  * @returns {{ maxIssues: number, used: number, remaining: number, stopReason: string|null }}
  */
-export function createBudget(opts = {}) {
+type Budget = { maxIssues: number; used: number; remaining: number; stopReason: string | null };
+
+export function createBudget(opts: { maxIssues?: number } = {}): Budget {
   const maxIssues = opts.maxIssues || 0;
   return { maxIssues, used: 0, remaining: maxIssues > 0 ? maxIssues : Infinity, stopReason: null };
 }
@@ -25,7 +26,7 @@ export function createBudget(opts = {}) {
  * @param {object} budget - Tracker returned by createBudget
  * @returns {{ ok: boolean, budget: object }}
  */
-export function consume(budget) {
+export function consume(budget: Budget) {
   if (budget.maxIssues > 0 && budget.used >= budget.maxIssues) {
     return { ok: false, budget: { ...budget, stopReason: "budget_exhausted" } };
   }
@@ -41,6 +42,6 @@ export function consume(budget) {
  * @param {string} reason
  * @returns {object} budget copy with stopReason set
  */
-export function closeBudget(budget, reason) {
+export function closeBudget(budget: Budget, reason: string) {
   return { ...budget, stopReason: budget.stopReason || reason };
 }

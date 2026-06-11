@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -53,7 +52,7 @@ async function detectAgents() {
   return results;
 }
 
-export async function run(args, { cpbRoot, executorRoot } = {}) {
+export async function run(args, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
   cpb quickstart [--agent <name>] [--project-path <path>] [--project-name <name>] [--demo]

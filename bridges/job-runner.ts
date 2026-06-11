@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { appendEvent } from "../server/services/event-store.js";
@@ -20,6 +19,14 @@ import {
   markExited as markProcessExited,
   addChildPid,
 } from "../server/services/process-registry.js";
+
+type AnyRecord = Record<string, any>;
+type GuardedError = Error & { guardResult?: AnyRecord };
+type ChildResult = {
+  exitCode: number;
+  signal?: NodeJS.Signals | string | null;
+  error?: GuardedError;
+};
 
 const rawArgs = process.argv.slice(2);
 
@@ -137,23 +144,33 @@ function killChildProcess(child) {
   }, 2_000).unref?.();
 }
 
-function runChild(command, args, cwd, onOutput, options = {}) {
+function runChild(
+  command,
+  args,
+  cwd,
+  onOutput,
+  options: {
+    signal?: AbortSignal;
+    env?: NodeJS.ProcessEnv;
+    onSpawn?: (child: any) => Promise<any> | any;
+  } = {},
+): Promise<ChildResult> {
   const guardResult = classifyDeleteRisk(command, args, { cwd, repoRoot: cwd });
   if (!guardResult.allowed) {
     const message = formatDeleteBlockedMessage(guardResult);
-    logDeleteBlock(command, args, cwd, guardResult);
-    const error = new Error(message);
+    logDeleteBlock(command, args, cwd, guardResult, console.error);
+    const error = new Error(message) as GuardedError;
     error.guardResult = guardResult;
     return Promise.resolve({ exitCode: 1, error });
   }
 
   return new Promise((resolve) => {
     let settled = false;
-    let child;
+    let child: any;
     const detached = Boolean(options.signal) && process.platform !== "win32";
     let onSpawnDone = Promise.resolve();
 
-    function finish(result) {
+    function finish(result: ChildResult) {
       if (settled) {
         return;
       }
@@ -243,7 +260,7 @@ async function main() {
   let heartbeat = null;
   let leaseLostError = null;
   const abortController = new AbortController();
-  let childResult = { exitCode: 1 };
+  let childResult: ChildResult = { exitCode: 1 };
   let signalReceived = null;
   let processRegistered = false;
 

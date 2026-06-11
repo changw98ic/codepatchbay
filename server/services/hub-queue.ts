@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildMeta, REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
@@ -31,15 +30,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function queuePath(hubRoot) {
+type QueueEntry = Record<string, any>;
+type QueueState = { version: number; entries: QueueEntry[] };
+
+function queuePath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "queue", "queue.json");
 }
 
-function defaultQueue() {
+function defaultQueue(): QueueState {
   return { version: QUEUE_VERSION, entries: [] };
 }
 
-function normalizeQueue(raw) {
+function normalizeQueue(raw: any): QueueState {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultQueue();
   return {
     version: raw.version || QUEUE_VERSION,
@@ -47,7 +49,7 @@ function normalizeQueue(raw) {
   };
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
@@ -56,7 +58,7 @@ async function writeAtomic(filePath, content) {
 
 const QUEUE_LOCK_TTL_MS = 120_000;
 
-async function queueLockIsStale(lockDir) {
+async function queueLockIsStale(lockDir: string) {
   const now = Date.now();
   try {
     const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
@@ -73,7 +75,7 @@ async function queueLockIsStale(lockDir) {
   }
 }
 
-async function queueLockOwnerPid(lockDir) {
+async function queueLockOwnerPid(lockDir: string) {
   try {
     const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
     const lock = JSON.parse(raw);
@@ -83,7 +85,7 @@ async function queueLockOwnerPid(lockDir) {
   }
 }
 
-async function withQueueLock(hubRoot, callback) {
+async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
   const file = queuePath(hubRoot);
   const lockDir = `${file}.lock`;
   const ownerPid = process.pid;
@@ -158,16 +160,16 @@ export function validateIssueLink(entry) {
   return { linked: hasIssueLink(entry.metadata), reason: null };
 }
 
-function entryKey(entry) {
+function entryKey(entry: QueueEntry) {
   const lineage = entry.metadata?.queueDedupeKey || entry.metadata?.originJobId || "";
   return `${entry.projectId}::${entry.description}::${lineage}`;
 }
 
-export async function enqueue(hubRoot, input = {}) {
+export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
   if (!input.projectId) throw new Error("projectId is required");
 
   const meta = buildMeta(input);
-  const normalizedInput = {
+  const normalizedInput: QueueEntry = {
     ...input,
     sourcePath: meta.sourcePath,
     sessionId: meta.sessionId,
@@ -206,7 +208,7 @@ export async function enqueue(hubRoot, input = {}) {
     const existing = queue.entries.find((e) => entryKey(e) === key && e.status === "pending");
     if (existing) return existing;
 
-    const entry = {
+    const entry: QueueEntry = {
       id: generateId(),
       projectId: normalizedInput.projectId,
       sourcePath: meta.sourcePath,
@@ -231,7 +233,7 @@ export async function enqueue(hubRoot, input = {}) {
   });
 }
 
-export async function peekQueue(hubRoot) {
+export async function peekQueue(hubRoot: string) {
   const queue = await loadQueue(hubRoot);
   const pending = queue.entries.filter((e) => e.status === "pending");
   if (pending.length === 0) return null;
@@ -240,7 +242,7 @@ export async function peekQueue(hubRoot) {
   return pending[0];
 }
 
-export async function updateEntry(hubRoot, entryId, patch = {}) {
+export async function updateEntry(hubRoot: string, entryId: string, patch: QueueEntry = {}) {
   return withQueueLock(hubRoot, async () => {
     const queue = await loadQueue(hubRoot);
     const entry = queue.entries.find((e) => e.id === entryId);
@@ -261,7 +263,7 @@ export async function updateEntry(hubRoot, entryId, patch = {}) {
   });
 }
 
-export async function listQueue(hubRoot, { status, projectId } = {}) {
+export async function listQueue(hubRoot: string, { status, projectId }: QueueEntry = {}) {
   const queue = await loadQueue(hubRoot);
   return queue.entries.filter((e) => {
     if (status && e.status !== status) return false;
@@ -270,7 +272,7 @@ export async function listQueue(hubRoot, { status, projectId } = {}) {
   });
 }
 
-export async function syncBacklogResult(hubRoot, { projectId, description, result } = {}) {
+export async function syncBacklogResult(hubRoot: string, { projectId, description, result }: QueueEntry = {}) {
   if (!projectId || !description) return { synced: 0, entries: [] };
 
   return withQueueLock(hubRoot, async () => {
@@ -284,7 +286,7 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
 
     if (matches.length === 0) return { synced: 0, entries: [] };
 
-    const metadata = {
+    const metadata: QueueEntry = {
       syncedFrom: "backlog",
       backlogIssueId: result.backlogIssueId || null,
       syncReason: result.ok ? "backlog_completed" : "backlog_failed",
@@ -302,10 +304,10 @@ export async function syncBacklogResult(hubRoot, { projectId, description, resul
   });
 }
 
-export async function queueStatus(hubRoot) {
+export async function queueStatus(hubRoot: string) {
   const queue = await loadQueue(hubRoot);
   const failedTargetStatus = summarizeFailedTargets(queue.entries);
-  const counts = {
+  const counts: Record<string, any> = {
     total: queue.entries.length,
     pending: 0,
     scheduled: 0,
@@ -346,12 +348,12 @@ export async function queueStatus(hubRoot) {
     maxActivePerProject: hubLimits.maxActivePerProject,
     projectLimits,
   });
-  counts.activeProjects = Object.entries(counts.projects)
+  counts.activeProjects = (Object.entries(counts.projects) as Array<[string, any]>)
     .filter(([, ps]) => ps.activeMutating > 0)
     .map(([projectId, ps]) => ({ projectId, ...ps }));
   counts.eligibleQueued = 0;
   counts.eligibleProjects = [];
-  for (const [pid, ps] of Object.entries(counts.projects)) {
+  for (const [pid, ps] of Object.entries(counts.projects) as Array<[string, any]>) {
     counts.eligibleQueued += ps.eligiblePending;
     if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
   }
@@ -415,18 +417,18 @@ export function summarizeFailedTargets(entries = []) {
   };
 }
 
-function limitForProject(projectLimits, projectId, fallback) {
+function limitForProject(projectLimits: any, projectId: string, fallback: number) {
   if (projectLimits instanceof Map) {
     return positiveInt(projectLimits.get(projectId), fallback);
   }
   return positiveInt(projectLimits?.[projectId], fallback);
 }
 
-export function buildProjectQueueStatus(entries, {
+export function buildProjectQueueStatus(entries: QueueEntry[], {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
   projectLimits = new Map(),
-} = {}) {
-  const byProject = {};
+}: Record<string, any> = {}) {
+  const byProject: Record<string, any> = {};
   for (const e of entries) {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
@@ -487,7 +489,7 @@ export function buildProjectQueueStatus(entries, {
   return byProject;
 }
 
-export async function claimEligible(hubRoot, opts = {}) {
+export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
   const {
     workerId = `worker-${process.pid}`,
     projectId = null,

@@ -1,7 +1,6 @@
-// @ts-nocheck
 import path from "node:path";
 
-export async function run(args, { cpbRoot }) {
+export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const project = args[0];
   if (!project) {
     console.error("Usage: cpb diff <project>");

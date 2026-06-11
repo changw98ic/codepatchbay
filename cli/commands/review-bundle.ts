@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 
 import { buildReviewBundle, writeReviewBundle } from "../../server/services/review-bundle.js";
@@ -41,7 +40,7 @@ function parseArgs(argv) {
   return { ...options, project: positional[0], jobId: positional[1] };
 }
 
-export async function run(args, context) {
+export async function run(args, context: Record<string, any> = {}) {
   const options = parseArgs(args);
   if (options.help) {
     console.log(usage());

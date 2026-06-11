@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { getSetupAgent } from "./agent-catalog.js";
 
@@ -97,7 +96,7 @@ function pickMethod(agent, detected) {
   return Object.keys(agent.install)[0];
 }
 
-export function createInstallPlan({ agentId, method, version, detected } = {}) {
+export function createInstallPlan({ agentId, method, version, detected }: Record<string, any> = {}) {
   const agent = getSetupAgent(agentId);
   if (!agent) {
     throw new Error(`Unknown setup agent: ${agentId}`);
@@ -138,7 +137,7 @@ export function createInstallPlan({ agentId, method, version, detected } = {}) {
   };
 }
 
-export async function executeInstallPlan(plan, { stdio = "inherit" } = {}) {
+export async function executeInstallPlan(plan, { stdio = "inherit" }: Record<string, any> = {}) {
   if (!plan?.requiresExplicitConfirmation) {
     throw new Error("Refusing to execute an install plan without explicit-confirmation metadata");
   }
@@ -148,7 +147,7 @@ export async function executeInstallPlan(plan, { stdio = "inherit" } = {}) {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve({ ok: true, code });
-      else reject(Object.assign(new Error(`Install command exited with code ${code}`), { code }));
+        else reject(Object.assign(new Error(`Install command exited with code ${code}`), { code }));
+      });
     });
-  });
 }

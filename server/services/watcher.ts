@@ -1,4 +1,3 @@
-// @ts-nocheck
 import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import path from 'path';

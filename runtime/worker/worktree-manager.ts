@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Worktree Manager — isolated worktree creation with retry and cleanup.
  *
@@ -64,22 +63,22 @@ export async function cleanupFailedWorktreeCreate({
   try {
     await runGit("git", ["worktree", "remove", "--force", worktreePath], gitOpts);
   } catch (err) {
-    log?.debug?.(`worktree retry cleanup remove skipped: ${err.message}`);
+    log?.debug?.(`worktree retry cleanup remove skipped: ${(err as Error).message}`);
   }
   try {
     await removePath(worktreePath, { recursive: true, force: true });
   } catch (err) {
-    log?.debug?.(`worktree retry cleanup rm skipped: ${err.message}`);
+    log?.debug?.(`worktree retry cleanup rm skipped: ${(err as Error).message}`);
   }
   try {
     await runGit("git", ["branch", "-D", branch], gitOpts);
   } catch (err) {
-    log?.debug?.(`worktree retry cleanup branch skipped: ${err.message}`);
+    log?.debug?.(`worktree retry cleanup branch skipped: ${(err as Error).message}`);
   }
   try {
     await runGit("git", ["worktree", "prune"], gitOpts);
   } catch (err) {
-    log?.debug?.(`worktree retry cleanup prune skipped: ${err.message}`);
+    log?.debug?.(`worktree retry cleanup prune skipped: ${(err as Error).message}`);
   }
 }
 
@@ -94,7 +93,7 @@ export async function createIsolatedWorktreeWithRetry({
   maxAttempts = WORKTREE_CREATE_MAX_ATTEMPTS,
   retryDelayMs = WORKTREE_CREATE_RETRY_DELAY_MS,
   log = null,
-} = {}) {
+}: Record<string, any> = {}) {
   if (!hubRoot) throw new Error("hubRoot is required for worktree isolation");
   if (!sourcePath) throw new Error("sourcePath is required for worktree isolation");
   if (!entryId) throw new Error("entryId is required for worktree isolation");
@@ -120,7 +119,7 @@ export async function createIsolatedWorktreeWithRetry({
       return info;
     } catch (err) {
       lastError = err;
-      log?.warn?.(`worktree create attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+      log?.warn?.(`worktree create attempt ${attempt}/${maxAttempts} failed: ${(err as Error).message}`);
       await cleanupFailedWorktreeCreate({
         sourcePath,
         worktreePath,
@@ -134,8 +133,8 @@ export async function createIsolatedWorktreeWithRetry({
   }
 
   const failure = new Error(
-    `worktree creation failed after ${maxAttempts} attempts; refusing to run against source checkout: ${lastError?.message || "unknown error"}`,
+    `worktree creation failed after ${maxAttempts} attempts; refusing to run against source checkout: ${(lastError as Error | null)?.message || "unknown error"}`,
   );
-  failure.code = "WORKTREE_UNAVAILABLE";
+  (failure as Error & { code?: string }).code = "WORKTREE_UNAVAILABLE";
   throw failure;
 }

@@ -1,13 +1,12 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 
 const DEFAULT_MAX_SLUG_LENGTH = 48;
 
-function shortHash(value) {
+function shortHash(value: unknown) {
   return createHash("sha1").update(String(value || "")).digest("hex").slice(0, 8);
 }
 
-export function slugifyBranchComponent(value, { fallback = "github-issue", maxLength = DEFAULT_MAX_SLUG_LENGTH } = {}) {
+export function slugifyBranchComponent(value: unknown, { fallback = "github-issue", maxLength = DEFAULT_MAX_SLUG_LENGTH }: { fallback?: string; maxLength?: number } = {}) {
   const raw = String(value || "").trim();
   let slug = raw
     .normalize("NFKD")
@@ -24,8 +23,8 @@ export function slugifyBranchComponent(value, { fallback = "github-issue", maxLe
   return `${prefix}-${suffix}`;
 }
 
-export function buildGithubIssueBranchParts({ issueNumber, title, jobId, maxSlugLength = DEFAULT_MAX_SLUG_LENGTH } = {}) {
-  const number = Number.parseInt(issueNumber, 10);
+export function buildGithubIssueBranchParts({ issueNumber, title, jobId, maxSlugLength = DEFAULT_MAX_SLUG_LENGTH }: { issueNumber?: string | number; title?: string; jobId?: string; maxSlugLength?: number } = {}) {
+  const number = Number.parseInt(String(issueNumber), 10);
   if (!Number.isFinite(number) || number <= 0) {
     throw new Error("issueNumber is required for GitHub issue branch naming");
   }

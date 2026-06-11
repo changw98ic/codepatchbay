@@ -1,7 +1,8 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { appendEvent, readEvents } from "./event-store.js";
 import { jobToQueueRow } from "./job-projection.js";
+
+type AnyRecord = Record<string, any>;
 
 const SLACK_STATUS_COMMENT_STATUSES = new Set(["blocked", "failed", "passed", "pr-opened"]);
 
@@ -51,7 +52,7 @@ export function slackStatusDedupeKey(row) {
     .join(":");
 }
 
-export function buildSlackStatusMessage({ job, projection } = {}) {
+export function buildSlackStatusMessage({ job, projection }: AnyRecord = {}) {
   const row = projection || jobToQueueRow(job || {});
   return [
     slackStatusHeading(row.status),
@@ -86,7 +87,7 @@ export async function postSlackMessageWithBotToken({
   return body;
 }
 
-async function alreadyPostedSlackStatus(cpbRoot, project, jobId, dedupeKey, { dataRoot } = {}) {
+async function alreadyPostedSlackStatus(cpbRoot, project, jobId, dedupeKey, { dataRoot }: AnyRecord = {}) {
   if (!cpbRoot || !project || !jobId || !dedupeKey) return false;
   const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
   return events.some((event) => (
@@ -104,7 +105,7 @@ export async function postSlackStatusComment({
   dryRun = false,
   postMessage,
   dataRoot,
-} = {}) {
+}: AnyRecord = {}) {
   const row = projection || jobToQueueRow(job || {});
   if (!SLACK_STATUS_COMMENT_STATUSES.has(row.status)) {
     return { status: "skipped", posted: false, reason: "job is not a terminal Slack status update" };

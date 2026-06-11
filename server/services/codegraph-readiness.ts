@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -8,8 +7,8 @@ export class CodeGraphUnavailableError extends Error {
   constructor(reason, details = {}) {
     super(reason);
     this.name = "CodeGraphUnavailableError";
-    this.code = "codegraph_unavailable";
-    this.details = details;
+    (this as Error & { code?: string; details?: Record<string, any> }).code = "codegraph_unavailable";
+    (this as Error & { code?: string; details?: Record<string, any> }).details = details;
   }
 }
 
@@ -69,7 +68,7 @@ async function readDaemonState(sourceRoot) {
   };
 }
 
-export async function checkCodeGraphReady({ cpbRoot, sourcePath } = {}) {
+export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string, any> = {}) {
   const sourceRoot = await canonicalDir(sourcePath);
   if (!sourceRoot) {
     throw new CodeGraphUnavailableError("sourcePath is required for CodeGraph readiness", {

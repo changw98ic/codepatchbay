@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -134,7 +133,7 @@ export function projectCapabilityMapGate(project) {
   return { available: true, confidence: "high", generatedAt: capabilityMap.generatedAt || null };
 }
 
-export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath } = {}) {
+export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Record<string, any> = {}) {
   const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
   const files = await queryCodeGraphFiles(readiness.indexFile);
   const generatedAt = new Date().toISOString();

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Single source of truth for queue claim / stale-recovery rules.
  * Scheduler, claimEligible API, and any future caller all go through here.

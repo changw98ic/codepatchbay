@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { BOUNDARY_VERSION, validateGitPlatformAdapter, validateTransportResult } from "../../../core/contracts/git-platform.js";
 import { resolveGithubTransport } from "../github-api.js";
 import { normalizeGithubWebhookEvent } from "../github-events.js";
@@ -17,7 +16,7 @@ export function createGithubAdapter() {
     boundaryVersion: BOUNDARY_VERSION,
     platform: "github",
 
-    async resolveTransport(hubRoot, options = {}) {
+    async resolveTransport(hubRoot, options: Record<string, any> = {}) {
       const transport = await resolveGithubTransport(hubRoot, { env: options.env });
       return validateTransportResult(transport);
     },

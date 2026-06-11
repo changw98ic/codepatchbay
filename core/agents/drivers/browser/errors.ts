@@ -1,6 +1,10 @@
-// @ts-nocheck
 export class BrowserAgentLoginRequiredError extends Error {
-  constructor(provider, message) {
+  code: string
+  provider: string
+  kind: string
+  retryable: boolean
+
+  constructor(provider: string, message?: string) {
     super(message || `${provider} requires login`)
     this.name = "BrowserAgentLoginRequiredError"
     this.code = "LOGIN_REQUIRED"
@@ -11,7 +15,12 @@ export class BrowserAgentLoginRequiredError extends Error {
 }
 
 export class BrowserAgentCaptchaRequiredError extends Error {
-  constructor(provider, message) {
+  code: string
+  provider: string
+  kind: string
+  retryable: boolean
+
+  constructor(provider: string, message?: string) {
     super(message || `${provider} requires CAPTCHA`)
     this.name = "BrowserAgentCaptchaRequiredError"
     this.code = "CAPTCHA_REQUIRED"
@@ -22,7 +31,12 @@ export class BrowserAgentCaptchaRequiredError extends Error {
 }
 
 export class BrowserAgentRateLimitedError extends Error {
-  constructor(provider, message) {
+  code: string
+  provider: string
+  kind: string
+  retryable: boolean
+
+  constructor(provider: string, message?: string) {
     super(message || `${provider} rate limited`)
     this.name = "BrowserAgentRateLimitedError"
     this.code = "RATE_LIMITED"
@@ -33,7 +47,12 @@ export class BrowserAgentRateLimitedError extends Error {
 }
 
 export class BrowserAgentSelectorError extends Error {
-  constructor(selector, message) {
+  code: string
+  selector: string
+  kind: string
+  retryable: boolean
+
+  constructor(selector: string, message?: string) {
     super(message || `Selector not found: ${selector}`)
     this.name = "BrowserAgentSelectorError"
     this.code = "SELECTOR_ERROR"
@@ -44,7 +63,12 @@ export class BrowserAgentSelectorError extends Error {
 }
 
 export class BrowserAgentTimeoutError extends Error {
-  constructor(timeoutMs, message) {
+  code: string
+  timeoutMs: number
+  kind: string
+  retryable: boolean
+
+  constructor(timeoutMs: number, message?: string) {
     super(message || `Timed out after ${timeoutMs}ms`)
     this.name = "BrowserAgentTimeoutError"
     this.code = "TIMEOUT"
@@ -55,7 +79,12 @@ export class BrowserAgentTimeoutError extends Error {
 }
 
 export class BrowserAgentOutputEmptyError extends Error {
-  constructor(provider, message) {
+  code: string
+  provider: string
+  kind: string
+  retryable: boolean
+
+  constructor(provider: string, message?: string) {
     super(message || `${provider} returned empty output`)
     this.name = "BrowserAgentOutputEmptyError"
     this.code = "OUTPUT_EMPTY"

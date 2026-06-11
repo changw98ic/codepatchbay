@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getJob, createRecoveryJob } from "./job-store.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
@@ -13,7 +12,7 @@ export function isRecoverable(job) {
   return ["failed", "blocked", "cancelled"].includes(job.status);
 }
 
-export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null } = {}) {
+export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
   const original = await getJob(cpbRoot, project, jobId);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
@@ -48,7 +47,7 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, tri
   });
 }
 
-export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null } = {}) {
+export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
   const original = await getJob(cpbRoot, project, jobId);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);

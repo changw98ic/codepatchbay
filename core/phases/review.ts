@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
@@ -43,24 +42,28 @@ export async function runReview(ctx) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
+    scope: ctx.scope || null,
+    env: ctx.env || {},
     timeoutMs: ctx.timeouts?.review ?? 0,
   });
 
   if (!agentResult.ok) {
+    const failed = agentResult as Record<string, any>;
     return phaseFailed({
       phase: "review",
       failure: failure({
-        kind: agentResult.kind,
+        kind: failed.kind,
         phase: "review",
-        reason: agentResult.reason,
-        retryable: agentResult.retryable,
-        cause: agentResult.cause || {},
+        reason: failed.reason,
+        retryable: failed.retryable,
+        cause: failed.cause || {},
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: failed.diagnostics,
     });
   }
 
-  const parsed = parseAgentJson(agentResult.output);
+  const success = agentResult as Record<string, any>;
+  const parsed = parseAgentJson(success.output);
   if (!parsed.ok) {
     return phaseFailed({
       phase: "review",
@@ -70,7 +73,7 @@ export async function runReview(ctx) {
         reason: parsed.reason,
         retryable: true,
       }),
-      diagnostics: agentResult.diagnostics,
+      diagnostics: success.diagnostics,
     });
   }
 
@@ -86,7 +89,7 @@ export async function runReview(ctx) {
   return phasePassed({
     phase: "review",
     artifact,
-    diagnostics: agentResult.diagnostics,
+    diagnostics: success.diagnostics,
   });
 }
 

@@ -1,18 +1,27 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import net from "node:net";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 
 import { tempRoot } from "./helpers.js";
 
+type WebSocketAttempt = {
+  opened: boolean;
+  ws: WebSocket;
+  timeout?: boolean;
+  error?: boolean;
+  code?: number;
+};
+
 async function freePort() {
   const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = server.address() as AddressInfo;
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
@@ -32,7 +41,7 @@ async function waitForHttp(url, { timeoutMs = 10_000 } = {}) {
   throw lastErr || new Error(`server did not respond: ${url}`);
 }
 
-async function stopServer(child) {
+async function stopServer(child: ChildProcess) {
   if (child.exitCode !== null || child.signalCode) return;
   child.kill("SIGTERM");
   await Promise.race([
@@ -42,11 +51,11 @@ async function stopServer(child) {
   if (child.exitCode === null && !child.signalCode) child.kill("SIGKILL");
 }
 
-async function tryOpenWebSocket(url) {
+async function tryOpenWebSocket(url: string): Promise<WebSocketAttempt> {
   return await new Promise((resolve) => {
     const ws = new WebSocket(url);
     let settled = false;
-    const finish = (result) => {
+    const finish = (result: Omit<WebSocketAttempt, "ws">) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

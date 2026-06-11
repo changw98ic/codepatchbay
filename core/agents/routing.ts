@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   defaultAgentForRole,
   getDescriptor,
@@ -130,7 +129,7 @@ function availabilityFor(agentAvailability, agent) {
   if (!agent || !agentAvailability || typeof agentAvailability !== "object") {
     return { available: true, reason: null };
   }
-  const entry = agentAvailability[agent];
+  const entry: any = agentAvailability[agent];
   if (entry === undefined) return { available: true, reason: null };
   if (entry === false) return { available: false, reason: "unavailable" };
   if (entry === true) return { available: true, reason: null };
@@ -150,7 +149,7 @@ export function selectAgentWithFallback({
   agentAvailability = null,
   allowFallback = true,
   policyAllowsFallback = true,
-} = {}) {
+}: Record<string, any> = {}) {
   const preferred = preferredAgent || null;
   const fallback = fallbackAgent || null;
   const fallbackPermitted = allowFallback !== false && policyAllowsFallback !== false;
@@ -206,17 +205,18 @@ export function selectAgentWithFallback({
 
 export function healthToAvailability(agentHealth) {
   if (!agentHealth || typeof agentHealth !== "object") return null;
-  const result = {};
+  const result: Record<string, any> = {};
   for (const [agent, health] of Object.entries(agentHealth)) {
     if (health === true) {
       result[agent] = { available: true };
     } else if (health === false) {
       result[agent] = { available: false, status: "unavailable", reason: "health check failed" };
     } else if (health && typeof health === "object") {
-      const unavailable = health.healthy === false
-        || ["unavailable", "offline", "rate_limited"].includes(health.status);
+      const healthRecord = health as Record<string, any>;
+      const unavailable = healthRecord.healthy === false
+        || ["unavailable", "offline", "rate_limited"].includes(healthRecord.status);
       result[agent] = unavailable
-        ? { available: false, status: health.status || "unavailable", reason: health.reason || null }
+        ? { available: false, status: healthRecord.status || "unavailable", reason: healthRecord.reason || null }
         : { available: true };
     } else {
       result[agent] = { available: true };
@@ -263,11 +263,12 @@ export function resolvePhaseAgentWithFallback({
   return { ...selection, phase };
 }
 
-export function validateRoutingRules(routing, { isWorkflowName } = {}) {
+export function validateRoutingRules(routing, { isWorkflowName }: Record<string, any> = {}) {
   const errors = [];
   const rules = routingRules(routing);
 
-  for (const [category, rule] of Object.entries(rules)) {
+  for (const [category, rawRule] of Object.entries(rules)) {
+    const rule = rawRule as Record<string, any>;
     if (!CATEGORY_SET.has(category)) {
       errors.push(`unknown routing category: ${category}`);
       continue;

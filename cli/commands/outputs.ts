@@ -1,10 +1,9 @@
-// @ts-nocheck
 import path from "node:path";
 
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
-export async function run(args, { cpbRoot }) {
+export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const project = args[0];
   if (!project) {
     console.error("Usage: cpb outputs <project>");

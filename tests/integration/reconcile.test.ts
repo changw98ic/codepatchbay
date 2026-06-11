@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, writeFile, rm, readFile, stat } from "node:fs/promises";

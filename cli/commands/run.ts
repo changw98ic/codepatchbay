@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -28,7 +27,7 @@ export function buildAgentMetadata({
   verifyVariant,
   reviewVariant,
 }) {
-  const result = {};
+  const result: Record<string, any> = {};
   const roles = [
     ["planner", planAgent, planVariant],
     ["executor", executeAgent, executeVariant],
@@ -49,7 +48,7 @@ export function buildAgentMetadata({
   return hasAny ? result : undefined;
 }
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   const positional = [];
   let projectId;
   let workflow = "standard";
@@ -132,7 +131,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       const hubRoot = resolveHubRoot(cpbRoot);
       const registry = await loadRegistry(hubRoot);
       const cwd = path.resolve(process.cwd());
-      for (const [id, proj] of Object.entries(registry.projects || {})) {
+      for (const [id, proj] of Object.entries(registry.projects || {}) as Array<[string, Record<string, any>]>) {
         const src = proj.sourcePath && path.resolve(proj.sourcePath);
         if (src === cwd || cwd.startsWith(src + path.sep)) {
           projectId = id;
@@ -164,7 +163,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     workflowExplicit,
     planModeExplicit,
     actor: "cli",
-  });
+  } as Record<string, any>);
   workflow = route.workflow;
   planMode = route.planMode;
 

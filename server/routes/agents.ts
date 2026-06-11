@@ -1,8 +1,7 @@
-// @ts-nocheck
 import { collectAgentMetrics, getAgentDetail, getAgentJobs } from "../services/agent-metrics.js";
 import { collectAgentSetupReadiness } from "../services/agent-setup-readiness.js";
 
-export function agentRoutes(fastify, opts, done) {
+export function agentRoutes(fastify: any, _opts: any, done: () => void) {
   const notifBroadcast = fastify.notifBroadcast;
 
   // GET /api/agents — list all registered agents with status

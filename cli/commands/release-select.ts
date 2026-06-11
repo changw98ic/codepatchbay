@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import {
   listReleases,
@@ -7,7 +6,13 @@ import {
   selectRelease,
 } from "../../server/services/release-store.js";
 
-function parseFlags(args) {
+type LooseRecord = Record<string, any>;
+
+const listReleasesForCli = listReleases as any;
+const inspectCurrentReleaseForCli = inspectCurrentRelease as any;
+const selectReleaseForCli = selectRelease as any;
+
+function parseFlags(args: string[]) {
   const rest = [];
   let json = false;
   let destRoot = null;
@@ -43,8 +48,8 @@ Options:
   --help          Show this help`);
 }
 
-async function cmdList({ json, destRoot }) {
-  const result = await listReleases({ destRoot });
+async function cmdList({ json, destRoot }: LooseRecord) {
+  const result = await listReleasesForCli({ destRoot });
   if (json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return;
@@ -64,8 +69,8 @@ async function cmdList({ json, destRoot }) {
   }
 }
 
-async function cmdCurrent({ json }) {
-  const result = await inspectCurrentRelease();
+async function cmdCurrent({ json }: LooseRecord) {
+  const result = await inspectCurrentReleaseForCli();
   if (!result) {
     if (json) {
       process.stderr.write(JSON.stringify({ current: false, error: "No release selected" }) + "\n");
@@ -91,7 +96,7 @@ async function cmdCurrent({ json }) {
   }
 }
 
-async function cmdUse({ json, destRoot, rest }) {
+async function cmdUse({ json, destRoot, rest }: LooseRecord) {
   const releaseId = rest[0];
   if (!releaseId) {
     if (json) {
@@ -104,7 +109,7 @@ async function cmdUse({ json, destRoot, rest }) {
   }
 
   try {
-    const result = await selectRelease({ releaseId, destRoot });
+    const result = await selectReleaseForCli({ releaseId, destRoot });
     if (json) {
       process.stdout.write(JSON.stringify({
         selected: true,
@@ -117,39 +122,40 @@ async function cmdUse({ json, destRoot, rest }) {
     console.log(`Selected release: ${result.selector.releaseId}`);
     console.log(`  Path: ${result.selector.releasePath}`);
   } catch (err) {
-    if (err.name === "ReleaseCompatibilityError") {
+    const error = err as LooseRecord;
+    if (error.name === "ReleaseCompatibilityError") {
       if (json) {
         process.stderr.write(JSON.stringify({
           ok: false,
-          error: { code: "release_incompatible", message: err.message, releaseId, failures: err.failures },
+          error: { code: "release_incompatible", message: error.message, releaseId, failures: error.failures },
           releaseId,
-          failures: err.failures,
+          failures: error.failures,
         }, null, 2) + "\n");
       } else {
         console.error(`Cannot select release '${releaseId}':`);
-        for (const f of err.failures) {
+        for (const f of error.failures) {
           console.error(`  ${f.code}: ${f.message}`);
         }
       }
     } else {
       if (json) {
-        process.stderr.write(JSON.stringify({ ok: false, error: err.message, releaseId }) + "\n");
+        process.stderr.write(JSON.stringify({ ok: false, error: error.message, releaseId }) + "\n");
       } else {
-        console.error(`Error: ${err.message}`);
+        console.error(`Error: ${error.message}`);
       }
     }
     process.exitCode = 1;
   }
 }
 
-async function cmdDoctor({ json }) {
+async function cmdDoctor({ json }: LooseRecord) {
   const {
     runReleaseDoctorChecks,
     formatReleaseDoctorHuman,
     formatReleaseDoctorJson,
   } = await import("../../server/services/readiness-checks.js");
 
-  const result = await runReleaseDoctorChecks({ cpbRoot: process.env.CPB_ROOT });
+  const result = await (runReleaseDoctorChecks as any)({ cpbRoot: process.env.CPB_ROOT });
   if (json) {
     process.stdout.write(formatReleaseDoctorJson(result) + "\n");
   } else {
@@ -158,7 +164,7 @@ async function cmdDoctor({ json }) {
   if (!result.summary.success) process.exitCode = 1;
 }
 
-async function cmdGc({ json, rest }) {
+async function cmdGc({ json, rest }: LooseRecord) {
   const hasExecute = rest.includes("--execute");
   const hasDryRun = rest.includes("--dry-run");
   const dryRun = !hasExecute || hasDryRun;
@@ -170,7 +176,7 @@ async function cmdGc({ json, rest }) {
     formatGcResultHuman,
   } = await import("../../server/services/release-gc.js");
 
-  const plan = await buildReleaseGcPlan({ cpbRoot: process.env.CPB_ROOT });
+  const plan = await (buildReleaseGcPlan as any)({ cpbRoot: process.env.CPB_ROOT });
 
   if (dryRun) {
     if (json) {
@@ -182,7 +188,7 @@ async function cmdGc({ json, rest }) {
     return;
   }
 
-  const result = await executeReleaseGc(plan, { cpbRoot: process.env.CPB_ROOT });
+  const result = await (executeReleaseGc as any)(plan, { cpbRoot: process.env.CPB_ROOT });
   if (json) {
     process.stdout.write(JSON.stringify({ dryRun: false, plan, result }, null, 2) + "\n");
   } else {
@@ -190,7 +196,7 @@ async function cmdGc({ json, rest }) {
   }
 }
 
-async function cmdInstall(args, context) {
+async function cmdInstall(args: string[], context: LooseRecord) {
   const mod = await import("./install-release.js");
   if (typeof mod.run !== "function") {
     console.error("install-release module missing run()");
@@ -201,7 +207,7 @@ async function cmdInstall(args, context) {
   if (Number.isInteger(code)) process.exitCode = code;
 }
 
-export async function run(args, context) {
+export async function run(args: string[], context: LooseRecord = {}) {
   const sub = args[0] || "";
   const flags = parseFlags(args.slice(1));
   switch (sub) {
@@ -220,7 +226,7 @@ export async function run(args, context) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   run(process.argv.slice(2)).catch((err) => {
-    console.error(err.message);
+    console.error((err as Error).message);
     process.exitCode = 1;
   });
 }

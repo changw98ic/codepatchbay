@@ -1,5 +1,4 @@
-// @ts-nocheck
-export function validatePlanMarkdown(content) {
+export function validatePlanMarkdown(content: unknown) {
   if (!content || typeof content !== "string") {
     return { ok: false, reason: "plan content is empty or not a string" };
   }
@@ -9,7 +8,7 @@ export function validatePlanMarkdown(content) {
   return { ok: true };
 }
 
-export function validateDeliverable(content, ctx) {
+export function validateDeliverable(content: unknown, ctx?: Record<string, any>) {
   if (!content || typeof content !== "string") {
     return { ok: false, reason: "deliverable content is empty", kind: "artifact_invalid" };
   }
@@ -32,7 +31,7 @@ export function validateDeliverable(content, ctx) {
   return { ok: true };
 }
 
-export function validateVerdict(verdict) {
+export function validateVerdict(verdict: any) {
   if (!verdict || typeof verdict !== "object") {
     return { ok: false, reason: "verdict is not an object" };
   }

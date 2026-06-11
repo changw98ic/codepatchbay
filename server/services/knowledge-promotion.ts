@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -9,12 +8,13 @@ import {
 } from "./knowledge-policy.js";
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function slugify(value, fallback = "candidate") {
+function slugify(value: any, fallback = "candidate") {
   const slug = String(value || fallback)
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
@@ -23,25 +23,25 @@ function slugify(value, fallback = "candidate") {
   return SAFE_SEGMENT.test(slug) ? slug : fallback;
 }
 
-function assertSafeSessionId(sessionId) {
+function assertSafeSessionId(sessionId: string) {
   if (!SAFE_SEGMENT.test(sessionId)) {
     throw new Error(`invalid sessionId: ${sessionId}`);
   }
 }
 
-function candidateDir(sourcePath, sessionId) {
+function candidateDir(sourcePath: string, sessionId: string) {
   assertSafeSessionId(sessionId);
   return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotion-candidates");
 }
 
-export function promotionCandidatePath(sourcePath, sessionId, candidateId) {
+export function promotionCandidatePath(sourcePath: string, sessionId: string, candidateId: string) {
   if (!SAFE_SEGMENT.test(candidateId)) {
     throw new Error(`invalid candidateId: ${candidateId}`);
   }
   return path.join(candidateDir(sourcePath, sessionId), `${candidateId}.md`);
 }
 
-function renderCandidate({ title, content, sourceLinks = [] }) {
+function renderCandidate({ title, content, sourceLinks = [] }: AnyRecord) {
   const lines = [`# ${title}`, "", String(content || "").trim(), ""];
   if (sourceLinks.length > 0) {
     lines.push("## Sources", ...sourceLinks.map((link) => `- ${link}`), "");
@@ -55,7 +55,7 @@ export async function writePromotionCandidate({
   title = "Promotion Candidate",
   content,
   sourceLinks = [],
-} = {}) {
+}: AnyRecord = {}) {
   if (!sourcePath) throw new Error("sourcePath is required");
   if (!sessionId) throw new Error("sessionId is required");
   if (!content || !String(content).trim()) throw new Error("content is required");
@@ -74,11 +74,11 @@ export async function writePromotionCandidate({
   };
 }
 
-async function readCandidateContent(sourcePath, sessionId, candidateId) {
+async function readCandidateContent(sourcePath: string, sessionId: string, candidateId: string) {
   return await readFile(promotionCandidatePath(sourcePath, sessionId, candidateId), "utf8");
 }
 
-function renderPromotion({ title, content, sourceLinks = [] }) {
+function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
   const lines = [`## ${title}`, "", String(content || "").trim(), "", `Promoted: ${nowIso()}`];
   if (sourceLinks.length > 0) {
     lines.push("", "Sources:", ...sourceLinks.map((link) => `- ${link}`));
@@ -86,7 +86,7 @@ function renderPromotion({ title, content, sourceLinks = [] }) {
   return `${lines.join("\n").trim()}\n\n`;
 }
 
-async function appendPromotionRecord(sourcePath, sessionId, record) {
+async function appendPromotionRecord(sourcePath: string, sessionId: string, record: AnyRecord) {
   const filePath = path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotions.jsonl");
   await mkdir(path.dirname(filePath), { recursive: true });
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
@@ -103,7 +103,7 @@ export async function promoteKnowledge({
   content,
   sourceLinks = [],
   approved = false,
-} = {}) {
+}: AnyRecord = {}) {
   if (!approved) {
     throw new Error("knowledge promotion requires explicit approval");
   }

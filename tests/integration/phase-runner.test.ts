@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

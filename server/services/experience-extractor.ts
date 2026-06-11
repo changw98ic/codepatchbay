@@ -1,6 +1,7 @@
-// @ts-nocheck
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import path from "node:path";
+
+type AnyRecord = Record<string, any>;
 
 const FIX_SIGNALS = /\b(fix|bug|workaround|race|regression|remediation|prevented|patch|hotfix|broken|crash|deadlock|leak|orphan|zombie|stale)\b/i;
 
@@ -58,7 +59,7 @@ export function categorizeVerdictEnvelope(envelope) {
 /**
  * Extract tags from verdict envelope content.
  */
-function extractTags(envelope, content) {
+function extractTags(envelope, content = "") {
   const tags = new Set();
 
   // From fix_scope
@@ -81,7 +82,7 @@ function extractTags(envelope, content) {
 
   // From failed layers
   if (envelope?.layers && typeof envelope.layers === "object") {
-    for (const [name, layer] of Object.entries(envelope.layers)) {
+    for (const [name, layer] of Object.entries(envelope.layers as AnyRecord)) {
       if (String(layer?.status || "").toLowerCase() === "fail") {
         tags.add(name);
       }
@@ -148,7 +149,7 @@ function buildDetails(envelope) {
     parts.push(`Fix scope: ${envelope.fix_scope.join(", ")}`);
   }
   if (envelope?.layers && typeof envelope.layers === "object") {
-    const failed = Object.entries(envelope.layers)
+    const failed = Object.entries(envelope.layers as AnyRecord)
       .filter(([, l]) => String(l?.status || "").toLowerCase() === "fail")
       .map(([name]) => name);
     if (failed.length > 0) parts.push(`Failed layers: ${failed.join(", ")}`);
@@ -173,7 +174,7 @@ function buildFix(envelope) {
 function buildPrevention(envelope) {
   const parts = [];
   if (envelope?.layers && typeof envelope.layers === "object") {
-    const failed = Object.entries(envelope.layers)
+    const failed = Object.entries(envelope.layers as AnyRecord)
       .filter(([, l]) => String(l?.status || "").toLowerCase() === "fail")
       .map(([name]) => name);
     if (failed.length > 0) parts.push(`下次提交前检查: ${failed.join(", ")} 层`);
@@ -191,7 +192,7 @@ function buildPrevention(envelope) {
  * Extract ## Status / ## Reason / ## Details / ## Confidence from legacy Markdown verdict.
  */
 function extractLegacyMarkdownSections(content) {
-  const result = {};
+  const result: AnyRecord = {};
   const sections = content.split(/^## /m);
   for (const section of sections) {
     const headerMatch = section.match(/^(\w[\w -]*)\s*\n([\s\S]*)/);
@@ -337,7 +338,7 @@ export async function extractExperienceFromVerdict(cpbRoot, project, jobId, arti
     return null; // artifact not readable — skip silently
   }
 
-  let envelope = parseVerdictEnvelope(content);
+  let envelope = parseVerdictEnvelope(content) as AnyRecord;
 
   // Enrich legacy Markdown verdicts that parseVerdictEnvelope returns as legacy/inconclusive
   // by extracting ## Status / ## Reason / ## Details / ## Confidence sections
@@ -379,7 +380,12 @@ export async function extractExperienceFromTerminalState(cpbRoot, project, jobId
  * Main entry: extract experience for a job.
  * Tries verdict artifact first, then falls back to terminal state.
  */
-export async function extractExperienceForJob(cpbRoot, project, jobId, { dataRoot, force = false, skipIndexRebuild = false } = {}) {
+export async function extractExperienceForJob(
+  cpbRoot,
+  project,
+  jobId,
+  { dataRoot, force = false, skipIndexRebuild = false }: AnyRecord = {},
+) {
   const { getJob } = await import("./job-store.js");
 
   const state = await getJob(cpbRoot, project, jobId, { dataRoot });
@@ -404,18 +410,18 @@ export async function extractExperienceForJob(cpbRoot, project, jobId, { dataRoo
  * Find verdict artifact path using artifact index (authoritative),
  * falling back to job state artifacts + standard wiki path.
  */
-async function findVerdictArtifactPath(cpbRoot, project, jobId, state, { dataRoot } = {}) {
+async function findVerdictArtifactPath(cpbRoot, project, jobId, state, { dataRoot }: AnyRecord = {}) {
   // Primary: use artifact index for authoritative path resolution
   try {
     const { buildArtifactIndex } = await import("./artifact-index.js");
-    const index = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot });
+    const index = await (buildArtifactIndex as any)(cpbRoot, project, jobId, { dataRoot });
     const verdictEntry = [...index.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
     if (verdictEntry?.path) return verdictEntry.path;
   } catch { /* index not available — fall through */ }
 
   // Fallback: job state artifacts + standard wiki path
   if (!state?.artifacts) return null;
-  for (const [phase, artifact] of Object.entries(state.artifacts)) {
+  for (const [phase, artifact] of Object.entries(state.artifacts as AnyRecord)) {
     if (phase === "verify" || phase.includes("verdict") || (typeof artifact === "string" && artifact.includes("verdict"))) {
       if (path.isAbsolute(artifact)) return artifact;
       return path.join(cpbRoot, "wiki", "projects", project, "outputs", artifact);
@@ -492,7 +498,7 @@ export async function rebuildExperienceIndex(cpbRoot) {
 function parseFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  const meta = {};
+  const meta: AnyRecord = {};
   for (const line of match[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.+)/);
     if (kv) {

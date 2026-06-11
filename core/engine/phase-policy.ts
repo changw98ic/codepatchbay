@@ -1,6 +1,7 @@
-// @ts-nocheck
 import { defaultPlanModeForWorkflow } from "../triage/schema.js";
 import { getWorkflow, isWorkflowName } from "../workflow/definition.js";
+
+type PlanModeResult = { phases: string[]; warning?: string };
 
 /**
  * Filter workflow phases by planMode semantics.
@@ -9,7 +10,7 @@ import { getWorkflow, isWorkflowName } from "../workflow/definition.js";
  * @param {string}   planMode - One of: full, light, none, parent.
  * @returns {{ phases: string[], warning?: string }}
  */
-function applyPlanMode(phases, planMode, workflowName) {
+function applyPlanMode(phases: string[], planMode: string, workflowName: string): PlanModeResult {
   if (workflowName === "direct" && planMode === "none") {
     return {
       phases: phases.filter((p) => p === "execute"),
@@ -40,7 +41,7 @@ function applyPlanMode(phases, planMode, workflowName) {
  * @param {{ workflow?: string, planMode?: string, taskType?: string }} opts
  * @returns {{ phases: string[], resolvedPlanMode: string, source: "phase_policy", warning?: string }}
  */
-export function resolveSemanticPhases({ workflow = "standard", planMode = "auto", taskType } = {}) {
+export function resolveSemanticPhases({ workflow = "standard", planMode = "auto" }: { workflow?: string; planMode?: string; taskType?: string } = {}) {
   const workflowName = isWorkflowName(workflow) ? workflow : "standard";
   const wf = getWorkflow(workflowName);
   const resolvedPlanMode = planMode === "auto"
@@ -66,7 +67,7 @@ export function resolveSemanticPhases({ workflow = "standard", planMode = "auto"
  * @param {string}   resolvedPlanMode - The plan mode that produced the phase list.
  * @returns {{ valid: boolean, reason?: string }}
  */
-export function validatePhasePolicy(phases, resolvedPlanMode) {
+export function validatePhasePolicy(phases: string[], resolvedPlanMode: string) {
   if (resolvedPlanMode === "none") {
     return { valid: false, reason: 'planMode "none" is an escape hatch — not allowed for mutating durable jobs' };
   }

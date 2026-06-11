@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import sensible from "@fastify/sensible";
@@ -18,9 +17,10 @@ async function makeApp(route, { cpbRoot, hubRoot, runtimeHealth = null }) {
   const app = Fastify({ logger: false });
   await app.register(sensible);
   app.addHook("onRequest", (req, _reply, done) => {
-    req.cpbRoot = cpbRoot;
-    req.cpbHubRoot = hubRoot;
-    req.runtimeHealth = runtimeHealth;
+    const request = req as typeof req & Record<string, any>;
+    request.cpbRoot = cpbRoot;
+    request.cpbHubRoot = hubRoot;
+    request.runtimeHealth = runtimeHealth;
     done();
   });
   await app.register(route);

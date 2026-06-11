@@ -1,4 +1,3 @@
-// @ts-nocheck
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
@@ -66,7 +65,7 @@ const apiKeys = process.env.CPB_API_KEYS
   : null;
 
 function parseCookieHeader(header) {
-  const cookies = {};
+  const cookies: Record<string, string> = {};
   for (const part of String(header || '').split(';')) {
     const index = part.indexOf('=');
     if (index === -1) continue;
@@ -89,7 +88,7 @@ function extractApiKey(req) {
   if (headerKey) return headerKey;
   const cookieKey = parseCookieHeader(req.headers.cookie).cpb_api_key;
   if (cookieKey) return cookieKey;
-  return req.query?.api_key;
+  return (req.query as Record<string, any> | undefined)?.api_key;
 }
 
 function hasValidApiKey(req) {
@@ -125,9 +124,10 @@ app.register(async function (fastify) {
 
 // Inject CPB_ROOT into requests
 app.addHook('onRequest', (req, _res, done) => {
-  req.cpbRoot = CPB_ROOT;
-  req.cpbHubRoot = hubRuntime.hubRoot;
-  req.hubRuntime = hubRuntime;
+  const request = req as Record<string, any>;
+  request.cpbRoot = CPB_ROOT;
+  request.cpbHubRoot = hubRuntime.hubRoot;
+  request.hubRuntime = hubRuntime;
   done();
 });
 
@@ -245,7 +245,7 @@ if (existsSync(webDist)) {
   });
 }
 
-const watchers = await registerWatcher(CPB_ROOT, notifBroadcast);
+const watchers = await registerWatcher(CPB_ROOT, notifBroadcast) as Record<string, any>;
 
 // Start
 try {

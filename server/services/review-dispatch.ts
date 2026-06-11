@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Review Dispatch — extracted session dispatch, analysis, and cancellation logic.
  *
@@ -34,7 +33,7 @@ function worktreePathFor(cpbRoot, jobId) {
  * Dispatch a review session to the hub queue.
  * Shared by approve and auto-approve routes.
  */
-export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride } = {}) {
+export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId);
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -81,7 +80,7 @@ export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOver
 /**
  * Auto-approve path: handles already-dispatched sessions idempotently.
  */
-export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootOverride } = {}) {
+export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId);
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -219,12 +218,13 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
     });
   });
 
-  if (acpResult.error) {
-    return { ok: false, summary: `Analysis failed: ${acpResult.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
+  const resultRecord = acpResult as Record<string, any>;
+  if (resultRecord.error) {
+    return { ok: false, summary: `Analysis failed: ${resultRecord.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
   }
 
   let parsed = null;
-  const rawOutput = acpResult.output || "";
+  const rawOutput = resultRecord.output || "";
   const jsonMatch = rawOutput.match(/```json\s*([\s\S]*?)```/) || rawOutput.match(/\{[\s\S]*"summary"[\s\S]*\}/);
   if (jsonMatch) {
     try {

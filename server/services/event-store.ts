@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { deriveDagResumeState } from "../../core/workflow/dag-executor.js";
@@ -12,8 +11,9 @@ import {
 } from "./secret-policy.js";
 
 const EVENT_LOCK_TTL_MS = 30_000;
+type AnyRecord = Record<string, any>;
 
-async function withEventLock(eventFile, callback) {
+async function withEventLock(eventFile: string, callback: () => Promise<any>) {
   const lockDir = `${eventFile}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
@@ -46,11 +46,11 @@ async function withEventLock(eventFile, callback) {
 
 export const JOBS_EVENTS_FORMAT_VERSION = 1;
 
-function _base(cpbRoot, opts) {
+function _base(cpbRoot: string, opts: Record<string, any>) {
   return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
-function validatePathComponent(name, value) {
+function validatePathComponent(name: string, value: unknown) {
   if (
     typeof value !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value)
@@ -59,7 +59,7 @@ function validatePathComponent(name, value) {
   }
 }
 
-function serializeEvent(event) {
+function serializeEvent(event: any) {
   if (event === null || typeof event !== "object" || Array.isArray(event)) {
     throw new Error("invalid event: expected a non-null object");
   }
@@ -78,17 +78,17 @@ function serializeEvent(event) {
   return serialized;
 }
 
-function malformedEventError(file, lineNumber, reason) {
+function malformedEventError(file: string, lineNumber: number, reason: string) {
   return new Error(`${file} at line ${lineNumber}: malformed event: ${reason}`);
 }
 
-async function truncateCorruptJsonlTail(file, raw) {
+async function truncateCorruptJsonlTail(file: string, raw: string) {
   const lastNewline = raw.lastIndexOf("\n");
   const validPrefix = lastNewline >= 0 ? raw.slice(0, lastNewline + 1) : "";
   await truncate(file, Buffer.byteLength(validPrefix, "utf8"));
 }
 
-export function eventFileFor(cpbRoot, project, jobId, opts = {}) {
+export function eventFileFor(cpbRoot: string, project: string, jobId: string, opts: Record<string, any> = {}) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
 
@@ -103,7 +103,7 @@ export function eventFileFor(cpbRoot, project, jobId, opts = {}) {
   return file;
 }
 
-async function _scanEventsDir(eventsRoot) {
+async function _scanEventsDir(eventsRoot: string) {
   let projectEntries;
   try {
     projectEntries = await readdir(eventsRoot, { withFileTypes: true });
@@ -136,7 +136,7 @@ async function _scanEventsDir(eventsRoot) {
   return files;
 }
 
-export async function listEventFiles(cpbRoot, opts = {}) {
+export async function listEventFiles(cpbRoot: string, opts: Record<string, any> = {}) {
   const rtRoot = opts.dataRoot ? path.join(opts.dataRoot, "events") : null;
   const legacyRoot = runtimeDataPath(cpbRoot, "events");
 
@@ -157,7 +157,7 @@ export async function listEventFiles(cpbRoot, opts = {}) {
   return allFiles.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-export async function recoverEventFile(cpbRoot, project, jobId, opts = {}) {
+export async function recoverEventFile(cpbRoot: string, project: string, jobId: string, opts: Record<string, any> = {}) {
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   try {
     const raw = await readFile(file, "utf8");
@@ -191,7 +191,7 @@ export async function recoverEventFile(cpbRoot, project, jobId, opts = {}) {
   }
 }
 
-export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
+export async function appendEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, opts: Record<string, any> = {}) {
   // Validate event structure first (throws on invalid input)
   serializeEvent(event);
 
@@ -208,8 +208,8 @@ export async function appendEvent(cpbRoot, project, jobId, event, opts = {}) {
       }
     }
 
-    const writeBlocked = async (artifactName, reason) => {
-      const blocked = makeSecretBlockedEvent(artifactName, reason);
+    const writeBlocked = async (artifactName: string, reason: string) => {
+      const blocked: AnyRecord = makeSecretBlockedEvent(artifactName, reason);
       blocked.jobId = event.jobId || jobId;
       blocked.project = event.project || project;
       const serialized = serializeEvent(blocked);
@@ -293,7 +293,7 @@ async function _parseEventFile(file) {
   }
 }
 
-export async function readEvents(cpbRoot, project, jobId, opts = {}) {
+export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
   // Try runtime root first when dataRoot is provided and differs from legacy
   if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
     const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
@@ -307,7 +307,7 @@ export async function readEvents(cpbRoot, project, jobId, opts = {}) {
   return result ?? [];
 }
 
-export async function readEventsReadOnly(cpbRoot, project, jobId, opts = {}) {
+export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
   if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
     const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
     const rtEvents = await _parseEventFileReadOnly(rtFile);
@@ -357,7 +357,7 @@ const NODE_STATE_DEFAULTS = {
   durationMs: null,
 };
 
-function _updateNodeState(state, nodeId, updates) {
+function _updateNodeState(state: AnyRecord, nodeId: any, updates: AnyRecord) {
   if (!nodeId) return;
   const prev = state.nodeStates[nodeId] || { ...NODE_STATE_DEFAULTS };
   const definedUpdates = Object.fromEntries(
@@ -366,33 +366,33 @@ function _updateNodeState(state, nodeId, updates) {
   const next = { ...prev, ...definedUpdates };
   const terminalTs = definedUpdates.completedAt || definedUpdates.failedAt || definedUpdates.cancelledAt;
   if (terminalTs && prev.startedAt) {
-    const ms = new Date(terminalTs).getTime() - new Date(prev.startedAt).getTime();
+    const ms = new Date(String(terminalTs)).getTime() - new Date(prev.startedAt).getTime();
     next.durationMs = Number.isFinite(ms) ? ms : null;
   }
   state.nodeStates = { ...state.nodeStates, [nodeId]: next };
 }
 
-function _workflowNodes(state) {
+function _workflowNodes(state: AnyRecord): AnyRecord[] {
   return Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : [];
 }
 
-function _workflowNodeIds(state) {
+function _workflowNodeIds(state: AnyRecord) {
   return new Set(_workflowNodes(state).map((node) => node?.id).filter(Boolean));
 }
 
-function _workflowHasNodeId(state, nodeId) {
+function _workflowHasNodeId(state: AnyRecord, nodeId: any): boolean {
   return _workflowNodeIds(state).has(nodeId);
 }
 
-function _syncDagResume(state) {
-  const phaseStates = {};
+function _syncDagResume(state: AnyRecord) {
+  const phaseStates: AnyRecord = {};
   for (const phase of state.completedPhases) phaseStates[phase] = "completed";
   if (state.failurePhase) phaseStates[state.failurePhase] = state.status === "blocked" ? "blocked" : "failed";
   state.dagResume = deriveDagResumeState({
     workflowDag: state.workflowDag,
     nodeStates: state.nodeStates,
     phaseStates,
-  });
+  } as any);
   state.completedNodes = state.dagResume.completedNodeIds;
 }
 
@@ -825,7 +825,7 @@ export async function writeCheckpoint(cpbRoot, project, jobId, state, opts = {})
   return file;
 }
 
-export async function readCheckpoint(cpbRoot, project, jobId, opts = {}) {
+export async function readCheckpoint(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
   // Try runtime root first
   if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
     const rtFile = checkpointFileFor(cpbRoot, project, jobId, opts);

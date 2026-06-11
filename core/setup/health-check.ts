@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getSetupAgent } from "./agent-catalog.js";
 import { normalizeCommandProbe } from "./detect.js";
 
@@ -64,13 +63,13 @@ export async function checkSetupAgentHealth(agentOrId, { runCommand = defaultRun
   const agent = asAgent(agentOrId);
   const binary = normalizeCommandProbe(await runCommand(agent.binary, ["--version"]));
 
-  let auth = skippedCheck("agent manifest does not define auth.statusCommand");
+  let auth: Record<string, any> = skippedCheck("agent manifest does not define auth.statusCommand");
   if (agent.auth?.statusCommand) {
     const parsed = splitCommand(agent.auth.statusCommand);
     auth = okOrProbe(await runCommand(parsed.command, parsed.args));
   }
 
-  let adapter = skippedCheck("agent manifest does not define adapter.command");
+  let adapter: Record<string, any> = skippedCheck("agent manifest does not define adapter.command");
   if (agent.adapter?.command) {
     adapter = okOrProbe(await runCommand(agent.adapter.command, ["--help"]));
   }

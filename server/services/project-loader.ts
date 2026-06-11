@@ -1,4 +1,3 @@
-// @ts-nocheck
 import fs from 'fs/promises';
 import path from 'path';
 import { isSecretPath, notifySecretBlocked } from './secret-policy.js';
@@ -52,7 +51,7 @@ function statsEqual(a, b) {
  * @param {string[]} [opts.files] - subset to load (default: all 4)
  * @returns {Object<string, string|null>} file contents keyed by name (no .md extension)
  */
-export async function loadProjectFiles(projDir, opts = {}) {
+export async function loadProjectFiles(projDir, opts: Record<string, any> = {}) {
   const requested = opts.files || ALL_FILES;
   const onSecretBlocked = opts.onSecretBlocked;
 

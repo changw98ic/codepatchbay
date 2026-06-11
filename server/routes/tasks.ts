@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { broadcast } from '../services/ws-broadcast.js';
 import { getRunningTasks, getDurableTasks } from '../services/executor.js';
 import { cancelJob, requestRedirectJob, retryJob } from '../services/job-store.js';
@@ -94,7 +93,7 @@ export async function taskRoutes(fastify, opts) {
       workflowExplicit: Object.hasOwn(body, 'workflow'),
       planModeExplicit: Object.hasOwn(body, 'planMode'),
       actor,
-    });
+    } as Record<string, any>);
 
     const entry = await enqueue(req.cpbHubRoot, {
       projectId: name,
@@ -184,7 +183,7 @@ export async function taskRoutes(fastify, opts) {
         actor,
         feedback,
         dataRoot,
-      });
+      } as Record<string, any>);
     } catch (error) {
       return sendReviewLoopError(reply, error);
     }
@@ -208,7 +207,7 @@ export async function taskRoutes(fastify, opts) {
         hubRoot: req.cpbHubRoot,
         sourcePath: project.sourcePath || null,
         dataRoot,
-      });
+      } as Record<string, any>);
     } catch (error) {
       return sendReviewLoopError(reply, error);
     }

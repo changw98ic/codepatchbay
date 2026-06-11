@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   readHubConfig,
   writeHubConfig,
@@ -9,13 +8,15 @@ import {
   isValidSchedulerMode,
 } from "../../server/services/agent-config.js";
 
-function optionValue(args, name) {
+type LooseRecord = Record<string, any>;
+
+function optionValue(args: string[], name: string): string | null {
   const idx = args.indexOf(name);
   return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
 }
 
-function parseRuleString(str) {
-  const parts = {};
+function parseRuleString(str: string): LooseRecord {
+  const parts: LooseRecord = {};
   for (const segment of str.split(";")) {
     const eq = segment.indexOf("=");
     if (eq < 0) continue;
@@ -24,7 +25,7 @@ function parseRuleString(str) {
     if (key.startsWith("match.")) {
       if (!parts.match) parts.match = {};
       const matchKey = key.slice(6);
-      if (matchKey === "labels") parts.match[matchKey] = val.split(",").map(s => s.trim());
+      if (matchKey === "labels") parts.match[matchKey] = val.split(",").map((s) => s.trim());
       else parts.match[matchKey] = val;
     } else if (key.startsWith("action.")) {
       if (!parts.action) parts.action = {};
@@ -36,7 +37,7 @@ function parseRuleString(str) {
   return parts;
 }
 
-function displayAgents(config, label) {
+function displayAgents(config: LooseRecord | null | undefined, label: string) {
   if (!config || Object.keys(config).length === 0) {
     console.log(`${label}: (no overrides)`);
     return;
@@ -52,7 +53,12 @@ function displayAgents(config, label) {
   }
 }
 
-async function applyAgentUpdates(args, container, field, onSave) {
+async function applyAgentUpdates(
+  args: string[],
+  container: LooseRecord,
+  field: string,
+  onSave: (data: LooseRecord) => Promise<void>,
+) {
   const defaultAgent = optionValue(args, "--agent");
   const planAgent = optionValue(args, "--plan-agent");
   const executeAgent = optionValue(args, "--execute-agent");
@@ -112,7 +118,7 @@ async function applyAgentUpdates(args, container, field, onSave) {
   return true;
 }
 
-export async function run(args, { cpbRoot } = {}) {
+export async function run(args: string[], { cpbRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
   cpb config --hub --agent <name>                Set global default agent
@@ -211,7 +217,7 @@ export async function run(args, { cpbRoot } = {}) {
     const maxActivePerProject = optionValue(args, "--max-active-per-project");
     const acpProviderMax = optionValue(args, "--acp-provider-max");
     if (maxActivePerProject !== null || acpProviderMax !== null) {
-      const parsePositive = (label, value) => {
+      const parsePositive = (label: string, value: string | null) => {
         if (value === null) return null;
         const n = Number(value);
         if (!Number.isFinite(n) || n < 1) throw new Error(`${label} must be a positive integer.`);
@@ -229,7 +235,7 @@ export async function run(args, { cpbRoot } = {}) {
           if (providerMax !== null) hubConfig.acpPool.providerMax = providerMax;
         }
       } catch (err) {
-        console.error(err.message);
+        console.error((err as Error).message);
         return 1;
       }
       await writeHubConfig(hubRoot, hubConfig);
@@ -255,8 +261,9 @@ export async function run(args, { cpbRoot } = {}) {
     const merged = mergeAgentConfig(hubConfig.agents, projectAgents, null);
     console.log(`Agent config for project '${project}' (merged):`);
     for (const [role, spec] of Object.entries(merged)) {
-      const variantTag = spec.variant ? ` variant:${spec.variant}` : "";
-      console.log(`  ${role}: ${spec.agent}${variantTag}`);
+      const typedSpec = spec as LooseRecord;
+      const variantTag = typedSpec.variant ? ` variant:${typedSpec.variant}` : "";
+      console.log(`  ${role}: ${typedSpec.agent}${variantTag}`);
     }
     console.log(`\nSource: hub config + project config`);
     return 0;
@@ -317,7 +324,7 @@ export async function run(args, { cpbRoot } = {}) {
     if (syncInterval !== null) a.syncIntervalSec = parseInt(syncInterval, 10) || 0;
     if (excludeLabels !== null) {
       a.exclude = a.exclude || {};
-      a.exclude.labels = excludeLabels.split(",").map(s => s.trim()).filter(Boolean);
+      a.exclude.labels = excludeLabels.split(",").map((s) => s.trim()).filter(Boolean);
     }
     if (clearRules) a.rules = [];
     for (const rs of ruleStrings) {

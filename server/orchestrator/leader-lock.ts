@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, writeFile, rm, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -6,9 +5,19 @@ import { writeJsonAtomic } from "../../shared/fs-utils.js";
 
 const DEFAULT_TTL_MS = 60_000;
 const RENEW_INTERVAL_MS = 20_000;
+type AnyRecord = Record<string, any>;
 
 export class LeaderLock {
-  constructor(hubRoot) {
+  lockDir: string;
+  leaderFile: string;
+  epochFile: string;
+  quarantineDir: string;
+  hubId: string;
+  epoch: number;
+  _renewTimer: NodeJS.Timeout | null;
+  _onLost?: () => void;
+
+  constructor(hubRoot: string) {
     this.lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
     this.leaderFile = path.join(this.lockDir, "leader.json");
     this.epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
@@ -47,7 +56,7 @@ export class LeaderLock {
     await mkdir(path.dirname(this.lockDir), { recursive: true });
     try {
       await mkdir(this.lockDir);
-    } catch (err) {
+    } catch (err: any) {
       if (err.code === "EEXIST") {
         throw new Error(`leader lock contention: another Hub acquired the lock`);
       }
@@ -84,7 +93,7 @@ export class LeaderLock {
   /**
    * Start periodic renewal. Calls onLost() if renewal fails (lock stolen/expired).
    */
-  startRenewal(onLost) {
+  startRenewal(onLost: () => void) {
     this._onLost = onLost;
     this._renewTimer = setInterval(async () => {
       const ok = await this.renew();
@@ -130,12 +139,12 @@ export class LeaderLock {
     }
   }
 
-  _isExpired(leader) {
+  _isExpired(leader: AnyRecord | null) {
     const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
     return !Number.isFinite(expiresAt) || Date.now() > expiresAt;
   }
 
-  _matchesCurrentIdentity(leader) {
+  _matchesCurrentIdentity(leader: AnyRecord | null) {
     return Boolean(
       leader
       && this.epoch > 0
@@ -144,7 +153,7 @@ export class LeaderLock {
     );
   }
 
-  _isCurrentLeader(leader) {
+  _isCurrentLeader(leader: AnyRecord | null) {
     return this._matchesCurrentIdentity(leader) && !this._isExpired(leader);
   }
 
@@ -164,7 +173,7 @@ export class LeaderLock {
   getHubId() { return this.hubId; }
 }
 
-export async function readLeaderStatus(hubRoot) {
+export async function readLeaderStatus(hubRoot: string) {
   const lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
   const leaderFile = path.join(lockDir, "leader.json");
   const epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
@@ -182,7 +191,7 @@ export async function readLeaderStatus(hubRoot) {
   };
 }
 
-async function readJsonOrNull(file) {
+async function readJsonOrNull(file: string): Promise<AnyRecord | null> {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -190,7 +199,7 @@ async function readJsonOrNull(file) {
   }
 }
 
-function isLeaderAlive(leader) {
+function isLeaderAlive(leader: AnyRecord | null) {
   const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
   if (!leader || !Number.isFinite(expiresAt) || Date.now() > expiresAt) return false;
   if (!leader.pid || leader.host !== os.hostname()) return true;

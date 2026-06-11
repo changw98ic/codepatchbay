@@ -1,4 +1,3 @@
-// @ts-nocheck
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -71,7 +70,7 @@ async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, 
   }
 }
 
-export async function composePromptContext({ hubRoot, sourcePath, sessionId, task, profile, onSecretBlocked } = {}) {
+export async function composePromptContext({ hubRoot, sourcePath, sessionId, task, profile, onSecretBlocked }: Record<string, any> = {}) {
   const layers = [];
 
   for (const layerName of PROMPT_COMPOSITION_ORDER) {

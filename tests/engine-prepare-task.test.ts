@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,15 +10,17 @@ import { materializeJob } from "../server/services/event-store.js";
 import { jobToPipelineState } from "../server/services/job-projection.js";
 import { tempRoot } from "./helpers.js";
 
+type AnyRecord = Record<string, any>;
+
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
 process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
 
-function jsonEnvelope(data) {
+function jsonEnvelope(data: AnyRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-function phaseOutput(role) {
+function phaseOutput(role: string) {
   if (role === "planner") {
     return jsonEnvelope({
       status: "ok",
@@ -78,7 +79,7 @@ function mediumRiskMap() {
   };
 }
 
-function makeServices({ events = [], starts = [], completed = [], blocked = [], failed = [], prepareTask } = {}) {
+function makeServices({ events = [], starts = [], completed = [], blocked = [], failed = [], prepareTask }: AnyRecord = {}) {
   return {
     createJob: async (_cpbRoot, job) => ({
       ...job,
@@ -112,7 +113,7 @@ function makeServices({ events = [], starts = [], completed = [], blocked = [], 
   };
 }
 
-function makePool({ calls = [], failWhen = null } = {}) {
+function makePool({ calls = [], failWhen = null }: AnyRecord = {}) {
   return {
     async execute(agent, prompt, cwd, timeoutMs, meta) {
       const call = { agent, prompt, cwd, timeoutMs, meta };
@@ -128,7 +129,7 @@ function makePool({ calls = [], failWhen = null } = {}) {
   };
 }
 
-async function runPrepareEngine({ prepareTask, includePrepareTask = true } = {}) {
+async function runPrepareEngine({ prepareTask, includePrepareTask = true }: AnyRecord = {}) {
   const cpbRoot = await tempRoot("cpb-prepare-cpb");
   const sourcePath = await makeSourceRoot();
   const events = [];
@@ -227,7 +228,7 @@ test("runJob emits and materializes riskmap_generated before normal phases", asy
   assert.equal(riskEvent.verificationDepth, "standard");
   assert.equal(riskEvent.adversarialRequired, false);
 
-  const materialized = materializeJob(events);
+  const materialized = materializeJob(events) as AnyRecord;
   assert.deepEqual(materialized.riskMap, riskMap);
 });
 
@@ -254,7 +255,7 @@ test("runJob materializes workflow DAG and emits node transitions for phases", a
     "dag_node_completed:verify",
   ]);
 
-  const materialized = materializeJob(events);
+  const materialized = materializeJob(events) as AnyRecord;
   assert.deepEqual(materialized.workflowDag.nodes.map((node) => node.id), ["plan", "execute", "verify"]);
   assert.deepEqual(materialized.completedNodes, ["plan", "execute", "verify"]);
   assert.equal(materialized.nodeStates.verify.status, "completed");
@@ -406,8 +407,8 @@ test("runJob failed same-phase DAG node records node-aware resume target", async
   });
 
   assert.equal(result.status, "failed");
-  assert.equal(result.failure.nodeId, "execute_b");
-  const materialized = materializeJob(events);
+  assert.equal((result.failure as AnyRecord).nodeId, "execute_b");
+  const materialized = materializeJob(events) as AnyRecord;
   assert.equal(materialized.dagResume.failedNodeId, "execute_b");
   assert.deepEqual(materialized.dagResume.resumeTarget, { nodeId: "execute_b", phase: "execute" });
   assert.deepEqual(materialized.dagResume.completedNodeIds, ["plan", "execute_a"]);
@@ -480,7 +481,7 @@ test("runJob resumes DAG retries without rerunning completed nodes", async () =>
       .map((event) => event.nodeId),
     ["execute_b", "verify"],
   );
-  const materialized = materializeJob(events);
+  const materialized = materializeJob(events) as AnyRecord;
   assert.deepEqual(materialized.completedNodes, ["plan", "execute_a", "execute_b", "verify"]);
   assert.equal(materialized.nodeStates.plan.status, "skipped");
   assert.equal(materialized.nodeStates.execute_a.status, "skipped");
@@ -550,7 +551,7 @@ test("runJob emits and materializes dynamic agent plan from prepare_task", async
   assert.ok(planEvent, "dynamic_agent_plan_generated event should be emitted");
   assert.deepEqual(planEvent.dynamicAgentPlan, dynamicAgentPlan);
 
-  const materialized = materializeJob(events);
+  const materialized = materializeJob(events) as AnyRecord;
   assert.deepEqual(materialized.dynamicAgentPlan, dynamicAgentPlan);
 });
 
@@ -578,7 +579,7 @@ test("runJob inserts adversarial_verify after verify for high-risk RiskMap", asy
   assert.ok(transitions.includes("dag_node_started:adversarial_verify"));
   assert.ok(transitions.includes("dag_node_completed:adversarial_verify"));
 
-  const materialized = materializeJob(events);
+  const materialized = materializeJob(events) as AnyRecord;
   assert.equal(materialized.nodeStates.adversarial_verify.status, "completed");
   assert.ok(materialized.completedNodes.includes("adversarial_verify"));
 

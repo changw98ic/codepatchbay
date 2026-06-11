@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -38,11 +37,12 @@ function snippet(text, maxLen = 500) {
 }
 
 function failContext(label, result, detail) {
+  const info = result as Record<string, any>;
   const lines = [`${FAIL} ${label}`];
-  lines.push(`  command: ${result.commandText}`);
-  lines.push(`  exit code: ${result.code}`);
-  if (result.stdout) lines.push(`  stdout: ${snippet(result.stdout)}`);
-  if (result.stderr) lines.push(`  stderr: ${snippet(result.stderr)}`);
+  lines.push(`  command: ${info.commandText}`);
+  lines.push(`  exit code: ${info.code}`);
+  if (info.stdout) lines.push(`  stdout: ${snippet(info.stdout)}`);
+  if (info.stderr) lines.push(`  stderr: ${snippet(info.stderr)}`);
   if (detail) lines.push(`  validation error: ${detail}`);
   return lines.join("\n");
 }
@@ -111,7 +111,7 @@ function validateDemo(data) {
   try {
     verdict = JSON.parse(readFileSync(artifacts.verdict.path, "utf8"));
   } catch (error) {
-    return `.artifacts.verdict.path is not valid JSON: ${error.message}`;
+    return `.artifacts.verdict.path is not valid JSON: ${(error as Error).message}`;
   }
   if (verdict.status !== "pass") return `.verdict.status is "${verdict.status}", expected "pass"`;
   if (!verdict.risk || verdict.risk.level !== "low") return ".verdict.risk.level must be low";
@@ -127,7 +127,7 @@ function validateDemo(data) {
 // --- runner ---
 
 async function smoke(label, args, validator) {
-  const result = await run(CPB, args);
+  const result = await run(CPB, args) as Record<string, any>;
   result.command = CPB;
   result.commandText = `node ${path.relative(ROOT, CPB)} ${args.join(" ")}`;
 

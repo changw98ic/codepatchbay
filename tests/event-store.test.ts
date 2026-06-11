@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { materializeJob } from "../server/services/event-store.js";
+
+type AnyRecord = Record<string, any>;
 
 function ts(offset = 0) {
   return new Date(Date.now() + offset).toISOString();
@@ -11,8 +12,8 @@ function ts(offset = 0) {
 
 const JOB_CREATED = { type: "job_created", jobId: "j1", project: "p", task: "t", ts: ts(0) };
 
-function materialize(...events) {
-  return materializeJob([JOB_CREATED, ...events]);
+function materialize(...events: AnyRecord[]) {
+  return materializeJob([JOB_CREATED, ...events]) as AnyRecord;
 }
 
 // ── external_repair ──────────────────────────────────────

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
@@ -55,7 +54,7 @@ export async function runExecute(ctx) {
     prompt,
   });
 
-  const agentResult = await runAgent({
+  const agentResult: Record<string, any> = await runAgent({
     role,
     ...resolvedAgent,
     project,
@@ -64,6 +63,8 @@ export async function runExecute(ctx) {
     cwd,
     pool,
     timeoutMs: ctx.timeouts?.execute ?? 0,
+    scope: ctx.scope,
+    env: ctx.env,
   });
 
   if (!agentResult.ok) {
@@ -82,7 +83,7 @@ export async function runExecute(ctx) {
     });
   }
 
-  const parsed = parseExecutorJson(agentResult.output);
+  const parsed: Record<string, any> = parseExecutorJson(agentResult.output) as any;
   if (!parsed.ok) {
     return phaseFailed({
       phase: "execute",
@@ -103,7 +104,7 @@ export async function runExecute(ctx) {
 
   const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
-  const validation = validateDeliverable(deliverable, { ...ctx, changedFiles });
+  const validation: Record<string, any> = validateDeliverable(deliverable, { ...ctx, changedFiles }) as any;
   if (!validation.ok) {
     return phaseFailed({
       phase: "execute",

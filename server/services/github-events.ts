@@ -1,5 +1,6 @@
-// @ts-nocheck
 import { normalizeGithubIssue, normalizeGithubLabels } from "./github-issues.js";
+
+type AnyRecord = Record<string, any>;
 
 function ignored(event, reason) {
   return {
@@ -9,15 +10,15 @@ function ignored(event, reason) {
   };
 }
 
-function repoFullName(payload = {}) {
+function repoFullName(payload: AnyRecord = {}) {
   return payload.repository?.full_name || payload.repository?.nameWithOwner || payload.repository?.fullName || null;
 }
 
-function actorLogin(payload = {}) {
+function actorLogin(payload: AnyRecord = {}) {
   return payload.sender?.login || payload.actor?.login || payload.sender?.name || null;
 }
 
-function issueAuthorAssociation(issue = {}) {
+function issueAuthorAssociation(issue: AnyRecord = {}) {
   return issue.author_association || issue.authorAssociation || issue.author?.association || null;
 }
 
@@ -106,7 +107,9 @@ function normalizeInstallationEvent({ event, delivery, payload }) {
   };
 }
 
-export function normalizeGithubWebhookEvent({ event, delivery, payload = {}, projectId = null } = {}) {
+export function normalizeGithubWebhookEvent(
+  { event, delivery, payload = {}, projectId = null }: AnyRecord = {},
+) {
   if (event === "issues") {
     return normalizeIssuesEvent({ event, delivery, projectId, payload });
   }

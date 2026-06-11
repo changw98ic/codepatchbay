@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
@@ -6,12 +5,13 @@ import { appendEvent } from "./event-store.js";
 import { loadProfileSkills } from "./profile-loader.js";
 
 const PROFILES_DIR = "profiles";
+type AnyRecord = Record<string, any>;
 
-function skillsDir(cpbRoot, role) {
+function skillsDir(cpbRoot: string, role: string) {
   return path.join(cpbRoot, PROFILES_DIR, role, "skills");
 }
 
-function slugify(text) {
+function slugify(text: string) {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -24,7 +24,7 @@ function slugify(text) {
  * Only extracts from jobs that completed successfully (PASS verdict).
  * Writes a DRAFT skill file and appends a skill_extracted event.
  */
-export async function extractSkillFromJob(cpbRoot, project, jobId, job) {
+export async function extractSkillFromJob(cpbRoot: string, project: string, jobId: string, job: AnyRecord) {
   const verdict = job.verdict || job.artifacts?.verdict;
   const role = inferRole(job);
   const taskSummary = job.task || job.taskDescription || `job-${jobId}`;
@@ -77,7 +77,7 @@ export async function extractSkillFromJob(cpbRoot, project, jobId, job) {
 /**
  * Review a draft skill — promote to active or reject.
  */
-export async function reviewSkill(cpbRoot, role, fileName, { approve, reviewer }) {
+export async function reviewSkill(cpbRoot: string, role: string, fileName: string, { approve, reviewer }: AnyRecord) {
   const dir = skillsDir(cpbRoot, role);
   const filePath = path.join(dir, fileName);
 
@@ -99,7 +99,7 @@ export async function reviewSkill(cpbRoot, role, fileName, { approve, reviewer }
 /**
  * List all extracted (draft + active) skills for a role.
  */
-export async function listExtractedSkills(cpbRoot, role) {
+export async function listExtractedSkills(cpbRoot: string, role: string) {
   const dir = skillsDir(cpbRoot, role);
 
   let entries;
@@ -121,7 +121,7 @@ export async function listExtractedSkills(cpbRoot, role) {
       continue;
     }
 
-    const fm = parseFrontMatter(content);
+    const fm: AnyRecord = parseFrontMatter(content);
     skills.push({
       fileName: entry.name,
       role,
@@ -141,12 +141,12 @@ export async function listExtractedSkills(cpbRoot, role) {
 /**
  * Load only ACTIVE extracted skills for a role (for prompt injection).
  */
-export async function loadActiveExtractedSkills(cpbRoot, role) {
+export async function loadActiveExtractedSkills(cpbRoot: string, role: string) {
   const all = await listExtractedSkills(cpbRoot, role);
   return all.filter((s) => s.status === "active");
 }
 
-function inferRole(job) {
+function inferRole(job: AnyRecord) {
   if (job.role) return job.role;
   const phases = job.completedPhases || [];
   if (phases.includes("execute")) return "executor";
@@ -155,7 +155,7 @@ function inferRole(job) {
   return null;
 }
 
-function buildSkillContent(fm, job, isPositive) {
+function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean) {
   const lines = [
     "---",
     `name: ${fm.name}`,
@@ -207,10 +207,10 @@ function buildSkillContent(fm, job, isPositive) {
   return lines.join("\n");
 }
 
-function parseFrontMatter(content) {
+function parseFrontMatter(content: string): AnyRecord {
   const parts = content.split("---");
   if (parts.length < 3) return {};
-  const fm = {};
+  const fm: AnyRecord = {};
   for (const line of parts[1].split("\n")) {
     const m = line.match(/^(\w+):\s*(.+)/);
     if (m) fm[m[1]] = m[2].trim();
@@ -218,7 +218,7 @@ function parseFrontMatter(content) {
   return fm;
 }
 
-function updateFrontmatterStatus(content, newStatus, reviewer) {
+function updateFrontmatterStatus(content: string, newStatus: string, reviewer: any) {
   const parts = content.split("---");
   if (parts.length < 3) return content;
 

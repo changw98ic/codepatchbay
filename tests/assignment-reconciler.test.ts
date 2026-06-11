@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
@@ -15,7 +14,7 @@ function attemptDir(hubRoot, assignmentId, attempt = 1) {
   return path.join(hubRoot, "assignments", assignmentId, "attempts", String(attempt).padStart(3, "0"));
 }
 
-function reconciler(hubRoot, assignments, workers, failureRouter = {}, options = {}) {
+function reconciler(hubRoot, assignments, workers, failureRouter: Record<string, any> = {}, options: Record<string, any> = {}) {
   const router = typeof failureRouter?.route === "function"
     ? failureRouter
     : {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { DEFAULT_GITHUB_TRIGGERS } from "./hub-registry.js";
 
 function eventKey(event) {

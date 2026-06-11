@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { lstat, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -68,7 +67,7 @@ async function collectProcessAndLeaseEvidence(cpbRoot, jobs) {
   return { processReleaseIds, leaseReleaseIds };
 }
 
-export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot } = {}) {
+export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot }: Record<string, any> = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   const releaseList = await listReleases({ destRoot, env });
@@ -78,7 +77,7 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   try {
     jobs = await listJobs(resolvedCpbRoot);
   } catch (err) {
-    throw new Error(`Cannot build release GC plan: failed to read job inventory: ${err.message}`);
+    throw new Error(`Cannot build release GC plan: failed to read job inventory: ${(err as Error).message}`);
   }
 
   const jobPins = collectReleasePins(jobs);
@@ -187,7 +186,7 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   };
 }
 
-export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbRoot } = {}) {
+export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbRoot }: Record<string, any> = {}) {
   const eligible = plan.candidates.filter(c => c.classification === "eligible");
   const protected_ = plan.candidates.filter(c => c.classification === "protected");
   const unsafe = plan.candidates.filter(c => c.classification === "unsafe");
@@ -212,7 +211,7 @@ export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbR
       deleted: [],
       skipped: protected_.map(c => ({ ...c, skipReason: "protected" })),
       refused: [
-        ...eligible.map(c => ({ ...c, refusalReason: `job_inventory_unreadable: ${err.message}` })),
+        ...eligible.map(c => ({ ...c, refusalReason: `job_inventory_unreadable: ${(err as Error).message}` })),
         ...unsafe.map(c => ({ ...c, refusalReason: "unsafe" })),
       ],
       executedAt: new Date().toISOString(),
@@ -246,7 +245,7 @@ export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbR
     }
 
     // Re-check: resolved path must not match current release path
-    const currentReleasePath = currentSelection?.linkTarget || currentSelection?.selector?.releasePath;
+    const currentReleasePath = (currentSelection as Record<string, any> | null | undefined)?.linkTarget || currentSelection?.selector?.releasePath;
     if (currentReleasePath && path.resolve(candidate.installedPath) === path.resolve(currentReleasePath)) {
       refused.push({ ...candidate, refusalReason: "path_matches_current_release_revalidated" });
       continue;

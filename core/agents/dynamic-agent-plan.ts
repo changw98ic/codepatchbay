@@ -1,4 +1,3 @@
-// @ts-nocheck
 const DEFAULT_DYNAMIC_VERIFIER_AGENT = process.env.CPB_DYNAMIC_VERIFIER_AGENT || "codex";
 
 export const DYNAMIC_AGENT_PLAN_SCHEMA_VERSION = 1;
@@ -6,7 +5,7 @@ export const DYNAMIC_AGENT_PLAN_SCHEMA_VERSION = 1;
 /** Roles that MUST bind to a real DAG node when marked required. */
 const REQUIRED_ROLES = new Set(["verifier", "adversarial_verifier"]);
 
-function highRisk(riskMap = {}) {
+function highRisk(riskMap: Record<string, any> = {}) {
   return riskMap.riskLevel === "high" || riskMap.riskLevel === "critical" || riskMap.adversarialRequired === true;
 }
 
@@ -109,10 +108,12 @@ export function validateDynamicAgentPlan(plan, workflowDag) {
   };
 }
 
-export function generateDynamicAgentPlan({ riskMap = {}, workflowDag = null, workflow = null, planMode = null } = {}) {
+export function generateDynamicAgentPlan(options: Record<string, any> = {}) {
+  const { riskMap: rawRiskMap = {}, workflowDag = null, workflow = null, planMode = null } = options;
+  const riskMap = rawRiskMap as Record<string, any>;
   const requiresIndependentVerifier = highRisk(riskMap);
   const generatedAt = new Date().toISOString();
-  const agentConfig = {};
+  const agentConfig: Record<string, any> = {};
 
   if (requiresIndependentVerifier) {
     agentConfig.verifier = {

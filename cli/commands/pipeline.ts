@@ -1,8 +1,7 @@
-// @ts-nocheck
 import path from "node:path";
 import { buildAgentMetadata } from "./run.js";
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   const interactive = args[0] === "--interactive";
   if (interactive) args.shift();
 
@@ -97,7 +96,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     workflowExplicit,
     planModeExplicit,
     actor: "cli",
-  });
+  } as Record<string, any>);
   workflow = route.workflow;
   planMode = route.planMode;
 

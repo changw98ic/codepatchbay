@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm, writeFile, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -21,7 +20,7 @@ async function writeExitScript(root, { code = 1 } = {}) {
   return script;
 }
 
-async function waitFor(predicate, { description, timeoutMs = 10_000, intervalMs = 25 } = {}) {
+async function waitFor(predicate, { description, timeoutMs = 10_000, intervalMs = 25 }: { description?: string; timeoutMs?: number; intervalMs?: number } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
@@ -53,12 +52,12 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
   });
 
   const exitScript = await writeExitScript(hubRoot, { code: 1 });
-  const spawned = [];
+  const spawned: Array<{ workerId: string; restartCount: number }> = [];
 
   // Patch startWorker to use our exit-immediately script.
   // Preserves the real restart logic by reading _restartCount from assignment.
   const origRegisterWorker = workerStore.registerWorker.bind(workerStore);
-  supervisor.startWorker = async function (assignment) {
+  supervisor.startWorker = async function (assignment: Record<string, any>) {
     const workerId = WorkerStore.makeWorkerId();
     const restartCount = assignment._restartCount || 0;
 
@@ -66,7 +65,7 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
     const child = spawn(process.execPath, [exitScript], {
       cwd: hubRoot,
       detached: true,
-      stdio: ["ignore", logFd, logFd],
+      stdio: ["ignore", logFd as any, logFd as any],
     });
     child.unref();
 
@@ -103,7 +102,7 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
           });
           try {
             await supervisor.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
-          } catch (err) {
+          } catch (err: any) {
             await workerStore.updateWorker(workerId, {
               status: "exhausted",
               restartError: err.message,

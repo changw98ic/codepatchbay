@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -12,7 +11,7 @@ test("CodeGraph index-only flag is allowed through child env policy", () => {
   const env = buildChildEnv({
     CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
     NOT_ALLOWED_FLAG: "1",
-  });
+  }) as Record<string, any>;
   assert.equal(env.CPB_CODEGRAPH_INDEX_ONLY_OK, "1");
   assert.equal(env.NOT_ALLOWED_FLAG, undefined);
 });

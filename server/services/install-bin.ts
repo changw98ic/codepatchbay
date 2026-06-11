@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertExecutorRoot } from "./executor-root.js";

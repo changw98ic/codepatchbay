@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,7 +29,7 @@ describe("ProjectWorker", () => {
     else process.env.CPB_WORKER_DISPATCH_ENABLED = originalDispatch;
   });
 
-  function makeWorker(opts = {}) {
+  function makeWorker(opts: Record<string, any> = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,
@@ -458,7 +457,7 @@ describe("ProjectWorker stale queue recovery", () => {
     projectId = project.id;
   });
 
-  function makeWorker(opts = {}) {
+  function makeWorker(opts: Record<string, any> = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,
@@ -671,7 +670,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
     activeWorkers = [];
   });
 
-  function makeWorker(opts = {}) {
+  function makeWorker(opts: Record<string, any> = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,

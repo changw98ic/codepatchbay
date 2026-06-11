@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const BOUNDARY_VERSION = "1.0.0";
 
 export const REQUIRED_ADAPTER_METHODS = Object.freeze([
@@ -23,11 +22,11 @@ export const REQUIRED_TRANSPORT_METHODS = Object.freeze([
 
 export const SUPPORTED_PLATFORMS = Object.freeze(["github"]);
 
-export function isValidPlatform(platform) {
+export function isValidPlatform(platform: string) {
   return SUPPORTED_PLATFORMS.includes(platform);
 }
 
-export function validateGitPlatformAdapter(adapter) {
+export function validateGitPlatformAdapter(adapter: Record<string, any>) {
   if (!adapter || typeof adapter !== "object") {
     throw new Error("git-platform adapter: must be a non-null object");
   }
@@ -44,7 +43,7 @@ export function validateGitPlatformAdapter(adapter) {
   return adapter;
 }
 
-export function validateTransportResult(transport) {
+export function validateTransportResult(transport: Record<string, any>) {
   if (!transport || typeof transport !== "object") {
     throw new Error("git-platform transport: must be a non-null object");
   }

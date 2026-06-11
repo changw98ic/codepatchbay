@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 export const PROMPT_COMPOSITION_ORDER = Object.freeze([
@@ -84,7 +83,7 @@ export function knowledgePolicySummary() {
   };
 }
 
-export async function scanKnowledgeContamination(sourcePath, { fs: fsMod } = {}) {
+export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Record<string, any> = {}) {
   const realFs = fsMod || await import("node:fs/promises");
   const src = path.resolve(sourcePath);
   const issues = [];

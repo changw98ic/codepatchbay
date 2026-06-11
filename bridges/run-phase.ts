@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // run-phase.js - Unified Node phase entrypoint (plan/execute/verify/review/repair)
 // Replaces shell bridge business logic. Shell wrappers exec this for CLI compatibility.
 //
@@ -147,7 +146,9 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 
 // --- ACP runner ---
 
-async function runAcp(agent, prompt, cwd, executorRoot) {
+type AnyRecord = Record<string, any>;
+
+async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
   const { spawn } = await import("node:child_process");
   const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.js");
   const useDirect = !!process.env.CPB_ACP_CLIENT;
@@ -161,7 +162,7 @@ async function runAcp(agent, prompt, cwd, executorRoot) {
     const stdoutChunks = [];
     const stderrChunks = [];
 
-    function finish(result) {
+    function finish(result: AnyRecord) {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -511,7 +512,7 @@ async function handleRepair(args) {
   try {
     const repairStatus = await completeRepair(cpbRoot, {
       project, jobId, repairId, repairFile, repairArtifact,
-      status: "completed", executorRoot,
+      status: "completed", error: null, executorRoot,
     });
     await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | ${repairStatus}`);
   } catch (err) {

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 

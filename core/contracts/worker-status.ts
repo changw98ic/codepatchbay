@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const WorkerState = Object.freeze({
   STARTING: "starting",
   READY: "ready",

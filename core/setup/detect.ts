@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import os from "node:os";
 import { promisify } from "node:util";
@@ -84,6 +83,8 @@ async function probeAgent(agent, runCommand) {
     capabilities: agent.capabilities,
     installMethods: Object.keys(agent.install || {}),
     adapter: agent.adapter || null,
+    adapterInstalled: null,
+    adapterCommand: null,
   };
 
   // Probe adapter availability when adapter command differs from agent binary

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Execution boundary metadata normalization.
  * Ensures sessionId, workerId, sourcePath, cwd, executionBoundary are
@@ -12,7 +11,7 @@ export const REQUIRED_EXECUTION_BOUNDARY = "worktree";
  * Normalize execution metadata. Missing optional fields become explicit
  * null rather than silently empty strings.
  */
-export function buildMeta(input = {}) {
+export function buildMeta(input: Record<string, any> = {}) {
   return {
     projectId: input.projectId || null,
     sourcePath: input.sourcePath || null,

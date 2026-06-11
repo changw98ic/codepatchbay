@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { BrowserAgentTimeoutError } from "./errors.js"
 
 export async function checkSelectorVisible(page, selector, timeoutMs = 5000) {
@@ -88,7 +87,7 @@ async function clickContinueIfPresent(page, provider) {
   return false
 }
 
-export async function waitForFinalResponse(page, provider, options = {}) {
+export async function waitForFinalResponse(page, provider, options: Record<string, any> = {}) {
   const { signal, timeoutMs = 900_000 } = options
   const pollInterval = provider.response.pollIntervalMs || 2000
   const maxWait = Math.min(provider.response.maxWaitMs || 900_000, timeoutMs)

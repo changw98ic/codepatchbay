@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { inspectCurrentRelease } from "./release-store.js";
@@ -9,9 +8,20 @@ import { readJobsIndex } from "./jobs-index.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event-store.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 
+type AnyRecord = Record<string, any>;
+type RuntimeJob = AnyRecord & {
+  jobId?: string;
+  project?: string;
+  status?: string;
+  leaseId?: string;
+  lastActivityAt?: string;
+  updatedAt?: string;
+  createdAt?: string;
+};
+
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-async function probeValue(probes, key, fallback) {
+async function probeValue(probes: AnyRecord, key: string, fallback: () => any) {
   if (Object.prototype.hasOwnProperty.call(probes, key)) {
     const value = probes[key];
     return typeof value === "function" ? await value() : value;
@@ -19,7 +29,7 @@ async function probeValue(probes, key, fallback) {
   return fallback();
 }
 
-async function readPackageVersion(root) {
+async function readPackageVersion(root: string) {
   try {
     const raw = await readFile(path.join(path.resolve(root), "package.json"), "utf8");
     const parsed = JSON.parse(raw);
@@ -29,7 +39,7 @@ async function readPackageVersion(root) {
   }
 }
 
-async function readLauncherReleaseVersion(executorRoot) {
+async function readLauncherReleaseVersion(executorRoot: string) {
   try {
     const raw = await readFile(path.join(path.resolve(executorRoot), "release", "manifest.json"), "utf8");
     const parsed = JSON.parse(raw);
@@ -39,7 +49,7 @@ async function readLauncherReleaseVersion(executorRoot) {
   }
 }
 
-async function readActiveRelease(env) {
+async function readActiveRelease(env: NodeJS.ProcessEnv) {
   const current = await inspectCurrentRelease({ env });
   return {
     initialized: Boolean(current),
@@ -47,7 +57,7 @@ async function readActiveRelease(env) {
   };
 }
 
-function countQueueBlockers(entries) {
+function countQueueBlockers(entries: AnyRecord[]) {
   const counts = {
     codegraph_unavailable: 0,
     agent_rate_limited: 0,
@@ -65,7 +75,7 @@ function countQueueBlockers(entries) {
   return counts;
 }
 
-async function countJobsIndexDivergence(cpbRoot) {
+async function countJobsIndexDivergence(cpbRoot: string) {
   let index;
   try {
     index = await readJobsIndex(cpbRoot);
@@ -108,9 +118,9 @@ async function countJobsIndexDivergence(cpbRoot) {
   return diverged;
 }
 
-async function findStaleJobs(cpbRoot) {
+async function findStaleJobs(cpbRoot: string) {
   const index = await readJobsIndex(cpbRoot);
-  const jobs = Object.values(index?.jobs || {});
+  const jobs = Object.values((index as AnyRecord)?.jobs || {}) as RuntimeJob[];
   const stale = [];
   const now = new Date();
 

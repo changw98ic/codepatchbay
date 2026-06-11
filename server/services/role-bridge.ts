@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { loadProfile } from "./profile-loader.js";
 
-const ROLE_BRIDGE_MAP = {
+const ROLE_BRIDGE_MAP: Record<string, string> = {
   planner: "planner.sh",
   executor: "executor.sh",
   verifier: "verifier.sh",
@@ -9,7 +8,7 @@ const ROLE_BRIDGE_MAP = {
   repairer: "repairer.sh",
 };
 
-const ROLE_DISPATCH_MAP = {
+const ROLE_DISPATCH_MAP: Record<string, string> = {
   planner: "planner",
   executor: "executor",
   verifier: "verifier",
@@ -17,17 +16,17 @@ const ROLE_DISPATCH_MAP = {
   repairer: "repairer",
 };
 
-export function bridgeForRole(role) {
+export function bridgeForRole(role: string) {
   return ROLE_BRIDGE_MAP[role] ?? null;
 }
 
-export function dispatchForRole(role) {
+export function dispatchForRole(role: string) {
   return ROLE_DISPATCH_MAP[role] ?? null;
 }
 
-export async function bridgeEnvFromProfile(cpbRoot, role) {
+export async function bridgeEnvFromProfile(cpbRoot: string, role: string) {
   const profile = await loadProfile(cpbRoot, role);
-  const env = {};
+  const env: Record<string, string> = {};
   if (profile.permissions.deny_tools.length > 0) {
     env.CPB_ACP_DENY_TOOLS = profile.permissions.deny_tools.join(",");
   }

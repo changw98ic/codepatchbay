@@ -1,8 +1,9 @@
-// @ts-nocheck
 import { readEventsReadOnly, materializeJob, appendEvent, checkpointJob } from "./event-store.js";
 import { enqueue, updateEntry } from "./hub-queue.js";
 import { buildReviewBundle } from "./review-bundle.js";
 import { updateJobsIndexEntry } from "./jobs-index.js";
+
+type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
@@ -20,7 +21,10 @@ function bundleIdFor(project, jobId) {
 const REVIEWABLE_TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
 
 export class ReviewLoopError extends Error {
-  constructor(message, code, statusCode) {
+  code: string;
+  statusCode: number;
+
+  constructor(message: string, code: string, statusCode: number) {
     super(message);
     this.name = "ReviewLoopError";
     this.code = code;
@@ -28,7 +32,7 @@ export class ReviewLoopError extends Error {
   }
 }
 
-export function isReviewLoopError(error) {
+export function isReviewLoopError(error: any) {
   return error instanceof ReviewLoopError || Boolean(error?.code && error?.statusCode);
 }
 
@@ -57,7 +61,7 @@ function assertReviewNotFinalized(loop) {
   }
 }
 
-async function refreshJobIndex(cpbRoot, project, jobId, { dataRoot } = {}) {
+async function refreshJobIndex(cpbRoot, project, jobId, { dataRoot }: AnyRecord = {}) {
   const job = await checkpointJob(cpbRoot, project, jobId, { dataRoot })
     || materializeJob(await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot }));
   await updateJobsIndexEntry(cpbRoot, project, jobId, job, { dataRoot });
@@ -99,7 +103,7 @@ function retryPreviousOutput(bundle) {
   return trimText(chunks.join("\n\n"), 8000);
 }
 
-function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retryQueueEntryId }) {
+function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retryQueueEntryId }: AnyRecord) {
   const base = job?.sourceContext && typeof job.sourceContext === "object" ? { ...job.sourceContext } : {};
   const dagResume = job?.dagResume && typeof job.dagResume === "object"
     ? {
@@ -156,7 +160,7 @@ function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retr
   };
 }
 
-export async function getReviewLoop(cpbRoot, project, jobId, { dataRoot } = {}) {
+export async function getReviewLoop(cpbRoot, project, jobId, { dataRoot }: AnyRecord = {}) {
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
   return reviewLoopState(events);
 }
@@ -166,7 +170,7 @@ export async function acceptReviewBundle(cpbRoot, project, jobId, {
   feedback = "",
   ts = nowIso(),
   dataRoot,
-} = {}) {
+}: AnyRecord = {}) {
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
   const job = materializeJob(events);
   if (!job?.jobId) throw reviewLoopError(`job not found: ${jobId}`, "REVIEW_JOB_NOT_FOUND", 404);
@@ -206,7 +210,7 @@ export async function rejectReviewBundle(cpbRoot, project, jobId, {
   priority = "P0",
   ts = nowIso(),
   dataRoot,
-} = {}) {
+}: AnyRecord = {}) {
   const normalizedFeedback = trimText(feedback);
   if (!normalizedFeedback) throw reviewLoopError("feedback required", "REVIEW_FEEDBACK_REQUIRED", 400);
   if (!hubRoot) throw reviewLoopError("hubRoot required", "REVIEW_HUB_ROOT_REQUIRED", 400);

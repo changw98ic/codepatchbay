@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile as execFileCb } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +6,8 @@ import { listProjects } from "./hub-registry.js";
 
 const execFileAsync = promisify(execFileCb);
 const CACHE_VERSION = 1;
+
+type AnyRecord = Record<string, any>;
 
 function cachePath(hubRoot) {
   return path.join(path.resolve(hubRoot), "github", "issues.json");
@@ -28,7 +29,7 @@ export function normalizeGithubLabels(labels) {
   return Array.isArray(labels) ? labels.map(normalizeLabel).filter(Boolean) : [];
 }
 
-export function normalizeGithubIssue(issue = {}, { repo, projectId } = {}) {
+export function normalizeGithubIssue(issue: AnyRecord = {}, { repo, projectId }: AnyRecord = {}) {
   return {
     repository: issue.repository || issue.repo || issue.repositoryFullName || repo || null,
     projectId: issue.projectId || projectId || "flow",
@@ -56,7 +57,7 @@ export async function readGithubIssues(hubRoot) {
   }
 }
 
-export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() } = {}) {
+export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() }: AnyRecord = {}) {
   const normalized = (issues || [])
     .map((issue) => normalizeGithubIssue(issue, { repo, projectId }))
     .filter((issue) => Number.isFinite(issue.number));
@@ -76,7 +77,7 @@ export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", iss
   return payload;
 }
 
-function issueBelongsToSyncScope(issue, { repo, projectId } = {}) {
+function issueBelongsToSyncScope(issue, { repo, projectId }: AnyRecord = {}) {
   const normalized = normalizeGithubIssue(issue);
   if (projectId && normalized.projectId === projectId) return true;
   if (!repo) return false;
@@ -84,7 +85,7 @@ function issueBelongsToSyncScope(issue, { repo, projectId } = {}) {
   return !projectId || !normalized.projectId || normalized.projectId === "flow";
 }
 
-async function runGh(args, { cwd, execFile = execFileAsync } = {}) {
+async function runGh(args, { cwd, execFile = execFileAsync }: AnyRecord = {}) {
   const result = await execFile("gh", args, {
     cwd,
     maxBuffer: 20 * 1024 * 1024,
@@ -93,7 +94,7 @@ async function runGh(args, { cwd, execFile = execFileAsync } = {}) {
   return typeof result === "string" ? result : result.stdout;
 }
 
-async function resolveRepo(repo, { cwd, execFile } = {}) {
+async function resolveRepo(repo, { cwd, execFile }: AnyRecord = {}) {
   if (repo) return repo;
   const stdout = await runGh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd, execFile });
   return stdout.trim();
@@ -113,12 +114,12 @@ export async function syncGithubIssuesFromGh(hubRoot, {
   limit = 1000,
   cwd = process.cwd(),
   execFile,
-} = {}) {
+}: AnyRecord = {}) {
   const resolvedRepo = await resolveRepo(repo, { cwd, execFile });
   const normalizedState = ["open", "closed", "all"].includes(String(state).toLowerCase())
     ? String(state).toLowerCase()
     : "open";
-  const normalizedLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || 1000, 1000));
+  const normalizedLimit = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 1000, 1000));
   const stdout = await runGh([
     "issue",
     "list",
@@ -147,8 +148,8 @@ export async function syncConfiguredGithubIssuesFromGh(hubRoot, {
   execFile,
   listProjectsFn = listProjects,
   syncProjectFn = syncGithubIssuesFromGh,
-} = {}) {
-  const projects = await listProjectsFn(hubRoot, { enabledOnly: true });
+}: AnyRecord = {}) {
+  const projects = await listProjectsFn(hubRoot, { enabledOnly: true }) as AnyRecord[];
   const selected = projectId ? projects.filter((project) => project.id === projectId) : projects;
   if (projectId && selected.length === 0) {
     throw new Error(`project not found or disabled: ${projectId}`);

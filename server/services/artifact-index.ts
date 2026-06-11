@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -138,7 +137,7 @@ function artifactReferences(events) {
   return refs;
 }
 
-export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir, restrictToWiki = false } = {}) {
+export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir, restrictToWiki = false }: Record<string, any> = {}) {
   const sourceEvents = events || await readEvents(cpbRoot, project, jobId, { dataRoot });
   const entries = [];
   const seen = new Set();

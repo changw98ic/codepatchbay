@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 import { listJobsAcrossRuntimeRoots } from "../services/job-store.js";
@@ -15,6 +14,7 @@ import { buildAttentionProjection } from "../services/attention-projection.js";
 import { collectRuntimeHealth } from "../services/runtime-health.js";
 
 const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
+type LooseRecord = Record<string, any>;
 
 function sendReviewLoopError(reply, error) {
   if (!isReviewLoopError(error)) throw error;
@@ -294,7 +294,7 @@ export function inboxRoutes(fastify) {
         actor,
         feedback,
         dataRoot,
-      });
+      } as LooseRecord);
     } catch (error) {
       return sendReviewLoopError(reply, error);
     }
@@ -327,7 +327,7 @@ export function inboxRoutes(fastify) {
         hubRoot,
         sourcePath: project?.sourcePath || job.sourcePath || null,
         dataRoot,
-      });
+      } as LooseRecord);
     } catch (error) {
       return sendReviewLoopError(reply, error);
     }
@@ -519,19 +519,19 @@ function runtimeWikiDirFor(cpbRoot, dataRoot) {
 }
 
 function artifactsFromReviewBundle(bundle) {
-  const artifactByKind = new Map((bundle?.artifacts || []).map((artifact) => [artifact.kind, artifact]));
+  const artifactByKind = new Map<string, LooseRecord>((bundle?.artifacts || []).map((artifact) => [artifact.kind, artifact]));
   return {
     plan: bundle?.evidence?.plan
-      ? { ...artifactByKind.get("plan"), path: bundle.evidence.plan.path, content: bundle.evidence.plan.content }
+      ? { ...(artifactByKind.get("plan") || {}), path: bundle.evidence.plan.path, content: bundle.evidence.plan.content }
       : null,
     deliverable: bundle?.evidence?.deliverable
-      ? { ...artifactByKind.get("deliverable"), path: bundle.evidence.deliverable.path, content: bundle.evidence.deliverable.content }
+      ? { ...(artifactByKind.get("deliverable") || {}), path: bundle.evidence.deliverable.path, content: bundle.evidence.deliverable.content }
       : null,
     verdict: bundle?.evidence?.verdict
-      ? { ...artifactByKind.get("verdict"), parsed: bundle.evidence.verdict }
+      ? { ...(artifactByKind.get("verdict") || {}), parsed: bundle.evidence.verdict }
       : null,
     review: bundle?.evidence?.review
-      ? { ...artifactByKind.get("review"), content: bundle.evidence.review }
+      ? { ...(artifactByKind.get("review") || {}), content: bundle.evidence.review }
       : null,
   };
 }

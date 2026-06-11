@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -22,6 +21,17 @@ const REJECT_DIR = path.join(STATE_DIR, "rejects");
 const LOCK_TTL_MS = 6 * 60 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = Number(process.env.CPB_FLOW_CRON_COMMAND_TIMEOUT_MS || 30 * 60 * 1000);
 const MAX_RETRIES_PER_TASK = Number(process.env.CPB_FLOW_CRON_MAX_RETRIES_PER_TASK || 1);
+
+type AnyRecord = Record<string, any>;
+type QueueEntry = AnyRecord;
+type CronOptions = AnyRecord;
+type CommandResult = {
+  code: number;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  error: any;
+};
 
 const BIN = {
   node: process.execPath,
@@ -59,7 +69,7 @@ function usage() {
   ].join("\n");
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): CronOptions {
   const out = { bootstrapExisting: false, processExisting: false, dryRun: false, help: false };
   for (const arg of argv) {
     if (arg === "--bootstrap-existing") out.bootstrapExisting = true;
@@ -77,29 +87,29 @@ async function ensureRuntimeDirs() {
   await fsp.mkdir(REJECT_DIR, { recursive: true });
 }
 
-async function readJson(file, fallback = null) {
+async function readJson(file: string, fallback: any = null): Promise<any> {
   try {
     return JSON.parse(await fsp.readFile(file, "utf8"));
   } catch (err) {
-    if (err?.code === "ENOENT" && fallback !== null) return fallback;
+    if ((err as any)?.code === "ENOENT" && fallback !== null) return fallback;
     throw err;
   }
 }
 
-async function writeJsonAtomic(file, value) {
+async function writeJsonAtomic(file: string, value: any): Promise<void> {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fsp.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
   await fsp.rename(tmp, file);
 }
 
-async function appendRunLog(line) {
+async function appendRunLog(line: string): Promise<void> {
   const stamp = new Date().toISOString().slice(0, 10);
   await fsp.appendFile(path.join(LOG_DIR, `${stamp}.log`), `${nowIso()} ${line}\n`);
   console.log(line);
 }
 
-function defaultState() {
+function defaultState(): AnyRecord {
   return {
     schemaVersion: 1,
     projectId: PROJECT_ID,
@@ -111,7 +121,7 @@ function defaultState() {
   };
 }
 
-async function loadState() {
+async function loadState(): Promise<AnyRecord> {
   return readJson(STATE_FILE, defaultState());
 }
 
@@ -135,7 +145,7 @@ async function acquireLock() {
   }
 }
 
-function runFile(cmd, args, options = {}) {
+function runFile(cmd: string, args: string[], options: AnyRecord = {}): Promise<CommandResult> {
   return new Promise((resolve) => {
     execFile(cmd, args, {
       cwd: options.cwd || REPO_ROOT,
@@ -143,9 +153,10 @@ function runFile(cmd, args, options = {}) {
       timeout: options.timeout ?? COMMAND_TIMEOUT_MS,
       maxBuffer: options.maxBuffer ?? 20 * 1024 * 1024,
     }, (error, stdout, stderr) => {
+      const err = error as any;
       resolve({
-        code: Number.isInteger(error?.code) ? error.code : 0,
-        signal: error?.signal || null,
+        code: Number.isInteger(err?.code) ? err.code : 0,
+        signal: err?.signal || null,
         stdout: stdout || "",
         stderr: stderr || "",
         error,
@@ -154,7 +165,7 @@ function runFile(cmd, args, options = {}) {
   });
 }
 
-async function runStrict(cmd, args, options = {}) {
+async function runStrict(cmd: string, args: string[], options: AnyRecord = {}): Promise<CommandResult> {
   const result = await runFile(cmd, args, options);
   if (result.code !== 0 || result.signal) {
     const detail = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n");
@@ -192,17 +203,17 @@ async function writeReviewSchema() {
   await writeJsonAtomic(REVIEW_SCHEMA_FILE, schema);
 }
 
-async function loadQueue() {
+async function loadQueue(): Promise<QueueEntry[]> {
   const raw = await readJson(QUEUE_FILE);
   return Array.isArray(raw) ? raw : raw.entries || raw.items || [];
 }
 
-function jobIdToQueueId(jobId) {
+function jobIdToQueueId(jobId: any): string | null {
   if (!jobId || typeof jobId !== "string") return null;
   return jobId.replace(/^job-/, "").replace(/-a\d+$/, "");
 }
 
-function rootQueueId(entry, byId) {
+function rootQueueId(entry: QueueEntry, byId: Map<string, QueueEntry>): string {
   let current = entry;
   const seen = new Set();
   while (current?.metadata?.retryJobId) {
@@ -214,7 +225,7 @@ function rootQueueId(entry, byId) {
   return current?.id || entry.id;
 }
 
-function taskKeyFor(entry, byId) {
+function taskKeyFor(entry: QueueEntry, byId: Map<string, QueueEntry>): string {
   const sourceContext = entry.metadata?.sourceContext || {};
   const explicit = [
     sourceContext.taskId,
@@ -228,20 +239,25 @@ function taskKeyFor(entry, byId) {
   return explicit ? `task:${explicit}` : `root:${rootQueueId(entry, byId)}`;
 }
 
-function completedTs(entry) {
+function completedTs(entry: QueueEntry): string {
   return entry.completedAt || entry.updatedAt || entry.createdAt || "";
 }
 
-function compareEntryTime(a, b) {
+function compareEntryTime(a: QueueEntry, b: QueueEntry): number {
   return completedTs(a).localeCompare(completedTs(b));
 }
 
-function selectCandidates(entries, state, options, byId = new Map(entries.map((entry) => [entry.id, entry]))) {
+function selectCandidates(
+  entries: QueueEntry[],
+  state: AnyRecord,
+  options: CronOptions,
+  byId = new Map<string, QueueEntry>(entries.map((entry) => [entry.id, entry])),
+): Array<{ taskKey: string; entry: QueueEntry }> {
   const completed = entries
     .filter((entry) => entry.projectId === PROJECT_ID && entry.status === "completed")
     .sort(compareEntryTime);
 
-  const latestByTask = new Map();
+  const latestByTask = new Map<string, QueueEntry>();
   for (const entry of completed) {
     if (!options.processExisting && state.processed[entry.id]) continue;
     const taskKey = taskKeyFor(entry, byId);
@@ -255,8 +271,8 @@ function selectCandidates(entries, state, options, byId = new Map(entries.map((e
   return [...latestByTask.entries()].map(([taskKey, entry]) => ({ taskKey, entry }));
 }
 
-async function bootstrapExisting(entries, state) {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+async function bootstrapExisting(entries: QueueEntry[], state: AnyRecord): Promise<number> {
+  const byId = new Map<string, QueueEntry>(entries.map((entry) => [entry.id, entry]));
   let count = 0;
   for (const entry of entries) {
     if (entry.projectId !== PROJECT_ID || entry.status !== "completed") continue;
@@ -279,7 +295,7 @@ async function bootstrapExisting(entries, state) {
   return count;
 }
 
-async function latestAttempt(entry) {
+async function latestAttempt(entry: QueueEntry): Promise<AnyRecord | null> {
   const attemptsRoot = path.join(CPB_ROOT, "assignments", `a-${entry.id}`, "attempts");
   const names = await fsp.readdir(attemptsRoot).catch(() => []);
   const attempts = names
@@ -296,11 +312,11 @@ async function latestAttempt(entry) {
   return null;
 }
 
-function jobIdFor(entry, attempt) {
+function jobIdFor(entry: QueueEntry, attempt: AnyRecord | null): string {
   return attempt?.result?.jobResult?.jobId || `job-${entry.id}`;
 }
 
-function retryTargetJobIdFor(entry, attempt, byId = new Map()) {
+function retryTargetJobIdFor(entry: QueueEntry, attempt: AnyRecord | null, byId = new Map<string, QueueEntry>()): string {
   let targetJobId = stripAttemptSuffix(entry?.metadata?.retryJobId);
   if (!targetJobId) return jobIdFor(entry, attempt);
 
@@ -319,18 +335,18 @@ function retryTargetJobIdFor(entry, attempt, byId = new Map()) {
   return targetJobId;
 }
 
-async function gitOutput(args, cwd, options = {}) {
+async function gitOutput(args: string[], cwd: string, options: AnyRecord = {}): Promise<string> {
   const result = await runStrict(BIN.git, args, { cwd, ...options });
   return result.stdout.trim();
 }
 
-function stripAttemptSuffix(jobId) {
+function stripAttemptSuffix(jobId: any): any {
   return typeof jobId === "string" ? jobId.replace(/-a\d+$/, "") : jobId;
 }
 
-function candidateWorktreePaths(entry, attempt) {
-  const candidates = [];
-  const add = (value) => {
+function candidateWorktreePaths(entry: QueueEntry, attempt: AnyRecord | null): string[] {
+  const candidates: string[] = [];
+  const add = (value: any) => {
     if (value && !candidates.includes(value)) candidates.push(value);
   };
   add(attempt?.worktree?.worktreePath);
@@ -350,7 +366,7 @@ function candidateWorktreePaths(entry, attempt) {
   return candidates;
 }
 
-async function resolveWorktreePath(entry, attempt) {
+async function resolveWorktreePath(entry: QueueEntry, attempt: AnyRecord | null): Promise<string> {
   const candidates = candidateWorktreePaths(entry, attempt);
   for (const candidate of candidates) {
     if (!candidate || !fs.existsSync(candidate)) continue;
@@ -360,7 +376,7 @@ async function resolveWorktreePath(entry, attempt) {
   throw new Error(`missing worktree for ${entry.id}: checked ${candidates.join(", ") || "none"}`);
 }
 
-async function ensureMergeableWorktree(entry, attempt) {
+async function ensureMergeableWorktree(entry: QueueEntry, attempt: AnyRecord | null): Promise<AnyRecord> {
   const worktreePath = await resolveWorktreePath(entry, attempt);
   await runFile(BIN.git, ["fetch", "origin", "main", "--quiet"], { cwd: worktreePath, timeout: 5 * 60 * 1000 });
 
@@ -401,7 +417,7 @@ async function ensureMergeableWorktree(entry, attempt) {
   return { worktreePath, branch };
 }
 
-function commitMessage(entry, jobId) {
+function commitMessage(entry: QueueEntry, jobId: string): string {
   return [
     `Preserve reviewed CPB job ${jobId}`,
     "",
@@ -417,7 +433,7 @@ function commitMessage(entry, jobId) {
   ].join("\n");
 }
 
-async function runAdversarialReview(entry, attempt, mergeable) {
+async function runAdversarialReview(entry: QueueEntry, attempt: AnyRecord | null, mergeable: AnyRecord): Promise<AnyRecord> {
   await writeReviewSchema();
   const jobId = jobIdFor(entry, attempt);
   const outDir = path.join(REVIEW_DIR, entry.id);
@@ -475,7 +491,7 @@ async function runAdversarialReview(entry, attempt, mergeable) {
   return { review, outputFile };
 }
 
-async function runMergePreview(entry, mergeable) {
+async function runMergePreview(entry: QueueEntry, mergeable: AnyRecord): Promise<AnyRecord> {
   const result = await runFile(BIN.cpb, [
     "merge-preview",
     PROJECT_ID,
@@ -498,7 +514,7 @@ async function runMergePreview(entry, mergeable) {
   return preview;
 }
 
-function prBody(entry, attempt, review, preview) {
+function prBody(entry: QueueEntry, attempt: AnyRecord | null, review: AnyRecord, preview: AnyRecord): string {
   const jobId = jobIdFor(entry, attempt);
   const resultPath = attempt?.attemptDir ? path.join(attempt.attemptDir, "result.json") : null;
   return [
@@ -524,7 +540,7 @@ function prBody(entry, attempt, review, preview) {
   ].filter(Boolean).join("\n");
 }
 
-async function openAndMergePr(entry, attempt, mergeable, review, preview) {
+async function openAndMergePr(entry: QueueEntry, attempt: AnyRecord | null, mergeable: AnyRecord, review: AnyRecord, preview: AnyRecord): Promise<AnyRecord> {
   const repo = (await runStrict(BIN.gh, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], { cwd: REPO_ROOT })).stdout.trim();
   await runStrict(BIN.git, ["push", "origin", `HEAD:refs/heads/${mergeable.branch}`], { cwd: mergeable.worktreePath, timeout: 15 * 60 * 1000 });
 
@@ -566,7 +582,7 @@ async function openAndMergePr(entry, attempt, mergeable, review, preview) {
   return { prUrl, mergeMode, mergeOutput: merge.stdout.trim() || merge.stderr.trim() };
 }
 
-function failureClass(reason) {
+function failureClass(reason: string): string {
   if (/missing worktree/i.test(reason)) return "missing_worktree";
   if (/no completed assignment attempt/i.test(reason)) return "missing_assignment_attempt";
   if (/no mergeable committed changes/i.test(reason)) return "no_mergeable_changes";
@@ -576,20 +592,31 @@ function failureClass(reason) {
   return "unknown";
 }
 
-function isRetryableRejection(reason) {
+function isRetryableRejection(reason: string): boolean {
   const cls = failureClass(reason);
   return !["missing_worktree", "missing_assignment_attempt", "no_mergeable_changes"].includes(cls);
 }
 
-function retryCountForTask(state, taskKey, cls) {
-  return Object.values(state.processed || {}).filter((record) => (
-    record?.taskKey === taskKey
-    && record?.failureClass === cls
-    && record?.retryQueued
-  )).length;
+function retryCountForTask(state: AnyRecord, taskKey: string, cls: string): number {
+  return Object.values(state.processed || {}).filter((record) => {
+    const item = record as AnyRecord;
+    return (
+      item?.taskKey === taskKey
+      && item?.failureClass === cls
+      && item?.retryQueued
+    );
+  }).length;
 }
 
-async function rejectAndRetry(entry, attempt, taskKey, reason, state, options, byId) {
+async function rejectAndRetry(
+  entry: QueueEntry,
+  attempt: AnyRecord | null,
+  taskKey: string,
+  reason: string,
+  state: AnyRecord,
+  options: CronOptions,
+  byId: Map<string, QueueEntry>,
+): Promise<AnyRecord> {
   const jobId = jobIdFor(entry, attempt);
   const retryTargetJobId = retryTargetJobIdFor(entry, attempt, byId);
   const cls = failureClass(reason);
@@ -634,7 +661,7 @@ async function rejectAndRetry(entry, attempt, taskKey, reason, state, options, b
   return { retryQueued: true, retryQueueId, retryable, failureClass: cls, output: retry.stdout.trim() };
 }
 
-async function processEntry(entry, taskKey, state, options, byId) {
+async function processEntry(entry: QueueEntry, taskKey: string, state: AnyRecord, options: CronOptions, byId: Map<string, QueueEntry>): Promise<void> {
   entry.__taskKey = taskKey;
   await appendRunLog(`processing ${entry.id} taskKey=${taskKey}`);
   const attempt = await latestAttempt(entry);
@@ -669,12 +696,13 @@ async function processEntry(entry, taskKey, state, options, byId) {
     await writeJsonAtomic(STATE_FILE, state);
     await appendRunLog(`accepted ${entry.id} status=${state.processed[entry.id].status}`);
   } catch (err) {
-    const retry = await rejectAndRetry(entry, attempt, taskKey, err.message, state, options, byId).catch((retryErr) => ({
+    const error = err as Error;
+    const retry: AnyRecord = await rejectAndRetry(entry, attempt, taskKey, error.message, state, options, byId).catch((retryErr) => ({
       retryQueued: false,
       retryQueueId: null,
       retryError: retryErr.message,
       retryable: true,
-      failureClass: failureClass(err.message),
+      failureClass: failureClass(error.message),
     }));
     state.processed[entry.id] = {
       status: retry.retryQueued ? "rejected_retry_enqueued" : "rejected_no_retry",
@@ -682,7 +710,7 @@ async function processEntry(entry, taskKey, state, options, byId) {
       jobId: jobIdFor(entry, attempt),
       completedAt: completedTs(entry),
       rejectedAt: nowIso(),
-      reason: err.message,
+      reason: error.message,
       failureClass: retry.failureClass,
       retryable: retry.retryable,
       retryQueued: retry.retryQueued,
@@ -693,7 +721,7 @@ async function processEntry(entry, taskKey, state, options, byId) {
     };
     state.taskLastProcessed[taskKey] = completedTs(entry);
     await writeJsonAtomic(STATE_FILE, state);
-    await appendRunLog(`rejected ${entry.id} status=${state.processed[entry.id].status} retryQueueId=${retry.retryQueueId || "none"} reason=${err.message}`);
+    await appendRunLog(`rejected ${entry.id} status=${state.processed[entry.id].status} retryQueueId=${retry.retryQueueId || "none"} reason=${error.message}`);
   }
 }
 
@@ -706,7 +734,7 @@ async function main() {
   await ensureRuntimeDirs();
   const state = await loadState();
   const entries = await loadQueue();
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const byId = new Map<string, QueueEntry>(entries.map((entry) => [entry.id, entry]));
 
   if (options.bootstrapExisting) {
     const count = await bootstrapExisting(entries, state);
@@ -737,7 +765,8 @@ async function main() {
 }
 
 main().catch(async (err) => {
+  const error = err as Error;
   await ensureRuntimeDirs().catch(() => {});
-  await appendRunLog(`fatal: ${err.stack || err.message}`).catch(() => {});
+  await appendRunLog(`fatal: ${error.stack || error.message}`).catch(() => {});
   process.exitCode = 1;
 });

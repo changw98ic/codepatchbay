@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { listJobsAcrossRuntimeRoots } from "./job-store.js";
 import { normalizeWorkflow } from "../../core/workflow/definition.js";
 
@@ -19,16 +18,16 @@ function orderedUnique(values) {
 }
 
 function projectDagNodes(job) {
-  const nodeStates = job.nodeStates ?? {};
+  const nodeStates: Record<string, any> = job.nodeStates ?? {};
   const ids = orderedUnique([
     ...workflowNodeIds(job),
     ...Object.keys(nodeStates),
-    ...(job.completedNodes ?? []),
-    ...(job.runningNodes ?? []),
-    ...(job.blockedNodes ?? []),
+    ...((job.completedNodes ?? []) as string[]),
+    ...((job.runningNodes ?? []) as string[]),
+    ...((job.blockedNodes ?? []) as string[]),
   ]);
 
-  return ids.map((id) => {
+  return (ids as string[]).map((id) => {
     const node = nodeStates[id] ?? {};
     const definition = workflowNodeById(job, id);
     let status = node.status ?? "pending";
@@ -107,7 +106,10 @@ export function jobToPipelineState(job) {
 
 function retryCountForJob(job) {
   const nodeAttempts = Object.values(job.nodeStates ?? {})
-    .map((node) => Number.isFinite(node?.attempt) ? Math.max(0, node.attempt - 1) : 0);
+    .map((node) => {
+      const entry = node as Record<string, any>;
+      return Number.isFinite(entry?.attempt) ? Math.max(0, entry.attempt - 1) : 0;
+    });
   return Math.max(job.retryCount ?? 0, job.attempt != null ? Math.max(0, job.attempt - 1) : 0, ...nodeAttempts);
 }
 
@@ -120,7 +122,7 @@ function currentPhaseForJob(job) {
 }
 
 function sourceForJob(job) {
-  const source = job.sourceContext || {};
+  const source = (job.sourceContext || {}) as Record<string, any>;
   if (source.type === "github_issue" || source.issueNumber !== undefined) {
     return {
       type: "github_issue",
@@ -235,7 +237,7 @@ export function jobToGithubStatusUpdate(job) {
   const row = jobToQueueRow(job || {});
   if (!GITHUB_STATUS_COMMENT_STATUSES.has(row.status)) return null;
 
-  const source = row.source || {};
+  const source = (row.source || {}) as Record<string, any>;
   if (source.type !== "github_issue") return null;
 
   const repo = source.repo || job?.sourceContext?.repo || job?.sourceContext?.repository || null;

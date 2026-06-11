@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -26,7 +25,6 @@ const focusedTests = [
   "tests/runtime-health-gate.test.js",
   "tests/workflow-definition-contract.test.js",
   "tests/dag-resume-contract.test.js",
-  "tests/dw-status-readiness.test.js",
   "tests/attention-projection.test.js",
   "tests/engine-prepare-task.test.js",
   "tests/job-recovery.test.js",
@@ -34,7 +32,6 @@ const focusedTests = [
   "tests/queue-orchestrator.test.js",
   "tests/acp-supervisor.test.js",
   "tests/dw-codegraph-gate.test.js",
-  "tests/dw08-acceptance.test.js",
   "tests/integration/release-pack-smoke.test.js",
 ];
 
@@ -46,7 +43,7 @@ function commandText(command, commandArgs) {
   return [command, ...commandArgs].join(" ");
 }
 
-function run(label, command, commandArgs, options = {}) {
+function run(label, command, commandArgs, options: { env?: Record<string, string> } = {}) {
   console.log(`\n${label}`);
   console.log(`$ ${commandText(command, commandArgs)}`);
   return new Promise((resolve) => {

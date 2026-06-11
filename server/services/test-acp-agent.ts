@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
@@ -7,14 +6,16 @@ import readline from "node:readline";
 const PROTOCOL_VERSION = 1;
 const DEFAULT_CHUNK_SIZE = 4096;
 
-const sessions = new Map();
-const pending = new Map();
+type AnyRecord = Record<string, any>;
+
+const sessions = new Map<string, AnyRecord>();
+const pending = new Map<any, AnyRecord>();
 let nextId = 1;
 let shuttingDown = false;
 const options = parseArgs(process.argv.slice(2));
 
-function parseArgs(argv) {
-  const parsed = {};
+function parseArgs(argv: string[]): AnyRecord {
+  const parsed: AnyRecord = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--response") parsed.response = argv[++i] ?? "";
@@ -45,11 +46,11 @@ Options:
   return parsed;
 }
 
-function writeMessage(message) {
+function writeMessage(message: any): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-async function record(event) {
+async function record(event: AnyRecord): Promise<void> {
   const transcriptFile = options.transcriptFile || process.env.CPB_TEST_ACP_TRANSCRIPT_FILE;
   if (!transcriptFile) return;
   await appendFile(
@@ -59,21 +60,21 @@ async function record(event) {
   ).catch(() => {});
 }
 
-function respond(id, result) {
+function respond(id: any, result: any): void {
   writeMessage({ jsonrpc: "2.0", id, result });
 }
 
-function respondError(id, code, message, data) {
-  const error = { code, message };
+function respondError(id: any, code: number, message: string, data?: any): void {
+  const error: AnyRecord = { code, message };
   if (data !== undefined) error.data = data;
   writeMessage({ jsonrpc: "2.0", id, error });
 }
 
-function notify(method, params) {
+function notify(method: string, params: any): void {
   writeMessage({ jsonrpc: "2.0", method, params });
 }
 
-function requestClient(method, params) {
+function requestClient(method: string, params: any): Promise<any> {
   const id = nextId++;
   writeMessage({ jsonrpc: "2.0", id, method, params });
   return new Promise((resolve, reject) => {
@@ -81,7 +82,7 @@ function requestClient(method, params) {
   });
 }
 
-function textFromPrompt(prompt) {
+function textFromPrompt(prompt: any): string {
   if (Array.isArray(prompt)) {
     return prompt.map((part) => (part?.type === "text" ? part.text : "")).join("");
   }
@@ -89,24 +90,24 @@ function textFromPrompt(prompt) {
   return "";
 }
 
-function cleanPath(value) {
+function cleanPath(value: any): string {
   return String(value || "").trim().replace(/^["'`]+|["'`]+$/g, "").replace(/[.,]$/, "");
 }
 
-function chunkText(text, chunkSize = DEFAULT_CHUNK_SIZE) {
-  const chunks = [];
+function chunkText(text: string, chunkSize = DEFAULT_CHUNK_SIZE): string[] {
+  const chunks: string[] = [];
   for (let i = 0; i < text.length; i += chunkSize) chunks.push(text.slice(i, i + chunkSize));
   return chunks.length > 0 ? chunks : [""];
 }
 
-function interpolate(value, context) {
+function interpolate(value: any, context: AnyRecord): string {
   return String(value ?? "").replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key) => {
     if (Object.hasOwn(context, key)) return String(context[key] ?? "");
     return "";
   });
 }
 
-async function loadJsonFile(filePath, label) {
+async function loadJsonFile(filePath: string, label: string): Promise<any> {
   const fullPath = path.resolve(filePath);
   try {
     return JSON.parse(await readFile(fullPath, "utf8"));
@@ -115,7 +116,7 @@ async function loadJsonFile(filePath, label) {
   }
 }
 
-async function loadTextFile(filePath, label) {
+async function loadTextFile(filePath: string, label: string): Promise<string> {
   const fullPath = path.resolve(filePath);
   try {
     return readFile(fullPath, "utf8");
@@ -124,7 +125,7 @@ async function loadTextFile(filePath, label) {
   }
 }
 
-async function loadScenario() {
+async function loadScenario(): Promise<AnyRecord> {
   const scenarioFile = options.scenarioFile || process.env.CPB_TEST_ACP_SCENARIO_FILE;
   if (scenarioFile) {
     const scenario = await loadJsonFile(scenarioFile, "scenario file");
@@ -149,7 +150,7 @@ async function loadScenario() {
   };
 }
 
-function matchesEntry(entry, context) {
+function matchesEntry(entry: AnyRecord, context: AnyRecord): boolean {
   if (entry.agent && entry.agent !== context.agent) return false;
   if (entry.phase && entry.phase !== context.phase) return false;
   if (entry.role && entry.role !== context.role) return false;
@@ -159,12 +160,12 @@ function matchesEntry(entry, context) {
   return true;
 }
 
-function selectResponse(scenario, context) {
+function selectResponse(scenario: AnyRecord, context: AnyRecord): AnyRecord {
   const responses = Array.isArray(scenario.responses) ? scenario.responses : [];
   return responses.find((entry) => matchesEntry(entry, context)) || scenario.default || responses[0] || {};
 }
 
-function pathFromWrite(write, context) {
+function pathFromWrite(write: AnyRecord, context: AnyRecord): string {
   if (write.path) return interpolate(write.path, context);
   if (!write.pathRegex) throw new Error("scenario write is missing path or pathRegex");
   const match = context.prompt.match(new RegExp(write.pathRegex, "m"));
@@ -172,14 +173,14 @@ function pathFromWrite(write, context) {
   return cleanPath(interpolate(match[1], context));
 }
 
-async function contentFromWrite(write, context) {
+async function contentFromWrite(write: AnyRecord, context: AnyRecord): Promise<string> {
   if (write.contentFile) {
     return interpolate(await loadTextFile(interpolate(write.contentFile, context), "scenario write.contentFile"), context);
   }
   return interpolate(write.content ?? "", context);
 }
 
-async function writeArtifacts(response, context) {
+async function writeArtifacts(response: AnyRecord, context: AnyRecord): Promise<void> {
   const writes = Array.isArray(response.writes) ? response.writes : [];
   for (const write of writes) {
     const filePath = pathFromWrite(write, context);
@@ -189,7 +190,7 @@ async function writeArtifacts(response, context) {
   }
 }
 
-async function outputChunks(response, context) {
+async function outputChunks(response: AnyRecord, context: AnyRecord): Promise<string[]> {
   if (Array.isArray(response.chunks)) return response.chunks.map((chunk) => interpolate(chunk, context));
   if (response.outputFile) {
     return chunkText(
@@ -203,7 +204,7 @@ async function outputChunks(response, context) {
   return [];
 }
 
-async function streamOutput(sessionId, response, context) {
+async function streamOutput(sessionId: string, response: AnyRecord, context: AnyRecord): Promise<void> {
   const chunks = await outputChunks(response, context);
   for (const chunk of chunks) {
     notify("session/update", {
@@ -216,10 +217,10 @@ async function streamOutput(sessionId, response, context) {
   }
 }
 
-async function streamToolCalls(sessionId, response) {
+async function streamToolCalls(sessionId: string, response: AnyRecord, _context?: AnyRecord): Promise<void> {
   const toolCalls = Array.isArray(response.toolCalls) ? response.toolCalls : [];
   for (const call of toolCalls) {
-    const update = {
+    const update: AnyRecord = {
       sessionUpdate: call.sessionUpdate || "tool_call",
       toolCallId: call.toolCallId || call.id || `tool-${nextId++}`,
       title: call.title || call.name || "tool",
@@ -239,7 +240,7 @@ async function streamToolCalls(sessionId, response) {
   }
 }
 
-async function streamUsage(sessionId, response) {
+async function streamUsage(sessionId: string, response: AnyRecord, _context?: AnyRecord): Promise<void> {
   const updates = Array.isArray(response.usageUpdates)
     ? response.usageUpdates
     : (response.usage ? [{ usage: response.usage }] : []);
@@ -257,12 +258,12 @@ async function streamUsage(sessionId, response) {
   }
 }
 
-async function maybeDelay(response) {
+async function maybeDelay(response: AnyRecord): Promise<void> {
   const delayMs = Number(response.delayMs ?? options.delayMs ?? process.env.CPB_TEST_ACP_DELAY_MS ?? 0);
   if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-async function handleInitialize(id) {
+async function handleInitialize(id: any): Promise<void> {
   await record({ event: "initialize" });
   respond(id, {
     protocolVersion: PROTOCOL_VERSION,
@@ -276,7 +277,7 @@ async function handleInitialize(id) {
   });
 }
 
-async function handleSessionNew(id, params = {}) {
+async function handleSessionNew(id: any, params: AnyRecord = {}): Promise<void> {
   const sessionId = `test-acp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   sessions.set(sessionId, { cwd: params.cwd || process.cwd() });
   await record({
@@ -288,14 +289,14 @@ async function handleSessionNew(id, params = {}) {
   respond(id, { sessionId });
 }
 
-async function handleSessionResume(id, params = {}) {
+async function handleSessionResume(id: any, params: AnyRecord = {}): Promise<void> {
   const sessionId = params.sessionId || `test-acp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   sessions.set(sessionId, { cwd: params.cwd || process.cwd() });
   await record({ event: "session/resume", sessionId, cwd: params.cwd || process.cwd() });
   respond(id, { sessionId });
 }
 
-async function handleSessionPrompt(id, params = {}) {
+async function handleSessionPrompt(id: any, params: AnyRecord = {}): Promise<void> {
   const sessionId = params.sessionId;
   const session = sessions.get(sessionId);
   if (!session) {
@@ -329,13 +330,13 @@ async function handleSessionPrompt(id, params = {}) {
   respond(id, null);
 }
 
-async function handleSessionClose(id, params = {}) {
+async function handleSessionClose(id: any, params: AnyRecord = {}): Promise<void> {
   if (params.sessionId) sessions.delete(params.sessionId);
   await record({ event: "session/close", sessionId: params.sessionId || null });
   respond(id, null);
 }
 
-async function handleRequest(message) {
+async function handleRequest(message: AnyRecord): Promise<void> {
   const { id, method, params = {} } = message;
   if (shuttingDown) {
     if (Object.hasOwn(message, "id")) respondError(id, -32006, "server is shutting down");
@@ -363,9 +364,9 @@ async function handleRequest(message) {
   }
 }
 
-async function handleLine(line) {
+async function handleLine(line: string): Promise<void> {
   if (!line.trim()) return;
-  let message;
+  let message: AnyRecord;
   try {
     message = JSON.parse(line);
   } catch {

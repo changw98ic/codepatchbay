@@ -1,4 +1,3 @@
-// @ts-nocheck
 export function parseAgentJson(output) {
   if (!output || typeof output !== "string") {
     return { ok: false, reason: "agent output is empty" };

@@ -8,6 +8,8 @@ web/node_modules/
 dist/
 build/
 coverage/
+codepatchbay-*.tgz
+dist-tests/
 runtime/target/
 web/dist/
 server/dist/

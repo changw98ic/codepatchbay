@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Completion Gate — deterministic gate evaluation before a job may complete.
  *
@@ -8,6 +7,8 @@
  */
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
+type AnyRecord = Record<string, any>;
+type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
 
 /**
  * Parse a verdict string looking for the canonical `VERDICT: <STATUS>` line.
@@ -16,7 +17,7 @@ const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
  * @param {string|null|undefined} verdictText
  * @returns {{ status: "pass"|"fail", raw: string }|null}
  */
-export function parseVerdict(verdictText) {
+export function parseVerdict(verdictText: any): ParsedVerdict {
   if (verdictText && typeof verdictText === "object") {
     const raw = (verdictText.verdict || verdictText.status || "").toString().toUpperCase()
     if (raw === "PASS") return { status: "pass", raw }
@@ -59,7 +60,7 @@ export function parseVerdict(verdictText) {
  * @param {{ workflow?: string, planMode?: string }} job
  * @returns {boolean}
  */
-export function isMutatingJob(job) {
+export function isMutatingJob(job: AnyRecord | null | undefined): boolean {
   if (!job) return false
   const mode = job.planMode
   if (mode === "parent" || mode === "none") return false
@@ -100,6 +101,14 @@ export function evaluateCompletionGate({
   artifactIndex,
   parsedVerdict,
   parsedAdversarialVerdict,
+}: {
+  job?: AnyRecord;
+  workflowDag?: AnyRecord;
+  riskMap?: AnyRecord;
+  dynamicAgentPlan?: AnyRecord;
+  artifactIndex?: AnyRecord;
+  parsedVerdict?: ParsedVerdict;
+  parsedAdversarialVerdict?: ParsedVerdict;
 } = {}) {
   const completedPhases = new Set(job?.completedPhases || [])
   const dagNodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : []
@@ -198,7 +207,7 @@ export function evaluateCompletionGate({
  * @param {{ outcome: string, reason: string, missingGates: string[] }} gateResult
  * @returns {object}
  */
-export function completionGateEvent(jobId, project, gateResult) {
+export function completionGateEvent(jobId: string, project: string, gateResult: AnyRecord) {
   return {
     type: "completion_gate_evaluated",
     jobId,
@@ -212,6 +221,6 @@ export function completionGateEvent(jobId, project, gateResult) {
 
 // ─── Internal ─────────────────────────────────────────────────────────
 
-function gateResult(outcome, reason, missingGates, details) {
+function gateResult(outcome: string, reason: string, missingGates: string[], details: AnyRecord) {
   return { outcome, reason, missingGates, details }
 }

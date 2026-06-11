@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, stat } from "node:fs/promises";
 
 export async function validateNonEmptyMarkdownArtifact({ path: filePath, kind, id }) {

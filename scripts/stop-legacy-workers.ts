@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 /**
  * Stop all legacy worker processes from the Hub worker registry.
  * Reads PID files from hub registry and sends SIGTERM.

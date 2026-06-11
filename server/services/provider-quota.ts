@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Provider Quota — centralised provider availability state.
  *
@@ -29,6 +28,17 @@ const TERMINAL_STATUSES = new Set([
 
 // ─── Error ──────────────────────────────────────────────────────────
 export class ProviderQuotaError extends Error {
+  providerKey: any;
+  agent: any;
+  variant: any;
+  status: any;
+  nextEligibleAt: any;
+  source: any;
+  confidence: any;
+  reason: any;
+  phase: any;
+  role: any;
+
   /**
    * @param {string} message
    * @param {object} opts
@@ -43,7 +53,7 @@ export class ProviderQuotaError extends Error {
    * @param {string} [opts.phase]
    * @param {string} [opts.role]
    */
-  constructor(message, opts) {
+  constructor(message: string, opts: Record<string, any>) {
     super(redactSecrets(message));
     this.name = "ProviderQuotaError";
     this.providerKey = opts.providerKey;

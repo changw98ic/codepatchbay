@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { buildChildEnv } from "../../core/policy/child-env.js";
@@ -35,11 +34,11 @@ export const REQUIRED_EXECUTOR_FILES = [
   "runtime/worker/managed-worker.js",
 ];
 
-export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.cwd() } = {}) {
+export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.cwd() }: Record<string, any> = {}) {
   return path.resolve(env.CPB_EXECUTOR_ROOT || fallbackRoot);
 }
 
-export function executorEnv(env = process.env, { cpbRoot, executorRoot } = {}) {
+export function executorEnv(env = process.env, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   return buildChildEnv(env, {
     CPB_ROOT: path.resolve(cpbRoot || env.CPB_ROOT || process.cwd()),
     CPB_EXECUTOR_ROOT: path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || cpbRoot || process.cwd()),
@@ -80,7 +79,7 @@ export async function readExecutorPackage(executorRoot) {
   }
 }
 
-export async function executorMetadata(executorRoot, { codeVersion, env = process.env } = {}) {
+export async function executorMetadata(executorRoot, { codeVersion, env = process.env }: Record<string, any> = {}) {
   const root = await assertExecutorRoot(executorRoot);
   const pkg = await readExecutorPackage(root);
 

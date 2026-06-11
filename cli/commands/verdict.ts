@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { buildArtifactsForJob, readArtifactContent } from "./artifacts.js";
 
 function usage() {
   return "Usage: cpb verdict <job-id> [--json]";
 }
 
-function formatVerdictHuman(payload) {
+function formatVerdictHuman(payload: Record<string, any>) {
   if (!payload.verdict) return `Verdict not found for ${payload.jobId}\n`;
   const lines = [
     `Verdict for ${payload.jobId}`,
@@ -19,7 +18,7 @@ function formatVerdictHuman(payload) {
   return `${lines.join("\n")}\n`;
 }
 
-export async function run(args = [], { cpbRoot }) {
+export async function run(args: string[] = [], { cpbRoot }: { cpbRoot: string }) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
     return 0;

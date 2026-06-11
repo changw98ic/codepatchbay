@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getProject, resolveHubRoot } from "../../server/services/hub-registry.js";
@@ -89,7 +88,7 @@ function formatHuman(result, projectId) {
   return `${lines.join("\n")}\n`;
 }
 
-export async function run(args, context) {
+export async function run(args, context: Record<string, any> = {}) {
   const options = parseArgs(args);
   if (options.help) {
     console.log(usage());
@@ -110,7 +109,7 @@ export async function run(args, context) {
     repoRoot: project.sourcePath,
     baseRef: options.baseRef,
     candidate: options.candidate,
-  });
+  } as Record<string, any>);
 
   if (options.json) {
     console.log(JSON.stringify({ projectId: options.projectId, ...result }, null, 2));

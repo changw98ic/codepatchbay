@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Scope guard — deterministic validation that changed files stay within
  * the allowed fix_scope boundary.

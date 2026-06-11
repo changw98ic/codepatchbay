@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -9,8 +8,9 @@ import path from "node:path";
  */
 
 const HUB_CONFIG_FILE = "config.json";
+type AnyRecord = Record<string, any>;
 
-async function readJson(filePath) {
+async function readJson(filePath: string): Promise<AnyRecord> {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch {
@@ -18,15 +18,15 @@ async function readJson(filePath) {
   }
 }
 
-async function writeJson(filePath, data) {
+async function writeJson(filePath: string, data: AnyRecord) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function normalizeHubConfig(data) {
+function normalizeHubConfig(data: any): AnyRecord {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const removedHubTotalKey = ["maxActive", "Total"].join("");
-  const next = { ...data };
+  const next: AnyRecord = { ...data };
   if (next.concurrency && typeof next.concurrency === "object" && !Array.isArray(next.concurrency)) {
     next.concurrency = { ...next.concurrency };
     delete next.concurrency[removedHubTotalKey];
@@ -70,11 +70,11 @@ export async function writeHubConfig(hubRoot, data) {
 
 // ── Project config (wiki/projects/{id}/project.json → agents) ──
 
-function projectConfigPath(root, project) {
+function projectConfigPath(root: string, project: string) {
   return path.join(root, "wiki", "projects", project, "project.json");
 }
 
-function uniqueRoots(roots) {
+function uniqueRoots(roots: any[]) {
   const seen = new Set();
   const result = [];
   for (const root of roots) {
@@ -150,9 +150,9 @@ export function normalizeAgentSpec(raw) {
   return { agent: String(raw), variant: null };
 }
 
-function resolveFromConfig(config) {
+function resolveFromConfig(config: AnyRecord | null | undefined): AnyRecord {
   if (!config) return {};
-  const result = {};
+  const result: AnyRecord = {};
   const defaultSpec = normalizeAgentSpec(config.default);
   if (defaultSpec) result.default = defaultSpec;
 
@@ -203,16 +203,17 @@ const PHASE_TO_ROLE = {
  * Later sources override earlier ones.
  */
 export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
-  const merged = {};
+  const merged: AnyRecord = {};
 
-  function applyResolved(resolved, overrideDefault) {
+  function applyResolved(resolved: AnyRecord, overrideDefault: boolean) {
     if (resolved.default) {
       for (const role of ["planner", "executor", "verifier", "reviewer"]) {
         if (overrideDefault || !merged[role]) merged[role] = { ...resolved.default };
       }
     }
-    for (const [phase, spec] of Object.entries(resolved)) {
+    for (const [phase, rawSpec] of Object.entries(resolved)) {
       if (phase === "default") continue;
+      const spec = rawSpec as AnyRecord;
       const role = PHASE_TO_ROLE[phase] || phase;
       if (spec.agent === null && merged[role]) {
         // Standalone variant — only override variant, keep existing agent
@@ -265,6 +266,7 @@ export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
  * Called at enqueue time.
  */
 export async function resolveAgentsForEntry(hubRoot, cpbRoot, project, metadata = {}) {
+  const metadataRecord = metadata as AnyRecord;
   const hubConfig = await readHubConfig(hubRoot);
   const projectAgents = await readProjectConfigFromRoots(
     [hubRoot, process.env.CPB_ROOT, cpbRoot],
@@ -274,16 +276,16 @@ export async function resolveAgentsForEntry(hubRoot, cpbRoot, project, metadata 
   const merged = mergeAgentConfig(
     hubConfig.agents,
     projectAgents,
-    metadata.agents || null,
+    metadataRecord.agents || null,
   );
 
   // If metadata.agent is a string, it's a global override already handled by mergeAgentConfig
   // Otherwise, use the merged result
-  if (Object.keys(merged).length === 0 && !metadata.agent) return metadata;
+  if (Object.keys(merged).length === 0 && !metadataRecord.agent) return metadata;
 
   return {
     ...metadata,
     agents: Object.keys(merged).length > 0 ? merged : undefined,
-    agent: metadata.agent || undefined,
+    agent: metadataRecord.agent || undefined,
   };
 }

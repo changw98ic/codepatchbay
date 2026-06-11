@@ -1,7 +1,8 @@
-// @ts-nocheck
 import { createPublicKey, verify } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
+
+type AnyRecord = Record<string, any>;
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -26,7 +27,7 @@ export function verifyDiscordSignature({
   timestamp,
   signature,
   rawBody,
-} = {}) {
+}: AnyRecord = {}) {
   if (!publicKey) return { ok: false, reason: "Discord public key is not configured" };
   if (!timestamp || !signature) return { ok: false, reason: "missing Discord signature headers" };
 
@@ -47,12 +48,12 @@ function optionValue(options = [], names = []) {
   return found?.value ?? null;
 }
 
-export function parseDiscordInteraction(payload = {}) {
+export function parseDiscordInteraction(payload: AnyRecord = {}) {
   if (payload.type === 1) {
     return { ok: true, channel: "discord", type: "ping" };
   }
 
-  const data = payload.data || {};
+  const data: AnyRecord = payload.data || {};
   const commandText = data.name === "cpb"
     ? ["/cpb", optionValue(data.options, ["command", "text", "input"]) || ""].join(" ").trim()
     : ["/cpb", data.name || "", optionValue(data.options, ["command", "text", "input"]) || ""].join(" ").trim();

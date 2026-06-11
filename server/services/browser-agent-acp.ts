@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
+
+type AnyRecord = Record<string, any>;
 
 let _engineModule = null;
 async function getEngine() {
@@ -41,8 +42,8 @@ function sendNotification(method, params) {
   writeMessage({ jsonrpc: "2.0", method, params });
 }
 
-function respondError(id, code, message, data) {
-  const error = { code, message };
+function respondError(id, code, message, data = null) {
+  const error: AnyRecord = { code, message };
   if (data) error.data = data;
   writeMessage({ jsonrpc: "2.0", id, error });
 }

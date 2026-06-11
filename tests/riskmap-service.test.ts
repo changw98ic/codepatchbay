@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -23,7 +22,8 @@ async function loadRiskMapApi() {
       if (typeof mod.prepareTask === "function") return { ...mod, __specifier: specifier };
       failures.push(`${specifier}: missing prepareTask export`);
     } catch (err) {
-      if (err?.code !== "ERR_MODULE_NOT_FOUND") failures.push(`${specifier}: ${err.message}`);
+      const typedErr = err as any;
+      if (typedErr?.code !== "ERR_MODULE_NOT_FOUND") failures.push(`${specifier}: ${typedErr.message}`);
       else failures.push(`${specifier}: module not found`);
     }
   }
@@ -71,7 +71,7 @@ function highConfidenceCapabilityContext() {
   };
 }
 
-async function callPrepareTask(api, overrides = {}) {
+async function callPrepareTask(api: any, overrides: Record<string, any> = {}) {
   const cpbRoot = overrides.cpbRoot || await tempRoot("cpb-riskmap-cpb");
   const sourcePath = overrides.sourcePath === undefined
     ? await makeCodegraphReadyProject()

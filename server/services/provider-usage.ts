@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Provider Usage — JSONL-based phase-level usage tracking.
  *
@@ -13,8 +12,9 @@ import { mkdir, readFile, appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const USAGE_FILE = "usage.jsonl";
+type AnyRecord = Record<string, any>;
 
-function usageFilePath(hubRoot) {
+function usageFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", USAGE_FILE);
 }
 
@@ -24,7 +24,7 @@ function usageFilePath(hubRoot) {
  * @param {string} hubRoot
  * @param {object} record — already-normalized entry
  */
-export async function _internalAppendUsageLine(hubRoot, record) {
+export async function _internalAppendUsageLine(hubRoot: string, record: AnyRecord) {
   const filePath = usageFilePath(hubRoot);
   const line = `${JSON.stringify(record)}\n`;
   try {
@@ -43,7 +43,7 @@ export async function _internalAppendUsageLine(hubRoot, record) {
  * @param {string} hubRoot
  * @returns {Promise<Array>}
  */
-export async function readProviderUsage(hubRoot) {
+export async function readProviderUsage(hubRoot: string): Promise<AnyRecord[]> {
   try {
     const content = await readFile(usageFilePath(hubRoot), "utf8");
     return content
@@ -63,9 +63,9 @@ export async function readProviderUsage(hubRoot) {
  * @param {string} hubRoot
  * @returns {Promise<Object>} keyed by providerKey
  */
-export async function readProviderUsageRollup(hubRoot) {
+export async function readProviderUsageRollup(hubRoot: string): Promise<Record<string, AnyRecord>> {
   const records = await readProviderUsage(hubRoot);
-  const rollup = {};
+  const rollup: Record<string, AnyRecord> = {};
 
   for (const r of records) {
     const key = r.providerKey;
@@ -104,9 +104,9 @@ export async function readProviderUsageRollup(hubRoot) {
  * @param {string} hubRoot
  * @returns {Promise<object>}
  */
-export async function readSystemUsageRollup(hubRoot) {
+export async function readSystemUsageRollup(hubRoot: string) {
   const providerRollup = await readProviderUsageRollup(hubRoot);
-  const providers = Object.values(providerRollup);
+  const providers = Object.values(providerRollup) as AnyRecord[];
 
   return {
     totalCalls: providers.reduce((s, p) => s + p.calls, 0),

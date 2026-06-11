@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
@@ -18,6 +17,8 @@ const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
 const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
 
+type AnyRecord = Record<string, any>;
+
 function sourceDir(cpbRoot) {
   return runtimeDataPath(cpbRoot, EVENT_SOURCE_DIR);
 }
@@ -34,9 +35,9 @@ function dedupeKey(source, externalId) {
   return `${source}:${externalId}`;
 }
 
-const candidateChains = new Map();
+const candidateChains = new Map<string, Promise<any>>();
 
-async function withCandidateFileLock(cpbRoot, fn) {
+async function withCandidateFileLock(cpbRoot, fn: () => Promise<any>) {
   const file = candidateFile(cpbRoot);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -71,7 +72,7 @@ async function withCandidateFileLock(cpbRoot, fn) {
   }
 }
 
-function withCandidateLock(cpbRoot, fn) {
+function withCandidateLock(cpbRoot, fn: () => Promise<any>) {
   const key = path.resolve(cpbRoot);
   const prev = candidateChains.get(key) || Promise.resolve();
   const next = prev.then(() => withCandidateFileLock(cpbRoot, fn));
@@ -89,7 +90,7 @@ async function atomicWriteJson(file, data) {
   await rename(tmp, file);
 }
 
-async function readQueue(file) {
+async function readQueue(file): Promise<AnyRecord[]> {
   try {
     const raw = await readFile(file, "utf8");
     const queue = JSON.parse(raw);
@@ -110,7 +111,7 @@ async function readQueue(file) {
  * Ingest an external event into the candidate queue.
  * Returns the created candidate entry.
  */
-export async function ingestEvent(cpbRoot, event) {
+export async function ingestEvent(cpbRoot, event: AnyRecord) {
   const {
     source,
     externalId,
@@ -155,7 +156,7 @@ export async function ingestEvent(cpbRoot, event) {
   });
 }
 
-function githubQueueExternalId(event) {
+function githubQueueExternalId(event: AnyRecord) {
   if (event.delivery) return event.delivery;
   return [
     event.event || "github",
@@ -166,19 +167,19 @@ function githubQueueExternalId(event) {
   ].join(":");
 }
 
-function githubPriority(labels = []) {
+function githubPriority(labels: any[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
 }
 
-function effectiveRoute(route) {
+function effectiveRoute(route: AnyRecord | null | undefined) {
   return route?.effectiveRoute || route?.effective || {};
 }
 
-function requestedRoute(route) {
+function requestedRoute(route: AnyRecord | null | undefined) {
   return route?.requestedRoute || route?.requested || null;
 }
 
-function routingMetadata(route) {
+function routingMetadata(route: AnyRecord | null | undefined) {
   if (!route) return null;
   const acpTriager = route.acpTriager
     ? {
@@ -234,7 +235,7 @@ function routeConflict(decision) {
   );
 }
 
-function autoAcpDecision(decision = {}) {
+function autoAcpDecision(decision: AnyRecord = {}) {
   if ((decision.protectedScopes || []).length > 0 || decision.actualDiffRisk?.protected) {
     return { useAcp: false, reason: "protected or changed-file risk is already forced to complex/full" };
   }
@@ -250,7 +251,7 @@ function autoAcpDecision(decision = {}) {
   return { useAcp: false, reason: "confident deterministic route" };
 }
 
-function withTriageStrategy(decision, mode, strategy) {
+function withTriageStrategy(decision: AnyRecord, mode, strategy: AnyRecord) {
   return {
     ...decision,
     triageMode: mode,
@@ -269,7 +270,7 @@ async function resolveGithubRoute(cpbRoot, event, {
   triageAgent = "claude",
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
-} = {}) {
+}: AnyRecord = {}) {
   const requestedMode = autoTriageMode(
     triageMode || process.env.CPB_GITHUB_TRIAGE_MODE,
     process.env.CPB_TRIAGE_MODE,
@@ -314,7 +315,7 @@ async function resolveChannelRoute(cpbRoot, command, context, {
   triageAgent = "claude",
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
-} = {}) {
+}: AnyRecord = {}) {
   const requestedMode = autoTriageMode(
     command.triage || triageMode || process.env.CPB_CHANNEL_TRIAGE_MODE,
     process.env.CPB_TRIAGE_MODE,
@@ -352,7 +353,7 @@ async function resolveChannelRoute(cpbRoot, command, context, {
   };
 }
 
-function githubQueuePayload(event, match, route) {
+function githubQueuePayload(event: AnyRecord, match: AnyRecord, route: AnyRecord) {
   const effective = effectiveRoute(route);
   return {
     issueNumber: event.issueNumber ?? null,
@@ -372,7 +373,7 @@ function githubQueuePayload(event, match, route) {
   };
 }
 
-function githubHubPriority(labels = []) {
+function githubHubPriority(labels: any[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2";
 }
 
@@ -385,7 +386,7 @@ async function resolveRegisteredProject(hubRoot, projectId, getProjectFn) {
   }
 }
 
-function sourcePathForQueue(explicitSourcePath, project) {
+function sourcePathForQueue(explicitSourcePath, project: AnyRecord | null) {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
@@ -393,7 +394,7 @@ async function maybeGenerateQueueContextPack(project, hubRoot, task) {
   return null;
 }
 
-function isSddRoute(route) {
+function isSddRoute(route: AnyRecord) {
   const effective = effectiveRoute(route);
   const requested = requestedRoute(route);
   return effective.workflow === "sdd-standard"
@@ -403,7 +404,7 @@ function isSddRoute(route) {
     || route?.ruleRoute?.category === "sdd";
 }
 
-function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null, contextPackResult = null }) {
+function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null, contextPackResult = null }: AnyRecord) {
   const route = payload.route;
   const sddMetadata = sddAutomation?.queueMetadata || {};
   const contextPack = contextPackResult?.contextPack || null;
@@ -448,7 +449,7 @@ export async function enqueueSddTaskEntries({
   sddAutomation,
   route,
   contextPackResult = null,
-}) {
+}: AnyRecord) {
   if (!sddAutomation?.tasks?.length) return [];
   const parentMetadata = parentQueueEntry?.metadata || {};
   const contextPack = contextPackResult?.contextPack || parentMetadata.contextPack || null;
@@ -493,7 +494,7 @@ export async function enqueueSddTaskEntries({
 
 export async function enqueueSddTaskEntriesForApprovedParent(hubRoot, parentQueueEntry, {
   enqueueFn = enqueueHubQueue,
-} = {}) {
+}: AnyRecord = {}) {
   const metadata = parentQueueEntry?.metadata || {};
   if (!metadata.sddApproval?.requiresApproval || !Array.isArray(metadata.sddTasks)) return [];
   return enqueueSddTaskEntries({
@@ -539,7 +540,7 @@ export async function createGithubIssueQueueJob(
     sddAcpPool = null,
     sddDrafterAgent = "claude",
     sddDrafterTimeoutMs = 60_000,
-  } = {},
+  }: AnyRecord = {},
 ) {
   if (!event || event.status !== "ok") {
     throw new Error("GitHub event must be normalized before queue creation");
@@ -665,7 +666,7 @@ export async function createGithubIssueQueueJob(
   };
 }
 
-function channelExternalId(source, context = {}) {
+function channelExternalId(source, context: AnyRecord = {}) {
   if (context.externalId) return context.externalId;
   if (context.triggerId) return context.triggerId;
   return [
@@ -678,7 +679,7 @@ function channelExternalId(source, context = {}) {
   ].join(":");
 }
 
-function channelQueuePayload(command, context = {}, route = null) {
+function channelQueuePayload(command: AnyRecord, context: AnyRecord = {}, route: AnyRecord | null = null) {
   const effective = effectiveRoute(route);
   const workflowRequested = command.workflowRequested || (command.workflow && command.workflow !== "standard");
   const explicitCustomWorkflow = workflowRequested
@@ -704,11 +705,11 @@ function channelQueuePayload(command, context = {}, route = null) {
   };
 }
 
-function channelDescription(payload) {
+function channelDescription(payload: AnyRecord) {
   return payload.task || (payload.issueNumber ? `GitHub issue #${payload.issueNumber}` : "");
 }
 
-function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project, contextPackResult = null }) {
+function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project, contextPackResult = null }: AnyRecord) {
   const repo = project?.github?.fullName || project?.github?.repo || null;
   const issueUrl = payload.issueNumber && repo ? `https://github.com/${repo}/issues/${payload.issueNumber}` : null;
   const contextPack = contextPackResult?.contextPack || null;
@@ -749,7 +750,7 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
 export async function createChannelQueueJob(
   cpbRoot,
   command,
-  context = {},
+  context: AnyRecord = {},
   {
     hubRoot = cpbRoot,
     enqueueFn = enqueueHubQueue,
@@ -760,7 +761,7 @@ export async function createChannelQueueJob(
     acpPool = null,
     triageAgent = "claude",
     triageTimeoutMs = 60_000,
-  } = {},
+  }: AnyRecord = {},
 ) {
   if (!command || !["run", "issue"].includes(command.type)) {
     throw new Error("channel command must be a run or issue command before queue creation");
@@ -848,7 +849,7 @@ export async function createChannelQueueJob(
 /**
  * List candidate events, optionally filtered by status or source.
  */
-export async function listCandidates(cpbRoot, { status, source } = {}) {
+export async function listCandidates(cpbRoot, { status, source }: AnyRecord = {}) {
   const file = candidateFile(cpbRoot);
   const queue = await readQueue(file);
 
@@ -862,7 +863,7 @@ export async function listCandidates(cpbRoot, { status, source } = {}) {
 /**
  * Update a candidate's status (pending → processed | dismissed).
  */
-export async function updateCandidate(cpbRoot, candidateId, { status, reason }) {
+export async function updateCandidate(cpbRoot, candidateId, { status, reason }: AnyRecord) {
   return withCandidateLock(cpbRoot, async () => {
     const file = candidateFile(cpbRoot);
     const queue = await readQueue(file);
@@ -883,7 +884,7 @@ export async function updateCandidate(cpbRoot, candidateId, { status, reason }) 
 /**
  * Normalize a GitHub issue into a candidate event.
  */
-export function githubIssueToCandidate(issue, { projectId } = {}) {
+export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecord = {}) {
   return {
     source: "github-issue",
     externalId: String(issue.number || issue.id),
@@ -907,7 +908,7 @@ export function githubIssueToCandidate(issue, { projectId } = {}) {
 /**
  * Normalize a CI failure into a candidate event.
  */
-export function ciFailureToCandidate(failure, { projectId } = {}) {
+export function ciFailureToCandidate(failure: AnyRecord, { projectId }: AnyRecord = {}) {
   return {
     source: "ci-failure",
     externalId: failure.runId || failure.buildId || `ci-${Date.now()}`,

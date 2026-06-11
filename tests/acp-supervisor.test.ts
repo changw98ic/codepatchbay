@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -229,7 +228,7 @@ test("AcpPool isolates control-plane provider keys from worker provider capacity
         waitTimeoutMs: 20,
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("control-plane request waited on worker provider slot")), 80)),
-    ]);
+    ]) as { output: string };
     assert.equal(control.output, "control");
   } finally {
     if (releaseWorker) releaseWorker();

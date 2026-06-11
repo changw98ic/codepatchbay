@@ -1,17 +1,16 @@
-// @ts-nocheck
 import os from "node:os";
 import path from "node:path";
 
 // --- Legacy (backward compat) ---
 
-export function runtimeDataRoot(cpbRoot) {
+export function runtimeDataRoot(cpbRoot: string) {
   if (process.env.CPB_PROJECT_RUNTIME_ROOT) {
     return path.resolve(process.env.CPB_PROJECT_RUNTIME_ROOT);
   }
   return path.join(path.resolve(cpbRoot), "cpb-task");
 }
 
-export function runtimeDataPath(cpbRoot, ...parts) {
+export function runtimeDataPath(cpbRoot: string, ...parts: string[]) {
   return path.join(runtimeDataRoot(cpbRoot), ...parts);
 }
 
@@ -21,25 +20,25 @@ export function cpbHome() {
   return process.env.CPB_HOME || path.join(os.homedir(), ".cpb");
 }
 
-export function defaultProjectRuntimeRoot(projectId) {
+export function defaultProjectRuntimeRoot(projectId: string) {
   return path.join(cpbHome(), "projects", projectId);
 }
 
-export function projectRuntimeRoot(hubRoot, projectId) {
+export function projectRuntimeRoot(hubRoot: string, projectId: string) {
   return path.join(path.resolve(hubRoot), "projects", projectId);
 }
 
-export function projectRuntimePath(hubRoot, projectId, ...parts) {
+export function projectRuntimePath(hubRoot: string, projectId: string, ...parts: string[]) {
   return path.join(projectRuntimeRoot(hubRoot, projectId), ...parts);
 }
 
-export function resolveDataRoot(cpbRoot, { hubRoot, projectId } = {}) {
+export function resolveDataRoot(cpbRoot: string, { hubRoot, projectId }: { hubRoot?: string; projectId?: string } = {}) {
   if (hubRoot && projectId) {
     return projectRuntimeRoot(hubRoot, projectId);
   }
   return runtimeDataRoot(cpbRoot);
 }
 
-export function dataPath(root, ...parts) {
+export function dataPath(root: string, ...parts: string[]) {
   return path.join(path.resolve(root), ...parts);
 }

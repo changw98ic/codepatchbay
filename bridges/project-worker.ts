@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // project-worker.js — Per-project worker that polls Hub queue and runs pipeline
 // Usage: node bridges/project-worker.js --project <id> [--once] [--workflow blocked]
 
@@ -26,23 +25,24 @@ const CPB_EXECUTOR_ROOT = resolveExecutorRoot({
   fallbackRoot: path.join(__dirname, ".."),
 });
 export const AGENT_OUTAGE_EXIT_CODE = 2;
+type AnyRecord = Record<string, any>;
 
-function numericOption(value, fallback) {
+function numericOption(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function sleep(ms) {
+function sleep(ms: number) {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function truncateOutput(output, maxLength = 2_000) {
+function truncateOutput(output: string, maxLength = 2_000) {
   if (!output || output.length <= maxLength) return output || "";
   return `${output.slice(0, maxLength)}\n[truncated ${output.length - maxLength} chars]`;
 }
 
-function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }) {
+function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: Record<string, any>): Promise<any> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const script = [
@@ -112,7 +112,7 @@ function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }) {
   });
 }
 
-async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }) {
+async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: Record<string, any>) {
   const [codex, claude] = await Promise.all([
     runAgentSmoke({ agent: "codex", cpbRoot, executorRoot, cwd, timeoutMs }),
     runAgentSmoke({ agent: "claude", cpbRoot, executorRoot, cwd, timeoutMs }),
@@ -132,7 +132,7 @@ function priorityScore(p) {
 }
 
 export function parseArgs(argv) {
-  const opts = {
+  const opts: AnyRecord = {
     project: null,
     pool: false,
     once: false,
@@ -179,7 +179,31 @@ export function parseArgs(argv) {
 }
 
 export class ProjectWorker {
-  constructor(opts = {}) {
+  cpbRoot: string;
+  executorRoot: string;
+  hubRoot: string;
+  projectId: any;
+  pool: boolean;
+  workerId: string;
+  once: boolean;
+  heartbeatMs: number;
+  pollMs: number;
+  claimTimeoutMs: number;
+  maxActivePerProject: number;
+  requireIssueLink: boolean;
+  agentPreflightRetries: number;
+  agentPreflightBackoffMs: number;
+  agentPreflightTimeoutMs: number;
+  workflow: string;
+  assignmentStore: any;
+  _runPipelineFn: any;
+  _agentHealthFn: any;
+  _heartbeatTimer: NodeJS.Timeout | null;
+  _stopRequested: boolean;
+  _activeEntryId: any;
+  project: any;
+
+  constructor(opts: Record<string, any> = {}) {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
     this.executorRoot = path.resolve(opts.executorRoot || CPB_EXECUTOR_ROOT);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(this.cpbRoot));
@@ -255,7 +279,7 @@ export class ProjectWorker {
 
   async recoverStaleEntries() {
     if (this.claimTimeoutMs <= 0) return [];
-    const filter = { status: "in_progress" };
+    const filter: AnyRecord = { status: "in_progress" };
     if (!this.pool && this.project) filter.projectId = this.project.id;
     const inProgress = await listQueue(this.hubRoot, filter);
     const now = Date.now();
@@ -282,7 +306,7 @@ export class ProjectWorker {
   }
 
   async releaseOwnEntries() {
-    const filter = { status: "in_progress" };
+    const filter: AnyRecord = { status: "in_progress" };
     if (!this.pool && this.project) filter.projectId = this.project.id;
     const inProgress = await listQueue(this.hubRoot, filter);
     const released = [];
@@ -312,7 +336,7 @@ export class ProjectWorker {
   }
 
   async peekNext() {
-    const filter = { status: "pending" };
+    const filter: AnyRecord = { status: "pending" };
     if (!this.pool && this.project) filter.projectId = this.project.id;
     const pending = await listQueue(this.hubRoot, filter);
     if (pending.length === 0) return null;
@@ -436,7 +460,7 @@ export class ProjectWorker {
     });
   }
 
-  async poll() {
+  async poll(): Promise<AnyRecord> {
     const entry = await this.claimNext();
     if (!entry) return { idle: true };
 
@@ -477,7 +501,7 @@ export class ProjectWorker {
     return { entry, result };
   }
 
-  async run() {
+  async run(): Promise<AnyRecord> {
     await this.init();
     this.startHeartbeat();
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "child_process";
 import path from "path";
 import { readFile, rm } from "fs/promises";
@@ -140,12 +139,13 @@ export async function reviewRoutes(fastify, opts) {
     });
 
     if (!result.ok) {
+      const failure = result as Record<string, any>;
       if (result.error === "session_not_found") throw fastify.httpErrors.notFound("session not found");
       return {
         dispatched: false,
         sessionId: req.params.id,
-        status: result.status,
-        note: result.note,
+        status: failure.status,
+        note: failure.note,
       };
     }
 
@@ -162,7 +162,7 @@ export async function reviewRoutes(fastify, opts) {
       dispatched: true,
       sessionId: result.sessionId,
       taskId: result.taskId,
-      note: result.note,
+      note: (result as Record<string, any>).note,
     };
   });
 

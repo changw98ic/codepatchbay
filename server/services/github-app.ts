@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +5,7 @@ import { redactSecrets } from "./secret-policy.js";
 
 const SCHEMA_VERSION = 1;
 const PERMISSION_LEVELS = new Set(["read", "write"]);
+type AnyRecord = Record<string, any>;
 
 export const DEFAULT_GITHUB_APP_PERMISSIONS = {
   metadata: "read",
@@ -20,11 +20,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export function githubAppConfigPath(hubRoot) {
+export function githubAppConfigPath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "github", "app.json");
 }
 
-function normalizeId(value, field, errors, { required = true } = {}) {
+function normalizeId(value: any, field: string, errors: string[], { required = true }: AnyRecord = {}) {
   if (value === null || value === undefined || value === "") {
     if (required) errors.push(`${field} is required`);
     return null;
@@ -37,7 +37,7 @@ function normalizeId(value, field, errors, { required = true } = {}) {
   return text;
 }
 
-function normalizeWebhookSecretRef(value, errors) {
+function normalizeWebhookSecretRef(value: any, errors: string[]) {
   if (typeof value !== "string" || value.trim() === "") {
     errors.push("webhookSecretRef is required");
     return null;
@@ -50,7 +50,7 @@ function normalizeWebhookSecretRef(value, errors) {
   return ref;
 }
 
-function normalizePrivateKeyRef(value, errors) {
+function normalizePrivateKeyRef(value: any, errors: string[]) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value !== "string") {
     errors.push("privateKeyRef must be a string");
@@ -64,8 +64,8 @@ function normalizePrivateKeyRef(value, errors) {
   return ref;
 }
 
-function normalizePermissions(value, errors) {
-  const permissions = {
+function normalizePermissions(value: any, errors: string[]) {
+  const permissions: AnyRecord = {
     ...DEFAULT_GITHUB_APP_PERMISSIONS,
     ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
   };
@@ -79,12 +79,13 @@ function normalizePermissions(value, errors) {
 }
 
 export function validateGithubAppConfig(raw = {}) {
-  const errors = [];
-  const appId = normalizeId(raw.appId, "appId", errors);
-  const installationId = normalizeId(raw.installationId, "installationId", errors, { required: false });
-  const webhookSecretRef = normalizeWebhookSecretRef(raw.webhookSecretRef, errors);
-  const privateKeyRef = normalizePrivateKeyRef(raw.privateKeyRef, errors);
-  const permissions = normalizePermissions(raw.permissions, errors);
+  const input = raw as AnyRecord;
+  const errors: string[] = [];
+  const appId = normalizeId(input.appId, "appId", errors);
+  const installationId = normalizeId(input.installationId, "installationId", errors, { required: false });
+  const webhookSecretRef = normalizeWebhookSecretRef(input.webhookSecretRef, errors);
+  const privateKeyRef = normalizePrivateKeyRef(input.privateKeyRef, errors);
+  const permissions = normalizePermissions(input.permissions, errors);
 
   const config = {
     schemaVersion: SCHEMA_VERSION,
@@ -93,7 +94,7 @@ export function validateGithubAppConfig(raw = {}) {
     webhookSecretRef,
     privateKeyRef,
     permissions,
-    updatedAt: raw.updatedAt || null,
+    updatedAt: input.updatedAt || null,
   };
 
   return {
@@ -103,20 +104,20 @@ export function validateGithubAppConfig(raw = {}) {
   };
 }
 
-export function redactGithubAppConfig(config) {
+export function redactGithubAppConfig(config: AnyRecord | null) {
   if (!config) return null;
   const { webhookSecret, privateKey, privateKeyPem, ...safe } = config;
   return redactSecrets(safe);
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
 }
 
-export async function saveGithubAppConfig(hubRoot, raw = {}) {
+export async function saveGithubAppConfig(hubRoot: string, raw: AnyRecord = {}) {
   const validation = validateGithubAppConfig(raw);
   if (!validation.valid) {
     throw new Error(`invalid GitHub App config: ${validation.errors.join("; ")}`);
@@ -129,7 +130,7 @@ export async function saveGithubAppConfig(hubRoot, raw = {}) {
   return config;
 }
 
-export async function loadGithubAppConfig(hubRoot) {
+export async function loadGithubAppConfig(hubRoot: string) {
   let raw;
   try {
     raw = JSON.parse(await readFile(githubAppConfigPath(hubRoot), "utf8"));
@@ -143,11 +144,11 @@ export async function loadGithubAppConfig(hubRoot) {
   }
   return redactGithubAppConfig({
     ...validation.config,
-    updatedAt: raw.updatedAt || null,
+    updatedAt: (raw as AnyRecord).updatedAt || null,
   });
 }
 
-export function buildGithubAppReadiness(config) {
+export function buildGithubAppReadiness(config: AnyRecord | null) {
   if (!config) {
     return [{
       id: "github-app-config",
@@ -191,7 +192,7 @@ export function buildGithubAppReadiness(config) {
   ];
 }
 
-export function resolveSecretRef(secretRef, { env = process.env } = {}) {
+export function resolveSecretRef(secretRef: any, { env = process.env }: AnyRecord = {}) {
   if (typeof secretRef !== "string" || secretRef.trim() === "") {
     throw new Error("secret reference is required");
   }
@@ -204,14 +205,14 @@ export function resolveSecretRef(secretRef, { env = process.env } = {}) {
   throw new Error(`unsupported secret reference: ${secretRef.split(":")[0] || "unknown"}`);
 }
 
-export function resolveGithubWebhookSecret(config, options = {}) {
+export function resolveGithubWebhookSecret(config: AnyRecord | null, options: AnyRecord = {}) {
   if (!config?.webhookSecretRef) {
     throw new Error("GitHub webhook secret reference missing");
   }
   return resolveSecretRef(config.webhookSecretRef, options);
 }
 
-export function verifyGithubWebhookSignature({ signature, rawBody, secret }) {
+export function verifyGithubWebhookSignature({ signature, rawBody, secret }: AnyRecord) {
   if (typeof signature !== "string" || !signature.startsWith("sha256=")) return false;
   if (!secret || !rawBody) return false;
 

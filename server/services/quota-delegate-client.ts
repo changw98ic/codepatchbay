@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Quota Delegate Client — IPC client for the quota delegate process.
  *
@@ -110,7 +109,7 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutM
   await appendCommand(hubRoot, command);
   const ack = await waitForAck(hubRoot, commandId, ackTimeoutMs || ACK_TIMEOUT_MS);
   if (!ack?.ok) {
-    const err = new Error("quota delegate unavailable; provider state not recorded");
+    const err = new Error("quota delegate unavailable; provider state not recorded") as Error & { code?: string };
     err.code = "QUOTA_DELEGATE_UNAVAILABLE";
     throw err;
   }

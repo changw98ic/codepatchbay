@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const FailureKind = Object.freeze({
   AGENT_UNAVAILABLE: "agent_unavailable",
   AGENT_RATE_LIMITED: "agent_rate_limited",
@@ -20,10 +19,10 @@ export const FailureKind = Object.freeze({
   UNKNOWN: "unknown",
 });
 
-const VALID_KINDS = new Set(Object.values(FailureKind));
+const VALID_KINDS = new Set<string>(Object.values(FailureKind));
 
-export function isValidFailureKind(kind) {
-  return VALID_KINDS.has(kind);
+export function isValidFailureKind(kind: unknown) {
+  return typeof kind === "string" && VALID_KINDS.has(kind);
 }
 
 export function failure({
@@ -36,6 +35,16 @@ export function failure({
   stdoutSnippet = "",
   stderrSnippet = "",
   cause = {},
+}: {
+  kind: string;
+  phase?: string | null;
+  reason: unknown;
+  retryable?: boolean;
+  exitCode?: number | null;
+  signal?: string | null;
+  stdoutSnippet?: unknown;
+  stderrSnippet?: unknown;
+  cause?: unknown;
 }) {
   if (!VALID_KINDS.has(kind)) throw new Error(`invalid FailureKind: ${kind}`);
   return {

@@ -1,40 +1,40 @@
-// @ts-nocheck
 import { listDispatches } from "./dispatch-state.js";
 import { listQueue, queueStatus } from "./hub-queue.js";
 import { listJobs } from "./job-store.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+type AnyRecord = Record<string, any>;
 
-function clampLimit(limit) {
+function clampLimit(limit: any) {
   const parsed = Number.parseInt(limit, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
   return Math.min(parsed, MAX_LIMIT);
 }
 
-function timestampOf(item) {
+function timestampOf(item: AnyRecord) {
   return item.updatedAt || item.createdAt || "";
 }
 
-function countByStatus(items) {
+function countByStatus(items: AnyRecord[]) {
   return items.reduce((acc, item) => {
     const status = item.status || "unknown";
     acc[status] = (acc[status] || 0) + 1;
     return acc;
-  }, {});
+  }, {} as Record<string, number>);
 }
 
-function firstLine(value, fallback) {
+function firstLine(value: any, fallback: any) {
   const line = String(value || "").split("\n").find((part) => part.trim());
   return line ? line.trim() : fallback;
 }
 
-function truncate(value, max = 160) {
+function truncate(value: any, max = 160) {
   const text = String(value || "");
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
-function githubIssueLink(metadata = {}) {
+function githubIssueLink(metadata: AnyRecord = {}) {
   if (!metadata.issueNumber && !metadata.issueUrl) return null;
   return {
     kind: "github-issue",
@@ -44,7 +44,7 @@ function githubIssueLink(metadata = {}) {
   };
 }
 
-function queueItem(entry) {
+function queueItem(entry: AnyRecord) {
   const metadata = entry.metadata || {};
   const links = [githubIssueLink(metadata)].filter(Boolean);
   const supersededByIssues = Array.isArray(metadata.supersededByIssues)
@@ -76,7 +76,7 @@ function queueItem(entry) {
   };
 }
 
-function dispatchItem(dispatch) {
+function dispatchItem(dispatch: AnyRecord) {
   return {
     id: `dispatch:${dispatch.dispatchId}`,
     kind: "dispatch",
@@ -98,7 +98,7 @@ function dispatchItem(dispatch) {
   };
 }
 
-function jobItem(job) {
+function jobItem(job: AnyRecord) {
   return {
     id: `job:${job.jobId}`,
     kind: "job",
@@ -125,7 +125,7 @@ function jobItem(job) {
   };
 }
 
-function applyFilters(items, { projectId, kinds } = {}) {
+function applyFilters(items: AnyRecord[], { projectId, kinds }: AnyRecord = {}) {
   const kindSet = kinds?.length ? new Set(kinds) : null;
   return items.filter((item) => {
     if (projectId && item.projectId !== projectId) return false;
@@ -134,7 +134,7 @@ function applyFilters(items, { projectId, kinds } = {}) {
   });
 }
 
-export async function buildTaskHistory({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT, projectId, kinds } = {}) {
+export async function buildTaskHistory({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT, projectId, kinds }: AnyRecord = {}) {
   const [queueEntries, dispatches, jobs, qStatus] = await Promise.all([
     listQueue(hubRoot),
     listDispatches(hubRoot),

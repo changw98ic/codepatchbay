@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const SupervisorAction = Object.freeze({
   RETRY_SAME_WORKER: "retry_same_worker",
   RESTART_WORKER_AND_RETRY: "restart_worker_and_retry",
@@ -55,32 +54,34 @@ export function validateSupervisorDecision(decision) {
   if (!decision || typeof decision !== "object") {
     return { valid: false, errors: ["decision must be an object"] };
   }
+  const candidate = decision as Record<string, any>;
   const errors = [];
 
   // Action must be valid
-  if (!VALID_ACTIONS.has(decision.action)) {
-    errors.push(`invalid action: ${decision.action} (allowed: ${[...VALID_ACTIONS].join(", ")})`);
+  if (!VALID_ACTIONS.has(candidate.action)) {
+    errors.push(`invalid action: ${candidate.action} (allowed: ${[...VALID_ACTIONS].join(", ")})`);
   }
 
   // Reason required and must be string
-  if (typeof decision.reason !== "string" || !decision.reason) {
+  if (typeof candidate.reason !== "string" || !candidate.reason) {
     errors.push("reason is required and must be a string");
   }
 
   // Confidence must be 0-1 if present
-  if (decision.confidence != null && (typeof decision.confidence !== "number" || decision.confidence < 0 || decision.confidence > 1)) {
+  if (candidate.confidence != null && (typeof candidate.confidence !== "number" || candidate.confidence < 0 || candidate.confidence > 1)) {
     errors.push("confidence must be between 0 and 1");
   }
 
   // Validate params
-  if (decision.params) {
-    if (typeof decision.params !== "object" || Array.isArray(decision.params)) {
+  if (candidate.params) {
+    if (typeof candidate.params !== "object" || Array.isArray(candidate.params)) {
       errors.push("params must be an object");
     } else {
-      const schema = ACTION_SCHEMAS[decision.action];
+      const params = candidate.params as Record<string, any>;
+      const schema = (ACTION_SCHEMAS as Record<string, any>)[candidate.action];
 
       // Check forbidden params
-      for (const key of Object.keys(decision.params)) {
+      for (const key of Object.keys(params)) {
         if (FORBIDDEN_PARAMS.has(key)) {
           errors.push(`forbidden param: ${key}`);
         }
@@ -89,14 +90,14 @@ export function validateSupervisorDecision(decision) {
       if (schema?.params) {
         // Check required params
         for (const req of schema.params.required) {
-          if (!(req in decision.params)) {
+          if (!(req in params)) {
             errors.push(`missing required param: ${req}`);
           }
         }
 
         // Check enum and type constraints for each property
-        for (const [key, spec] of Object.entries(schema.params.properties)) {
-          const value = decision.params[key];
+        for (const [key, spec] of Object.entries(schema.params.properties) as Array<[string, Record<string, any>]>) {
+          const value = params[key];
           if (value === undefined) continue; // required check handles missing
 
           if (spec.type === "enum") {
@@ -118,9 +119,9 @@ export function validateSupervisorDecision(decision) {
         // additionalProperties: reject params not in schema
         const allowedKeys = new Set([...Object.keys(schema.params.properties), ...FORBIDDEN_PARAMS]);
         // Actions without explicit param schemas allow any non-forbidden param
-        for (const key of Object.keys(decision.params)) {
+        for (const key of Object.keys(params)) {
           if (!allowedKeys.has(key)) {
-            errors.push(`unexpected param for ${decision.action}: ${key}`);
+            errors.push(`unexpected param for ${candidate.action}: ${key}`);
           }
         }
       }

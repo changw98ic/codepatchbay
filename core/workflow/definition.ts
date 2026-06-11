@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { phasesToDag, validateDag } from "./dag-executor.js";
 import { resolveSquadAgent } from "../agents/registry.js";
 import {
@@ -7,7 +6,27 @@ import {
   resolveEffectiveRouting,
 } from "../agents/routing.js";
 
-const WORKFLOWS = {
+type AnyRecord = Record<string, any>;
+type WorkflowNode = AnyRecord & {
+  id: string;
+  phase: string;
+  role?: string;
+  agent?: string | null;
+  squad?: any;
+  _squad?: any;
+  dependsOn?: string[];
+};
+type WorkflowDefinition = AnyRecord & {
+  name: string;
+  phases: string[];
+  roleForPhase: Record<string, string>;
+  dispatchForPhase: Record<string, string>;
+  nodes?: WorkflowNode[];
+  maxConcurrentNodes?: number;
+};
+type WorkflowOptions = { category?: any; routing?: any };
+
+const WORKFLOWS: Record<string, WorkflowDefinition> = {
   standard: {
     name: "standard",
     phases: ["plan", "execute", "verify"],
@@ -51,13 +70,13 @@ const WORKFLOWS = {
 };
 
 // Cache for normalized DAGs
-const _dagCache = new Map();
+const _dagCache = new Map<string, AnyRecord>();
 
-export function getWorkflow(name) {
+export function getWorkflow(name: string): WorkflowDefinition {
   return WORKFLOWS[name] ?? WORKFLOWS.standard;
 }
 
-export function nextPhase(workflow, currentPhase) {
+export function nextPhase(workflow: WorkflowDefinition, currentPhase?: string | null) {
   const phases = workflow.phases;
   if (phases.length === 0) return null;
   if (currentPhase === null || currentPhase === undefined) return phases[0];
@@ -66,23 +85,23 @@ export function nextPhase(workflow, currentPhase) {
   return phases[idx + 1];
 }
 
-export function dispatchForPhase(workflow, phase) {
+export function dispatchForPhase(workflow: WorkflowDefinition, phase: string) {
   return workflow.dispatchForPhase[phase] ?? null;
 }
 
-export function roleForPhase(workflow, phase) {
+export function roleForPhase(workflow: WorkflowDefinition, phase: string) {
   return workflow.roleForPhase[phase] ?? null;
 }
 
-export function phaseRequiresSubagents(workflow, phase) {
+export function phaseRequiresSubagents(workflow: WorkflowDefinition, phase: string) {
   return workflow.requireSubagents?.[phase] === true;
 }
 
-export function getVerificationLayers(workflow) {
+export function getVerificationLayers(workflow: WorkflowDefinition) {
   return workflow.verificationLayers ?? null;
 }
 
-export function getSubagentConfig(workflow) {
+export function getSubagentConfig(workflow: WorkflowDefinition) {
   return workflow.subagentConfig ?? null;
 }
 
@@ -90,7 +109,7 @@ export function listWorkflows() {
   return Object.keys(WORKFLOWS).filter((k) => !WORKFLOWS[k].stub);
 }
 
-export function isWorkflowName(name) {
+export function isWorkflowName(name: string) {
   return Object.hasOwn(WORKFLOWS, name) && !WORKFLOWS[name].stub;
 }
 
@@ -101,7 +120,7 @@ export function isWorkflowName(name) {
  * If workflow has explicit `nodes`, validate and use them.
  * Otherwise, convert legacy `phases` to a single-chain DAG.
  */
-export function normalizeWorkflow(name, options = {}) {
+export function normalizeWorkflow(name: string, options: WorkflowOptions = {}) {
   const hasRouting = Boolean(options?.category || options?.routing);
   if (hasRouting) {
     return normalizeWorkflowWithRouting(name, options);
@@ -140,7 +159,7 @@ export function normalizeWorkflow(name, options = {}) {
   return result;
 }
 
-function normalizeWorkflowWithRouting(name, { category, routing = null } = {}) {
+function normalizeWorkflowWithRouting(name: string, { category, routing = null }: WorkflowOptions = {}) {
   assertValidRoutingRules(routing, { isWorkflowName });
   const selection = resolveEffectiveRouting(category, routing, { workflow: name });
   const wf = getWorkflow(selection.workflow || name);
@@ -172,7 +191,7 @@ function normalizeWorkflowWithRouting(name, { category, routing = null } = {}) {
   };
 }
 
-function applyRoutingAgents(nodes, selection) {
+function applyRoutingAgents(nodes: WorkflowNode[], selection: AnyRecord) {
   return nodes.map((node) => {
     const agent = agentForRoutingPhase(selection, node.phase, node.role);
     return agent ? { ...node, agent } : node;
@@ -184,7 +203,7 @@ function applyRoutingAgents(nodes, selection) {
  * Agent resolution happens at execution time via resolveNodeAgent() so
  * that pool status is available for least-busy strategy.
  */
-function resolveSquadsInNodes(nodes) {
+function resolveSquadsInNodes(nodes: WorkflowNode[]) {
   return nodes.map((node) => {
     if (!node.squad) return node;
     return { ...node, _squad: node.squad };
@@ -195,7 +214,7 @@ function resolveSquadsInNodes(nodes) {
  * Resolve a node's agent at execution time with current pool status.
  * Supports squad strategies (least-busy, round-robin, leader-first).
  */
-export function resolveNodeAgent(node, { poolStatus } = {}) {
+export function resolveNodeAgent(node: WorkflowNode, { poolStatus }: { poolStatus?: any } = {}) {
   if (node._squad) {
     const agent = resolveSquadAgent(node._squad, { poolStatus });
     if (agent) return agent;
@@ -203,8 +222,8 @@ export function resolveNodeAgent(node, { poolStatus } = {}) {
   return node.agent || null;
 }
 
-function buildEdges(nodes) {
-  const edges = [];
+function buildEdges(nodes: WorkflowNode[]) {
+  const edges: Array<{ from: string; to: string }> = [];
   for (const n of nodes) {
     for (const dep of n.dependsOn || []) {
       edges.push({ from: dep, to: n.id });
@@ -216,14 +235,14 @@ function buildEdges(nodes) {
 /**
  * Get DAG nodes for a workflow. Returns empty array for blocked/empty workflows.
  */
-export function getDagNodes(name) {
+export function getDagNodes(name: string) {
   return normalizeWorkflow(name).nodes;
 }
 
 /**
  * Register a custom DAG workflow at runtime.
  */
-export function registerDagWorkflow(name, { nodes, maxConcurrentNodes = 2 }) {
+export function registerDagWorkflow(name: string, { nodes, maxConcurrentNodes = 2 }: { nodes: WorkflowNode[]; maxConcurrentNodes?: number }) {
   const validation = validateDag(nodes);
   if (!validation.valid) {
     throw new Error(`invalid DAG: ${validation.errors.join(", ")}`);

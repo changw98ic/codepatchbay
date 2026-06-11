@@ -1,9 +1,8 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { buildChildEnv } from "../../core/policy/child-env.js";
 
-export async function runEvolveMultiCli(args, { cpbRoot, executorRoot, env = process.env } = {}) {
+export async function runEvolveMultiCli(args: string[], { cpbRoot, executorRoot, env = process.env }: { cpbRoot?: string; executorRoot?: string; env?: NodeJS.ProcessEnv } = {}) {
   const root = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const execRoot = path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || root);
   const child = spawn(process.execPath, [path.join(execRoot, "runtime", "evolve", "multi-evolve.js"), ...args], {

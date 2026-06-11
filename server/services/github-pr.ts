@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { appendEvent } from "./event-store.js";
 import { getJob } from "./job-store.js";
 import { buildCodePatchBayPrBody } from "./pr-body.js";
@@ -11,11 +10,13 @@ import { redactSecrets } from "./secret-policy.js";
 
 const execFileAsync = promisify(execFile);
 
+type AnyRecord = Record<string, any>;
+
 function isPass(verdict) {
   return String(verdict || "").toUpperCase() === "PASS";
 }
 
-function prTitle(job) {
+function prTitle(job: AnyRecord) {
   const title = job.task || job.sourceContext?.issueTitle || `Issue #${job.sourceContext?.issueNumber || job.jobId}`;
   return `[cpb] ${title}`;
 }
@@ -26,7 +27,7 @@ function verdictForBody(verdict, verdictDetail) {
   return { status: status || "unavailable" };
 }
 
-function prBody(job, routingContext = null, agents = {}, bodyContext = {}) {
+function prBody(job, routingContext = null, agents = {}, bodyContext: AnyRecord = {}) {
   const {
     artifacts = {},
     tests = [],
@@ -46,7 +47,7 @@ function prBody(job, routingContext = null, agents = {}, bodyContext = {}) {
   });
 }
 
-function buildRequest(job, routingContext = null, agents = {}, bodyContext = {}) {
+function buildRequest(job: AnyRecord, routingContext = null, agents = {}, bodyContext: AnyRecord = {}) {
   return {
     repo: job.sourceContext?.repo || null,
     title: prTitle(job),
@@ -57,7 +58,7 @@ function buildRequest(job, routingContext = null, agents = {}, bodyContext = {})
   };
 }
 
-function prepareCommitMessage(job) {
+function prepareCommitMessage(job: AnyRecord) {
   return [
     `Finalize CPB job ${job?.jobId || "unknown"}`,
     "",
@@ -84,8 +85,8 @@ function parseGhPrUrl(stdout) {
   return { url: match[0], number: Number.parseInt(match[1], 10) };
 }
 
-async function runGit(cwd, args, { runCommand = execFileAsync, env } = {}) {
-  const opts = { cwd, maxBuffer: 1024 * 1024 };
+async function runGit(cwd, args, { runCommand = execFileAsync, env }: AnyRecord = {}) {
+  const opts: AnyRecord = { cwd, maxBuffer: 1024 * 1024 };
   if (env) opts.env = env;
   return runCommand("git", args, opts);
 }
@@ -103,11 +104,11 @@ esac
   return askpass;
 }
 
-export async function preparePullRequestBranchWithGit(request, job, {
+export async function preparePullRequestBranchWithGit(request: AnyRecord, job: AnyRecord, {
   runCommand = execFileAsync,
   remote = "origin",
   token = null,
-} = {}) {
+}: AnyRecord = {}) {
   if (!job?.worktree) {
     return {
       ok: false,
@@ -176,7 +177,7 @@ export async function preparePullRequestBranchWithGit(request, job, {
   }
 }
 
-export async function createPullRequestWithGh(request, { runCommand = execFileAsync } = {}) {
+export async function createPullRequestWithGh(request: AnyRecord, { runCommand = execFileAsync }: AnyRecord = {}) {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-body-"));
   const bodyFile = path.join(tmpDir, "body.md");
   try {
@@ -219,7 +220,7 @@ export async function openDraftPullRequest({
   audit = {},
   verdictDetail = null,
   sddTrace = null,
-} = {}) {
+}: AnyRecord = {}): Promise<AnyRecord> {
   if (!isPass(verdict)) {
     return {
       status: "skipped",
@@ -288,7 +289,7 @@ export async function openDraftPullRequest({
   }
 }
 
-export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options = {}) {
+export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options: AnyRecord = {}) {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot: options.dataRoot });
   const result = await openDraftPullRequest({
     job,

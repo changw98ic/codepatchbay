@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, rmdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent, checkpointJob, readEvents, materializeJob } from "./event-store.js";
@@ -173,7 +172,10 @@ async function createLineageTask(cpbRoot, { project, jobId, remediationArtifact,
     const index = await readJobsIndex(cpbRoot);
     const jobs = index?.jobs || {};
     const alreadyCompleted = Object.values(jobs).some(
-      (j) => j && j.task === job.task && j.status === "completed" && j.project === project,
+      (j) => {
+        const candidate = j as Record<string, any>;
+        return candidate && candidate.task === job.task && candidate.status === "completed" && candidate.project === project;
+      },
     );
     if (alreadyCompleted) {
       console.log(`Skip lineage task: task already completed — ${job.task.slice(0, 60)}`);

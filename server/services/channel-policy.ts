@@ -1,8 +1,9 @@
-// @ts-nocheck
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
 import { redactSecrets } from "./secret-policy.js";
+
+type AnyRecord = Record<string, any>;
 
 function channelPolicyEventsPath(cpbRoot) {
   return runtimeDataPath(cpbRoot, "channel-policy-events.jsonl");
@@ -19,7 +20,7 @@ function matchesField(ruleValue, requestValue) {
   return values.some((value) => value === "*" || String(value) === String(requestValue ?? ""));
 }
 
-function ruleMatches(rule, request) {
+function ruleMatches(rule: AnyRecord, request: AnyRecord) {
   return (
     matchesField(rule.channel, request.channel) &&
     matchesField(rule.project, request.project) &&
@@ -29,7 +30,7 @@ function ruleMatches(rule, request) {
   );
 }
 
-function normalizedRules(policy = {}) {
+function normalizedRules(policy: AnyRecord = {}) {
   return [
     ...asList(policy.rules),
     ...asList(policy.allow).map((rule) => ({ ...rule, effect: "allow" })),
@@ -44,7 +45,7 @@ export function channelPolicyRequest({
   job = null,
   actor = {},
   channelId = null,
-} = {}) {
+}: AnyRecord = {}) {
   return {
     channel: channel || null,
     action: action || null,

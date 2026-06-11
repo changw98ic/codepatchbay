@@ -1,21 +1,21 @@
-// @ts-nocheck
 import { copyFile, lstat, mkdir, rm, readdir, stat, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runtimeDataPath } from "../paths.js";
 
 const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+type StringRecord = Record<string, any>;
 const CODEX_SHARED_CONFIG_FILES = ["auth.json", "config.toml"];
 const CLAUDE_SHARED_HOME_FILES = [".claude.json"];
 const CLAUDE_SHARED_CONFIG_FILES = [".credentials.json", "credentials.json", "auth.json"];
 
-function resolveSourceCodexHome(parentEnv = {}) {
+function resolveSourceCodexHome(parentEnv: StringRecord = {}) {
   if (parentEnv.CODEX_HOME) return path.resolve(parentEnv.CODEX_HOME);
   const home = parentEnv.HOME || os.homedir();
   return home ? path.join(home, ".codex") : null;
 }
 
-function resolveSourceHome(parentEnv = {}) {
+function resolveSourceHome(parentEnv: StringRecord = {}) {
   return parentEnv.HOME || os.homedir() || null;
 }
 
@@ -93,7 +93,7 @@ async function inheritClaudeConfig(targetHome, parentEnv = {}) {
  * linked from the user's agent home, so ACP adapters can reuse login without
  * sharing mutable session state.
  */
-export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {} } = {}) {
+export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {} }: { parentEnv?: StringRecord } = {}) {
   const baseDir = runtimeDataPath(cpbRoot, "agent-homes", agentName, jobId || "default");
   await mkdir(baseDir, { recursive: true });
 
@@ -105,7 +105,7 @@ export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {
   await mkdir(dataDir, { recursive: true });
   await mkdir(cacheDir, { recursive: true });
 
-  const env = {
+  const env: StringRecord = {
     HOME: baseDir,
     XDG_CONFIG_HOME: configDir,
     XDG_DATA_HOME: dataDir,
@@ -128,7 +128,7 @@ export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {
  *   Returns true if the job has a non-stale lease. When provided,
  *   directories with active leases are never deleted regardless of age.
  */
-export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive } = {}) {
+export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive }: StringRecord = {}) {
   const homesRoot = runtimeDataPath(cpbRoot, "agent-homes");
   let agents;
   try {

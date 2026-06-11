@@ -1,5 +1,4 @@
-// @ts-nocheck
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot, executorRoot }: { cpbRoot: string; executorRoot: string }) {
   const project = args[0];
   const task = args[1];
   if (!project || !task) {

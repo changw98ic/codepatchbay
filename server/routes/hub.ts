@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 import {
@@ -42,6 +41,8 @@ import {
   recordDispatch,
 } from "../services/worker-dispatch.js";
 import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
+
+type LooseRecord = Record<string, any>;
 
 async function currentGitHead(sourcePath) {
   const { execFile } = await import("node:child_process");
@@ -168,12 +169,12 @@ export async function hubRoutes(fastify) {
     const visible = filterVisibleProjects(allProjects, { includeTest, hubRoot: hr });
     const results = [];
     for (const project of visible) {
-      const entry = {
+      const entry: LooseRecord = {
         ...project,
         workerDerivedStatus: deriveWorkerStatus(project.worker),
       };
       if (includeTest) {
-        entry._pollution = classifyProject(project, { hubRoot: hr });
+        entry._pollution = classifyProject(project, { hubRoot: hr } as LooseRecord);
       }
       results.push(entry);
     }
@@ -232,7 +233,7 @@ export async function hubRoutes(fastify) {
   fastify.get("/hub/queue/status", async (req) => queueStatus(hubRoot(req)));
 
   fastify.get("/hub/queue", async (req) => {
-    const filter = {};
+    const filter: LooseRecord = {};
     if (req.query.status) filter.status = req.query.status;
     if (req.query.projectId) filter.projectId = req.query.projectId;
     return listQueue(hubRoot(req), filter);
@@ -337,12 +338,12 @@ export async function hubRoutes(fastify) {
       cpbRoot: req.cpbRoot,
       hubRoot: hubRoot(req),
       acpPool: getManagedAcpPool({ hubRoot: hubRoot(req), cpbRoot: req.cpbRoot }),
-    });
+    } as LooseRecord);
   });
 
   fastify.get("/hub/observability", async (req) => {
     const hr = hubRoot(req);
-    const summary = await buildObservabilitySummary({
+    const summary: LooseRecord = await buildObservabilitySummary({
       cpbRoot: req.cpbRoot,
       hubRoot: hr,
       acpPool: getManagedAcpPool({ hubRoot: hr, cpbRoot: req.cpbRoot }),
@@ -396,7 +397,7 @@ export async function hubRoutes(fastify) {
       projectId: req.query.projectId,
       includeQueueOnly: req.query.includeQueueOnly === "true",
       includeArchived: req.query.includeArchived === "true",
-    });
+    } as LooseRecord);
   });
 
   fastify.get("/hub/github/issues", async (req) => {
@@ -432,7 +433,7 @@ export async function hubRoutes(fastify) {
       limit: body.limit,
       cwd,
     });
-    const response = { synced: true, ...result };
+    const response: LooseRecord = { synced: true, ...result };
     if (body.autoEnqueue && body.projectId) {
       const eqResult = await autoEnqueueSyncedIssues(hubRoot(req), req.cpbRoot, body.projectId);
       response.autoEnqueue = eqResult;
@@ -462,7 +463,7 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/dispatches", async (req) => {
-    const filter = {};
+    const filter: LooseRecord = {};
     if (req.query.projectId) filter.projectId = req.query.projectId;
     if (req.query.status) filter.status = req.query.status;
     return listDispatches(hubRoot(req), filter);
@@ -549,7 +550,7 @@ export async function hubRoutes(fastify) {
       listQueue(hr, {}).catch(() => []),
       listDispatches(hr, {}).catch(() => []),
       buildObservabilitySummary({ cpbRoot: cr, hubRoot: hr, acpPool: getManagedAcpPool({ hubRoot: hr, cpbRoot: cr }) }).catch(() => null),
-      buildTaskLedger({ cpbRoot: cr, hubRoot: hr, limit: req.query.limit || 50 }).catch(() => null),
+      buildTaskLedger({ cpbRoot: cr, hubRoot: hr, limit: req.query.limit || 50 } as LooseRecord).catch(() => null),
       listJobsAcrossRuntimeRoots(cr, { hubRoot: hr }).catch(() => []),
       listSessions(cr).catch(() => []),
       resolveRuntimeHealth(req, cr),
@@ -558,12 +559,12 @@ export async function hubRoutes(fastify) {
     const visible = filterVisibleProjects(allProjects || [], { includeTest, hubRoot: hr });
     const registryProjects = [];
     for (const project of visible) {
-      const entry = {
+      const entry: LooseRecord = {
         ...project,
         workerDerivedStatus: deriveWorkerStatus(project.worker),
       };
       if (includeTest) {
-        entry._pollution = classifyProject(project, { hubRoot: hr });
+        entry._pollution = classifyProject(project, { hubRoot: hr } as LooseRecord);
       }
       registryProjects.push(entry);
     }

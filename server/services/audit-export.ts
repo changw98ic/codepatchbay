@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readEventsReadOnly } from "./event-store.js";
@@ -6,10 +5,10 @@ import { buildArtifactIndex } from "./artifact-index.js";
 import { redactSecrets } from "./secret-policy.js";
 import { parseVerdictEnvelope } from "../../core/workflow/verdict.js";
 
-export async function buildJobAuditExport(cpbRoot, project, jobId, { dataRoot, wikiDir } = {}) {
+export async function buildJobAuditExport(cpbRoot: string, project: string, jobId: string, { dataRoot, wikiDir }: { dataRoot?: string; wikiDir?: string } = {}) {
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
 
-  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, {
+  const artifactIndex = await (buildArtifactIndex as any)(cpbRoot, project, jobId, {
     events,
     dataRoot,
     wikiDir,
@@ -43,7 +42,7 @@ export async function buildJobAuditExport(cpbRoot, project, jobId, { dataRoot, w
   return redactSecrets({ schemaVersion: 1, project, jobId, eventLog: events, artifactIndex, verdict, pr });
 }
 
-export async function writeJobAuditExport(outputDir, auditPackage) {
+export async function writeJobAuditExport(outputDir: string, auditPackage: Record<string, any>) {
   const safe = redactSecrets(auditPackage);
   const slug = `${auditPackage.project}-${auditPackage.jobId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
   const filePath = path.join(outputDir, `${slug}-audit.json`);

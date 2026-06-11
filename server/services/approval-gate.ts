@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { appendEvent } from "./event-store.js";
 import { getJob } from "./job-store.js";
 
@@ -7,10 +6,10 @@ function nowIso() {
 }
 
 export async function requestApprovalGate(
-  cpbRoot,
-  project,
-  jobId,
-  { operation, phase, channels = [], reason = "approval required", timeoutAt = null, ts = nowIso(), dataRoot } = {},
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { operation, phase, channels = [], reason = "approval required", timeoutAt = null, ts = nowIso(), dataRoot }: Record<string, any> = {},
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "approval_required",
@@ -27,10 +26,10 @@ export async function requestApprovalGate(
 }
 
 export async function approveGate(
-  cpbRoot,
-  project,
-  jobId,
-  { actor = null, action = null, ts = nowIso(), dataRoot } = {},
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { actor = null, action = null, ts = nowIso(), dataRoot }: Record<string, any> = {},
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_approved",
@@ -44,10 +43,10 @@ export async function approveGate(
 }
 
 export async function timeoutApprovalGate(
-  cpbRoot,
-  project,
-  jobId,
-  { reason = "approval timed out", ts = nowIso(), dataRoot } = {},
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { reason = "approval timed out", ts = nowIso(), dataRoot }: Record<string, any> = {},
 ) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "approval_timed_out",

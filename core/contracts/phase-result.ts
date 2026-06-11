@@ -1,5 +1,4 @@
-// @ts-nocheck
-export function phasePassed({ phase, artifact = null, diagnostics = {} }) {
+export function phasePassed({ phase, artifact = null, diagnostics = {} }: { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown> }) {
   return {
     schemaVersion: 1,
     phase,
@@ -11,7 +10,7 @@ export function phasePassed({ phase, artifact = null, diagnostics = {} }) {
   };
 }
 
-export function phaseFailed({ phase, failure, diagnostics = {} }) {
+export function phaseFailed({ phase, failure, diagnostics = {} }: { phase: string; failure: unknown; diagnostics?: Record<string, unknown> }) {
   return {
     schemaVersion: 1,
     phase,
@@ -23,6 +22,6 @@ export function phaseFailed({ phase, failure, diagnostics = {} }) {
   };
 }
 
-export function isPhasePassed(result) {
+export function isPhasePassed(result: { status?: string } | null | undefined) {
   return result?.status === "passed";
 }

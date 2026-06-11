@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Shared child-process environment policy.
 // Keep this in core so runtime, bridges, and server entrypoints enforce the
 // same secret boundary without importing server modules.
@@ -165,7 +164,7 @@ function normalizeAgentName(agent) {
   return String(agent || "").trim().toLowerCase();
 }
 
-function agentNameFromOptions(options = {}) {
+function agentNameFromOptions(options: Record<string, any> | string = {}) {
   if (typeof options === "string") return normalizeAgentName(options);
   return normalizeAgentName(options.agent || options.agentName || options.provider);
 }
@@ -176,7 +175,7 @@ export function providerCredentialKeysForAgent(agent) {
   return new Set(scoped || PROVIDER_CREDENTIALS);
 }
 
-function allowedProviderCredentialsForOptions(options = {}) {
+function allowedProviderCredentialsForOptions(options: Record<string, any> | string = {}) {
   const agent = agentNameFromOptions(options);
   if (!agent) return PROVIDER_CREDENTIALS;
   return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;

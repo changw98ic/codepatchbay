@@ -1,4 +1,3 @@
-// @ts-nocheck
 import crypto from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -65,7 +64,7 @@ function finishedEvent(plan, startedAt, result, error) {
   };
 }
 
-export async function runInstallPlanWithEvents(plan, { cpbRoot, stdio = "inherit" } = {}) {
+export async function runInstallPlanWithEvents(plan, { cpbRoot, stdio = "inherit" }: Record<string, any> = {}) {
   const startedAt = new Date().toISOString();
   await appendSetupEvent(cpbRoot, startedEvent(plan, startedAt));
   try {

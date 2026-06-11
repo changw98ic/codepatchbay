@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
@@ -14,8 +13,18 @@ const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.js");
 const testAgent = path.join(repoRoot, "server", "services", "test-acp-agent.js");
 
+type ClientRunResult = {
+  stdout: string;
+  stderr: string;
+};
+
+type ProcessExitStatus = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+};
+
 async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {
-  return new Promise((resolve, reject) => {
+  return new Promise<ClientRunResult>((resolve, reject) => {
     const child = spawn(process.execPath, [acpClient, "--agent", "fake-acp", "--cwd", repoRoot], {
       cwd: repoRoot,
       env: {
@@ -270,14 +279,14 @@ test("ACP client close terminates registered terminal processes", async () => {
     outputByteLimit: 4096,
   });
   const terminal = client.terminals.get(created.terminalId);
-  const exited = new Promise((resolve) => {
+  const exited = new Promise<ProcessExitStatus>((resolve) => {
     terminal.child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
   });
 
   await client.close();
   const exitStatus = await Promise.race([
     exited,
-    new Promise((_, reject) => {
+    new Promise<never>((_, reject) => {
       const timer = setTimeout(() => reject(new Error("terminal did not exit after client close")), 2_000);
       timer.unref();
     }),
@@ -485,6 +494,7 @@ test("runAgent passes cwd while persistent ACP process keys stay reusable", asyn
   const result = await runAgent({
     role: "executor",
     agent: "fake-acp",
+    variant: null,
     project: "proj",
     jobId: "job-run-agent-cwd",
     prompt: "hello",
@@ -492,6 +502,7 @@ test("runAgent passes cwd while persistent ACP process keys stay reusable", asyn
     pool,
     timeoutMs: 123,
     scope: { workspaceId: "workspace-a", policyHash: "policy-a" },
+    env: {},
   });
 
   assert.equal(result.ok, true);
@@ -727,7 +738,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
       outputByteLimit: 4096,
     });
     const terminal = persistent.client.terminals.get(createdTerminal.terminalId);
-    const terminalExited = new Promise((resolve) => {
+    const terminalExited = new Promise<ProcessExitStatus>((resolve) => {
       terminal.child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
     });
     const released = await pool.releaseWorktree(firstWorktree);
@@ -743,7 +754,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
     assert.equal(persistent.client.terminals.has(createdTerminal.terminalId), false);
     const terminalExitStatus = await Promise.race([
       terminalExited,
-      new Promise((_, reject) => {
+      new Promise<never>((_, reject) => {
         const timer = setTimeout(() => reject(new Error("terminal node did not exit after worktree release")), 2_000);
         timer.unref();
       }),

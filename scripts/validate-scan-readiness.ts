@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // validate-scan-readiness.js — Bounded operational validation for multi-project scan
 // under simulated 429/backoff pressure.
 //
@@ -29,11 +28,19 @@ import { resolveHubRoot } from "../server/services/hub-registry.js";
 import { assertProviderAvailable, ProviderQuotaError } from "../server/services/provider-quota.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+type AnyRecord = Record<string, any>;
+type CliOptions = {
+  live: boolean;
+  hubRoot: string | null;
+  json: boolean;
+  verbose: boolean;
+  help?: boolean;
+};
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
-export function parseArgs(argv) {
-  const opts = { live: false, hubRoot: null, json: false, verbose: false };
+export function parseArgs(argv: string[]): CliOptions {
+  const opts: CliOptions = { live: false, hubRoot: null, json: false, verbose: false };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -57,7 +64,7 @@ export function makeTempHub() {
   return mkdtemp(path.join(os.tmpdir(), "cpb-val-"));
 }
 
-async function withQuotaDelegate(hubRoot, fn) {
+async function withQuotaDelegate(hubRoot: string, fn: () => Promise<any>) {
   const delegateScript = path.join(__dirname, "..", "server", "services", "quota-delegate.js");
   const child = spawn(process.execPath, [delegateScript, "--hub-root", hubRoot], {
     env: { ...process.env, CPB_DELEGATE_POLL_MS: "10" },
@@ -66,7 +73,7 @@ async function withQuotaDelegate(hubRoot, fn) {
 
   let stdout = "";
   let stderr = "";
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`quota delegate did not start\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     }, 3_000);
@@ -98,7 +105,7 @@ async function withQuotaDelegate(hubRoot, fn) {
   }
 }
 
-async function seedQueue(hubRoot, entries) {
+async function seedQueue(hubRoot: string, entries: AnyRecord[]) {
   for (const e of entries) {
     await enqueue(hubRoot, {
       projectId: e.projectId || "test-project",
@@ -110,7 +117,7 @@ async function seedQueue(hubRoot, entries) {
   }
 }
 
-function makeFakeProjects(n) {
+function makeFakeProjects(n: number) {
   const projects = [];
   for (let i = 0; i < n; i++) {
     projects.push({
@@ -179,18 +186,19 @@ export async function checkRateLimitBackoff(hubRoot) {
     }
 
     try {
-      await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
+      await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" } as any);
       return { pass: false, detail: "provider quota gate should reject during backoff" };
     } catch (err) {
       if (!(err instanceof ProviderQuotaError)) {
         return { pass: false, detail: `quota gate rejection not ProviderQuotaError: ${err.name}` };
       }
-      if (!err.nextEligibleAt || err.nextEligibleAt <= Date.now()) {
-        return { pass: false, detail: `nextEligibleAt not in future: ${err.nextEligibleAt}` };
+      const quotaError = err as ProviderQuotaError & { nextEligibleAt?: number };
+      if (!quotaError.nextEligibleAt || quotaError.nextEligibleAt <= Date.now()) {
+        return { pass: false, detail: `nextEligibleAt not in future: ${quotaError.nextEligibleAt}` };
       }
       return {
         pass: true,
-        detail: `429 → delegate quota write, gate blocks until ${new Date(err.nextEligibleAt).toISOString()} (source=${firstQuotaError.source})`,
+        detail: `429 → delegate quota write, gate blocks until ${new Date(quotaError.nextEligibleAt).toISOString()} (source=${firstQuotaError.source})`,
       };
     }
   });
@@ -221,7 +229,7 @@ export async function checkConcurrencyBounds(hubRoot) {
   if (results.some((r) => r.output !== "ok")) return { pass: false, detail: "some executions failed" };
   if (maxActive > 2) return { pass: false, detail: `maxActive=${maxActive} exceeded limit of 2` };
 
-  const st = pool.status().pools.codex;
+  const st = (pool.status().pools as AnyRecord).codex;
   if (st.active !== 0) return { pass: false, detail: `active=${st.active} after all resolved (leak)` };
 
   return { pass: true, detail: `6 tasks, limit 2, maxActive=${maxActive}, active now=${st.active}` };
@@ -246,7 +254,7 @@ export async function checkMultiProjectScanUnder429(hubRoot) {
     });
     const providerKey = pool.providerKey("codex");
 
-    const projects = [
+    const projects: (AnyRecord & { id: string; sourcePath: string; name: string; enabled: boolean })[] = [
       { id: "proj-0", sourcePath: "/tmp/fake-0", name: "proj-0", enabled: true },
       { id: "proj-1", sourcePath: "/tmp/fake-1", name: "proj-1", enabled: true },
       { id: "proj-2", sourcePath: "/tmp/fake-2", name: "proj-2", enabled: true },
@@ -254,10 +262,10 @@ export async function checkMultiProjectScanUnder429(hubRoot) {
 
     for (const project of projects) {
       try {
-        await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
+        await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" } as any);
       } catch (err) {
         if (!(err instanceof ProviderQuotaError)) throw err;
-        project.rateLimitedUntil = err.nextEligibleAt;
+        project.rateLimitedUntil = (err as ProviderQuotaError & { nextEligibleAt?: number }).nextEligibleAt;
         rateLimitedProjects.add(project.id);
         continue;
       }
@@ -268,7 +276,7 @@ export async function checkMultiProjectScanUnder429(hubRoot) {
         if (!(err instanceof ProviderQuotaError)) {
           return { pass: false, detail: `unexpected scan error for ${project.id}: ${err.name}: ${err.message}` };
         }
-        project.rateLimitedUntil = err.nextEligibleAt;
+        project.rateLimitedUntil = (err as ProviderQuotaError & { nextEligibleAt?: number }).nextEligibleAt;
         rateLimitedProjects.add(project.id);
       }
     }
@@ -296,7 +304,7 @@ export async function checkProcessGrowthBound(hubRoot) {
 
   for (let i = 0; i < 20; i++) {
     const handle = await pool.acquire("codex");
-    const st = pool.status().pools.codex;
+    const st = (pool.status().pools as AnyRecord).codex;
     if (st.active > 1) {
       handle.release();
       return { pass: false, detail: `active=${st.active} exceeded limit=1 at iteration ${i}` };
@@ -305,12 +313,13 @@ export async function checkProcessGrowthBound(hubRoot) {
   }
 
   let totalActive = 0;
-  for (const p of Object.values(pool.status().pools)) totalActive += p.active;
+  for (const p of Object.values(pool.status().pools as AnyRecord)) totalActive += p.active;
 
   if (totalActive !== 0) return { pass: false, detail: `leaked ${totalActive} active slots after 20 cycles` };
 
-  const codexActive = pool.status().pools.codex.active;
-  const claudeActive = pool.status().pools.claude.active;
+  const pools = pool.status().pools as AnyRecord;
+  const codexActive = pools.codex.active;
+  const claudeActive = pools.claude.active;
   return { pass: true, detail: `20 acquire/release cycles, active=0 after (codex=${codexActive}, claude=${claudeActive})` };
 }
 
@@ -325,14 +334,14 @@ export const ALL_CHECKS = [
   { name: "process-growth-bound", fn: checkProcessGrowthBound },
 ];
 
-export async function runChecks(hubRootFactory, opts = {}) {
+export async function runChecks(hubRootFactory: string | (() => Promise<string>), opts: AnyRecord = {}) {
   const results = [];
   for (const check of ALL_CHECKS) {
     const isolatedHub = typeof hubRootFactory === "function" ? await hubRootFactory() : hubRootFactory;
     try {
       const result = await check.fn(isolatedHub);
       results.push({ name: check.name, ...result });
-    } catch (err) {
+    } catch (err: any) {
       results.push({ name: check.name, pass: false, detail: `UNEXPECTED: ${err.message}` });
     } finally {
       if (typeof hubRootFactory === "function") {
@@ -343,7 +352,7 @@ export async function runChecks(hubRootFactory, opts = {}) {
   return results;
 }
 
-export function formatResults(results, { json: asJson } = {}) {
+export function formatResults(results: AnyRecord[], { json: asJson }: AnyRecord = {}) {
   if (asJson) return JSON.stringify(results, null, 2);
 
   const lines = [];
@@ -395,7 +404,7 @@ Use --live --hub-root DIR to validate real state.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch((err) => {
+  main().catch((err: any) => {
     console.error(`[validate] fatal: ${err.message}`);
     process.exit(2);
   });

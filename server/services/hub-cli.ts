@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { openSync, readSync, closeSync, writeSync, fstatSync } from "node:fs";
 import { mkdir, stat, readFile, writeFile, rm, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +6,8 @@ import { readHubLiveness, getHubRuntime } from "./hub-runtime.js";
 import { buildChildEnv, buildRuntimeEnv } from "./secret-policy.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "./concurrency-limits.js";
 
+type AnyRecord = Record<string, any>;
+
 function resolveRoots() {
   const cpbRoot = path.resolve(process.env.CPB_ROOT || ".");
   const executorRoot = path.resolve(process.env.CPB_EXECUTOR_ROOT || cpbRoot);
@@ -14,7 +15,7 @@ function resolveRoots() {
   return { cpbRoot, executorRoot, hubRoot };
 }
 
-export function buildHubServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, hubRoot, port, host } = {}) {
+export function buildHubServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, hubRoot, port, host }: AnyRecord = {}) {
   return buildChildEnv(parentEnv, {
     CPB_ROOT: cpbRoot,
     CPB_EXECUTOR_ROOT: executorRoot,
@@ -80,7 +81,7 @@ export async function cmdStart() {
     const { getManagedAcpPool } = await import("./acp-pool.js");
     const pool = getManagedAcpPool({ cpbRoot, hubRoot });
     const status = pool.status();
-    const hasBrowserAgent = Object.values(status.pools || {}).some((p) => p.agent === "browser-agent" || p.mode === "persistent");
+    const hasBrowserAgent = (Object.values(status.pools || {}) as AnyRecord[]).some((p) => p.agent === "browser-agent" || p.mode === "persistent");
     if (hasBrowserAgent) {
       const { default: playwright } = await import("playwright");
       const execPath = playwright.chromium.executablePath();
@@ -256,20 +257,19 @@ export async function cmdStop() {
 
   // Release in_progress queue entries back to failed (workers are gone)
   try {
-    const { loadQueue, saveQueue } = await import("../services/hub-queue.js");
+    const { loadQueue, updateEntry } = await import("../services/hub-queue.js");
     const queue = await loadQueue(hubRoot);
     let released = 0;
     for (const e of queue.entries) {
       if (e.status === "in_progress") {
-        e.status = "failed";
-        e.updatedAt = new Date().toISOString();
+        await updateEntry(hubRoot, e.id, {
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+        });
         released++;
       }
     }
-    if (released > 0) {
-      await saveQueue(hubRoot, queue);
-      console.log(`Queue entries released (${released})`);
-    }
+    if (released > 0) console.log(`Queue entries released (${released})`);
   } catch {}
 
   // Flush jobs-index (rebuild from event logs to ensure consistency)

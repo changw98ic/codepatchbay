@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // Records ui_lane_requested escalation events via the durable event log.
 
 import { detectUiEscalation } from "../core/acp/policy.js";
 import { appendEvent } from "../bridges/runtime-services.js";
 
-export async function recordUiEscalations(stdout, cpbRoot, project, jobId, phase, agent, acpProfile) {
+export async function recordUiEscalations(stdout: string, cpbRoot: string, project: string, jobId: string, phase: string, agent: string, acpProfile?: string) {
   const escalations = detectUiEscalation(stdout || "");
   if (escalations.length === 0) return;
   for (const esc of escalations) {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
@@ -28,8 +27,16 @@ const REQUIRED_SHARED_FILES = [
   "shared/orchestrator/worker-store.js",
 ];
 
-function listFiles(dir) {
-  const files = [];
+type PackFile = {
+  path: string;
+};
+
+type PackMetadata = {
+  files: PackFile[];
+};
+
+function listFiles(dir: string): string[] {
+  const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
@@ -41,17 +48,17 @@ function listFiles(dir) {
   return files;
 }
 
-function relativeRepoPath(file) {
+function relativeRepoPath(file: string): string {
   return path.relative(EXECUTOR_ROOT, file).split(path.sep).join("/");
 }
 
-function writeStubFile(root, relativePath, content = "// stub\n") {
+function writeStubFile(root: string, relativePath: string, content = "// stub\n") {
   const file = path.join(root, relativePath);
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, content);
 }
 
-function hasPackedPath(packedPaths, relativePath) {
+function hasPackedPath(packedPaths: Set<string>, relativePath: string) {
   return packedPaths.has(relativePath) || packedPaths.has(`dist/${relativePath}`);
 }
 
@@ -74,10 +81,10 @@ test("npm pack includes all REQUIRED_EXECUTOR_FILES", () => {
     cwd: PACKAGE_ROOT,
     encoding: "utf8",
   });
-  const packMeta = JSON.parse(raw);
+  const packMeta = JSON.parse(raw) as PackMetadata[];
   const packedPaths = new Set(packMeta[0].files.map((f) => f.path));
 
-  const missing = [];
+  const missing: string[] = [];
   for (const required of REQUIRED_EXECUTOR_FILES) {
     if (!packedPaths.has(required)) {
       missing.push(required);

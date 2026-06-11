@@ -1,4 +1,3 @@
-// @ts-nocheck
 const VALID_OPERATIONS = Object.freeze(["write", "shell", "network", "push", "PR", "merge"]);
 const VALID_TOP_LEVEL = new Set(["approvals", "routing", "channels", "protectedOperations"]);
 

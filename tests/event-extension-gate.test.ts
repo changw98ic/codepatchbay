@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,7 +61,7 @@ const EVENT_REGISTRY = {
   merge_index_status:     { class: 'audit',    consumer: 'merge-index, supervisor',   testFile: 'event-store.test.js', testMatch: ['merge_index_status'] },
   pr_opened:              { class: 'audit',    consumer: 'github-integration',        testFile: 'event-store.test.js', testMatch: ['pr_opened'] },
   completion_gate_evaluated: { class: 'audit', consumer: 'completion-gate, supervisor', testFile: 'event-store.test.js', testMatch: ['completion_gate_evaluated'] },
-};
+} satisfies Record<string, { class: string; consumer: string; testFile: string; testMatch: string[] }>;
 
 const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);
 
@@ -104,7 +103,7 @@ describe('R4: event extension gate', () => {
     // Scan EVENT_HANDLERS keys from the source by finding lines like:
     //   event_name(state, ...) {   or   event_name: _sharedRef,
     const handlerKeyRegex = /^  ([a-z_]+)\(state|^  ([a-z_]+): _/gm;
-    const materialized = new Set();
+    const materialized = new Set<string>();
     let match;
     while ((match = handlerKeyRegex.exec(EVENT_STORE)) !== null) {
       materialized.add(match[1] || match[2]);

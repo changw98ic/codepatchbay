@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createSign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolveSecretRef } from "./github-app.js";
@@ -60,17 +59,18 @@ function createAppJwt(appId, privateKeyPem) {
 let tokenCache = { token: null, expiresAt: 0 };
 
 async function fetchJson(url, options = {}) {
+  const requestOptions = options as RequestInit & { headers?: Record<string, string> };
   const headers = {
     "Accept": "application/vnd.github+json",
     "User-Agent": "codepatchbay",
-    ...options.headers,
+    ...requestOptions.headers,
   };
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...requestOptions, headers });
   const body = await res.json();
   if (!res.ok) {
     const error = new Error(body.message || `GitHub API ${res.status}`);
-    error.status = res.status;
-    error.body = body;
+    (error as Error & { status?: number; body?: any }).status = res.status;
+    (error as Error & { status?: number; body?: any }).body = body;
     throw error;
   }
   return body;

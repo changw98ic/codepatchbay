@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, ciFailureToCandidate } from "../services/event-source.js";
 import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/task-brain.js";
 import { enqueue } from "../services/hub-queue.js";

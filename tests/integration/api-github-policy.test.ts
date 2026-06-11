@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
@@ -41,8 +40,8 @@ async function makeApp(route, { cpbRoot, hubRoot, opts = {} }) {
   await app.register(sensible);
   app.decorate("notifBroadcast", async () => {});
   app.addHook("onRequest", (req, _reply, done) => {
-    req.cpbRoot = cpbRoot;
-    req.cpbHubRoot = hubRoot;
+    (req as any).cpbRoot = cpbRoot;
+    (req as any).cpbHubRoot = hubRoot;
     done();
   });
   await app.register(route, opts);
@@ -118,7 +117,17 @@ function issuePayload({ repo = "owner/repo", action = "labeled", labels = ["cpb"
   };
 }
 
-function commentPayload({ repo = "owner/repo", issueNumber = 5, body, association = "MEMBER" } = {}) {
+function commentPayload({
+  repo = "owner/repo",
+  issueNumber = 5,
+  body,
+  association = "MEMBER",
+}: {
+  repo?: string;
+  issueNumber?: number;
+  body?: string;
+  association?: string;
+} = {}) {
   return {
     action: "created",
     repository: { full_name: repo },
@@ -522,7 +531,7 @@ test("channel policy deny wins over allow, default deny applies, and secret comm
   const before = await listQueue(hubRoot);
   const parsed = parseChannelCommand("/cpb run proj rotate OPENAI_API_KEY=sk-1234567890abcdef");
   assert.equal(parsed.ok, false);
-  assert.equal(parsed.code, "SECRET_INPUT_REJECTED");
+  assert.equal((parsed as Record<string, any>).code, "SECRET_INPUT_REJECTED");
   assert.deepEqual(await listQueue(hubRoot), before);
 
   const cpbRoot = await tempRoot("cpb-api-secret-events");

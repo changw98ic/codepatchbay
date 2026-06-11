@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Handoff Bundle — generates continuation context for provider fallback.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { listProfiles, loadProfile, loadProfileSkills } from "../../server/services/profile-loader.js";
@@ -145,7 +144,7 @@ async function profileUse(args, { cpbRoot }) {
 
 // ─── main ───
 
-export async function run(args, { cpbRoot } = {}) {
+export async function run(args, { cpbRoot }: Record<string, any> = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
     return 0;

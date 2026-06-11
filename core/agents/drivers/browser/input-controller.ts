@@ -1,4 +1,3 @@
-// @ts-nocheck
 export async function fillPrompt(page, provider, prompt) {
   const { input } = provider
   const el = page.locator(input.selector).first()

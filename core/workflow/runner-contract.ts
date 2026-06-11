@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const BOUNDARY_VERSION = "1.0.0";
 
 export const CONTRACT = {
@@ -26,7 +25,7 @@ export const CONTRACT = {
 
 const REQUIRED_JOB_INPUT_FIELDS = CONTRACT.jobInput.required;
 
-function validateJobInput(input) {
+function validateJobInput(input: Record<string, any>) {
   if (!input || typeof input !== "object") {
     throw new Error("jobInput: must be a non-null object");
   }
@@ -39,7 +38,7 @@ function validateJobInput(input) {
   }
 }
 
-export function validateRunnerAdapter(adapter) {
+export function validateRunnerAdapter(adapter: Record<string, any>) {
   if (!adapter || typeof adapter !== "object") {
     throw new Error("adapter: must be a non-null object");
   }
@@ -55,7 +54,7 @@ export function validateRunnerAdapter(adapter) {
   return adapter;
 }
 
-export function createLocalRunnerAdapter(runnerFn) {
+export function createLocalRunnerAdapter(runnerFn: (input: Record<string, any>) => unknown | Promise<unknown>) {
   if (typeof runnerFn !== "function") {
     throw new Error("adapter: local runner requires a function");
   }

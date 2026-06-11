@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { glob } from "glob";
@@ -20,7 +19,7 @@ function normalizeRequestedFile(arg) {
   return relative.replace(/\.ts$/, ".js");
 }
 
-async function runTests(files, opts = {}) {
+async function runTests(files, opts: Record<string, any> = {}) {
   const { concurrency = undefined, env: envOverrides = {}, label = "tests" } = opts;
   const args = ["--test", ...files];
   if (concurrency !== undefined) {

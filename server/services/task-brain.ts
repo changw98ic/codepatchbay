@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import { listCandidates, updateCandidate } from "./event-source.js";
 import { listJobs } from "./job-store.js";

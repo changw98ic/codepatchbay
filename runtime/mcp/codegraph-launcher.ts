@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { resolve, dirname } from "path";

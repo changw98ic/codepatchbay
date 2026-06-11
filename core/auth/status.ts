@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listSetupAgents } from "../setup/agent-catalog.js";

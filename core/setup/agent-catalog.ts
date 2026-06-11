@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { assertValidSetupAgentCatalog, validateSetupAgentManifest } from "./manifest-schema.js";

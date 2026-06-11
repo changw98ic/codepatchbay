@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +5,9 @@ import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js
 import { getJob } from "./job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
+
+type AnyRecord = Record<string, any>;
+type RunChildResult = { exitCode: number; stdout: string; error?: any };
 
 export function roleForBridge(scriptPath) {
   const base = path.basename(scriptPath);
@@ -77,12 +79,12 @@ async function fileExists(file) {
   }
 }
 
-function runChild(command, args, cwd, options = {}) {
+function runChild(command: string, args: string[], cwd: string, options: AnyRecord = {}): Promise<RunChildResult> {
   return new Promise((resolve) => {
     let settled = false;
     const stdoutChunks = [];
 
-    function finish(result) {
+    function finish(result: RunChildResult) {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -115,7 +117,7 @@ function runChild(command, args, cwd, options = {}) {
   });
 }
 
-export async function dispatchPhase(cpbRoot, { project, jobId, phase, script, scriptArgs, executorRoot, env } = {}) {
+export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, script, scriptArgs, executorRoot, env }: AnyRecord = {}) {
   const validation = await validatePhaseInputs(cpbRoot, project, jobId, phase);
   if (!validation.valid) {
     return { exitCode: 1, error: new Error(validation.errors.join("; ")), envelope: null };

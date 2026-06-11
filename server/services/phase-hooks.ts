@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const HOOK_POINTS = Object.freeze({
   PRE_PLAN: "pre-plan",
   PRE_EXECUTE: "pre-execute",
@@ -8,8 +7,8 @@ export const HOOK_POINTS = Object.freeze({
   ON_FAILURE: "on-failure",
 });
 
-const ALL_POINTS = Object.values(HOOK_POINTS);
-const registry = new Map();
+const ALL_POINTS = Object.values(HOOK_POINTS) as string[];
+const registry = new Map<string, Array<(context: Record<string, any>) => any>>();
 
 export function registerPhaseHook(point, fn) {
   if (!ALL_POINTS.includes(point)) {
@@ -23,7 +22,7 @@ export function registerPhaseHook(point, fn) {
   registry.set(point, hooks);
 }
 
-export function clearPhaseHooks(point) {
+export function clearPhaseHooks(point = undefined) {
   if (point !== undefined) {
     registry.delete(point);
   } else {
@@ -47,7 +46,7 @@ export function hookPointFor(bp, timing) {
 }
 
 export function buildHookContext({ hookPoint, locator, envelope, role, phase, result, error }) {
-  const env = envelope || locator || {};
+  const env = (envelope || locator || {}) as Record<string, any>;
   return {
     hookPoint,
     phase: phase || env.phase || null,
@@ -128,7 +127,7 @@ export async function runPhaseHooks(context) {
     } catch (err) {
       hookResult = {
         ok: false,
-        diagnostics: [{ message: err.message, classification: "infra" }],
+        diagnostics: [{ message: (err as Error).message, classification: "infra" }],
         events: [],
         blockPhase: false,
         classification: "infra",
@@ -160,7 +159,7 @@ export async function runPhaseHooks(context) {
   return { ok, diagnostics: allDiagnostics, events: [], blockPhase, classification, hookResults, hookEvents };
 }
 
-function preflightCheck(requiredFields, artifactCheck) {
+function preflightCheck(requiredFields, artifactCheck = null) {
   return function preflight(context) {
     const missing = requiredFields.filter((f) => !context[f]);
     if (missing.length > 0) {

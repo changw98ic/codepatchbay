@@ -1,5 +1,6 @@
-// @ts-nocheck
-export async function run(args, { cpbRoot, executorRoot }) {
+type AnyRecord = Record<string, any>;
+
+export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) {
   const sub = args[0] || "status";
   const json = args.includes("--json");
   const { getProject, hubStatus, listProjects, resolveHubRoot } = await import("../../server/services/hub-registry.js").then(m => ({
@@ -25,6 +26,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       workerStore.listWorkers(),
       pool.connectionLeaseStatus().catch(() => ({ total: 0, providers: {} })),
     ]);
+    const leaseStatus = poolLeases as AnyRecord;
     const managedWorkers = summarizeWorkers(workers);
     if (json) {
       console.log(JSON.stringify({
@@ -37,7 +39,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
         orchestrator,
         queue,
         workers: managedWorkers,
-        poolLeases,
+        poolLeases: leaseStatus,
       }, null, 2));
     } else {
       const liveTag = liveness.alive ? "alive" : `down (${liveness.reason})`;
@@ -53,11 +55,11 @@ export async function run(args, { cpbRoot, executorRoot }) {
       const defaultLimit = pool.providerConnectionLimit;
       const knownKeys = await pool.getKnownProviderKeys();
       const allProviders = new Set([
-        ...Object.keys(poolLeases.providers),
+        ...Object.keys(leaseStatus.providers),
         ...knownKeys,
       ]);
       const poolParts = [...allProviders].sort().map((k) => {
-        const active = poolLeases.providers[k] || 0;
+        const active = leaseStatus.providers[k] || 0;
         const limit = pool.getProviderLimit(k);
         return `${k}:${active}/${limit}`;
       });
@@ -85,12 +87,12 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
     const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
     const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
-    const status = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
+    const status: AnyRecord = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
     if (json) {
       console.log(JSON.stringify(status, null, 2));
     } else {
       console.log("ACP pools:");
-      for (const [agent, info] of Object.entries(status.pools || {})) {
+      for (const [agent, info] of Object.entries(status.pools || {}) as Array<[string, AnyRecord]>) {
         const limit = status.providerQuotas?.[agent];
         const backoff = limit?.untilTs ? ` backoff:${limit.untilTs}` : "";
         console.log(`  ${agent}\tmode:${info.mode} limit:${info.limit} active:${info.active} queued:${info.queued}${backoff}`);
@@ -109,7 +111,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
           console.log(`  eligible:${qs.eligibleQueued} projects:${qs.eligibleProjects?.join(",") || ""}`);
         }
         if (qs.projects && Object.keys(qs.projects).length > 0) {
-          for (const [pid, ps] of Object.entries(qs.projects)) {
+          for (const [pid, ps] of Object.entries(qs.projects) as Array<[string, AnyRecord]>) {
             let line = `  ${pid}\tpending:${ps.pending} scheduled:${ps.scheduled || 0} active:${ps.inProgress}`;
             if (ps.maxActivePerProject) line += ` cap:${ps.activeMutating}/${ps.maxActivePerProject}`;
             if (ps.eligiblePending > 0) line += ` eligible:${ps.eligiblePending}`;
@@ -136,7 +138,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     const syncProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
     const shouldAutoEnqueue = !args.includes("--no-enqueue");
     const { syncConfiguredGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
-    const result = await syncConfiguredGithubIssuesFromGh(hubRoot, { projectId: syncProject, state: "open", limit: 1000, cwd: cpbRoot });
+    const result: AnyRecord = await syncConfiguredGithubIssuesFromGh(hubRoot, { projectId: syncProject, state: "open", limit: 1000, cwd: cpbRoot });
     if (shouldAutoEnqueue && result.projects?.length) {
       const { autoEnqueueSyncedIssues } = await import("../../server/services/auto-enqueue.js");
       result.autoEnqueue = [];
@@ -211,7 +213,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     }
   } else if (sub === "diagnostics") {
     const { gatherDiagnostics } = await import("../../server/services/diagnostics-bundle.js");
-    const diag = await gatherDiagnostics({ cpbRoot, hubRoot });
+    const diag = await gatherDiagnostics({ cpbRoot, hubRoot } as any);
     if (json) console.log(JSON.stringify(diag, null, 2));
     else {
       console.log(`Diagnostics gathered at: ${diag.gatheredAt}`);
@@ -254,16 +256,16 @@ export async function run(args, { cpbRoot, executorRoot }) {
   }
 }
 
-function formatManagedWorkerSummary(counts) {
+function formatManagedWorkerSummary(counts: AnyRecord) {
   const preferred = ["ready", "running", "unhealthy", "exited"];
   const parts = preferred.map((status) => `${status}:${counts[status] || 0}`);
-  for (const [status, count] of Object.entries(counts)) {
+  for (const [status, count] of Object.entries(counts) as Array<[string, number]>) {
     if (!preferred.includes(status) && count > 0) parts.push(`${status}:${count}`);
   }
   return parts.join(" ");
 }
 
-function formatFailedSummary(queue) {
+function formatFailedSummary(queue: AnyRecord) {
   if (queue?.failedTargets !== undefined) {
     return `failedEntries:${queue.failedEntries ?? queue.failed ?? 0} failedTargets:${queue.failedTargets || 0} retryingTargets:${queue.retryingFailedTargets || 0} retriedTargets:${queue.retriedFailedTargets || 0} unretriedTargets:${queue.unretriedFailedTargets || 0}`;
   }

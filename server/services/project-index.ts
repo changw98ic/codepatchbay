@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { loadRegistry, saveRegistry } from "./hub-registry.js";
@@ -114,7 +113,7 @@ export async function writeProjectIndex(hubRoot, cpbRoot, projectId, data) {
       projectId,
       "project.json"
     );
-    let existing = {};
+    let existing: Record<string, any> = {};
     try {
       existing = JSON.parse(await readFile(metaPath, "utf8"));
     } catch {}

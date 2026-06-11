@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { chromium } from "playwright"
 import path from "node:path"
 import os from "node:os"
@@ -19,6 +18,11 @@ async function ensureDir(dir) {
 export async function executeBrowserAgent({
   providerName,
   prompt,
+  sessionId = null,
+  role = null,
+  project = null,
+  jobId = null,
+  phase = "execute",
   timeoutMs = 900_000,
   headless = false,
   trace = false,
@@ -32,6 +36,9 @@ export async function executeBrowserAgent({
   // 2. Acquire browser session via session manager
   const sessionHandle = await globalSessionManager.acquire({
     providerName,
+    sessionId,
+    role,
+    project,
     headless,
   })
 
@@ -98,7 +105,7 @@ export async function executeBrowserAgent({
     }
     if (provider?.diagnostics?.screenshotOnFailure && page) {
       try {
-        await saveDiagnostic({ provider: providerName, error: err, page })
+        await saveDiagnostic({ provider: providerName, phase, project, jobId, error: err, page, tracePath })
       } catch {}
     }
     throw err

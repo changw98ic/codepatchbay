@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { buildChildEnv, buildRuntimeEnv } from "../../core/policy/child-env.js";
@@ -8,7 +7,14 @@ const BOLD = "\x1b[1m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-export function buildUiServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, port, host } = {}) {
+type UiServerEnvOptions = {
+  cpbRoot?: string;
+  executorRoot?: string;
+  port?: string;
+  host?: string;
+};
+
+export function buildUiServerEnv(parentEnv = process.env, { cpbRoot, executorRoot, port, host }: UiServerEnvOptions = {}) {
   return buildChildEnv(parentEnv, {
     CPB_PORT: port,
     CPB_HOST: host,
@@ -21,7 +27,7 @@ export function buildUiDevServerEnv(parentEnv = process.env) {
   return buildRuntimeEnv(parentEnv);
 }
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot, executorRoot }: { cpbRoot: string; executorRoot?: string }) {
   let port = process.env.CPB_PORT || "3456";
   let host = process.env.CPB_HOST || "127.0.0.1";
   for (let i = 0; i < args.length; i++) {

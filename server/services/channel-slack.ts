@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parseChannelCommand } from "./channel-commands.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
@@ -7,6 +6,8 @@ import { approveGate } from "./approval-gate.js";
 import { handleChannelCommand } from "./channel-queue-actions.js";
 
 const DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 300;
+
+type LooseRecord = Record<string, any>;
 
 function rawBodyText(rawBody) {
   if (Buffer.isBuffer(rawBody)) return rawBody.toString("utf8");
@@ -32,7 +33,7 @@ export function verifySlackSignature({
   rawBody,
   nowMs = Date.now(),
   toleranceSeconds = DEFAULT_SIGNATURE_TOLERANCE_SECONDS,
-} = {}) {
+}: LooseRecord = {}) {
   if (!signingSecret) return { ok: false, reason: "Slack signing secret is not configured" };
   if (!timestamp || !signature) return { ok: false, reason: "missing Slack signature headers" };
 
@@ -52,7 +53,7 @@ export function parseSlackFormBody(rawBody) {
   return Object.fromEntries(params.entries());
 }
 
-export function parseSlackSlashCommand(payload = {}) {
+export function parseSlackSlashCommand(payload: LooseRecord = {}) {
   const commandText = [payload.command || "/cpb", payload.text || ""]
     .map((part) => String(part || "").trim())
     .filter(Boolean)
@@ -120,7 +121,7 @@ function actionTypeFromId(actionId = "") {
   return normalized.split(/[:.]/).filter(Boolean).pop() || null;
 }
 
-function parseActionValue(value) {
+function parseActionValue(value): LooseRecord {
   if (!value || typeof value !== "string") return {};
   try {
     const parsed = JSON.parse(value);
@@ -130,7 +131,7 @@ function parseActionValue(value) {
   }
 }
 
-export function parseSlackInteractiveAction(payload = {}) {
+export function parseSlackInteractiveAction(payload: LooseRecord = {}) {
   const rawAction = Array.isArray(payload.actions) ? payload.actions[0] : null;
   const actionValue = parseActionValue(rawAction?.value);
   const type = actionValue.action || actionValue.type || actionTypeFromId(rawAction?.action_id);
@@ -183,7 +184,7 @@ function policyDenied(decision) {
   };
 }
 
-async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project = null, job = null } = {}) {
+async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project = null, job = null }: LooseRecord = {}) {
   if (!policy) return { allowed: true, reason: "channel policy not configured" };
   return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
     channel: "slack",
@@ -191,10 +192,10 @@ async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project 
     project,
     job,
     actor: parsed.actor,
-  }));
+  } as LooseRecord));
 }
 
-export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot } = {}) {
+export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot }: LooseRecord = {}) {
   return handleChannelCommand(cpbRoot, parsed, {
     policy,
     hubRoot,
@@ -204,7 +205,7 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
   });
 }
 
-export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null } = {}) {
+export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null }: LooseRecord = {}) {
   if (!parsed?.ok || !parsed.action?.type || !parsed.action?.job) {
     return {
       ok: false,

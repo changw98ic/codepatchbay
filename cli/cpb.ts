@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // cpb — CodePatchbay CLI (pure Node.js, replaces Bash entrypoint)
 // Usage: ./cpb <command> [args...]
 
@@ -9,7 +8,7 @@ import { access, constants, readFile } from "node:fs/promises";
 
 // Graceful EPIPE handling when piped to head/tail
 process.stdout.on("error", (err) => {
-  if (err.code === "EPIPE") process.exit(0);
+  if ((err as NodeJS.ErrnoException).code === "EPIPE") process.exit(0);
 });
 
 const __filename = fileURLToPath(import.meta.url);

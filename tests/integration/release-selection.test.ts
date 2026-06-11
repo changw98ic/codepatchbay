@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -28,11 +27,11 @@ const execFileAsync = promisify(execFile);
 const CPB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const CPB_BIN = path.join(CPB_ROOT, "cpb");
 
-async function pathExists(p) {
+async function pathExists(p: string) {
   try { await access(p); return true; } catch { return false; }
 }
 
-async function buildFixtureSource(root) {
+async function buildFixtureSource(root: string) {
   const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/executor-root.js");
 
   const dirs = [
@@ -77,7 +76,7 @@ async function buildFixtureSource(root) {
   await chmodP(path.join(root, "cpb"), 0o755);
 }
 
-async function installTestRelease(sourceRoot, destRoot, name, now) {
+async function installTestRelease(sourceRoot: string, destRoot: string, name: string, now?: Date) {
   return installRelease({ sourceRoot, destRoot, name, now: now || new Date() });
 }
 

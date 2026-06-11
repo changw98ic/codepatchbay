@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import os from "node:os";
 
@@ -186,7 +185,7 @@ function checkShellString(cmdStr) {
   return { allowed: true };
 }
 
-export function classifyDeleteRisk(command, args, { cwd, repoRoot, bulkThreshold } = {}) {
+export function classifyDeleteRisk(command, args, { cwd, repoRoot, bulkThreshold }: Record<string, any> = {}) {
   const threshold = bulkThreshold ?? DEFAULT_BULK_THRESHOLD;
   const base = path.basename(command);
 

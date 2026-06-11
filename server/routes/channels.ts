@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "path";
 import { spawn } from "child_process";
 import { readFile } from "node:fs/promises";
@@ -26,7 +25,9 @@ import {
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-async function queueReviewPipeline(cpbRoot, project, task, log, options = {}) {
+type LooseRecord = Record<string, any>;
+
+async function queueReviewPipeline(cpbRoot, project, task, log, options: LooseRecord = {}) {
   const hubRoot = options.hubRoot || cpbRoot;
   const queuedAt = new Date().toISOString();
   try {
@@ -124,7 +125,7 @@ function reviewPolicyAction(action) {
   return action;
 }
 
-async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, channel = "channel", actor = null } = {}) {
+async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, channel = "channel", actor = null }: LooseRecord = {}) {
   if (!policy) return { allowed: true, reason: "channel policy not configured" };
   return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
     channel,
@@ -132,10 +133,10 @@ async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, ch
     project: cmd.project || session?.project || null,
     job: session?.jobId || null,
     actor,
-  }));
+  } as LooseRecord));
 }
 
-function reviewPolicyDenied(decision, cmd, session, { channel = "channel", actor = null } = {}) {
+function reviewPolicyDenied(decision, cmd, session, { channel = "channel", actor = null }: LooseRecord = {}) {
   return {
     ...channelPolicyDenied(decision),
     channel,
@@ -149,7 +150,7 @@ function reviewPolicyDenied(decision, cmd, session, { channel = "channel", actor
   };
 }
 
-async function handleReviewCommand(cpbRoot, cmd, log, options = {}) {
+async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {}) {
   if (cmd.action === "create") {
     const decision = await authorizeReviewCommand(cpbRoot, cmd, null, options);
     if (!decision.allowed) return reviewPolicyDenied(decision, cmd, null, options);
@@ -209,7 +210,7 @@ async function loadChannelConfig(cpbRoot) {
   }
 }
 
-async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = null } = {}) {
+async function queueChannelCommand(cpbRoot, parsed, context: LooseRecord = {}, { policy = null }: LooseRecord = {}) {
   const channel = context.channel || parsed?.channel || "channel";
   return handleChannelCommand(cpbRoot, parsed, {
     policy,
@@ -219,7 +220,7 @@ async function queueChannelCommand(cpbRoot, parsed, context = {}, { policy = nul
   });
 }
 
-export async function channelRoutes(fastify, opts) {
+export async function channelRoutes(fastify, opts: LooseRecord = {}) {
   fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
     req.rawBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ""), "utf8");
     try {
@@ -262,7 +263,8 @@ export async function channelRoutes(fastify, opts) {
       policy,
       hubRoot: req.cpbHubRoot || req.cpbRoot,
     });
-    return reply.code(result.statusCode || (result.ok ? 200 : 400)).send(result);
+    const response = result as LooseRecord;
+    return reply.code(response.statusCode || (response.ok ? 200 : 400)).send(result);
   });
 
   fastify.post("/channels/slack/actions", async (req, reply) => {
@@ -287,7 +289,8 @@ export async function channelRoutes(fastify, opts) {
     const parsed = parseSlackInteractiveAction(payload);
     const policy = opts.channelPolicy || null;
     const result = await handleSlackInteractiveAction(req.cpbRoot, parsed, { policy });
-    return reply.code(result.statusCode || (result.ok ? 200 : 400)).send(result);
+    const response = result as LooseRecord;
+    return reply.code(response.statusCode || (response.ok ? 200 : 400)).send(result);
   });
 
   fastify.post("/channels/discord/interactions", async (req, reply) => {
@@ -328,7 +331,8 @@ export async function channelRoutes(fastify, opts) {
       channel: "discord",
       hubRoot: req.cpbHubRoot || req.cpbRoot,
     }, { policy });
-    return reply.code(result.statusCode || (result.ok ? (result.action === "queued" ? 202 : 200) : 400)).send(result);
+    const response = result as LooseRecord;
+    return reply.code(response.statusCode || (response.ok ? (response.action === "queued" ? 202 : 200) : 400)).send(result);
   });
 
   // Feishu event callback
@@ -377,7 +381,7 @@ export async function channelRoutes(fastify, opts) {
     }
 
     const commandText = text.trim();
-    const command = parseChannelCommand(commandText);
+    const command = parseChannelCommand(commandText) as LooseRecord;
     if (!command.ok && command.code === "NOT_CPB_COMMAND") {
       const legacy = parseCommand(text);
       if (!legacy) return { ok: true, parsed: false };
@@ -456,7 +460,7 @@ export async function channelRoutes(fastify, opts) {
     }
 
     const commandText = text.trim();
-    const command = parseChannelCommand(commandText);
+    const command = parseChannelCommand(commandText) as LooseRecord;
     if (!command.ok && command.code === "NOT_CPB_COMMAND") {
       const legacy = parseCommand(text);
       if (!legacy) return { ok: true, parsed: false };

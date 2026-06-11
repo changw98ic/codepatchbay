@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { assertNoSecretInput } from "../../server/services/secret-policy.js";
 
 function usage() {
@@ -31,7 +30,7 @@ export function parseAuthCommand(args = []) {
 
 function formatHuman(status) {
   const lines = ["CodePatchBay Auth", ""];
-  for (const provider of Object.values(status.providers)) {
+  for (const provider of Object.values(status.providers) as Array<Record<string, any>>) {
     lines.push(`${provider.id}: ${provider.status}`);
   }
   return `${lines.join("\n")}\n`;

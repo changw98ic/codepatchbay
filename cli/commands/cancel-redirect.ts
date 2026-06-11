@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 /**
  * CLI command for cancel/redirect operations.
  * Routed as: cpb cancel <project> <jobId> [reason]

@@ -1,4 +1,3 @@
-// @ts-nocheck
 const VALID_STATUSES = new Set(["pass", "fail", "inconclusive", "infra_error"]);
 
 const REQUIRED_BASIS_KEYS = [
@@ -118,8 +117,8 @@ function failedLayerChecks(envelope) {
   const layers = envelope?.layers;
   if (!layers || typeof layers !== "object" || Array.isArray(layers)) return [];
   return Object.entries(layers)
-    .filter(([, layer]) => String(layer?.status || "").toLowerCase() === "fail")
-    .map(([name, layer]) => truncate(`${name}: ${layer?.detail || "failed"}`));
+    .filter(([, layer]) => String((layer as Record<string, any>)?.status || "").toLowerCase() === "fail")
+    .map(([name, layer]) => truncate(`${name}: ${(layer as Record<string, any>)?.detail || "failed"}`));
 }
 
 function retryScopeFromEnvelope(envelope) {

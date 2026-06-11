@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createInstallPlan, upgradeFor } from "../core/setup/install-plan.js";

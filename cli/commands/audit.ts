@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildJobAuditExport, writeJobAuditExport } from "../../server/services/audit-export.js";
@@ -39,7 +38,7 @@ function parseArgs(argv) {
   return { ...options, project: positional[0], jobId: positional[1] };
 }
 
-export async function run(args, context) {
+export async function run(args, context: Record<string, any> = {}) {
   const options = parseArgs(args);
   if (options.help) {
     console.log(usage());

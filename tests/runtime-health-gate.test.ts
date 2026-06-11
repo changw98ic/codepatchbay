@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -200,7 +199,7 @@ test("failed reconcile evidence escalates jobs-index divergence without writing 
       staleJobs: [],
       reconcileEvidence: { attempted: true, success: false, divergenceCount: 1 },
     },
-  });
+  } as any);
 
   assert.equal(health.jobsIndexDivergence.severity, "blocker");
   assert.ok(health.blockers.some((b) => b.code === "jobs_index_divergent"));

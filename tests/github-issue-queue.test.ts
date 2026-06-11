@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -9,7 +8,7 @@ import { createJob, getJobByQueueEntryId } from "../server/services/job-store.js
 import { enqueue } from "../server/services/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
-function makeIssuePayload(overrides = {}) {
+function makeIssuePayload(overrides: Record<string, any> = {}) {
   return {
     action: "labeled",
     issue: {
@@ -28,7 +27,7 @@ function makeIssuePayload(overrides = {}) {
   };
 }
 
-function makeCommentPayload(overrides = {}) {
+function makeCommentPayload(overrides: Record<string, any> = {}) {
   return {
     action: "created",
     issue: {
@@ -51,7 +50,7 @@ function makeCommentPayload(overrides = {}) {
   };
 }
 
-function makeNormalizedEvent(payload, projectId = "test-project") {
+function makeNormalizedEvent(payload: Record<string, any>, projectId = "test-project") {
   return normalizeGithubWebhookEvent({
     event: payload.action === "created" && payload.comment ? "issue_comment" : "issues",
     delivery: `del-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,

@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
 import { createInstallPlan, upgradeFor } from "../../core/setup/install-plan.js";
 import { runInstallPlanWithEvents } from "../../server/services/setup-events.js";
+
+type AnyRecord = Record<string, any>;
+
+const runInstallPlan = runInstallPlanWithEvents as (plan: AnyRecord, options?: AnyRecord) => Promise<AnyRecord>;
 
 function usage() {
   return [
@@ -19,12 +22,12 @@ function usage() {
   ].join("\n");
 }
 
-function optionValue(args, name) {
+function optionValue(args: string[], name: string) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : null;
 }
 
-export async function run(args = []) {
+export async function run(args: string[] = []) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
     return 0;
@@ -51,7 +54,7 @@ export async function run(args = []) {
     if (args.includes("--json")) {
       console.log(JSON.stringify(snapshot, null, 2));
     } else {
-      for (const [id, agent] of Object.entries(snapshot.agents)) {
+      for (const [id, agent] of Object.entries(snapshot.agents as Record<string, AnyRecord>)) {
         const version = agent.version ? ` (${agent.version})` : "";
         console.log(`${id}\t${agent.installed ? "installed" : "missing"}${version}`);
       }
@@ -69,12 +72,12 @@ export async function run(args = []) {
     }
 
     const detected = await detectSetupEnvironment();
-    const plan = createInstallPlan({ agentId, method, version, detected });
+    const plan = createInstallPlan({ agentId, method, version, detected }) as AnyRecord;
     const shouldExecute = args.includes("--yes");
-    const result = { executed: false, plan };
+    const result: AnyRecord = { executed: false, plan };
 
     if (shouldExecute) {
-      result.installResult = await runInstallPlanWithEvents(plan, { cpbRoot: process.env.CPB_ROOT });
+      result.installResult = await runInstallPlan(plan, { cpbRoot: process.env.CPB_ROOT });
       result.executed = true;
     }
 
@@ -99,7 +102,7 @@ export async function run(args = []) {
     }
 
     const { getSetupAgent } = await import("../../core/setup/agent-catalog.js");
-    const agent = getSetupAgent(agentId);
+    const agent = getSetupAgent(agentId) as AnyRecord | null;
     if (!agent) {
       console.error(`Unknown agent: ${agentId}`);
       return 1;
@@ -109,7 +112,7 @@ export async function run(args = []) {
     const selectedMethod = method || (agent.install.brew && detected?.tools?.brew?.installed
       ? "brew"
       : Object.keys(agent.upgrade || {})[0]);
-    const upgrade = upgradeFor(selectedMethod, agent);
+    const upgrade = upgradeFor(selectedMethod, agent) as AnyRecord | null;
     if (!upgrade) {
       console.error(`No upgrade path found for '${agentId}' via '${selectedMethod}'`);
       return 1;
@@ -117,7 +120,7 @@ export async function run(args = []) {
 
     const shouldExecute = args.includes("--yes");
     if (shouldExecute) {
-      await runInstallPlanWithEvents(
+      await runInstallPlan(
         { ...upgrade, agent: { id: agent.id, displayName: agent.displayName, vendor: agent.vendor, binary: agent.binary } },
         { cpbRoot: process.env.CPB_ROOT },
       );

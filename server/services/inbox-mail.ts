@@ -1,6 +1,7 @@
-// @ts-nocheck
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+type AnyRecord = Record<string, any>;
 
 const SCHEMA = "cpb.inbox-mail.v1";
 const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);
@@ -66,7 +67,7 @@ function parseFrontmatter(raw) {
 
   const fmText = raw.slice(3, end).trim();
   const content = raw.slice(end + 3).trimStart();
-  const meta = {};
+  const meta: AnyRecord = {};
 
   for (const line of fmText.split("\n")) {
     const trimmed = line.trim();
@@ -170,7 +171,7 @@ export async function writeInboxMessage(cpbRoot, project, input) {
   return messageToOutput(meta);
 }
 
-export async function listInboxMessages(cpbRoot, project, filters = {}) {
+export async function listInboxMessages(cpbRoot, project, filters: AnyRecord = {}) {
   const dir = inboxDir(cpbRoot, project);
   let files;
   try {
@@ -220,7 +221,7 @@ export async function readInboxMessage(cpbRoot, project, id) {
   }
 }
 
-export async function ackInboxMessage(cpbRoot, project, id, { owner } = {}) {
+export async function ackInboxMessage(cpbRoot, project, id, { owner }: AnyRecord = {}) {
   if (!safeId(id)) return null;
   return withLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);

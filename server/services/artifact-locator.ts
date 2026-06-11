@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readdir, writeFile, access, stat } from "node:fs/promises";
 import path from "node:path";
 import { projectRuntimePath } from "./runtime-root.js";

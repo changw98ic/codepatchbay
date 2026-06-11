@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * WorkflowDagBuilder — constructs and validates a DAG from workflow + phase list.
  *
@@ -10,6 +9,14 @@
 
 import { normalizeWorkflow } from "../workflow/definition.js";
 
+type AnyRecord = Record<string, any>;
+type DagNode = AnyRecord & {
+  id: string;
+  phase: string;
+  role?: string;
+  dependsOn?: string[];
+};
+
 /**
  * Build a DAG descriptor for a concrete run.
  *
@@ -19,16 +26,16 @@ import { normalizeWorkflow } from "../workflow/definition.js";
  * @param {{ workflow: string, phases: string[], phaseRoleMap: Record<string,string> }} opts
  * @returns {{ name: string, nodes: object[], edges: object[], maxConcurrentNodes: number, isDag: boolean, source: string }}
  */
-export function buildWorkflowDag({ workflow, phases, phaseRoleMap }) {
+export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }) {
   const base = normalizeWorkflow(workflow);
   const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
 
-  const phaseBudget = new Map();
+  const phaseBudget = new Map<string, number>();
   for (const phase of phases) {
     phaseBudget.set(phase, (phaseBudget.get(phase) || 0) + 1);
   }
 
-  const nodes = [];
+  const nodes: DagNode[] = [];
   for (const existing of baseNodes) {
     const phase = existing.phase || existing.id;
     if (!phaseBudget.has(phase)) continue;
@@ -84,7 +91,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }) {
  * @param {{ adversarialRequired?: boolean }} riskMap
  * @returns {string[]}
  */
-export function insertAdversarialVerify(phases, riskMap) {
+export function insertAdversarialVerify(phases: string[], riskMap: { adversarialRequired?: boolean } | null | undefined) {
   if (
     !riskMap?.adversarialRequired ||
     !phases.includes("verify") ||
@@ -93,7 +100,7 @@ export function insertAdversarialVerify(phases, riskMap) {
     return phases;
   }
 
-  const result = [];
+  const result: string[] = [];
   for (const phase of phases) {
     result.push(phase);
     if (phase === "verify") result.push("adversarial_verify");
@@ -109,7 +116,7 @@ export function insertAdversarialVerify(phases, riskMap) {
  * @param {{ nodes: { phase: string }[] }} dag
  * @returns {{ valid: boolean, reason?: string }}
  */
-export function validateDagForMutatingJob(dag) {
+export function validateDagForMutatingJob(dag: { nodes?: Array<{ phase?: string }> } | null | undefined) {
   const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
   const hasVerify = nodes.some((n) => n.phase === "verify");
   if (!hasVerify) {

@@ -1,15 +1,19 @@
-// @ts-nocheck
-const clients = new Set();
+type BroadcastClient = {
+  send(data: string): void;
+  close(): void;
+};
 
-export function addClient(socket) {
+const clients = new Set<BroadcastClient>();
+
+export function addClient(socket: BroadcastClient) {
   clients.add(socket);
 }
 
-export function removeClient(socket) {
+export function removeClient(socket: BroadcastClient) {
   clients.delete(socket);
 }
 
-export function broadcast(event) {
+export function broadcast(event: unknown) {
   const data = JSON.stringify(event);
   for (const socket of clients) {
     try { socket.send(data); } catch {}

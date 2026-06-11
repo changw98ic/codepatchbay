@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
@@ -6,10 +5,10 @@ import { autoDiscoverAgents } from "./auto-discover.js";
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
 const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
 
-const _registry = new Map();
-const _discovered = new Map();
-const _squads = new Map();
-const _rrCounters = new Map(); // round-robin counters per squad
+const _registry = new Map<string, any>();
+const _discovered = new Map<string, any>();
+const _squads = new Map<string, any>();
+const _rrCounters = new Map<string, number>(); // round-robin counters per squad
 let _loaded = false;
 
 function validateDescriptor(d) {
@@ -89,7 +88,7 @@ export async function loadRegistry(configDir) {
     const raw = await readFile(SQUADS_FILE, "utf8");
     const data = JSON.parse(raw);
     if (data.squads && typeof data.squads === "object") {
-      for (const [name, squad] of Object.entries(data.squads)) {
+      for (const [name, squad] of Object.entries(data.squads as Record<string, any>)) {
         if (squad.leader && Array.isArray(squad.members)) {
           _squads.set(name, { ...squad, name });
         }
@@ -242,7 +241,7 @@ export function getSquad(name) {
  * poolStatus: optional object from AcpPool.status().pools — keyed by agent name,
  * each with { active } field.
  */
-export function resolveSquadAgent(squadName, { strategy, poolStatus } = {}) {
+export function resolveSquadAgent(squadName, { strategy, poolStatus }: Record<string, any> = {}) {
   ensureLoaded();
   const squad = _squads.get(squadName);
   if (!squad) return null;

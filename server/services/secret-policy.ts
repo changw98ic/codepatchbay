@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Shared secret policy for P0.3: child-env allowlist, recursive redaction,
 // secret-path detection, and secret-artifact classification.
 
@@ -114,14 +113,14 @@ export function assertNoSecretInput(input) {
   const detected = detectSecretInput(input);
   if (detected.matched) {
     const error = new Error(SECRET_INPUT_GUIDANCE);
-    error.code = "SECRET_INPUT_REJECTED";
-    error.detection = detected;
+    (error as Error & { code?: string; detection?: any }).code = "SECRET_INPUT_REJECTED";
+    (error as Error & { code?: string; detection?: any }).detection = detected;
     throw error;
   }
   return detected;
 }
 
-export function makeSecretInputRejectedEvent({ source, input, reason } = {}) {
+export function makeSecretInputRejectedEvent({ source, input, reason }: Record<string, any> = {}) {
   const detected = detectSecretInput(input);
   return {
     type: "secret_input_rejected",

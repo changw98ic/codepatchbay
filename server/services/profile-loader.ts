@@ -1,20 +1,20 @@
-// @ts-nocheck
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 const PROFILES_DIR = "profiles";
+type AnyRecord = Record<string, any>;
 
-function escapeRegex(s) {
+function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export const DEFAULT_SKILL_LIMIT = 10;
 export const DEFAULT_SKILL_MAX_BYTES = 32768;
 
-function parseFrontMatter(content) {
+function parseFrontMatter(content: string): AnyRecord {
   const parts = content.split("---");
   if (parts.length < 3) return {};
-  const fm = {};
+  const fm: AnyRecord = {};
   for (const line of parts[1].split("\n")) {
     const nm = line.match(/^name:\s*(.+)/);
     if (nm) fm.name = nm[1].trim();
@@ -30,7 +30,7 @@ function parseFrontMatter(content) {
   return fm;
 }
 
-export async function loadProfileSkills(cpbRoot, role, options = {}) {
+export async function loadProfileSkills(cpbRoot: string, role: string, options: AnyRecord = {}) {
   const maxSkills = options.maxSkills ?? DEFAULT_SKILL_LIMIT;
   const maxBytes = options.maxBytes ?? DEFAULT_SKILL_MAX_BYTES;
   const includeDrafts = options.includeDrafts ?? false;
@@ -45,8 +45,8 @@ export async function loadProfileSkills(cpbRoot, role, options = {}) {
     if (extractedStat.isDirectory()) dirsToScan.push(extractedDir);
   } catch {}
 
-  const skills = [];
-  const diagnostics = [];
+  const skills: AnyRecord[] = [];
+  const diagnostics: AnyRecord[] = [];
 
   for (const scanDir of dirsToScan) {
     let entries;
@@ -115,12 +115,12 @@ export async function loadProfileSkills(cpbRoot, role, options = {}) {
   return { skills, diagnostics };
 }
 
-export async function selectProfileSkills(cpbRoot, role, context = {}, options = {}) {
+export async function selectProfileSkills(cpbRoot: string, role: string, context: AnyRecord = {}, options: AnyRecord = {}) {
   const { skills } = await loadProfileSkills(cpbRoot, role, options);
   const { phase, task, artifactText } = context;
   const matchText = [task, artifactText].filter(Boolean).join(" ").toLowerCase();
 
-  const selected = [];
+  const selected: AnyRecord[] = [];
 
   for (const skill of skills) {
     const nameLower = skill.name.toLowerCase();

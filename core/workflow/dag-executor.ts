@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DAG executor for workflow nodes.
  * Provides topological sort, ready-node identification, and concurrency control.
@@ -83,7 +82,7 @@ function orderedPhaseEntries(phaseStates) {
   if (!phaseStates || typeof phaseStates !== "object") return [];
   return Object.entries(phaseStates)
     .map(([phase, value]) => {
-      const status = value && typeof value === "object" ? value.status : value;
+      const status = value && typeof value === "object" ? (value as Record<string, any>).status : value;
       return [phase, status];
     })
     .filter(([phase]) => Boolean(phase));
@@ -93,7 +92,7 @@ function orderedPhaseEntries(phaseStates) {
  * Derive deterministic DAG resume metadata from node-first state.
  * Falls back to phase names only when no workflow DAG nodes are available.
  */
-export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates = {} } = {}) {
+export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates = {} }: Record<string, any> = {}) {
   const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes.filter((node) => node?.id) : [];
 
   if (nodes.length === 0) {
@@ -103,11 +102,12 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
       let failedNodeId = null;
       let failedPhase = null;
       for (const [nodeId, node] of nodeEntries) {
-        const status = node && typeof node === "object" ? node.status : node;
+        const entry = node as Record<string, any>;
+        const status = node && typeof node === "object" ? entry.status : node;
         if (status === "completed" || status === "skipped") completedNodeIds.push(nodeId);
         if (!failedNodeId && ["failed", "blocked", "cancelled"].includes(status)) {
           failedNodeId = nodeId;
-          failedPhase = node?.phase || nodeId;
+          failedPhase = entry?.phase || nodeId;
         }
       }
       return {

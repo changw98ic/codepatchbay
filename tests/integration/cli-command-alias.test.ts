@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -7,7 +6,14 @@ import { test } from "node:test";
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const cli = path.join(repoRoot, "cli", "cpb.js");
 
-function runCli(args) {
+type CliResult = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+};
+
+function runCli(args: string[]): Promise<CliResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], {
       cwd: repoRoot,

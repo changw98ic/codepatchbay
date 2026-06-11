@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { defaultSddTrace, sddDir, sddQueueMetadata, sddTracePath } from "../../core/sdd/trace.js";
@@ -7,39 +6,42 @@ const TEMPLATE_FILES = {
   spec: "spec.md",
   design: "design.md",
   tasks: "tasks.md",
-};
+} as const;
+
+type TemplateName = keyof typeof TEMPLATE_FILES;
+type LooseRecord = Record<string, any>;
 
 function usage() {
   return "Usage: cpb sdd <init|bootstrap|verify|drift> <project> [--task \"<task>\"] [--json]";
 }
 
-function validateProject(project) {
+function validateProject(project: string | undefined) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(project || "");
 }
 
-async function readTemplate(executorRoot, name) {
+async function readTemplate(executorRoot: string, name: TemplateName) {
   const file = path.join(executorRoot, "templates", "sdd", TEMPLATE_FILES[name]);
   return readFile(file, "utf8");
 }
 
-async function writeIfMissing(file, content) {
+async function writeIfMissing(file: string, content: string) {
   try {
     await readFile(file, "utf8");
     return false;
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await writeFile(file, content, "utf8");
     return true;
   }
 }
 
-async function initSdd({ cpbRoot, executorRoot, project, status = "initialized" }) {
+async function initSdd({ cpbRoot, executorRoot, project, status = "initialized" }: LooseRecord) {
   const dir = sddDir(cpbRoot, project);
   await mkdir(dir, { recursive: true });
 
-  const files = {};
-  const created = {};
-  for (const name of Object.keys(TEMPLATE_FILES)) {
+  const files: LooseRecord = {};
+  const created: LooseRecord = {};
+  for (const name of Object.keys(TEMPLATE_FILES) as TemplateName[]) {
     const target = path.join(dir, TEMPLATE_FILES[name]);
     files[name] = target;
     created[name] = await writeIfMissing(target, await readTemplate(executorRoot, name));
@@ -53,7 +55,7 @@ async function initSdd({ cpbRoot, executorRoot, project, status = "initialized" 
   return { project, files, created, trace };
 }
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord) {
   const subcommand = args[0];
   const project = args[1];
   const json = args.includes("--json");
@@ -87,7 +89,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.error(`Project '${project}' not found.`);
       process.exit(1);
     }
-    const result = await analyzeSddDrift({ cpbRoot, projectRecord, hubRoot, task });
+    const result = await (analyzeSddDrift as any)({ cpbRoot, projectRecord, hubRoot, task });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -98,7 +100,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     return result.status === "fail" ? 1 : 0;
   }
 
-  const result = await initSdd({
+  const result: LooseRecord = await initSdd({
     cpbRoot,
     executorRoot,
     project,

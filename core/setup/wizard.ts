@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -28,7 +27,7 @@ export async function readSetupProfile(cpbRoot) {
   try {
     return JSON.parse(await readFile(setupProfilePath(cpbRoot), "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return null;
+    if ((error as Record<string, any>).code === "ENOENT") return null;
     throw error;
   }
 }
@@ -76,7 +75,7 @@ async function askQuestion(question, questionFn) {
   }
 }
 
-async function askForAgents(catalog, snapshot, { questionFn } = {}) {
+async function askForAgents(catalog, snapshot, { questionFn }: Record<string, any> = {}) {
   const recommended = selectRecommended(catalog, snapshot);
   if (!input.isTTY && typeof questionFn !== "function") return recommended;
 
@@ -103,7 +102,7 @@ async function confirmPlan(plan) {
   }
 }
 
-async function askRunAuthCheck({ mode, questionFn } = {}) {
+async function askRunAuthCheck({ mode, questionFn }: Record<string, any> = {}) {
   if (mode !== "interactive") return true;
   if (!input.isTTY && typeof questionFn !== "function") return true;
   return yes(await askQuestion("Run auth check? y/N ", questionFn));
@@ -201,7 +200,7 @@ export async function runSetupWizard({
       continue;
     }
     try {
-      const install = await runInstallPlanFn(plan, { cpbRoot, stdio });
+      const install = await runInstallPlanFn(plan, { cpbRoot, stdio } as Record<string, any>);
       result.installations[agent.id] = installationRecord(plan, install);
       result.executed = true;
     } catch (error) {
@@ -267,9 +266,9 @@ export async function runSetupWizard({
         if (native?.command) {
           const { command: cmd, args } = native;
           if (stdio === "inherit") {
-            console.log(`\n[setup] Running: ${nativeCommand}\n`);
+            console.log(`\n[setup] Running: ${cmd} ${args.join(" ")}\n`);
           }
-          await new Promise((resolve) => {
+          await new Promise<void>((resolve) => {
             const child = spawn(cmd, args, { stdio: "inherit", shell: false });
             child.on("close", (code) => {
               if (stdio === "inherit") {

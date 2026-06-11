@@ -1,8 +1,7 @@
-// @ts-nocheck
 import { extractSkillFromJob, reviewSkill, listExtractedSkills, loadActiveExtractedSkills } from "../services/skill-extractor.js";
 import { getJob } from "../services/job-store.js";
 
-export function skillRoutes(fastify, opts, done) {
+export function skillRoutes(fastify: any, _opts: any, done: () => void) {
   // GET /api/skills/:role — list extracted skills for a role
   fastify.get("/skills/:role", async (req, reply) => {
     const skills = await listExtractedSkills(req.cpbRoot, req.params.role);

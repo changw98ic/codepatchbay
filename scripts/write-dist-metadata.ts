@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 

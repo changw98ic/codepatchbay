@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { approveGate } from "./approval-gate.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-policy.js";
 import { createChannelQueueJob, enqueueSddTaskEntriesForApprovedParent } from "./event-source.js";
@@ -6,6 +5,8 @@ import { readEvents } from "./event-store.js";
 import { listQueue, updateEntry } from "./hub-queue.js";
 import { cancelJob, listJobsAcrossRuntimeRoots, retryJob } from "./job-store.js";
 import { jobToQueueRow } from "./job-projection.js";
+
+type AnyRecord = Record<string, any>;
 
 function titleCaseChannel(channel) {
   const value = String(channel || "channel");
@@ -107,7 +108,11 @@ export function channelPolicyDenied(decision) {
   };
 }
 
-async function authorizeChannelAction(cpbRoot, policy, { channel, action, project = null, job = null, actor = null } = {}) {
+async function authorizeChannelAction(
+  cpbRoot,
+  policy,
+  { channel, action, project = null, job = null, actor = null }: AnyRecord = {},
+) {
   if (!policy) return { allowed: true, reason: "channel policy not configured" };
   return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
     channel,
@@ -118,7 +123,7 @@ async function authorizeChannelAction(cpbRoot, policy, { channel, action, projec
   }));
 }
 
-function actorId(actor = {}) {
+function actorId(actor: AnyRecord = {}) {
   return actor.userId || actor.id || "unknown user";
 }
 
@@ -281,10 +286,10 @@ export async function handleChannelCommand(cpbRoot, parsed, {
   policy = null,
   hubRoot = cpbRoot,
   channel = parsed?.channel || "channel",
-  context = {},
+  context = {} as AnyRecord,
   jobActionMetadata = channelJobActionMetadata,
   queueActionMetadata = channelQueueActionMetadata,
-} = {}) {
+}: AnyRecord = {}) {
   const command = parsed?.command;
   if (!parsed?.ok || !command?.ok) {
     return {

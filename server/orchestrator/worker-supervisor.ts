@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
@@ -9,9 +9,16 @@ import { executorEnv, resolveExecutorRoot } from "../services/executor-root.js";
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
 const MAX_RESTARTS = 3;
+type AnyRecord = Record<string, any>;
 
 export class WorkerSupervisor {
-  constructor(hubRoot, cpbRoot, { workerStore, executorRoot } = {}) {
+  hubRoot: string;
+  cpbRoot: string;
+  executorRoot: string;
+  workers: any;
+  _children: Map<string, ChildProcess>;
+
+  constructor(hubRoot: string, cpbRoot: string, { workerStore, executorRoot }: AnyRecord = {}) {
     this.hubRoot = path.resolve(hubRoot);
     this.cpbRoot = path.resolve(cpbRoot);
     this.executorRoot = path.resolve(executorRoot || resolveExecutorRoot({
@@ -22,14 +29,14 @@ export class WorkerSupervisor {
     this._children = new Map(); // workerId → ChildProcess
   }
 
-  async ensureWorkerFor(assignment, worker) {
+  async ensureWorkerFor(assignment: AnyRecord, worker: AnyRecord | null) {
     if (worker && worker.status === "ready") return worker;
     if (worker && worker.status === "starting") return worker;
 
     return this.startWorker(assignment);
   }
 
-  async startWorker(assignment) {
+  async startWorker(assignment: AnyRecord) {
     const workerId = WorkerStore.makeWorkerId();
     const executorRoot = this.executorRoot;
 
@@ -48,7 +55,7 @@ export class WorkerSupervisor {
         CPB_HUB_ROOT: this.hubRoot,
       },
       detached: true,
-      stdio: ["ignore", logFd, logFd],
+      stdio: ["ignore", logFd as any, logFd as any],
     });
     child.unref();
 
@@ -81,7 +88,7 @@ export class WorkerSupervisor {
         });
         try {
           await this.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
-        } catch (err) {
+        } catch (err: any) {
           await this.workers.updateWorker(workerId, {
             status: "exhausted",
             restartError: err.message,
@@ -97,7 +104,7 @@ export class WorkerSupervisor {
     return worker;
   }
 
-  async stopWorker(workerId, reason) {
+  async stopWorker(workerId: string, reason: string) {
     const child = this._children.get(workerId);
     const worker = await this.workers.getWorker(workerId);
     const pid = child?.pid || worker?.pid;
@@ -153,7 +160,7 @@ export class WorkerSupervisor {
     }
   }
 
-  _killProcessGroup(pid) {
+  _killProcessGroup(pid: number | null | undefined) {
     if (!pid) return;
     try { process.kill(-pid, "SIGTERM"); } catch { /* no group or already dead */ }
     try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }

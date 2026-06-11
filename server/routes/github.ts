@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   loadGithubAppConfig,
   resolveGithubWebhookSecret,
@@ -17,24 +16,26 @@ import { parseChannelCommand } from "../services/channel-commands.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
 import { loadQueue, updateEntry } from "../services/hub-queue.js";
 
-function rawBodyBuffer(body) {
+type AnyRecord = Record<string, any>;
+
+function rawBodyBuffer(body: any): Buffer {
   if (Buffer.isBuffer(body)) return body;
   if (typeof body === "string") return Buffer.from(body, "utf8");
   return Buffer.from(JSON.stringify(body ?? {}), "utf8");
 }
 
-function headerValue(headers, name) {
+function headerValue(headers: AnyRecord, name: string): any {
   const value = headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
 }
 
-async function findProjectByRepo(hubRoot, repo) {
+async function findProjectByRepo(hubRoot: string, repo: any): Promise<AnyRecord | null> {
   if (!repo) return null;
   const projects = await listProjects(hubRoot, { enabledOnly: true });
   return projects.find((project) => project.github?.fullName === repo) || null;
 }
 
-function responseBase({ event, delivery, action }) {
+function responseBase({ event, delivery, action }: AnyRecord): AnyRecord {
   return {
     accepted: true,
     event,
@@ -43,15 +44,15 @@ function responseBase({ event, delivery, action }) {
   };
 }
 
-export async function githubRoutes(fastify, opts = {}) {
-  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (_req, body, done) => {
+export async function githubRoutes(fastify: any, opts: AnyRecord = {}) {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (_req: any, body: any, done: any) => {
     done(null, body);
   });
 
-  fastify.post("/github/webhook", async (req, reply) => {
+  fastify.post("/github/webhook", async (req: any, reply: any) => {
     const rawBody = rawBodyBuffer(req.body);
-    let config;
-    let secret;
+    let config: AnyRecord;
+    let secret: any;
     try {
       config = await loadGithubAppConfig(req.cpbHubRoot);
       secret = resolveGithubWebhookSecret(config);
@@ -65,7 +66,7 @@ export async function githubRoutes(fastify, opts = {}) {
       return reply.code(401).send({ error: "invalid GitHub webhook signature" });
     }
 
-    let payload;
+    let payload: AnyRecord;
     try {
       payload = JSON.parse(rawBody.toString("utf8"));
     } catch {
@@ -78,7 +79,7 @@ export async function githubRoutes(fastify, opts = {}) {
     const project = await findProjectByRepo(req.cpbHubRoot, payload.repository?.full_name || null);
     if (!project) return reply.code(202).send(base);
 
-    const normalized = normalizeGithubWebhookEvent({
+    const normalized: AnyRecord = (normalizeGithubWebhookEvent as any)({
       event,
       delivery,
       payload,
@@ -92,11 +93,11 @@ export async function githubRoutes(fastify, opts = {}) {
     if (normalized.type === "github_issue_comment" && normalized.action === "created" && normalized.commandText) {
       const parsed = parseChannelCommand(normalized.commandText);
       if (parsed.ok && parsed.command === "approve" && parsed.job) {
-        const queue = await loadQueue(req.cpbHubRoot);
+        const queue: AnyRecord = await loadQueue(req.cpbHubRoot);
         const entry = queue.entries.find((e) => e.id === parsed.job);
 
         const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-        const permissionDenied = (reason) => reply.code(403).send({
+        const permissionDenied = (reason: string) => reply.code(403).send({
           ...base, normalized, projectId: project.id, commandHandled: "approve", error: reason,
         });
 
@@ -113,7 +114,7 @@ export async function githubRoutes(fastify, opts = {}) {
           return permissionDenied("queue entry does not belong to this issue");
         }
         if (opts.channelPolicy) {
-          const decision = await enforceChannelPolicy(req.cpbHubRoot, opts.channelPolicy, channelPolicyRequest({
+          const decision = await enforceChannelPolicy(req.cpbHubRoot, opts.channelPolicy, (channelPolicyRequest as any)({
             channel: "github",
             action: "approve",
             project: project.id,
@@ -179,21 +180,21 @@ export async function githubRoutes(fastify, opts = {}) {
       }
     }
 
-    const match = matchGithubTrigger(normalized, project.github?.triggers);
+    const match: AnyRecord = matchGithubTrigger(normalized, project.github?.triggers);
     if (!match.matched) {
       return reply.code(202).send({ ...base, normalized, projectId: project.id, match });
     }
 
-    const queue = await createGithubIssueQueueJob(req.cpbRoot || req.cpbHubRoot, normalized, match, {
+    const queue: AnyRecord = await createGithubIssueQueueJob(req.cpbRoot || req.cpbHubRoot, normalized, match, {
       hubRoot: req.cpbHubRoot,
       sourcePath: project.sourcePath || null,
       sddDrafterMode: opts.sddDrafterMode,
       sddAcpPool: opts.sddAcpPool,
       sddDrafterAgent: opts.sddDrafterAgent,
       sddDrafterTimeoutMs: opts.sddDrafterTimeoutMs,
-    });
+    } as any);
     const transport = await resolveGithubTransport(req.cpbHubRoot);
-    const comment = await postGithubQueuedComment({
+    const comment: AnyRecord = await (postGithubQueuedComment as any)({
       repo: normalized.repo,
       issueNumber: normalized.issueNumber,
       job: queue.job,

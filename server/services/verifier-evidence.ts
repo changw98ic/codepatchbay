@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -110,7 +109,7 @@ export async function collectDeliverable(cpbRoot, project, deliverableId) {
   }
 }
 
-export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourcePath, deliverableId } = {}) {
+export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourcePath, deliverableId }: Record<string, any> = {}) {
   const jobState = await reconstructJobState(cpbRoot, project, jobId);
 
   const evidence = {

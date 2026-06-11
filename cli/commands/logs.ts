@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { openSync, readSync, closeSync, writeSync } from "node:fs";

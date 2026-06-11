@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 /**
  * Managed Worker — passive execution slot for Hub Orchestrator.
  *
@@ -31,9 +30,10 @@ const execFileAsync = promisify(_execFile);
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
 const CANCEL_POLL_MS = 1_000;
+type AnyRecord = Record<string, any>;
 
-function parseArgs(argv) {
-  const opts = {};
+function parseArgs(argv: string[]) {
+  const opts: AnyRecord = {};
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === "--worker-id") opts.workerId = argv[++i];
     else if (argv[i] === "--hub-root") opts.hubRoot = argv[++i];
@@ -82,21 +82,21 @@ export async function main() {
   // Bridge: service injection + sourcePath resolution (no direct core import)
   const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
 
-  async function stopWorkerAcpPool(jobLog = log) {
+  async function stopWorkerAcpPool(jobLog: any = log) {
     try {
       const stopped = await stopManagedAcpPool({ cpbRoot, hubRoot });
       if (stopped) jobLog.info("ACP pool stopped");
-    } catch (err) {
+    } catch (err: any) {
       jobLog.warn(`ACP pool stop failed: ${err.message}`);
     }
   }
 
-  async function releaseWorkerAcpWorktree(worktreePath, jobLog = log) {
+  async function releaseWorkerAcpWorktree(worktreePath: string | null | undefined, jobLog: any = log) {
     if (!worktreePath) return;
     try {
       const released = await releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd: worktreePath });
       if (released) jobLog.info("ACP worktree session released");
-    } catch (err) {
+    } catch (err: any) {
       jobLog.warn(`ACP worktree session release failed: ${err.message}`);
     }
   }
@@ -120,7 +120,7 @@ export async function main() {
         continue;
       }
 
-      let assignment;
+      let assignment: AnyRecord;
       try {
         assignment = JSON.parse(await readFile(claimedPath, "utf8"));
       } catch {
@@ -169,7 +169,7 @@ export async function main() {
       }, null, 2) + "\n", "utf8");
 
       const heartbeatPath = path.join(attemptDir, "heartbeat.json");
-      let heartbeatState = {
+      let heartbeatState: AnyRecord = {
         workerId,
         assignmentId,
         attempt: attemptNum,
@@ -186,7 +186,7 @@ export async function main() {
         updatedAt: new Date().toISOString(),
       };
 
-      async function writeAssignmentHeartbeat(patch = {}, { progress = false } = {}) {
+      async function writeAssignmentHeartbeat(patch: AnyRecord = {}, { progress = false }: AnyRecord = {}) {
         const now = new Date().toISOString();
         heartbeatState = {
           ...heartbeatState,
@@ -213,13 +213,13 @@ export async function main() {
       }, HEARTBEAT_MS);
       assignmentHeartbeat.unref();
 
-      let cancelRequested = null;
-      let resolveCancel = null;
-      const cancelPromise = new Promise((resolve) => {
+      let cancelRequested: AnyRecord | null = null;
+      let resolveCancel: ((value: AnyRecord) => void) | null = null;
+      const cancelPromise = new Promise<AnyRecord>((resolve) => {
         resolveCancel = resolve;
       });
 
-      function buildCancelledResult(cancel) {
+      function buildCancelledResult(cancel: AnyRecord | null) {
         const reason = cancel?.reason || "assignment cancelled";
         return {
           status: "cancelled",
@@ -239,7 +239,7 @@ export async function main() {
         };
       }
 
-      async function requestCancel(cancel) {
+      async function requestCancel(cancel: AnyRecord | null) {
         if (cancelRequested) return;
         cancelRequested = cancel || { reason: "assignment cancelled" };
         await writeAssignmentHeartbeat({
@@ -249,7 +249,7 @@ export async function main() {
           progressKind: "cancel_requested",
           lastProgressType: "cancel_requested",
         }, { progress: true }).catch(() => {});
-        resolveCancel(buildCancelledResult(cancelRequested));
+        resolveCancel?.(buildCancelledResult(cancelRequested));
         void stopWorkerAcpPool(jobLog);
       }
 
@@ -270,7 +270,7 @@ export async function main() {
       const metadata = assignment.metadata || {};
       const autoFinalize = Boolean(metadata.autoFinalize && assignment.sourcePath);
       const jobId = `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
-      let worktreeInfo = null;
+      let worktreeInfo: AnyRecord | null = null;
 
       // Run job via bridge (service injection + sourcePath resolution)
       try {
@@ -281,7 +281,7 @@ export async function main() {
             sourcePath: assignment.sourcePath,
             entryId: assignment.entryId,
             log: jobLog,
-          });
+          } as AnyRecord);
           jobLog.info(`worktree created: ${worktreeInfo.branch} at ${worktreeInfo.path}`);
           await writeAssignmentHeartbeat({
             phase: "worktree",
@@ -329,7 +329,7 @@ export async function main() {
           agentAvailability: metadata.agentAvailability || null,
           agentHealth: metadata.agentHealth || null,
           teamPolicy: metadata.teamPolicy || null,
-          onProgress: async (event = {}) => {
+          onProgress: async (event: AnyRecord = {}) => {
             const eventType = event.type || "progress";
             const activePhase = eventType === "phase_result" || eventType === "job_completed" || eventType === "job_failed"
               ? null
@@ -349,7 +349,7 @@ export async function main() {
             jobLog.warn(`cancelled job settled after cancellation: ${err.message}`);
           }
         });
-        const result = cancelRequested
+            const result: AnyRecord = cancelRequested
           ? buildCancelledResult(cancelRequested)
           : await Promise.race([jobPromise, cancelPromise]);
 
@@ -365,7 +365,7 @@ export async function main() {
               await execFileAsync("git", ["add", "-A"], { cwd: worktreeInfo.path });
               await execFileAsync("git", ["commit", "-m", assignment.task || "automated change"], { cwd: worktreeInfo.path });
             }
-          } catch (commitErr) {
+          } catch (commitErr: any) {
             jobLog.warn(`worktree commit failed: ${commitErr.message}`);
           }
         }
@@ -382,7 +382,7 @@ export async function main() {
           worktreeInfo,
           log: jobLog,
         });
-      } catch (err) {
+      } catch (err: any) {
         clearInterval(assignmentHeartbeat);
         clearInterval(cancelTimer);
         const isPoolExhausted = err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError";
@@ -462,7 +462,7 @@ export async function main() {
   });
 
   watcher.on("add", async () => {
-    try { await processInboxGuarded(); } catch (err) {
+    try { await processInboxGuarded(); } catch (err: any) {
       log.error(`process error: ${err.message}`);
     }
   });

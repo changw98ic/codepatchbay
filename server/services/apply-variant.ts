@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // apply-variant.js — Claude provider variant overlay (shared between Node and shell)
 //
 // Node usage:
@@ -9,7 +8,9 @@
 // Shell usage:
 //   eval "$(node server/services/apply-variant.js --export)"
 
-function envFirst(env, ...names) {
+type AnyRecord = Record<string, any>;
+
+function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
   for (const name of names) {
     const val = env[name];
     if (val) return val;
@@ -17,11 +18,11 @@ function envFirst(env, ...names) {
   return undefined;
 }
 
-function normalizeVariant(requested) {
+function normalizeVariant(requested: any): string {
   return (requested || "").trim().toLowerCase();
 }
 
-function resolveVariant(env = process.env) {
+function resolveVariant(env: AnyRecord = process.env): string {
   const requested =
     env.CPB_CLAUDE_VARIANT ||
     env.CPB_BUILDER_VARIANT ||
@@ -33,7 +34,7 @@ function resolveVariant(env = process.env) {
   return "none";
 }
 
-function applyXiaomi(env = process.env) {
+function applyXiaomi(env: AnyRecord = process.env): AnyRecord {
   const variant = "mimo-v2.5pro";
   const baseUrl = envFirst(env, "XIAOMI_BASE_URL", "MIMO_BASE_URL");
   const authToken = envFirst(env, "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN");
@@ -46,7 +47,7 @@ function applyXiaomi(env = process.env) {
   return { variant, displayName: "MiMo v2.5 Pro", baseUrl, authToken, model };
 }
 
-function resolveConfig(env = process.env) {
+function resolveConfig(env: AnyRecord = process.env): AnyRecord {
   const normalized = resolveVariant(env);
 
   switch (normalized) {
@@ -67,7 +68,7 @@ function resolveConfig(env = process.env) {
   }
 }
 
-export function resolveVariantConfig(env = process.env) {
+export function resolveVariantConfig(env: AnyRecord = process.env): AnyRecord {
   return resolveConfig(env);
 }
 
@@ -77,7 +78,7 @@ export function resolveVariantConfig(env = process.env) {
  * @param {string} [opts.variant] - Override variant name
  * @returns {object} Resolved config
  */
-export function applyVariantToEnv(env = process.env, opts = {}) {
+export function applyVariantToEnv(env: AnyRecord = process.env, opts: AnyRecord = {}): AnyRecord {
   if (opts.variant) {
     env.CPB_CLAUDE_VARIANT = opts.variant;
   }
@@ -105,7 +106,7 @@ export function applyVariantToEnv(env = process.env, opts = {}) {
   return config;
 }
 
-export function applyVariant(opts = {}) {
+export function applyVariant(opts: AnyRecord = {}) {
   return applyVariantToEnv(process.env, opts);
 }
 

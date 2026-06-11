@@ -1,10 +1,12 @@
-// @ts-nocheck
 import { getProject } from "./hub-registry.js";
 import { updateEntry } from "./hub-queue.js";
 import { checkCodeGraphReady } from "./codegraph-readiness.js";
 import { generateDynamicAgentPlan } from "../../core/agents/dynamic-agent-plan.js";
 
 export class ProjectCapabilityMapUnavailableError extends Error {
+  code: string;
+  details: Record<string, any>;
+
   constructor(reason, details = {}) {
     super(reason);
     this.name = "ProjectCapabilityMapUnavailableError";

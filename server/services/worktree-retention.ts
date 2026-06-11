@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { listJobs } from "./job-store.js";
@@ -6,7 +5,7 @@ import { runtimeDataPath } from "./runtime-root.js";
 
 const COMPLETED_ACTIONS = new Set(["preserve", "delete", "archive"]);
 
-function normalizePolicy(cpbRoot, policy = {}) {
+function normalizePolicy(cpbRoot, policy: Record<string, any> = {}) {
   const completed = COMPLETED_ACTIONS.has(policy.completed) ? policy.completed : "preserve";
   return {
     completed,
@@ -18,8 +17,8 @@ function archivePathFor(policy, worktree) {
   return path.join(policy.archiveRoot, path.basename(worktree));
 }
 
-function entryForJob(job, policy) {
-  const base = {
+function entryForJob(job, policy): Record<string, any> {
+  const base: Record<string, any> = {
     jobId: job.jobId,
     project: job.project || null,
     status: job.status || "unknown",
@@ -65,13 +64,13 @@ function entryForJob(job, policy) {
   };
 }
 
-export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true } = {}) {
+export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
   const jobs = await listJobs(cpbRoot);
   const entries = jobs
     .filter((job) => job.jobId && job.worktree)
     .map((job) => entryForJob(job, normalizedPolicy))
-    .sort((a, b) => a.worktree.localeCompare(b.worktree));
+    .sort((a, b) => a.worktree.localeCompare(b.worktree)) as Array<Record<string, any>>;
 
   return {
     dryRun: Boolean(dryRun),
@@ -86,7 +85,7 @@ export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun 
   };
 }
 
-export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true } = {}) {
+export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
   const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun });
   if (plan.dryRun) return plan;
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, rmdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent, checkpointJob, readEvents, materializeJob } from "./event-store.js";

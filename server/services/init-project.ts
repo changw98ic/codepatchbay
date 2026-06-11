@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { initProject } from "../../cli/commands/init.js";
@@ -11,7 +10,7 @@ const cpbRoot = path.resolve(process.env.CPB_ROOT || executorRoot);
 
 try {
   await initProject(process.argv.slice(2), { cpbRoot, executorRoot });
-} catch (error) {
+} catch (error: any) {
   console.error(error.message);
   process.exitCode = 1;
 }

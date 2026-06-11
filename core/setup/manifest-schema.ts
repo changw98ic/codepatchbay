@@ -1,4 +1,3 @@
-// @ts-nocheck
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -46,7 +45,8 @@ function validateInstall(errors, install) {
 
   for (const [method, config] of entries) {
     validateMethodEntry(errors, `install.${method}`, config);
-    if (config.pinnedCommandTemplate !== undefined && !isNonEmptyString(config.pinnedCommandTemplate)) {
+    const methodConfig = config as Record<string, any>;
+    if (methodConfig.pinnedCommandTemplate !== undefined && !isNonEmptyString(methodConfig.pinnedCommandTemplate)) {
       errors.push(`install.${method}.pinnedCommandTemplate must be a non-empty string when present`);
     }
   }

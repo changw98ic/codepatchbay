@@ -1,9 +1,9 @@
-// @ts-nocheck
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 const VALID_MODES = new Set(["off", "best-effort", "required", "strict"]);
+type StringRecord = Record<string, any>;
 const SYSTEM_READ_ROOTS = Object.freeze([
   "/bin",
   "/lib",
@@ -44,11 +44,11 @@ function defaultProbe(command) {
     stdio: "ignore",
     timeout: 1000,
   });
-  if (result.error?.code === "ENOENT") return false;
+  if ((result.error as { code?: string } | undefined)?.code === "ENOENT") return false;
   return true;
 }
 
-function normalizedMode(env = {}) {
+function normalizedMode(env: StringRecord = {}) {
   const requested = String(
     env.CPB_AGENT_SANDBOX ||
     env.CPB_AGENT_SANDBOX_MODE ||
@@ -89,7 +89,7 @@ function uniqueRoots(values) {
   return out;
 }
 
-function executableReadRoots(command, env = {}, cwd = process.cwd()) {
+function executableReadRoots(command, env: StringRecord = {}, cwd = process.cwd()) {
   const commandText = String(command || "");
   if (!commandText) return [];
 
@@ -125,7 +125,7 @@ function withExecutableReadRoots(policy, command, env, cwd) {
   return { ...policy, readRoots };
 }
 
-export function resolveAgentSandboxPolicy(env = {}, { cwd = process.cwd(), platform = process.platform, probe = defaultProbe } = {}) {
+export function resolveAgentSandboxPolicy(env: StringRecord = {}, { cwd = process.cwd(), platform = process.platform, probe = defaultProbe }: StringRecord = {}) {
   const mode = normalizedMode(env);
   const strict = mode === "strict";
   const network = String(env.CPB_AGENT_SANDBOX_NETWORK || (strict ? "deny" : "allow")).toLowerCase() === "deny"
@@ -241,7 +241,7 @@ function bwrapArgs(policy, command, args, cwd) {
   return bargs;
 }
 
-export function buildAgentSandboxLaunch(command, args = [], options = {}) {
+export function buildAgentSandboxLaunch(command, args = [], options: StringRecord = {}) {
   const env = options.env || {};
   const cwd = options.cwd || process.cwd();
   const policy = withExecutableReadRoots(

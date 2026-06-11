@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 

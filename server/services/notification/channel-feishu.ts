@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHmac } from "node:crypto";
 import { request } from "node:https";
 
@@ -96,7 +95,7 @@ export function send({ webhookUrl, secret, message }) {
 }
 
 function formatReviewMessage(eventType, title, color, session) {
-  const elements = [
+  const elements: Array<Record<string, any>> = [
     {
       tag: "div",
       fields: [

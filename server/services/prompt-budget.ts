@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Prompt budgeting helpers for token/byte-aware prompt construction.
  *

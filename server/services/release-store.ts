@@ -1,9 +1,9 @@
-// @ts-nocheck
 import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertExecutorRoot, readExecutorPackage, REQUIRED_EXECUTOR_FILES } from "./executor-root.js";
 
 export const RELEASE_METADATA_FORMAT_VERSION = 1;
+type AnyRecord = Record<string, any>;
 
 const REQUIRED_METADATA_FIELDS = [
   "metadataVersion", "releaseId", "sourcePath", "installedPath",
@@ -45,7 +45,7 @@ const EXCLUDED_WIKI_PROJECTS = new Set([
   "flow",
 ]);
 
-export function resolveReleaseStoreRoot({ destRoot, env = process.env } = {}) {
+export function resolveReleaseStoreRoot({ destRoot, env = process.env }: AnyRecord = {}) {
   if (destRoot) return path.resolve(destRoot);
   const cpbHome = env.CPB_HOME || path.join(
     process.env.HOME || "/tmp",
@@ -54,7 +54,7 @@ export function resolveReleaseStoreRoot({ destRoot, env = process.env } = {}) {
   return path.join(cpbHome, "releases");
 }
 
-export function validateReleaseId(releaseId) {
+export function validateReleaseId(releaseId: any) {
   if (typeof releaseId !== "string" || releaseId.length === 0) {
     throw new Error("release id must be a non-empty string");
   }
@@ -69,15 +69,15 @@ export function validateReleaseId(releaseId) {
   }
 }
 
-export function releasePath(releaseStoreRoot, releaseId) {
+export function releasePath(releaseStoreRoot: string, releaseId: string) {
   return path.join(path.resolve(releaseStoreRoot), releaseId);
 }
 
-export function manifestPathForRelease(installedPath) {
+export function manifestPathForRelease(installedPath: string) {
   return path.join(path.resolve(installedPath), "release", "manifest.json");
 }
 
-export async function readReleaseMetadata(installedPathOrManifestPath) {
+export async function readReleaseMetadata(installedPathOrManifestPath: string): Promise<AnyRecord> {
   const resolved = path.resolve(installedPathOrManifestPath);
   let manifestFile;
   try {
@@ -92,27 +92,27 @@ export async function readReleaseMetadata(installedPathOrManifestPath) {
   return JSON.parse(raw);
 }
 
-function formatTimestampId(date) {
+function formatTimestampId(date: Date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
-function generateDefaultReleaseId(codeVersion, now) {
+function generateDefaultReleaseId(codeVersion: any, now: any) {
   const stamp = formatTimestampId(now instanceof Date ? now : new Date());
   return `${codeVersion || "dev"}-${stamp}`;
 }
 
-function copyFilter(source) {
+function copyFilter(source: string) {
   const base = path.basename(source);
   if (EXCLUDED_COPY_NAMES.has(base)) return false;
   if (base === "target" && source.includes(`${path.sep}runtime${path.sep}`)) return false;
   return true;
 }
 
-function wikiProjectFilter(projectName) {
+function wikiProjectFilter(projectName: string) {
   return !EXCLUDED_WIKI_PROJECTS.has(projectName);
 }
 
-async function exists(targetPath) {
+async function exists(targetPath: string) {
   try {
     await stat(targetPath);
     return true;
@@ -121,7 +121,7 @@ async function exists(targetPath) {
   }
 }
 
-export async function installRelease({ sourceRoot, destRoot, name, now = new Date(), env } = {}) {
+export async function installRelease({ sourceRoot, destRoot, name, now = new Date(), env }: AnyRecord = {}) {
   const resolvedSource = await assertExecutorRoot(sourceRoot);
   const pkg = await readExecutorPackage(resolvedSource);
 
@@ -216,15 +216,15 @@ export async function installRelease({ sourceRoot, destRoot, name, now = new Dat
   }
 }
 
-export function resolveCpbHome({ env = process.env } = {}) {
+export function resolveCpbHome({ env = process.env }: AnyRecord = {}) {
   return env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
 }
 
-export function currentReleaseLinkPath({ env = process.env } = {}) {
+export function currentReleaseLinkPath({ env = process.env }: AnyRecord = {}) {
   return path.join(resolveCpbHome({ env }), "current");
 }
 
-export function currentReleaseStatePath({ env = process.env } = {}) {
+export function currentReleaseStatePath({ env = process.env }: AnyRecord = {}) {
   return path.join(resolveCpbHome({ env }), "release", "current.json");
 }
 
@@ -242,14 +242,14 @@ export async function supportedStateFormatVersions() {
   };
 }
 
-export async function listReleases({ destRoot, env = process.env } = {}) {
+export async function listReleases({ destRoot, env = process.env }: AnyRecord = {}) {
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   let currentSelection = null;
   try {
     currentSelection = await readCurrentReleaseSelection({ env });
   } catch {}
 
-  const releases = [];
+  const releases: AnyRecord[] = [];
   let entries;
   try {
     entries = await readdir(storeRoot, { withFileTypes: true });
@@ -296,7 +296,7 @@ export async function listReleases({ destRoot, env = process.env } = {}) {
   };
 }
 
-export async function readCurrentReleaseSelection({ env = process.env } = {}) {
+export async function readCurrentReleaseSelection({ env = process.env }: AnyRecord = {}) {
   const statePath = currentReleaseStatePath({ env });
   let selector = null;
   try {
@@ -315,7 +315,7 @@ export async function readCurrentReleaseSelection({ env = process.env } = {}) {
   return { selector, linkTarget };
 }
 
-export async function inspectCurrentRelease({ env = process.env } = {}) {
+export async function inspectCurrentRelease({ env = process.env }: AnyRecord = {}) {
   const selection = await readCurrentReleaseSelection({ env });
   if (!selection) return null;
 
@@ -330,7 +330,7 @@ export async function inspectCurrentRelease({ env = process.env } = {}) {
   }
 }
 
-export async function checkReleaseCompatibility({ releaseId, destRoot, env = process.env } = {}) {
+export async function checkReleaseCompatibility({ releaseId, destRoot, env = process.env }: AnyRecord = {}) {
   try {
     validateReleaseId(releaseId);
   } catch (err) {
@@ -345,7 +345,7 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
 
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   const rPath = releasePath(storeRoot, releaseId);
-  const failures = [];
+  const failures: AnyRecord[] = [];
 
   const resolvedStoreRoot = path.resolve(storeRoot);
   const resolvedRPath = path.resolve(rPath);
@@ -463,7 +463,10 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
 }
 
 export class ReleaseCompatibilityError extends Error {
-  constructor(failures, releaseId) {
+  failures: AnyRecord[];
+  releaseId: string;
+
+  constructor(failures: AnyRecord[], releaseId: string) {
     super(`Release '${releaseId}' is not compatible: ${failures.map(f => f.code).join(", ")}`);
     this.name = "ReleaseCompatibilityError";
     this.failures = failures;
@@ -471,7 +474,7 @@ export class ReleaseCompatibilityError extends Error {
   }
 }
 
-export async function selectRelease({ releaseId, destRoot, env = process.env, now } = {}) {
+export async function selectRelease({ releaseId, destRoot, env = process.env, now }: AnyRecord = {}) {
   const compat = await checkReleaseCompatibility({ releaseId, destRoot, env });
   if (!compat.ok) {
     throw new ReleaseCompatibilityError(compat.failures, releaseId);

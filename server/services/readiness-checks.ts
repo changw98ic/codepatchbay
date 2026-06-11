@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import {
   access,
@@ -47,36 +46,38 @@ const HUB_WORKER_TTL = 120_000;
 
 // --- Result model ---
 
-function makeCheck(id, category, status, severity, message, { details, remediation } = {}) {
-  const check = { id, category, status, severity, message };
+type Check = Record<string, any>;
+
+function makeCheck(id: string, category: string, status: string, severity: string, message: string, { details, remediation }: Record<string, any> = {}) {
+  const check: Check = { id, category, status, severity, message };
   if (details !== undefined) check.details = details;
   if (remediation !== undefined) check.remediation = remediation;
   return check;
 }
 
-function ok(id, category, message, opts) {
+function ok(id: string, category: string, message: string, opts?: Record<string, any>) {
   return makeCheck(id, category, "ok", "info", message, opts);
 }
 
-function warn(id, category, message, opts) {
+function warn(id: string, category: string, message: string, opts?: Record<string, any>) {
   return makeCheck(id, category, "warn", "important", message, opts);
 }
 
-function error(id, category, message, opts) {
+function error(id: string, category: string, message: string, opts?: Record<string, any>) {
   return makeCheck(id, category, "error", "critical", message, opts);
 }
 
-function skipped(id, category, message, opts) {
+function skipped(id: string, category: string, message: string, opts?: Record<string, any>) {
   return makeCheck(id, category, "skipped", "info", message, opts);
 }
 
-export function deriveSummary(checks) {
-  const counts = { ok: 0, warn: 0, error: 0, skipped: 0 };
+export function deriveSummary(checks: Check[]) {
+  const counts: Record<string, number> = { ok: 0, warn: 0, error: 0, skipped: 0 };
   for (const check of checks) counts[check.status]++;
   return { ...counts, success: counts.error === 0 };
 }
 
-function statusForCategories(checks, categories) {
+function statusForCategories(checks: Check[], categories: string[]) {
   const selected = checks.filter((check) => categories.includes(check.category));
   if (selected.length === 0) return "skipped";
   if (selected.some((check) => check.status === "error")) return "fail";
@@ -85,7 +86,7 @@ function statusForCategories(checks, categories) {
   return "pass";
 }
 
-function evidenceForCategories(checks, categories) {
+function evidenceForCategories(checks: Check[], categories: string[]) {
   const selected = checks.filter((check) => categories.includes(check.category));
   return {
     checks: selected.map((check) => ({
@@ -97,7 +98,7 @@ function evidenceForCategories(checks, categories) {
   };
 }
 
-export function deriveReadinessLevels(checks = []) {
+export function deriveReadinessLevels(checks: Check[] = []) {
   const normalizedChecks = Array.isArray(checks) ? checks : [];
   const levels = [
     {
@@ -193,7 +194,7 @@ async function checkGit() {
   }
 }
 
-async function findExistingDiskProbePath(targetPath, statFn = statFs) {
+async function findExistingDiskProbePath(targetPath: string, statFn: any = statFs) {
   let current = path.resolve(targetPath);
   while (true) {
     try {
@@ -210,7 +211,7 @@ async function findExistingDiskProbePath(targetPath, statFn = statFs) {
   }
 }
 
-export async function checkDiskSpace(dirPath, label, { execFileFn = execFileAsync, statFn = statFs } = {}) {
+export async function checkDiskSpace(dirPath: string, label: string, { execFileFn = execFileAsync, statFn = statFs }: Record<string, any> = {}) {
   const id = `disk-${label}`;
   try {
     const resolved = path.resolve(dirPath);
@@ -234,7 +235,7 @@ export async function checkDiskSpace(dirPath, label, { execFileFn = execFileAsyn
   }
 }
 
-async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability } = {}) {
+async function checkAcpAdapter(adapterName: string, command: string, args: string[], { npxPkg, stability }: Record<string, any> = {}) {
   const id = `acp-adapter-${adapterName}`;
 
   let stdout;
@@ -278,14 +279,14 @@ async function checkAcpAdapter(adapterName, command, args, { npxPkg, stability }
   return ok(id, "acp", msg, { details: version ? { version } : undefined });
 }
 
-function preferredInstallMethod(agent, setupSnapshot) {
+function preferredInstallMethod(agent: any, setupSnapshot: any) {
   const methods = Object.keys(agent.install || {});
   if (methods.includes("brew") && setupSnapshot?.tools?.brew?.installed) return "brew";
   if (methods.includes("npm") && setupSnapshot?.tools?.npm?.installed) return "npm";
   return methods[0] || "manual";
 }
 
-export function buildSetupReadinessChecks(setupSnapshot = {}, catalog = []) {
+export function buildSetupReadinessChecks(setupSnapshot: Record<string, any> = {}, catalog: any[] = []) {
   const checks = [];
   for (const agent of catalog) {
     const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
@@ -316,7 +317,7 @@ export function buildSetupReadinessChecks(setupSnapshot = {}, catalog = []) {
   return checks;
 }
 
-async function checkHubLiveness(hubRoot) {
+async function checkHubLiveness(hubRoot: string) {
   try {
     const liveness = await readHubLiveness(hubRoot);
     if (liveness.alive) {
@@ -339,7 +340,7 @@ async function checkHubLiveness(hubRoot) {
   }
 }
 
-async function checkHubWritability(hubRoot) {
+async function checkHubWritability(hubRoot: string) {
   const probeDir = path.join(path.resolve(hubRoot), "state");
   const probeFile = path.join(probeDir, `.readiness-probe-${process.pid}`);
   try {
@@ -357,10 +358,10 @@ async function checkHubWritability(hubRoot) {
   }
 }
 
-async function checkRegistryConsistency(hubRoot) {
+async function checkRegistryConsistency(hubRoot: string) {
   try {
     const registry = await loadRegistry(hubRoot);
-    const projects = Object.values(registry.projects);
+    const projects: any[] = Object.values(registry.projects || {});
     const issues = [];
     for (const project of projects) {
       if (!project.id) {
@@ -381,9 +382,9 @@ async function checkRegistryConsistency(hubRoot) {
   }
 }
 
-async function checkStaleJobs(cpbRoot) {
+async function checkStaleJobs(cpbRoot: string) {
   try {
-    const allJobs = await listJobs(cpbRoot);
+    const allJobs: any[] = await listJobs(cpbRoot);
     const terminalStates = ["completed", "failed", "blocked", "cancelled"];
     const running = allJobs.filter((j) => !terminalStates.includes(j.status));
     if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
@@ -419,7 +420,7 @@ async function checkStaleJobs(cpbRoot) {
   }
 }
 
-async function checkOrphanLeases(cpbRoot) {
+async function checkOrphanLeases(cpbRoot: string) {
   try {
     const leasesDir = runtimeDataPath(cpbRoot, "leases");
     let files;
@@ -431,7 +432,7 @@ async function checkOrphanLeases(cpbRoot) {
     const leaseFiles = files.filter((f) => f.endsWith(".json"));
     if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
 
-    const allJobs = await listJobs(cpbRoot);
+    const allJobs: any[] = await listJobs(cpbRoot);
     const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
     const orphans = [];
     for (const f of leaseFiles) {
@@ -452,7 +453,7 @@ async function checkOrphanLeases(cpbRoot) {
   }
 }
 
-async function checkStaleWorkers(hubRoot) {
+async function checkStaleWorkers(hubRoot: string) {
   try {
     const workerStore = new WorkerStore(hubRoot);
     const workers = await workerStore.listWorkers();
@@ -478,7 +479,7 @@ async function checkStaleWorkers(hubRoot) {
   }
 }
 
-async function checkProviderBackoff(hubRoot) {
+async function checkProviderBackoff(hubRoot: string) {
   try {
     const rateLimitsPath = path.join(path.resolve(hubRoot), "providers", "rate-limits.json");
     let limits;
@@ -493,12 +494,13 @@ async function checkProviderBackoff(hubRoot) {
     const now = Date.now();
     for (const [agent, info] of Object.entries(limits)) {
       if (!info || typeof info !== "object") continue;
-      const untilTs = Date.parse(info.untilTs);
+      const backoff = info as Record<string, any>;
+      const untilTs = Date.parse(backoff.untilTs);
       if (Number.isFinite(untilTs) && untilTs > now) {
         active.push({
           agent,
-          untilTs: info.untilTs,
-          reason: sanitizeProviderReason(info.reason || ""),
+          untilTs: backoff.untilTs,
+          reason: sanitizeProviderReason(backoff.reason || ""),
         });
       }
     }
@@ -514,7 +516,7 @@ async function checkProviderBackoff(hubRoot) {
   }
 }
 
-async function checkHubProjectPollution(hubRoot) {
+async function checkHubProjectPollution(hubRoot: string) {
   try {
     const { candidates, orphanRuntimeDirs } = await scanHubPollution(hubRoot);
     const all = [...candidates, ...orphanRuntimeDirs];
@@ -542,7 +544,7 @@ export function buildAgentSandboxReadinessChecks({
   cwd = process.cwd(),
   platform = process.platform,
   probe,
-} = {}) {
+}: Record<string, any> = {}) {
   let policy;
   try {
     policy = resolveAgentSandboxPolicy(env, { cwd, platform, probe });
@@ -592,7 +594,7 @@ export async function runAgentSandboxSelfTestCheck({
   platform = process.platform,
   probe,
   timeout = SUBPROCESS_TIMEOUT_MS,
-} = {}) {
+}: Record<string, any> = {}) {
   if (!["1", "true", "yes"].includes(String(env.CPB_AGENT_SANDBOX_SELF_TEST || "").toLowerCase())) {
     return skipped("agent-sandbox-self-test", "sandbox", "Agent sandbox live self-test not requested", {
       details: { reason: "set CPB_AGENT_SANDBOX_SELF_TEST=1 to run" },
@@ -768,11 +770,11 @@ async function checkGithubReadiness(hubRoot) {
   return checks;
 }
 
-export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env } = {}) {
+export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env }: Record<string, any> = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
   let setup = null;
-  let setupChecks = [];
+  let setupChecks: Check[] = [];
   try {
     setup = await detectSetupEnvironment();
     setupChecks = buildSetupReadinessChecks(setup, listSetupAgents());
@@ -782,9 +784,9 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
   }
 
   // Resolve adapter checks from registry
-  let adapterChecks = [];
+  let adapterChecks: Promise<Check>[] = [];
   try {
-    await agentRegistry.loadRegistry();
+    await (agentRegistry.loadRegistry as any)();
     const agents = agentRegistry.listAgents();
     for (const d of agents) {
       const override = adapterOverrides?.[d.name];
@@ -838,10 +840,10 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
   const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots
-  let projectRuntimeRoots = {};
+  let projectRuntimeRoots: Record<string, any> = {};
   try {
     const registry = await loadRegistry(resolvedHubRoot);
-    for (const project of Object.values(registry.projects)) {
+    for (const project of Object.values(registry.projects) as Record<string, any>[]) {
       if (project.projectRuntimeRoot) {
         projectRuntimeRoots[project.id] = project.projectRuntimeRoot;
       }
@@ -864,19 +866,19 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
 
 // --- Release doctor checks ---
 
-function okR(id, message, opts) {
+function okR(id: string, message: string, opts: Record<string, any> = {}) {
   return { id, status: "ok", message, ...opts };
 }
 
-function warnR(id, message, { guidance, ...rest } = {}) {
+function warnR(id: string, message: string, { guidance, ...rest }: Record<string, any> = {}) {
   return { id, status: "warn", message, guidance, ...rest };
 }
 
-function failR(id, message, { guidance, ...rest } = {}) {
+function failR(id: string, message: string, { guidance, ...rest }: Record<string, any> = {}) {
   return { id, status: "fail", message, guidance, ...rest };
 }
 
-async function checkReleaseCurrentMetadata({ env }) {
+async function checkReleaseCurrentMetadata({ env }: Record<string, any>) {
   const selection = await inspectCurrentRelease({ env });
   if (!selection) {
     return warnR("release.current_metadata", "No release selected", {
@@ -915,7 +917,7 @@ async function checkReleaseCurrentMetadata({ env }) {
   });
 }
 
-async function checkReleaseExecutorRoot({ env }) {
+async function checkReleaseExecutorRoot({ env }: Record<string, any>) {
   const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
   if (!executorRoot) {
     return warnR("release.executor_root", "CPB_EXECUTOR_ROOT not set", {
@@ -942,7 +944,7 @@ async function checkReleaseExecutorRoot({ env }) {
   return okR("release.executor_root", `Executor root: ${executorRoot} (release: ${meta.releaseId || "dev"})`);
 }
 
-async function checkReleaseRuntimeRoot({ env }) {
+async function checkReleaseRuntimeRoot({ env }: Record<string, any>) {
   const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
   if (!executorRoot) {
     return warnR("release.runtime_root", "Cannot check runtime root without CPB_EXECUTOR_ROOT", {
@@ -961,7 +963,7 @@ async function checkReleaseRuntimeRoot({ env }) {
   }
 }
 
-async function checkReleaseStateFormat({ env }) {
+async function checkReleaseStateFormat({ env }: Record<string, any>) {
   const selection = await inspectCurrentRelease({ env });
   if (!selection?.metadata?.stateFormatVersions) {
     return warnR("release.state_format", "No release selected or metadata missing stateFormatVersions", {
@@ -984,7 +986,7 @@ async function checkReleaseStateFormat({ env }) {
   return okR("release.state_format", "State format versions compatible");
 }
 
-async function checkReleaseLauncherHealth({ env }) {
+async function checkReleaseLauncherHealth({ env }: Record<string, any>) {
   const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
   const binLink = path.join(cpbHome, "bin", "cpb");
   let target;
@@ -1009,7 +1011,7 @@ async function checkReleaseLauncherHealth({ env }) {
   return okR("release.launcher_health", `Launcher resolves to: ${target}`);
 }
 
-async function checkReleaseJobPinning({ env, cpbRoot }) {
+async function checkReleaseJobPinning({ env, cpbRoot }: Record<string, any>) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const selection = await inspectCurrentRelease({ env });
   const currentReleaseId = selection?.metadata?.releaseId || null;
@@ -1054,7 +1056,7 @@ async function checkReleaseJobPinning({ env, cpbRoot }) {
   }
 }
 
-export async function runReleaseDoctorChecks({ cpbRoot, env = process.env } = {}) {
+export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Record<string, any> = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const checks = await Promise.all([
     checkReleaseCurrentMetadata({ env }),
@@ -1065,7 +1067,7 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env } = {}
     checkReleaseJobPinning({ env, cpbRoot: resolvedCpbRoot }),
   ]);
 
-  const summary = { ok: 0, warn: 0, fail: 0 };
+  const summary: Record<string, any> = { ok: 0, warn: 0, fail: 0 };
   for (const check of checks) summary[check.status]++;
   summary.success = summary.fail === 0;
 

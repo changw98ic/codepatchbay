@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -55,8 +54,9 @@ test("CodeGraph readiness requires live state, not only an index file", async ()
   await assert.rejects(
     checkCodeGraphReady({ sourcePath }),
     (err) => {
-      assert.equal(err.code, FailureKind.CODEGRAPH_UNAVAILABLE);
-      assert.equal(err.details?.reason, "missing_codegraph_state");
+      const typedErr = err as any;
+      assert.equal(typedErr.code, FailureKind.CODEGRAPH_UNAVAILABLE);
+      assert.equal(typedErr.details?.reason, "missing_codegraph_state");
       return true;
     },
   );

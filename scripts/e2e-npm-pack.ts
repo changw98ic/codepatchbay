@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // e2e-npm-pack.js — One-shot E2E: pack → install → doctor → hub → enqueue → verify
 // Usage: node scripts/e2e-npm-pack.js [--keep-state] [--project flow]
 import { execSync } from "node:child_process";
@@ -84,7 +83,7 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function run(cmd, opts = {}) {
+function run(cmd, opts: Record<string, any> = {}) {
   try {
     const result = execSync(cmd, {
       encoding: "utf8",
@@ -95,9 +94,10 @@ function run(cmd, opts = {}) {
     });
     return { ok: true, stdout: result?.trim() || "" };
   } catch (e) {
-    if (opts.allowFail) return { ok: false, stdout: e.stdout?.trim() || "", stderr: e.stderr?.trim() || "" };
+    const error = e as Record<string, any>;
+    if (opts.allowFail) return { ok: false, stdout: error.stdout?.trim() || "", stderr: error.stderr?.trim() || "" };
     fail(`${cmd}`);
-    if (e.stderr) console.error(e.stderr.substring(0, 500));
+    if (error.stderr) console.error(error.stderr.substring(0, 500));
     if (opts.fatal !== false) process.exit(1);
     return { ok: false };
   }

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -14,6 +13,8 @@ import { buildChildEnv } from "../../core/policy/child-env.js";
 const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
 const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
+
+type AnyRecord = Record<string, any>;
 
 // --- Persistent ACP connection ---
 
@@ -47,6 +48,16 @@ function resolveAgentCommand(agent, env = process.env) {
 }
 
 class PersistentAcp {
+  agent: string;
+  nextId: number;
+  pending: Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>;
+  child: any;
+  initialized: boolean;
+  closed: boolean;
+  lastActivity: number;
+  watchdog: ReturnType<typeof setInterval> | null;
+  sessionId: string | null;
+
   constructor(agent) {
     this.agent = agent;
     this.nextId = 1;
@@ -60,7 +71,7 @@ class PersistentAcp {
   }
 
   async start() {
-    const env = buildChildEnv(process.env, {}, { agent: this.agent });
+    const env = buildChildEnv(process.env, {}, { agent: this.agent }) as NodeJS.ProcessEnv;
     const { command, args } = resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
@@ -107,8 +118,8 @@ class PersistentAcp {
       clientInfo: { name: "cpb-review", title: "CodePatchbay Review", version: "0.1.0" },
     });
 
-    if (init.protocolVersion !== PROTOCOL_VERSION) {
-      throw new Error(`unsupported ACP protocol version: ${init.protocolVersion}`);
+    if ((init as AnyRecord).protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error(`unsupported ACP protocol version: ${(init as AnyRecord).protocolVersion}`);
     }
     this.initialized = true;
 
@@ -182,7 +193,7 @@ class PersistentAcp {
   async #ensureSession() {
     if (this.sessionId) return;
     const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
-    this.sessionId = session.sessionId;
+    this.sessionId = (session as AnyRecord).sessionId;
   }
 
   async #closeSession() {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { listAuthProviders } from "./status.js";
 
 const SCHEMA_VERSION = 1;

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, realpath } from "node:fs/promises";
@@ -21,7 +20,7 @@ const execFileAsync = promisify(execFile);
 
 const PHASE_ROLE_MAP = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
 
-async function resolveAgentsFromEvents(cpbRoot, projectId, jobId, { dataRoot } = {}) {
+async function resolveAgentsFromEvents(cpbRoot: string, projectId: string, jobId: string, { dataRoot }: Record<string, any> = {}) {
   try {
     const events = await readEvents(cpbRoot, projectId, jobId, { dataRoot });
     const agents = {};
@@ -37,7 +36,7 @@ async function resolveAgentsFromEvents(cpbRoot, projectId, jobId, { dataRoot } =
   }
 }
 
-async function runGit(cwd, args, { allowFailure = false, runCommand = execFileAsync } = {}) {
+async function runGit(cwd: string, args: string[], { allowFailure = false, runCommand = execFileAsync }: Record<string, any> = {}) {
   try {
     const result = await runCommand("git", args, {
       cwd,
@@ -58,7 +57,7 @@ async function runGit(cwd, args, { allowFailure = false, runCommand = execFileAs
   }
 }
 
-async function pathExists(targetPath) {
+async function pathExists(targetPath: string) {
   try {
     await access(targetPath, fsConstants.F_OK);
     return true;
@@ -67,7 +66,7 @@ async function pathExists(targetPath) {
   }
 }
 
-async function isGitRepo(repoPath, { runCommand } = {}) {
+async function isGitRepo(repoPath: string, { runCommand }: Record<string, any> = {}) {
   const result = await runGit(repoPath, ["rev-parse", "--is-inside-work-tree"], {
     allowFailure: true,
     runCommand,
@@ -75,12 +74,12 @@ async function isGitRepo(repoPath, { runCommand } = {}) {
   return result.exitCode === 0 && result.stdout.trim() === "true";
 }
 
-async function assertClean(repoPath, { runCommand } = {}) {
+async function assertClean(repoPath: string, { runCommand }: Record<string, any> = {}) {
   const status = await runGit(repoPath, ["status", "--porcelain"], { runCommand });
   return status.stdout.trim() === "";
 }
 
-async function autoStash(repoPath, { runCommand } = {}) {
+async function autoStash(repoPath: string, { runCommand }: Record<string, any> = {}) {
   try {
     await runGit(repoPath, ["stash", "push", "--include-untracked", "-m", "cpb-auto-stash"], { runCommand });
     return true;
@@ -89,26 +88,26 @@ async function autoStash(repoPath, { runCommand } = {}) {
   }
 }
 
-async function stashPop(repoPath, { runCommand } = {}) {
+async function stashPop(repoPath: string, { runCommand }: Record<string, any> = {}) {
   try {
     await runGit(repoPath, ["stash", "pop"], { runCommand, allowFailure: true });
   } catch { /* ignore */ }
 }
 
-async function currentBranch(repoPath, { runCommand } = {}) {
+async function currentBranch(repoPath: string, { runCommand }: Record<string, any> = {}) {
   return (await runGit(repoPath, ["branch", "--show-current"], { runCommand })).stdout.trim();
 }
 
-async function revParse(repoPath, ref = "HEAD", { runCommand } = {}) {
+async function revParse(repoPath: string, ref = "HEAD", { runCommand }: Record<string, any> = {}) {
   return (await runGit(repoPath, ["rev-parse", "--verify", ref], { runCommand })).stdout.trim();
 }
 
-async function diffFiles(repoPath, fromRef, toRef, { runCommand } = {}) {
+async function diffFiles(repoPath: string, fromRef: string, toRef: string, { runCommand }: Record<string, any> = {}) {
   const result = await runGit(repoPath, ["diff", "--name-only", "-z", fromRef, toRef], { runCommand });
   return splitNul(result.stdout);
 }
 
-async function isAncestor(repoPath, ancestor, descendant, { runCommand } = {}) {
+async function isAncestor(repoPath: string, ancestor: string, descendant: string, { runCommand }: Record<string, any> = {}) {
   const result = await runGit(repoPath, ["merge-base", "--is-ancestor", ancestor, descendant], {
     allowFailure: true,
     runCommand,
@@ -116,7 +115,7 @@ async function isAncestor(repoPath, ancestor, descendant, { runCommand } = {}) {
   return result.exitCode === 0;
 }
 
-function reject(code, details = {}) {
+function reject(code: string, details: Record<string, any> = {}) {
   return {
     ok: false,
     status: "rejected",
@@ -126,7 +125,7 @@ function reject(code, details = {}) {
   };
 }
 
-function skipped(code, details = {}) {
+function skipped(code: string, details: Record<string, any> = {}) {
   return {
     ok: false,
     status: "skipped",
@@ -136,7 +135,7 @@ function skipped(code, details = {}) {
   };
 }
 
-function parseIssueUrl(issueUrl) {
+function parseIssueUrl(issueUrl: unknown) {
   if (!issueUrl) return null;
   const match = String(issueUrl).match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)(?:[/?#].*)?$/);
   if (!match) return null;
@@ -147,7 +146,7 @@ function parseIssueUrl(issueUrl) {
   };
 }
 
-function resolveIssue(metadata = {}) {
+function resolveIssue(metadata: Record<string, any> = {}) {
   const number = Number(metadata.issueNumber);
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName;
   if (Number.isInteger(number) && number > 0 && typeof repo === "string" && repo.includes("/")) {
@@ -161,11 +160,11 @@ function resolveIssue(metadata = {}) {
   return parseIssueUrl(metadata.issueUrl);
 }
 
-function splitNul(value) {
+function splitNul(value: unknown) {
   return String(value || "").split("\0").filter(Boolean);
 }
 
-async function changedWorktreeFiles(worktreePath, { runCommand } = {}) {
+async function changedWorktreeFiles(worktreePath: string, { runCommand }: Record<string, any> = {}) {
   const [unstaged, staged, untracked] = await Promise.all([
     runGit(worktreePath, ["diff", "--name-only", "-z"], { runCommand }),
     runGit(worktreePath, ["diff", "--cached", "--name-only", "-z"], { runCommand }),
@@ -178,21 +177,21 @@ async function changedWorktreeFiles(worktreePath, { runCommand } = {}) {
   ])];
 }
 
-function hasUnsafeChanges(summary) {
+function hasUnsafeChanges(summary: any) {
   return (
     summary.counts[MERGE_CLASSIFICATION.SHARED_STATE] > 0
     || summary.counts[MERGE_CLASSIFICATION.NEEDS_HUMAN] > 0
   );
 }
 
-function unsafeFiles(summary) {
+function unsafeFiles(summary: any) {
   return summary.entries.filter((entry) => (
     entry.classification === MERGE_CLASSIFICATION.SHARED_STATE
     || entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN
   ));
 }
 
-function routingEffectiveRoute(entry = {}, job = {}) {
+function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<string, any> = {}) {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   return normalizeRoute(
@@ -206,7 +205,7 @@ function routingEffectiveRoute(entry = {}, job = {}) {
   );
 }
 
-function routeAllowsProtectedDiff(route, protectedScopes = []) {
+function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []) {
   if (route?.workflow === "complex" && route?.planMode === "full") {
     return { allowed: true, escalation: null, reviewer: false };
   }
@@ -251,7 +250,7 @@ function routeAllowsProtectedDiff(route, protectedScopes = []) {
   };
 }
 
-function protectedDiffForRoute(files, entry, job) {
+function protectedDiffForRoute(files: string[], entry: any, job: any) {
   const route = routingEffectiveRoute(entry, job);
   const protectedDiff = actualDiffRiskGuard({ files });
   if (!protectedDiff.actualDiffRisk.protected) {
@@ -275,7 +274,7 @@ async function requeueProtectedDiffUpgrade({
   route,
   protectedDiff,
   guardResult,
-} = {}) {
+}: Record<string, any> = {}) {
   if (!hubRoot || !entry?.id || !projectId) return null;
   const escalation = guardResult?.escalation || { workflow: "complex", planMode: "full", reviewer: true };
   const scopeLevel = scopesContainCritical(protectedDiff.protectedScopes) ? "critical" : "non-critical";
@@ -349,7 +348,7 @@ async function requeueProtectedDiffUpgrade({
   return upgraded;
 }
 
-function buildRoutingContext(entry, job, routeGuard = null) {
+function buildRoutingContext(entry: any, job: any, routeGuard: any = null) {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   let finalDiffGuard = null;
@@ -374,13 +373,13 @@ function buildRoutingContext(entry, job, routeGuard = null) {
   };
 }
 
-function isInsideRoot(root, targetPath) {
+function isInsideRoot(root: string, targetPath: string) {
   if (!root || !targetPath || !path.isAbsolute(targetPath)) return false;
   const relative = path.relative(path.resolve(root), path.resolve(targetPath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function displayArtifactPath(artifactPath, roots = []) {
+function displayArtifactPath(artifactPath: any, roots: string[] = []) {
   if (!artifactPath) return null;
   const value = String(artifactPath);
   if (!path.isAbsolute(value)) return value;
@@ -390,12 +389,12 @@ function displayArtifactPath(artifactPath, roots = []) {
   return path.basename(value);
 }
 
-function artifactIdFromPath(artifactPath) {
+function artifactIdFromPath(artifactPath: any) {
   const name = path.basename(String(artifactPath || "artifact"));
   return name.replace(/\.(?:md|patch|diff|txt|json)$/i, "") || "artifact";
 }
 
-function artifactReferenceFromEntry(entry, roots) {
+function artifactReferenceFromEntry(entry: any, roots: string[]) {
   if (!entry || entry.broken) return null;
   return {
     id: entry.id || artifactIdFromPath(entry.path),
@@ -403,7 +402,7 @@ function artifactReferenceFromEntry(entry, roots) {
   };
 }
 
-function artifactReferenceForKind(bundle, kind, roots) {
+function artifactReferenceForKind(bundle: any, kind: string, roots: string[]) {
   const matches = (bundle?.links?.artifacts || [])
     .filter((entry) => entry?.kind === kind && !entry.broken);
   if (matches.length === 0) return null;
@@ -411,7 +410,7 @@ function artifactReferenceForKind(bundle, kind, roots) {
   return artifactReferenceFromEntry(entry, roots);
 }
 
-function pushEvidenceLine(lines, value) {
+function pushEvidenceLine(lines: string[], value: any) {
   if (Array.isArray(value)) {
     for (const item of value) pushEvidenceLine(lines, item);
     return;
@@ -421,12 +420,12 @@ function pushEvidenceLine(lines, value) {
   if (text) lines.push(text);
 }
 
-function testEvidenceFromVerdict(verdict) {
-  const lines = [];
+function testEvidenceFromVerdict(verdict: any) {
+  const lines: string[] = [];
   pushEvidenceLine(lines, verdict?.tests);
   pushEvidenceLine(lines, verdict?.basis?.tests);
   if (verdict?.layers && typeof verdict.layers === "object") {
-    for (const [name, layer] of Object.entries(verdict.layers)) {
+    for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, any]>) {
       if (!layer?.detail) continue;
       pushEvidenceLine(lines, `${name}: ${layer.detail}`);
     }
@@ -434,7 +433,7 @@ function testEvidenceFromVerdict(verdict) {
   return [...new Set(lines)].slice(0, 8);
 }
 
-function verdictEvidenceForBody(verdict) {
+function verdictEvidenceForBody(verdict: any) {
   if (!verdict || typeof verdict !== "object") {
     return { status: "pass", reason: "No structured verdict evidence was found" };
   }
@@ -449,7 +448,7 @@ export function buildPrEvidenceFromReviewBundle(bundle, {
   cpbRoot = null,
   dataRoot = null,
   hubRoot = null,
-} = {}) {
+}: Record<string, any> = {}) {
   const roots = [hubRoot, dataRoot, cpbRoot].filter(Boolean);
   const artifacts = {
     plan: artifactReferenceForKind(bundle, "plan", roots),
@@ -477,7 +476,7 @@ export function buildPrEvidenceFromReviewBundle(bundle, {
   };
 }
 
-function commitMessage({ jobId, issueNumber }) {
+function commitMessage({ jobId, issueNumber }: Record<string, any>) {
   return [
     `Finalize CPB job ${jobId} for issue #${issueNumber}`,
     "",
@@ -492,10 +491,10 @@ function commitMessage({ jobId, issueNumber }) {
  * the intersection of intervening changes with the worktree's changed files.
  */
 export async function detectParallelConflict(
-  sourcePath,
-  originalSourceHead,
-  worktreeChangedFiles,
-  { runCommand = execFileAsync } = {},
+  sourcePath: string,
+  originalSourceHead: string,
+  worktreeChangedFiles: string[],
+  { runCommand = execFileAsync }: Record<string, any> = {},
 ) {
   const currentHead = await revParse(sourcePath, "HEAD", { runCommand });
   if (currentHead === originalSourceHead) {
@@ -522,7 +521,7 @@ export async function detectParallelConflict(
 async function finalizeAsReviewBundle({
   cpbRoot, hubRoot, project, entry, job, sourcePath,
   jobId, dataRoot,
-} = {}) {
+}: Record<string, any> = {}) {
   try {
     const bundle = await buildReviewBundle(cpbRoot, project, jobId, {
       entry, job, sourcePath,
@@ -574,7 +573,7 @@ export async function finalizeSuccessfulQueueEntry({
   transportMode = null,
   dataRoot,
   hubRoot = null,
-} = {}) {
+}: Record<string, any> = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
   const projectId = project || job?.project || entry?.projectId || null;
 
@@ -723,7 +722,7 @@ export async function finalizeSuccessfulQueueEntry({
         protectedDiff: routeGuard.protectedDiff,
         guardResult: routeGuard.guardResult,
         requeuedQueueEntryId: upgraded?.id || null,
-        action: upgraded ? `requeued_${routeGuard.guardResult.escalation?.workflow || "complex"}_${routeGuard.guardResult.escalation?.planMode || "full"}` : "rejected_no_requeue",
+        action: upgraded ? `requeued_${(routeGuard.guardResult as Record<string, any>).escalation?.workflow || "complex"}_${(routeGuard.guardResult as Record<string, any>).escalation?.planMode || "full"}` : "rejected_no_requeue",
         ts: new Date().toISOString(),
       }, { dataRoot });
     }
@@ -786,7 +785,7 @@ export async function finalizeSuccessfulQueueEntry({
       },
     };
     const agents = await resolveAgentsFromEvents(cpbRoot, projectId, job.jobId, { dataRoot });
-    let prEvidence = {};
+    let prEvidence: Record<string, any> = {};
     try {
       const bundle = await buildReviewBundle(cpbRoot, projectId, job.jobId, {
         entry,
@@ -799,7 +798,7 @@ export async function finalizeSuccessfulQueueEntry({
     } catch {
       prEvidence = {};
     }
-    const pr = await openDraftPullRequest({
+    const pr: any = await openDraftPullRequest({
       job: prJob,
       verdict: "PASS",
       branchPushed: false,
@@ -815,7 +814,8 @@ export async function finalizeSuccessfulQueueEntry({
         issue,
         jobId,
         pr,
-      }, pr.error || null);
+        error: pr.error || null,
+      });
     }
 
     await appendEvent(cpbRoot, projectId, job.jobId, {

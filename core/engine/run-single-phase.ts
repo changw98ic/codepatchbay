@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * runSinglePhase — run exactly one phase outside of a full pipeline.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 export const SDD_TRACE_SCHEMA_VERSION = 1;

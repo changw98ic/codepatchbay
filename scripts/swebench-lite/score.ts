@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -10,6 +9,8 @@ import {
   usageError,
   writeJson,
 } from "./lib.js";
+
+type AnyRecord = Record<string, any>;
 
 function usage() {
   return `Usage: node scripts/swebench-lite/score.js --run-dir <dir> [options]
@@ -52,7 +53,7 @@ async function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-export async function scoreRunDir(runDir, options = {}) {
+export async function scoreRunDir(runDir: string, options: AnyRecord = {}) {
   const manifest = await readOptionalJson(path.join(runDir, "manifest.json"));
   const predictionsPath = path.join(runDir, "all_preds.jsonl");
   const predictions = await readOptionalJsonLines(predictionsPath);
@@ -132,7 +133,7 @@ function printHuman(summary) {
   }
 }
 
-function extractOfficialScore(value, context) {
+function extractOfficialScore(value: unknown, context: AnyRecord): AnyRecord | null {
   const direct = extractDirectScore(value, context);
   if (direct) return direct;
   const instanceStatus = extractInstanceStatusScore(value, context);
@@ -155,10 +156,11 @@ function extractOfficialScore(value, context) {
   return null;
 }
 
-function extractDirectScore(value, context) {
+function extractDirectScore(value: unknown, context: AnyRecord): AnyRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as AnyRecord;
 
-  const resolved = countField(value, [
+  const resolved = countField(record, [
     "resolved_instances",
     "resolvedInstances",
     "resolved_ids",
@@ -166,7 +168,7 @@ function extractDirectScore(value, context) {
   ]);
   if (resolved === null) return null;
 
-  const total = numberField(value, [
+  const total = numberField(record, [
     "submitted_instances",
     "submittedInstances",
     "completed_instances",
@@ -186,7 +188,7 @@ function extractDirectScore(value, context) {
   };
 }
 
-function extractInstanceStatusScore(value, context) {
+function extractInstanceStatusScore(value: unknown, context: AnyRecord): AnyRecord | null {
   const statuses = collectInstanceStatuses(value);
   if (statuses.length === 0) return null;
 
@@ -212,40 +214,42 @@ function extractInstanceStatusScore(value, context) {
   };
 }
 
-function collectInstanceStatuses(value) {
+function collectInstanceStatuses(value: unknown): AnyRecord[] {
   if (!value || typeof value !== "object") return [];
   if (Array.isArray(value)) {
     return value.flatMap((item) => collectInstanceStatuses(item));
   }
+  const record = value as AnyRecord;
 
-  if (typeof value.resolved === "boolean") {
+  if (typeof record.resolved === "boolean") {
     return [{
-      instanceId: typeof value.instance_id === "string"
-        ? value.instance_id
-        : typeof value.instanceId === "string"
-          ? value.instanceId
+      instanceId: typeof record.instance_id === "string"
+        ? record.instance_id
+        : typeof record.instanceId === "string"
+          ? record.instanceId
           : null,
-      resolved: value.resolved,
+      resolved: record.resolved,
     }];
   }
 
   const entries = [];
-  for (const [key, nested] of Object.entries(value)) {
+  for (const [key, nested] of Object.entries(record)) {
     if (!nested || typeof nested !== "object") continue;
-    if (typeof nested.resolved === "boolean") {
+    const nestedRecord = nested as AnyRecord;
+    if (typeof nestedRecord.resolved === "boolean") {
       entries.push({
-        instanceId: typeof nested.instance_id === "string"
-          ? nested.instance_id
-          : typeof nested.instanceId === "string"
-            ? nested.instanceId
+        instanceId: typeof nestedRecord.instance_id === "string"
+          ? nestedRecord.instance_id
+          : typeof nestedRecord.instanceId === "string"
+            ? nestedRecord.instanceId
             : key,
-        resolved: nested.resolved,
+        resolved: nestedRecord.resolved,
       });
     }
   }
   if (entries.length > 0) return entries;
 
-  return Object.values(value).flatMap((nested) => collectInstanceStatuses(nested));
+  return Object.values(record).flatMap((nested) => collectInstanceStatuses(nested));
 }
 
 function combineInstanceReports(reports, runDir) {
@@ -268,7 +272,7 @@ function combineInstanceReports(reports, runDir) {
   };
 }
 
-function countField(value, keys) {
+function countField(value: AnyRecord, keys: string[]): number | null {
   for (const key of keys) {
     if (!(key in value)) continue;
     const field = value[key];
@@ -279,7 +283,7 @@ function countField(value, keys) {
   return null;
 }
 
-function numberField(value, keys) {
+function numberField(value: AnyRecord, keys: string[]): number | null {
   for (const key of keys) {
     const field = value[key];
     if (typeof field === "number" && Number.isFinite(field)) return field;
@@ -407,7 +411,7 @@ function buildInstanceGateReports(manifest, officialScore) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().then((code) => {
     process.exitCode = code;
-  }).catch((err) => {
+  }).catch((err: any) => {
     console.error(err?.usage ? `${err.message}\n\n${usage()}` : err.stack || err.message || String(err));
     process.exitCode = 1;
   });

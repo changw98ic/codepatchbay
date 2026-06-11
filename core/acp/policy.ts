@@ -1,4 +1,3 @@
-// @ts-nocheck
 // acp-lane-policy.js — Headless/UI ACP lane resolution and UI tool enforcement for issue #62
 
 const VALID_PROFILES = new Set(["headless", "ui"]);
@@ -51,7 +50,7 @@ export function normalizeAcpProfile(profile) {
   return null;
 }
 
-export function resolveAcpLane({ profile, uiLane, uiLaneReason } = {}) {
+export function resolveAcpLane({ profile, uiLane, uiLaneReason }: Record<string, any> = {}) {
   const normalized = normalizeAcpProfile(profile);
   if (normalized === null) {
     return { error: `invalid ACP profile: ${profile}. Accepted values: headless, ui` };

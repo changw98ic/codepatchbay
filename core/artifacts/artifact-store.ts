@@ -1,10 +1,9 @@
-// @ts-nocheck
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import { resolveArtifactDir, resolveArtifactPath } from "./artifact-paths.js";
 
-export async function writeArtifact(cpbRoot, { project, jobId, kind, content, metadata = {} }) {
+export async function writeArtifact(cpbRoot: string, { project, jobId, kind, content, metadata = {} }: { project: string; jobId: string; kind: string; content: string; metadata?: Record<string, unknown> }) {
   const id = await allocateArtifactId(cpbRoot, project, kind);
   const filePath = resolveArtifactPath(cpbRoot, project, kind, id);
 
@@ -22,7 +21,7 @@ export async function writeArtifact(cpbRoot, { project, jobId, kind, content, me
   };
 }
 
-export async function allocateArtifactId(cpbRoot, project, kind) {
+export async function allocateArtifactId(cpbRoot: string, project: string, kind: string) {
   const dir = resolveArtifactDir(cpbRoot, project, kind);
   await mkdir(dir, { recursive: true });
 
@@ -46,7 +45,6 @@ export async function allocateArtifactId(cpbRoot, project, kind) {
   return id;
 }
 
-function sha256(content) {
+function sha256(content: string) {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
 }
-

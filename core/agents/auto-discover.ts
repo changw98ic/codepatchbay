@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";

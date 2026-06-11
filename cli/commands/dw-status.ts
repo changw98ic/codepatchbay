@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * cpb dw-status — report Dynamic Workflow Strict Completion readiness.
  *
@@ -73,7 +72,7 @@ function resolveCompiledRoot(root, __dirname) {
  * @param {{ cpbRoot?: string, executorRoot?: string }} opts
  * @returns {Promise<number>} exit code (0 = ready, 1 = incomplete)
  */
-export async function run(args, { cpbRoot, executorRoot } = {}) {
+export async function run(args, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   const root = executorRoot || cpbRoot || ".";
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const contractRoot = resolveCompiledRoot(root, __dirname);

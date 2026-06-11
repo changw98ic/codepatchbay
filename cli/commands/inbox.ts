@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 const BOLD = "\x1b[1m";

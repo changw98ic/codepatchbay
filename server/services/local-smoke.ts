@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // local-smoke.js — repeatable local smoke checks with fake ACP providers.
 
 import { execFile } from "node:child_process";
@@ -22,7 +21,7 @@ function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-async function runCommand(command, args, opts = {}) {
+async function runCommand(command, args, opts: Record<string, any> = {}) {
   try {
     const result = await execFileAsync(command, args, {
       cwd: opts.cwd,
@@ -32,13 +31,14 @@ async function runCommand(command, args, opts = {}) {
     });
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
-    const stdout = err.stdout || "";
-    const stderr = err.stderr || "";
+    const error = err as Record<string, any>;
+    const stdout = error.stdout || "";
+    const stderr = error.stderr || "";
     const message = [
       `command failed: ${command} ${args.join(" ")}`,
       stdout.trim(),
       stderr.trim(),
-      err.message,
+      error.message,
     ].filter(Boolean).join("\n");
     throw new Error(message);
   }
@@ -287,7 +287,7 @@ export async function runFakeAcpSmoke({
 }
 
 function parseArgs(argv) {
-  const opts = { json: false, keepTemp: false, codegraph: false };
+  const opts: Record<string, any> = { json: false, keepTemp: false, codegraph: false };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") opts.json = true;

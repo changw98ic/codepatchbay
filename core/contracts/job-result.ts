@@ -1,5 +1,4 @@
-// @ts-nocheck
-export function jobCompleted({ jobId, phaseResults }) {
+export function jobCompleted({ jobId, phaseResults }: { jobId: string; phaseResults: unknown[] }) {
   return {
     schemaVersion: 1,
     status: "completed",
@@ -10,7 +9,7 @@ export function jobCompleted({ jobId, phaseResults }) {
   };
 }
 
-export function jobFailed({ jobId, phaseResults, failure }) {
+export function jobFailed({ jobId, phaseResults, failure }: { jobId: string; phaseResults: unknown[]; failure: unknown }) {
   return {
     schemaVersion: 1,
     status: "failed",
@@ -21,6 +20,6 @@ export function jobFailed({ jobId, phaseResults, failure }) {
   };
 }
 
-export function isJobCompleted(result) {
+export function isJobCompleted(result: { status?: string } | null | undefined) {
   return result?.status === "completed";
 }

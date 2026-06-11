@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event-store.js";
 import { listRuntimeDataRoots } from "./runtime-context.js";
 
@@ -20,7 +19,7 @@ function isAnomalous(job, jobIdSet) {
   return false;
 }
 
-export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot } = {}) {
+export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }: Record<string, any> = {}) {
   const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
   const seenPaths = new Set();
   const eventFiles = [];
@@ -59,7 +58,7 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot } 
   }
   const phaseFailureCounts = Object.keys(phaseMap).sort().map((phase) => ({
     phase,
-    count: Object.values(phaseMap[phase]).reduce((a, b) => a + b, 0),
+    count: (Object.values(phaseMap[phase]) as number[]).reduce((a, b) => a + b, 0),
     byCode: Object.entries(phaseMap[phase])
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([code, count]) => ({ code, count })),

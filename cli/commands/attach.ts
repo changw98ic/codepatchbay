@@ -1,7 +1,6 @@
-// @ts-nocheck
 import path from "node:path";
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args: string[], { cpbRoot }: { cpbRoot: string; executorRoot?: string }) {
   const { registerProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
   const sourcePath = path.resolve(args[0] || process.cwd());
   const name = args[1] || path.basename(sourcePath);

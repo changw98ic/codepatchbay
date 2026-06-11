@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { readFile, stat, readdir, rm } from "node:fs/promises";
 import path from "node:path";

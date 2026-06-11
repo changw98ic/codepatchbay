@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { getProject } from "./hub-registry.js";
@@ -17,7 +16,7 @@ function dispatchEnabled() {
 
 export { dispatchEnabled };
 
-export async function guardSourcePath(hubRoot, projectId, sourcePath) {
+export async function guardSourcePath(hubRoot: string, projectId: string, sourcePath?: string) {
   if (!dispatchEnabled()) return;
   if (!sourcePath) throw new Error("sourcePath is required for Hub-dispatched mutations");
 
@@ -35,31 +34,31 @@ export async function guardSourcePath(hubRoot, projectId, sourcePath) {
   }
 }
 
-export async function recordDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId } = {}) {
+export async function recordDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId }: Record<string, any> = {}) {
   if (!dispatchEnabled()) return null;
-  return createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
+  return (createDispatch as any)(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
 }
 
-export async function lookupDispatch(hubRoot, dispatchId) {
+export async function lookupDispatch(hubRoot: string, dispatchId: string) {
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function markDispatchAssigned(hubRoot, dispatchId, { workerId } = {}) {
+export async function markDispatchAssigned(hubRoot: string, dispatchId: string, { workerId }: { workerId?: string } = {}) {
   if (!dispatchEnabled()) return null;
-  return assignWorker(hubRoot, dispatchId, { workerId });
+  return (assignWorker as any)(hubRoot, dispatchId, { workerId });
 }
 
-export async function markDispatchStarted(hubRoot, dispatchId) {
+export async function markDispatchStarted(hubRoot: string, dispatchId: string) {
   if (!dispatchEnabled()) return null;
   return startDispatch(hubRoot, dispatchId);
 }
 
-export async function markDispatchCompleted(hubRoot, dispatchId) {
+export async function markDispatchCompleted(hubRoot: string, dispatchId: string) {
   if (!dispatchEnabled()) return null;
   return completeDispatch(hubRoot, dispatchId);
 }
 
-export async function markDispatchFailed(hubRoot, dispatchId) {
+export async function markDispatchFailed(hubRoot: string, dispatchId: string) {
   if (!dispatchEnabled()) return null;
   return failDispatch(hubRoot, dispatchId);
 }

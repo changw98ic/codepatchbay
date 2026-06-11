@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -117,7 +116,7 @@ test("handleSlackSlashCommand: run returns View Run and Cancel actions", async (
     channel_name: "dev",
   });
 
-  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot });
+  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot }) as Record<string, any>;
 
   assert.equal(result.ok, true);
   assert.equal(result.channel, "slack");
@@ -153,7 +152,7 @@ test("handleSlackSlashCommand: status returns current projection for job", async
     channel_name: "dev",
   });
 
-  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot });
+  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot }) as Record<string, any>;
 
   assert.equal(result.ok, true);
   assert.equal(result.action, "status");
@@ -187,7 +186,7 @@ test("handleSlackSlashCommand: status falls back to queue entry", async () => {
     channel_name: "dev",
   });
 
-  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot });
+  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot }) as Record<string, any>;
 
   assert.equal(result.ok, true);
   assert.equal(result.action, "status");
@@ -209,7 +208,7 @@ test("handleSlackSlashCommand: status returns error for unknown job", async () =
     channel_name: "dev",
   });
 
-  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot });
+  const result = await handleSlackSlashCommand(cpbRoot, parsed, { hubRoot }) as Record<string, any>;
 
   assert.equal(result.ok, false);
   assert.ok(result.error.includes("job not found"));

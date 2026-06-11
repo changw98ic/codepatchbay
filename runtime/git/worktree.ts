@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -31,6 +30,13 @@ const BASELINE_ENV = {
   GIT_COMMITTER_NAME: "CodePatchbay Supervisor",
   GIT_COMMITTER_EMAIL: "cpb-supervisor@local.invalid",
 };
+type AnyRecord = Record<string, any>;
+type RunResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  error?: any;
+};
 
 function usage() {
   return [
@@ -40,9 +46,9 @@ function usage() {
   ].join("\n");
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]) {
   const [command, ...tokens] = argv;
-  const args = { command };
+  const args: AnyRecord = { command };
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -63,29 +69,29 @@ function parseArgs(argv) {
   return args;
 }
 
-function validateComponent(name, value) {
+function validateComponent(name: string, value: any) {
   if (typeof value !== "string" || !SAFE_COMPONENT.test(value)) {
     throw new Error(`invalid ${name}`);
   }
 }
 
-function ensureInside(root, child) {
+function ensureInside(root: string, child: string) {
   const relative = path.relative(root, child);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("worktree path resolves outside worktrees root");
   }
 }
 
-function run(command, args, options = {}) {
+function run(command: string, args: string[], options: AnyRecord = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (result) => {
+    const finish = (result: RunResult) => {
       if (settled) return;
       settled = true;
       resolve(result);
     };
 
-    let child;
+    let child: ReturnType<typeof spawn>;
     let stdout = "";
     let stderr = "";
     try {
@@ -93,7 +99,7 @@ function run(command, args, options = {}) {
         ...options,
         stdio: ["ignore", "pipe", "pipe"],
       });
-    } catch (err) {
+    } catch (err: any) {
       finish({ code: null, stdout, stderr: err?.message || String(err), error: err });
       return;
     }
@@ -110,11 +116,11 @@ function run(command, args, options = {}) {
   });
 }
 
-async function git(project, args, options = {}) {
+async function git(project: string, args: string[], options: AnyRecord = {}) {
   return await run("git", ["-C", project, ...args], options);
 }
 
-async function mustGit(project, args, options = {}) {
+async function mustGit(project: string, args: string[], options: AnyRecord = {}) {
   const result = await git(project, args, options);
   if (result.code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
@@ -122,7 +128,7 @@ async function mustGit(project, args, options = {}) {
   return result;
 }
 
-async function isGitRepo(project) {
+async function isGitRepo(project: string) {
   const result = await git(project, ["rev-parse", "--show-toplevel"]);
   if (result.code !== 0) {
     return false;
@@ -137,18 +143,18 @@ async function isGitRepo(project) {
   }
 }
 
-async function hasHead(project) {
+async function hasHead(project: string) {
   const result = await git(project, ["rev-parse", "--verify", "HEAD"]);
   return result.code === 0;
 }
 
-async function ensureGitignore(project) {
+async function ensureGitignore(project: string) {
   const file = path.join(project, ".gitignore");
   let raw = "";
 
   try {
     raw = await readFile(file, "utf8");
-  } catch (err) {
+  } catch (err: any) {
     if (!err || err.code !== "ENOENT") {
       throw err;
     }
@@ -170,7 +176,7 @@ async function ensureGitignore(project) {
   return true;
 }
 
-async function removeRequiredIgnoresFromIndex(project) {
+async function removeRequiredIgnoresFromIndex(project: string) {
   await mustGit(project, [
     "rm",
     "--cached",
@@ -181,7 +187,7 @@ async function removeRequiredIgnoresFromIndex(project) {
   ]);
 }
 
-async function assertNoRequiredIgnoresInIndex(project) {
+async function assertNoRequiredIgnoresInIndex(project: string) {
   const tracked = await git(project, ["ls-files", "--", ...REQUIRED_IGNORES]);
   if (tracked.code !== 0) {
     throw new Error(`git ls-files failed: ${tracked.stderr || tracked.stdout}`);
@@ -191,12 +197,12 @@ async function assertNoRequiredIgnoresInIndex(project) {
   }
 }
 
-async function hasStagedChanges(project) {
+async function hasStagedChanges(project: string) {
   const staged = await git(project, ["diff", "--cached", "--quiet", "--exit-code"]);
   return staged.code !== 0;
 }
 
-async function stagedPaths(project) {
+async function stagedPaths(project: string) {
   const result = await git(project, ["diff", "--cached", "--name-only"]);
   if (result.code !== 0) {
     throw new Error(`git diff --cached --name-only failed: ${result.stderr || result.stdout}`);
@@ -207,7 +213,7 @@ async function stagedPaths(project) {
     .filter((line) => line.length > 0);
 }
 
-function isRequiredIgnoredPath(file) {
+function isRequiredIgnoredPath(file: string) {
   return REQUIRED_IGNORES.some((pattern) => {
     if (pattern.endsWith("/")) {
       const directory = pattern.slice(0, -1);
@@ -220,7 +226,7 @@ function isRequiredIgnoredPath(file) {
   });
 }
 
-async function rejectPreExistingStagedChanges(project) {
+async function rejectPreExistingStagedChanges(project: string) {
   const unsafeStaged = (await stagedPaths(project)).filter(
     (file) => !isRequiredIgnoredPath(file)
   );
@@ -231,7 +237,7 @@ async function rejectPreExistingStagedChanges(project) {
   }
 }
 
-async function commitStaged(project, message, { allowEmpty = false } = {}) {
+async function commitStaged(project: string, message: string, { allowEmpty = false }: AnyRecord = {}) {
   const commitArgs = allowEmpty
     ? ["commit", "--allow-empty", "-m", message]
     : ["commit", "-m", message];
@@ -243,7 +249,7 @@ async function commitStaged(project, message, { allowEmpty = false } = {}) {
   });
 }
 
-async function createBaselineCommit(project) {
+async function createBaselineCommit(project: string) {
   await mustGit(project, ["add", "--", "."]);
   await removeRequiredIgnoresFromIndex(project);
   await assertNoRequiredIgnoresInIndex(project);
@@ -253,7 +259,7 @@ async function createBaselineCommit(project) {
   });
 }
 
-async function commitIgnoreProtection(project) {
+async function commitIgnoreProtection(project: string) {
   await mustGit(project, ["add", "--", ".gitignore"]);
   await removeRequiredIgnoresFromIndex(project);
   await assertNoRequiredIgnoresInIndex(project);
@@ -263,7 +269,7 @@ async function commitIgnoreProtection(project) {
   }
 }
 
-export async function bootstrap(projectInput) {
+export async function bootstrap(projectInput: string) {
   if (!projectInput) {
     throw new Error("missing --project");
   }
@@ -289,11 +295,11 @@ export async function bootstrap(projectInput) {
   }
 }
 
-async function pathExists(target) {
+async function pathExists(target: string) {
   try {
     await stat(target);
     return true;
-  } catch (err) {
+  } catch (err: any) {
     if (err && err.code === "ENOENT") {
       return false;
     }
@@ -301,7 +307,7 @@ async function pathExists(target) {
   }
 }
 
-async function ensureLocalGitExclude(worktreePath, pattern) {
+async function ensureLocalGitExclude(worktreePath: string, pattern: string) {
   const result = await git(worktreePath, ["rev-parse", "--git-path", "info/exclude"]);
   if (result.code !== 0) {
     throw new Error(`git rev-parse --git-path info/exclude failed: ${result.stderr || result.stdout}`);
@@ -312,7 +318,7 @@ async function ensureLocalGitExclude(worktreePath, pattern) {
   let raw = "";
   try {
     raw = await readFile(excludePath, "utf8");
-  } catch (err) {
+  } catch (err: any) {
     if (!err || err.code !== "ENOENT") {
       throw err;
     }
@@ -340,13 +346,13 @@ async function ensureWorktreeLocalExcludes(worktreePath) {
   }
 }
 
-function commandFailureMessage(command, args, result) {
+function commandFailureMessage(command: string, args: string[], result: RunResult) {
   const output = `${result.stderr || ""}${result.stdout || ""}`.trim();
   const suffix = output.length > 0 ? `: ${output}` : "";
   return `${command} ${args.join(" ")} failed${suffix}`;
 }
 
-async function initCodegraphIndex(worktreePath, runCommand = run) {
+async function initCodegraphIndex(worktreePath: string, runCommand = run) {
   const args = ["init", worktreePath];
   const result = await runCommand("codegraph", args, { cwd: worktreePath });
   if (result.code !== 0) {
@@ -355,7 +361,7 @@ async function initCodegraphIndex(worktreePath, runCommand = run) {
   return true;
 }
 
-async function isAlive(pid) {
+async function isAlive(pid: any) {
   const parsed = Number(pid);
   if (!Number.isInteger(parsed) || parsed <= 0) return false;
   try {
@@ -366,7 +372,7 @@ async function isAlive(pid) {
   }
 }
 
-async function readJson(file) {
+async function readJson(file: string): Promise<AnyRecord | null> {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -374,7 +380,7 @@ async function readJson(file) {
   }
 }
 
-async function ensureCodegraphReadinessState(worktreePath) {
+async function ensureCodegraphReadinessState(worktreePath: string) {
   const codegraphDir = path.join(worktreePath, ".codegraph");
   const stateDir = path.join(worktreePath, "cpb-task");
   const statePath = path.join(stateDir, "codegraph-state.json");
@@ -421,7 +427,7 @@ async function ensureCodegraphReadinessState(worktreePath) {
   return true;
 }
 
-async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodegraphIndex } = {}) {
+async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = initCodegraphIndex }: AnyRecord = {}) {
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
   let resetCodegraph = false;
 
@@ -431,7 +437,7 @@ async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodeg
       await rm(worktreeCodegraph, { force: true });
       resetCodegraph = true;
     }
-  } catch (err) {
+  } catch (err: any) {
     if (!err || err.code !== "ENOENT") {
       throw err;
     }
@@ -444,14 +450,14 @@ async function ensureIsolatedCodegraph(worktreePath, { initCodegraph = initCodeg
   return resetCodegraph;
 }
 
-async function ensureSharedNodeModules(project, worktreePath) {
+async function ensureSharedNodeModules(project: string, worktreePath: string) {
   const sourceNodeModules = path.join(path.resolve(project), "node_modules");
   const worktreeNodeModules = path.join(worktreePath, "node_modules");
 
   try {
     const sourceStats = await stat(sourceNodeModules);
     if (!sourceStats.isDirectory()) return false;
-  } catch (err) {
+  } catch (err: any) {
     if (err?.code === "ENOENT") return false;
     throw err;
   }
@@ -468,11 +474,11 @@ async function ensureSharedNodeModules(project, worktreePath) {
         return false;
       }
       return false;
-    } catch (err) {
+    } catch (err: any) {
       if (err?.code !== "ENOENT") throw err;
       await rm(worktreeNodeModules, { force: true });
     }
-  } catch (err) {
+  } catch (err: any) {
     if (!err || err.code !== "ENOENT") {
       throw err;
     }
@@ -482,7 +488,7 @@ async function ensureSharedNodeModules(project, worktreePath) {
   return true;
 }
 
-async function prepareWorktreeRuntime(project, worktreePath, options = {}) {
+async function prepareWorktreeRuntime(project: string, worktreePath: string, options: AnyRecord = {}) {
   const codegraphEnabled = options.codegraphEnabled ?? (process.env.CPB_CODEGRAPH_ENABLED !== "0");
   await ensureWorktreeLocalExcludes(worktreePath);
   if (codegraphEnabled) {
@@ -491,7 +497,7 @@ async function prepareWorktreeRuntime(project, worktreePath, options = {}) {
   await ensureSharedNodeModules(project, worktreePath);
 }
 
-async function samePath(left, right) {
+async function samePath(left: string, right: string) {
   try {
     return (await realpath(left)) === (await realpath(right));
   } catch {
@@ -499,7 +505,7 @@ async function samePath(left, right) {
   }
 }
 
-async function existingWorktreePath(project, branch) {
+async function existingWorktreePath(project: string, branch: string) {
   const result = await git(project, ["worktree", "list", "--porcelain"]);
   if (result.code !== 0) {
     throw new Error(`git worktree list failed: ${result.stderr || result.stdout}`);
@@ -517,7 +523,7 @@ async function existingWorktreePath(project, branch) {
   return null;
 }
 
-export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled } = {}) {
+export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled }: AnyRecord = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
   validateComponent("job-id", jobId);

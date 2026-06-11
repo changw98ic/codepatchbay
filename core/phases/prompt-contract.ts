@@ -1,5 +1,4 @@
-// @ts-nocheck
-export function phaseExecutionContract(phase) {
+export function phaseExecutionContract(phase: string) {
   const phaseBoundary = {
     plan: "Plan the smallest file-scoped path that satisfies the task; do not design unrelated product surface.",
     execute: "Implement only the scoped plan or job request; do not broaden into unrelated refactors.",

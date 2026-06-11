@@ -1,11 +1,10 @@
-// @ts-nocheck
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { RELEASE_METADATA_FORMAT_VERSION } from "./release-store.js";
 
 export { RELEASE_METADATA_FORMAT_VERSION };
 
-export async function buildVersionIdentityReport({ cpbRoot, executorRoot, codeVersion, env = process.env }) {
+export async function buildVersionIdentityReport({ cpbRoot, executorRoot, codeVersion, env = process.env }: { cpbRoot: string; executorRoot: string; codeVersion: string; env?: NodeJS.ProcessEnv }) {
   const resolvedCpbRoot = path.resolve(cpbRoot);
   const resolvedExecutorRoot = path.resolve(executorRoot);
 

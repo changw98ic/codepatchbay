@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { hubStatus, listProjects } from "./hub-registry.js";
 import { queueStatus } from "./hub-queue.js";
@@ -31,7 +30,7 @@ export async function gatherDiagnostics({
   hubRoot,
   recentJobsLimit = 5,
   acpPool = null,
-} = {}) {
+}: Record<string, any> = {}) {
   const errors = [];
   let hub;
   try {

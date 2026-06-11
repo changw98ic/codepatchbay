@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, mkdtemp, rm } from "node:fs/promises";
@@ -10,6 +9,11 @@ import test from "node:test";
 import { loadBacklog, pushIssues } from "../../server/services/multi-evolve-state.js";
 
 const execFileAsync = promisify(execFile);
+
+type ExecFileRejection = {
+  code?: number;
+  stderr?: string;
+};
 
 function envFor(hubRoot) {
   return { ...process.env, CPB_HUB_ROOT: hubRoot };
@@ -100,8 +104,9 @@ test("cpb evolve-multi rejects invalid workflow names", async () => {
       env: envFor(hubRoot),
     }),
     (error) => {
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /invalid workflow: surprise/);
+      const execError = error as ExecFileRejection;
+      assert.equal(execError.code, 1);
+      assert.match(execError.stderr ?? "", /invalid workflow: surprise/);
       return true;
     },
   );
@@ -116,8 +121,9 @@ test("cpb evolve-multi rejects missing workflow value under --once", async () =>
       env: envFor(hubRoot),
     }),
     (error) => {
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /missing value for --workflow/);
+      const execError = error as ExecFileRejection;
+      assert.equal(execError.code, 1);
+      assert.match(execError.stderr ?? "", /missing value for --workflow/);
       return true;
     },
   );
@@ -132,8 +138,9 @@ test("cpb evolve-multi rejects missing project value under --once", async () => 
       env: envFor(hubRoot),
     }),
     (error) => {
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /missing value for --project/);
+      const execError = error as ExecFileRejection;
+      assert.equal(execError.code, 1);
+      assert.match(execError.stderr ?? "", /missing value for --project/);
       return true;
     },
   );

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // init-project.js — Initialize project integration (Node.js, replaces init-project.sh)
 
 import { mkdir, cp, writeFile, readFile, symlink, access, constants } from "node:fs/promises";

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   mergeRoutePolicy,
   normalizeActorTrust,
@@ -88,7 +87,7 @@ function normalizeLabels(labels = []) {
     : [];
 }
 
-function textInput(input = {}) {
+function textInput(input: Record<string, any> = {}) {
   return [
     ...normalizeLabels(input.labels),
     input.title,
@@ -110,14 +109,14 @@ function isComplexImplementationTask(text) {
   return matchesAny(text, IMPLEMENTATION_VERBS) && matchesAny(text, COMPLEX_IMPLEMENTATION_OBJECTS);
 }
 
-function changedFiles(input = {}) {
+function changedFiles(input: Record<string, any> = {}) {
   if (Array.isArray(input.changedFiles)) return input.changedFiles;
   if (Array.isArray(input.files)) return input.files;
   if (Array.isArray(input.paths)) return input.paths;
   return [];
 }
 
-export function detectProtectedScopes(input = {}) {
+export function detectProtectedScopes(input: Record<string, any> = {}) {
   const text = textInput(input);
   const files = changedFiles(input).map((file) => String(file || ""));
   const scopes = [];
@@ -137,7 +136,7 @@ export function detectProtectedScopes(input = {}) {
   return normalizeProtectedScopes(scopes);
 }
 
-export function actualDiffRiskGuard(input = {}) {
+export function actualDiffRiskGuard(input: Record<string, any> = {}) {
   const files = changedFiles(input);
   const protectedScopes = detectProtectedScopes({ files });
   return {
@@ -152,7 +151,7 @@ export function actualDiffRiskGuard(input = {}) {
   };
 }
 
-export function classifyIssueRules(input = {}) {
+export function classifyIssueRules(input: Record<string, any> = {}) {
   const labels = normalizeLabels(input.labels);
   const text = textInput(input);
   const reasons = [];
@@ -221,8 +220,8 @@ export function classifyIssueRules(input = {}) {
   };
 }
 
-export function triageByRules(input = {}) {
-  const rules = classifyIssueRules(input);
+export function triageByRules(input: Record<string, any> = {}) {
+  const rules: Record<string, any> = classifyIssueRules(input) as any;
   return mergeRoutePolicy({
     ...rules,
     requestedRoute: input.requestedRoute || rules.requestedRoute,

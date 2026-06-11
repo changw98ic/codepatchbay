@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,9 +21,10 @@ async function buildApp(cpbRoot, hubRoot) {
   resetHubRuntimeInstances();
   const hubRuntime = getHubRuntime(cpbRoot, hubRoot);
   app.addHook('onRequest', (req, _res, done) => {
-    req.cpbRoot = cpbRoot;
-    req.cpbHubRoot = hubRoot;
-    req.hubRuntime = hubRuntime;
+    const testReq = req as Record<string, any>;
+    testReq.cpbRoot = cpbRoot;
+    testReq.cpbHubRoot = hubRoot;
+    testReq.hubRuntime = hubRuntime;
     done();
   });
   await app.register(hubRoutes, { prefix: '/api' });

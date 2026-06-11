@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -11,6 +10,8 @@ const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 const SAFE_GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const SAFE_GITHUB_REPO = /^[A-Za-z0-9._-]+$/;
 const REGISTRY_LOCK_TTL_MS = 30_000;
+
+type AnyRecord = Record<string, any>;
 
 export const DEFAULT_GITHUB_TRIGGERS = [
   { event: "issues.labeled", label: "sdd", workflow: "sdd-standard", planMode: "parent" },
@@ -127,7 +128,7 @@ async function canonicalSourcePath(sourcePath) {
   return canonical;
 }
 
-function normalizeRegistry(raw) {
+function normalizeRegistry(raw: AnyRecord) {
   const registry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : defaultRegistry();
   return {
     version: registry.version || REGISTRY_VERSION,
@@ -156,8 +157,8 @@ export async function saveRegistry(hubRoot, registry) {
   return normalized;
 }
 
-function resolveProjectId(registry, preferredId, sourcePath) {
-  const existing = Object.values(registry.projects).find((project) => project.sourcePath === sourcePath);
+function resolveProjectId(registry: AnyRecord, preferredId, sourcePath) {
+  const existing = (Object.values(registry.projects) as AnyRecord[]).find((project) => project.sourcePath === sourcePath);
   if (existing?.id) return existing.id;
 
   const base = slugify(preferredId || path.basename(sourcePath));
@@ -166,7 +167,7 @@ function resolveProjectId(registry, preferredId, sourcePath) {
   return `${base}-${pathHash(sourcePath)}`;
 }
 
-export async function registerProject(hubRoot, input = {}) {
+export async function registerProject(hubRoot, input: AnyRecord = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
   const generatedMetadata = input.skipCodeGraphGate
     ? {}
@@ -211,7 +212,7 @@ export async function registerProject(hubRoot, input = {}) {
 
 export async function listProjects(hubRoot, { enabledOnly = false } = {}) {
   const registry = await loadRegistry(hubRoot);
-  return Object.values(registry.projects)
+  return (Object.values(registry.projects) as AnyRecord[])
     .filter((project) => !enabledOnly || project.enabled !== false)
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -255,7 +256,7 @@ export async function bindProjectGithub(hubRoot, id, repoFullName, { triggers = 
   });
 }
 
-export async function updateProject(hubRoot, id, patch = {}) {
+export async function updateProject(hubRoot, id, patch: AnyRecord = {}) {
   if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
   return await withRegistryLock(hubRoot, async () => {
     const registry = await loadRegistry(hubRoot);
@@ -276,7 +277,7 @@ export async function updateProject(hubRoot, id, patch = {}) {
   });
 }
 
-export async function heartbeatWorker(hubRoot, id, worker = {}) {
+export async function heartbeatWorker(hubRoot, id, worker: AnyRecord = {}) {
   const heartbeat = {
     workerId: worker.workerId || `worker-${process.pid}`,
     pid: worker.pid || process.pid,
@@ -297,7 +298,7 @@ export function deriveWorkerStatus(worker) {
   return status;
 }
 
-function summarizeProjectWorkers(projects) {
+function summarizeProjectWorkers(projects: AnyRecord[]) {
   const summary = {
     workersOnline: 0,
     workersStale: 0,
@@ -317,7 +318,7 @@ function summarizeProjectWorkers(projects) {
 
 export async function hubStatus(hubRoot) {
   const registry = await loadRegistry(hubRoot);
-  const projects = Object.values(registry.projects);
+  const projects = Object.values(registry.projects) as AnyRecord[];
   return {
     hubRoot: path.resolve(hubRoot),
     registryPath: registryPath(hubRoot),

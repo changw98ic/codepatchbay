@@ -1,12 +1,11 @@
-// @ts-nocheck
 import { isValidPlatform, validateGitPlatformAdapter } from "../../core/contracts/git-platform.js";
 import { createGithubAdapter } from "./git-adapters/github.js";
 
 const DEFAULT_PLATFORM = "github";
 
-const adapterCache = new Map();
+const adapterCache = new Map<string, Record<string, any>>();
 
-export function resolveGitPlatform(platformHint, options = {}) {
+export function resolveGitPlatform(platformHint?: string | null, options: { platform?: string } = {}) {
   let platform;
   if (typeof platformHint === "string" && platformHint.length > 0) {
     platform = platformHint;
@@ -30,7 +29,7 @@ export function clearAdapterCache() {
   adapterCache.clear();
 }
 
-export function registerAdapter(adapter) {
+export function registerAdapter(adapter: Record<string, any>) {
   const validated = validateGitPlatformAdapter(adapter);
   adapterCache.set(validated.platform, validated);
   return validated;

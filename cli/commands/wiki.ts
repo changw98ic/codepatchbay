@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 
 const GREEN = "\x1b[0;32m";
@@ -6,13 +5,15 @@ const RED = "\x1b[0;31m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
-export async function run(args, { cpbRoot, executorRoot }) {
+type LooseRecord = Record<string, any>;
+
+export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord) {
   const sub = args[0] || "list";
   if (sub === "list") {
     const { readdir } = await import("node:fs/promises");
     const wikiDir = path.join(cpbRoot, "wiki");
-    const files = [];
-    async function walk(dir, prefix = "") {
+    const files: string[] = [];
+    async function walk(dir: string, prefix = "") {
       const entries = await readdir(dir, { withFileTypes: true });
       for (const e of entries) {
         const rel = prefix ? `${prefix}/${e.name}` : e.name;
@@ -175,12 +176,12 @@ export async function run(args, { cpbRoot, executorRoot }) {
   }
 }
 
-function getArg(args, flag) {
+function getArg(args: string[], flag: string): string | null {
   const idx = args.indexOf(flag);
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : null;
 }
 
-async function listExperiences(cpbRoot, { category, tag, project } = {}) {
+async function listExperiences(cpbRoot: string, { category, tag, project }: LooseRecord = {}) {
   const { readFile, readdir } = await import("node:fs/promises");
   const expDir = path.join(cpbRoot, "wiki", "experience");
   const categories = category ? [category] : ["failures", "patterns", "gotchas"];
@@ -197,7 +198,7 @@ async function listExperiences(cpbRoot, { category, tag, project } = {}) {
         if (project && meta.project !== project) continue;
         if (tag) {
           const tags = Array.isArray(meta.tags) ? meta.tags : [];
-          if (!tags.some((t) => t.includes(tag))) continue;
+          if (!tags.some((t) => String(t).includes(tag))) continue;
         }
         const title = extractTitle(content);
         entries.push({ cat, date: meta.date || "?", severity: meta.severity || "?", title });
@@ -212,7 +213,7 @@ async function listExperiences(cpbRoot, { category, tag, project } = {}) {
   if (entries.length === 0) console.log("  (no experiences found)");
 }
 
-async function searchExperiences(cpbRoot, keyword, { category, project } = {}) {
+async function searchExperiences(cpbRoot: string, keyword: string, { category, project }: LooseRecord = {}) {
   const { readFile, readdir } = await import("node:fs/promises");
   const expDir = path.join(cpbRoot, "wiki", "experience");
   const categories = category ? [category] : ["failures", "patterns", "gotchas"];
@@ -239,9 +240,10 @@ async function searchExperiences(cpbRoot, keyword, { category, project } = {}) {
   if (count === 0) console.log(`  (no experiences matching "${keyword}")`);
 }
 
-async function backfillExperiences(cpbRoot, { project, force } = {}) {
+async function backfillExperiences(cpbRoot: string, { project, force }: LooseRecord = {}) {
   const { readdir } = await import("node:fs/promises");
   const { listEventFiles, readEvents } = await import("../../server/services/event-store.js");
+  const { extractExperienceFromVerdict } = await import("../../server/services/experience-extractor.js");
   const wikiDir = path.join(cpbRoot, "wiki", "projects");
 
   let projects;
@@ -259,7 +261,7 @@ async function backfillExperiences(cpbRoot, { project, force } = {}) {
     if (project && ef.project !== project) continue;
     try {
       const events = await readEvents(cpbRoot, ef.project, ef.jobId);
-      for (const ev of events) {
+      for (const ev of events as LooseRecord[]) {
         if (typeof ev.artifact === "string" && ev.artifact.startsWith("verdict-")) {
           const key = `${ef.project}/${ev.artifact.replace(/\.(?:md|patch|diff|txt|json)$/i, "")}`;
           if (!verdictToJob.has(key)) verdictToJob.set(key, ef.jobId);
@@ -291,7 +293,7 @@ async function backfillExperiences(cpbRoot, { project, force } = {}) {
           if (result) { extracted++; console.log(`  Extracted: ${proj}/${vf} (job ${realJobId})`); }
           else { skipped++; }
         } catch (err) {
-          console.error(`  Error processing ${proj}/${vf}: ${err.message}`);
+          console.error(`  Error processing ${proj}/${vf}: ${(err as Error).message}`);
         }
       }
     } catch { /* no outputs dir */ }
@@ -303,14 +305,14 @@ async function backfillExperiences(cpbRoot, { project, force } = {}) {
   console.log(`\nBackfill complete: ${extracted} extracted, ${skipped} skipped, ${unmapped} unmapped (no event log).`);
 }
 
-function parseFrontmatter(content) {
+function parseFrontmatter(content: string): LooseRecord {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  const meta = {};
+  const meta: LooseRecord = {};
   for (const line of match[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.+)/);
     if (kv) {
-      let val = kv[2].trim();
+      let val: string | string[] = kv[2].trim();
       if (val.startsWith("[") && val.endsWith("]")) {
         val = val.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
       }
@@ -320,7 +322,7 @@ function parseFrontmatter(content) {
   return meta;
 }
 
-function extractTitle(content) {
+function extractTitle(content: string): string {
   const match = content.match(/^#\s+(.+)/m);
   return match ? match[1].trim() : "untitled";
 }

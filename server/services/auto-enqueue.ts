@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readGithubIssues } from "./github-issues.js";
 import { loadQueue } from "./hub-queue.js";
 import { getProject } from "./hub-registry.js";
@@ -85,7 +84,7 @@ export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { cre
   const matched = [];
 
   for (const issue of projectIssues) {
-    const key = issueQueueKey(issue.repository || issue.repo || project.github?.fullName, issue.number);
+    const key = issueQueueKey(issue.repository || (issue as Record<string, any>).repo || project.github?.fullName, issue.number);
     if (queuedIssueKeys.has(key)) { duplicates++; continue; }
     if (isExcluded(issue, automation.exclude)) { skipped++; continue; }
 

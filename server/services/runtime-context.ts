@@ -1,11 +1,12 @@
-// @ts-nocheck
 import path from "node:path";
 import { runtimeDataRoot } from "./runtime-root.js";
 import { getProject, listProjects, resolveHubRoot } from "./hub-registry.js";
 
-function uniqueRoots(entries) {
-  const seen = new Set();
-  const result = [];
+type RuntimeRootEntry = { kind: string; dataRoot: string; projectId: string | null };
+
+function uniqueRoots(entries: RuntimeRootEntry[]) {
+  const seen = new Set<string>();
+  const result: RuntimeRootEntry[] = [];
   for (const entry of entries) {
     if (!entry?.dataRoot) continue;
     const dataRoot = path.resolve(entry.dataRoot);
@@ -16,7 +17,7 @@ function uniqueRoots(entries) {
   return result;
 }
 
-export async function resolveProjectDataRoot(cpbRoot, project, { hubRoot, dataRoot } = {}) {
+export async function resolveProjectDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot }: { hubRoot?: string; dataRoot?: string } = {}) {
   if (dataRoot) return path.resolve(dataRoot);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
   try {
@@ -26,12 +27,12 @@ export async function resolveProjectDataRoot(cpbRoot, project, { hubRoot, dataRo
   return runtimeDataRoot(cpbRoot);
 }
 
-export async function listRuntimeDataRoots(cpbRoot, { hubRoot, includeHubProjects = true } = {}) {
-  const entries = [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
+export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHubProjects = true }: { hubRoot?: string; includeHubProjects?: boolean } = {}) {
+  const entries: RuntimeRootEntry[] = [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
   if (!includeHubProjects) return uniqueRoots(entries);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
   try {
-    const projects = await listProjects(resolvedHubRoot);
+    const projects = await listProjects(resolvedHubRoot) as Array<{ id: string; projectRuntimeRoot?: string }>;
     for (const project of projects) {
       if (project.projectRuntimeRoot) {
         entries.push({

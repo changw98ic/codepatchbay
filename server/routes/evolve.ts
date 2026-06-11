@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
 import { listProjects, resolveHubRoot } from "../services/hub-registry.js";
@@ -11,10 +10,10 @@ import { buildChildEnv } from "../services/secret-policy.js";
 let activeProcess = null;
 
 class Mutex {
-  #queue = Promise.resolve();
+  #queue: Promise<void> = Promise.resolve();
   acquire() {
-    let release;
-    const next = new Promise((r) => { release = r; });
+    let release!: () => void;
+    const next = new Promise<void>((r) => { release = r; });
     const prev = this.#queue;
     this.#queue = this.#queue.then(() => next);
     return prev.then(() => release);

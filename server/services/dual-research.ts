@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // dual-research.js — Dual-agent parallel research service.
 
 import { mkdir, writeFile, readFile, access, constants, rm } from "node:fs/promises";
@@ -9,6 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { buildChildEnv } from "../../core/policy/child-env.js";
+
+type AnyRecord = Record<string, any>;
+type AcpRunResult = { code: number; stdout: string; stderr: string };
 
 const RED = "\x1b[0;31m";
 const GREEN = "\x1b[0;32m";
@@ -30,7 +32,7 @@ async function nextId(dir, prefix) {
       acquired = true;
       break;
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      if ((err as AnyRecord).code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 100));
     }
   }
@@ -60,7 +62,7 @@ async function logAppend(wikiDir, msg) {
       acquired = true;
       break;
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      if ((err as AnyRecord).code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -139,7 +141,7 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 `;
 }
 
-function acpRun(agent, cwd, executorRoot, cpbRoot, input) {
+function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot: string, input: string): Promise<AcpRunResult> {
   const acp = path.join(executorRoot, "server", "services", "acp-client-core.js");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {

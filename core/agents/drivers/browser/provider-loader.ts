@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdir, readFile, access } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"

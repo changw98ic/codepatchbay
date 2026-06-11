@@ -1,4 +1,3 @@
-// @ts-nocheck
 function clamp01(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
@@ -19,7 +18,7 @@ function durationScore(totalDurationMs, sampleSize) {
   return clamp01(1 / (1 + (avg / 600_000)));
 }
 
-export function scoreAgentMetrics(input = {}) {
+export function scoreAgentMetrics(input: Record<string, any> = {}) {
   const totalJobs = Math.max(0, Number(input.totalJobs) || 0);
   const successes = Math.max(0, Number(input.successes) || 0);
   const retries = Math.max(0, Number(input.retries) || 0);

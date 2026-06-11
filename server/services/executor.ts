@@ -1,14 +1,13 @@
-// @ts-nocheck
 import { listJobsAcrossRuntimeRoots } from "./job-store.js";
 import { jobToQueueRow } from "./job-projection.js";
 
-const runningTasks = new Map();
+const runningTasks = new Map<string, { project: string; script: string; pid: number; started: number }>();
 
-export function registerTask(taskId, project, script, pid) {
+export function registerTask(taskId: string, project: string, script: string, pid: number) {
   runningTasks.set(taskId, { project, script, pid, started: Date.now() });
 }
 
-export function unregisterTask(taskId) {
+export function unregisterTask(taskId: string) {
   runningTasks.delete(taskId);
 }
 
@@ -20,10 +19,10 @@ export function getRunningTasks() {
   }));
 }
 
-export async function getDurableTasks(cpbRoot, { hubRoot } = {}) {
+export async function getDurableTasks(cpbRoot: string, { hubRoot }: { hubRoot?: string } = {}) {
   const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, {
     hubRoot,
     includeHubProjects: Boolean(hubRoot),
   });
-  return jobs.map((job) => ({ ...job, ...jobToQueueRow(job) }));
+  return (jobs as Array<Record<string, any>>).map((job) => ({ ...job, ...jobToQueueRow(job) }));
 }

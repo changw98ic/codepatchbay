@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { runJob } from "../../core/engine/run-job.js";
 import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job-store.js";
 import { appendEvent } from "./event-store.js";

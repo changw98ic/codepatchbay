@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, rm, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -174,7 +173,7 @@ export async function claimIssue(projectRoot, project, identity) {
   });
 }
 
-export async function completeIssue(projectRoot, project, identity, result = {}) {
+export async function completeIssue(projectRoot, project, identity, result: Record<string, any> = {}) {
   const status = result.ok ? "completed" : "failed";
   return updateIssueStatus(projectRoot, project, identity, status, {
     exitCode: result.code ?? null,

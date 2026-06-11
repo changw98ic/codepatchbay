@@ -1,5 +1,6 @@
-// @ts-nocheck
 import { readHubConfig, readProjectJsonFromRoots } from "./agent-config.js";
+
+type AnyRecord = Record<string, any>;
 
 export const DEFAULT_MAX_ACTIVE_PER_PROJECT = Number(process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT || 2);
 export const DEFAULT_ACP_PROVIDER_MAX = Number(process.env.CPB_ACP_POOL_PROVIDER_MAX || 3);
@@ -54,7 +55,7 @@ export async function readProjectConcurrencyConfig(hubRoot, projectId, getProjec
 export async function resolveProjectConcurrencyLimits(hubRoot, projectIds, {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
   getProjectFn = null,
-} = {}) {
+}: AnyRecord = {}) {
   const fallback = positiveInt(maxActivePerProject, DEFAULT_MAX_ACTIVE_PER_PROJECT);
   const limits = new Map();
   for (const projectId of [...new Set((projectIds || []).filter(Boolean))]) {
@@ -65,24 +66,26 @@ export async function resolveProjectConcurrencyLimits(hubRoot, projectIds, {
 }
 
 export async function resolveHubConcurrencyLimits(hubRoot, fallback = {}) {
-  const config = await readHubConfig(hubRoot).catch(() => ({}));
-  const concurrency = config.concurrency || {};
-  const acpPool = config.acpPool || {};
+  const config: AnyRecord = await readHubConfig(hubRoot).catch(() => ({}));
+  const concurrency: AnyRecord = config.concurrency || {};
+  const acpPool: AnyRecord = config.acpPool || {};
+  const fallbackLimits = fallback as AnyRecord;
   return {
     maxActivePerProject: positiveInt(
-      concurrency.maxActivePerProject ?? fallback.maxActivePerProject,
+      concurrency.maxActivePerProject ?? fallbackLimits.maxActivePerProject,
       DEFAULT_MAX_ACTIVE_PER_PROJECT,
     ),
     acpProviderMax: positiveInt(
-      acpPool.providerMax ?? fallback.acpProviderMax,
+      acpPool.providerMax ?? fallbackLimits.acpProviderMax,
       DEFAULT_ACP_PROVIDER_MAX,
     ),
   };
 }
 
 export function hubConcurrencyEnv(limits = {}) {
-  const env = {};
-  if (limits.maxActivePerProject) env.CPB_HUB_MAX_ACTIVE_PER_PROJECT = String(limits.maxActivePerProject);
-  if (limits.acpProviderMax) env.CPB_ACP_POOL_PROVIDER_MAX = String(limits.acpProviderMax);
+  const limitValues = limits as AnyRecord;
+  const env: AnyRecord = {};
+  if (limitValues.maxActivePerProject) env.CPB_HUB_MAX_ACTIVE_PER_PROJECT = String(limitValues.maxActivePerProject);
+  if (limitValues.acpProviderMax) env.CPB_ACP_POOL_PROVIDER_MAX = String(limitValues.acpProviderMax);
   return env;
 }

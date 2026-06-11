@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const PROFILE_SCHEMA = {
   schemaVersion: 1,
   name: "string (required)",
@@ -60,6 +59,8 @@ export const PROFILE_SCHEMA = {
 }
 
 export class LoginRequiredError extends Error {
+  code: string
+
   constructor(message) {
     super(message)
     this.name = "LoginRequiredError"
@@ -68,6 +69,8 @@ export class LoginRequiredError extends Error {
 }
 
 export class ProviderProfileError extends Error {
+  code: string
+
   constructor(message) {
     super(message)
     this.name = "ProviderProfileError"
@@ -89,7 +92,7 @@ function assertBoolean(value, field) {
   return null
 }
 
-function assertNumber(value, field, opts = {}) {
+function assertNumber(value, field, opts: Record<string, any> = {}) {
   const { min, max, default: defaultValue } = opts
   if (value === undefined && defaultValue !== undefined) return null
   if (typeof value !== "number" || Number.isNaN(value)) {

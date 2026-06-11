@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -146,7 +145,7 @@ function yamlString(value) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().then((code) => {
     process.exitCode = code;
-  }).catch((err) => {
+  }).catch((err: any) => {
     console.error(err?.usage ? `${err.message}\n\n${usage()}` : err.stack || err.message || String(err));
     process.exitCode = 1;
   });

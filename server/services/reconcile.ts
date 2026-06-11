@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeDataPath } from "./runtime-root.js";
@@ -125,7 +124,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
 
 export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   const streamRecoveries = [];
-  const report = {
+  const report: Record<string, any> = {
     staleJobs: [],
     orphanLeases: [],
     streamRecoveries,
@@ -249,7 +248,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     }
 
     if (isStale) {
-      const jobReport = {
+      const jobReport: Record<string, any> = {
         jobId: job.jobId,
         project: job.project,
         reason: staleReason,

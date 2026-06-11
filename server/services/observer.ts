@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readEvents, materializeJob } from "./event-store.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
 import { getManagedAcpPool } from "./acp-pool.js";
@@ -7,10 +6,11 @@ import { listInboxMessages } from "./inbox-mail.js";
 import { listSessions } from "./review-session.js";
 
 const EVENT_TAIL_SIZE = 10;
+type AnyRecord = Record<string, any>;
 
-export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }) {
+export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: AnyRecord) {
   const timestamp = new Date().toISOString();
-  const snapshot = {
+  const snapshot: AnyRecord = {
     job: null,
     eventTail: [],
     lease: null,
@@ -75,10 +75,10 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }) {
   return snapshot;
 }
 
-export function analyzeChainSnapshot(snapshot) {
+export function analyzeChainSnapshot(snapshot: AnyRecord) {
   const { job, eventTail, lease, acpPool, queueEntry, reviewSession } = snapshot;
-  const reasons = [];
-  const details = {};
+  const reasons: string[] = [];
+  const details: AnyRecord = {};
 
   // No job found — nothing to analyze
   if (!job || !job.jobId) {
@@ -129,7 +129,7 @@ export function analyzeChainSnapshot(snapshot) {
 
   // Check ACP pool for provider rate limits
   if (acpPool?.pools) {
-    for (const [agent, info] of Object.entries(acpPool.pools)) {
+    for (const [agent, info] of Object.entries(acpPool.pools) as [string, AnyRecord][]) {
       if (info.rateLimitedUntil) {
         blockedReasons.push(`provider rate limited: ${agent} until ${info.rateLimitedUntil}`);
       }

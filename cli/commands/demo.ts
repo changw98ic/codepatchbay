@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { runDemo } from "../../server/services/demo-runner.js";
 
 function usage() {
@@ -8,7 +7,7 @@ Runs a local mock plan -> diff -> tests -> verdict -> risk story in a temporary 
 No real agent credentials or provider API keys are required.`;
 }
 
-function parseArgs(args) {
+function parseArgs(args: string[]) {
   const opts = { json: false, project: undefined, task: undefined, help: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -29,7 +28,7 @@ function parseArgs(args) {
   return opts;
 }
 
-export async function run(args) {
+export async function run(args: string[]) {
   const opts = parseArgs(args);
   if (opts.help) {
     console.log(usage());

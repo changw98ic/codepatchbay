@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
@@ -34,7 +33,7 @@ test("server services do not call the runtime-facing engine bridge", async () =>
   const violations = (await scanTextFragments({
     scanDir: path.join(REPO_ROOT, "server", "services"),
     fragments: ["engine-bridge.js"],
-  })).filter((hit) => !hit.startsWith("server/services/executor-root.js:"));
+  })).filter((hit: string) => !hit.startsWith("server/services/executor-root.js:"));
   assert.deepEqual(violations, []);
 });
 

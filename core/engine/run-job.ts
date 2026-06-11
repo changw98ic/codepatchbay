@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Engine.runJob — native phase state machine.
  *
@@ -23,6 +22,8 @@ import { evaluateCompletionGate, parseVerdict, completionGateEvent } from "./com
 import { validateScopeConstraint, stripGitStatusPrefix } from "./scope-guard.js";
 import { readyNodes, getNode } from "../workflow/dag-executor.js";
 import { resolveArtifactPath } from "../artifacts/artifact-paths.js";
+
+type AnyRecord = Record<string, any>;
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
@@ -79,7 +80,7 @@ function arrayOfStrings(value) {
   return Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
 }
 
-function normalizeDagResumeContext(sourceContext = {}) {
+function normalizeDagResumeContext(sourceContext: AnyRecord = {}) {
   const retry = sourceContext?.retry && typeof sourceContext.retry === "object" ? sourceContext.retry : {};
   const dagResume = sourceContext?.dagResume && typeof sourceContext.dagResume === "object" ? sourceContext.dagResume : {};
   const previousFailure = sourceContext?.previousFailure && typeof sourceContext.previousFailure === "object" ? sourceContext.previousFailure : {};
@@ -103,7 +104,7 @@ function artifactKindForPhase(phase) {
   return phase || "artifact";
 }
 
-function artifactPathFromName({ cpbRoot, project, kind, value }) {
+function artifactPathFromName({ cpbRoot, project, kind, value }: AnyRecord) {
   if (!value || typeof value !== "string") return null;
   if (path.isAbsolute(value)) return value;
   if (value.includes("/") || value.includes("\\")) return path.resolve(cpbRoot, value);
@@ -113,7 +114,7 @@ function artifactPathFromName({ cpbRoot, project, kind, value }) {
   return resolveArtifactPath(cpbRoot, project, kind, base.slice(prefix.length));
 }
 
-function recoveredArtifactForPhase(sourceContext = {}, phase, { cpbRoot, project } = {}) {
+function recoveredArtifactForPhase(sourceContext: AnyRecord = {}, phase: string, { cpbRoot, project }: AnyRecord = {}) {
   const raw = sourceContext?.retry?.artifacts?.[phase] || sourceContext?.previousFailure?.artifacts?.[phase] || null;
   if (!raw) return null;
   const kind = artifactKindForPhase(phase);
@@ -132,7 +133,7 @@ function recoveredArtifactForPhase(sourceContext = {}, phase, { cpbRoot, project
   return null;
 }
 
-function recoveredVerdictForPhase(sourceContext = {}, phase) {
+function recoveredVerdictForPhase(sourceContext: AnyRecord = {}, phase: string) {
   if (phase === "verify") return sourceContext?.retry?.verdict || sourceContext?.previousFailure?.verdict || null;
   if (phase === "adversarial_verify") return sourceContext?.retry?.adversarialVerdict || sourceContext?.previousFailure?.adversarialVerdict || null;
   return null;
@@ -201,8 +202,8 @@ function retryFailureCause(fail) {
   };
 }
 
-function normalizeProviderServices(services = {}) {
-  const source = services && typeof services === "object" ? services : {};
+function normalizeProviderServices(services: AnyRecord = {}) {
+  const source: AnyRecord = services && typeof services === "object" ? services : {};
   return {
     assertProviderAvailable:
       source.assertProviderAvailable ||
@@ -446,7 +447,7 @@ export async function runJob(ctx) {
   let dynamicAgentPlan = dynamicAgentPlanFrom(ctx, phaseSourceContext);
   try {
     if (typeof prepareTask !== "function") {
-      const err = new Error("prepareTask service is unavailable");
+      const err: any = new Error("prepareTask service is unavailable");
       err.code = "prepare_task_unavailable";
       throw err;
     }
@@ -504,7 +505,7 @@ export async function runJob(ctx) {
       verificationDepth: riskMap?.verificationDepth ?? null,
       adversarialRequired: Boolean(riskMap?.adversarialRequired),
     });
-  } catch (err) {
+  } catch (err: any) {
     const fail = normalizePrepareFailure(err);
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     await reportProgress(ctx, {
@@ -512,7 +513,7 @@ export async function runJob(ctx) {
       jobId,
       project,
       phase: "prepare_task",
-      reason: fail.cause?.code || fail.reason,
+      reason: (fail.cause as AnyRecord | undefined)?.code || fail.reason,
       failure: { kind: fail.kind, reason: fail.reason },
     });
     return { status: "blocked", jobId, exitCode: 2, failure: fail };
@@ -914,7 +915,7 @@ export async function runJob(ctx) {
       let delegateFailure = null;
       try {
         if (typeof providerServices.delegateMarkProviderUnavailable !== "function") {
-          const err = new Error("quota delegate client unavailable; provider state not recorded");
+          const err: any = new Error("quota delegate client unavailable; provider state not recorded");
           err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
           throw err;
         }
@@ -1499,7 +1500,7 @@ export async function runJob(ctx) {
 
   if (gateResult.outcome !== "complete") {
     const adversarialRetryContext = buildAdversarialRetryContext(gateResult, phaseResults, riskMap);
-    const failCause = {
+    const failCause: AnyRecord = {
       gateOutcome: gateResult.outcome,
       missingGates: gateResult.missingGates,
       details: gateResult.details,

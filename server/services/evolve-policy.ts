@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { execSync } from "node:child_process";
 
 const HIGH_RISK_PATTERNS = [
@@ -21,7 +20,7 @@ const HIGH_RISK_PATTERNS = [
  * @param {boolean} [opts.requireCleanWorktree=true] - Reject if git working tree is dirty
  * @returns {{ allowed: boolean, reasons: string[] }}
  */
-export function checkPolicy(issue, opts = {}) {
+export function checkPolicy(issue, opts: Record<string, any> = {}) {
   const reasons = [];
   const allowlist = opts.allowlist || [];
   const requireCleanWorktree = opts.requireCleanWorktree !== false;

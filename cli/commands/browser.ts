@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { readdir, access, constants, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -175,6 +174,7 @@ async function cmdTest(args) {
       providerName,
       prompt: TEST_PROMPT,
       timeoutMs: 120000,
+      signal: undefined,
     });
   } catch (err) {
     if (err instanceof LoginRequiredError || err instanceof BrowserAgentLoginRequiredError) {
@@ -291,7 +291,7 @@ async function cmdDoctor(args, cpbRoot, executorRoot) {
 }
 
 function cmdInstall() {
-  return new Promise((resolve) => {
+  return new Promise<number>((resolve) => {
     const child = spawn("npx", ["playwright", "install", "chromium"], {
       stdio: "inherit",
       shell: false,
@@ -340,7 +340,7 @@ async function cmdDiagnostics(args) {
   return 0;
 }
 
-export async function run(args, { cpbRoot, executorRoot }) {
+export async function run(args, { cpbRoot, executorRoot }: Record<string, any> = {}) {
   const subcmd = args[0];
   const subArgs = args.slice(1);
 
@@ -369,7 +369,10 @@ export async function run(args, { cpbRoot, executorRoot }) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  run(process.argv.slice(2), { cpbRoot: process.env.CPB_ROOT || path.resolve("..") })
+  run(process.argv.slice(2), {
+    cpbRoot: process.env.CPB_ROOT || path.resolve(".."),
+    executorRoot: process.env.CPB_EXECUTOR_ROOT || process.env.CPB_ROOT || path.resolve(".."),
+  })
     .then((code) => {
       if (Number.isInteger(code)) process.exitCode = code;
     })
