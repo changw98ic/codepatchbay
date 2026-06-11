@@ -4,8 +4,7 @@ import websocket from '@fastify/websocket';
 import sensible from '@fastify/sensible';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { accessSync, constants, existsSync, statSync } from 'fs';
-import { readFile } from 'fs/promises';
+import { accessSync, constants, statSync } from 'fs';
 import { registerWatcher } from './services/infra.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -270,35 +269,9 @@ if (process.env.CPB_PROACTIVE === '1') {
   proactiveInterval.unref();
 }
 
-// Serve pre-built web UI from the compiled executor root, with a source-root fallback for local development.
-const executorWebDist = path.join(CPB_EXECUTOR_ROOT, 'web', 'dist');
-const sourceWebDist = path.join(CPB_ROOT, 'web', 'dist');
-const webDist = existsSync(executorWebDist) ? executorWebDist : sourceWebDist;
-if (existsSync(webDist)) {
-  const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-  app.setNotFoundHandler(async (req, reply) => {
-    if (req.url.startsWith('/api') || req.url.startsWith('/ws')) {
-      return reply.code(404).send({ message: `Route GET:${req.url.split('?')[0]} not found` });
-    }
-    const reqPath = req.url.split('?')[0];
-    const filePath = path.join(webDist, reqPath === '/' ? 'index.html' : reqPath);
-    const resolved = path.resolve(filePath);
-    const safe = resolved === webDist || resolved.startsWith(webDist + path.sep);
-    if (!safe) return reply.code(404).send('not found');
-    try {
-      const content = await readFile(filePath);
-      const ext = path.extname(filePath);
-      reply.header('content-type', MIME[ext] || 'application/octet-stream');
-      return reply.send(content);
-    } catch {
-      try {
-        return reply.header('content-type', 'text/html').send(await readFile(path.join(webDist, 'index.html')));
-      } catch {
-        return reply.code(404).send('not found');
-      }
-    }
-  });
-}
+app.setNotFoundHandler(async (req, reply) => {
+  reply.code(404).send({ message: `Route GET:${req.url.split('?')[0]} not found` });
+});
 
 const watchers = await registerWatcher(CPB_ROOT, async (event) => { broadcast(event); }) as Record<string, any>;
 
