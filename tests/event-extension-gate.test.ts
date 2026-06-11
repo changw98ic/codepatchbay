@@ -27,7 +27,7 @@ const EVENT_REGISTRY = {
   job_superseded:         { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'event-store.test.js', testMatch: ['job_superseded'] },
   job_approved:           { class: 'control',  consumer: 'approval-gateway',          testFile: 'event-store.test.js', testMatch: ['job_approved'] },
   recovery_created:       { class: 'audit',    consumer: 'job-store, job-recovery',    testFile: 'job-recovery.test.js', testMatch: ['recovery_created', 'recoverAsNewJob'] },
-  permission_denied:      { class: 'control',  consumer: 'permission-matrix, verifier', testFile: 'profile-loader.test.js', testMatch: ['deny'] },
+  permission_denied:      { class: 'control',  consumer: 'permission-matrix, verifier', testFile: 'prompt-permission-runtime.test.js', testMatch: ['permission_denied'] },
   workflow_selected:      { class: 'state',    consumer: 'supervisor',                testFile: 'engine-provider-event.test.js', testMatch: ['workflow'] },
   workflow_dag_materialized: { class: 'state', consumer: 'supervisor, dag-engine',     testFile: 'engine-prepare-task.test.js', testMatch: ['workflow_dag_materialized'] },
   plan_decision:          { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'engine-provider-event.test.js', testMatch: ['planMode'] },

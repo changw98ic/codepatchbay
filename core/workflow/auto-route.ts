@@ -1,4 +1,4 @@
-import { classifyRoute } from "./triage.js";
+import { triageByRules } from "../triage/rules.js";
 
 const AUTO_TRIAGE_MODES = new Set(["auto", "rules", "", null, undefined]);
 const LOCAL_TRUSTED_ACTORS = Object.freeze(["api", "cli", "ui"]);
@@ -6,6 +6,25 @@ const LOCAL_TRUSTED_ACTORS = Object.freeze(["api", "cli", "ui"]);
 function clean(value, fallback) {
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function classifyRoute(input = {}) {
+  const decision = triageByRules(input);
+  const effective = {
+    workflow: decision.effectiveRoute.workflow,
+    planMode: decision.effectiveRoute.planMode,
+  };
+  const protectedUpgrade = decision.protectedScopes.length > 0 || Boolean(decision.actualDiffRisk?.protected);
+
+  return {
+    ...decision,
+    requested: protectedUpgrade ? decision.effectiveRoute : decision.requestedRoute,
+    effective,
+    workflow: effective.workflow,
+    planMode: effective.planMode,
+    protectedUpgrade,
+    protectedKeywords: decision.protectedScopes.map((scope) => scope.scope),
+  };
 }
 
 export function resolveTaskRoute({

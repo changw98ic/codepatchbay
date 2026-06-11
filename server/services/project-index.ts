@@ -1,4 +1,6 @@
-import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename, readdir, stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { loadRegistry, saveRegistry } from "./hub/hub-registry.js";
 
@@ -142,6 +144,143 @@ export function formatProjectIndexLine(idx) {
   return parts.join(" ");
 }
 
-// ── Re-exports from project-capability-map and project-pollution ──
+// ── project-pollution (inlined) ──
+
+const TEST_VISIBILITY = new Set(["test", "fixture", "generated"]);
+type AnyRecord = Record<string, any>;
+const POLLUTION_NAME_PATTERNS = [
+  { pattern: /fake-repo/i, reason: "fake-repo name" },
+  { pattern: /-test$/i, reason: "test-suffix name" },
+  { pattern: /^exec-/i, reason: "exec-prefix name" },
+  { pattern: /^pbi-test/i, reason: "pbi-test prefix" },
+  { pattern: /^temp-prod/i, reason: "temp-prod prefix" },
+  { pattern: /^jobs-test/i, reason: "jobs-test prefix" },
+  { pattern: /^calc-test/i, reason: "calc-test prefix" },
+];
+
+export function isUnderTestPath(filePath: any) {
+  if (!filePath || typeof filePath !== "string") return false;
+  const tmpDir = realpathSync(os.tmpdir());
+  try {
+    const resolved = realpathSync(path.resolve(filePath));
+    return resolved.startsWith(tmpDir + path.sep) || resolved === tmpDir;
+  } catch {
+    // Path doesn't exist — check unresolved path
+    const resolved = path.resolve(filePath);
+    return resolved.startsWith(tmpDir + path.sep) || resolved === tmpDir;
+  }
+}
+
+export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = false }: AnyRecord = {}) {
+  const reasons: string[] = [];
+  const metadata = project.metadata || {};
+
+  // Explicit visibility tags
+  if (TEST_VISIBILITY.has(metadata.visibility)) {
+    reasons.push(`metadata.visibility=${metadata.visibility}`);
+  }
+  if (metadata.test === true) reasons.push("metadata.test=true");
+  if (metadata.fixture === true) reasons.push("metadata.fixture=true");
+  if (metadata.generated === true) reasons.push("metadata.generated=true");
+  if (typeof metadata.generatedBy === "string" && metadata.generatedBy.length > 0) {
+    reasons.push(`metadata.generatedBy=${metadata.generatedBy}`);
+  }
+
+  // Known pollution name patterns (check id AND name independently)
+  const candidates = [project.id, project.name].filter(Boolean);
+  for (const { pattern, reason } of POLLUTION_NAME_PATTERNS) {
+    if (candidates.some((c) => pattern.test(c))) {
+      reasons.push(reason);
+      break;
+    }
+  }
+
+  // Temp-path warning (only when path checks enabled)
+  if (!skipPathChecks) {
+    if (isUnderTestPath(project.sourcePath)) {
+      reasons.push("sourcePath under tmpdir");
+    }
+    // projectRuntimeRoot under hubRoot is expected (Hub-managed), not pollution
+    const hubResolved = hubRoot ? path.resolve(hubRoot) : null;
+    const rtResolved = project.projectRuntimeRoot ? path.resolve(project.projectRuntimeRoot) : null;
+    const isHubManaged = hubResolved && rtResolved &&
+      (rtResolved.startsWith(hubResolved + path.sep) || rtResolved === hubResolved);
+    if (!isHubManaged && isUnderTestPath(project.projectRuntimeRoot)) {
+      reasons.push("projectRuntimeRoot under tmpdir");
+    }
+  }
+
+  return {
+    visibility: reasons.length > 0 ? "test" : "production",
+    reasons,
+  };
+}
+
+export function filterVisibleProjects(projects: AnyRecord[], opts: AnyRecord = {}) {
+  const { includeTest = false } = opts;
+  if (includeTest) return projects;
+  const skipPathChecks = opts.skipPathChecks || isUnderTestPath(opts.hubRoot);
+
+  return projects.filter((project) => {
+    const { visibility } = classifyProject(project, { hubRoot: opts.hubRoot, skipPathChecks });
+    return visibility === "production";
+  });
+}
+
+export async function scanHubPollution(hubRoot: string) {
+  const candidates: AnyRecord[] = [];
+  const orphanRuntimeDirs: AnyRecord[] = [];
+
+  // Read registry
+  let registry;
+  try {
+    registry = await loadRegistry(hubRoot);
+  } catch {
+    registry = { projects: {} };
+  }
+
+  const projects: AnyRecord[] = typeof registry.projects === "object" && registry.projects !== null
+    ? Object.values(registry.projects) as AnyRecord[]
+    : [];
+  const registeredIds = new Set(projects.map((p) => p.id));
+
+  // Classify registered projects
+  for (const project of projects) {
+    const classification = classifyProject(project, { hubRoot });
+    if (classification.visibility === "test") {
+      candidates.push({
+        kind: "project",
+        projectId: project.id,
+        reasons: classification.reasons,
+        sourcePath: project.sourcePath,
+        projectRuntimeRoot: project.projectRuntimeRoot,
+      });
+    }
+  }
+
+  // Detect orphan runtime directories
+  const projectsDir = path.join(path.resolve(hubRoot), "projects");
+  let entries;
+  try {
+    entries = await readdir(projectsDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!registeredIds.has(entry.name)) {
+      orphanRuntimeDirs.push({
+        kind: "orphan-runtime-dir",
+        runtimeDir: path.join(projectsDir, entry.name),
+        projectId: entry.name,
+        reasons: ["unregistered runtime directory"],
+      });
+    }
+  }
+
+  return { candidates, orphanRuntimeDirs };
+}
+
+// ── Re-exports from project-capability-map ──
 export { projectCapabilityMapGate, generateProjectCapabilityMaps } from "./project-capability-map.js";
-export { isUnderTestPath, classifyProject, filterVisibleProjects, scanHubPollution } from "./project-pollution.js";

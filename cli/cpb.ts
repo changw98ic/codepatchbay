@@ -48,7 +48,6 @@ async function usage() {
   console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
-  console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
   console.log(`  ${CYAN}sdd${NC} <init|bootstrap|verify|drift> <project> [--json]  Spec-driven development skeleton`);
@@ -66,7 +65,6 @@ async function usage() {
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
   console.log(`  ${CYAN}setup${NC} [--json]                         Run the setup wizard`);
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
-  console.log(`  ${CYAN}browser${NC} <providers|show|login|logout|test|doctor|install|reset|diagnostics>  Browser agent management`);
   console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration: bind, connect, health`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
@@ -79,7 +77,6 @@ async function usage() {
   console.log(`  ${CYAN}migrate-runtime-root${NC} [--execute] [--dry-run]  One-time legacy runtime migration`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
-  console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
   console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
@@ -116,7 +113,6 @@ const COMMANDS = {
   pipeline: "pipeline.js",
   profile: "profile.js",
   run: "run.js",
-  demo: "demo.js",
   research: "research.js",
   status: "status.js",
   list: "list.js",
@@ -132,7 +128,6 @@ const COMMANDS = {
   outputs: "outputs.js",
   setup: "setup.js",
   agents: "agents.js",
-  browser: "browser.js",
   auth: "auth.js",
   github: "github.js",
   doctor: "doctor.js",
@@ -140,7 +135,6 @@ const COMMANDS = {
   gc: "reconcile.js",
   recover: "reconcile.js",
   wiki: "wiki.js",
-  ui: "ui.js",
   version: "version.js",
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",

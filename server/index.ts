@@ -9,7 +9,6 @@ import { readFile } from 'fs/promises';
 import { registerWatcher } from './services/infra.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
-import { channelRoutes } from './routes/channels.js';
 import { reviewRoutes } from './routes/review.js';
 import { evolveRoutes } from './routes/evolve.js';
 import { hubRoutes } from './routes/hub.js';
@@ -22,7 +21,6 @@ import { getProject, resolveHubRoot } from './services/hub/hub-registry.js';
 import { getHubRuntime } from './services/hub/hub-registry.js';
 import { assertNoLegacyRuntimeData } from './services/runtime-migration-guard.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/infra.js';
-import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.resolve(__dirname, '..'));
@@ -197,20 +195,12 @@ app.get('/api/health', async () => ({
   uptimeMs: Math.round(process.uptime() * 1000),
 }));
 
-// File watcher + notification service
-const notifService = initNotificationService(CPB_ROOT);
-const notifBroadcast = async (event) => {
-  broadcast(event);
-  await notifService.notify(event).catch(() => {});
-};
-
-// Register routes — decorate broadcast for channel notifications
-app.decorate('notifBroadcast', notifBroadcast);
+// Register routes — decorate broadcast for event-driven routes
+app.decorate('notifBroadcast', async (event) => { broadcast(event); });
 
 // Register routes
 app.register(projectRoutes, { prefix: '/api' });
 app.register(taskRoutes, { prefix: '/api' });
-app.register(channelRoutes, { prefix: '/api' });
 app.register(reviewRoutes, { prefix: '/api' });
 app.register(evolveRoutes, { prefix: '/api' });
 app.register(hubRoutes, { prefix: '/api' });
@@ -310,7 +300,7 @@ if (existsSync(webDist)) {
   });
 }
 
-const watchers = await registerWatcher(CPB_ROOT, notifBroadcast) as Record<string, any>;
+const watchers = await registerWatcher(CPB_ROOT, async (event) => { broadcast(event); }) as Record<string, any>;
 
 // Start
 try {
@@ -327,7 +317,6 @@ const shutdown = async (sig) => {
   console.log(`\n${sig} received, shutting down...`);
   await hubRuntime.markDead().catch((err) => app.log.warn({ err }, 'failed to mark hub dead'));
   closeAll();
-  await notifService.close();
   await watchers.stateWatcher?.close();
   await watchers.wikiWatcher.close();
   await watchers.eventsWatcher.close();
