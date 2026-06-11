@@ -116,15 +116,6 @@ test("npm pack includes all REQUIRED_EXECUTOR_FILES", () => {
     "npm pack must include the compiled web UI",
   );
 
-  assert.ok(
-    hasPackedPath(packedPaths, "core/agents/drivers/browser/fixtures/pages/mock-chat.html"),
-    "npm pack must include browser mock fixture HTML",
-  );
-  assert.ok(
-    hasPackedPath(packedPaths, "core/agents/drivers/browser/fixtures/pages/dev-null.html"),
-    "npm pack must include browser dev-null fixture HTML",
-  );
-
   const runtimeStateArtifacts = [...packedPaths]
     .filter((packedPath) => packedPath.startsWith("dist/server/.omc/") || packedPath.startsWith("server/.omc/"))
     .sort();

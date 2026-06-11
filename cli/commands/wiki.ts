@@ -145,7 +145,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     const {
       extractExperienceFromVerdict,
       rebuildExperienceIndex,
-    } = await import("../../server/services/experience-extractor.js");
+    } = await import("../../server/services/event/event-source.js");
     const { readFile, readdir } = await import("node:fs/promises");
 
     if (expSub === "list") {

@@ -7,7 +7,7 @@ import test, { describe, beforeEach, afterEach } from "node:test";
 import { ProjectWorker, parseArgs } from "../bridges/project-worker.js";
 import { registerProject, heartbeatWorker, getProject, loadRegistry, saveRegistry } from "../server/services/hub/hub-registry.js";
 import { enqueue, listQueue, queueStatus } from "../server/services/hub/hub-queue.js";
-import { listDispatches } from "../server/services/dispatch-state.js";
+import { listDispatches } from "../server/services/dispatch/dispatch.js";
 
 let activeWorkers;
 
