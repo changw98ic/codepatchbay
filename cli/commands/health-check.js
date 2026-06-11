@@ -11,7 +11,7 @@ function usage() {
     "Usage: cpb health-check [options]",
     "",
     "Options:",
-    "  --url <url>                 HTTP endpoint to probe (default: http://127.0.0.1:<port>/api/projects)",
+    "  --url <url>                 HTTP endpoint to probe (default: http://127.0.0.1:<port>/api/health)",
     "  --port <port>               Port used by the default HTTP endpoint",
     "  --http-attempts <n>         Number of HTTP attempts (default: 10)",
     "  --http-interval-ms <ms>     Delay between HTTP attempts (default: 3000)",
@@ -28,7 +28,7 @@ function positiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseArgs(args = [], env = process.env) {
+export function parseArgs(args = [], env = process.env) {
   const options = {
     port: positiveInt(env.CPB_PORT || "3456", 3456),
     url: null,
@@ -77,7 +77,7 @@ function parseArgs(args = [], env = process.env) {
     }
   }
 
-  options.url ||= `http://127.0.0.1:${options.port}/api/projects`;
+  options.url ||= `http://127.0.0.1:${options.port}/api/health`;
   return options;
 }
 
@@ -92,7 +92,7 @@ async function httpCheck(url, maxAttempts = 10, intervalMs = 3000) {
   return false;
 }
 
-function runCmd(cmd, args, cwd = CPB_ROOT) {
+function runCmd(cmd, args, cwd = process.cwd()) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, stdio: "pipe" });
     let output = "";
@@ -103,15 +103,21 @@ function runCmd(cmd, args, cwd = CPB_ROOT) {
   });
 }
 
-async function check({ cpbRoot, executorRoot, options }) {
+export async function check({
+  cpbRoot,
+  executorRoot,
+  options,
+  httpCheckFn = httpCheck,
+  runCmdFn = runCmd,
+  fakeAcpSmokeFn = null,
+}) {
   const checks = [];
-  const webDir = path.join(cpbRoot, "web");
 
   // Check 1: HTTP
   if (options.skipHttp) {
     checks.push({ name: "http", ok: true, skipped: true });
   } else {
-    const httpOk = await httpCheck(options.url, options.httpAttempts, options.httpIntervalMs);
+    const httpOk = await httpCheckFn(options.url, options.httpAttempts, options.httpIntervalMs);
     checks.push({ name: "http", ok: httpOk });
     if (!httpOk) {
       console.log("FAIL: HTTP health check failed");
@@ -121,14 +127,14 @@ async function check({ cpbRoot, executorRoot, options }) {
 
   // Check 2: Backend tests
   if (!options.skipTests) {
-    const tests = await runCmd("node", ["--test", "tests/*.mjs"], cpbRoot);
+    const tests = await runCmdFn("npm", ["run", "test:node"], cpbRoot);
     checks.push({ name: "tests", ok: tests.ok });
     if (!tests.ok) console.log("FAIL: tests\n" + tests.output.slice(-500));
   }
 
   // Check 3: Frontend build
   if (!options.skipBuild) {
-    const build = await runCmd("npx", ["vite", "build"], webDir);
+    const build = await runCmdFn("npm", ["run", "build:web"], cpbRoot);
     checks.push({ name: "build", ok: build.ok });
     if (!build.ok) console.log("FAIL: build\n" + build.output.slice(-500));
   }
@@ -136,7 +142,10 @@ async function check({ cpbRoot, executorRoot, options }) {
   // Check 4: repeatable fake ACP smoke
   if (options.fakeAcpSmoke) {
     try {
-      const { runFakeAcpSmoke } = await import("../../server/services/local-smoke.mjs");
+      let runFakeAcpSmoke = fakeAcpSmokeFn;
+      if (!runFakeAcpSmoke) {
+        ({ runFakeAcpSmoke } = await import("../../server/services/local-smoke.mjs"));
+      }
       const smoke = await runFakeAcpSmoke({ executorRoot: executorRoot || cpbRoot });
       checks.push({ name: "fake-acp-smoke", ok: smoke.ok, artifacts: smoke.artifacts });
       console.log(`PASS: fake-acp-smoke (${smoke.artifacts.inbox.length} inbox, ${smoke.artifacts.outputs.length} outputs)`);
@@ -149,7 +158,7 @@ async function check({ cpbRoot, executorRoot, options }) {
   return checks;
 }
 
-export async function run(args = [], { cpbRoot, executorRoot } = {}) {
+export async function run(args = [], { cpbRoot, executorRoot, httpCheckFn, runCmdFn, fakeAcpSmokeFn } = {}) {
   let options;
   try {
     options = parseArgs(args);
@@ -165,7 +174,14 @@ export async function run(args = [], { cpbRoot, executorRoot } = {}) {
 
   const root = path.resolve(cpbRoot || process.env.CPB_ROOT || ".");
   const execRoot = path.resolve(executorRoot || process.env.CPB_EXECUTOR_ROOT || root);
-  const checks = await check({ cpbRoot: root, executorRoot: execRoot, options });
+  const checks = await check({
+    cpbRoot: root,
+    executorRoot: execRoot,
+    options,
+    httpCheckFn,
+    runCmdFn,
+    fakeAcpSmokeFn,
+  });
   const allOk = checks.every((c) => c.ok);
   console.log(allOk ? "PASS" : `FAIL: ${checks.filter((c) => !c.ok).map((c) => c.name).join(", ")}`);
   return allOk ? 0 : 1;

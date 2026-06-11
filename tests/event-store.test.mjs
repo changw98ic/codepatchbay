@@ -32,11 +32,12 @@ describe("external_repair events in materializeJob", () => {
   });
 
   it("external_repair_failed sets externalRepair status to failed", () => {
+    const t = ts(200);
     const state = materialize(
       { type: "external_repair_started", reason: "fix", ts: ts(100) },
-      { type: "external_repair_failed", error: "timeout", ts: ts(200) },
+      { type: "external_repair_failed", error: "timeout", ts: t },
     );
-    assert.deepStrictEqual(state.externalRepair, { status: "failed", error: "timeout", ts: ts(200) });
+    assert.deepStrictEqual(state.externalRepair, { status: "failed", error: "timeout", ts: t });
   });
 
   it("externalRepair defaults to null", () => {
