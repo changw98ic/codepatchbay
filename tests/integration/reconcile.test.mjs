@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, rm, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, writeFile, rm, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -509,8 +509,10 @@ describe("job-runner - signal handling", () => {
     const job = await createJob(cpbRoot, { project, task: "signal test" });
     const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${job.jobId}.jsonl`);
 
-    // Long-running script that just waits
-    const waitScript = "setTimeout(function(){},10000)";
+    // Long-running executable that ignores the phase argument job-runner prepends.
+    const waitScriptPath = path.join(cpbRoot, "wait-script.mjs");
+    await writeFile(waitScriptPath, "#!/usr/bin/env node\nsetTimeout(function(){}, 10000);\n", "utf8");
+    await chmod(waitScriptPath, 0o755);
 
     const bridgePath = path.resolve(
       path.join(import.meta.dirname, "..", "..", "bridges", "job-runner.mjs")
@@ -522,49 +524,59 @@ describe("job-runner - signal handling", () => {
       "--project", project,
       "--job-id", job.jobId,
       "--phase", "execute",
-      "--script", process.execPath,
-      "--", "-e", waitScript,
+      "--script", waitScriptPath,
+      "--",
     ], {
       cwd: cpbRoot,
       env: { ...process.env, CPB_ROOT: cpbRoot, CPB_HUB_ROOT: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Wait for an observable startup marker before sending SIGINT,
-    // so the signal arrives after the handler is installed.
-    const waitForPhaseStarted = async () => {
-      const deadline = Date.now() + 8_000;
+    // Register close listener immediately before awaits that might throw.
+    const closePromise = new Promise((resolve) => {
+      child.once("close", (code) => resolve(code));
+    });
+
+    try {
+      // Wait for phase_started event with generous timeout for slow CI
+      const deadline = Date.now() + 15_000;
+      let started = false;
       while (Date.now() < deadline) {
         try {
           const raw = await readFile(eventFile, "utf8");
-          if (raw.includes("phase_started")) return;
+          if (raw.includes("phase_started")) { started = true; break; }
         } catch { /* not created yet */ }
-        await new Promise((r) => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 100));
       }
-      throw new Error("timed out waiting for phase_started event");
-    };
-    await waitForPhaseStarted();
-    const exitCodePromise = new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        resolve(null);
-      }, 10_000);
-      child.once("close", (code, signal) => {
-        clearTimeout(timeout);
-        resolve(code);
-      });
-    });
-    child.kill("SIGINT");
-    const exitCode = await exitCodePromise;
+      assert.ok(started, "timed out waiting for phase_started event");
 
-    // Exit code 130 = 128 + SIGINT(2), null = SIGKILL fallback on slow CI
-    assert.ok(
-      exitCode === 130 || exitCode === 1 || exitCode === null,
-      `expected exit 130 or 1 (signal race), got ${exitCode}`
-    );
+      child.kill("SIGINT");
 
-    // Check event stream for interrupted evidence
-    const events = await readFile(eventFile, "utf8");
-    assert.match(events, /interrupted by SIGINT/, `event stream should contain SIGINT evidence. Got: ${events}`);
+      let timeout = null;
+      const exitCode = await Promise.race([
+        closePromise,
+        new Promise((resolve) => {
+          timeout = setTimeout(() => {
+            child.kill("SIGKILL");
+            resolve(null);
+          }, 5_000);
+        }),
+      ]);
+      clearTimeout(timeout);
+
+      // Exit code 130 = 128 + SIGINT(2), null = SIGKILL fallback on slow CI
+      assert.ok(
+        exitCode === 130 || exitCode === 1 || exitCode === null,
+        `expected exit 130 or 1 (signal race), got ${exitCode}`
+      );
+
+      // Check event stream for interrupted evidence
+      const events = await readFile(eventFile, "utf8");
+      assert.match(events, /interrupted by SIGINT/, `event stream should contain SIGINT evidence. Got: ${events}`);
+    } finally {
+      // Always ensure child is dead and reaped
+      try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      await closePromise.catch(() => {});
+    }
   });
 });
