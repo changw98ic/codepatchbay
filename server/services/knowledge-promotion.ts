@@ -29,16 +29,24 @@ function assertSafeSessionId(sessionId: string) {
   }
 }
 
-function candidateDir(sourcePath: string, sessionId: string) {
-  assertSafeSessionId(sessionId);
-  return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotion-candidates");
+function resolvePromotionDataRoot({ projectRuntimeRoot, dataRoot }: AnyRecord = {}) {
+  const root = projectRuntimeRoot || dataRoot;
+  if (!root || !String(root).trim()) {
+    throw new Error("projectRuntimeRoot or dataRoot is required");
+  }
+  return path.resolve(String(root));
 }
 
-export function promotionCandidatePath(sourcePath: string, sessionId: string, candidateId: string) {
+function candidateDir(dataRoot: string, sessionId: string) {
+  assertSafeSessionId(sessionId);
+  return path.join(path.resolve(dataRoot), "sessions", sessionId, "promotion-candidates");
+}
+
+export function promotionCandidatePath(dataRoot: string, sessionId: string, candidateId: string) {
   if (!SAFE_SEGMENT.test(candidateId)) {
     throw new Error(`invalid candidateId: ${candidateId}`);
   }
-  return path.join(candidateDir(sourcePath, sessionId), `${candidateId}.md`);
+  return path.join(candidateDir(dataRoot, sessionId), `${candidateId}.md`);
 }
 
 function renderCandidate({ title, content, sourceLinks = [] }: AnyRecord) {
@@ -51,6 +59,8 @@ function renderCandidate({ title, content, sourceLinks = [] }: AnyRecord) {
 
 export async function writePromotionCandidate({
   sourcePath,
+  projectRuntimeRoot,
+  dataRoot,
   sessionId,
   title = "Promotion Candidate",
   content,
@@ -59,23 +69,25 @@ export async function writePromotionCandidate({
   if (!sourcePath) throw new Error("sourcePath is required");
   if (!sessionId) throw new Error("sessionId is required");
   if (!content || !String(content).trim()) throw new Error("content is required");
+  const resolvedDataRoot = resolvePromotionDataRoot({ projectRuntimeRoot, dataRoot });
   assertKnowledgeWriteAllowed("session-memory", { automatic: true, markdown: true });
 
   const candidateId = slugify(title);
-  const filePath = promotionCandidatePath(sourcePath, sessionId, candidateId);
+  const filePath = promotionCandidatePath(resolvedDataRoot, sessionId, candidateId);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, renderCandidate({ title, content, sourceLinks }), "utf8");
   return {
     candidateId,
     filePath,
     sourcePath: path.resolve(sourcePath),
+    dataRoot: resolvedDataRoot,
     sessionId,
     createdAt: nowIso(),
   };
 }
 
-async function readCandidateContent(sourcePath: string, sessionId: string, candidateId: string) {
-  return await readFile(promotionCandidatePath(sourcePath, sessionId, candidateId), "utf8");
+async function readCandidateContent(dataRoot: string, sessionId: string, candidateId: string) {
+  return await readFile(promotionCandidatePath(dataRoot, sessionId, candidateId), "utf8");
 }
 
 function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
@@ -86,8 +98,9 @@ function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
   return `${lines.join("\n").trim()}\n\n`;
 }
 
-async function appendPromotionRecord(sourcePath: string, sessionId: string, record: AnyRecord) {
-  const filePath = path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotions.jsonl");
+async function appendPromotionRecord(dataRoot: string, sessionId: string, record: AnyRecord) {
+  assertSafeSessionId(sessionId);
+  const filePath = path.join(path.resolve(dataRoot), "sessions", sessionId, "promotions.jsonl");
   await mkdir(path.dirname(filePath), { recursive: true });
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }
@@ -95,6 +108,8 @@ async function appendPromotionRecord(sourcePath: string, sessionId: string, reco
 export async function promoteKnowledge({
   hubRoot,
   sourcePath,
+  projectRuntimeRoot,
+  dataRoot,
   sessionId,
   candidateId,
   targetKind = "project-memory",
@@ -109,6 +124,8 @@ export async function promoteKnowledge({
   }
   if (!sourcePath) throw new Error("sourcePath is required");
   if (!sessionId) throw new Error("sessionId is required");
+  assertSafeSessionId(sessionId);
+  const resolvedDataRoot = resolvePromotionDataRoot({ projectRuntimeRoot, dataRoot });
 
   const classification = classifyKnowledgeKind(targetKind);
   if (classification === "machine-state") {
@@ -116,7 +133,7 @@ export async function promoteKnowledge({
   }
   assertKnowledgeWriteAllowed(targetKind, { automatic: false, markdown: true });
 
-  const body = content || await readCandidateContent(sourcePath, sessionId, candidateId);
+  const body = content || await readCandidateContent(resolvedDataRoot, sessionId, candidateId);
   const promotionTitle = title || name || candidateId || "Promoted Knowledge";
   const targetPath = resolveKnowledgePath({
     hubRoot,
@@ -130,7 +147,7 @@ export async function promoteKnowledge({
   const rendered = renderPromotion({
     title: promotionTitle,
     content: body,
-    sourceLinks: sourceLinks.length > 0 ? sourceLinks : candidateId ? [promotionCandidatePath(sourcePath, sessionId, candidateId)] : [],
+    sourceLinks: sourceLinks.length > 0 ? sourceLinks : candidateId ? [promotionCandidatePath(resolvedDataRoot, sessionId, candidateId)] : [],
   });
   if (targetKind === "project-memory") {
     await appendFile(targetPath, rendered, "utf8");
@@ -145,6 +162,6 @@ export async function promoteKnowledge({
     candidateId: candidateId || null,
     title: promotionTitle,
   };
-  await appendPromotionRecord(sourcePath, sessionId, record);
+  await appendPromotionRecord(resolvedDataRoot, sessionId, record);
   return record;
 }

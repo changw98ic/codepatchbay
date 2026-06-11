@@ -45,18 +45,18 @@ async function setupTempRoots() {
   await mkdir(path.join(cpbRoot, 'wiki/projects'), { recursive: true });
   await mkdir(path.join(hubRoot, 'queue'), { recursive: true });
 
-  await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'test-proj', sourcePath: projectRoot, id: 'test-proj' });
+  const project = await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'test-proj', sourcePath: projectRoot, id: 'test-proj' });
 
-  return { cpbRoot, hubRoot, projectRoot };
+  return { cpbRoot, hubRoot, projectRoot, projectRuntimeRoot: project.projectRuntimeRoot };
 }
 
 // ── GET /api/tasks/running ──
 
 describe('GET /api/tasks/running', () => {
-  let cpbRoot, hubRoot, projectRoot, app;
+  let cpbRoot, hubRoot, projectRoot, projectRuntimeRoot, app;
 
   beforeEach(async () => {
-    ({ cpbRoot, hubRoot, projectRoot } = await setupTempRoots());
+    ({ cpbRoot, hubRoot, projectRoot, projectRuntimeRoot } = await setupTempRoots());
     app = await buildApp(cpbRoot, hubRoot);
   });
 
@@ -77,10 +77,10 @@ describe('GET /api/tasks/running', () => {
 // ── GET /api/tasks/durable ──
 
 describe('GET /api/tasks/durable', () => {
-  let cpbRoot, hubRoot, projectRoot, app;
+  let cpbRoot, hubRoot, projectRoot, projectRuntimeRoot, app;
 
   beforeEach(async () => {
-    ({ cpbRoot, hubRoot, projectRoot } = await setupTempRoots());
+    ({ cpbRoot, hubRoot, projectRoot, projectRuntimeRoot } = await setupTempRoots());
     app = await buildApp(cpbRoot, hubRoot);
   });
 
@@ -101,7 +101,7 @@ describe('GET /api/tasks/durable', () => {
   });
 
   it('returns jobs from the event store', async () => {
-    const eventsDir = path.join(cpbRoot, 'cpb-task/events/test-proj');
+    const eventsDir = path.join(projectRuntimeRoot, 'events/test-proj');
     await mkdir(eventsDir, { recursive: true });
     const jobEvent = {
       type: 'job_created',

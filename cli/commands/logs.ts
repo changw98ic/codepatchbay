@@ -81,16 +81,23 @@ async function collectAllLogFiles(hubRoot, workerId, jobId, cpbRoot) {
   // JSONL event files (use listEventFiles to cover all runtime roots)
   try {
     const { listEventFiles } = await import("../../server/services/event-store.js");
-    const eventFiles = await listEventFiles(cpbRoot);
-    for (const ef of eventFiles) {
-      if (jobId) {
-        // Flexible match: try full jobId, then strip "job-" prefix
-        const jobIdBase = jobId.startsWith("job-") ? jobId.slice(4) : jobId;
-        const matchFull = ef.jobId.includes(jobId);
-        const matchBase = jobIdBase !== jobId && ef.jobId.includes(jobIdBase);
-        if (!matchFull && !matchBase) continue;
+    const { listRuntimeDataRoots } = await import("../../server/services/runtime-context.js");
+    const roots = await listRuntimeDataRoots(cpbRoot, { includeLegacy: false });
+    for (const root of roots) {
+      const eventFiles = await listEventFiles(cpbRoot, {
+        dataRoot: root.dataRoot,
+        includeLegacyFallback: false,
+      });
+      for (const ef of eventFiles) {
+        if (jobId) {
+          // Flexible match: try full jobId, then strip "job-" prefix
+          const jobIdBase = jobId.startsWith("job-") ? jobId.slice(4) : jobId;
+          const matchFull = ef.jobId.includes(jobId);
+          const matchBase = jobIdBase !== jobId && ef.jobId.includes(jobIdBase);
+          if (!matchFull && !matchBase) continue;
+        }
+        files.push(ef.file);
       }
-      files.push(ef.file);
     }
   } catch {}
   return files;

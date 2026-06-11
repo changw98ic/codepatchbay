@@ -1,8 +1,12 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-export async function appendJobEvent(cpbRoot, project, jobId, event) {
-  const eventsDir = path.join(cpbRoot, "cpb-task", "events", project);
+export async function appendJobEvent(cpbRoot, project, jobId, event, opts: { dataRoot?: string } = {}) {
+  const dataRoot = opts.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT;
+  if (!dataRoot) {
+    throw new Error(`project runtime root required for project '${project}'`);
+  }
+  const eventsDir = path.join(dataRoot, "events", project);
   await mkdir(eventsDir, { recursive: true });
   const line = JSON.stringify({ ...event, jobId, project, ts: event.ts || new Date().toISOString() }) + "\n";
   await appendFile(path.join(eventsDir, `${jobId}.jsonl`), line, "utf8");

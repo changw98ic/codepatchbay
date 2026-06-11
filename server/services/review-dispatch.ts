@@ -7,14 +7,56 @@
 
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { execFile } from "child_process";
-import { runtimeDataPath } from "./runtime-root.js";
 import { enqueue } from "./hub-queue.js";
 import { makeJobId } from "./job-store.js";
 import { getSession, updateSession } from "./review-session.js";
 import { buildChildEnv } from "./secret-policy.js";
 import { resolveHubRoot, getProject } from "./hub-registry.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
+
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const DISPATCH_LOCK_MAX_ATTEMPTS = 100;
+const DISPATCH_LOCK_DELAY_MS = 10;
+
+function reviewControlRoot(cpbRoot, hubRoot = null) {
+  return path.resolve(hubRoot || process.env.CPB_HUB_ROOT || cpbRoot);
+}
+
+function reviewStorageOptions(cpbRoot, hubRoot = null) {
+  return { hubRoot: reviewControlRoot(cpbRoot, hubRoot) };
+}
+
+function dispatchLockDir(cpbRoot, sessionId, hubRoot = null) {
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`invalid sessionId: ${sessionId}`);
+  }
+  return path.join(reviewControlRoot(cpbRoot, hubRoot), "reviews", `.lock-dispatch-${sessionId}`);
+}
+
+async function withDispatchSessionLock(cpbRoot, sessionId, hubRoot, fn) {
+  const lockDir = dispatchLockDir(cpbRoot, sessionId, hubRoot);
+  await mkdir(path.dirname(lockDir), { recursive: true });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST" || attempt >= DISPATCH_LOCK_MAX_ATTEMPTS) {
+        throw err?.code === "EEXIST"
+          ? new Error(`review dispatch lock busy: ${sessionId}`)
+          : err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, DISPATCH_LOCK_DELAY_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 function gitExec(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -25,8 +67,19 @@ function gitExec(cwd, ...args) {
   });
 }
 
-function worktreePathFor(cpbRoot, jobId) {
-  return runtimeDataPath(cpbRoot, "worktrees", `${jobId}-pipeline`);
+async function worktreePathFor(cpbRoot, project, jobId, hubRoot) {
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot });
+  return path.join(dataRoot, "worktrees", `${jobId}-pipeline`);
+}
+
+async function projectSourcePathFor(hubRoot, project) {
+  let registered = null;
+  try {
+    registered = await getProject(hubRoot, project);
+  } catch {
+    registered = null;
+  }
+  return registered?.sourcePath || null;
 }
 
 /**
@@ -34,54 +87,90 @@ function worktreePathFor(cpbRoot, jobId) {
  * Shared by approve and auto-approve routes.
  */
 export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
-  const session = await getSession(cpbRoot, sessionId);
-  if (!session) return { ok: false, error: "session_not_found" };
-
-  const jobId = makeJobId();
-  const wtPath = worktreePathFor(cpbRoot, jobId);
   const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const storageOptions = reviewStorageOptions(cpbRoot, hubRoot);
+  return withDispatchSessionLock(cpbRoot, sessionId, hubRoot, async () => {
+    const session = await getSession(cpbRoot, sessionId, storageOptions);
+    if (!session) return { ok: false, error: "session_not_found" };
 
-  let registered;
-  try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
+    if (session.status === "dispatched" && session.jobId) {
+      return {
+        ok: true,
+        dispatched: true,
+        sessionId: session.sessionId,
+        taskId: session.queueEntryId || session.jobId,
+        jobId: session.jobId,
+        session,
+        project: session.project,
+        note: "already_dispatched",
+      };
+    }
 
-  const entry = await enqueue(hubRoot, {
-    projectId: session.project,
-    sourcePath: registered?.sourcePath || null,
-    priority: "P1",
-    description: session.intent,
-    type: "review_dispatch",
-    metadata: {
-      source: "review",
-      reviewSessionId: session.sessionId,
-      jobId,
-      workflow: "standard",
-      autoFinalize: true,
-      requestedAt: new Date().toISOString(),
-    },
+    if (session.status !== "user_review") {
+      return {
+        ok: false,
+        error: "invalid_state",
+        status: session.status,
+        note: "invalid_state_for_dispatch",
+      };
+    }
+
+    const jobId = makeJobId();
+    const dispatchKey = `review:${session.sessionId}`;
+
+    let registered;
+    try { registered = await getProject(hubRoot, session.project); } catch { registered = null; }
+
+    const entry = await enqueue(hubRoot, {
+      projectId: session.project,
+      sourcePath: registered?.sourcePath || null,
+      sessionId: session.sessionId,
+      priority: "P1",
+      description: session.intent,
+      type: "review_dispatch",
+      metadata: {
+        source: "review",
+        reviewSessionId: session.sessionId,
+        queueDedupeKey: dispatchKey,
+        jobId,
+        workflow: "standard",
+        autoFinalize: true,
+        requestedAt: new Date().toISOString(),
+      },
+    });
+
+    const dispatchedJobId = entry.metadata?.jobId || jobId;
+    const wtPath = await worktreePathFor(cpbRoot, session.project, dispatchedJobId, hubRoot);
+    const updated = await updateSession(cpbRoot, session.sessionId, {
+      status: "dispatched",
+      userVerdict: "approved",
+      jobId: dispatchedJobId,
+      queueEntryId: entry.id,
+      worktreePath: wtPath,
+      idempotency: {
+        ...(session.idempotency || {}),
+        dispatchKey,
+      },
+    }, storageOptions);
+
+    return {
+      ok: true,
+      sessionId: session.sessionId,
+      taskId: entry.id,
+      jobId: dispatchedJobId,
+      session: updated,
+      project: session.project,
+    };
   });
-
-  const updated = await updateSession(cpbRoot, session.sessionId, {
-    status: "dispatched",
-    userVerdict: "approved",
-    jobId,
-    worktreePath: wtPath,
-  });
-
-  return {
-    ok: true,
-    sessionId: session.sessionId,
-    taskId: entry.id,
-    jobId,
-    session: updated,
-    project: session.project,
-  };
 }
 
 /**
  * Auto-approve path: handles already-dispatched sessions idempotently.
  */
 export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
-  const session = await getSession(cpbRoot, sessionId);
+  const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const storageOptions = reviewStorageOptions(cpbRoot, hubRoot);
+  const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
 
   if (!["dispatched", "user_review"].includes(session.status)) {
@@ -93,39 +182,22 @@ export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootO
     };
   }
 
-  // If already dispatched with a jobId, just confirm
-  if (session.status === "dispatched" && session.jobId) {
-    return {
-      ok: true,
-      dispatched: true,
-      sessionId: session.sessionId,
-      taskId: session.jobId,
-      project: session.project,
-      session,
-      note: "already_dispatched",
-    };
-  }
-
-  // Transition from user_review → dispatched, then dispatch
-  await updateSession(cpbRoot, session.sessionId, {
-    status: "dispatched",
-    userVerdict: "approved",
-  }, { skipTransitionCheck: true });
-
   return dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride });
 }
 
 /**
  * Cancel a review session.
  */
-export async function cancelReviewDispatch(cpbRoot, sessionId, reason) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function cancelReviewDispatch(cpbRoot, sessionId, reason, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+  const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const storageOptions = reviewStorageOptions(cpbRoot, hubRoot);
+  const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
 
   const updated = await updateSession(cpbRoot, sessionId, {
     status: "cancelled",
     detail: reason || "cancelled",
-  }, { skipTransitionCheck: true });
+  }, { ...storageOptions, skipTransitionCheck: true });
 
   return { ok: true, sessionId, session: updated, project: session.project };
 }
@@ -133,8 +205,9 @@ export async function cancelReviewDispatch(cpbRoot, sessionId, reason) {
 /**
  * Run ACP analysis on a review session.
  */
-export async function analyzeSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function analyzeSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+  const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const session = await getSession(cpbRoot, sessionId, reviewStorageOptions(cpbRoot, hubRoot));
   if (!session) return { ok: false, error: "session_not_found" };
 
   const sections = [];
@@ -256,8 +329,10 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 /**
  * Accept a review session — merge worktree branch into main.
  */
-export async function acceptSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function acceptSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+  const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const storageOptions = reviewStorageOptions(cpbRoot, hubRoot);
+  const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review" && session.status !== "dispatched") {
     return { ok: false, error: "invalid_state", status: session.status };
@@ -266,12 +341,14 @@ export async function acceptSession(cpbRoot, sessionId) {
   let merged = false;
   let mergeError = null;
 
-  if (session.worktreePath && session.jobId) {
-    try {
-      const projectJson = path.join(cpbRoot, "wiki", "projects", session.project, "project.json");
-      const meta = JSON.parse(await readFile(projectJson, "utf8"));
-      const sourcePath = meta.sourcePath;
-      if (sourcePath) {
+  if (session.worktreePath || session.jobId) {
+    if (!session.worktreePath || !session.jobId) {
+      mergeError = "review merge requires both worktreePath and jobId";
+    } else {
+      const sourcePath = await projectSourcePathFor(hubRoot, session.project);
+      if (!sourcePath) {
+        mergeError = `project sourcePath missing for review session ${session.sessionId}`;
+      } else {
         const branch = `cpb/${session.jobId}-pipeline`;
         try {
           await gitExec(sourcePath, "rev-parse", "--verify", branch);
@@ -284,7 +361,7 @@ export async function acceptSession(cpbRoot, sessionId) {
         await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
         await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
       }
-    } catch {}
+    }
   }
 
   const finalStatus = (!merged && mergeError) ? "merge_failed" : "completed";
@@ -293,7 +370,7 @@ export async function acceptSession(cpbRoot, sessionId) {
     userVerdict: "accepted",
     merged,
     ...(mergeError && { mergeError }),
-  });
+  }, storageOptions);
 
   return {
     ok: true,
@@ -309,28 +386,27 @@ export async function acceptSession(cpbRoot, sessionId) {
 /**
  * Reject a review session — discard worktree.
  */
-export async function rejectSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function rejectSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+  const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
+  const storageOptions = reviewStorageOptions(cpbRoot, hubRoot);
+  const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review") {
     return { ok: false, error: "invalid_state", status: session.status };
   }
 
   if (session.worktreePath) {
-    try {
-      const projectJson = path.join(cpbRoot, "wiki", "projects", session.project, "project.json");
-      const meta = JSON.parse(await readFile(projectJson, "utf8"));
-      if (meta.sourcePath) {
-        await gitExec(meta.sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
-      }
-    } catch {}
+    const sourcePath = await projectSourcePathFor(hubRoot, session.project);
+    if (sourcePath) {
+      await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
+    }
     try { await rm(session.worktreePath, { recursive: true, force: true }); } catch {}
   }
 
   const updated = await updateSession(cpbRoot, session.sessionId, {
     status: "expired",
     userVerdict: "rejected",
-  });
+  }, storageOptions);
 
   return { ok: true, sessionId, session: updated, project: session.project };
 }

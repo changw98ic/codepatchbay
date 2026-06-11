@@ -300,6 +300,7 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
   const tmp = await tempRoot("cpb-acp-pool-audit");
   const cpbRoot = path.join(tmp, "cpb");
   const hubRoot = path.join(tmp, "hub");
+  const dataRoot = path.join(tmp, "project-runtime");
   const scenarioPath = path.join(tmp, "scenario.json");
   await mkdir(cpbRoot, { recursive: true });
   await mkdir(hubRoot, { recursive: true });
@@ -336,6 +337,7 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "1",
       CPB_CODEGRAPH_PORT: "43101",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--scenario-file", scenarioPath]),
     },
@@ -522,6 +524,7 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
   const tmp = await tempRoot("cpb-acp-persistent");
   const cpbRoot = path.join(tmp, "cpb");
   const hubRoot = path.join(tmp, "hub");
+  const dataRoot = path.join(tmp, "project-runtime");
   const scenarioPath = path.join(tmp, "scenario.json");
   const transcriptPath = path.join(tmp, "transcript.jsonl");
   await mkdir(cpbRoot, { recursive: true });
@@ -558,6 +561,7 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
         testAgent,
@@ -685,6 +689,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
   const tmp = await tempRoot("cpb-acp-persistent-cwd");
   const cpbRoot = path.join(tmp, "cpb");
   const hubRoot = path.join(tmp, "hub");
+  const dataRoot = path.join(tmp, "project-runtime");
   const firstWorktree = path.join(tmp, "worktree-a");
   const secondWorktree = path.join(tmp, "worktree-b");
   const scenarioPath = path.join(tmp, "scenario.json");
@@ -712,6 +717,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
         testAgent,

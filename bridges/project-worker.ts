@@ -425,7 +425,14 @@ export class ProjectWorker {
   async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
     if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId);
 
-    const projectId = overrideProjectId || this.project?.id;
+    const projectId = overrideProjectId || entry?.projectId || this.project?.id;
+    const project = projectId ? await getProject(this.hubRoot, projectId) : null;
+    const projectRuntimeRoot = project?.projectRuntimeRoot ? path.resolve(project.projectRuntimeRoot) : null;
+    if (!projectId || !project || !projectRuntimeRoot) {
+      const error = `projectRuntimeRoot missing for project: ${projectId || "unknown"}`;
+      return { ok: false, code: 1, error, stdout: "", stderr: error };
+    }
+
     return new Promise((resolve) => {
       const args = [
         path.join(this.executorRoot, "bridges", "run-pipeline.js"),
@@ -444,6 +451,7 @@ export class ProjectWorker {
             executorRoot: this.executorRoot,
           }),
           CPB_PROJECT_PATH_OVERRIDE: sourcePath || "",
+          CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot,
           CPB_ACP_CWD: sourcePath || "",
           CPB_SESSION_ID: entry.sessionId || "",
           CPB_WORKER_ID: this.workerId,

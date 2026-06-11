@@ -121,6 +121,19 @@ function currentPhaseForJob(job) {
   return null;
 }
 
+function jobUpdatedAtMs(job) {
+  const parsed = Date.parse(job?.updatedAt ?? job?.createdAt ?? "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function preferredPipelineJob(existing, candidate) {
+  if (!existing) return candidate;
+  const existingRunning = existing.status === "running";
+  const candidateRunning = candidate.status === "running";
+  if (existingRunning !== candidateRunning) return candidateRunning ? candidate : existing;
+  return jobUpdatedAtMs(candidate) > jobUpdatedAtMs(existing) ? candidate : existing;
+}
+
 function sourceForJob(job) {
   const source = (job.sourceContext || {}) as Record<string, any>;
   if (source.type === "github_issue" || source.issueNumber !== undefined) {
@@ -266,12 +279,12 @@ export function jobToGithubStatusUpdate(job) {
   };
 }
 
-async function allJobs(cpbRoot) {
-  return listJobsAcrossRuntimeRoots(cpbRoot);
+async function allJobs(cpbRoot, options = {}) {
+  return listJobsAcrossRuntimeRoots(cpbRoot, options);
 }
 
-export async function projectPipelineState(cpbRoot, project) {
-  const jobs = await allJobs(cpbRoot);
+export async function projectPipelineState(cpbRoot, project, options = {}) {
+  const jobs = await allJobs(cpbRoot, options);
   const matching = jobs.filter((j) => j.project === project);
   if (matching.length === 0) return null;
 
@@ -279,14 +292,12 @@ export async function projectPipelineState(cpbRoot, project) {
   return jobToPipelineState(running ?? matching[0]);
 }
 
-export async function listProjectPipelineStates(cpbRoot) {
-  const jobs = await allJobs(cpbRoot);
+export async function listProjectPipelineStates(cpbRoot, options = {}) {
+  const jobs = await allJobs(cpbRoot, options);
   const byProject = new Map();
   for (const job of jobs) {
     const existing = byProject.get(job.project);
-    if (!existing || existing.status !== "running") {
-      byProject.set(job.project, job);
-    }
+    byProject.set(job.project, preferredPipelineJob(existing, job));
   }
   const result = {};
   for (const [project, job] of byProject) {

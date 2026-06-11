@@ -4,6 +4,7 @@ import { getManagedAcpPool } from "./acp-pool.js";
 import { listQueue } from "./hub-queue.js";
 import { listInboxMessages } from "./inbox-mail.js";
 import { listSessions } from "./review-session.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
 
 const EVENT_TAIL_SIZE = 10;
 type AnyRecord = Record<string, any>;
@@ -20,11 +21,15 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: A
     reviewSession: null,
     timestamp,
   };
+  let dataRoot = null;
+  try {
+    dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot });
+  } catch {}
 
   // 1. Materialize job state + event tail
   let events = [];
   try {
-    events = await readEvents(cpbRoot, project, jobId);
+    events = await readEvents(cpbRoot, project, jobId, dataRoot ? { dataRoot } : { includeLegacyFallback: false });
     if (events.length > 0) {
       snapshot.job = materializeJob(events);
     }
@@ -34,7 +39,7 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: A
   // 2. Lease state
   if (snapshot.job?.leaseId) {
     try {
-      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId);
+      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId, dataRoot ? { dataRoot } : {});
     } catch {}
   }
 
@@ -67,7 +72,7 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: A
 
   // 6. Review session matching this job
   try {
-    const sessions = await listSessions(cpbRoot);
+    const sessions = await listSessions(cpbRoot, { hubRoot });
     snapshot.reviewSession =
       sessions.find((s) => s.jobId === jobId) || null;
   } catch {}

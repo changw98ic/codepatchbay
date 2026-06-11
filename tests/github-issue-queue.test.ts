@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
@@ -6,6 +8,7 @@ import { matchGithubTrigger } from "../server/services/github-triggers.js";
 import { createGithubIssueQueueJob } from "../server/services/event-source.js";
 import { createJob, getJobByQueueEntryId } from "../server/services/job-store.js";
 import { enqueue } from "../server/services/hub-queue.js";
+import { registerProject } from "../server/services/hub-registry.js";
 import { tempRoot } from "./helpers.js";
 
 function makeIssuePayload(overrides: Record<string, any> = {}) {
@@ -65,6 +68,15 @@ async function makeTestRoots() {
   return { cpbRoot, hubRoot };
 }
 
+async function registerTestProject(hubRoot: string, projectId = "flow") {
+  const sourcePath = await tempRoot(`cpb-d25-src-${projectId}`);
+  return await registerProject(hubRoot, {
+    id: projectId,
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
+}
+
 // Acceptance 1: Queue entry preserves issue number, repo, title, body, source URL, actor, and workflow.
 test("queue entry preserves issue number, repo, title, body, source URL, actor, and workflow", async (t) => {
   const { cpbRoot, hubRoot } = await makeTestRoots();
@@ -96,6 +108,7 @@ test("queue entry preserves issue number, repo, title, body, source URL, actor, 
 // Acceptance 2: Duplicate webhook deliveries are idempotent.
 test("duplicate webhook delivery is idempotent", async (t) => {
   const { cpbRoot, hubRoot } = await makeTestRoots();
+  await registerTestProject(hubRoot, "flow");
   const payload = makeIssuePayload();
   const normalized = makeNormalizedEvent(payload, "flow");
   const match = matchGithubTrigger(normalized);
@@ -120,6 +133,7 @@ test("duplicate webhook delivery is idempotent", async (t) => {
 // Acceptance 3: Created job links back to queue entry.
 test("createGithubIssueQueueJob creates a job-store job linked to queue entry", async (t) => {
   const { cpbRoot, hubRoot } = await makeTestRoots();
+  const project = await registerTestProject(hubRoot, "flow");
   const payload = makeIssuePayload();
   const normalized = makeNormalizedEvent(payload, "flow");
   const match = matchGithubTrigger(normalized);
@@ -138,14 +152,25 @@ test("createGithubIssueQueueJob creates a job-store job linked to queue entry", 
   assert.equal(job.queueEntryId, queueEntryId, "job.queueEntryId links to queue entry");
 
   // Verify lookup by queue entry ID
-  const found = await getJobByQueueEntryId(cpbRoot, "flow", queueEntryId);
+  const found = await getJobByQueueEntryId(cpbRoot, "flow", queueEntryId, { dataRoot: project.projectRuntimeRoot });
   assert.ok(found, "should find job by queue entry ID");
   assert.equal(found.jobId, job.jobId, "found job matches");
+  assert.equal(
+    existsSync(path.join(project.projectRuntimeRoot, "events", "flow", `${job.jobId}.jsonl`)),
+    true,
+    "job event should be written under the registered project runtime root",
+  );
+  assert.equal(
+    existsSync(path.join(cpbRoot, "cpb-task", "events", "flow", `${job.jobId}.jsonl`)),
+    false,
+    "immediate job creation must not write legacy runtime events",
+  );
 });
 
 // createJob idempotency: creating job with same queueEntryId returns existing
 test("createJob with same queueEntryId returns existing job (idempotent)", async (t) => {
-  const cpbRoot = await tempRoot("cpb-d25-idem");
+  const { cpbRoot, hubRoot } = await makeTestRoots();
+  const project = await registerTestProject(hubRoot, "flow");
   const queueEntryId = "q-test-idempotent-001";
 
   const first = await createJob(cpbRoot, {
@@ -153,6 +178,7 @@ test("createJob with same queueEntryId returns existing job (idempotent)", async
     task: "First task",
     workflow: "standard",
     queueEntryId,
+    dataRoot: project.projectRuntimeRoot,
   });
   assert.ok(first.jobId);
 
@@ -161,6 +187,7 @@ test("createJob with same queueEntryId returns existing job (idempotent)", async
     task: "Second task — should be ignored",
     workflow: "standard",
     queueEntryId,
+    dataRoot: project.projectRuntimeRoot,
   });
   assert.equal(second.jobId, first.jobId, "same job returned for duplicate queueEntryId");
   assert.equal(second.task, first.task, "original task preserved");
@@ -175,6 +202,7 @@ test("getJobByQueueEntryId returns null for missing queue entry ID", async () =>
 // Additional: issue comment command triggers queue entry with job
 test("issue comment /cpb run creates queue entry and job", async (t) => {
   const { cpbRoot, hubRoot } = await makeTestRoots();
+  await registerTestProject(hubRoot, "flow");
   const payload = makeCommentPayload();
   const normalized = makeNormalizedEvent(payload, "flow");
 

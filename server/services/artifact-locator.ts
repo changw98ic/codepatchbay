@@ -1,4 +1,4 @@
-import { mkdir, readdir, writeFile, access, stat } from "node:fs/promises";
+import { mkdir, readdir, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { projectRuntimePath } from "./runtime-root.js";
 
@@ -125,32 +125,29 @@ function hasHubRoot(hubRoot) {
 
 export async function resolveWikiDir(hubRoot, cpbRoot, projectId) {
   if (hasHubRoot(hubRoot)) {
-    const rtDir = runtimeWikiDir(hubRoot, projectId);
-    if (await dirExists(rtDir)) return rtDir;
+    return runtimeWikiDir(hubRoot, projectId);
   }
   const legDir = legacyWikiDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
-  return hasHubRoot(hubRoot) ? runtimeWikiDir(hubRoot, projectId) : legDir;
+  return legDir;
 }
 
 export async function resolveInboxDir(hubRoot, cpbRoot, projectId) {
   if (hasHubRoot(hubRoot)) {
-    const rtDir = runtimeInboxDir(hubRoot, projectId);
-    if (await dirExists(rtDir)) return rtDir;
+    return runtimeInboxDir(hubRoot, projectId);
   }
   const legDir = legacyInboxDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
-  return hasHubRoot(hubRoot) ? runtimeInboxDir(hubRoot, projectId) : legDir;
+  return legDir;
 }
 
 export async function resolveOutputsDir(hubRoot, cpbRoot, projectId) {
   if (hasHubRoot(hubRoot)) {
-    const rtDir = runtimeOutputsDir(hubRoot, projectId);
-    if (await dirExists(rtDir)) return rtDir;
+    return runtimeOutputsDir(hubRoot, projectId);
   }
   const legDir = legacyOutputsDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
-  return hasHubRoot(hubRoot) ? runtimeOutputsDir(hubRoot, projectId) : legDir;
+  return legDir;
 }
 
 function validateRelativePath(relativePath) {
@@ -176,11 +173,7 @@ export function legacyArtifactPath(cpbRoot, projectId, relativePath) {
 
 export async function resolveArtifactPath(hubRoot, cpbRoot, projectId, relativePath) {
   if (hasHubRoot(hubRoot)) {
-    const rtPath = runtimeArtifactPath(hubRoot, projectId, relativePath);
-    try {
-      await access(rtPath);
-      return rtPath;
-    } catch {}
+    return runtimeArtifactPath(hubRoot, projectId, relativePath);
   }
   return legacyArtifactPath(cpbRoot, projectId, relativePath);
 }

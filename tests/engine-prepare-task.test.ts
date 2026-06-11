@@ -131,6 +131,7 @@ function makePool({ calls = [], failWhen = null }: AnyRecord = {}) {
 
 async function runPrepareEngine({ prepareTask, includePrepareTask = true }: AnyRecord = {}) {
   const cpbRoot = await tempRoot("cpb-prepare-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
   const events = [];
   const starts = [];
@@ -149,6 +150,7 @@ async function runPrepareEngine({ prepareTask, includePrepareTask = true }: AnyR
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "prepare_task engine fixture",
     jobId: "job-prepare-task",
@@ -273,6 +275,7 @@ test("runJob preserves explicit workflow DAG dependencies and concurrency", asyn
     ],
   });
   const cpbRoot = await tempRoot("cpb-explicit-dag-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
   const events = [];
   const services = makeServices({
@@ -282,6 +285,7 @@ test("runJob preserves explicit workflow DAG dependencies and concurrency", asyn
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "explicit DAG fixture",
     jobId: "job-explicit-dag",
@@ -323,6 +327,7 @@ test("runJob executes same-phase DAG nodes after their dependencies regardless o
     ],
   });
   const cpbRoot = await tempRoot("cpb-same-phase-dag-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
   const events = [];
   const calls = [];
@@ -333,6 +338,7 @@ test("runJob executes same-phase DAG nodes after their dependencies regardless o
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "same-phase DAG dependency fixture",
     jobId: "job-same-phase-dag",
@@ -375,6 +381,7 @@ test("runJob failed same-phase DAG node records node-aware resume target", async
     ],
   });
   const cpbRoot = await tempRoot("cpb-node-failure-dag-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
   const events = [];
   const calls = [];
@@ -385,6 +392,7 @@ test("runJob failed same-phase DAG node records node-aware resume target", async
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "same phase node failure fixture",
     jobId: "job-node-failure-dag",
@@ -425,8 +433,9 @@ test("runJob resumes DAG retries without rerunning completed nodes", async () =>
     ],
   });
   const cpbRoot = await tempRoot("cpb-resume-dag-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
-  const planPath = path.join(cpbRoot, "wiki", "projects", "flow", "inbox", "plan-001.md");
+  const planPath = path.join(dataRoot, "wiki", "inbox", "plan-001.md");
   await mkdir(path.dirname(planPath), { recursive: true });
   await writeFile(planPath, "# Recovered Plan\n\nContinue from execute_b.\n", "utf8");
   const events = [];
@@ -438,6 +447,7 @@ test("runJob resumes DAG retries without rerunning completed nodes", async () =>
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "resume completed DAG nodes fixture",
     jobId: "job-resume-dag",
@@ -497,6 +507,7 @@ test("runJob uses explicit workflow DAG node roles for phase execution", async (
     ],
   });
   const cpbRoot = await tempRoot("cpb-explicit-role-dag-cpb");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
   const events = [];
   const calls = [];
@@ -507,6 +518,7 @@ test("runJob uses explicit workflow DAG node roles for phase execution", async (
 
   const result = await runJob({
     cpbRoot,
+    dataRoot,
     project: "flow",
     task: "explicit DAG role fixture",
     jobId: "job-explicit-role-dag",

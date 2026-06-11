@@ -212,13 +212,16 @@ describe('Hub routes', () => {
   });
 
   it('returns promotion candidates for projects with session memory', async () => {
-    await app.inject({
+    const attach = await app.inject({
       method: 'POST',
       url: '/api/hub/projects/attach',
       payload: { sourcePath: projectRoot, name: 'promo-project' },
     });
+    assert.equal(attach.statusCode, 200);
+    const project = attach.json().project;
+    assert.ok(project.projectRuntimeRoot);
 
-    const sessionDir = path.join(projectRoot, 'cpb-task', 'sessions', 'sess-001');
+    const sessionDir = path.join(project.projectRuntimeRoot, 'sessions', 'sess-001');
     await mkdir(sessionDir, { recursive: true });
     await writeFile(path.join(sessionDir, 'memory.md'), 'useful insight', 'utf8');
 

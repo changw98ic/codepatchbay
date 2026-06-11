@@ -17,6 +17,7 @@ import {
   updateEntry as hubUpdateEntry,
 } from "../server/services/hub-queue.js";
 import { listProjects, loadRegistry, resolveHubRoot } from "../server/services/hub-registry.js";
+import { rebuildJobsIndex } from "../server/services/jobs-index.js";
 import { poolExhaustedJob } from "../server/services/job-store.js";
 import {
   appendHistory,
@@ -49,6 +50,7 @@ export {
   poolExhaustedJob,
   pushIssues,
   RateLimitError,
+  rebuildJobsIndex,
   releaseManagedAcpWorktree,
   resolveGithubTransport,
   resolveHubRoot,

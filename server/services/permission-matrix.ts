@@ -1,7 +1,6 @@
 import path from "node:path";
 import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
 import { appendEvent } from "./event-store.js";
-import { runtimeDataPath } from "./runtime-root.js";
 
 const ROLES = new Set(["planner", "executor", "verifier", "remediator", "reviewer"]);
 const READ_ALLOWED_PATHS = Object.freeze(["*"]);
@@ -11,19 +10,19 @@ export const INFRA_FAILURE = "INFRA_FAILURE";
 const WRITE_SCOPES = {
   planner: {
     allowed: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "inbox"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
     ],
     denied: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
   },
   executor: {
     allowed: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
       (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
     ],
     denied: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "inbox"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
       (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
       (cpbRoot) => path.resolve(cpbRoot, "profiles"),
       (cpbRoot) => path.resolve(cpbRoot, "bridges"),
@@ -31,10 +30,10 @@ const WRITE_SCOPES = {
   },
   verifier: {
     allowed: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
     denied: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "inbox"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
       (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
     ],
   },
@@ -46,7 +45,7 @@ const WRITE_SCOPES = {
   },
   reviewer: {
     allowed: [
-      (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project, "outputs"),
+      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
     denied: [],
   },
@@ -54,23 +53,23 @@ const WRITE_SCOPES = {
 
 const OBSERVATION_PATHS = {
   planner: [
-    (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
+    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
     (cpbRoot) => path.resolve(cpbRoot, "profiles"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   verifier: [
-    (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
+    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
-    (cpbRoot, project) => runtimeDataPath(cpbRoot, "events", project),
-    (cpbRoot, project) => runtimeDataPath(cpbRoot, "state"),
-    (cpbRoot) => runtimeDataPath(cpbRoot, "checkpoints"),
+    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "events", project),
+    (cpbRoot, _project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "state"),
+    (cpbRoot, _project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "checkpoints"),
   ],
   executor: [
-    (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
+    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot) => path.resolve(cpbRoot, "templates"),
     (cpbRoot) => path.resolve(cpbRoot, "profiles"),
@@ -81,11 +80,29 @@ const OBSERVATION_PATHS = {
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   reviewer: [
-    (cpbRoot, project) => path.resolve(cpbRoot, "wiki", "projects", project),
+    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
     (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
     (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
   ],
 };
+
+function legacyWikiPath(cpbRoot: string, project: string, ...parts: string[]) {
+  return path.resolve(cpbRoot, "wiki", "projects", project, ...parts);
+}
+
+function legacyDataPath(cpbRoot: string, ...parts: string[]) {
+  return path.resolve(cpbRoot, "cpb-task", ...parts);
+}
+
+function wikiBoundary(cpbRoot: string, project: string, dataRoot: string | null | undefined, legacyOnly = false, ...parts: string[]) {
+  if (dataRoot) return path.resolve(dataRoot, "wiki", ...parts);
+  return legacyOnly ? legacyWikiPath(cpbRoot, project, ...parts) : null;
+}
+
+function dataBoundary(cpbRoot: string, dataRoot: string | null | undefined, legacyOnly = false, ...parts: string[]) {
+  if (dataRoot) return path.resolve(dataRoot, ...parts);
+  return legacyOnly ? legacyDataPath(cpbRoot, ...parts) : null;
+}
 
 export function validateRole(role) {
   if (!ROLES.has(role)) {
@@ -110,9 +127,9 @@ function matchesPath(targetPath, boundaryPath) {
   return null;
 }
 
-function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath, effect) {
+function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, effect) {
   return resolvers
-    .map((resolver) => resolver(cpbRoot, project, sourcePath))
+    .map((resolver) => resolver(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
     .filter(Boolean)
     .map((boundaryPath) => {
       const match = matchesPath(targetPath, boundaryPath);
@@ -121,7 +138,7 @@ function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath
     .filter(Boolean);
 }
 
-export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) {
+export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null, { dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   if (!scope) return { allowed: false, reason: `unknown role: ${role}` };
@@ -129,8 +146,8 @@ export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) 
   const resolved = path.resolve(targetPath);
 
   const matches = [
-    ...resolveScopeMatches(scope.allowed, targetPath, cpbRoot, project, sourcePath, "allow"),
-    ...resolveScopeMatches(scope.denied, targetPath, cpbRoot, project, sourcePath, "deny"),
+    ...resolveScopeMatches(scope.allowed, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, "allow"),
+    ...resolveScopeMatches(scope.denied, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, "deny"),
   ].sort((a, b) => {
     if (b.specificity !== a.specificity) return b.specificity - a.specificity;
     return a.effect === "deny" ? -1 : 1;
@@ -142,7 +159,7 @@ export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null) 
   }
 
   const allowedDirs = scope.allowed
-    .map((r) => r(cpbRoot, project, sourcePath))
+    .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
     .filter(Boolean)
     .map((d) => path.resolve(d));
 
@@ -426,7 +443,7 @@ export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = 
   };
 }
 
-export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId }: Record<string, any> = {}) {
+export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId, dataRoot, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
 
   if (action === "read") {
@@ -434,7 +451,7 @@ export function checkPermission(role, action, targetPath, cpbRoot, project, { so
   }
 
   if (action === "write") {
-    return canWrite(canonicalRole, targetPath, cpbRoot, project, sourcePath);
+    return canWrite(canonicalRole, targetPath, cpbRoot, project, sourcePath, { dataRoot, legacyOnly });
   }
 
   if (action === "execute") {
@@ -457,8 +474,13 @@ export async function recordPermissionDenial(
     allowedBoundary,
     recoveryGuidance,
     tool,
-  }
+    dataRoot,
+    legacyOnly = false,
+  }: Record<string, any>
 ) {
+  if (!dataRoot && !legacyOnly) {
+    throw new Error("project runtime root required to record permission denial");
+  }
   const eventRole = role ? validateRole(role) : null;
   const event: Record<string, any> = {
     type: "permission_denied",
@@ -476,15 +498,15 @@ export async function recordPermissionDenial(
     ts: new Date().toISOString(),
   };
   if (tool) event.tool = tool;
-  await appendEvent(cpbRoot, project, jobId, event);
+  await appendEvent(cpbRoot, project, jobId, event, dataRoot ? { dataRoot, includeLegacyFallback: false } : { includeLegacyFallback: true });
 }
 
-export function getObservablePaths(role, cpbRoot, project, { sourcePath = null } = {}) {
+export function getObservablePaths(role, cpbRoot, project, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const resolvers = OBSERVATION_PATHS[canonicalRole];
   if (!resolvers) return [];
   return resolvers
-    .map((r) => r(cpbRoot, project, sourcePath))
+    .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
     .filter(Boolean);
 }
 
@@ -492,17 +514,17 @@ export function isInfraDenial(event) {
   return event?.type === "permission_denied" && event?.category === "infra";
 }
 
-export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, profileConfig = null } = {}) {
+export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
-  const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath });
+  const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath, dataRoot, legacyOnly });
 
   const basePolicy = {
     role: canonicalRole,
     readScope: "unrestricted",
     readAllowed: getReadAllowedPaths(canonicalRole),
-    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
-    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath)).filter(Boolean),
+    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(Boolean),
+    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(Boolean),
     observablePaths: observable,
     executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
@@ -558,7 +580,7 @@ function isSecretPath(targetPath) {
   return SECRET_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
 }
 
-export function evaluatePermissionDecision(role, phase, action, targetPath, cpbRoot, project, { sourcePath = null } = {}) {
+export function evaluatePermissionDecision(role, phase, action, targetPath, cpbRoot, project, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   // Action validation
   if (!["read", "write", "execute"].includes(action)) {
     return {
@@ -601,7 +623,7 @@ export function evaluatePermissionDecision(role, phase, action, targetPath, cpbR
 
   // Write: delegate to existing canWrite logic
   if (action === "write") {
-    const result = canWrite(role, targetPath, cpbRoot, project, sourcePath);
+    const result = canWrite(role, targetPath, cpbRoot, project, sourcePath, { dataRoot, legacyOnly });
     if (result.allowed) {
       return {
         allowed: true,

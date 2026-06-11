@@ -1,12 +1,18 @@
-import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
-import { appendEvent, eventFileFor } from "./event-store.js";
+import { appendEvent } from "./event-store.js";
 
 const PERFORMANCE_DIR = "performance";
 
-function perfDir(cpbRoot) {
-  return runtimeDataPath(cpbRoot, PERFORMANCE_DIR);
+function requireDataRoot(dataRoot, label = "performance tracker") {
+  if (!dataRoot || typeof dataRoot !== "string" || !dataRoot.trim()) {
+    throw new Error(`dataRoot is required for ${label}`);
+  }
+  return path.resolve(dataRoot);
+}
+
+function perfDir(dataRoot) {
+  return path.join(requireDataRoot(dataRoot), PERFORMANCE_DIR);
 }
 
 function agentKey(agent, role, phase) {
@@ -19,6 +25,7 @@ function agentKey(agent, role, phase) {
  */
 export async function recordPerformance(cpbRoot, project, jobId, entry) {
   const { agent, role, phase, status, durationMs, error, ts } = entry;
+  const dataRoot = requireDataRoot(entry.dataRoot);
   if (!agent || !phase) return;
 
   // Append performance event to job event log
@@ -32,11 +39,11 @@ export async function recordPerformance(cpbRoot, project, jobId, entry) {
       durationMs: durationMs || null,
       error: error || null,
       ts: ts || new Date().toISOString(),
-    });
+    }, { dataRoot, includeLegacyFallback: false });
   } catch {}
 
   // Update agent metrics file
-  const dir = perfDir(cpbRoot);
+  const dir = perfDir(dataRoot);
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${agent}.jsonl`);
 
@@ -57,8 +64,8 @@ export async function recordPerformance(cpbRoot, project, jobId, entry) {
 /**
  * Get aggregated performance metrics for an agent.
  */
-export async function getAgentPerformance(cpbRoot, agent) {
-  const dir = perfDir(cpbRoot);
+export async function getAgentPerformance(cpbRoot, agent, { dataRoot }: Record<string, any> = {}) {
+  const dir = perfDir(dataRoot);
   const file = path.join(dir, `${agent}.jsonl`);
 
   let lines;
@@ -91,7 +98,8 @@ export async function getAgentPerformance(cpbRoot, agent) {
 /**
  * Record a quality score for an agent based on verifier verdict.
  */
-export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase, verdict, ts }) {
+export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase, verdict, ts, dataRoot }) {
+  dataRoot = requireDataRoot(dataRoot);
   try {
     await appendEvent(cpbRoot, project, jobId, {
       type: "agent_quality_scored",
@@ -99,10 +107,10 @@ export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase
       phase,
       verdict,
       ts: ts || new Date().toISOString(),
-    });
+    }, { dataRoot, includeLegacyFallback: false });
   } catch {}
 
-  const dir = perfDir(cpbRoot);
+  const dir = perfDir(dataRoot);
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${agent}-quality.jsonl`);
 
@@ -118,8 +126,8 @@ export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase
 /**
  * Get quality metrics for an agent.
  */
-export async function getAgentQuality(cpbRoot, agent) {
-  const dir = perfDir(cpbRoot);
+export async function getAgentQuality(cpbRoot, agent, { dataRoot }: Record<string, any> = {}) {
+  const dir = perfDir(dataRoot);
   const file = path.join(dir, `${agent}-quality.jsonl`);
 
   let lines;

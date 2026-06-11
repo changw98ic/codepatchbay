@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { listCandidates, updateCandidate } from "./event-source.js";
+import { listProjects } from "./hub-registry.js";
 import { listJobs } from "./job-store.js";
 import { getAgentPerformance } from "./performance-tracker.js";
 
@@ -62,6 +63,12 @@ function recommendAgent(category, _availableAgents) {
   return null; // null means use default agent selection
 }
 
+function isProactiveJob(job) {
+  return job?.trigger === "proactive" ||
+    job?.sourceContext?.type === "proactive" ||
+    job?.sourceContext?.source === "proactive";
+}
+
 /**
  * Evaluate a candidate event and produce a task recommendation.
  * Returns { candidate, recommendation } or null if not actionable.
@@ -93,8 +100,8 @@ export async function evaluateCandidate(cpbRoot, candidate, { availableAgents = 
  * Scan pending candidates and evaluate them for task generation.
  * Returns array of { candidate, recommendation }.
  */
-export async function scanCandidates(cpbRoot, { availableAgents = [] } = {}) {
-  const pending = await listCandidates(cpbRoot, { status: "pending" });
+export async function scanCandidates(cpbRoot, { availableAgents = [], hubRoot }: Record<string, any> = {}) {
+  const pending = await listCandidates(cpbRoot, { status: "pending", hubRoot });
 
   const results = [];
   for (const candidate of pending) {
@@ -110,7 +117,7 @@ export async function scanCandidates(cpbRoot, { availableAgents = [] } = {}) {
 /**
  * Check if proactive mode is enabled and within budget.
  */
-export async function checkProactiveBudget(cpbRoot) {
+export async function checkProactiveBudget(cpbRoot, { hubRoot, logger = console }: Record<string, any> = {}) {
   const enabled = process.env.CPB_PROACTIVE === "1";
   if (!enabled) {
     return { allowed: false, reason: "proactive disabled (CPB_PROACTIVE not set to 1)" };
@@ -120,11 +127,27 @@ export async function checkProactiveBudget(cpbRoot) {
   const failureLimit = parseInt(process.env.CPB_PROACTIVE_FAILURE_LIMIT, 10) || DEFAULT_CONSECUTIVE_FAILURE_LIMIT;
 
   // Rolling 24h window instead of calendar day to prevent midnight bypass
-  const jobs = await listJobs(cpbRoot);
+  const projects = hubRoot ? await listProjects(hubRoot) : [];
+  const jobBatches = [];
+  for (const project of projects) {
+    const dataRoot = typeof project?.projectRuntimeRoot === "string" && project.projectRuntimeRoot.trim()
+      ? project.projectRuntimeRoot
+      : null;
+    if (!dataRoot) {
+      logger?.warn?.({ project: project?.id }, "skipping proactive budget project without projectRuntimeRoot");
+      continue;
+    }
+    try {
+      jobBatches.push(await listJobs(cpbRoot, { dataRoot, includeLegacyFallback: false }));
+    } catch (err) {
+      logger?.warn?.({ err, project: project.id, dataRoot }, "skipping proactive budget project with unreadable runtime root");
+    }
+  }
+  const jobs = jobBatches.flat();
   const windowMs = 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - windowMs;
   const windowProactive = jobs.filter((j) => {
-    if (j.trigger !== "proactive") return false;
+    if (!isProactiveJob(j)) return false;
     const ts = j.createdAt ? new Date(j.createdAt).getTime() : 0;
     return ts > cutoff;
   });

@@ -43,6 +43,7 @@ import {
 import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
 
 type LooseRecord = Record<string, any>;
+const DASHBOARD_JOBS_CACHE_TTL_MS = 500;
 
 async function currentGitHead(sourcePath) {
   const { execFile } = await import("node:child_process");
@@ -454,7 +455,9 @@ export async function hubRoutes(fastify) {
     const projects = await listProjects(hubRoot(req));
     const allCandidates = [];
     for (const project of projects) {
-      const candidates = await findPromotionCandidates(project.sourcePath);
+      const candidates = await findPromotionCandidates(project.sourcePath, {
+        projectRuntimeRoot: project.projectRuntimeRoot,
+      });
       if (candidates.length > 0) {
         allCandidates.push({ projectId: project.id, candidates });
       }
@@ -551,8 +554,8 @@ export async function hubRoutes(fastify) {
       listDispatches(hr, {}).catch(() => []),
       buildObservabilitySummary({ cpbRoot: cr, hubRoot: hr, acpPool: getManagedAcpPool({ hubRoot: hr, cpbRoot: cr }) }).catch(() => null),
       buildTaskLedger({ cpbRoot: cr, hubRoot: hr, limit: req.query.limit || 50 } as LooseRecord).catch(() => null),
-      listJobsAcrossRuntimeRoots(cr, { hubRoot: hr }).catch(() => []),
-      listSessions(cr).catch(() => []),
+      listJobsAcrossRuntimeRoots(cr, { hubRoot: hr, cacheTtlMs: DASHBOARD_JOBS_CACHE_TTL_MS }).catch(() => []),
+      listSessions(cr, { hubRoot: hr }).catch(() => []),
       resolveRuntimeHealth(req, cr),
     ]);
 

@@ -1,18 +1,18 @@
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
-import { listEventFiles, readEvents, materializeJob, recoverEventFile } from "./event-store.js";
-import { appendEvent } from "./event-store.js";
-import { readLease, releaseLease, isLeaseStale } from "./lease-manager.js";
-import { listJobs, failJob, blockJob } from "./job-store.js";
-import { rebuildJobsIndex, readJobsIndex } from "./jobs-index.js";
+import { eventFileFor, listEventFiles, recoverEventFile } from "./event-store.js";
+import { readLease, isLeaseStale } from "./lease-manager.js";
+import { listJobs, failJob } from "./job-store.js";
+import { rebuildJobsIndex } from "./jobs-index.js";
 import { resolveHubRoot, loadRegistry, saveRegistry } from "./hub-registry.js";
 import { projectRuntimeRoot } from "./runtime-root.js";
 import { listProcesses, classifyLiveness, removeProcess } from "./process-registry.js";
+import { listRuntimeDataRoots } from "./runtime-context.js";
 import { listQueue as listHubQueue, updateEntry as updateQueueEntry } from "./hub-queue.js";
 import { scanHubPollution, isUnderTestPath } from "./project-pollution.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+type AnyRecord = Record<string, any>;
 
 function findMatchingQueueEntry(queueEntries, job) {
   const inProgress = queueEntries.filter((e) => e.status === "in_progress");
@@ -43,10 +43,88 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export async function validateEventStream(cpbRoot, project, jobId, { dryRun = false } = {}) {
+function runtimeOpts(dataRoot) {
+  return dataRoot
+    ? { dataRoot, includeLegacyFallback: false }
+    : { includeLegacyFallback: false };
+}
+
+function eventStreamRuntimeOpts({ dataRoot, includeLegacyFallback, legacyOnly }: AnyRecord = {}) {
+  if (dataRoot) return { dataRoot, includeLegacyFallback: false };
+  if (legacyOnly === true || includeLegacyFallback === true) return { legacyOnly: true };
+  throw new Error("dataRoot is required for validateEventStream unless legacyOnly/includeLegacyFallback is explicit");
+}
+
+function jobRuntimeKey(job) {
+  return `${path.resolve(job._dataRoot || "")}\0${job.jobId || ""}`;
+}
+
+async function runtimeContextsForReconcile(cpbRoot: string, { hubRoot, dataRoot }: AnyRecord = {}) {
+  if (dataRoot) {
+    return [{ kind: "project", projectId: null, dataRoot: path.resolve(dataRoot) }];
+  }
+  return await listRuntimeDataRoots(cpbRoot, {
+    hubRoot,
+    includeHubProjects: true,
+    includeLegacy: false,
+  });
+}
+
+async function listScopedJobs(cpbRoot: string, contexts: AnyRecord[]) {
+  const jobs = [];
+  for (const context of contexts) {
+    const batch = await listJobs(cpbRoot, runtimeOpts(context.dataRoot));
+    for (const job of batch) {
+      jobs.push({ ...job, _dataRoot: context.dataRoot, _runtimeKind: context.kind });
+    }
+  }
+  return jobs.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+async function listScopedProcesses(cpbRoot: string, contexts: AnyRecord[]) {
+  const processes = [];
+  for (const context of contexts) {
+    const batch = await listProcesses(cpbRoot, { dataRoot: context.dataRoot });
+    for (const entry of batch) {
+      processes.push({ ...entry, _dataRoot: context.dataRoot, _runtimeKind: context.kind });
+    }
+  }
+  return processes;
+}
+
+async function listLeaseFiles(dataRoot: string) {
+  const leasesDir = path.join(dataRoot, "leases");
+  let leaseFiles;
+  try {
+    leaseFiles = await readdir(leasesDir);
+  } catch {
+    leaseFiles = [];
+  }
+  return leaseFiles
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => ({
+      leaseId: file.slice(0, -".json".length),
+      file,
+      leasesDir,
+      dataRoot,
+    }));
+}
+
+function contextsWithJobs(contexts: AnyRecord[], jobs: AnyRecord[]) {
+  const byRoot = new Map<string, AnyRecord>(contexts.map((context) => [path.resolve(context.dataRoot), { ...context, jobs: [] }]));
+  for (const job of jobs) {
+    const key = path.resolve(job._dataRoot);
+    if (!byRoot.has(key)) byRoot.set(key, { kind: job._runtimeKind || "project", projectId: null, dataRoot: job._dataRoot, jobs: [] });
+    byRoot.get(key).jobs.push(job);
+  }
+  return [...byRoot.values()];
+}
+
+export async function validateEventStream(cpbRoot, project, jobId, { dryRun = false, dataRoot, includeLegacyFallback, legacyOnly }: AnyRecord = {}) {
   const events = [];
   let raw;
-  const file = path.join(runtimeDataPath(cpbRoot, "events"), project, `${jobId}.jsonl`);
+  const opts = eventStreamRuntimeOpts({ dataRoot, includeLegacyFallback, legacyOnly });
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
 
   try {
     raw = await readFile(file, "utf8");
@@ -86,7 +164,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
             error: null,
           };
         }
-        const recoveryResult = await recoverEventFile(cpbRoot, project, jobId);
+        const recoveryResult = await recoverEventFile(cpbRoot, project, jobId, opts);
         return {
           valid: true,
           events: recoveredEvents,
@@ -122,7 +200,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
   return { valid: true, events, recovered: false, repaired: false, wouldRepair: false, error: null };
 }
 
-export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
+export async function reconcileJobs(cpbRoot, { dryRun = false, hubRoot: hubRootOverride, dataRoot }: AnyRecord = {}) {
   const streamRecoveries = [];
   const report: Record<string, any> = {
     staleJobs: [],
@@ -136,16 +214,17 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     reconciledQueueEntries: [],
   };
 
-  const jobs = await listJobs(cpbRoot);
+  const hubRoot = hubRootOverride ? path.resolve(hubRootOverride) : resolveHubRoot(cpbRoot);
+  const contexts = await runtimeContextsForReconcile(cpbRoot, { hubRoot, dataRoot });
+  const jobs = await listScopedJobs(cpbRoot, contexts);
   const now = new Date();
 
-  const processEntries = await listProcesses(cpbRoot);
+  const processEntries = await listScopedProcesses(cpbRoot, contexts);
   const processByJobId = new Map();
   for (const pe of processEntries) {
-    if (pe.jobId) processByJobId.set(pe.jobId, pe);
+    if (pe.jobId) processByJobId.set(jobRuntimeKey(pe), pe);
   }
 
-  const hubRoot = resolveHubRoot(cpbRoot);
   let queueEntries = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
@@ -160,7 +239,8 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     let staleReason = "";
     let cause = null;
     let failureArtifact = null;
-    const processEntry = processByJobId.get(job.jobId) || null;
+    const processEntry = processByJobId.get(jobRuntimeKey(job)) || null;
+    const scopedOpts = runtimeOpts(job._dataRoot);
 
     // Check process registry first (concrete evidence of vanished phase runner)
     if (processEntry && processEntry.status === "running") {
@@ -187,7 +267,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
     // Fall back to lease-based detection
     if (!isStale && job.leaseId) {
-      const lease = await readLease(cpbRoot, job.leaseId);
+      const lease = await readLease(cpbRoot, job.leaseId, scopedOpts);
       if (lease === null) {
         isStale = true;
         staleReason = "lease file missing";
@@ -251,6 +331,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
       const jobReport: Record<string, any> = {
         jobId: job.jobId,
         project: job.project,
+        dataRoot: job._dataRoot,
         reason: staleReason,
         worktree: job.worktree || null,
       };
@@ -292,6 +373,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
             code: "FATAL",
             phase: cause?.phase || job.phase,
             cause,
+            dataRoot: job._dataRoot,
           });
         } catch (err) {
           if (err.message?.includes("job is terminal") || err.message?.includes("job not found")) {
@@ -332,7 +414,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         // Clean stale process registry record
         if (processEntry) {
           try {
-            await removeProcess(cpbRoot, job.jobId);
+            await removeProcess(cpbRoot, job.jobId, { dataRoot: job._dataRoot });
             report.reconciledProcesses.push({ jobId: job.jobId, removed: true });
           } catch {
             report.reconciledProcesses.push({ jobId: job.jobId, removed: false, error: "cleanup failed" });
@@ -342,7 +424,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         // Clean stale lease (direct removal to bypass owner-token checks)
         if (job.leaseId) {
           try {
-            const leasesDir = runtimeDataPath(cpbRoot, "leases");
+            const leasesDir = path.join(job._dataRoot, "leases");
             await rm(path.join(leasesDir, `${job.leaseId}.json`), { force: true });
             try { await rm(path.join(leasesDir, `${job.leaseId}.json.lock`), { recursive: true, force: true }); } catch {}
           } catch {}
@@ -351,48 +433,40 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     }
   }
 
-  // 2. Detect orphan leases
-  const activeJobIds = new Set(jobs.map((j) => j.jobId));
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
-  let leaseFiles;
-  try {
-    leaseFiles = await readdir(leasesDir);
-  } catch {
-    leaseFiles = [];
-  }
+  // 2. Detect orphan leases within each project runtime root.
+  for (const context of contextsWithJobs(contexts, jobs)) {
+    const activeJobIds = new Set(context.jobs.map((j) => j.jobId));
+    for (const leaseFile of await listLeaseFiles(context.dataRoot)) {
+      let lease;
+      try {
+        const raw = await readFile(path.join(leaseFile.leasesDir, leaseFile.file), "utf8");
+        lease = JSON.parse(raw);
+      } catch {
+        continue;
+      }
 
-  for (const f of leaseFiles) {
-    if (!f.endsWith(".json")) continue;
-    const leaseId = f.slice(0, -".json".length);
+      if (!lease || !lease.jobId) continue;
+      if (TERMINAL_STATUSES.has(lease.phase) && !lease.jobId) continue;
 
-    let lease;
-    try {
-      const raw = await readFile(path.join(leasesDir, f), "utf8");
-      lease = JSON.parse(raw);
-    } catch {
-      continue;
-    }
+      const jobExists = activeJobIds.has(lease.jobId);
+      const ownerAlive = lease.ownerPid ? isProcessAlive(lease.ownerPid) : false;
+      const leaseExpired = isLeaseStale(lease, now);
 
-    if (!lease || !lease.jobId) continue;
-    if (TERMINAL_STATUSES.has(lease.phase) && !lease.jobId) continue;
+      if ((!jobExists || (leaseExpired && !ownerAlive))) {
+        report.orphanLeases.push({
+          leaseId: leaseFile.leaseId,
+          jobId: lease.jobId || null,
+          dataRoot: context.dataRoot,
+          reason: !jobExists ? "job not found" : "expired with dead owner",
+        });
 
-    const jobExists = activeJobIds.has(lease.jobId);
-    const ownerAlive = lease.ownerPid ? isProcessAlive(lease.ownerPid) : false;
-    const leaseExpired = isLeaseStale(lease, now);
-
-    if ((!jobExists || (leaseExpired && !ownerAlive))) {
-      report.orphanLeases.push({
-        leaseId,
-        jobId: lease.jobId || null,
-        reason: !jobExists ? "job not found" : "expired with dead owner",
-      });
-
-      if (!dryRun) {
-        try {
-          const lockDir = path.join(leasesDir, `${leaseId}.json.lock`);
-          await rm(path.join(leasesDir, f), { force: true });
-          try { await rm(lockDir, { recursive: true, force: true }); } catch {}
-        } catch {}
+        if (!dryRun) {
+          try {
+            const lockDir = path.join(leaseFile.leasesDir, `${leaseFile.leaseId}.json.lock`);
+            await rm(path.join(leaseFile.leasesDir, leaseFile.file), { force: true });
+            try { await rm(lockDir, { recursive: true, force: true }); } catch {}
+          } catch {}
+        }
       }
     }
   }
@@ -445,38 +519,44 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   } catch { /* hub not initialized */ }
 
   // 4. Validate and recover JSONL event streams
-  const eventFiles = await listEventFiles(cpbRoot);
-  for (const { project, jobId } of eventFiles) {
-    const result = await validateEventStream(cpbRoot, project, jobId, { dryRun });
-    if (result.error) {
-      report.streamErrors.push({
-        project,
-        jobId,
-        file: result.error.file,
-        lineNumber: result.error.lineNumber,
-        reason: result.error.reason,
-      });
-    } else if (result.recovered || result.wouldRecover || result.wouldRepair) {
-      report.streamRecoveries.push({
-        project,
-        jobId,
-        wouldRecover: result.wouldRecover || false,
-        wouldRepair: result.wouldRepair || false,
-        repaired: result.repaired || false,
-      });
+  for (const context of contexts) {
+    const eventFiles = await listEventFiles(cpbRoot, runtimeOpts(context.dataRoot));
+    for (const { project, jobId } of eventFiles) {
+      const result = await validateEventStream(cpbRoot, project, jobId, { dryRun, dataRoot: context.dataRoot });
+      if (result.error) {
+        report.streamErrors.push({
+          project,
+          jobId,
+          dataRoot: context.dataRoot,
+          file: result.error.file,
+          lineNumber: result.error.lineNumber,
+          reason: result.error.reason,
+        });
+      } else if (result.recovered || result.wouldRecover || result.wouldRepair) {
+        report.streamRecoveries.push({
+          project,
+          jobId,
+          dataRoot: context.dataRoot,
+          wouldRecover: result.wouldRecover || false,
+          wouldRepair: result.wouldRepair || false,
+          repaired: result.repaired || false,
+        });
+      }
     }
   }
 
   // 5. Rebuild jobs-index from authoritative state (only when no stream errors)
   if (!dryRun && report.streamErrors.length === 0) {
-    await rebuildJobsIndex(cpbRoot);
-    report.indexRebuilt = true;
+    for (const context of contexts) {
+      await rebuildJobsIndex(cpbRoot, runtimeOpts(context.dataRoot));
+      report.indexRebuilt = true;
+    }
   }
 
   // 6. Clean up test/fixture pollution and orphan runtime dirs
   if (dryRun) {
     try {
-      const preview = await cleanupDryRun(cpbRoot);
+      const preview = await cleanupDryRun(cpbRoot, { hubRoot, dataRoot });
       report.pollutionPreview = {
         testProjectsToRemove: preview.testProjectsToRemove?.length || 0,
         orphanRuntimeDirsToRemove: preview.orphanRuntimeDirsToRemove?.length || 0,
@@ -493,7 +573,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   return report;
 }
 
-export async function cleanupDryRun(cpbRoot) {
+export async function cleanupDryRun(cpbRoot, { hubRoot: hubRootOverride, dataRoot }: AnyRecord = {}) {
   const report = {
     leasesToRemove: [],
     worktreesPreserved: [],
@@ -504,40 +584,37 @@ export async function cleanupDryRun(cpbRoot) {
     orphanRuntimeDirsToRemove: [],
   };
 
-  const jobs = await listJobs(cpbRoot);
+  const hubRoot = hubRootOverride ? path.resolve(hubRootOverride) : resolveHubRoot(cpbRoot);
+  const contexts = await runtimeContextsForReconcile(cpbRoot, { hubRoot, dataRoot });
+  const jobs = await listScopedJobs(cpbRoot, contexts);
   report.totalJobCount = jobs.length;
 
-  const terminalLeaseIds = new Set(
-    jobs.filter((j) => TERMINAL_STATUSES.has(j.status) && j.leaseId).map((j) => j.leaseId)
-  );
-  const terminalJobIds = new Set(
-    jobs.filter((j) => TERMINAL_STATUSES.has(j.status)).map((j) => j.jobId)
-  );
+  for (const context of contextsWithJobs(contexts, jobs)) {
+    const terminalLeaseIds = new Set(
+      context.jobs.filter((j) => TERMINAL_STATUSES.has(j.status) && j.leaseId).map((j) => j.leaseId)
+    );
+    const terminalJobIds = new Set(
+      context.jobs.filter((j) => TERMINAL_STATUSES.has(j.status)).map((j) => j.jobId)
+    );
 
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
-  let leaseFiles;
-  try {
-    leaseFiles = await readdir(leasesDir);
-  } catch {
-    leaseFiles = [];
-  }
-  report.totalLeaseFiles = leaseFiles.filter((f) => f.endsWith(".json")).length;
+    const leaseFiles = await listLeaseFiles(context.dataRoot);
+    report.totalLeaseFiles += leaseFiles.length;
 
-  for (const f of leaseFiles) {
-    if (!f.endsWith(".json")) continue;
-    const leaseId = f.slice(0, -".json".length);
+    for (const leaseFile of leaseFiles) {
+      const leaseId = leaseFile.leaseId;
 
-    let leaseJobId = null;
-    try {
-      const raw = await readFile(path.join(leasesDir, f), "utf8");
-      const lease = JSON.parse(raw);
-      leaseJobId = lease.jobId || null;
-    } catch {}
+      let leaseJobId = null;
+      try {
+        const raw = await readFile(path.join(leaseFile.leasesDir, leaseFile.file), "utf8");
+        const lease = JSON.parse(raw);
+        leaseJobId = lease.jobId || null;
+      } catch {}
 
-    const shouldClean = terminalLeaseIds.has(leaseId) ||
-      (leaseJobId && terminalJobIds.has(leaseJobId));
-    if (shouldClean) {
-      report.leasesToRemove.push(leaseId);
+      const shouldClean = terminalLeaseIds.has(leaseId) ||
+        (leaseJobId && terminalJobIds.has(leaseJobId));
+      if (shouldClean) {
+        report.leasesToRemove.push(leaseId);
+      }
     }
   }
 
@@ -553,7 +630,6 @@ export async function cleanupDryRun(cpbRoot) {
   }
 
   // Scan for test/polluted projects and orphan runtime dirs
-  const hubRoot = resolveHubRoot(cpbRoot);
   try {
     const pollution = await scanHubPollution(hubRoot);
     report.testProjectsToRemove = pollution.candidates;
@@ -563,28 +639,26 @@ export async function cleanupDryRun(cpbRoot) {
   return report;
 }
 
-export async function cleanupJobs(cpbRoot) {
-  const jobs = await listJobs(cpbRoot);
+export async function cleanupJobs(cpbRoot, { hubRoot: hubRootOverride, dataRoot }: AnyRecord = {}) {
+  const hubRoot = hubRootOverride ? path.resolve(hubRootOverride) : resolveHubRoot(cpbRoot);
+  const contexts = await runtimeContextsForReconcile(cpbRoot, { hubRoot, dataRoot });
+  const jobs = await listScopedJobs(cpbRoot, contexts);
   const terminal = new Set(["completed", "failed", "blocked", "cancelled"]);
-  const terminalJobIds = new Set(
-    jobs.filter((j) => terminal.has(j.status)).map((j) => j.jobId)
-  );
-  // Also match by leaseId from job state (for jobs where leaseId survived)
-  const terminalLeaseIds = new Set(
-    jobs.filter((j) => terminal.has(j.status) && j.leaseId).map((j) => j.leaseId)
-  );
-
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
   let cleaned = 0;
-  try {
-    const files = await readdir(leasesDir);
-    for (const f of files) {
-      if (!f.endsWith(".json")) continue;
-      const leaseId = f.slice(0, -".json".length);
+  for (const context of contextsWithJobs(contexts, jobs)) {
+    const terminalJobIds = new Set(
+      context.jobs.filter((j) => terminal.has(j.status)).map((j) => j.jobId)
+    );
+    // Also match by leaseId from job state (for jobs where leaseId survived)
+    const terminalLeaseIds = new Set(
+      context.jobs.filter((j) => terminal.has(j.status) && j.leaseId).map((j) => j.leaseId)
+    );
 
+    for (const leaseFile of await listLeaseFiles(context.dataRoot)) {
+      const leaseId = leaseFile.leaseId;
       let leaseJobId = null;
       try {
-        const raw = await readFile(path.join(leasesDir, f), "utf8");
+        const raw = await readFile(path.join(leaseFile.leasesDir, leaseFile.file), "utf8");
         const lease = JSON.parse(raw);
         leaseJobId = lease.jobId || null;
       } catch {}
@@ -592,14 +666,14 @@ export async function cleanupJobs(cpbRoot) {
       const shouldClean = terminalLeaseIds.has(leaseId) ||
         (leaseJobId && terminalJobIds.has(leaseJobId));
       if (shouldClean) {
-        await rm(path.join(leasesDir, f), { force: true });
+        await rm(path.join(leaseFile.leasesDir, leaseFile.file), { force: true });
         try {
-          await rm(path.join(leasesDir, `${leaseId}.json.lock`), { recursive: true, force: true });
+          await rm(path.join(leaseFile.leasesDir, `${leaseId}.json.lock`), { recursive: true, force: true });
         } catch {}
         cleaned++;
       }
     }
-  } catch {}
+  }
 
   return { cleaned };
 }

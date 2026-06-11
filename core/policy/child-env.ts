@@ -2,6 +2,9 @@
 // Keep this in core so runtime, bridges, and server entrypoints enforce the
 // same secret boundary without importing server modules.
 
+type EnvMap = Record<string, string | undefined>;
+type ChildEnvOptions = Record<string, any> | string;
+
 const RUNTIME_BASICS = new Set([
   "PATH", "HOME", "SHELL", "TERM", "TMPDIR", "TEMP", "TMP",
   "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE",
@@ -136,6 +139,10 @@ const ALLOWED_ENV = new Set([
   ...PROVIDER_CREDENTIALS,
 ]);
 
+const EXPLICIT_ONLY_CHILD_ENV = new Set([
+  "CPB_PROJECT_RUNTIME_ROOT",
+]);
+
 const ACP_POOL_ENV = new Set([
   "CPB_ACP_RATE_LIMIT_BACKOFF_MS",
   "CPB_ACP_POOL_PROVIDER_MAX",
@@ -164,7 +171,7 @@ function normalizeAgentName(agent) {
   return String(agent || "").trim().toLowerCase();
 }
 
-function agentNameFromOptions(options: Record<string, any> | string = {}) {
+function agentNameFromOptions(options: ChildEnvOptions = {}) {
   if (typeof options === "string") return normalizeAgentName(options);
   return normalizeAgentName(options.agent || options.agentName || options.provider);
 }
@@ -175,7 +182,7 @@ export function providerCredentialKeysForAgent(agent) {
   return new Set(scoped || PROVIDER_CREDENTIALS);
 }
 
-function allowedProviderCredentialsForOptions(options: Record<string, any> | string = {}) {
+function allowedProviderCredentialsForOptions(options: ChildEnvOptions = {}) {
   const agent = agentNameFromOptions(options);
   if (!agent) return PROVIDER_CREDENTIALS;
   return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;
@@ -193,7 +200,7 @@ function shouldCopyChildEnvEntry(key, value, options = {}) {
   return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, options);
 }
 
-export function isAllowedChildEnvKey(key, options = {}) {
+export function isAllowedChildEnvKey(key, options: ChildEnvOptions = {}) {
   if (PROVIDER_CREDENTIALS.has(key)) {
     return allowedProviderCredentialsForOptions(options).has(key);
   }
@@ -202,22 +209,31 @@ export function isAllowedChildEnvKey(key, options = {}) {
 
 const RUNTIME_ALLOWED = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
 
-function _filterEnv(parentEnv, extra, predicate) {
-  const env = {};
-  for (const [k, v] of Object.entries(parentEnv || {})) { if (predicate(k, v)) env[k] = v; }
+function allowKeysFromOptions(options: ChildEnvOptions) {
+  if (!options || typeof options === "string") return new Set<string>();
+  return new Set(Array.isArray(options.allowKeys) ? options.allowKeys : []);
+}
+
+function _filterEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}, predicate: (key: string, value: string | undefined) => boolean): EnvMap {
+  const env: EnvMap = {};
+  for (const [k, v] of Object.entries(parentEnv || {})) {
+    if (EXPLICIT_ONLY_CHILD_ENV.has(k)) continue;
+    if (predicate(k, v)) env[k] = v;
+  }
   for (const [k, v] of Object.entries(extra || {})) { if (predicate(k, v)) env[k] = v; }
   return env;
 }
 
-export function buildChildEnv(parentEnv = {}, extra = {}, options = {}) {
-  return _filterEnv(parentEnv, extra, (k, v) => shouldCopyChildEnvEntry(k, v, options));
+export function buildChildEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}, options: ChildEnvOptions = {}) {
+  const allowKeys = allowKeysFromOptions(options);
+  return _filterEnv(parentEnv, extra, (k, v) => allowKeys.has(k) || shouldCopyChildEnvEntry(k, v, options));
 }
 
-export function buildRuntimeEnv(parentEnv = {}, extra = {}) {
+export function buildRuntimeEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}) {
   return _filterEnv(parentEnv, extra, (k) => RUNTIME_ALLOWED.has(k));
 }
 
-export function buildAcpPoolEnv(parentEnv = {}, extra = {}) {
+export function buildAcpPoolEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}) {
   return _filterEnv(parentEnv, extra, (k, v) => shouldCopyAcpPoolEnvEntry(k, v));
 }
 

@@ -1,5 +1,11 @@
 import path from "node:path";
 
+import {
+  assertSafeSessionId,
+  resolveKnowledgeDataRoot,
+  sessionPath,
+} from "./knowledge-paths.js";
+
 export const PROMPT_COMPOSITION_ORDER = Object.freeze([
   "global-soul-profile",
   "global-provider-runtime-policy",
@@ -46,7 +52,13 @@ export function assertKnowledgeWriteAllowed(kind, { automatic = false, markdown 
   return { kind, classification, automatic, markdown };
 }
 
-export function resolveKnowledgePath({ hubRoot, sourcePath, kind, sessionId = "session", name = "note" }) {
+function assertSafeKnowledgeName(name) {
+  if (typeof name !== "string" || !name.trim() || name.includes("..") || name.includes("/") || name.includes(path.sep)) {
+    throw new Error(`invalid knowledge name: ${name}`);
+  }
+}
+
+export function resolveKnowledgePath({ hubRoot = null, sourcePath, projectRuntimeRoot = null, dataRoot = null, kind, sessionId = "session", name = "note" }) {
   const classification = classifyKnowledgeKind(kind);
   if (classification === "machine-state") {
     throw new Error(`${kind} must use runtime state storage, not knowledge paths`);
@@ -56,7 +68,8 @@ export function resolveKnowledgePath({ hubRoot, sourcePath, kind, sessionId = "s
     return path.join(path.resolve(hubRoot), "profiles", name, file);
   }
   if (classification === "session") {
-    return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, `${name}.md`);
+    assertSafeKnowledgeName(name);
+    return path.join(sessionPath(sourcePath, sessionId, { projectRuntimeRoot, dataRoot }), `${name}.md`);
   }
   if (classification === "project-memory") {
     return path.join(path.resolve(sourcePath), ".cpb", "memory.md");
@@ -124,13 +137,14 @@ export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Reco
   return issues;
 }
 
-export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null } = {}) {
+export async function findPromotionCandidates(sourcePath, { sessionId = null, projectRuntimeRoot = null, dataRoot = null, fs = null } = {}) {
   const realFs = fs || await import("node:fs/promises");
   const src = path.resolve(sourcePath);
+  const resolvedDataRoot = resolveKnowledgeDataRoot({ projectRuntimeRoot, dataRoot });
   const candidates = [];
 
   const sessionBase = sessionId
-    ? path.join(src, "cpb-task", "sessions", sessionId)
+    ? sessionPath(src, sessionId, { dataRoot: resolvedDataRoot })
     : null;
 
   if (sessionBase) {
@@ -150,12 +164,13 @@ export async function findPromotionCandidates(sourcePath, { sessionId = null, fs
     } catch {}
   }
 
-  const sessionsDir = path.join(src, "cpb-task", "sessions");
+  const sessionsDir = path.join(resolvedDataRoot, "sessions");
   try {
     const entries = await realFs.readdir(sessionsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (sessionId && entry.name === sessionId) continue;
+      assertSafeSessionId(entry.name);
       const memFile = path.join(sessionsDir, entry.name, "memory.md");
       try {
         const content = await realFs.readFile(memFile, "utf8");

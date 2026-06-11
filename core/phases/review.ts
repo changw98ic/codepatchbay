@@ -29,6 +29,7 @@ Rules:
 
 export async function runReview(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "reviewer";
   const deliverableArtifact = getRequiredArtifact(ctx.previousResults, "deliverable");
 
@@ -83,6 +84,7 @@ export async function runReview(ctx) {
     jobId,
     kind: "review",
     content,
+    dataRoot,
     metadata: parsed.data,
   });
 

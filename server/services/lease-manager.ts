@@ -2,13 +2,14 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
-import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 
 export const LEASE_FORMAT_VERSION = 1;
 type AnyRecord = Record<string, any>;
 
-function _base(cpbRoot: string, opts: AnyRecord) {
-  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+function _base(cpbRoot: string, opts: AnyRecord = {}) {
+  if (opts?.dataRoot) return path.resolve(opts.dataRoot);
+  if (opts?.includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
+  throw new Error("project runtime root required for lease storage");
 }
 
 const ownedLeaseTokens = new Map<string, string>();
@@ -218,9 +219,10 @@ export async function acquireLease(
     ownerPid = process.pid,
     lockTtlMs,
     dataRoot,
+    includeLegacyFallback,
   }: AnyRecord
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   const lease = createLease({
     leaseId,
     jobId,
@@ -261,14 +263,8 @@ export async function acquireLease(
   }
 }
 
-export async function readLease(cpbRoot: string, leaseId: string, { dataRoot }: AnyRecord = {}) {
-  // Try dataRoot first, then legacy
-  if (dataRoot && dataRoot !== runtimeDataRoot(cpbRoot)) {
-    const rtFile = leaseFileFor(cpbRoot, leaseId, { dataRoot });
-    const rtLease = await readLeaseFile(rtFile);
-    if (rtLease !== null) return rtLease;
-  }
-  return await readLeaseFile(leaseFileFor(cpbRoot, leaseId));
+export async function readLease(cpbRoot: string, leaseId: string, { dataRoot, includeLegacyFallback }: AnyRecord = {}) {
+  return await readLeaseFile(leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback }));
 }
 
 export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
@@ -291,9 +287,9 @@ export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
 export async function renewLease(
   cpbRoot: string,
   leaseId: string,
-  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot }: AnyRecord = {}
+  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback }: AnyRecord = {}
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(
     file,
     async () => {
@@ -322,9 +318,9 @@ export async function renewLease(
 export async function releaseLease(
   cpbRoot: string,
   leaseId: string,
-  { ownerToken, lockTtlMs, dataRoot }: AnyRecord = {}
+  { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback }: AnyRecord = {}
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
 
   const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
   try {

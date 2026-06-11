@@ -1,5 +1,5 @@
 import * as agentRegistry from "../../core/agents/registry.js";
-import { listJobs } from "./job-store.js";
+import { listJobsAcrossRuntimeRoots } from "./job-store.js";
 import { getWorkflow, roleForPhase } from "../../core/workflow/definition.js";
 import { scoreAgentMetrics } from "../../core/agents/scoring.js";
 import { getAgentPerformance, getAgentQuality } from "./performance-tracker.js";
@@ -119,7 +119,80 @@ function buildScoreInput(stats, performance, quality) {
   };
 }
 
-export async function collectAgentMetrics(cpbRoot) {
+function runtimeRootsForJobs(jobs) {
+  return [...new Set(jobs.map((job) => job.dataRoot || job._dataRoot).filter(Boolean))];
+}
+
+function emptyPerformance(agent) {
+  return {
+    agent,
+    entries: 0,
+    totalRequests: 0,
+    totalErrors: 0,
+    avgDurationMs: null,
+    phases: {},
+  };
+}
+
+function numericField(value, field) {
+  if (!value || typeof value !== "object") return 0;
+  const record = value as Record<string, unknown>;
+  const numberValue = Number(record[field] || 0);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function mergePerformance(agent, records) {
+  const merged = emptyPerformance(agent);
+  let totalDurationMs = 0;
+  for (const record of records) {
+    merged.entries += record.entries || 0;
+    merged.totalRequests += record.totalRequests || 0;
+    merged.totalErrors += record.totalErrors || 0;
+    if (record.avgDurationMs && record.totalRequests) {
+      totalDurationMs += record.avgDurationMs * record.totalRequests;
+    }
+    for (const [phase, stats] of Object.entries(record.phases || {})) {
+      if (!merged.phases[phase]) merged.phases[phase] = { count: 0, failures: 0 };
+      merged.phases[phase].count += numericField(stats, "count");
+      merged.phases[phase].failures += numericField(stats, "failures");
+    }
+  }
+  merged.avgDurationMs = merged.totalRequests > 0 && totalDurationMs > 0
+    ? Math.round(totalDurationMs / merged.totalRequests)
+    : null;
+  return merged;
+}
+
+function emptyQuality(agent) {
+  return { agent, total: 0, pass: 0, fail: 0, passRate: null };
+}
+
+function mergeQuality(agent, records) {
+  const merged = emptyQuality(agent);
+  for (const record of records) {
+    merged.total += record.total || 0;
+    merged.pass += record.pass || 0;
+    merged.fail += record.fail || 0;
+  }
+  merged.passRate = merged.total > 0 ? Math.round((merged.pass / merged.total) * 100) : null;
+  return merged;
+}
+
+async function collectRuntimePerformance(cpbRoot, agent, jobs) {
+  const records = await Promise.all(runtimeRootsForJobs(jobs).map((dataRoot) =>
+    getAgentPerformance(cpbRoot, agent, { dataRoot }).catch(() => emptyPerformance(agent))
+  ));
+  return mergePerformance(agent, records);
+}
+
+async function collectRuntimeQuality(cpbRoot, agent, jobs) {
+  const records = await Promise.all(runtimeRootsForJobs(jobs).map((dataRoot) =>
+    getAgentQuality(cpbRoot, agent, { dataRoot }).catch(() => emptyQuality(agent))
+  ));
+  return mergeQuality(agent, records);
+}
+
+export async function collectAgentMetrics(cpbRoot, { hubRoot }: Record<string, any> = {}) {
   let descriptors = [];
   try {
     await agentRegistry.loadRegistry(undefined);
@@ -128,7 +201,7 @@ export async function collectAgentMetrics(cpbRoot) {
     return { agents: [], timestamp: new Date().toISOString() };
   }
 
-  const allJobs = await listJobs(cpbRoot).catch(() => []);
+  const allJobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot }).catch(() => []);
   const jobsByAgent = classifyJobsByAgent(allJobs);
 
   // Collect all known agent names: from registry + from jobs
@@ -142,21 +215,8 @@ export async function collectAgentMetrics(cpbRoot) {
     const desc = agentRegistry.getDescriptor(name);
     const jobs = jobsByAgent.get(name) || [];
     const stats = buildJobStats(jobs);
-    const performance = await getAgentPerformance(cpbRoot, name).catch(() => ({
-      agent: name,
-      entries: 0,
-      totalRequests: 0,
-      totalErrors: 0,
-      avgDurationMs: null,
-      phases: {},
-    }));
-    const quality = await getAgentQuality(cpbRoot, name).catch(() => ({
-      agent: name,
-      total: 0,
-      pass: 0,
-      fail: 0,
-      passRate: null,
-    }));
+    const performance = await collectRuntimePerformance(cpbRoot, name, jobs);
+    const quality = await collectRuntimeQuality(cpbRoot, name, jobs);
     const score = scoreAgentMetrics(buildScoreInput(stats, performance, quality));
 
     // Pool status
@@ -200,14 +260,14 @@ export async function collectAgentMetrics(cpbRoot) {
   return { agents: result, timestamp: new Date().toISOString() };
 }
 
-export async function getAgentDetail(cpbRoot, agentName) {
-  const metrics = await collectAgentMetrics(cpbRoot);
+export async function getAgentDetail(cpbRoot, agentName, opts: Record<string, any> = {}) {
+  const metrics = await collectAgentMetrics(cpbRoot, opts);
   return metrics.agents.find((a) => a.name === agentName) || null;
 }
 
 export async function getAgentJobs(cpbRoot, agentName, opts: Record<string, any> = {}) {
   const limit = opts.limit ?? 50;
-  const allJobs = await listJobs(cpbRoot).catch(() => []);
+  const allJobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot: opts.hubRoot }).catch(() => []);
   return allJobs
     .filter((j) => resolveAgentForJob(j) === agentName)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))

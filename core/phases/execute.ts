@@ -32,6 +32,7 @@ Rules:
 
 export async function runExecute(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "executor";
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
   const cwd = sourcePath || cpbRoot;
@@ -52,6 +53,7 @@ export async function runExecute(ctx) {
     role,
     agent: resolvedAgent.agent,
     prompt,
+    dataRoot,
   });
 
   const agentResult: Record<string, any> = await runAgent({
@@ -124,6 +126,7 @@ export async function runExecute(ctx) {
     jobId,
     kind: "deliverable",
     content: deliverable,
+    dataRoot,
     metadata: { agent: agentResult.agent, changedFiles },
   });
 

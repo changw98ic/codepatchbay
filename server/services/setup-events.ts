@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { executeInstallPlan } from "../../core/setup/install-plan.js";
+import { resolveHubRoot } from "./hub-registry.js";
 
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
@@ -11,7 +12,7 @@ const SECRET_PATTERNS = [
 ];
 
 function setupEventsPath(cpbRoot) {
-  return path.join(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd()), "cpb-task", "setup-events.jsonl");
+  return path.join(resolveHubRoot(cpbRoot || process.env.CPB_ROOT || process.cwd()), "setup", "events.jsonl");
 }
 
 function redact(value) {

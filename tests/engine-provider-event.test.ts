@@ -229,6 +229,7 @@ async function readDelegateUsageCommands(hubRoot) {
 
 async function runEngine({
   cpbRoot = null,
+  dataRoot = null,
   hubRoot = null,
   sourcePath = null,
   sourceContext = {},
@@ -251,11 +252,13 @@ async function runEngine({
 } = {}) {
   const runJob = await loadRunJob();
   const root = cpbRoot || await tempRoot("cpb-engine-cpb");
+  const runtimeRoot = dataRoot || path.join(root, "runtime");
   const source = sourcePath || await makeSourceRoot();
   const services = makeServices(servicesState);
   const effectivePool = pool || makePool();
   const result = await runJob({
     cpbRoot: root,
+    dataRoot: runtimeRoot,
     hubRoot,
     project: "proj",
     task: "engine provider fixture",
@@ -763,6 +766,7 @@ test("runJob retries transient phase failures and corrects artifact validation f
 
 test("event store seals terminal jobs and blocks or redacts secret-like artifacts", async () => {
   const cpbRoot = await tempRoot("cpb-engine-events");
+  const dataRoot = path.join(cpbRoot, "runtime");
   const project = "proj";
   const jobId = "job-events";
 
@@ -771,7 +775,7 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     jobId,
     project,
     ts: new Date().toISOString(),
-  });
+  }, { dataRoot });
   const skipped = await appendEvent(cpbRoot, project, jobId, {
     type: "phase_result",
     jobId,
@@ -780,9 +784,9 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     status: "passed",
     artifact: "verdict-001.md",
     ts: new Date().toISOString(),
-  });
+  }, { dataRoot });
   assert.equal(skipped, null);
-  assert.deepEqual((await readEvents(cpbRoot, project, jobId)).map((event) => event.type), ["job_completed"]);
+  assert.deepEqual((await readEvents(cpbRoot, project, jobId, { dataRoot })).map((event) => event.type), ["job_completed"]);
 
   const secretJobId = "job-secret";
   const blocked = await appendEvent(cpbRoot, project, secretJobId, {
@@ -794,10 +798,10 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     artifact: ".env",
     content: "OPENAI_API_KEY=sk-1234567890abcdef",
     ts: new Date().toISOString(),
-  });
+  }, { dataRoot });
   assert.equal(blocked.type, "secret_blocked");
   assert.match(blocked.reason, /secret-like/);
-  const secretEvents = await readEvents(cpbRoot, project, secretJobId);
+  const secretEvents = await readEvents(cpbRoot, project, secretJobId, { dataRoot });
   assert.equal(secretEvents.length, 1);
   assert.equal(secretEvents[0].type, "secret_blocked");
   assert.doesNotMatch(JSON.stringify(secretEvents[0]), /sk-1234567890abcdef/);
@@ -812,8 +816,8 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     artifact: "plan-001.md",
     metadata: { apiKey: "sk-abcdef1234567890" },
     ts: new Date().toISOString(),
-  });
-  const redacted = await readEvents(cpbRoot, project, redactedJobId);
+  }, { dataRoot });
+  const redacted = await readEvents(cpbRoot, project, redactedJobId, { dataRoot });
   assert.equal(redacted[0].metadata.apiKey, "[REDACTED]");
 });
 

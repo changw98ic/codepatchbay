@@ -172,12 +172,14 @@ describe("DAG resume projection and recovery lineage", () => {
 
   it("preserves failed node resume context when retrying as a new recovery job", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cpb-dag-resume-"));
+    const dataRoot = path.join(root, "runtime");
     const project = "dag-resume";
     const job = await createJob(root, {
       project,
       task: "node-aware retry",
       workflow: "standard",
       ts: ts(1),
+      dataRoot,
     });
     await appendEvent(root, project, job.jobId, {
       type: "workflow_dag_materialized",
@@ -186,7 +188,7 @@ describe("DAG resume projection and recovery lineage", () => {
       workflow: "standard",
       workflowDag,
       ts: ts(2),
-    });
+    }, { dataRoot });
     await appendEvent(root, project, job.jobId, {
       type: "dag_node_completed",
       jobId: job.jobId,
@@ -194,7 +196,7 @@ describe("DAG resume projection and recovery lineage", () => {
       nodeId: "plan",
       phase: "plan",
       ts: ts(3),
-    });
+    }, { dataRoot });
     await appendEvent(root, project, job.jobId, {
       type: "dag_node_failed",
       jobId: job.jobId,
@@ -203,20 +205,22 @@ describe("DAG resume projection and recovery lineage", () => {
       phase: "execute",
       reason: "node failed",
       ts: ts(4),
-    });
+    }, { dataRoot });
     await failJob(root, project, job.jobId, {
       reason: "node failed",
       phase: "execute",
       retryable: true,
       ts: ts(5),
+      dataRoot,
     });
 
-    const failed = await getJob(root, project, job.jobId);
+    const failed = await getJob(root, project, job.jobId, { dataRoot });
     assert.equal(failed.dagResume.failedNodeId, "execute_b");
 
     const retried = await retryJob(root, project, job.jobId, {
       force: true,
       ts: ts(6),
+      dataRoot,
     });
 
     assert.deepEqual(retried.sourceContext.dagResume, {

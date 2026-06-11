@@ -7,9 +7,23 @@ import {
   inspectCurrentRelease,
 } from "./release-store.js";
 import { listJobs } from "./job-store.js";
+import { listRuntimeDataRoots } from "./runtime-context.js";
 
 async function exists(p) {
   try { await stat(p); return true; } catch { return false; }
+}
+
+async function listJobsWithRuntimeRoots(cpbRoot) {
+  const roots = await listRuntimeDataRoots(cpbRoot, { includeLegacy: false });
+  const jobs = [];
+  for (const root of roots) {
+    const batch = await listJobs(cpbRoot, {
+      dataRoot: root.dataRoot,
+      includeLegacyFallback: false,
+    });
+    for (const job of batch) jobs.push({ ...job, _dataRoot: root.dataRoot });
+  }
+  return { roots, jobs };
 }
 
 function collectReleasePins(jobs) {
@@ -27,41 +41,44 @@ function collectReleasePins(jobs) {
   return pins;
 }
 
-async function collectProcessAndLeaseEvidence(cpbRoot, jobs) {
+async function collectProcessAndLeaseEvidence(cpbRoot, roots, jobs) {
   const processReleaseIds = new Set();
   const leaseReleaseIds = new Set();
 
-  // Build a jobId -> job map for resolving lease/process references
+  // Build a runtimeRoot+jobId -> job map for resolving lease/process references.
   const jobMap = new Map();
   for (const job of jobs) {
-    if (job.jobId) jobMap.set(job.jobId, job);
+    if (job.jobId) jobMap.set(`${job._dataRoot}\0${job.jobId}`, job);
   }
 
   try {
     const { listProcesses } = await import("./process-registry.js");
-    const processes = await listProcesses(cpbRoot);
-    for (const proc of processes) {
-      if (proc.status === "running") {
-        // Resolve process -> jobId -> job -> executor.releaseId
-        const job = jobMap.get(proc.jobId);
-        if (job?.executor?.releaseId) processReleaseIds.add(job.executor.releaseId);
+    for (const root of roots) {
+      const processes = await listProcesses(cpbRoot, { dataRoot: root.dataRoot });
+      for (const proc of processes) {
+        if (proc.status === "running") {
+          // Resolve process -> jobId -> job -> executor.releaseId
+          const job = jobMap.get(`${root.dataRoot}\0${proc.jobId}`);
+          if (job?.executor?.releaseId) processReleaseIds.add(job.executor.releaseId);
+        }
       }
     }
   } catch {}
   try {
-    const { runtimeDataPath } = await import("./runtime-root.js");
-    const leasesDir = runtimeDataPath(cpbRoot, "leases");
-    const files = await readdir(leasesDir);
-    for (const f of files) {
-      if (!f.endsWith(".json")) continue;
-      try {
-        const lease = JSON.parse(await readFile(path.join(leasesDir, f), "utf8"));
-        // Resolve lease -> jobId -> job -> executor.releaseId (real lease schema)
-        if (lease.jobId) {
-          const job = jobMap.get(lease.jobId);
-          if (job?.executor?.releaseId) leaseReleaseIds.add(job.executor.releaseId);
-        }
-      } catch {}
+    for (const root of roots) {
+      const leasesDir = path.join(root.dataRoot, "leases");
+      const files = await readdir(leasesDir).catch(() => []);
+      for (const f of files) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          const lease = JSON.parse(await readFile(path.join(leasesDir, f), "utf8"));
+          // Resolve lease -> jobId -> job -> executor.releaseId (real lease schema)
+          if (lease.jobId) {
+            const job = jobMap.get(`${root.dataRoot}\0${lease.jobId}`);
+            if (job?.executor?.releaseId) leaseReleaseIds.add(job.executor.releaseId);
+          }
+        } catch {}
+      }
     }
   } catch {}
   return { processReleaseIds, leaseReleaseIds };
@@ -73,15 +90,16 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   const releaseList = await listReleases({ destRoot, env });
   const currentReleaseId = releaseList.current;
 
+  let roots;
   let jobs;
   try {
-    jobs = await listJobs(resolvedCpbRoot);
+    ({ roots, jobs } = await listJobsWithRuntimeRoots(resolvedCpbRoot));
   } catch (err) {
     throw new Error(`Cannot build release GC plan: failed to read job inventory: ${(err as Error).message}`);
   }
 
   const jobPins = collectReleasePins(jobs);
-  const { processReleaseIds, leaseReleaseIds } = await collectProcessAndLeaseEvidence(resolvedCpbRoot, jobs);
+  const { processReleaseIds, leaseReleaseIds } = await collectProcessAndLeaseEvidence(resolvedCpbRoot, roots, jobs);
 
   const candidates = [];
 
@@ -203,7 +221,7 @@ export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbR
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   let liveJobPins;
   try {
-    const jobs = await listJobs(resolvedCpbRoot);
+    const { jobs } = await listJobsWithRuntimeRoots(resolvedCpbRoot);
     liveJobPins = collectReleasePins(jobs);
   } catch (err) {
     // Fail-closed: refuse all deletions when job inventory is unreadable

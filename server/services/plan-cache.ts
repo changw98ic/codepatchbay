@@ -7,6 +7,7 @@ import {
   writeParentPlanRecord,
 } from "./plan-store.js";
 import { listJobsFromIndex } from "./jobs-index.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
 
 const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -25,9 +26,10 @@ function wordOverlap(a, b) {
   return common / Math.min(sa.size, sb.size);
 }
 
-async function planFileExists(cpbRoot, project, planId) {
+async function planFileExists(cpbRoot, project, planId, { dataRoot }: AnyRecord = {}) {
   try {
-    const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+    if (!dataRoot) throw new Error("project runtime root required for parent plan artifact lookup");
+    const wikiDir = path.join(dataRoot, "wiki");
     await access(path.join(wikiDir, "inbox", `plan-${planId}.md`));
     return true;
   } catch {
@@ -74,9 +76,10 @@ function hashPayload(payload) {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
-function planArtifactPath(cpbRoot, project, planArtifact) {
+function planArtifactPath(cpbRoot, project, planArtifact, { dataRoot }: AnyRecord = {}) {
+  if (!dataRoot) throw new Error("project runtime root required for parent plan artifact path");
   const artifact = String(planArtifact || "").replace(/^plan-/, "");
-  return path.join(path.resolve(cpbRoot), "wiki", "projects", project, "inbox", `plan-${artifact}.md`);
+  return path.join(path.resolve(dataRoot), "wiki", "inbox", `plan-${artifact}.md`);
 }
 
 async function artifactExists(filePath) {
@@ -98,21 +101,28 @@ export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: A
   };
 }
 
-export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {} }: AnyRecord = {}) {
+async function resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot }: AnyRecord = {}) {
+  return await resolveProjectDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+}
+
+export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+  if (!project) throw new Error("project is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
   const identity = parentPlanCacheIdentity({ project, task, sourceContext });
-  const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey);
-  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey);
+  const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
 
   const explicitPlanId = explicitParentPlanId(sourceContext);
   const planId = cached?.parentPlanId || cached?.planId || explicitPlanId || null;
   const planArtifact = cached?.planArtifact || (planId ? `plan-${planId}` : null);
-  const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact) : null;
+  const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact, { dataRoot: resolvedDataRoot }) : null;
   const cacheHit = Boolean(planId && artifactPath && await artifactExists(artifactPath));
 
   return {
     schemaVersion: 1,
     source: "parent_plan_cache",
     project,
+    dataRoot: resolvedDataRoot,
     task,
     ...identity,
     cachePath: file,
@@ -130,6 +140,8 @@ export async function writeParentPlanCache(cpbRoot, {
   project,
   task,
   sourceContext = {},
+  dataRoot,
+  hubRoot,
   planGroupId = null,
   planCacheKey = null,
   planId,
@@ -138,6 +150,7 @@ export async function writeParentPlanCache(cpbRoot, {
 }: AnyRecord = {}) {
   if (!project) throw new Error("project is required");
   if (!planId) throw new Error("planId is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
   const identity = planCacheKey && planGroupId
     ? { planGroupId, planCacheKey, payload: stablePayload({ project, task, sourceContext }) }
     : parentPlanCacheIdentity({ project, task, sourceContext });
@@ -152,15 +165,17 @@ export async function writeParentPlanCache(cpbRoot, {
     parentPlanId: String(planId),
     planId: String(planId),
     planArtifact: artifact,
-    planArtifactPath: planArtifactPath(cpbRoot, project, artifact),
+    planArtifactPath: planArtifactPath(cpbRoot, project, artifact, { dataRoot: resolvedDataRoot }),
     mergedPlanIds: [...new Set([String(planId), ...mergedPlanIds.filter(Boolean).map(String)])],
     payload: identity.payload,
     updatedAt: new Date().toISOString(),
   };
-  const stored = await writeParentPlanRecord(cpbRoot, project, identity.planCacheKey, record);
+  const stored = await writeParentPlanRecord(cpbRoot, project, identity.planCacheKey, record, { dataRoot: resolvedDataRoot });
   return {
     ...stored,
+    dataRoot: resolvedDataRoot,
     cacheHit: true,
+    planCacheKey: record.planCacheKey,
     parentPlanId: record.parentPlanId,
     reusedPlanId: record.planId,
     reusedPlanArtifact: record.planArtifact,
@@ -225,7 +240,7 @@ async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot
       const jobIssue = job.sourceContext?.issueNumber;
       if (jobIssue && String(jobIssue) === String(issueNumber)) {
         const planId = job.artifacts.plan.replace(/^plan-/, "");
-        if (await planFileExists(cpbRoot, project, planId)) {
+        if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
           return { planId, parentJobId: job.jobId, source: "same_issue" };
         }
       }
@@ -236,7 +251,7 @@ async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot
     const overlap = wordOverlap(task || "", job.task || "");
     if (overlap >= 0.5) {
       const planId = job.artifacts.plan.replace(/^plan-/, "");
-      if (await planFileExists(cpbRoot, project, planId)) {
+      if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
         return { planId, parentJobId: job.jobId, source: "task_overlap" };
       }
     }
@@ -245,24 +260,26 @@ async function findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot
   return null;
 }
 
-export async function resolveParentPlan(cpbRoot, { project, task, sourceContext = {}, dataRoot }: AnyRecord = {}) {
+export async function resolveParentPlan(cpbRoot, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+  if (!project) throw new Error("project is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
   const identity = parentPlanCacheIdentity({ project, task, sourceContext });
 
   // Priority 1: explicit parentPlanId from sourceContext
   const explicitPlanId = explicitParentPlanId(sourceContext);
   if (explicitPlanId) {
     const artifact = `plan-${explicitPlanId}`;
-    if (await planFileExists(cpbRoot, project, explicitPlanId)) {
+    if (await planFileExists(cpbRoot, project, explicitPlanId, { dataRoot: resolvedDataRoot })) {
       return hitResult(identity, { source: "explicit", planId: explicitPlanId, artifact });
     }
   }
 
   // Priority 2: plan cache record
-  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey);
+  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
   const cachedPlanId = cached?.parentPlanId || cached?.planId || null;
   if (cachedPlanId) {
     const artifact = cached?.planArtifact || `plan-${cachedPlanId}`;
-    if (await planFileExists(cpbRoot, project, cachedPlanId)) {
+    if (await planFileExists(cpbRoot, project, cachedPlanId, { dataRoot: resolvedDataRoot })) {
       return hitResult(identity, {
         source: "cache",
         planId: cachedPlanId,
@@ -273,7 +290,7 @@ export async function resolveParentPlan(cpbRoot, { project, task, sourceContext 
   }
 
   // Priority 3 & 4: same issue / task overlap from jobs index
-  const indexHit = await findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot });
+  const indexHit = await findJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot: resolvedDataRoot });
   if (indexHit) {
     const artifact = `plan-${indexHit.planId}`;
     return hitResult(identity, {

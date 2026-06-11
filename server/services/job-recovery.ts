@@ -12,8 +12,8 @@ export function isRecoverable(job) {
   return ["failed", "blocked", "cancelled"].includes(job.status);
 }
 
-export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
-  const original = await getJob(cpbRoot, project, jobId);
+export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null, dataRoot }: Record<string, any> = {}) {
+  const original = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
@@ -44,11 +44,12 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, tri
     ts,
     executor: selectedExecutor,
     executorSelection,
+    dataRoot,
   });
 }
 
-export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
-  const original = await getJob(cpbRoot, project, jobId);
+export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null, dataRoot }: Record<string, any> = {}) {
+  const original = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
@@ -76,18 +77,19 @@ export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, tr
     ts,
     executor: selectedExecutor,
     executorSelection,
+    dataRoot,
   });
 }
 
-export async function verifyTerminalImmutability(cpbRoot, project, jobId) {
-  const before = await getJob(cpbRoot, project, jobId);
+export async function verifyTerminalImmutability(cpbRoot, project, jobId, { dataRoot }: Record<string, any> = {}) {
+  const before = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!before?.jobId) return { immutable: false, reason: "job not found" };
 
   if (!TERMINAL_STATUSES.has(before.status)) {
     return { immutable: false, reason: `job is not terminal: ${before.status}` };
   }
 
-  const after = await getJob(cpbRoot, project, jobId);
+  const after = await getJob(cpbRoot, project, jobId, { dataRoot });
   const fields = ["status", "phase", "blockedReason", "failureCode", "failurePhase", "retryCount"];
   for (const field of fields) {
     if (before[field] !== after[field]) {

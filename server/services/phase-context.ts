@@ -32,11 +32,14 @@ export async function buildPhaseContextPacket(
     DEFAULT_MAX_BYTES;
 
   // 1. Build locator (never clipped)
-  const locator = await buildPhaseLocator(cpbRoot, project, jobId, phase);
+  const locator = await buildPhaseLocator(cpbRoot, project, jobId, phase, options);
   const locators = locatorEnvelope(locator);
 
   // 2. Materialize job from event log
-  const events = await readEvents(cpbRoot, project, jobId);
+  const events = await readEvents(cpbRoot, project, jobId, {
+    dataRoot: locator.stateRoot,
+    includeLegacyFallback: false,
+  });
   const job = materializeJob(events);
 
   // 3. Completed phases from materialized state

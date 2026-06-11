@@ -1,5 +1,6 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { resolveHubRoot } from "./hub-registry.js";
 
 const MIN_CODEGRAPH_DB_BYTES = 1024;
 
@@ -68,7 +69,7 @@ async function readDaemonState(sourceRoot) {
   };
 }
 
-export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string, any> = {}) {
+export async function checkCodeGraphReady({ cpbRoot, sourcePath, hubRoot }: Record<string, any> = {}) {
   const sourceRoot = await canonicalDir(sourcePath);
   if (!sourceRoot) {
     throw new CodeGraphUnavailableError("sourcePath is required for CodeGraph readiness", {
@@ -77,7 +78,7 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string
     });
   }
 
-  const statePath = path.join(path.resolve(cpbRoot || sourceRoot), "cpb-task", "codegraph-state.json");
+  const statePath = path.join(hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot || sourceRoot), "codegraph-state.json");
   const stateFile = await readJson(statePath);
   const daemonState = await readDaemonState(sourceRoot);
   let state = stateFile?.pid ? stateFile : daemonState;

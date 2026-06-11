@@ -5,13 +5,11 @@ import { getProject } from "../services/hub-registry.js";
 import { registerJobArtifactDetailRoute } from "./job-artifacts.js";
 
 async function projectDataRoot(req, project) {
-  if (!req.cpbHubRoot) return undefined;
-  try {
-    const registered = await getProject(req.cpbHubRoot, project);
-    return registered?.projectRuntimeRoot || undefined;
-  } catch {
-    return undefined;
-  }
+  if (!req.cpbHubRoot) throw new Error("hubRoot required");
+  const registered = await getProject(req.cpbHubRoot, project);
+  if (!registered) throw new Error(`Project '${project}' not found`);
+  if (!registered.projectRuntimeRoot) throw new Error(`Project '${project}' has no projectRuntimeRoot`);
+  return registered.projectRuntimeRoot;
 }
 
 export function eventRoutes(fastify, opts, done) {
@@ -19,7 +17,7 @@ export function eventRoutes(fastify, opts, done) {
   fastify.post("/events/ingest", async (req, reply) => {
     const event = req.body;
     try {
-      const result = await ingestEvent(req.cpbRoot, event);
+      const result = await ingestEvent(req.cpbRoot, event, { hubRoot: req.cpbHubRoot });
       return reply.code(result.status === "duplicate" ? 200 : 201).send(result);
     } catch (err) {
       return reply.code(400).send({ error: err.message });
@@ -31,7 +29,7 @@ export function eventRoutes(fastify, opts, done) {
     const { issue, projectId } = req.body;
     if (!issue) return reply.code(400).send({ error: "issue required" });
     const candidate = githubIssueToCandidate(issue, { projectId });
-    const result = await ingestEvent(req.cpbRoot, candidate);
+    const result = await ingestEvent(req.cpbRoot, candidate, { hubRoot: req.cpbHubRoot });
     return reply.code(result.status === "duplicate" ? 200 : 201).send(result);
   });
 
@@ -40,14 +38,14 @@ export function eventRoutes(fastify, opts, done) {
     const { failure, projectId } = req.body;
     if (!failure) return reply.code(400).send({ error: "failure required" });
     const candidate = ciFailureToCandidate(failure, { projectId });
-    const result = await ingestEvent(req.cpbRoot, candidate);
+    const result = await ingestEvent(req.cpbRoot, candidate, { hubRoot: req.cpbHubRoot });
     return reply.code(result.status === "duplicate" ? 200 : 201).send(result);
   });
 
   // GET /api/events/candidates — list candidate events
   fastify.get("/events/candidates", async (req, reply) => {
     const { status, source } = req.query;
-    const candidates = await listCandidates(req.cpbRoot, { status, source });
+    const candidates = await listCandidates(req.cpbRoot, { status, source, hubRoot: req.cpbHubRoot });
     return { candidates };
   });
 
@@ -61,31 +59,31 @@ export function eventRoutes(fastify, opts, done) {
   fastify.patch("/events/candidates/:id", async (req, reply) => {
     const { status, reason } = req.body;
     if (!status) return reply.code(400).send({ error: "status required" });
-    const result = await updateCandidate(req.cpbRoot, req.params.id, { status, reason });
+    const result = await updateCandidate(req.cpbRoot, req.params.id, { status, reason }, { hubRoot: req.cpbHubRoot });
     if (!result) return reply.code(404).send({ error: "candidate not found" });
     return result;
   });
 
   // POST /api/proactive/scan — scan candidates and evaluate
   fastify.post("/proactive/scan", async (req, reply) => {
-    const results = await scanCandidates(req.cpbRoot);
+    const results = await scanCandidates(req.cpbRoot, { hubRoot: req.cpbHubRoot });
     return { evaluations: results };
   });
 
   // GET /api/proactive/budget — check proactive budget
   fastify.get("/proactive/budget", async (req, reply) => {
-    const budget = await checkProactiveBudget(req.cpbRoot);
+    const budget = await checkProactiveBudget(req.cpbRoot, { hubRoot: req.cpbHubRoot, logger: req.log });
     return budget;
   });
 
   // POST /api/proactive/dispatch — create jobs from safe-auto candidates
   fastify.post("/proactive/dispatch", async (req, reply) => {
-    const budget = await checkProactiveBudget(req.cpbRoot);
+    const budget = await checkProactiveBudget(req.cpbRoot, { hubRoot: req.cpbHubRoot, logger: req.log });
     if (!budget.allowed) {
       return reply.code(429).send({ error: budget.reason });
     }
 
-    const evaluations = await scanCandidates(req.cpbRoot);
+    const evaluations = await scanCandidates(req.cpbRoot, { hubRoot: req.cpbHubRoot });
     const safeAuto = evaluations.filter((e) => e.recommendation.autoExecutable);
 
     if (safeAuto.length === 0) {
@@ -112,7 +110,7 @@ export function eventRoutes(fastify, opts, done) {
         await updateCandidate(req.cpbRoot, candidate.id, {
           status: "dispatched",
           reason: `queue ${entry.id}`,
-        });
+        }, { hubRoot: req.cpbHubRoot });
 
         dispatched.push({ candidateId: candidate.id, queueEntryId: entry.id, category: recommendation.category });
       } catch (err) {

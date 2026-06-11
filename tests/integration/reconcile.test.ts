@@ -14,7 +14,7 @@ import { appendEvent } from "../../server/services/event-store.js";
 import { createJob, failJob, completeJob } from "../../server/services/job-store.js";
 import { acquireLease } from "../../server/services/lease-manager.js";
 import { rebuildJobsIndex, readJobsIndex } from "../../server/services/jobs-index.js";
-import { resolveHubRoot } from "../../server/services/hub-registry.js";
+import { registerProject } from "../../server/services/hub-registry.js";
 
 function mkdtemp(prefix) {
   const dir = path.join(os.tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -23,8 +23,25 @@ function mkdtemp(prefix) {
 
 async function makeCpbRoot() {
   const dir = await mkdtemp("cpb-rec-");
-  await mkdir(path.join(dir, "cpb-task"), { recursive: true });
   return dir;
+}
+
+async function setupProjectRuntime(cpbRoot, project) {
+  const hubRoot = path.join(cpbRoot, ".cpb", "hub");
+  const sourcePath = path.join(cpbRoot, "sources", project);
+  await mkdir(sourcePath, { recursive: true });
+  const registered = await registerProject(hubRoot, {
+    id: project,
+    name: project,
+    sourcePath,
+    cpbRoot,
+    skipCodeGraphGate: true,
+  });
+  return { hubRoot, dataRoot: registered.projectRuntimeRoot };
+}
+
+async function assertSourceCpbTaskAbsent(cpbRoot) {
+  await assert.rejects(() => stat(path.join(cpbRoot, "cpb-task")), { code: "ENOENT" });
 }
 
 async function writeJsonl(filePath, lines) {
@@ -44,26 +61,29 @@ describe("validateEventStream", () => {
 
   it("returns valid for a clean JSONL file", async () => {
     const project = "testproj";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
     const jobId = "job-test-clean";
-    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    const file = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
     await writeJsonl(file, [
       JSON.stringify({ type: "job_created", jobId, project, task: "test", ts: new Date().toISOString() }),
     ]);
-    const result = await validateEventStream(cpbRoot, project, jobId);
+    const result = await validateEventStream(cpbRoot, project, jobId, { dataRoot });
     assert.equal(result.valid, true);
     assert.equal(result.events.length, 1);
     assert.equal(result.repaired, false);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("repairs a truncated final line", async () => {
     const project = "testproj";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
     const jobId = "job-test-trunc";
-    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    const file = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
     const validEvent = JSON.stringify({ type: "job_created", jobId, project, task: "test", ts: new Date().toISOString() });
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, validEvent + "\n" + '{"type":"phase_started","incom', "utf8");
 
-    const result = await validateEventStream(cpbRoot, project, jobId);
+    const result = await validateEventStream(cpbRoot, project, jobId, { dataRoot });
     assert.equal(result.valid, true);
     assert.equal(result.repaired, true);
     assert.equal(result.events.length, 1);
@@ -71,19 +91,21 @@ describe("validateEventStream", () => {
     const repaired = await readFile(file, "utf8");
     assert.ok(repaired.endsWith("\n"));
     assert.equal(repaired.trim().split("\n").length, 1);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("fails on malformed middle line without rewriting", async () => {
     const project = "testproj";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
     const jobId = "job-test-midbad";
-    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    const file = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
     const validEvent = JSON.stringify({ type: "job_created", jobId, project, task: "test", ts: new Date().toISOString() });
     const validEvent2 = JSON.stringify({ type: "phase_started", jobId, project, phase: "plan", ts: new Date().toISOString() });
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, validEvent + "\nTHIS_IS_NOT_JSON\n" + validEvent2 + "\n", "utf8");
 
     const modBefore = await fileModTime(file);
-    const result = await validateEventStream(cpbRoot, project, jobId);
+    const result = await validateEventStream(cpbRoot, project, jobId, { dataRoot });
     assert.equal(result.valid, false);
     assert.equal(result.repaired, false);
     assert.ok(result.error);
@@ -92,12 +114,34 @@ describe("validateEventStream", () => {
 
     const modAfter = await fileModTime(file);
     assert.equal(modBefore, modAfter);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("returns valid for missing file", async () => {
-    const result = await validateEventStream(cpbRoot, "testproj", "job-noexist");
+    const project = "testproj";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const result = await validateEventStream(cpbRoot, project, "job-noexist", { dataRoot });
     assert.equal(result.valid, true);
     assert.equal(result.events.length, 0);
+    await assertSourceCpbTaskAbsent(cpbRoot);
+  });
+
+  it("requires dataRoot unless legacy fallback is explicit", async () => {
+    await assert.rejects(
+      () => validateEventStream(cpbRoot, "testproj", "job-noexist"),
+      /dataRoot is required/
+    );
+
+    const project = "legacytest";
+    const jobId = "job-legacy-clean";
+    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    await writeJsonl(file, [
+      JSON.stringify({ type: "job_created", jobId, project, task: "legacy", ts: new Date().toISOString() }),
+    ]);
+
+    const result = await validateEventStream(cpbRoot, project, jobId, { legacyOnly: true });
+    assert.equal(result.valid, true);
+    assert.equal(result.events.length, 1);
   });
 });
 
@@ -108,7 +152,8 @@ describe("reconcileJobs - stale jobs", () => {
 
   it("detects stale running job with expired lease and dead owner", async () => {
     const project = "rectest";
-    const job = await createJob(cpbRoot, { project, task: "stale test" });
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "stale test", dataRoot });
     const leaseId = `lease-${job.jobId}-plan`;
 
     await acquireLease(cpbRoot, {
@@ -117,10 +162,11 @@ describe("reconcileJobs - stale jobs", () => {
       phase: "plan",
       ttlMs: 1,
       ownerPid: 999999999,
+      dataRoot,
     });
     await new Promise((r) => setTimeout(r, 10));
 
-    const report = await reconcileJobs(cpbRoot, { dryRun: true });
+    const report = await reconcileJobs(cpbRoot, { dryRun: true, hubRoot });
     assert.ok(report.staleJobs.length >= 1);
     const found = report.staleJobs.find((j) => j.jobId === job.jobId);
     assert.ok(found, "stale job should be detected");
@@ -128,24 +174,26 @@ describe("reconcileJobs - stale jobs", () => {
 
     // Dry-run: job should still be running
     const { listJobs } = await import("../../server/services/job-store.js");
-    const jobs = await listJobs(cpbRoot);
+    const jobs = await listJobs(cpbRoot, { dataRoot, includeLegacyFallback: false });
     const afterDryRun = jobs.find((j) => j.jobId === job.jobId);
     assert.equal(afterDryRun.status, "running");
 
     // Now do actual reconcile
-    const report2 = await reconcileJobs(cpbRoot, { dryRun: false });
+    const report2 = await reconcileJobs(cpbRoot, { dryRun: false, hubRoot });
     const found2 = report2.staleJobs.find((j) => j.jobId === job.jobId);
     assert.ok(found2, "stale job should be reconciled");
 
-    const jobs2 = await listJobs(cpbRoot);
+    const jobs2 = await listJobs(cpbRoot, { dataRoot, includeLegacyFallback: false });
     const afterReconcile = jobs2.find((j) => j.jobId === job.jobId);
     assert.equal(afterReconcile.status, "failed");
     assert.match(afterReconcile.blockedReason, /stale_runtime_reconciled/);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("is idempotent: running twice does not duplicate events", async () => {
     const project = "idemtest";
-    const job = await createJob(cpbRoot, { project, task: "idempotent test" });
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "idempotent test", dataRoot });
     const leaseId = `lease-${job.jobId}-plan`;
 
     await acquireLease(cpbRoot, {
@@ -154,13 +202,15 @@ describe("reconcileJobs - stale jobs", () => {
       phase: "plan",
       ttlMs: 1,
       ownerPid: 999999999,
+      dataRoot,
     });
     await new Promise((r) => setTimeout(r, 10));
 
-    await reconcileJobs(cpbRoot, { dryRun: false });
-    const report2 = await reconcileJobs(cpbRoot, { dryRun: false });
+    await reconcileJobs(cpbRoot, { dryRun: false, hubRoot });
+    const report2 = await reconcileJobs(cpbRoot, { dryRun: false, hubRoot });
     const foundAgain = report2.staleJobs.find((j) => j.jobId === job.jobId);
     assert.equal(foundAgain, undefined);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -170,8 +220,10 @@ describe("reconcileJobs - orphan leases", () => {
   after(async () => { if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true }); });
 
   it("detects orphan lease referencing missing job", async () => {
+    const project = "orphanleasetest";
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
     const leaseId = "lease-orphan-test-001";
-    const leasesDir = path.join(cpbRoot, "cpb-task", "leases");
+    const leasesDir = path.join(dataRoot, "leases");
     await mkdir(leasesDir, { recursive: true });
     await writeFile(
       path.join(leasesDir, `${leaseId}.json`),
@@ -189,7 +241,7 @@ describe("reconcileJobs - orphan leases", () => {
       "utf8"
     );
 
-    const report = await reconcileJobs(cpbRoot, { dryRun: true });
+    const report = await reconcileJobs(cpbRoot, { dryRun: true, hubRoot });
     const found = report.orphanLeases.find((l) => l.leaseId === leaseId);
     assert.ok(found, "orphan lease should be detected");
     assert.equal(found.reason, "job not found");
@@ -197,8 +249,9 @@ describe("reconcileJobs - orphan leases", () => {
     // Dry-run: lease file should still exist
     await assert.doesNotReject(() => stat(path.join(leasesDir, `${leaseId}.json`)));
 
-    await reconcileJobs(cpbRoot, { dryRun: false });
+    await reconcileJobs(cpbRoot, { dryRun: false, hubRoot });
     await assert.rejects(() => stat(path.join(leasesDir, `${leaseId}.json`)));
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -209,33 +262,37 @@ describe("cleanupDryRun", () => {
 
   it("reports planned cleanup without mutating state", async () => {
     const project = "cleanuptest";
-    const job = await createJob(cpbRoot, { project, task: "cleanup test" });
-    await completeJob(cpbRoot, project, job.jobId);
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "cleanup test", dataRoot });
+    await completeJob(cpbRoot, project, job.jobId, { dataRoot });
 
-    const report = await cleanupDryRun(cpbRoot);
+    const report = await cleanupDryRun(cpbRoot, { hubRoot });
     assert.equal(typeof report.totalJobCount, "number");
     assert.ok(report.totalJobCount >= 1);
     assert.ok(Array.isArray(report.leasesToRemove));
     assert.ok(Array.isArray(report.worktreesPreserved));
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("preserves failed worktrees in report", async () => {
     const project = "worktreepres";
-    const job = await createJob(cpbRoot, { project, task: "worktree pres test" });
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "worktree pres test", dataRoot });
     await appendEvent(cpbRoot, project, job.jobId, {
       type: "worktree_created",
       jobId: job.jobId,
       project,
       worktree: "/tmp/cpb-worktree-test-456",
       ts: new Date().toISOString(),
-    });
-    await failJob(cpbRoot, project, job.jobId, { reason: "test failure" });
+    }, { dataRoot });
+    await failJob(cpbRoot, project, job.jobId, { reason: "test failure", dataRoot });
 
-    const report = await cleanupDryRun(cpbRoot);
+    const report = await cleanupDryRun(cpbRoot, { hubRoot });
     const preserved = report.worktreesPreserved.find((w) => w.jobId === job.jobId);
     assert.ok(preserved, "failed job worktree should be in preserved list");
     assert.equal(preserved.worktree, "/tmp/cpb-worktree-test-456");
     assert.equal(preserved.status, "failed");
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -246,35 +303,39 @@ describe("cleanupJobs", () => {
 
   it("removes terminal leases but preserves running job leases", async () => {
     const project = "cleanact";
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
 
-    const completedJob = await createJob(cpbRoot, { project, task: "completed" });
+    const completedJob = await createJob(cpbRoot, { project, task: "completed", dataRoot });
     const completedLeaseId = `lease-${completedJob.jobId}-plan`;
     await acquireLease(cpbRoot, {
       leaseId: completedLeaseId,
       jobId: completedJob.jobId,
       phase: "plan",
       ttlMs: 600_000,
+      dataRoot,
     });
-    await completeJob(cpbRoot, project, completedJob.jobId);
+    await completeJob(cpbRoot, project, completedJob.jobId, { dataRoot });
 
-    const runningJob = await createJob(cpbRoot, { project, task: "running" });
+    const runningJob = await createJob(cpbRoot, { project, task: "running", dataRoot });
     const runningLeaseId = `lease-${runningJob.jobId}-plan`;
     await acquireLease(cpbRoot, {
       leaseId: runningLeaseId,
       jobId: runningJob.jobId,
       phase: "plan",
       ttlMs: 600_000,
+      dataRoot,
     });
 
-    const result = await cleanupJobs(cpbRoot);
+    const result = await cleanupJobs(cpbRoot, { hubRoot });
     assert.ok(result.cleaned >= 1, "should clean at least the completed job's lease");
 
     const { readLease } = await import("../../server/services/lease-manager.js");
-    const runningLease = await readLease(cpbRoot, runningLeaseId);
+    const runningLease = await readLease(cpbRoot, runningLeaseId, { dataRoot });
     assert.ok(runningLease, "running job's lease should NOT be cleaned");
 
-    const completedLease = await readLease(cpbRoot, completedLeaseId);
+    const completedLease = await readLease(cpbRoot, completedLeaseId, { dataRoot });
     assert.equal(completedLease, null, "completed job's lease should be cleaned");
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -285,15 +346,17 @@ describe("jobs-index rebuild", () => {
 
   it("rebuilds index from event streams", async () => {
     const project = "indextest";
-    const job = await createJob(cpbRoot, { project, task: "index rebuild" });
-    await completeJob(cpbRoot, project, job.jobId);
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "index rebuild", dataRoot });
+    await completeJob(cpbRoot, project, job.jobId, { dataRoot });
 
-    const index = await rebuildJobsIndex(cpbRoot);
+    const index = await rebuildJobsIndex(cpbRoot, { dataRoot, includeLegacyFallback: false });
     assert.ok(index._meta);
     assert.ok(index.jobs[`${project}/${job.jobId}`]);
 
     const state = index.jobs[`${project}/${job.jobId}`];
     assert.equal(state.status, "completed");
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -304,15 +367,16 @@ describe("validateEventStream - dry-run", () => {
 
   it("does not mutate truncated JSONL in dry-run mode", async () => {
     const project = "dryrunproj";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
     const jobId = "job-dryrun-trunc";
-    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    const file = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
     const validEvent = JSON.stringify({ type: "job_created", jobId, project, task: "test", ts: new Date().toISOString() });
     await mkdir(path.dirname(file), { recursive: true });
     const originalContent = validEvent + "\n" + '{"type":"phase_started","incom';
     await writeFile(file, originalContent, "utf8");
 
     const modBefore = await fileModTime(file);
-    const result = await validateEventStream(cpbRoot, project, jobId, { dryRun: true });
+    const result = await validateEventStream(cpbRoot, project, jobId, { dryRun: true, dataRoot });
     assert.equal(result.valid, true);
     assert.equal(result.wouldRepair, true);
     assert.equal(result.repaired, false);
@@ -323,6 +387,7 @@ describe("validateEventStream - dry-run", () => {
     assert.equal(contentAfter, originalContent);
     const modAfter = await fileModTime(file);
     assert.equal(modBefore, modAfter);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -333,18 +398,19 @@ describe("reconcileJobs - dry-run event stream safety", () => {
 
   it("does not repair truncated JSONL when dryRun is true", async () => {
     const project = "recdryrun";
-    const job = await createJob(cpbRoot, { project, task: "dry-run reconcile" });
-    const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${job.jobId}.jsonl`);
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "dry-run reconcile", dataRoot });
+    const eventFile = path.join(dataRoot, "events", project, `${job.jobId}.jsonl`);
 
     // Append a truncated line
     await appendEvent(cpbRoot, project, job.jobId, {
       type: "phase_activity", jobId: job.jobId, project, message: "activity", ts: new Date().toISOString(),
-    });
+    }, { dataRoot });
     const raw = await readFile(eventFile, "utf8");
     await writeFile(eventFile, raw + '{"type":"phase_started","incom', "utf8");
 
     const modBefore = await fileModTime(eventFile);
-    const report = await reconcileJobs(cpbRoot, { dryRun: true });
+    const report = await reconcileJobs(cpbRoot, { dryRun: true, hubRoot });
 
     // Should report a would-repair but not actually modify
     assert.ok(report.streamRepairs.length >= 1);
@@ -354,32 +420,35 @@ describe("reconcileJobs - dry-run event stream safety", () => {
     // File must be unchanged
     const modAfter = await fileModTime(eventFile);
     assert.equal(modBefore, modAfter);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("does not rebuild index when stream errors exist", async () => {
     const project = "streamerr";
-    const job = await createJob(cpbRoot, { project, task: "stream error test" });
-    await completeJob(cpbRoot, project, job.jobId);
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "stream error test", dataRoot });
+    await completeJob(cpbRoot, project, job.jobId, { dataRoot });
 
     // Build a valid index first
-    await rebuildJobsIndex(cpbRoot);
-    const indexBefore = await readJobsIndex(cpbRoot);
+    await rebuildJobsIndex(cpbRoot, { dataRoot, includeLegacyFallback: false });
+    const indexBefore = await readJobsIndex(cpbRoot, { dataRoot });
     assert.ok(indexBefore);
 
     // Now corrupt the event stream with a malformed middle line
-    const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${job.jobId}.jsonl`);
+    const eventFile = path.join(dataRoot, "events", project, `${job.jobId}.jsonl`);
     const validEvent = JSON.stringify({ type: "job_created", jobId: job.jobId, project, task: "test", ts: new Date().toISOString() });
     const validEvent2 = JSON.stringify({ type: "phase_started", jobId: job.jobId, project, phase: "plan", ts: new Date().toISOString() });
     await mkdir(path.dirname(eventFile), { recursive: true });
     await writeFile(eventFile, validEvent + "\nTHIS_IS_NOT_JSON\n" + validEvent2 + "\n", "utf8");
 
-    const report = await reconcileJobs(cpbRoot, { dryRun: false });
+    const report = await reconcileJobs(cpbRoot, { dryRun: false, hubRoot });
     assert.ok(report.streamErrors.length >= 1);
     assert.equal(report.indexRebuilt, false);
 
     // Index should not have been rebuilt (same _meta timestamp)
-    const indexAfter = await readJobsIndex(cpbRoot);
+    const indexAfter = await readJobsIndex(cpbRoot, { dataRoot });
     assert.equal(indexBefore._meta.updatedAt, indexAfter._meta.updatedAt);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -390,13 +459,14 @@ describe("cleanupDryRun - jobId matching", () => {
 
   it("reports lease for removal when its jobId matches a terminal job", async () => {
     const project = "jobidmatch";
-    const job = await createJob(cpbRoot, { project, task: "jobId match test" });
-    await failJob(cpbRoot, project, job.jobId, { reason: "test failure" });
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "jobId match test", dataRoot });
+    await failJob(cpbRoot, project, job.jobId, { reason: "test failure", dataRoot });
 
     // Create a lease file whose filename is NOT the job's leaseId,
     // but whose JSON payload has the terminal job's jobId
     const orphanLeaseId = "lease-orphan-by-jobid-001";
-    const leasesDir = path.join(cpbRoot, "cpb-task", "leases");
+    const leasesDir = path.join(dataRoot, "leases");
     await mkdir(leasesDir, { recursive: true });
     await writeFile(
       path.join(leasesDir, `${orphanLeaseId}.json`),
@@ -411,33 +481,37 @@ describe("cleanupDryRun - jobId matching", () => {
       "utf8"
     );
 
-    const report = await cleanupDryRun(cpbRoot);
+    const report = await cleanupDryRun(cpbRoot, { hubRoot });
     assert.ok(report.leasesToRemove.includes(orphanLeaseId),
       `cleanupDryRun should report lease ${orphanLeaseId} for removal because its jobId matches terminal job ${job.jobId}`);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
   it("cleanupDryRun is mutation-free", async () => {
     const project = "mutationfree";
-    const job = await createJob(cpbRoot, { project, task: "mutation test" });
+    const { hubRoot, dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const job = await createJob(cpbRoot, { project, task: "mutation test", dataRoot });
     const leaseId = `lease-${job.jobId}-plan`;
     await acquireLease(cpbRoot, {
       leaseId,
       jobId: job.jobId,
       phase: "plan",
       ttlMs: 600_000,
+      dataRoot,
     });
-    await completeJob(cpbRoot, project, job.jobId);
+    await completeJob(cpbRoot, project, job.jobId, { dataRoot });
 
-    const leasesDir = path.join(cpbRoot, "cpb-task", "leases");
+    const leasesDir = path.join(dataRoot, "leases");
     const leaseFile = path.join(leasesDir, `${leaseId}.json`);
     const modBefore = await fileModTime(leaseFile);
 
-    await cleanupDryRun(cpbRoot);
+    await cleanupDryRun(cpbRoot, { hubRoot });
 
     // Lease file must still exist and be unchanged
     await assert.doesNotReject(() => stat(leaseFile));
     const modAfter = await fileModTime(leaseFile);
     assert.equal(modBefore, modAfter);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 
@@ -504,10 +578,40 @@ describe("job-runner - signal handling", () => {
   before(async () => { cpbRoot = await makeCpbRoot(); });
   after(async () => { if (cpbRoot) await rm(cpbRoot, { recursive: true, force: true }); });
 
+  it("requires an explicit runtime data root", async () => {
+    const bridgePath = path.resolve(
+      path.join(import.meta.dirname, "..", "..", "bridges", "job-runner.js")
+    );
+    const child = spawn(process.execPath, [
+      bridgePath,
+      "--cpb-root", cpbRoot,
+      "--project", "sigtest",
+      "--job-id", "job-20260611-000000-missing",
+      "--phase", "execute",
+      "--script", "/bin/true",
+      "--",
+    ], {
+      cwd: cpbRoot,
+      env: { ...process.env, CPB_PROJECT_RUNTIME_ROOT: "" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    const exitCode = await new Promise((resolve) => {
+      child.once("close", (code) => resolve(code));
+    });
+
+    assert.equal(exitCode, 2);
+    assert.match(stderr, /missing required runtime data root/);
+  });
+
   it("records interrupted evidence on SIGINT", async () => {
     const project = "sigtest";
-    const job = await createJob(cpbRoot, { project, task: "signal test" });
-    const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${job.jobId}.jsonl`);
+    const dataRoot = path.join(cpbRoot, "runtime");
+    const job = await createJob(cpbRoot, { project, task: "signal test", dataRoot });
+    const eventFile = path.join(dataRoot, "events", project, `${job.jobId}.jsonl`);
 
     // Long-running executable that ignores the phase argument job-runner prepends.
     const waitScriptPath = path.join(cpbRoot, "wait-script.js");
@@ -525,10 +629,11 @@ describe("job-runner - signal handling", () => {
       "--job-id", job.jobId,
       "--phase", "execute",
       "--script", waitScriptPath,
+      "--data-root", dataRoot,
       "--",
     ], {
       cwd: cpbRoot,
-      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_HUB_ROOT: "" },
+      env: { ...process.env, CPB_ROOT: cpbRoot, CPB_HUB_ROOT: "", CPB_PROJECT_RUNTIME_ROOT: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

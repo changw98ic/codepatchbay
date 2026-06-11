@@ -21,13 +21,9 @@ import {
   buildRepairerPrompt,
   buildReviewerReviewPrompt,
 } from "../server/services/prompt-builder.js";
+import { resolveProjectDataRoot } from "../server/services/runtime-context.js";
 import {
   allocateArtifactId,
-  planFilePath,
-  deliverableFilePath,
-  verdictFilePath,
-  reviewFilePath,
-  remediationFilePath,
   wikiLogPath,
   dashboardPath,
 } from "../server/services/artifact-locator.js";
@@ -90,6 +86,21 @@ function parseArgs(argv) {
   return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, options };
 }
 
+async function phaseRuntime(cpbRoot: string, project: string) {
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: process.env.CPB_HUB_ROOT,
+    dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
+  process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
+  const wikiDir = path.join(dataRoot, "wiki");
+  return {
+    dataRoot,
+    wikiDir,
+    inboxDir: path.join(wikiDir, "inbox"),
+    outputsDir: path.join(wikiDir, "outputs"),
+  };
+}
+
 // --- Logging helpers ---
 
 const CYAN = "\x1b[0;36m";
@@ -98,8 +109,11 @@ const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-async function logAppend(cpbRoot, project, msg) {
-  const logFile = wikiLogPath(cpbRoot, project);
+async function logAppend(cpbRoot, project, msg, runtime: AnyRecord | null = null) {
+  const logFile = runtime?.wikiDir
+    ? path.join(runtime.wikiDir, "log.md")
+    : wikiLogPath(cpbRoot, project);
+  await mkdir(path.dirname(logFile), { recursive: true });
   const lockDir = path.join(path.dirname(logFile), ".cpb-log.lock");
   let acquired = false;
   for (let attempt = 0; attempt < 60; attempt++) {
@@ -253,15 +267,14 @@ async function handlePlan(args) {
   const task = options.get("--task") || "";
   if (!task) throw new Error("--task is required for plan phase");
 
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const inboxDir = path.join(wikiDir, "inbox");
-  const planId = await allocateArtifactId(inboxDir, "plan");
-  const planFile = planFilePath(cpbRoot, project, planId);
+  const runtime = await phaseRuntime(cpbRoot, project);
+  const planId = await allocateArtifactId(runtime.inboxDir, "plan");
+  const planFile = path.join(runtime.inboxDir, `plan-${planId}.md`);
 
   console.log(`Planning [${project}]: ${task}`);
   console.log(`Output: ${planFile}`);
 
-  const prompt = await buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile);
+  const prompt = await buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile, { dataRoot: runtime.dataRoot });
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -273,12 +286,12 @@ async function handlePlan(args) {
   try {
     await readFile(planFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `planner | plan | Failed to create plan for: ${task} | FAIL`);
+    await logAppend(cpbRoot, project, `planner | plan | Failed to create plan for: ${task} | FAIL`, runtime);
     console.error("Warning: Plan file not created.");
     return 1;
   }
 
-  await logAppend(cpbRoot, project, `planner | plan | Created plan-${planId} for: ${task} | SUCCESS`);
+  await logAppend(cpbRoot, project, `planner | plan | Created plan-${planId} for: ${task} | SUCCESS`, runtime);
   await dashboardUpdate(cpbRoot, project, "plan", "EXECUTING", `cpb execute ${project} ${planId}`);
   console.log("");
   console.log(`Plan: ${planFile}`);
@@ -293,26 +306,25 @@ async function handleExecute(args) {
   if (!planId && !jobId) throw new Error("--plan-id or --job-id is required for execute phase");
 
   const verdictFile = options.get("--verdict-file") || "";
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await phaseRuntime(cpbRoot, project);
 
-  const outputsDir = path.join(wikiDir, "outputs");
-  const deliverableId = await allocateArtifactId(outputsDir, "deliverable");
-  const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
+  const deliverableId = await allocateArtifactId(runtime.outputsDir, "deliverable");
+  const deliverableFile = path.join(runtime.outputsDir, `deliverable-${deliverableId}.md`);
 
   let prompt;
   if (jobId && !planId) {
     // Locator-first path: build prompt from job/event state, not artifact content
     console.log(`Executing [${project}] job-${jobId} (locator-first)...`);
-    prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile);
+    prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile, { dataRoot: runtime.dataRoot });
   } else {
     // Backward-compatible artifact-based path
-    const planFile = planFilePath(cpbRoot, project, planId);
+    const planFile = path.join(runtime.inboxDir, `plan-${planId}.md`);
     try { await readFile(planFile, "utf8"); } catch {
       console.error(`Plan file not found: ${planFile}`);
       return 1;
     }
     console.log(`Executing [${project}] plan-${planId}...`);
-    prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null);
+    prompt = await buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile || null, { dataRoot: runtime.dataRoot });
   }
   console.log(`Output: ${deliverableFile}`);
 
@@ -326,12 +338,12 @@ async function handleExecute(args) {
   try {
     await readFile(deliverableFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | WARN`);
+    await logAppend(cpbRoot, project, `executor | execute | deliverable not created from plan-${planId} | WARN`, runtime);
     console.error("Warning: Deliverable not created.");
     return 0;
   }
 
-  await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`);
+  await logAppend(cpbRoot, project, `executor | execute | deliverable-${deliverableId} from plan-${planId} | SUCCESS`, runtime);
   await dashboardUpdate(cpbRoot, project, "execute", "VERIFYING", `cpb verify ${project} ${deliverableId}`);
   console.log("");
   console.log(`Deliverable: ${deliverableFile}`);
@@ -348,10 +360,10 @@ async function handleVerify(args) {
     throw new Error("--deliverable-id or --job-id is required for verify phase");
   }
 
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await phaseRuntime(cpbRoot, project);
 
   if (deliverableId) {
-    const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
+    const deliverableFile = path.join(runtime.outputsDir, `deliverable-${deliverableId}.md`);
     try { await readFile(deliverableFile, "utf8"); } catch {
       console.error(`Deliverable file not found: ${deliverableFile}`);
       return 1;
@@ -359,7 +371,7 @@ async function handleVerify(args) {
   }
 
   const artifactId = deliverableId || jobId;
-  const verdictFile = verdictFilePath(cpbRoot, project, artifactId);
+  const verdictFile = path.join(runtime.outputsDir, `verdict-${artifactId}.md`);
 
   const label = jobId ? `job-${jobId}` : `deliverable-${deliverableId}`;
   console.log(`Verifying [${project}] ${label}...`);
@@ -367,9 +379,9 @@ async function handleVerify(args) {
 
   let prompt;
   if (jobId) {
-    prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile);
+    prompt = await buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { dataRoot: runtime.dataRoot });
   } else {
-    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile);
+    prompt = await buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { dataRoot: runtime.dataRoot });
   }
 
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
@@ -384,13 +396,13 @@ async function handleVerify(args) {
   try {
     verdictContent = await readFile(verdictFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `verifier | verify | verdict not created for ${label} | FAIL`);
+    await logAppend(cpbRoot, project, `verifier | verify | verdict not created for ${label} | FAIL`, runtime);
     console.error("Warning: Verdict not created.");
     return 1;
   }
 
   const verdict = parseVerdictFromContent(verdictContent);
-  await logAppend(cpbRoot, project, `verifier | verify | ${label} | ${verdict}`);
+  await logAppend(cpbRoot, project, `verifier | verify | ${label} | ${verdict}`, runtime);
 
   console.log("");
   console.log(`Verdict: ${verdict}`);
@@ -412,18 +424,18 @@ async function handleReview(args) {
   const deliverableId = options.get("--deliverable-id") || "";
   if (!deliverableId) throw new Error("--deliverable-id is required for review phase");
 
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const deliverableFile = deliverableFilePath(cpbRoot, project, deliverableId);
+  const runtime = await phaseRuntime(cpbRoot, project);
+  const deliverableFile = path.join(runtime.outputsDir, `deliverable-${deliverableId}.md`);
   try { await readFile(deliverableFile, "utf8"); } catch {
     console.error(`Deliverable file not found: ${deliverableFile}`);
     return 1;
   }
 
-  const reviewFile = reviewFilePath(cpbRoot, project, deliverableId);
+  const reviewFile = path.join(runtime.outputsDir, `review-${deliverableId}.md`);
   console.log(`Reviewing [${project}] deliverable-${deliverableId}...`);
   console.log(`Output: ${reviewFile}`);
 
-  const prompt = await buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId);
+  const prompt = await buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId, { dataRoot: runtime.dataRoot });
   const result = await runAcp("codex", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -435,13 +447,13 @@ async function handleReview(args) {
   try {
     reviewContent = await readFile(reviewFile, "utf8");
   } catch {
-    await logAppend(cpbRoot, project, `reviewer | review | review not created for deliverable-${deliverableId} | FAIL`);
+    await logAppend(cpbRoot, project, `reviewer | review | review not created for deliverable-${deliverableId} | FAIL`, runtime);
     console.error("Warning: Review not created.");
     return 1;
   }
 
   const reviewVerdict = parseReviewVerdict(reviewContent);
-  await logAppend(cpbRoot, project, `reviewer | review | deliverable-${deliverableId} | ${reviewVerdict}`);
+  await logAppend(cpbRoot, project, `reviewer | review | deliverable-${deliverableId} | ${reviewVerdict}`, runtime);
 
   console.log("");
   console.log(`Review: ${reviewVerdict}`);
@@ -458,7 +470,7 @@ async function handleRepair(args) {
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
 
-  const { repairId, repairFile, repairArtifact } = await runRepair(cpbRoot, {
+  const { repairId, repairFile, repairArtifact, dataRoot, lockDir } = await runRepair(cpbRoot, {
     project,
     jobId,
     executorRoot,
@@ -467,15 +479,15 @@ async function handleRepair(args) {
   console.log(`Repairing [${project}] job-${jobId}...`);
   console.log(`Output: ${repairFile}`);
 
-  const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
   const { appendEvent: appendEv, checkpointJob, readEvents: readEv, materializeJob } = await import("../server/services/event-store.js");
   const { updateJobsIndexEntry } = await import("../server/services/jobs-index.js");
+  const eventOpts = { dataRoot, includeLegacyFallback: false };
 
   async function recordEvent(event) {
-    await appendEv(cpbRoot, project, jobId, event);
-    await checkpointJob(cpbRoot, project, jobId).catch(() => {});
-    const state = materializeJob(await readEv(cpbRoot, project, jobId));
-    await updateJobsIndexEntry(cpbRoot, project, jobId, state).catch(() => {});
+    await appendEv(cpbRoot, project, jobId, event, eventOpts);
+    await checkpointJob(cpbRoot, project, jobId, eventOpts).catch(() => {});
+    const state = materializeJob(await readEv(cpbRoot, project, jobId, eventOpts));
+    await updateJobsIndexEntry(cpbRoot, project, jobId, state, eventOpts).catch(() => {});
   }
 
   await recordEvent({
@@ -495,7 +507,7 @@ async function handleRepair(args) {
     await completeRepair(cpbRoot, {
       project, jobId, repairId, repairFile, repairArtifact,
       status: "failed", error: `repairer spawn failed: ${result.error.message}`,
-      executorRoot,
+      executorRoot, lockDir,
     }).catch(() => {});
     return 1;
   }
@@ -504,7 +516,7 @@ async function handleRepair(args) {
     await completeRepair(cpbRoot, {
       project, jobId, repairId, repairFile, repairArtifact,
       status: "failed", error: `repairer exited ${result.exitCode}`,
-      executorRoot,
+      executorRoot, lockDir,
     }).catch(() => {});
     return result.exitCode;
   }
@@ -512,7 +524,7 @@ async function handleRepair(args) {
   try {
     const repairStatus = await completeRepair(cpbRoot, {
       project, jobId, repairId, repairFile, repairArtifact,
-      status: "completed", error: null, executorRoot,
+      status: "completed", error: null, executorRoot, lockDir,
     });
     await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | ${repairStatus}`);
   } catch (err) {

@@ -1,11 +1,12 @@
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { resolveHubRoot } from "../../server/services/hub-registry.js";
 
 const PROFILES_DIR_NAME = "model-profiles";
 
 function configDir(cpbRoot) {
-  return process.env.CPB_AGENTS_CONFIG_DIR || path.join(cpbRoot, "cpb-task", "agents");
+  return process.env.CPB_AGENTS_CONFIG_DIR || path.join(resolveHubRoot(cpbRoot), "agents");
 }
 
 function profilesDir(cpbRoot) {

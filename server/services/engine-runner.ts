@@ -1,4 +1,5 @@
 import { runJob } from "../../core/engine/run-job.js";
+import { mkdir } from "node:fs/promises";
 import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job-store.js";
 import { appendEvent } from "./event-store.js";
 import { getManagedAcpPool } from "./acp-pool.js";
@@ -29,15 +30,29 @@ function prepareTaskForEnv(env) {
   return prepareTask;
 }
 
-export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {}) {
+export function buildServices(cpbRoot, { hubRoot = null, env = process.env, dataRoot = null } = {}) {
+  const withJobOptions = (fn) => dataRoot
+    ? (root, project, jobId, opts = {}) => fn(root, project, jobId, { ...opts, dataRoot })
+    : fn;
   return {
-    createJob,
-    startPhase,
-    completePhase,
-    completeJob,
-    failJob,
-    blockJob,
-    appendEvent,
+    createJob: dataRoot
+      ? (root, opts = {}) => createJob(root, { ...opts, dataRoot })
+      : createJob,
+    startPhase: withJobOptions(startPhase),
+    completePhase: withJobOptions(completePhase),
+    completeJob: dataRoot
+      ? (root, project, jobId, opts = {}) => completeJob(root, project, jobId, { ...opts, dataRoot })
+      : completeJob,
+    failJob: withJobOptions(failJob),
+    blockJob: withJobOptions(blockJob),
+    appendEvent: dataRoot
+      ? (root, project, jobId, event, opts = {}) => {
+        if (typeof jobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) {
+          throw new Error(`invalid jobId for appendEvent: ${JSON.stringify(jobId)}`);
+        }
+        return appendEvent(root, project, jobId, event, { ...opts, dataRoot, includeLegacyFallback: false });
+      }
+      : appendEvent,
     prepareTask: prepareTaskForEnv(env),
     getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
     providerServices: {
@@ -51,13 +66,23 @@ export function buildServices(cpbRoot, { hubRoot = null, env = process.env } = {
 
 export async function runJobWithServices(opts) {
   const { cpbRoot, project, sourcePath: explicitSourcePath, hubRoot: explicitHubRoot } = opts;
-  const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot } = await resolveSourcePath(cpbRoot, project);
+  await mkdir(cpbRoot, { recursive: true });
+  const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot, projectRuntimeRoot } = await resolveSourcePath(cpbRoot, project, explicitHubRoot);
   const hubRoot = explicitHubRoot || resolvedHubRoot;
-  const services = buildServices(cpbRoot, { hubRoot, env: opts.env || process.env });
+  if (!projectRuntimeRoot) {
+    throw new Error(`project runtime root required for project '${project}'`);
+  }
+  const env = {
+    ...(opts.env || process.env),
+    CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot,
+  };
+  const services = buildServices(cpbRoot, { hubRoot, env, dataRoot: projectRuntimeRoot });
   const callerProvidedProviderServices = opts.providerServices !== undefined;
   return runJob({
     ...opts,
     hubRoot,
+    dataRoot: projectRuntimeRoot,
+    env,
     sourcePath: explicitSourcePath || resolvedSourcePath,
     routing: opts.routing || null,
     agentAvailability: opts.agentAvailability || null,
@@ -68,12 +93,12 @@ export async function runJobWithServices(opts) {
   });
 }
 
-async function resolveSourcePath(cpbRoot, project) {
+async function resolveSourcePath(cpbRoot, project, hubRootOverride = null) {
   try {
-    const hubRoot = resolveHubRoot(cpbRoot);
+    const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
     const registered = await getProject(hubRoot, project);
-    return { sourcePath: registered?.sourcePath || null, hubRoot };
+    return { sourcePath: registered?.sourcePath || null, hubRoot, projectRuntimeRoot: registered?.projectRuntimeRoot || null };
   } catch {
-    return { sourcePath: null, hubRoot: null };
+    return { sourcePath: null, hubRoot: null, projectRuntimeRoot: null };
   }
 }

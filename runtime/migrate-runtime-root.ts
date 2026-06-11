@@ -3,13 +3,18 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { listProjects, loadRegistry, resolveHubRoot } from "../bridges/runtime-services.js";
-import { cpbHome, projectRuntimeRoot, runtimeDataPath } from "../core/paths.js";
+import { listProjects, loadRegistry, rebuildJobsIndex, resolveHubRoot } from "../bridges/runtime-services.js";
+import { projectRuntimeRoot, runtimeDataPath } from "../core/paths.js";
 
 type MigrationOptions = {
   dryRun?: boolean;
   quarantineNonCodePatchbay?: boolean;
   quarantineNonFlow?: boolean;
+};
+
+type RegistryProject = {
+  id: string;
+  projectRuntimeRoot?: string;
 };
 
 async function exists(file) {
@@ -56,7 +61,49 @@ async function listFiles(root, base = root) {
   return files.sort();
 }
 
-async function copyOne(root, src, dest, report, dryRun) {
+async function listProjectDirs(root, skipNames = new Set<string>()) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => !name.startsWith(".") && !skipNames.has(name))
+    .sort();
+}
+
+function registryProjectsById(registry) {
+  return registry?.projects && typeof registry.projects === "object" && !Array.isArray(registry.projects)
+    ? registry.projects as Record<string, RegistryProject>
+    : {};
+}
+
+function assertInsideRoot(root: string, target: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`migration target escapes runtime root: ${target}`);
+  }
+}
+
+function projectRuntimeRootFromRegistry(hubRoot: string, projectsById: Record<string, RegistryProject>, projectId: string) {
+  const project = projectsById[projectId];
+  if (!project?.projectRuntimeRoot) {
+    throw new Error(`project runtime root required for registered project: ${projectId}`);
+  }
+  const expectedRoot = projectRuntimeRoot(hubRoot, projectId);
+  const registeredRoot = path.resolve(project.projectRuntimeRoot);
+  if (registeredRoot !== expectedRoot) {
+    throw new Error(`invalid projectRuntimeRoot for ${projectId}: must be ${expectedRoot}`);
+  }
+  return expectedRoot;
+}
+
+async function copyOne(root, src, dest, report, dryRun, allowedDestRoot = null) {
+  if (allowedDestRoot) assertInsideRoot(allowedDestRoot, dest);
   if (await exists(dest)) {
     if (await sameFile(src, dest)) {
       report.skipped.push(`${rel(root, src)} -> ${rel(root, dest)} (already current)`);
@@ -74,7 +121,8 @@ async function copyOne(root, src, dest, report, dryRun) {
   return true;
 }
 
-async function migrateTree(root, src, dest, report, dryRun) {
+async function migrateTree(root, src, dest, report, dryRun, allowedDestRoot = null) {
+  if (allowedDestRoot) assertInsideRoot(allowedDestRoot, dest);
   if (!await isDirectory(src)) {
     report.missing.push(rel(root, src));
     return;
@@ -83,7 +131,7 @@ async function migrateTree(root, src, dest, report, dryRun) {
   const files = await listFiles(src);
   let clean = true;
   for (const file of files) {
-    const ok = await copyOne(root, path.join(src, file), path.join(dest, file), report, dryRun);
+    const ok = await copyOne(root, path.join(src, file), path.join(dest, file), report, dryRun, allowedDestRoot);
     clean &&= ok;
   }
 
@@ -223,6 +271,7 @@ async function migrateWikiProjectsToRuntimeRoots(cpbRoot, hubRoot, report, dryRu
     report.retained.push("wiki/projects: cannot load Hub registry, skipping migration");
     return;
   }
+  const projectsById = registryProjectsById(registry);
 
   const projectEntries = await readdir(wikiProjectsDir, { withFileTypes: true });
   for (const entry of projectEntries) {
@@ -230,14 +279,7 @@ async function migrateWikiProjectsToRuntimeRoots(cpbRoot, hubRoot, report, dryRu
 
     const projectId = entry.name;
     const srcDir = path.join(wikiProjectsDir, projectId);
-    const project = registry.projects[projectId];
-
-    let destRoot;
-    if (project?.projectRuntimeRoot) {
-      destRoot = project.projectRuntimeRoot;
-    } else {
-      destRoot = projectRuntimeRoot(hubRoot, projectId);
-    }
+    const destRoot = projectRuntimeRootFromRegistry(hubRoot, projectsById, projectId);
 
     const destWikiDir = path.join(destRoot, "wiki");
 
@@ -248,7 +290,7 @@ async function migrateWikiProjectsToRuntimeRoots(cpbRoot, hubRoot, report, dryRu
     for (const file of files) {
       const srcFile = path.join(srcDir, file);
       const destFile = path.join(destWikiDir, file);
-      const ok = await copyOne(cpbRoot, srcFile, destFile, report, dryRun);
+      const ok = await copyOne(cpbRoot, srcFile, destFile, report, dryRun, destRoot);
       clean &&= ok;
     }
 
@@ -270,7 +312,33 @@ async function migrateWikiProjectsToRuntimeRoots(cpbRoot, hubRoot, report, dryRu
   }
 }
 
-async function migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, report, dryRun) {
+async function findLegacyProjectIds(cpbRoot) {
+  const root = path.resolve(cpbRoot);
+  const ids = new Set<string>();
+  const wikiProjectsDir = path.join(root, "wiki", "projects");
+  for (const projectId of await listProjectDirs(wikiProjectsDir, new Set(["_template"]))) {
+    ids.add(projectId);
+  }
+
+  const cpbTaskDir = runtimeDataPath(root);
+  for (const subdir of ["events", "checkpoints", "worktrees"]) {
+    for (const projectId of await listProjectDirs(path.join(cpbTaskDir, subdir))) {
+      ids.add(projectId);
+    }
+  }
+
+  return [...ids].sort();
+}
+
+async function assertLegacyProjectsRegistered(cpbRoot, projectsById: Record<string, RegistryProject>) {
+  const legacyProjectIds = await findLegacyProjectIds(cpbRoot);
+  const missing = legacyProjectIds.filter((projectId) => !projectsById[projectId]?.projectRuntimeRoot);
+  if (missing.length > 0) {
+    throw new Error(`unregistered legacy projects: ${missing.join(", ")}`);
+  }
+}
+
+async function migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, projectsById: Record<string, RegistryProject>, report, dryRun) {
   const cpbTaskDir = runtimeDataPath(cpbRoot);
   if (!await isDirectory(cpbTaskDir)) {
     report.missing.push(rel(cpbRoot, cpbTaskDir));
@@ -287,11 +355,12 @@ async function migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, report, dryRun) {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const projectId = entry.name;
-      const destRoot = projectRuntimeRoot(hubRoot, projectId);
-      const destDir = path.join(destRoot, subdir);
+      const destRoot = projectRuntimeRootFromRegistry(hubRoot, projectsById, projectId);
+      const destDir = path.join(destRoot, subdir, projectId);
 
-      await migrateTree(cpbRoot, path.join(srcBase, projectId), destDir, report, dryRun);
+      await migrateTree(cpbRoot, path.join(srcBase, projectId), destDir, report, dryRun, destRoot);
     }
+    await removeIfEmptyOrOnlyGitignore(cpbRoot, srcBase, report, dryRun);
   }
 
   // Migrate leases (flat directory, project-scoped via jobId)
@@ -320,6 +389,8 @@ async function migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, report, dryRun) {
       report.wouldDelete.push(rel(cpbRoot, indexPath));
     }
   }
+
+  await removeIfEmptyOrOnlyGitignore(cpbRoot, cpbTaskDir, report, dryRun);
 }
 
 export async function migrateToProjectRuntimeRoots(cpbRoot, hubRoot, options: MigrationOptions = {}) {
@@ -336,8 +407,20 @@ export async function migrateToProjectRuntimeRoots(cpbRoot, hubRoot, options: Mi
     missing: [],
   };
 
+  const registry = await loadRegistry(hubRoot);
+  const projectsById = registryProjectsById(registry);
+  await assertLegacyProjectsRegistered(cpbRoot, projectsById);
+
   await migrateWikiProjectsToRuntimeRoots(cpbRoot, hubRoot, report, dryRun);
-  await migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, report, dryRun);
+  await migrateCpbTaskToRuntimeRoots(cpbRoot, hubRoot, projectsById, report, dryRun);
+
+  if (!dryRun && report.conflicts.length === 0) {
+    for (const project of Object.values(projectsById)) {
+      if (project?.projectRuntimeRoot) {
+        await rebuildJobsIndex(cpbRoot, { dataRoot: project.projectRuntimeRoot });
+      }
+    }
+  }
 
   return report;
 }

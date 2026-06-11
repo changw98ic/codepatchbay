@@ -7,6 +7,7 @@ import { readLeaderStatus } from "../orchestrator/leader-lock.js";
 import { readJobsIndex } from "./jobs-index.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event-store.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
+import { listRuntimeDataRoots } from "./runtime-context.js";
 
 type AnyRecord = Record<string, any>;
 type RuntimeJob = AnyRecord & {
@@ -75,10 +76,23 @@ function countQueueBlockers(entries: AnyRecord[]) {
   return counts;
 }
 
-async function countJobsIndexDivergence(cpbRoot: string) {
+function runtimeOpts(dataRoot: string) {
+  return { dataRoot, includeLegacyFallback: false };
+}
+
+async function countJobsIndexDivergence(cpbRoot: string, hubRoot: string) {
+  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy: false });
+  let totalDiverged = 0;
+  for (const root of roots) {
+    totalDiverged += await countJobsIndexDivergenceForRoot(cpbRoot, root.dataRoot);
+  }
+  return totalDiverged;
+}
+
+async function countJobsIndexDivergenceForRoot(cpbRoot: string, dataRoot: string) {
   let index;
   try {
-    index = await readJobsIndex(cpbRoot);
+    index = await readJobsIndex(cpbRoot, runtimeOpts(dataRoot));
   } catch {
     index = null;
   }
@@ -87,7 +101,7 @@ async function countJobsIndexDivergence(cpbRoot: string) {
 
   let eventFiles = [];
   try {
-    eventFiles = await listEventFiles(cpbRoot);
+    eventFiles = await listEventFiles(cpbRoot, runtimeOpts(dataRoot));
   } catch {
     return 0;
   }
@@ -100,7 +114,7 @@ async function countJobsIndexDivergence(cpbRoot: string) {
       continue;
     }
     try {
-      const events = await readEventsReadOnly(cpbRoot, project, jobId);
+      const events = await readEventsReadOnly(cpbRoot, project, jobId, runtimeOpts(dataRoot));
       const actual = materializeJob(events);
       const indexed = indexJobs[key];
       if (actual?.status !== indexed?.status) diverged += 1;
@@ -118,29 +132,33 @@ async function countJobsIndexDivergence(cpbRoot: string) {
   return diverged;
 }
 
-async function findStaleJobs(cpbRoot: string) {
-  const index = await readJobsIndex(cpbRoot);
-  const jobs = Object.values((index as AnyRecord)?.jobs || {}) as RuntimeJob[];
+async function findStaleJobs(cpbRoot: string, hubRoot: string) {
+  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy: false });
   const stale = [];
   const now = new Date();
 
-  for (const job of jobs) {
-    if (!job?.jobId || TERMINAL_JOB_STATUSES.has(job.status)) continue;
-    if (!job.leaseId) {
-      const lastActivityAt = job.lastActivityAt || job.updatedAt || job.createdAt;
-      const age = lastActivityAt ? now.getTime() - new Date(lastActivityAt).getTime() : Infinity;
-      if (!Number.isFinite(age) || age > 300_000) {
-        stale.push({ jobId: job.jobId, project: job.project || null, reason: "no active lease" });
+  for (const root of roots) {
+    const index = await readJobsIndex(cpbRoot, runtimeOpts(root.dataRoot));
+    const jobs = Object.values((index as AnyRecord)?.jobs || {}) as RuntimeJob[];
+
+    for (const job of jobs) {
+      if (!job?.jobId || TERMINAL_JOB_STATUSES.has(job.status)) continue;
+      if (!job.leaseId) {
+        const lastActivityAt = job.lastActivityAt || job.updatedAt || job.createdAt;
+        const age = lastActivityAt ? now.getTime() - new Date(lastActivityAt).getTime() : Infinity;
+        if (!Number.isFinite(age) || age > 300_000) {
+          stale.push({ jobId: job.jobId, project: job.project || null, dataRoot: root.dataRoot, reason: "no active lease" });
+        }
+        continue;
       }
-      continue;
-    }
-    try {
-      const lease = await readLease(cpbRoot, job.leaseId);
-      if (lease === null || isLeaseStale(lease, now)) {
-        stale.push({ jobId: job.jobId, project: job.project || null, reason: lease === null ? "missing lease" : "stale lease" });
+      try {
+        const lease = await readLease(cpbRoot, job.leaseId, { dataRoot: root.dataRoot });
+        if (lease === null || isLeaseStale(lease, now)) {
+          stale.push({ jobId: job.jobId, project: job.project || null, dataRoot: root.dataRoot, reason: lease === null ? "missing lease" : "stale lease" });
+        }
+      } catch {
+        stale.push({ jobId: job.jobId, project: job.project || null, dataRoot: root.dataRoot, reason: "lease read error" });
       }
-    } catch {
-      stale.push({ jobId: job.jobId, project: job.project || null, reason: "lease read error" });
     }
   }
 
@@ -211,8 +229,8 @@ export async function collectRuntimeHealth({
         return [];
       }
     }),
-    probeValue(probes, "jobsIndexDivergenceCount", () => countJobsIndexDivergence(resolvedCpbRoot)),
-    probeValue(probes, "staleJobs", () => findStaleJobs(resolvedCpbRoot)),
+    probeValue(probes, "jobsIndexDivergenceCount", () => countJobsIndexDivergence(resolvedCpbRoot, hubRoot)),
+    probeValue(probes, "staleJobs", () => findStaleJobs(resolvedCpbRoot, hubRoot)),
     probeValue(probes, "reconcileEvidence", () => null),
   ]);
 

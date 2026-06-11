@@ -7,14 +7,15 @@ import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeDataPath } from "../server/services/runtime-root.js";
 import { appendEvent } from "../server/services/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
+import { resolveProjectDataRoot } from "../server/services/runtime-context.js";
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import {
   completeJob,
   completePhase,
   createJob,
+  blockJob,
   cancelJob,
   consumeRedirect,
   FAILURE_CODES,
@@ -112,6 +113,18 @@ function failure(reason: any, { code = FAILURE_CODES.FATAL, phase, cause, retrya
     retryable: retryable ?? code === FAILURE_CODES.RECOVERABLE,
     cause,
   };
+}
+
+function scopedRuntimeOpts(dataRoot: string) {
+  return { dataRoot, includeLegacyFallback: false };
+}
+
+function scopedExecutorEnv(cpbRoot: string, executorRoot: string, dataRoot: string) {
+  return executorEnv(process.env, {
+    cpbRoot,
+    executorRoot,
+    extra: { CPB_PROJECT_RUNTIME_ROOT: dataRoot },
+  });
 }
 
 export async function canonicalSourcePath(sourcePath: string) {
@@ -300,9 +313,11 @@ async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
   }
 }
 
-export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
+export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath, { dataRoot = null }: Record<string, any> = {}) {
   if (!sourcePath) return;
-  const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
+  const wikiDir = dataRoot
+    ? path.join(path.resolve(dataRoot), "wiki")
+    : path.resolve(cpbRoot, "wiki", "projects", project);
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   const projectJsonPath = path.join(wikiDir, "project.json");
@@ -384,7 +399,7 @@ async function parseReviewVerdict(reviewPath) {
 
 // ─── Phase execution ───
 
-async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
+async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, dataRoot, sourcePathOverride = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
     return null;
   }
@@ -401,7 +416,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   }
   if (!sourcePath) return null;
 
-  const worktreesRoot = runtimeDataPath(cpbRoot, "worktrees");
+  const worktreesRoot = path.join(path.resolve(dataRoot), "worktrees");
   const result = await runCommand(
     process.execPath,
     [
@@ -417,7 +432,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
       worktreesRoot,
     ],
     cpbRoot,
-    { env: executorEnv(process.env, { cpbRoot, executorRoot }) }
+    { env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot) }
   );
   if (result.exitCode !== 0) {
     throw result.error || new Error("worktree creation failed");
@@ -433,14 +448,14 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
     worktree: created.path,
     branch: created.branch,
     ts: ts(),
-  });
+  }, scopedRuntimeOpts(dataRoot));
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string): Promise<any> {
-  const job = await getJob(cpbRoot, project, jobId);
+async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<any> {
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (job.cancelRequested) {
-    await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });
+    await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}`, dataRoot });
     fail(`Cancelled before ${phase}`);
     return { cancelled: true, redirect: null };
   }
@@ -469,6 +484,19 @@ async function main() {
   const cpbRoot = path.resolve(process.env.CPB_ROOT || defaultExecutorRoot);
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
+  const hubRoot = resolveHubRoot(cpbRoot);
+  let dataRoot;
+  try {
+    dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+      hubRoot,
+      dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
+    });
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
+  process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
+  const runtimeOpts = scopedRuntimeOpts(dataRoot);
   if (sourcePath) {
     try {
       sourcePath = await canonicalSourcePath(sourcePath);
@@ -478,10 +506,9 @@ async function main() {
     }
     process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
     process.env.CPB_ACP_CWD = sourcePath;
-    await ensureWikiProjectBoundary(cpbRoot, project, sourcePath);
+    await ensureWikiProjectBoundary(cpbRoot, project, sourcePath, { dataRoot });
   }
 
-  const hubRoot = process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : null;
   let dispatchId = providedDispatchId || null;
 
   if (dispatchEnabled() && hubRoot && sourcePath) {
@@ -536,8 +563,13 @@ async function main() {
     workflow,
     jobId: jobIdOverride,
     executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
+    dataRoot,
   });
   const jobId = job.jobId;
+  const failCurrentJob = (details: Record<string, any>) => failJob(cpbRoot, project, jobId, { ...details, dataRoot });
+  const completeCurrentPhase = (details: Record<string, any>) => completePhase(cpbRoot, project, jobId, { ...details, dataRoot });
+  const completeCurrentJob = () => completeJob(cpbRoot, project, jobId, { dataRoot });
+  const checkCurrentCancelAndRedirect = (phase: string) => checkCancelAndRedirect(cpbRoot, project, jobId, phase, dataRoot);
 
   const meta = buildMeta({
     sourcePath,
@@ -546,11 +578,11 @@ async function main() {
   });
 
   if (meta.sourcePath) {
-    await appendEvent(cpbRoot, project, jobId, executionBoundaryEvent(meta, { jobId, project, ts: ts() }));
+    await appendEvent(cpbRoot, project, jobId, executionBoundaryEvent(meta, { jobId, project, ts: ts() }), runtimeOpts);
   }
 
-  const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
-  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath);
+  const wikiDir = path.join(dataRoot, "wiki");
+  await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, dataRoot, sourcePath);
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
   // Blocked workflow: record and exit without launching agents
@@ -563,9 +595,8 @@ async function main() {
       default: false,
       reason: "blocked by operator",
       ts: ts(),
-    });
-    const { blockJob } = await import("../server/services/job-store.js");
-    await blockJob(cpbRoot, project, jobId, { reason: "blocked by operator" });
+    }, runtimeOpts);
+    await blockJob(cpbRoot, project, jobId, { reason: "blocked by operator", dataRoot });
     log(project, `Job ${jobId} blocked. No agents launched.`);
     pipelineOk = true;
     await markDispatchDone(true);
@@ -581,15 +612,15 @@ async function main() {
       workflow,
       default: false,
       ts: ts(),
-    });
+    }, runtimeOpts);
   }
 
   try {
     // ─── Phase 1: Plan ───
     {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
+      const check = await checkCurrentCancelAndRedirect("plan");
       if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled before plan", { code: FAILURE_CODES.BLOCKED, phase: "plan" }));
+        await failCurrentJob(failure("cancelled before plan", { code: FAILURE_CODES.BLOCKED, phase: "plan" }));
         return 1;
       }
     }
@@ -599,12 +630,12 @@ async function main() {
       script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
       scriptArgs: [project, task],
       executorRoot,
-      env: executorEnv(process.env, { cpbRoot, executorRoot }),
+      env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
     });
 
     if (planResult.error) {
       fail(`Plan spawn failed: ${planResult.error.message}`);
-      await failJob(cpbRoot, project, jobId, failure(`plan spawn error: ${planResult.error.message}`, {
+      await failCurrentJob(failure(`plan spawn error: ${planResult.error.message}`, {
         code: FAILURE_CODES.RECOVERABLE,
         phase: "plan",
         cause: { message: planResult.error.message },
@@ -613,7 +644,7 @@ async function main() {
     }
 
     if (checkTimeout()) {
-      await failJob(cpbRoot, project, jobId, failure("timed out after plan phase", {
+      await failCurrentJob(failure("timed out after plan phase", {
         code: FAILURE_CODES.RECOVERABLE,
         phase: "plan",
       }));
@@ -624,8 +655,8 @@ async function main() {
 
     if (!planId) {
       fail("Plan not created. Aborting.");
-      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
-      await failJob(cpbRoot, project, jobId, failure("plan not created", {
+      await completeCurrentPhase({ phase: "plan", artifact: "" });
+      await failCurrentJob(failure("plan not created", {
         code: FAILURE_CODES.FATAL,
         phase: "plan",
       }));
@@ -633,13 +664,13 @@ async function main() {
     }
 
     ok(`plan-${planId}`);
-    await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
+    await completeCurrentPhase({ phase: "plan", artifact: `plan-${planId}` });
 
     // Cancel check after plan
     {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
+      const check = await checkCurrentCancelAndRedirect("execute");
       if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after plan", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
+        await failCurrentJob(failure("cancelled after plan", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
         return 1;
       }
     }
@@ -649,7 +680,7 @@ async function main() {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during execute phase", {
+        await failCurrentJob(failure("timed out during execute phase", {
           code: FAILURE_CODES.RECOVERABLE,
           phase: "execute",
         }));
@@ -663,14 +694,14 @@ async function main() {
         script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
         scriptArgs: [project, planId],
         executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
       });
 
       deliverableId = extractDeliverableId(execResult.stdout);
 
       if (deliverableId) {
         ok(`deliverable-${deliverableId}`);
-        await completePhase(cpbRoot, project, jobId, {
+        await completeCurrentPhase({
           phase: "execute",
           artifact: `deliverable-${deliverableId}`,
         });
@@ -678,7 +709,7 @@ async function main() {
       }
 
       warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
-      await completePhase(cpbRoot, project, jobId, {
+      await completeCurrentPhase({
         phase: `execute-retry-${attempt}`,
         artifact: "",
       });
@@ -686,7 +717,7 @@ async function main() {
 
     if (!deliverableId) {
       warn(`Execute completed without deliverable after ${maxRetries} attempts. Proceeding to verify by job state.`);
-      await completePhase(cpbRoot, project, jobId, {
+      await completeCurrentPhase({
         phase: "execute",
         artifact: "",
       });
@@ -698,7 +729,7 @@ async function main() {
 
       for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
         if (checkTimeout()) {
-          await failJob(cpbRoot, project, jobId, failure("timed out during review phase", {
+          await failCurrentJob(failure("timed out during review phase", {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "review",
           }));
@@ -712,12 +743,12 @@ async function main() {
           script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
           scriptArgs: [project, deliverableId],
           executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
         });
 
         if (reviewResult.error) {
           fail(`Review spawn failed: ${reviewResult.error.message}`);
-          await failJob(cpbRoot, project, jobId, failure(`review spawn error: ${reviewResult.error.message}`, {
+          await failCurrentJob(failure(`review spawn error: ${reviewResult.error.message}`, {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "review",
             cause: { message: reviewResult.error.message },
@@ -731,7 +762,7 @@ async function main() {
 
         if (reviewVerdict === "PASS") {
           ok(`review-${deliverableId}`);
-          await completePhase(cpbRoot, project, jobId, {
+          await completeCurrentPhase({
             phase: "review",
             artifact: `review-${deliverableId}`,
           });
@@ -740,7 +771,7 @@ async function main() {
         }
 
         warn(`Review did not pass: ${reviewVerdict ?? "missing"}`);
-        await completePhase(cpbRoot, project, jobId, {
+        await completeCurrentPhase({
           phase: reviewPhaseName,
           artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
         });
@@ -756,20 +787,20 @@ async function main() {
           script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
           scriptArgs: [project, planId, reviewPath],
           executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
         });
 
         const newDeliverableId = extractDeliverableId(fixResult.stdout);
         if (newDeliverableId) {
           deliverableId = newDeliverableId;
           ok(`deliverable-${deliverableId} (review fix)`);
-          await completePhase(cpbRoot, project, jobId, {
+          await completeCurrentPhase({
             phase: fixPhaseName,
             artifact: `deliverable-${deliverableId}`,
           });
         } else {
           warn("Review fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
+          await completeCurrentPhase({
             phase: fixPhaseName,
             artifact: "",
           });
@@ -777,7 +808,7 @@ async function main() {
       }
 
       if (!reviewPassed) {
-        await failJob(cpbRoot, project, jobId, failure(`review did not pass: ${lastReviewVerdict ?? "missing"}`, {
+        await failCurrentJob(failure(`review did not pass: ${lastReviewVerdict ?? "missing"}`, {
           code: FAILURE_CODES.QUALITY_FAIL,
           phase: "review",
           retryable: false,
@@ -785,18 +816,18 @@ async function main() {
         return 1;
       }
 
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
+      const check = await checkCurrentCancelAndRedirect("verify");
       if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after review", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
+        await failCurrentJob(failure("cancelled after review", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
         return 1;
       }
     }
 
     // Cancel check after execute
     {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
+      const check = await checkCurrentCancelAndRedirect("verify");
       if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after execute", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
+        await failCurrentJob(failure("cancelled after execute", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
         return 1;
       }
     }
@@ -808,7 +839,7 @@ async function main() {
 
     while (qualityFailureCount < maxRetries) {
       if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during verify phase", {
+        await failCurrentJob(failure("timed out during verify phase", {
           code: FAILURE_CODES.RECOVERABLE,
           phase: "verify",
         }));
@@ -825,7 +856,7 @@ async function main() {
         script: `bridges/${bridgeForPhase(workflowDef, "verify")}`,
         scriptArgs: verifyArgs,
         executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
+        env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
       });
 
       const verdictId = deliverableId || jobId;
@@ -835,9 +866,9 @@ async function main() {
       if (verdict === null) {
         verdictRetryCount += 1;
         warn(`No verdict file. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        await completeCurrentPhase({ phase: verifyPhaseName, artifact: "" });
         if (verdictRetryCount >= maxRetries) {
-          await failJob(cpbRoot, project, jobId, failure("verification verdict missing after retries", {
+          await failCurrentJob(failure("verification verdict missing after retries", {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "verify",
             retryable: true,
@@ -857,12 +888,12 @@ async function main() {
         verdictRetryCount += 1;
         const label = verdict === "INFRA_FAILURE" ? "infra error" : "unclear verdict";
         warn(`${label}: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
+        await completeCurrentPhase({ phase: verifyPhaseName, artifact: "" });
         if (verdictRetryCount >= maxRetries) {
           const reason = verdict === "INFRA_FAILURE"
             ? "verification infra errors after retries"
             : "verification verdict unclear after retries";
-          await failJob(cpbRoot, project, jobId, failure(reason, {
+          await failCurrentJob(failure(reason, {
             code: FAILURE_CODES.RECOVERABLE,
             phase: "verify",
             retryable: true,
@@ -880,11 +911,11 @@ async function main() {
 
       if (verdict === "PASS") {
         ok("Pipeline complete!");
-        await completePhase(cpbRoot, project, jobId, {
+        await completeCurrentPhase({
           phase: "verify",
           artifact: `verdict-${verdictId}`,
         });
-        await completeJob(cpbRoot, project, jobId);
+        await completeCurrentJob();
         pipelineOk = true;
         return 0;
       }
@@ -893,7 +924,7 @@ async function main() {
       qualityFailureCount += 1;
       warn(`Verdict: ${verdict}. Quality failure ${qualityFailureCount}/${maxRetries}`);
 
-      await completePhase(cpbRoot, project, jobId, {
+      await completeCurrentPhase({
         phase: verifyPhaseName,
         artifact: `verdict-${verdictId}`,
       });
@@ -906,14 +937,14 @@ async function main() {
           script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
           scriptArgs: [project, planId, verdictPath],
           executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
+          env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
         });
 
         const newDeliverableId = extractDeliverableId(fixResult.stdout);
         if (newDeliverableId) {
           deliverableId = newDeliverableId;
           ok(`deliverable-${deliverableId} (fix)`);
-          await completePhase(cpbRoot, project, jobId, {
+          await completeCurrentPhase({
             phase: fixPhaseName,
             artifact: `deliverable-${deliverableId}`,
           });
@@ -924,7 +955,7 @@ async function main() {
 
             for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
               if (checkTimeout()) {
-                await failJob(cpbRoot, project, jobId, failure("timed out during post-verify review phase", {
+                await failCurrentJob(failure("timed out during post-verify review phase", {
                   code: FAILURE_CODES.RECOVERABLE,
                   phase: "review",
                 }));
@@ -938,12 +969,12 @@ async function main() {
                 script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
                 scriptArgs: [project, deliverableId],
                 executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
+                env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
               });
 
               if (reviewResult.error) {
                 fail(`Review spawn failed: ${reviewResult.error.message}`);
-                await failJob(cpbRoot, project, jobId, failure(`post-verify review spawn error: ${reviewResult.error.message}`, {
+                await failCurrentJob(failure(`post-verify review spawn error: ${reviewResult.error.message}`, {
                   code: FAILURE_CODES.RECOVERABLE,
                   phase: "review",
                   cause: { message: reviewResult.error.message },
@@ -957,7 +988,7 @@ async function main() {
 
               if (reviewVerdict === "PASS") {
                 ok(`review-${deliverableId} (post-verify fix)`);
-                await completePhase(cpbRoot, project, jobId, {
+                await completeCurrentPhase({
                   phase: reviewPhaseName,
                   artifact: `review-${deliverableId}`,
                 });
@@ -966,7 +997,7 @@ async function main() {
               }
 
               warn(`Post-verify review did not pass: ${reviewVerdict ?? "missing"}`);
-              await completePhase(cpbRoot, project, jobId, {
+              await completeCurrentPhase({
                 phase: reviewPhaseName,
                 artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
               });
@@ -982,20 +1013,20 @@ async function main() {
                 script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
                 scriptArgs: [project, planId, reviewPath],
                 executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
+                env: scopedExecutorEnv(cpbRoot, executorRoot, dataRoot),
               });
 
               const reviewedDeliverableId = extractDeliverableId(reviewFixResult.stdout);
               if (reviewedDeliverableId) {
                 deliverableId = reviewedDeliverableId;
                 ok(`deliverable-${deliverableId} (post-verify review fix)`);
-                await completePhase(cpbRoot, project, jobId, {
+                await completeCurrentPhase({
                   phase: reviewFixPhaseName,
                   artifact: `deliverable-${deliverableId}`,
                 });
               } else {
                 warn("Post-verify review fix produced no deliverable.");
-                await completePhase(cpbRoot, project, jobId, {
+                await completeCurrentPhase({
                   phase: reviewFixPhaseName,
                   artifact: "",
                 });
@@ -1003,7 +1034,7 @@ async function main() {
             }
 
             if (!reviewPassed) {
-              await failJob(cpbRoot, project, jobId, failure(`post-verify review did not pass: ${lastReviewVerdict ?? "missing"}`, {
+              await failCurrentJob(failure(`post-verify review did not pass: ${lastReviewVerdict ?? "missing"}`, {
                 code: FAILURE_CODES.QUALITY_FAIL,
                 phase: "review",
                 retryable: false,
@@ -1013,7 +1044,7 @@ async function main() {
           }
         } else {
           warn("Fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
+          await completeCurrentPhase({
             phase: fixPhaseName,
             artifact: "",
           });
@@ -1022,7 +1053,7 @@ async function main() {
     }
 
     fail(`Pipeline failed after ${maxRetries} quality verification failures.`);
-    await failJob(cpbRoot, project, jobId, failure(`pipeline failed after ${maxRetries} quality verification failures`, {
+    await failCurrentJob(failure(`pipeline failed after ${maxRetries} quality verification failures`, {
       code: FAILURE_CODES.FATAL,
       phase: "verify",
     }));
@@ -1032,7 +1063,7 @@ async function main() {
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
     try {
-      await failJob(cpbRoot, project, jobId, failure(`unhandled: ${err.message}`, {
+      await failCurrentJob(failure(`unhandled: ${err.message}`, {
         code: FAILURE_CODES.FATAL,
         cause: { message: err.message },
       }));

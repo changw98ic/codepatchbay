@@ -8,12 +8,56 @@ import {
 } from "../../core/workflow/definition.js";
 import { loadProfile, selectProfileSkills, loadProfileSkills } from "./profile-loader.js";
 import { getJob } from "./job-store.js";
-import { runtimeDataRoot } from "./runtime-root.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../core/workflow/verdict.js";
 import { DISPATCH_FEEDBACK_SCHEMA_VERSION, dispatchFeedbackPath } from "../../core/workflow/dispatch-feedback.js";
 
-function dataRoot(cpbRoot) {
-  return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+type AnyRecord = Record<string, any>;
+
+function runtimeWikiDir(dataRoot: string) {
+  return path.join(path.resolve(dataRoot), "wiki");
+}
+
+function legacyWikiDir(cpbRoot: string, project: string) {
+  return path.join(path.resolve(cpbRoot), "wiki", "projects", project);
+}
+
+async function promptRuntime(cpbRoot: string, project: string, opts: AnyRecord = {}) {
+  if (opts.legacyOnly) {
+    const wikiDir = legacyWikiDir(cpbRoot, project);
+    return {
+      dataRoot: null,
+      wikiDir,
+      inboxDir: path.join(wikiDir, "inbox"),
+      outputsDir: path.join(wikiDir, "outputs"),
+      eventOpts: { includeLegacyFallback: true },
+    };
+  }
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: opts.hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: opts.dataRoot,
+  });
+  const wikiDir = runtimeWikiDir(dataRoot);
+  return {
+    dataRoot,
+    wikiDir,
+    inboxDir: path.join(wikiDir, "inbox"),
+    outputsDir: path.join(wikiDir, "outputs"),
+    eventOpts: { dataRoot, includeLegacyFallback: false },
+  };
+}
+
+function runtimeOutputPath(runtime: AnyRecord, originalPath: string | null | undefined, fallbackName: string) {
+  return path.join(runtime.outputsDir, path.basename(originalPath || fallbackName));
+}
+
+function runtimeInboxPath(runtime: AnyRecord, originalPath: string | null | undefined, fallbackName: string) {
+  return path.join(runtime.inboxDir, path.basename(originalPath || fallbackName));
+}
+
+function runtimeDispatchFeedbackPath(cpbRoot: string, project: string, jobId: string, runtime: AnyRecord) {
+  if (!runtime.dataRoot) return dispatchFeedbackPath(cpbRoot, project, jobId);
+  return path.join(runtime.outputsDir, `dispatch-feedback-${jobId}.json`);
 }
 
 async function preRead(filePath) {
@@ -81,20 +125,16 @@ function contextPackPathFromSourceContext(sourceContext = null) {
   return sourceContext.contextPackPath || sourceContext.contextPack?.path || null;
 }
 
-async function jobSourceContext(cpbRoot, project, jobId) {
+async function jobSourceContext(cpbRoot, project, jobId, eventOpts: AnyRecord) {
   try {
-    const job = await getJob(cpbRoot, project, jobId, { dataRoot: dataRoot(cpbRoot) });
-    if (job?.sourceContext) return job.sourceContext;
-  } catch {}
-  try {
-    const job = await getJob(cpbRoot, project, jobId);
+    const job = await getJob(cpbRoot, project, jobId, eventOpts);
     if (job?.sourceContext) return job.sourceContext;
   } catch {}
   return null;
 }
 
-async function resolveContextPackLocator(cpbRoot, project, jobId) {
-  const sourceContext = await jobSourceContext(cpbRoot, project, jobId);
+async function resolveContextPackLocator(cpbRoot, project, jobId, eventOpts: AnyRecord) {
+  const sourceContext = await jobSourceContext(cpbRoot, project, jobId, eventOpts);
   const jobPath = contextPackPathFromSourceContext(sourceContext);
   if (jobPath) return { path: jobPath, source: "job" };
 
@@ -237,10 +277,12 @@ function headlessEscalationSection() {
   return process.env.CPB_ACP_LAUNCH_PROFILE !== "ui" ? HEADLESS_ESCALATION_CONTRACT : "";
 }
 
-export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile) {
+export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
+  const effectivePlanFile = runtimeInboxPath(runtime, planFile, "plan.md");
   const profile = await loadProfile(executorRoot, "planner", { projectWikiDir: wikiDir });
   const projContext = await preRead(path.join(wikiDir, "context.md"));
   const decisions = await preRead(path.join(wikiDir, "decisions.md"));
@@ -252,7 +294,7 @@ export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, p
   const constraints = dangerous
     ? ""
     : `## Constraints
-- ONLY write files under: ${path.join(cpbRoot, "wiki", "projects", project, "inbox")}/
+- ONLY write files under: ${runtime.inboxDir}/
 - You may run read-only local inspection commands only (for example: pwd, ls, cat, sed, rg, git status, git diff).`;
 
   return `You are CodePatchbay Planner. Role: ${roleTitle}
@@ -284,15 +326,17 @@ ${handshake}
 ${planTpl}
 
 ## Output
-Write the plan to: ${planFile}
+Write the plan to: ${effectivePlanFile}
 The plan title/heading MUST reference the task: "${task}"
 Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile) {
+export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
+  const effectiveDeliverableFile = runtimeOutputPath(runtime, deliverableFile, `deliverable-${planId}.md`);
 
   const profile = await loadProfile(executorRoot, "executor", { projectWikiDir: wikiDir });
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
@@ -316,8 +360,8 @@ export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId
     ? ""
     : `## Constraints
 - Write code ONLY in the target project directory${projectCwd ? ": " + projectCwd : ""}
-- Write deliverable ONLY to: ${deliverableFile}
-- Write verdicts ONLY under: ${path.join(cpbRoot, "wiki", "projects", project, "outputs")}/
+- Write deliverable ONLY to: ${effectiveDeliverableFile}
+- Write verdicts ONLY under: ${runtime.outputsDir}/
 - Do NOT modify files under: ${path.join(executorRoot, "wiki", "system")}/, ${path.join(executorRoot, "profiles")}/, ${path.join(executorRoot, "bridges")}/
 - Do NOT mutate git history, publish, deploy, or run destructive shell commands.
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories.`;
@@ -373,23 +417,27 @@ ${buildSubagentGuidance("execute", profile)}
 1. Read the plan file first.
 2. Implement code changes described in the plan.
 3. Run tests and record results.
-4. Write the deliverable to: ${deliverableFile}
+4. Write the deliverable to: ${effectiveDeliverableFile}
 5. After the deliverable is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile) {
+export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
   const profile = await loadProfile(executorRoot, "executor", { projectWikiDir: wikiDir });
   const planMode = process.env.CPB_PLAN_MODE || "auto";
   const noPlan = planMode === "none";
-  const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
-  const stateRoot = dataRoot(cpbRoot);
-  const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId);
-  const contextPack = await resolveContextPackLocator(cpbRoot, project, jobId);
+  const eventLog = runtime.dataRoot
+    ? path.join(runtime.dataRoot, "events", project, `${jobId}.jsonl`)
+    : path.join(path.resolve(cpbRoot), "cpb-task", "events", project, `${jobId}.jsonl`);
+  const stateRoot = runtime.dataRoot || path.join(path.resolve(cpbRoot), "cpb-task");
+  const effectiveDeliverableFile = runtimeOutputPath(runtime, deliverableFile, `deliverable-${jobId}.md`);
+  const routingFeedbackFile = runtimeDispatchFeedbackPath(cpbRoot, project, jobId, runtime);
+  const contextPack = await resolveContextPackLocator(cpbRoot, project, jobId, runtime.eventOpts);
   const contextPackLocator = contextPack?.path
     ? `- Job context pack: ${contextPack.path}`
     : "";
@@ -401,8 +449,8 @@ export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, job
     ? ""
     : `## Constraints
 - Write code ONLY in the target project directory${projectCwd ? ": " + projectCwd : ""}
-- Write deliverable ONLY to: ${deliverableFile}
-- Write verdicts ONLY under: ${path.join(cpbRoot, "wiki", "projects", project, "outputs")}/
+- Write deliverable ONLY to: ${effectiveDeliverableFile}
+- Write verdicts ONLY under: ${runtime.outputsDir}/
 - Do NOT modify files under: ${path.join(executorRoot, "wiki", "system")}/, ${path.join(executorRoot, "profiles")}/, ${path.join(executorRoot, "bridges")}/
 - Do NOT mutate git history, publish, deploy, or run destructive shell commands.
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories.`;
@@ -455,15 +503,17 @@ Valid requested.workflow values are "standard", "complex", and "sdd-standard"; u
 4. Verify current job/task state from the locators above.
 5. Implement the requested code changes.
 6. Run tests and record results.
-7. Write the deliverable to: ${deliverableFile}
+7. Write the deliverable to: ${effectiveDeliverableFile}
 8. After the deliverable is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
+export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
+  const effectiveRepairFile = runtimeOutputPath(runtime, repairFile, `repair-${jobId}.md`);
 
   const profile = await loadProfile(executorRoot, "repairer", { projectWikiDir: wikiDir });
   const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
@@ -472,7 +522,7 @@ export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId,
   const constraints = dangerous
     ? ""
     : `## Constraints
-- ONLY write the repair output to: ${repairFile}
+- ONLY write the repair output to: ${effectiveRepairFile}
 - You may modify project code to fix the reported issues.
 - Do NOT modify wiki inputs, inbox files, or verdict files.`;
 
@@ -487,7 +537,7 @@ ${headlessEscalationSection()}
 ${executionIntensitySection("repair")}
 
 ## Repair locators
-- Repair output file: ${repairFile}
+- Repair output file: ${effectiveRepairFile}
 - Job ID: ${jobId}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
@@ -498,16 +548,18 @@ ${executionIntensitySection("repair")}
 1. Read the deliverable and verdict files from the outputs directory to understand what failed.
 2. Identify the root cause of the failure.
 3. Apply the minimal fix to resolve the reported issues.
-4. Write the repair summary to: ${repairFile}
+4. Write the repair summary to: ${effectiveRepairFile}
 5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId }: Record<string, any> = {}) {
+export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId, dataRoot, hubRoot, legacyOnly }: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, { dataRoot, hubRoot, legacyOnly });
+  const wikiDir = runtime.wikiDir;
 
   const profile = await loadProfile(executorRoot, "verifier", { projectWikiDir: wikiDir });
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
+  const effectiveVerdictFile = runtimeOutputPath(runtime, verdictFile, `verdict-${deliverableId}.json`);
   const deliverableContent = await preRead(deliverableFile);
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify", artifactText: deliverableContent });
   const planArtifactPath = planId ? path.join(wikiDir, "inbox", `plan-${planId}.md`) : null;
@@ -516,7 +568,7 @@ export async function buildVerifierPrompt(executorRoot, cpbRoot, project, delive
   const constraints = dangerous
     ? ""
     : `## Constraints
-- ONLY write the verdict to: ${verdictFile}
+- ONLY write the verdict to: ${effectiveVerdictFile}
 - You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
 - Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
 - Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
@@ -557,7 +609,7 @@ ${issueContextLines}
 3. MANDATORY: If a package.json with a "test" script exists in the project root, run \`npm test\`. If tests fail, the verdict MUST be "fail".
 4. If both step 2 and step 3 pass, then verify the deliverable against the task goal and plan Acceptance-Criteria.
 5. Run broader regression tests only when the above checks pass.
-6. Write the verdict to: ${verdictFile}
+6. Write the verdict to: ${effectiveVerdictFile}
 7. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
@@ -591,10 +643,15 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId }: Record<string, any> = {}) {
+export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, { planId, dataRoot, hubRoot, legacyOnly }: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, { dataRoot, hubRoot, legacyOnly });
+  const wikiDir = runtime.wikiDir;
+  const effectiveVerdictFile = runtimeOutputPath(runtime, verdictFile, `verdict-${jobId}.json`);
+  const eventLog = runtime.dataRoot
+    ? path.join(runtime.dataRoot, "events", project, `${jobId}.jsonl`)
+    : path.join(path.resolve(cpbRoot), "cpb-task", "events", project, `${jobId}.jsonl`);
 
   const profile = await loadProfile(executorRoot, "verifier", { projectWikiDir: wikiDir });
   const planArtifactPath = planId ? path.join(wikiDir, "inbox", `plan-${planId}.md`) : null;
@@ -603,7 +660,7 @@ export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, job
   const constraints = dangerous
     ? ""
     : `## Constraints
-- ONLY write the verdict to: ${verdictFile}
+- ONLY write the verdict to: ${effectiveVerdictFile}
 - You may use read-only local inspection commands/tools for observation when available (for example: pwd, ls, sed, cat, rg, git status, git diff).
 - Run build/test commands only when they are expected to be safe for this workspace; otherwise record them as not run.
 - Do NOT modify code, project files, wiki inputs, git state, dependencies, caches, or runtime state.`;
@@ -631,7 +688,7 @@ ${executionIntensitySection("verify")}
 
 ## Verification locators
 - Job ID: ${jobId}
-- Event log: ${path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`)}
+- Event log: ${eventLog}
 ${planLocatorLines}
 - Outputs directory: ${path.join(wikiDir, "outputs")}
 - Project context: ${path.join(wikiDir, "context.md")}
@@ -646,7 +703,7 @@ ${issueContextLines}
 4. If both step 2 and step 3 pass, inspect current project state and verify against task goal.
 5. Run broader regression tests only when the above checks pass.
 6. If data is missing, return a diagnostic verdict instead of crashing.
-7. Write the verdict to: ${verdictFile}
+7. Write the verdict to: ${effectiveVerdictFile}
 8. After the verdict file is written, stop immediately and return a short completion message. Do not continue exploring or wait for further input.
 
 ## Output Format (MANDATORY)
@@ -680,12 +737,16 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRemediatorPrompt(executorRoot, cpbRoot, project, jobId, remediationFile) {
+export async function buildRemediatorPrompt(executorRoot, cpbRoot, project, jobId, remediationFile, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "remediator");
   const skillsSection = await buildSkillsSection(executorRoot, "remediator", { phase: "remediate" });
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
   const profile = await loadProfile(executorRoot, "remediator", { projectWikiDir: wikiDir });
-  const eventLog = path.join(dataRoot(cpbRoot), "events", project, `${jobId}.jsonl`);
+  const eventLog = runtime.dataRoot
+    ? path.join(runtime.dataRoot, "events", project, `${jobId}.jsonl`)
+    : path.join(path.resolve(cpbRoot), "cpb-task", "events", project, `${jobId}.jsonl`);
+  const effectiveRemediationFile = runtimeOutputPath(runtime, remediationFile, `remediation-${jobId}.md`);
   const projectCwd = process.env.CPB_PROJECT_PATH_OVERRIDE || process.env.CPB_ACP_CWD || "";
 
   const dangerous = process.env.CPB_DANGEROUS === "1";
@@ -694,7 +755,7 @@ export async function buildRemediatorPrompt(executorRoot, cpbRoot, project, jobI
     : `## Scope
 - Work in the CodePatchbay executor root: ${executorRoot}
 - Use the target project only for direct inspection when needed: ${projectCwd || "[missing project root]"}
-- Write the remediation report only to: ${remediationFile}
+- Write the remediation report only to: ${effectiveRemediationFile}
 - Leave verifier, retry, recover, and pipeline execution paths outside this remediation run.`;
 
   return `You are CodePatchbay Remediator. Role: ${roleTitle}
@@ -728,7 +789,7 @@ ${executionIntensitySection("remediate")}
 4. After successful remediation, the execution channel points to a new task carrying remediation lineage metadata; the original failed job remains an audit record.
 5. Write the remediation report at the path below.
 
-Write the remediation report to: ${remediationFile}
+Write the remediation report to: ${effectiveRemediationFile}
 
 The report's first line MUST be exactly one of:
 REMEDIATION: FIXED
@@ -738,9 +799,10 @@ REMEDIATION: BLOCKED
 After the first line, include concise findings, changed files, and verification you ran.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId) {
+export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId, options: AnyRecord = {}) {
   const roleTitle = await readRoleTitle(executorRoot, "reviewer");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const runtime = await promptRuntime(cpbRoot, project, options);
+  const wikiDir = runtime.wikiDir;
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const reviewFile = path.join(wikiDir, "outputs", `review-${deliverableId}.md`);
 

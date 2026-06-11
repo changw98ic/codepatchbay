@@ -170,9 +170,14 @@ function jobSummary(job) {
   };
 }
 
-async function findJobById(cpbRoot, jobId) {
-  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
+async function findJobById(cpbRoot, jobId, { hubRoot }: LooseRecord = {}) {
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot });
   return jobs.find((job) => job.jobId === jobId) || null;
+}
+
+function jobRuntimeOpts(job) {
+  const dataRoot = job?._dataRoot || job?.dataRoot || null;
+  return dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
 }
 
 function policyDenied(decision) {
@@ -184,7 +189,7 @@ function policyDenied(decision) {
   };
 }
 
-async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project = null, job = null }: LooseRecord = {}) {
+async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project = null, job = null, hubRoot = null }: LooseRecord = {}) {
   if (!policy) return { allowed: true, reason: "channel policy not configured" };
   return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
     channel: "slack",
@@ -192,7 +197,7 @@ async function authorizeSlackCommand(cpbRoot, policy, parsed, { action, project 
     project,
     job,
     actor: parsed.actor,
-  } as LooseRecord));
+  } as LooseRecord), { hubRoot });
 }
 
 export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot }: LooseRecord = {}) {
@@ -205,7 +210,7 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
   });
 }
 
-export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null }: LooseRecord = {}) {
+export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot }: LooseRecord = {}) {
   if (!parsed?.ok || !parsed.action?.type || !parsed.action?.job) {
     return {
       ok: false,
@@ -216,7 +221,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
     };
   }
 
-  const job = await findJobById(cpbRoot, parsed.action.job);
+  const job = await findJobById(cpbRoot, parsed.action.job, { hubRoot });
   if (!job) {
     return {
       ok: false,
@@ -231,6 +236,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
     action: parsed.action.type,
     project: job.project,
     job: job.jobId,
+    hubRoot,
   });
   if (!decision.allowed) {
     return {
@@ -242,11 +248,13 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
   }
 
   const ts = new Date().toISOString();
+  const runtimeOpts = jobRuntimeOpts(job);
   if (parsed.action.type === "approve") {
     await approveGate(cpbRoot, job.project, job.jobId, {
       actor: parsed.actor,
       action: parsed.action,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,
@@ -262,6 +270,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
     const cancelled = await cancelJob(cpbRoot, job.project, job.jobId, {
       reason: `Cancelled from Slack by ${parsed.actor.userId || "unknown user"}`,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,
@@ -278,6 +287,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
       trigger: "slack",
       force: true,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,

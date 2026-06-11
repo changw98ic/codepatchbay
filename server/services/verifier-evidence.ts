@@ -73,9 +73,12 @@ export async function collectTestResults(sourcePath, { timeout = 30_000 } = {}) 
   }
 }
 
-export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50 } = {}) {
+export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50, dataRoot }: Record<string, any> = {}) {
   try {
-    const events = await readEvents(cpbRoot, project, jobId);
+    const events = await readEvents(cpbRoot, project, jobId, {
+      dataRoot,
+      includeLegacyFallback: false,
+    });
     if (events.length === 0) {
       return { available: false, reason: "event log is empty or missing" };
     }
@@ -86,9 +89,11 @@ export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50 
   }
 }
 
-export async function collectProjectContext(cpbRoot, project) {
-  const ctx = await readFile(contextPath(cpbRoot, project), "utf8").catch(() => null);
-  const decisions = await readFile(decisionsPath(cpbRoot, project), "utf8").catch(() => null);
+export async function collectProjectContext(cpbRoot, project, { dataRoot, wikiDir }: Record<string, any> = {}) {
+  const ctxPath = wikiDir ? path.join(wikiDir, "context.md") : contextPath(cpbRoot, project, { dataRoot });
+  const decisionsFile = wikiDir ? path.join(wikiDir, "decisions.md") : decisionsPath(cpbRoot, project, { dataRoot });
+  const ctx = await readFile(ctxPath, "utf8").catch(() => null);
+  const decisions = await readFile(decisionsFile, "utf8").catch(() => null);
 
   return {
     available: Boolean(ctx || decisions),
@@ -97,10 +102,10 @@ export async function collectProjectContext(cpbRoot, project) {
   };
 }
 
-export async function collectDeliverable(cpbRoot, project, deliverableId) {
+export async function collectDeliverable(cpbRoot, project, deliverableId, { dataRoot, outputsRoot }: Record<string, any> = {}) {
   if (!deliverableId) return { available: false, reason: "no deliverable ID" };
 
-  const file = path.join(outputsDir(cpbRoot, project), `deliverable-${deliverableId}.md`);
+  const file = path.join(outputsRoot || outputsDir(cpbRoot, project, { dataRoot }), `deliverable-${deliverableId}.md`);
   try {
     const content = await readFile(file, "utf8");
     return { available: true, content, path: file };
@@ -123,10 +128,14 @@ export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourceP
     diagnostics: [],
   };
 
-  const resolvedSourcePath = sourcePath || jobState?.worktree || null;
+  const resolvedSourcePath = sourcePath || jobState?.worktree || jobState?.sourcePath || null;
+  const dataRoot = jobState?.stateRoot || null;
 
   const [deliverable, diff, uncommittedDiff, eventLog, projectContext, testResults] = await Promise.all([
-    collectDeliverable(cpbRoot, project, deliverableId).catch((err) => ({
+    collectDeliverable(cpbRoot, project, deliverableId, {
+      dataRoot,
+      outputsRoot: jobState?.outputsDir,
+    }).catch((err) => ({
       available: false,
       reason: err.message,
     })),
@@ -138,11 +147,11 @@ export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourceP
       available: false,
       reason: err.message,
     })),
-    collectEventLog(cpbRoot, project, jobId).catch((err) => ({
+    collectEventLog(cpbRoot, project, jobId, { dataRoot }).catch((err) => ({
       available: false,
       reason: err.message,
     })),
-    collectProjectContext(cpbRoot, project).catch((err) => ({
+    collectProjectContext(cpbRoot, project, { dataRoot, wikiDir: jobState?.wikiDir }).catch((err) => ({
       available: false,
       reason: err.message,
     })),

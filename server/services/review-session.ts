@@ -1,10 +1,10 @@
 import { mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { runtimeDataPath } from "./runtime-root.js";
 
 const LOCK_MAX_ATTEMPTS = 10;
 const LOCK_BASE_DELAY_MS = 10;
+type AnyRecord = Record<string, any>;
 
 async function withFileLock(lockDir, fn) {
   for (let attempt = 0; ; attempt++) {
@@ -55,14 +55,19 @@ function validateSessionId(sessionId) {
   return sessionId;
 }
 
-function reviewsDir(cpbRoot) {
-  return runtimeDataPath(cpbRoot, "reviews");
+function controlDataRoot(cpbRoot, { dataRoot, hubRoot }: AnyRecord = {}) {
+  const root = dataRoot || hubRoot || process.env.CPB_HUB_ROOT;
+  return root ? path.resolve(root) : path.join(path.resolve(cpbRoot), "cpb-task");
 }
 
-function sessionFile(cpbRoot, sessionId) {
+function reviewsDir(cpbRoot, options: AnyRecord = {}) {
+  return path.join(controlDataRoot(cpbRoot, options), "reviews");
+}
+
+function sessionFile(cpbRoot, sessionId, options: AnyRecord = {}) {
   const safeId = validateSessionId(sessionId);
-  const resolved = path.resolve(reviewsDir(cpbRoot), `${safeId}.json`);
-  const base = path.resolve(reviewsDir(cpbRoot));
+  const base = path.resolve(reviewsDir(cpbRoot, options));
+  const resolved = path.resolve(base, `${safeId}.json`);
   if (!resolved.startsWith(base + path.sep) && resolved !== path.join(base, `${safeId}.json`)) {
     throw new Error("sessionId escapes reviews directory");
   }
@@ -75,7 +80,8 @@ export function makeSessionId() {
   return `rev-${ts}-${suffix}`;
 }
 
-export async function createSession(cpbRoot, { project, intent }) {
+export async function createSession(cpbRoot, { project, intent, dataRoot, hubRoot }: AnyRecord) {
+  const storageOptions = { dataRoot, hubRoot };
   const session = {
     sessionId: makeSessionId(),
     project,
@@ -101,16 +107,16 @@ export async function createSession(cpbRoot, { project, intent }) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const dir = reviewsDir(cpbRoot);
+  const dir = reviewsDir(cpbRoot, storageOptions);
   await mkdir(dir, { recursive: true });
-  await writeFile(sessionFile(cpbRoot, session.sessionId), JSON.stringify(session, null, 2) + "\n", "utf8");
+  await writeFile(sessionFile(cpbRoot, session.sessionId, storageOptions), JSON.stringify(session, null, 2) + "\n", "utf8");
   return session;
 }
 
-export async function getSession(cpbRoot, sessionId) {
+export async function getSession(cpbRoot, sessionId, options: AnyRecord = {}) {
   validateSessionId(sessionId);
   try {
-    const raw = await readFile(sessionFile(cpbRoot, sessionId), "utf8");
+    const raw = await readFile(sessionFile(cpbRoot, sessionId, options), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err && err.code === "ENOENT") return null;
@@ -118,8 +124,8 @@ export async function getSession(cpbRoot, sessionId) {
   }
 }
 
-export async function listSessions(cpbRoot) {
-  const dir = reviewsDir(cpbRoot);
+export async function listSessions(cpbRoot, options: AnyRecord = {}) {
+  const dir = reviewsDir(cpbRoot, options);
   let entries;
   try {
     entries = await readdir(dir);
@@ -142,11 +148,11 @@ export async function updateSession(cpbRoot, sessionId, patch, options: Record<s
   const safeId = validateSessionId(sessionId);
   const { skipTransitionCheck = false } = options;
 
-  const dir = reviewsDir(cpbRoot);
+  const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
   const lockDir = path.join(dir, `.lock-${safeId}`);
   return withFileLock(lockDir, async () => {
-    const session = await getSession(cpbRoot, sessionId);
+    const session = await getSession(cpbRoot, sessionId, options);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
     if (!skipTransitionCheck && patch.status) {
@@ -169,13 +175,13 @@ export async function updateSession(cpbRoot, sessionId, patch, options: Record<s
       updatedAt: new Date().toISOString(),
     };
 
-    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    await writeFile(sessionFile(cpbRoot, sessionId, options), JSON.stringify(updated, null, 2) + "\n", "utf8");
     return updated;
   });
 }
 
-export async function cancelReviewSession(cpbRoot, sessionId, reason) {
-  return updateSession(cpbRoot, sessionId, { status: "cancelled", detail: reason }, { skipTransitionCheck: true });
+export async function cancelReviewSession(cpbRoot, sessionId, reason, options: AnyRecord = {}) {
+  return updateSession(cpbRoot, sessionId, { status: "cancelled", detail: reason }, { ...options, skipTransitionCheck: true });
 }
 
 export function parseIssues(text) {
@@ -192,13 +198,13 @@ export function parseIssues(text) {
   return issues;
 }
 
-export async function startSessionResearch(cpbRoot, sessionId, key) {
+export async function startSessionResearch(cpbRoot, sessionId, key, options: AnyRecord = {}) {
   const safeId = validateSessionId(sessionId);
-  const dir = reviewsDir(cpbRoot);
+  const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
   const lockDir = path.join(dir, `.lock-start-${safeId}`);
   return withFileLock(lockDir, async () => {
-    const session = await getSession(cpbRoot, sessionId);
+    const session = await getSession(cpbRoot, sessionId, options);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
     const existingKey = session.idempotency?.startKey;
@@ -219,18 +225,18 @@ export async function startSessionResearch(cpbRoot, sessionId, key) {
       idempotency: { ...session.idempotency, startKey: key },
       updatedAt: new Date().toISOString(),
     };
-    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    await writeFile(sessionFile(cpbRoot, sessionId, options), JSON.stringify(updated, null, 2) + "\n", "utf8");
     return updated;
   });
 }
 
-export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes }) {
+export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes }, options: AnyRecord = {}) {
   const safeId = validateSessionId(sessionId);
-  const dir = reviewsDir(cpbRoot);
+  const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
   const lockDir = path.join(dir, `.lock-${safeId}`);
   return withFileLock(lockDir, async () => {
-    const session = await getSession(cpbRoot, sessionId);
+    const session = await getSession(cpbRoot, sessionId, options);
     if (!session) throw new Error(`review session not found: ${sessionId}`);
 
     const budget = {
@@ -244,7 +250,7 @@ export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes
       budget,
       updatedAt: new Date().toISOString(),
     };
-    await writeFile(sessionFile(cpbRoot, sessionId), JSON.stringify(updated, null, 2) + "\n", "utf8");
+    await writeFile(sessionFile(cpbRoot, sessionId, options), JSON.stringify(updated, null, 2) + "\n", "utf8");
     return updated;
   });
 }

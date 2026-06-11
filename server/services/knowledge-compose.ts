@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   PROMPT_COMPOSITION_ORDER,
 } from "./knowledge-policy.js";
+import { sessionPath } from "./knowledge-paths.js";
 import { isSecretPath, notifySecretBlocked } from "./secret-policy.js";
 
 async function readFileOrNull(filePath, onSecretBlocked) {
@@ -28,7 +29,7 @@ function writePolicyForLayer(layerName) {
   return "unknown";
 }
 
-async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, profile, task, onSecretBlocked }) {
+async function resolveLayerContent(layerName, { hubRoot, sourcePath, projectRuntimeRoot, dataRoot, sessionId, profile, task, onSecretBlocked }) {
   const hub = path.resolve(hubRoot);
   const src = path.resolve(sourcePath);
 
@@ -59,7 +60,7 @@ async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, 
       return { content: await readFileOrNull(memPath, onSecretBlocked), source: "file" };
     }
     case "session-memory": {
-      const sessMemPath = path.join(src, "cpb-task", "sessions", sessionId, "memory.md");
+      const sessMemPath = path.join(sessionPath(src, sessionId, { projectRuntimeRoot, dataRoot }), "memory.md");
       return { content: await readFileOrNull(sessMemPath, onSecretBlocked), source: "file" };
     }
     case "current-task": {
@@ -70,13 +71,15 @@ async function resolveLayerContent(layerName, { hubRoot, sourcePath, sessionId, 
   }
 }
 
-export async function composePromptContext({ hubRoot, sourcePath, sessionId, task, profile, onSecretBlocked }: Record<string, any> = {}) {
+export async function composePromptContext({ hubRoot, sourcePath, projectRuntimeRoot, dataRoot, sessionId, task, profile, onSecretBlocked }: Record<string, any> = {}) {
   const layers = [];
 
   for (const layerName of PROMPT_COMPOSITION_ORDER) {
     const { content, source } = await resolveLayerContent(layerName, {
       hubRoot,
       sourcePath,
+      projectRuntimeRoot,
+      dataRoot,
       sessionId,
       task,
       profile,

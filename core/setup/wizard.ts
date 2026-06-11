@@ -9,11 +9,13 @@ import { detectSetupEnvironment } from "./detect.js";
 import { createInstallPlan, executeInstallPlan } from "./install-plan.js";
 import { checkSetupAgentHealth } from "./health-check.js";
 import { getAuthConnectInstructions } from "../auth/connect.js";
+import { cpbHome } from "../paths.js";
 
 const SCHEMA_VERSION = 1;
 
 export function setupProfilePath(cpbRoot) {
-  return path.join(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd()), "cpb-task", "setup-profile.json");
+  const hubRoot = process.env.CPB_HUB_ROOT || cpbHome();
+  return path.join(path.resolve(hubRoot), "setup", "profile.json");
 }
 
 async function writeAtomicJson(file, data) {

@@ -38,10 +38,11 @@ export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.
   return path.resolve(env.CPB_EXECUTOR_ROOT || fallbackRoot);
 }
 
-export function executorEnv(env = process.env, { cpbRoot, executorRoot }: Record<string, any> = {}) {
+export function executorEnv(env = process.env, { cpbRoot, executorRoot, extra = {} }: Record<string, any> = {}) {
   return buildChildEnv(env, {
     CPB_ROOT: path.resolve(cpbRoot || env.CPB_ROOT || process.cwd()),
     CPB_EXECUTOR_ROOT: path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || cpbRoot || process.cwd()),
+    ...extra,
   });
 }
 

@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import {
+  appendEvent,
   checkpointJob,
   materializeJob,
+  onEventWritten,
   readCheckpoint,
   readEvents,
 } from "./event-store.js";
 import { getWorkflow, isWorkflowName } from "../../core/workflow/definition.js";
-import { appendEvent } from "./event-store.js";
 import { listJobsFromIndex, updateJobsIndexEntry } from "./jobs-index.js";
 import { recordPerformance } from "./performance-tracker.js";
 import { recordQualityScore } from "./performance-tracker.js";
@@ -19,6 +20,13 @@ import {
 import { validatePolicy } from "../../core/policy/team-policy.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
+const _runtimeJobsCache = new Map<string, { expiresAt: number; promise: Promise<any[]> }>();
+
+export function invalidateRuntimeJobsCache() {
+  _runtimeJobsCache.clear();
+}
+
+onEventWritten(() => invalidateRuntimeJobsCache());
 
 async function retryUpdate(fn, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
@@ -39,6 +47,37 @@ async function retryUpdate(fn, maxRetries = 3) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function runtimeJobsCacheKey(cpbRoot: string, options: Record<string, any>) {
+  return JSON.stringify({
+    cpbRoot,
+    hubRoot: options.hubRoot || null,
+    includeHubProjects: options.includeHubProjects !== false,
+  });
+}
+
+function cloneJobs(jobs: any[]) {
+  return jobs.map((job) => ({ ...job }));
+}
+
+function runtimeRootPriority(kind: string) {
+  return kind === "project" ? 2 : 1;
+}
+
+function jobUpdatedAtMs(job: any) {
+  const parsed = Date.parse(job?.updatedAt ?? job?.createdAt ?? "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function shouldReplaceRuntimeJob(current: { job: any; priority: number } | undefined, candidate: any, priority: number) {
+  if (!current) return true;
+  if (priority !== current.priority) return priority > current.priority;
+  return jobUpdatedAtMs(candidate) > jobUpdatedAtMs(current.job);
+}
+
+function scopedEventOpts(dataRoot: string | undefined) {
+  return dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
 }
 
 async function requireNotTerminal(cpbRoot: string, project: string, jobId: string, { allowMissing = false, dataRoot }: Record<string, any> = {}) {
@@ -153,7 +192,10 @@ export async function createJob(
   }
 
   if (queueEntryId) {
-    const existingForQueue = await getJobByQueueEntryId(cpbRoot, project, queueEntryId, { dataRoot });
+    const existingForQueue = await getJobByQueueEntryId(cpbRoot, project, queueEntryId, {
+      dataRoot,
+      includeLegacyFallback: !dataRoot,
+    });
     if (existingForQueue) {
       return existingForQueue;
     }
@@ -184,7 +226,7 @@ export async function createJob(
   if (planCache) {
     event.planCache = planCache;
   }
-  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
+  await appendEvent(cpbRoot, project, jobId, event, scopedEventOpts(dataRoot));
   if (executorSelection) {
     await appendEvent(cpbRoot, project, jobId, {
       type: "agent_routing_decision",
@@ -201,7 +243,7 @@ export async function createJob(
       reason: executorSelection.reason,
       executorSelection,
       ts,
-    }, { dataRoot });
+    }, scopedEventOpts(dataRoot));
   }
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
@@ -225,7 +267,7 @@ export async function startPhase(
   if (uiLane !== undefined) event.uiLane = uiLane;
   if (uiLaneReason !== undefined) event.uiLaneReason = uiLaneReason;
   await requireNotTerminal(cpbRoot, project, jobId, { dataRoot });
-  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
+  await appendEvent(cpbRoot, project, jobId, event, scopedEventOpts(dataRoot));
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -285,7 +327,7 @@ export async function completePhase(
     phase,
     artifact,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
 
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const agent = await resolveAgentForPhase(cpbRoot, job, phase);
@@ -296,6 +338,7 @@ export async function completePhase(
     phase,
     status: "completed",
     durationMs: job?.phaseStartedAt ? (Date.now() - new Date(job.phaseStartedAt).getTime()) : null,
+    dataRoot,
     ts,
   }).catch(() => {});
 
@@ -318,8 +361,8 @@ export async function blockJob(
     kind,
     cause,
     ts,
-  }, { dataRoot });
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  }, scopedEventOpts(dataRoot));
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -350,8 +393,8 @@ export async function failJob(
     retryCount,
     cause,
     ts,
-  }, { dataRoot });
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  }, scopedEventOpts(dataRoot));
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
 
   await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
@@ -499,7 +542,7 @@ export async function createRecoveryJob(
   if (executorSelection) event.executorSelection = executorSelection;
   if (retryCount !== undefined) event.retryCount = retryCount;
   if (maxRetries !== undefined) event.maxRetries = maxRetries;
-  await appendEvent(cpbRoot, project, newJob.jobId, event, { dataRoot });
+  await appendEvent(cpbRoot, project, newJob.jobId, event, scopedEventOpts(dataRoot));
 
   return getJobAndUpdateIndex(cpbRoot, project, newJob.jobId, { dataRoot });
 }
@@ -587,7 +630,7 @@ export async function budgetExceeded(
     project,
     reason,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
 
   await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
@@ -620,8 +663,8 @@ export async function poolExhaustedJob(
     phase,
     ts,
   };
-  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await appendEvent(cpbRoot, project, jobId, event, scopedEventOpts(dataRoot));
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
 
   await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
@@ -640,7 +683,7 @@ export async function completeJob(
     jobId,
     project,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
 
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const verdict = job?.verdict || job?.artifacts?.verdict || null;
@@ -650,11 +693,12 @@ export async function completeJob(
       agent,
       phase: "verify",
       verdict: verdict.toUpperCase(),
+      dataRoot,
       ts,
     }).catch(() => {});
   }
 
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
 
   await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
@@ -676,7 +720,7 @@ export async function recordWorktreeCreated(
     branch,
     baseBranch,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -692,7 +736,7 @@ export async function recordActivity(
     project,
     message,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -708,8 +752,8 @@ export async function recordFinalizerResult(
     project,
     result,
     ts,
-  }, { dataRoot });
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  }, scopedEventOpts(dataRoot));
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -726,7 +770,7 @@ export async function requestCancelJob(
     project,
     reason,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
   return cancelJob(cpbRoot, project, jobId, { reason, ts, dataRoot });
 }
 
@@ -752,8 +796,8 @@ export async function cancelJob(
     project,
     reason,
     ts,
-  }, { dataRoot });
-  await checkpointJob(cpbRoot, project, jobId, { dataRoot }).catch(() => {});
+  }, scopedEventOpts(dataRoot));
+  await checkpointJob(cpbRoot, project, jobId, scopedEventOpts(dataRoot)).catch(() => {});
 
   await extractJobExperienceBestEffort(cpbRoot, project, jobId, { dataRoot });
 
@@ -776,7 +820,7 @@ export async function requestRedirectJob(
     reason,
     redirectEventId,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
@@ -792,12 +836,12 @@ export async function consumeRedirect(
     project,
     redirectEventId,
     ts,
-  }, { dataRoot });
+  }, scopedEventOpts(dataRoot));
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
 export async function getJob(cpbRoot: string, project: string, jobId: string, { dataRoot }: Record<string, any> = {}) {
-  const opts = { dataRoot };
+  const opts = scopedEventOpts(dataRoot);
   const checkpoint = await readCheckpoint(cpbRoot, project, jobId, opts);
   if (checkpoint) return checkpoint;
   return materializeJob(await readEvents(cpbRoot, project, jobId, opts));
@@ -805,29 +849,62 @@ export async function getJob(cpbRoot: string, project: string, jobId: string, { 
 
 export async function listJobs(cpbRoot: string, options: Record<string, any> = {}) {
   const { dataRoot, ...rest } = options;
-  const jobs: any[] = await listJobsFromIndex(cpbRoot, { dataRoot });
+  if (!dataRoot && rest.includeLegacyFallback !== true) {
+    const jobs: any[] = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
+    return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+  }
+  const jobs: any[] = await listJobsFromIndex(cpbRoot, { dataRoot, includeLegacyFallback: rest.includeLegacyFallback });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
 }
 
-export async function getJobByQueueEntryId(cpbRoot: string, project: string, queueEntryId: string, { dataRoot }: Record<string, any> = {}) {
+export async function getJobByQueueEntryId(cpbRoot: string, project: string, queueEntryId: string, { dataRoot, includeLegacyFallback }: Record<string, any> = {}) {
   if (!queueEntryId) return null;
-  const jobs = await listJobs(cpbRoot, { project, dataRoot });
+  const jobs = await listJobs(cpbRoot, { project, dataRoot, includeLegacyFallback });
   return jobs.find((job) => job.queueEntryId === queueEntryId) || null;
 }
 
-export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Record<string, any> = {}) {
+async function listJobsAcrossRuntimeRootsFresh(cpbRoot: string, options: Record<string, any> = {}) {
   const { listRuntimeDataRoots } = await import("./runtime-context.js");
   const roots = await listRuntimeDataRoots(cpbRoot, options);
-  const seen = new Set();
-  const jobs = [];
+  const jobsByKey = new Map<string, { job: any; priority: number }>();
   for (const root of roots) {
-    const batch = await listJobs(cpbRoot, { dataRoot: root.kind === "legacy" ? undefined : root.dataRoot });
+    const priority = runtimeRootPriority(root.kind);
+    const batch = await listJobs(cpbRoot, {
+      dataRoot: root.kind === "legacy" ? undefined : root.dataRoot,
+      includeLegacyFallback: root.kind === "legacy",
+    });
     for (const job of batch) {
       const key = `${job.project}/${job.jobId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      jobs.push(job);
+      if (shouldReplaceRuntimeJob(jobsByKey.get(key), job, priority)) {
+        jobsByKey.set(key, { job, priority });
+      }
     }
   }
+  const jobs = [...jobsByKey.values()].map(({ job }) => job);
   return jobs.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Record<string, any> = {}) {
+  const cacheTtlMs = Number(options.cacheTtlMs || 0);
+  if (!Number.isFinite(cacheTtlMs) || cacheTtlMs <= 0) {
+    return listJobsAcrossRuntimeRootsFresh(cpbRoot, options);
+  }
+
+  const now = Date.now();
+  const key = runtimeJobsCacheKey(cpbRoot, options);
+  const cached = _runtimeJobsCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cloneJobs(await cached.promise);
+  }
+
+  const promise = listJobsAcrossRuntimeRootsFresh(cpbRoot, options);
+  _runtimeJobsCache.set(key, { expiresAt: now + cacheTtlMs, promise });
+  try {
+    return cloneJobs(await promise);
+  } catch (error) {
+    if (_runtimeJobsCache.get(key)?.promise === promise) {
+      _runtimeJobsCache.delete(key);
+    }
+    throw error;
+  }
 }

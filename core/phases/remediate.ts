@@ -26,6 +26,7 @@ Rules:
 
 export async function runRemediate(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "remediator";
 
   const prompt = await buildRemediatePrompt(ctx) + JSON_INSTRUCTION;
@@ -81,6 +82,7 @@ export async function runRemediate(ctx) {
     jobId,
     kind: "remediation",
     content,
+    dataRoot,
     metadata: { remediationStatus: status },
   });
 

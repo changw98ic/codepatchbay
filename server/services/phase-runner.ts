@@ -5,6 +5,7 @@ import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js
 import { getJob } from "./job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
+import { resolveProjectDataRoot } from "./runtime-context.js";
 
 type AnyRecord = Record<string, any>;
 type RunChildResult = { exitCode: number; stdout: string; error?: any };
@@ -52,7 +53,14 @@ export async function validatePhaseInputs(cpbRoot, project, jobId, phase) {
     errors.push(`project not found: ${project}`);
   }
 
-  const job = await getJob(cpbRoot, project, jobId);
+  let dataRoot = null;
+  try {
+    dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+  } catch (err) {
+    errors.push(err?.message || `project runtime root required for project: ${project}`);
+  }
+
+  const job = dataRoot ? await getJob(cpbRoot, project, jobId, { dataRoot }) : null;
   if (!job?.jobId) {
     errors.push(`job not found: ${jobId}`);
   }
@@ -61,14 +69,15 @@ export async function validatePhaseInputs(cpbRoot, project, jobId, phase) {
 }
 
 export async function checkPhasePermissions(cpbRoot, project, jobId, phase, targetPath, action) {
-  const job = await getJob(cpbRoot, project, jobId);
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const workflow = getWorkflow(job?.workflow);
   const role = workflowRoleForPhase(workflow, phase) || phaseRole(phase);
   if (!role) return { allowed: true };
 
   const sourcePath = job?.worktree || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
 
-  return checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId });
+  return checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId, dataRoot });
 }
 
 async function fileExists(file) {

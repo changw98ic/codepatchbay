@@ -11,20 +11,21 @@ import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from '../se
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 const SAFE_JOB_ID = /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const DASHBOARD_JOBS_CACHE_TTL_MS = 500;
 
 export function isSafeJobId(value) {
   const jobId = String(value || "");
   return SAFE_JOB_ID.test(jobId) && !jobId.includes("..");
 }
 
-async function projectDataRoot(hubRoot, name) {
-  if (!hubRoot) return undefined;
-  try {
-    const project = await getProject(hubRoot, name);
-    return project?.projectRuntimeRoot || undefined;
-  } catch {
-    return undefined;
+async function projectDataRoot(fastify, hubRoot, name) {
+  if (!hubRoot) throw fastify.httpErrors.badRequest("hubRoot required");
+  const project = await getProject(hubRoot, name);
+  if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
+  if (!project.projectRuntimeRoot) {
+    throw fastify.httpErrors.badRequest(`Project '${name}' has no projectRuntimeRoot`);
   }
+  return project.projectRuntimeRoot;
 }
 
 function sendReviewLoopError(reply, error) {
@@ -50,12 +51,12 @@ export async function taskRoutes(fastify, opts) {
 
   // Get durable tasks
   fastify.get('/tasks/durable', async (req) => {
-    return getDurableTasks(req.cpbRoot, { hubRoot: req.cpbHubRoot });
+    return getDurableTasks(req.cpbRoot, { hubRoot: req.cpbHubRoot, cacheTtlMs: DASHBOARD_JOBS_CACHE_TTL_MS });
   });
 
   registerJobArtifactDetailRoute(fastify, '/tasks/:name/jobs/:jobId/artifacts', {
     projectParam: 'name',
-    resolveDataRoot: (req, name) => projectDataRoot(req.cpbHubRoot, name),
+    resolveDataRoot: (req, name) => projectDataRoot(fastify, req.cpbHubRoot, name),
   });
 
   // Enqueue pipeline task
@@ -132,7 +133,7 @@ export async function taskRoutes(fastify, opts) {
     const { name } = req.params;
     const { jobId, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
-    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     const job = await cancelJob(req.cpbRoot, name, jobId, { reason, dataRoot });
     broadcast({ type: 'job:cancelled', project: name, jobId, reason });
     return job;
@@ -144,7 +145,7 @@ export async function taskRoutes(fastify, opts) {
     const { jobId, instructions, reason } = req.body || {};
     if (!jobId) throw fastify.httpErrors.badRequest('jobId required');
     if (!instructions) throw fastify.httpErrors.badRequest('instructions required');
-    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     const job = await requestRedirectJob(req.cpbRoot, name, jobId, { instructions, reason, dataRoot });
     broadcast({ type: 'job:redirect_requested', project: name, jobId, instructions, reason });
     return job;
@@ -155,7 +156,7 @@ export async function taskRoutes(fastify, opts) {
     const { name, jobId } = req.params;
     const { force = false } = req.body || {};
     if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
-    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     const result = await retryJob(req.cpbRoot, name, jobId, { force, dataRoot });
     broadcast({ type: 'job:retried', project: name, jobId, recoveryJobId: result?.jobId });
     return result;
@@ -165,7 +166,7 @@ export async function taskRoutes(fastify, opts) {
   fastify.get('/tasks/:name/jobs/:jobId/review-bundle', async (req) => {
     const { name, jobId } = req.params;
     if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
-    const dataRoot = await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     const bundle = await buildReviewBundle(req.cpbRoot, name, jobId, { dataRoot });
     return bundle;
   });
@@ -176,7 +177,7 @@ export async function taskRoutes(fastify, opts) {
     if (!isSafeJobId(jobId)) throw fastify.httpErrors.badRequest('Invalid job id');
     const project = await getProject(req.cpbHubRoot, name);
     if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
-    const dataRoot = project.projectRuntimeRoot || await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     let result;
     try {
       result = await acceptReviewBundle(req.cpbRoot, name, jobId, {
@@ -198,7 +199,7 @@ export async function taskRoutes(fastify, opts) {
     if (!feedback || !String(feedback).trim()) throw fastify.httpErrors.badRequest('feedback required');
     const project = await getProject(req.cpbHubRoot, name);
     if (!project) throw fastify.httpErrors.notFound(`Project '${name}' not found`);
-    const dataRoot = project.projectRuntimeRoot || await projectDataRoot(req.cpbHubRoot, name);
+    const dataRoot = await projectDataRoot(fastify, req.cpbHubRoot, name);
     let result;
     try {
       result = await rejectReviewBundle(req.cpbRoot, name, jobId, {

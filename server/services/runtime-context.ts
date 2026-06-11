@@ -1,5 +1,4 @@
 import path from "node:path";
-import { runtimeDataRoot } from "./runtime-root.js";
 import { getProject, listProjects, resolveHubRoot } from "./hub-registry.js";
 
 type RuntimeRootEntry = { kind: string; dataRoot: string; projectId: string | null };
@@ -18,30 +17,34 @@ function uniqueRoots(entries: RuntimeRootEntry[]) {
 }
 
 export async function resolveProjectDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot }: { hubRoot?: string; dataRoot?: string } = {}) {
-  if (dataRoot) return path.resolve(dataRoot);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
-  try {
-    const registered = await getProject(resolvedHubRoot, project);
-    if (registered?.projectRuntimeRoot) return path.resolve(registered.projectRuntimeRoot);
-  } catch {}
-  return runtimeDataRoot(cpbRoot);
+  const registered = await getProject(resolvedHubRoot, project);
+  if (registered?.projectRuntimeRoot) {
+    const registeredRoot = path.resolve(registered.projectRuntimeRoot);
+    if (dataRoot && path.resolve(dataRoot) !== registeredRoot) {
+      throw new Error(`CPB_PROJECT_RUNTIME_ROOT does not match Hub registry for project '${project}'`);
+    }
+    return registeredRoot;
+  }
+  throw new Error(`project runtime root required for project '${project}'`);
 }
 
-export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHubProjects = true }: { hubRoot?: string; includeHubProjects?: boolean } = {}) {
-  const entries: RuntimeRootEntry[] = [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
+export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHubProjects = true, includeLegacy = false }: { hubRoot?: string; includeHubProjects?: boolean; includeLegacy?: boolean } = {}) {
+  const entries: RuntimeRootEntry[] = [];
+  if (includeLegacy) {
+    entries.push({ kind: "legacy", dataRoot: path.join(path.resolve(cpbRoot), "cpb-task"), projectId: null });
+  }
   if (!includeHubProjects) return uniqueRoots(entries);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
-  try {
-    const projects = await listProjects(resolvedHubRoot) as Array<{ id: string; projectRuntimeRoot?: string }>;
-    for (const project of projects) {
-      if (project.projectRuntimeRoot) {
-        entries.push({
-          kind: "project",
-          projectId: project.id,
-          dataRoot: project.projectRuntimeRoot,
-        });
-      }
+  const projects = await listProjects(resolvedHubRoot) as Array<{ id: string; projectRuntimeRoot?: string }>;
+  for (const project of projects) {
+    if (project.projectRuntimeRoot) {
+      entries.push({
+        kind: "project",
+        projectId: project.id,
+        dataRoot: project.projectRuntimeRoot,
+      });
     }
-  } catch {}
+  }
   return uniqueRoots(entries);
 }

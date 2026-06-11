@@ -1,5 +1,26 @@
 import { extractSkillFromJob, reviewSkill, listExtractedSkills, loadActiveExtractedSkills } from "../services/skill-extractor.js";
 import { getJob } from "../services/job-store.js";
+import { getProject } from "../services/hub-registry.js";
+
+async function resolveProjectDataRoot(req: any, reply: any, projectId: string) {
+  if (!req.cpbHubRoot) {
+    reply.code(400).send({ error: "hub root required" });
+    return null;
+  }
+
+  const project = await getProject(req.cpbHubRoot, projectId);
+  if (!project) {
+    reply.code(404).send({ error: `project not found: ${projectId}` });
+    return null;
+  }
+
+  if (!project.projectRuntimeRoot) {
+    reply.code(400).send({ error: `project runtime root required: ${projectId}` });
+    return null;
+  }
+
+  return project.projectRuntimeRoot;
+}
 
 export function skillRoutes(fastify: any, _opts: any, done: () => void) {
   // GET /api/skills/:role — list extracted skills for a role
@@ -19,8 +40,11 @@ export function skillRoutes(fastify: any, _opts: any, done: () => void) {
     const { project, jobId } = req.body;
     if (!project || !jobId) return reply.code(400).send({ error: "project and jobId required" });
 
-    const job = await getJob(req.cpbRoot, project, jobId);
-    if (!job) return reply.code(404).send({ error: "job not found" });
+    const dataRoot = await resolveProjectDataRoot(req, reply, project);
+    if (!dataRoot) return;
+
+    const job = await getJob(req.cpbRoot, project, jobId, { dataRoot });
+    if (!job?.jobId) return reply.code(404).send({ error: "job not found" });
 
     const result = await extractSkillFromJob(req.cpbRoot, project, jobId, job);
     if (!result) return reply.code(204).send();

@@ -1,6 +1,5 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
 
 export const PROCESS_REGISTRY_FORMAT_VERSION = 1;
 type AnyRecord = Record<string, any>;
@@ -11,13 +10,19 @@ function validateId(value: any, label: string) {
   }
 }
 
-function processDir(cpbRoot: string) {
-  return runtimeDataPath(cpbRoot, "processes");
+function _base(cpbRoot: string, opts: AnyRecord = {}) {
+  if (opts?.dataRoot) return path.resolve(opts.dataRoot);
+  if (opts?.includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
+  throw new Error("project runtime root required for process registry");
 }
 
-function processFile(cpbRoot: string, jobId: string) {
+function processDir(cpbRoot: string, opts: AnyRecord = {}) {
+  return path.join(_base(cpbRoot, opts), "processes");
+}
+
+function processFile(cpbRoot: string, jobId: string, opts: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  return path.join(processDir(cpbRoot), `${jobId}.json`);
+  return path.join(processDir(cpbRoot, opts), `${jobId}.json`);
 }
 
 function nowIso() {
@@ -40,9 +45,9 @@ async function writeJson(file: string, data: any) {
   await rename(tmp, file);
 }
 
-export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot }: AnyRecord = {}) {
+export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback }: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  const file = processFile(cpbRoot, jobId);
+  const file = processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
   const entry = {
     jobId,
     project: project || null,
@@ -63,8 +68,8 @@ export async function registerProcess(cpbRoot: string, { jobId, project, phase, 
   return entry;
 }
 
-export async function updateHeartbeat(cpbRoot: string, jobId: string) {
-  const file = processFile(cpbRoot, jobId);
+export async function updateHeartbeat(cpbRoot: string, jobId: string, { dataRoot }: AnyRecord = {}) {
+  const file = processFile(cpbRoot, jobId, { dataRoot });
   const entry = await readJson(file);
   if (!entry) return null;
   entry.lastHeartbeat = nowIso();
@@ -72,8 +77,8 @@ export async function updateHeartbeat(cpbRoot: string, jobId: string) {
   return entry;
 }
 
-export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited" }: AnyRecord = {}) {
-  const file = processFile(cpbRoot, jobId);
+export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited", dataRoot }: AnyRecord = {}) {
+  const file = processFile(cpbRoot, jobId, { dataRoot });
   const entry = await readJson(file);
   if (!entry) return null;
   entry.status = status;
@@ -82,8 +87,8 @@ export async function markExited(cpbRoot: string, jobId: string, { exitCode, sta
   return entry;
 }
 
-export async function addChildPid(cpbRoot: string, jobId: string, childPid: number) {
-  const file = processFile(cpbRoot, jobId);
+export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, { dataRoot }: AnyRecord = {}) {
+  const file = processFile(cpbRoot, jobId, { dataRoot });
   const entry = await readJson(file);
   if (!entry) return null;
   if (!entry.childPids.includes(childPid)) {
@@ -93,12 +98,12 @@ export async function addChildPid(cpbRoot: string, jobId: string, childPid: numb
   return entry;
 }
 
-export async function getProcess(cpbRoot: string, jobId: string) {
-  return readJson(processFile(cpbRoot, jobId));
+export async function getProcess(cpbRoot: string, jobId: string, opts: AnyRecord = {}) {
+  return readJson(processFile(cpbRoot, jobId, opts));
 }
 
-export async function listProcesses(cpbRoot: string) {
-  const dir = processDir(cpbRoot);
+export async function listProcesses(cpbRoot: string, opts: AnyRecord = {}) {
+  const dir = processDir(cpbRoot, opts);
   let entries;
   try {
     entries = await readdir(dir);
@@ -152,8 +157,9 @@ export function classifyLiveness(entry: AnyRecord, { staleThresholdMs = 180_000 
   return "alive";
 }
 
-export async function stopProcess(cpbRoot: string, jobId: string) {
-  const entry = await getProcess(cpbRoot, jobId);
+export async function stopProcess(cpbRoot: string, jobId: string, opts: AnyRecord = {}) {
+  const { dataRoot } = opts;
+  const entry = await getProcess(cpbRoot, jobId, { dataRoot });
   if (!entry) return { stopped: false, reason: "not found" };
 
   const { project } = entry;
@@ -163,7 +169,7 @@ export async function stopProcess(cpbRoot: string, jobId: string) {
     if (!project) return;
     try {
       const { appendEvent } = await import("./event-store.js");
-      await appendEvent(cpbRoot, project, jobId, { type, jobId, project, runnerPid: entry.runnerPid, ts, ...extra });
+      await appendEvent(cpbRoot, project, jobId, { type, jobId, project, runnerPid: entry.runnerPid, ts, ...extra }, { dataRoot });
     } catch {}
   }
 
@@ -173,7 +179,7 @@ export async function stopProcess(cpbRoot: string, jobId: string) {
   }
 
   if (!isProcessAlive(entry.runnerPid)) {
-    await markExited(cpbRoot, jobId, { status: "orphan" });
+    await markExited(cpbRoot, jobId, { status: "orphan", dataRoot });
     await audit("process_marked_orphan");
     return { stopped: false, reason: "process already dead (marked orphan)" };
   }
@@ -206,13 +212,13 @@ export async function stopProcess(cpbRoot: string, jobId: string) {
     }
   }
 
-  await markExited(cpbRoot, jobId, { exitCode: -15, status: "stopped" });
+  await markExited(cpbRoot, jobId, { exitCode: -15, status: "stopped", dataRoot });
   await audit("process_stopped", { signaledPids: pids });
   return { stopped: true, jobId, signaledPids: pids };
 }
 
-export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRecord = {}) {
-  const entries = await listProcesses(cpbRoot);
+export async function cleanProcesses(cpbRoot: string, { dryRun = false, dataRoot }: AnyRecord = {}) {
+  const entries = await listProcesses(cpbRoot, { dataRoot });
   const eligible: AnyRecord[] = [];
 
   for (const entry of entries) {
@@ -228,16 +234,16 @@ export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRec
 
   const removed: string[] = [];
   for (const entry of eligible) {
-    const file = processFile(cpbRoot, entry.jobId);
+    const file = processFile(cpbRoot, entry.jobId, { dataRoot });
     await rm(file, { force: true });
     removed.push(entry.jobId);
   }
   return { dryRun: false, removed, eligible };
 }
 
-export async function removeProcess(cpbRoot, jobId, { dryRun = false } = {}) {
+export async function removeProcess(cpbRoot, jobId, { dryRun = false, dataRoot }: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  const file = processFile(cpbRoot, jobId);
+  const file = processFile(cpbRoot, jobId, { dataRoot });
   if (dryRun) {
     const entry = await readJson(file);
     return { removed: false, wouldRemove: !!entry, jobId };
@@ -246,15 +252,16 @@ export async function removeProcess(cpbRoot, jobId, { dryRun = false } = {}) {
   return { removed: true, jobId };
 }
 
-export async function inspectProcess(cpbRoot, jobId) {
-  const entry = await getProcess(cpbRoot, jobId);
+export async function inspectProcess(cpbRoot, jobId, opts: AnyRecord = {}) {
+  const { dataRoot } = opts;
+  const entry = await getProcess(cpbRoot, jobId, { dataRoot });
   const liveness = entry ? classifyLiveness(entry) : null;
 
   let leaseState = null;
   if (entry?.leaseId) {
     try {
       const { readLease, isLeaseStale } = await import("./lease-manager.js");
-      const lease = await readLease(cpbRoot, entry.leaseId);
+      const lease = await readLease(cpbRoot, entry.leaseId, { dataRoot });
       if (lease) {
         leaseState = {
           leaseId: entry.leaseId,
@@ -273,11 +280,11 @@ export async function inspectProcess(cpbRoot, jobId) {
   try {
     const { getJob, listJobs } = await import("./job-store.js");
     if (project) {
-      job = await getJob(cpbRoot, project, jobId);
+      job = await getJob(cpbRoot, project, jobId, { dataRoot });
       if (job && !job.jobId) job = null;
     }
     if (!job) {
-      const allJobs = await listJobs(cpbRoot);
+      const allJobs = await listJobs(cpbRoot, { dataRoot });
       job = allJobs.find((j) => j.jobId === jobId) || null;
       if (job && !project) project = job.project;
     }
@@ -287,7 +294,7 @@ export async function inspectProcess(cpbRoot, jobId) {
   if (project) {
     try {
       const { readEvents } = await import("./event-store.js");
-      const events = await readEvents(cpbRoot, project, jobId);
+      const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
       recentEvents = events.slice(-10);
     } catch {}
   }
@@ -299,7 +306,7 @@ export async function inspectProcess(cpbRoot, jobId) {
   let children = [];
   try {
     const { listJobs: listAllJobs, getJob } = await import("./job-store.js");
-    const allJobs = await listAllJobs(cpbRoot);
+    const allJobs = await listAllJobs(cpbRoot, { dataRoot });
     // Children: jobs whose lineage.parentJobId === this jobId
     children = allJobs.filter((j) => j.lineage?.parentJobId === jobId);
 
@@ -333,7 +340,7 @@ export async function inspectProcess(cpbRoot, jobId) {
           const profile = await loadProfile(cpbRoot, role);
           profileConfig = profile.permissions || null;
         } catch {}
-        policyState = getPhasePolicy(role, cpbRoot, project, { sourcePath: sp, profileConfig });
+        policyState = getPhasePolicy(role, cpbRoot, project, { sourcePath: sp, profileConfig, dataRoot });
       }
     } catch {}
   }

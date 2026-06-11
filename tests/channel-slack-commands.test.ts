@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { parseChannelCommand } from "../server/services/channel-commands.js";
-import { parseSlackSlashCommand, slackActionMetadata, slackQueueActionMetadata } from "../server/services/channel-slack.js";
-import { handleSlackSlashCommand } from "../server/services/channel-slack.js";
+import { parseSlackInteractiveAction, parseSlackSlashCommand, slackActionMetadata, slackQueueActionMetadata } from "../server/services/channel-slack.js";
+import { handleSlackInteractiveAction, handleSlackSlashCommand } from "../server/services/channel-slack.js";
 import { createChannelQueueJob } from "../server/services/event-source.js";
 import { handleChannelCommand, queueEntryStatus } from "../server/services/channel-queue-actions.js";
-import { createJob, getJob } from "../server/services/job-store.js";
+import { createJob, failJob, getJob } from "../server/services/job-store.js";
 import { enqueue, listQueue } from "../server/services/hub-queue.js";
 import { registerProject } from "../server/services/hub-registry.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent, readEvents } from "../server/services/event-store.js";
 import { tempRoot } from "./helpers.js";
 
 async function makeRoots(prefix = "cpb-chan") {
@@ -68,6 +69,12 @@ test("parseSlackSlashCommand: /cpb run frontend task", () => {
 
 test("createChannelQueueJob: creates queue entry and job for run command", async () => {
   const { cpbRoot, hubRoot } = await makeRoots("cpb-run-job");
+  const sourcePath = await tempRoot("cpb-run-job-src");
+  const project = await registerProject(hubRoot, {
+    id: "frontend",
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
   const command = parseChannelCommand("/cpb run frontend add dark mode");
 
   const result = await createChannelQueueJob(cpbRoot, command, {
@@ -88,6 +95,15 @@ test("createChannelQueueJob: creates queue entry and job for run command", async
   assert.equal(result.job.task, "add dark mode");
   assert.equal(result.job.status, "running");
   assert.equal(result.job.queueEntryId, result.queueEntry.id);
+  assert.ok(
+    await getJob(cpbRoot, "frontend", result.job.jobId, { dataRoot: project.projectRuntimeRoot }),
+    "job should be readable from the registered project runtime root",
+  );
+  assert.equal(
+    existsSync(path.join(cpbRoot, "cpb-task", "events", "frontend", `${result.job.jobId}.jsonl`)),
+    false,
+    "immediate channel job creation must not write legacy runtime events",
+  );
 });
 
 test("createChannelQueueJob: issue command does not create job", async () => {
@@ -106,6 +122,12 @@ test("createChannelQueueJob: issue command does not create job", async () => {
 
 test("handleSlackSlashCommand: run returns View Run and Cancel actions", async () => {
   const { cpbRoot, hubRoot } = await makeRoots("cpb-run-actions");
+  const sourcePath = await tempRoot("cpb-run-actions-src");
+  await registerProject(hubRoot, {
+    id: "frontend",
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
   const parsed = parseSlackSlashCommand({
     command: "/cpb",
     text: "run frontend add dark mode",
@@ -134,12 +156,19 @@ test("handleSlackSlashCommand: run returns View Run and Cancel actions", async (
 
 test("handleSlackSlashCommand: status returns current projection for job", async () => {
   const { cpbRoot, hubRoot } = await makeRoots("cpb-status-proj");
+  const sourcePath = await tempRoot("cpb-status-proj-src");
+  const project = await registerProject(hubRoot, {
+    id: "frontend",
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
 
   // Create a job first
   const job = await createJob(cpbRoot, {
     project: "frontend",
     task: "test task",
     workflow: "standard",
+    dataRoot: project.projectRuntimeRoot,
   });
 
   const parsed = parseSlackSlashCommand({
@@ -163,6 +192,195 @@ test("handleSlackSlashCommand: status returns current projection for job", async
   assert.ok(result.actions, "should include actions");
   assert.ok(result.actions.viewRun, "should include View Run action");
   assert.ok(result.actions.cancel, "should include Cancel action");
+});
+
+test("handleSlackSlashCommand: cross-root job actions keep project runtime root strict", async () => {
+  const { cpbRoot, hubRoot } = await makeRoots("cpb-cross-root-actions");
+  const sourcePath = path.join(cpbRoot, "workspace");
+  const dataRoot = path.join(hubRoot, "projects", "frontend");
+  await mkdir(sourcePath, { recursive: true });
+  await registerProject(hubRoot, {
+    id: "frontend",
+    name: "frontend",
+    sourcePath,
+    cpbRoot,
+    projectRuntimeRoot: dataRoot,
+    skipCodeGraphGate: true,
+  });
+
+  const jobId = "job-20260611-010203-cross";
+  await createJob(cpbRoot, {
+    project: "frontend",
+    task: "project-root task",
+    workflow: "standard",
+    jobId,
+    dataRoot,
+  });
+  await appendEvent(cpbRoot, "frontend", jobId, {
+    type: "phase_activity",
+    project: "frontend",
+    jobId,
+    message: "legacy event must not leak into channel logs",
+    ts: "2026-06-11T01:02:04.000Z",
+  }, { legacyOnly: true });
+
+  const logsParsed = parseSlackSlashCommand({
+    command: "/cpb",
+    text: `logs ${jobId}`,
+    user_id: "U1",
+    user_name: "alice",
+    team_id: "T1",
+    channel_id: "C1",
+    channel_name: "dev",
+  });
+  const logs = await handleSlackSlashCommand(cpbRoot, logsParsed, { hubRoot }) as Record<string, any>;
+
+  assert.equal(logs.ok, true);
+  assert.equal(logs.action, "logs");
+  assert.equal(logs.events.some((event: Record<string, any>) => event.message === "legacy event must not leak into channel logs"), false);
+
+  const cancelParsed = parseSlackSlashCommand({
+    command: "/cpb",
+    text: `cancel ${jobId}`,
+    user_id: "U1",
+    user_name: "alice",
+    team_id: "T1",
+    channel_id: "C1",
+    channel_name: "dev",
+  });
+  const cancelled = await handleSlackSlashCommand(cpbRoot, cancelParsed, { hubRoot }) as Record<string, any>;
+
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.action, "cancelled");
+  assert.equal((await getJob(cpbRoot, "frontend", jobId, { dataRoot })).status, "cancelled");
+  assert.equal((await readEvents(cpbRoot, "frontend", jobId, { dataRoot, includeLegacyFallback: false }))
+    .some((event: Record<string, any>) => event.type === "job_cancelled"), true);
+});
+
+test("handleSlackSlashCommand: cross-root retry creates recovery in project runtime root", async () => {
+  const { cpbRoot, hubRoot } = await makeRoots("cpb-cross-root-retry");
+  const sourcePath = path.join(cpbRoot, "workspace");
+  const dataRoot = path.join(hubRoot, "projects", "frontend");
+  await mkdir(sourcePath, { recursive: true });
+  await registerProject(hubRoot, {
+    id: "frontend",
+    name: "frontend",
+    sourcePath,
+    cpbRoot,
+    projectRuntimeRoot: dataRoot,
+    skipCodeGraphGate: true,
+  });
+
+  const job = await createJob(cpbRoot, {
+    project: "frontend",
+    task: "retry me",
+    workflow: "standard",
+    jobId: "job-20260611-020304-retry",
+    dataRoot,
+  });
+  await failJob(cpbRoot, "frontend", job.jobId, {
+    reason: "test failure",
+    code: "RECOVERABLE",
+    phase: "plan",
+    dataRoot,
+  });
+
+  const retryParsed = parseSlackSlashCommand({
+    command: "/cpb",
+    text: `retry ${job.jobId}`,
+    user_id: "U1",
+    user_name: "alice",
+    team_id: "T1",
+    channel_id: "C1",
+    channel_name: "dev",
+  });
+  const retried = await handleSlackSlashCommand(cpbRoot, retryParsed, { hubRoot }) as Record<string, any>;
+
+  assert.equal(retried.ok, true);
+  assert.equal(retried.action, "retried");
+  assert.equal(retried.recoveryOf, job.jobId);
+  assert.equal((await getJob(cpbRoot, "frontend", retried.job.jobId, { dataRoot })).sourceContext.previousFailure.jobId, job.jobId);
+  assert.deepEqual(await readEvents(cpbRoot, "frontend", retried.job.jobId, { legacyOnly: true }), []);
+});
+
+test("handleSlackInteractiveAction: cross-root job actions keep project runtime root strict", async () => {
+  const { cpbRoot, hubRoot } = await makeRoots("cpb-slack-action-cross-root");
+  const sourcePath = path.join(cpbRoot, "workspace");
+  const dataRoot = path.join(hubRoot, "projects", "frontend");
+  await mkdir(sourcePath, { recursive: true });
+  await registerProject(hubRoot, {
+    id: "frontend",
+    name: "frontend",
+    sourcePath,
+    cpbRoot,
+    projectRuntimeRoot: dataRoot,
+    skipCodeGraphGate: true,
+  });
+
+  const cancelJobId = "job-20260611-030405-action-cancel";
+  await createJob(cpbRoot, {
+    project: "frontend",
+    task: "cancel from Slack action",
+    workflow: "standard",
+    jobId: cancelJobId,
+    dataRoot,
+  });
+  await appendEvent(cpbRoot, "frontend", cancelJobId, {
+    type: "phase_activity",
+    project: "frontend",
+    jobId: cancelJobId,
+    message: "legacy event must stay isolated",
+    ts: "2026-06-11T03:04:06.000Z",
+  }, { legacyOnly: true });
+
+  const cancelParsed = parseSlackInteractiveAction({
+    user: { id: "U1", username: "alice" },
+    team: { id: "T1" },
+    channel: { id: "C1", name: "dev" },
+    actions: [{
+      action_id: "cpb.cancel",
+      value: JSON.stringify({ action: "cancel", job: cancelJobId }),
+    }],
+  });
+  const cancelled = await handleSlackInteractiveAction(cpbRoot, cancelParsed, { hubRoot }) as Record<string, any>;
+
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.action, "cancelled");
+  assert.equal((await getJob(cpbRoot, "frontend", cancelJobId, { dataRoot })).status, "cancelled");
+  assert.equal((await readEvents(cpbRoot, "frontend", cancelJobId, { dataRoot, includeLegacyFallback: false }))
+    .some((event: Record<string, any>) => event.type === "job_cancelled"), true);
+
+  const retryJobId = "job-20260611-040506-action-retry";
+  const retrySource = await createJob(cpbRoot, {
+    project: "frontend",
+    task: "retry from Slack action",
+    workflow: "standard",
+    jobId: retryJobId,
+    dataRoot,
+  });
+  await failJob(cpbRoot, "frontend", retrySource.jobId, {
+    reason: "test failure",
+    code: "RECOVERABLE",
+    phase: "plan",
+    dataRoot,
+  });
+
+  const retryParsed = parseSlackInteractiveAction({
+    user: { id: "U1", username: "alice" },
+    team: { id: "T1" },
+    channel: { id: "C1", name: "dev" },
+    actions: [{
+      action_id: "cpb.retry",
+      value: JSON.stringify({ action: "retry", job: retrySource.jobId }),
+    }],
+  });
+  const retried = await handleSlackInteractiveAction(cpbRoot, retryParsed, { hubRoot }) as Record<string, any>;
+
+  assert.equal(retried.ok, true);
+  assert.equal(retried.action, "retried");
+  assert.equal(retried.recoveryOf, retrySource.jobId);
+  assert.equal((await getJob(cpbRoot, "frontend", retried.job.jobId, { dataRoot })).sourceContext.previousFailure.jobId, retrySource.jobId);
+  assert.deepEqual(await readEvents(cpbRoot, "frontend", retried.job.jobId, { legacyOnly: true }), []);
 });
 
 test("handleSlackSlashCommand: status falls back to queue entry", async () => {

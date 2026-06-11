@@ -18,7 +18,7 @@ import { listJobs } from "./job-store.js";
 import { hubStatus, loadRegistry, resolveHubRoot } from "./hub-registry.js";
 import { readHubLiveness } from "./hub-runtime.js";
 import { readLease, isLeaseStale } from "./lease-manager.js";
-import { runtimeDataPath } from "./runtime-root.js";
+import { listRuntimeDataRoots } from "./runtime-context.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 
 import { sanitizeProviderReason } from "./acp-pool.js";
@@ -69,6 +69,35 @@ function error(id: string, category: string, message: string, opts?: Record<stri
 
 function skipped(id: string, category: string, message: string, opts?: Record<string, any>) {
   return makeCheck(id, category, "skipped", "info", message, opts);
+}
+
+async function listJobsWithRuntimeRoots(cpbRoot: string) {
+  const roots = await listRuntimeDataRoots(cpbRoot, { includeLegacy: false });
+  const jobs = [];
+  for (const root of roots) {
+    const batch = await listJobs(cpbRoot, {
+      dataRoot: root.dataRoot,
+      includeLegacyFallback: false,
+    });
+    for (const job of batch) jobs.push({ ...job, _dataRoot: root.dataRoot });
+  }
+  return { roots, jobs };
+}
+
+async function listLeaseFiles(dataRoot: string) {
+  const leasesDir = path.join(dataRoot, "leases");
+  let files;
+  try {
+    files = await readdir(leasesDir);
+  } catch {
+    return [];
+  }
+  return files
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => ({
+      leaseId: file.replace(".json", ""),
+      dataRoot,
+    }));
 }
 
 export function deriveSummary(checks: Check[]) {
@@ -384,7 +413,7 @@ async function checkRegistryConsistency(hubRoot: string) {
 
 async function checkStaleJobs(cpbRoot: string) {
   try {
-    const allJobs: any[] = await listJobs(cpbRoot);
+    const { jobs: allJobs } = await listJobsWithRuntimeRoots(cpbRoot);
     const terminalStates = ["completed", "failed", "blocked", "cancelled"];
     const running = allJobs.filter((j) => !terminalStates.includes(j.status));
     if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
@@ -397,14 +426,14 @@ async function checkStaleJobs(cpbRoot: string) {
         continue;
       }
       try {
-        const lease = await readLease(cpbRoot, job.leaseId);
+        const lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job._dataRoot });
         if (lease === null) {
-          missingLeases.push({ jobId: job.jobId, project: job.project, leaseId: job.leaseId, issue: "lease file missing" });
+          missingLeases.push({ jobId: job.jobId, project: job.project, leaseId: job.leaseId, dataRoot: job._dataRoot, issue: "lease file missing" });
         } else if (isLeaseStale(lease)) {
-          stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, issue: "expired lease" });
+          stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, dataRoot: job._dataRoot, issue: "expired lease" });
         }
       } catch {
-        stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, issue: "lease read error" });
+        stale.push({ jobId: job.jobId, project: job.project, phase: job.currentPhase, dataRoot: job._dataRoot, issue: "lease read error" });
       }
     }
     const allIssues = [...stale, ...missingLeases];
@@ -422,32 +451,28 @@ async function checkStaleJobs(cpbRoot: string) {
 
 async function checkOrphanLeases(cpbRoot: string) {
   try {
-    const leasesDir = runtimeDataPath(cpbRoot, "leases");
-    let files;
-    try {
-      files = await readdir(leasesDir);
-    } catch {
-      return ok("orphan-leases", "leases", "No leases directory");
-    }
-    const leaseFiles = files.filter((f) => f.endsWith(".json"));
-    if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
-
-    const allJobs: any[] = await listJobs(cpbRoot);
-    const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
+    const { roots, jobs: allJobs } = await listJobsWithRuntimeRoots(cpbRoot);
     const orphans = [];
-    for (const f of leaseFiles) {
-      const leaseId = f.replace(".json", "");
-      if (!jobLeaseIds.has(leaseId)) {
-        orphans.push({ leaseId });
+    let totalLeaseFiles = 0;
+    for (const root of roots) {
+      const leaseFiles = await listLeaseFiles(root.dataRoot);
+      totalLeaseFiles += leaseFiles.length;
+      const rootJobs = allJobs.filter((job) => job._dataRoot === root.dataRoot);
+      const jobLeaseIds = new Set(rootJobs.map((j) => j.leaseId).filter(Boolean));
+      for (const leaseFile of leaseFiles) {
+        if (!jobLeaseIds.has(leaseFile.leaseId)) {
+          orphans.push({ leaseId: leaseFile.leaseId, dataRoot: root.dataRoot });
+        }
       }
     }
+    if (totalLeaseFiles === 0) return ok("orphan-leases", "leases", "No lease files");
     if (orphans.length > 0) {
       return warn("orphan-leases", "leases", `${orphans.length} orphan lease(s) not tied to any job`, {
         details: orphans,
         remediation: "Run: cpb gc to clean up orphan leases from completed jobs.",
       });
     }
-    return ok("orphan-leases", "leases", `${leaseFiles.length} lease(s), all tied to jobs`);
+    return ok("orphan-leases", "leases", `${totalLeaseFiles} lease(s), all tied to jobs`);
   } catch (e) {
     return warn("orphan-leases", "leases", `Cannot check orphan leases: ${e.message}`);
   }
@@ -1019,7 +1044,7 @@ async function checkReleaseJobPinning({ env, cpbRoot }: Record<string, any>) {
     return okR("release.job_pinning", "No current release selected, skipping pin check");
   }
   try {
-    const allJobs = await listJobs(resolvedCpbRoot);
+    const { jobs: allJobs } = await listJobsWithRuntimeRoots(resolvedCpbRoot);
     const issues = [];
     for (const job of allJobs) {
       const jobReleaseId = job.executor?.releaseId

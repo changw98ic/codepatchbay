@@ -82,7 +82,7 @@ function formatWizardHuman(result) {
     const health = result.health[agent.id];
     lines.push(`  ${agent.id}\tinstall:${install?.status || "skipped"}\thealth:${health?.status || "unknown"}`);
   }
-  lines.push("", `Setup profile: ${result.profilePath || "cpb-task/setup-profile.json"}`, "");
+  lines.push("", `Setup profile: ${result.profilePath || "hub/setup/profile.json"}`, "");
   return lines.join("\n");
 }
 

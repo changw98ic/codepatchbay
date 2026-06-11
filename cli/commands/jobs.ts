@@ -25,8 +25,9 @@ export async function run(args: string[], { cpbRoot }: { cpbRoot: string; execut
     if (args.includes("--json")) console.log(JSON.stringify(plan, null, 2));
     else console.log(formatWorktreeRetentionHuman(plan));
   } else {
-    const { listJobs } = await import("../../server/services/job-store.js");
-    const jobs = await listJobs(cpbRoot) as Array<Record<string, any>>;
+    const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+    const { listJobsAcrossRuntimeRoots } = await import("../../server/services/job-store.js");
+    const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot: process.env.CPB_HUB_ROOT || resolveHubRoot(cpbRoot) }) as Array<Record<string, any>>;
     for (const job of jobs.slice(-20)) {
       console.log(`${job.jobId} ${job.status} ${job.project || "-"} ${job.phase || "-"}`);
     }

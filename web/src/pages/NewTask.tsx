@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '@/components/glass/GlassPanel';
 import { Button } from '@/components/shared/Button';
@@ -128,6 +129,30 @@ const modeCardDesc = style({
 
 const MIN_DESC_LENGTH = 10;
 
+type TaskQueueEntry = {
+  id?: string | null;
+  projectId?: string | null;
+  status?: string | null;
+};
+
+type TaskPipelineResponse = {
+  queued?: boolean;
+  entry?: TaskQueueEntry | null;
+};
+
+export function formatTaskSuccessMessage(data: TaskPipelineResponse, fallback: string) {
+  const entry = data?.entry;
+  if (!entry?.id && !entry?.projectId && !entry?.status) return fallback;
+
+  const details = [
+    entry?.id ? `queue ${entry.id}` : null,
+    entry?.projectId ? `project ${entry.projectId}` : null,
+    entry?.status ? `status ${entry.status}` : null,
+  ].filter(Boolean);
+
+  return `${fallback} (${details.join(', ')})`;
+}
+
 export default function NewTask() {
   const { t } = useTranslation();
   const { projects, fetchProjects } = useProjectsStore();
@@ -138,7 +163,7 @@ export default function NewTask() {
   const [maxRetries, setMaxRetries] = useState(3);
   const [timeout, setTimeout_] = useState(600);
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; msg: string; href?: string } | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -175,7 +200,12 @@ export default function NewTask() {
         }
         throw new Error(message);
       }
-      setResult({ ok: true, msg: t('task.success') });
+      const data = await res.json().catch(() => ({})) as TaskPipelineResponse;
+      setResult({
+        ok: true,
+        msg: formatTaskSuccessMessage(data, t('task.success')),
+        href: data?.entry?.id ? '/inbox' : undefined,
+      });
     } catch (err) {
       setResult({ ok: false, msg: `${t('task.error')}: ${(err as Error).message}` });
     } finally {
@@ -279,6 +309,12 @@ export default function NewTask() {
           {result && (
             <div className={`${statusMsg} ${result.ok ? statusSuccess : statusError}`}>
               {result.msg}
+              {result.href && (
+                <>
+                  {' '}
+                  <Link to={result.href}>{t('nav.inbox')}</Link>
+                </>
+              )}
             </div>
           )}
         </div>

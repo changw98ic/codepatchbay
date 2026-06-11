@@ -112,6 +112,16 @@ function extractAttentionItems(data: unknown): AttentionItem[] {
     .filter(isAttentionItem);
 }
 
+export function resolveAttentionHref(href: string) {
+  if (href === '/hub/runtime') return '/?tab=health';
+  if (href === '/hub/queue') return '/inbox';
+  return href;
+}
+
+export function isInternalAttentionHref(href: string) {
+  return href.startsWith('/') && !href.startsWith('//');
+}
+
 export default function Dashboard() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -212,11 +222,8 @@ export default function Dashboard() {
   const hasPriorityAttention = attentionItems.some((item) => item.severity === 'critical' || item.severity === 'warning');
 
   const handleAttentionNavigate = useCallback((href: string) => {
-    if (/^https?:\/\//i.test(href)) {
-      window.location.assign(href);
-      return;
-    }
-    navigate(href);
+    if (!isInternalAttentionHref(href)) return;
+    navigate(resolveAttentionHref(href));
   }, [navigate]);
 
   const recentDispatches = useMemo(() =>

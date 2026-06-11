@@ -1,8 +1,8 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
-import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
 import { resolveProjectDataRoot } from "./runtime-context.js";
 import { getJob } from "./job-store.js";
+import { getProject, resolveHubRoot } from "./hub-registry.js";
 import { getWorkflow } from "../../core/workflow/definition.js";
 
 type AnyRecord = Record<string, any>;
@@ -17,31 +17,53 @@ export function wikiProjectDir(cpbRoot, project) {
   return path.resolve(cpbRoot, "wiki", "projects", project);
 }
 
-export function inboxDir(cpbRoot, project) {
-  return path.join(wikiProjectDir(cpbRoot, project), "inbox");
+function runtimeWikiDir(dataRoot) {
+  return path.join(path.resolve(dataRoot), "wiki");
 }
 
-export function outputsDir(cpbRoot, project) {
-  return path.join(wikiProjectDir(cpbRoot, project), "outputs");
+export function inboxDir(cpbRoot, project, { dataRoot }: AnyRecord = {}) {
+  return path.join(dataRoot ? runtimeWikiDir(dataRoot) : wikiProjectDir(cpbRoot, project), "inbox");
+}
+
+export function outputsDir(cpbRoot, project, { dataRoot }: AnyRecord = {}) {
+  return path.join(dataRoot ? runtimeWikiDir(dataRoot) : wikiProjectDir(cpbRoot, project), "outputs");
 }
 
 export function projectMetaPath(cpbRoot, project) {
   return path.join(wikiProjectDir(cpbRoot, project), "project.json");
 }
 
-export function contextPath(cpbRoot, project) {
-  return path.join(wikiProjectDir(cpbRoot, project), "context.md");
+export function contextPath(cpbRoot, project, { dataRoot }: AnyRecord = {}) {
+  return path.join(dataRoot ? runtimeWikiDir(dataRoot) : wikiProjectDir(cpbRoot, project), "context.md");
 }
 
-export function decisionsPath(cpbRoot, project) {
-  return path.join(wikiProjectDir(cpbRoot, project), "decisions.md");
+export function decisionsPath(cpbRoot, project, { dataRoot }: AnyRecord = {}) {
+  return path.join(dataRoot ? runtimeWikiDir(dataRoot) : wikiProjectDir(cpbRoot, project), "decisions.md");
 }
 
-export function eventLogPath(cpbRoot, project, jobId) {
-  return runtimeDataPath(cpbRoot, "events", project, `${jobId}.jsonl`);
+function requireProjectDataRoot(dataRoot, label = "phase locator") {
+  if (!dataRoot || typeof dataRoot !== "string" || !dataRoot.trim()) {
+    throw new Error(`dataRoot is required for ${label}`);
+  }
+  return path.resolve(dataRoot);
 }
 
-export async function resolveProjectSourcePath(cpbRoot, project) {
+export function eventLogPath(cpbRoot, project, jobId, { dataRoot }: AnyRecord = {}) {
+  return path.join(requireProjectDataRoot(dataRoot, "phase event log path"), "events", project, `${jobId}.jsonl`);
+}
+
+async function resolveRegisteredProject(cpbRoot, project, hubRoot = process.env.CPB_HUB_ROOT) {
+  const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
+  return getProject(resolvedHubRoot, project);
+}
+
+export async function resolveProjectSourcePath(cpbRoot, project, { hubRoot, allowLegacyFallback = true }: AnyRecord = {}) {
+  if (process.env.CPB_PROJECT_PATH_OVERRIDE) return path.resolve(process.env.CPB_PROJECT_PATH_OVERRIDE);
+  try {
+    const registered = await resolveRegisteredProject(cpbRoot, project, hubRoot);
+    if (registered?.sourcePath) return path.resolve(registered.sourcePath);
+  } catch {}
+  if (!allowLegacyFallback) return null;
   const metaFile = projectMetaPath(cpbRoot, project);
   try {
     const raw = await readFile(metaFile, "utf8");
@@ -52,9 +74,10 @@ export async function resolveProjectSourcePath(cpbRoot, project) {
   }
 }
 
-export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoot }: AnyRecord = {}) {
+export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoot, hubRoot, dataRoot: explicitDataRoot }: AnyRecord = {}) {
   validateName(project, "project");
   if (jobId) validateName(jobId, "jobId");
+  const effectiveHubRoot = hubRoot || process.env.CPB_HUB_ROOT;
 
   const locator: AnyRecord = {
     cpbRoot: path.resolve(cpbRoot),
@@ -62,20 +85,33 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
     jobId: jobId || null,
     phase: phase || null,
     executorRoot: executorRoot ? path.resolve(executorRoot) : path.resolve(cpbRoot),
-    stateRoot: runtimeDataRoot(cpbRoot),
+    stateRoot: null,
     wikiDir: wikiProjectDir(cpbRoot, project),
     inboxDir: inboxDir(cpbRoot, project),
     outputsDir: outputsDir(cpbRoot, project),
   };
 
-  locator.sourcePath = process.env.CPB_PROJECT_PATH_OVERRIDE || await resolveProjectSourcePath(cpbRoot, project);
+  locator.sourcePath = await resolveProjectSourcePath(cpbRoot, project, {
+    hubRoot: effectiveHubRoot,
+    allowLegacyFallback: !jobId,
+  });
 
   if (jobId) {
-    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
-    locator.eventLogPath = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
+    const registered = await resolveRegisteredProject(cpbRoot, project, effectiveHubRoot).catch(() => null);
+    const dataRoot = explicitDataRoot
+      ? path.resolve(explicitDataRoot)
+      : registered?.projectRuntimeRoot
+      ? path.resolve(registered.projectRuntimeRoot)
+      : await resolveProjectDataRoot(cpbRoot, project, { hubRoot: effectiveHubRoot });
+    locator.stateRoot = dataRoot;
+    locator.wikiDir = runtimeWikiDir(dataRoot);
+    locator.inboxDir = inboxDir(cpbRoot, project, { dataRoot });
+    locator.outputsDir = outputsDir(cpbRoot, project, { dataRoot });
+    locator.eventLogPath = eventLogPath(cpbRoot, project, jobId, { dataRoot });
     locator.processRegistryDir = path.join(dataRoot, "processes");
     locator.stateFilePath = path.join(dataRoot, "state", `pipeline-${project}.json`);
-    const job = await getJob(cpbRoot, project, jobId);
+    locator.sourcePath = locator.sourcePath || (registered?.sourcePath ? path.resolve(registered.sourcePath) : null);
+    const job = await getJob(cpbRoot, project, jobId, { dataRoot });
     if (job?.jobId) {
       locator.task = job.task;
       locator.workflow = job.workflow;
@@ -108,7 +144,6 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
 
     // Fallback: derive from environment or project metadata
     if (!locator.issueNumber) {
-      const meta = await resolveProjectSourcePath(cpbRoot, project);
       locator.issueNumber = process.env.CPB_ISSUE_NUMBER || null;
       locator.issueUrl = process.env.CPB_ISSUE_URL || null;
       locator.repo = process.env.CPB_REPO || null;
@@ -119,10 +154,11 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
 }
 
 export async function reconstructJobState(cpbRoot, project, jobId) {
-  const job = await getJob(cpbRoot, project, jobId);
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!job?.jobId) return null;
 
-  return buildLocator(cpbRoot, project, jobId, { phase: job.phase });
+  return buildLocator(cpbRoot, project, jobId, { phase: job.phase, dataRoot });
 }
 
 export function locatorEnvelope(locator) {
@@ -144,6 +180,9 @@ export function locatorEnvelope(locator) {
     workflow: locator.workflow || null,
     artifacts: locator.artifacts || {},
     completedPhases: locator.completedPhases || [],
+    prevPhase: locator.prevPhase || null,
+    prevArtifact: locator.prevArtifact || null,
+    prevArtifactPath: locator.prevArtifactPath || null,
     jobStatus: locator.jobStatus || null,
     worktree: locator.worktree || null,
     lineage: locator.lineage || null,
@@ -177,30 +216,28 @@ export async function readProjectDecisions(cpbRoot, project) {
 
 export async function projectExists(cpbRoot, project) {
   try {
-    const info = await stat(wikiProjectDir(cpbRoot, project));
-    if (info.isDirectory()) return true;
+    const p = await resolveRegisteredProject(cpbRoot, project);
+    if (p) return true;
   } catch {}
   try {
-    const { resolveHubRoot, getProject } = await import("./hub-registry.js");
-    const hubRoot = resolveHubRoot(cpbRoot);
-    const p = await getProject(hubRoot, project);
-    return !!p;
+    const info = await stat(wikiProjectDir(cpbRoot, project));
+    if (info.isDirectory()) return true;
   } catch {}
   return false;
 }
 
-function resolveArtifactPath(cpbRoot, project, artifact) {
+function resolveArtifactPath(locator, artifact) {
   if (!artifact || typeof artifact !== "string") return null;
   if (path.isAbsolute(artifact)) return artifact;
   const normalized = artifact.endsWith(".md") ? artifact : `${artifact}.md`;
   const directory = normalized.startsWith("plan-")
-    ? inboxDir(cpbRoot, project)
-    : outputsDir(cpbRoot, project);
+    ? locator.inboxDir
+    : locator.outputsDir;
   return path.join(directory, normalized);
 }
 
-export async function buildPhaseLocator(cpbRoot, project, jobId, phase) {
-  const locator = await buildLocator(cpbRoot, project, jobId, { phase });
+export async function buildPhaseLocator(cpbRoot, project, jobId, phase, options: AnyRecord = {}) {
+  const locator = await buildLocator(cpbRoot, project, jobId, { ...options, phase });
   if (!locator.jobId) {
     locator.prevPhase = null;
     locator.prevArtifact = null;
@@ -216,7 +253,7 @@ export async function buildPhaseLocator(cpbRoot, project, jobId, phase) {
 
   locator.prevPhase = phaseIdx > 0 ? workflow.phases[phaseIdx - 1] : null;
   locator.prevArtifact = prevPhaseArtifact;
-  locator.prevArtifactPath = resolveArtifactPath(cpbRoot, project, prevPhaseArtifact);
+  locator.prevArtifactPath = resolveArtifactPath(locator, prevPhaseArtifact);
 
   return locator;
 }

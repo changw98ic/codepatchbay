@@ -64,9 +64,14 @@ export function channelQueueActionMetadata(queueEntryId) {
   };
 }
 
-export async function findChannelJobById(cpbRoot, jobId) {
-  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
+export async function findChannelJobById(cpbRoot, jobId, { hubRoot }: AnyRecord = {}) {
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot });
   return jobs.find((job) => job.jobId === jobId) || null;
+}
+
+function jobRuntimeOpts(job) {
+  const dataRoot = job?._dataRoot || job?.dataRoot || null;
+  return dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
 }
 
 function isQueueEntryId(value) {
@@ -221,12 +226,14 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
   const ts = new Date().toISOString();
   const actor = parsed.actor || {};
   const label = titleCaseChannel(channel);
+  const runtimeOpts = jobRuntimeOpts(job);
 
   if (command.type === "approve") {
     const approved = await approveGate(cpbRoot, job.project, job.jobId, {
       actor,
       action: command,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,
@@ -242,6 +249,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
     const cancelled = await cancelJob(cpbRoot, job.project, job.jobId, {
       reason: `Cancelled from ${label} by ${actorId(actor)}`,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,
@@ -258,6 +266,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
       trigger: channel,
       force: true,
       ts,
+      ...runtimeOpts,
     });
     return {
       ok: true,
@@ -271,7 +280,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
     };
   }
 
-  const events = await readEvents(cpbRoot, job.project, job.jobId);
+  const events = await readEvents(cpbRoot, job.project, job.jobId, runtimeOpts);
   return {
     ok: true,
     channel,
@@ -343,7 +352,7 @@ export async function handleChannelCommand(cpbRoot, parsed, {
   }
 
   if (command.type === "status") {
-    const job = await findChannelJobById(cpbRoot, command.job);
+    const job = await findChannelJobById(cpbRoot, command.job, { hubRoot });
     if (!job) {
       const queueEntry = await findQueueEntryById(hubRoot, command.job);
       if (queueEntry) {
@@ -409,7 +418,7 @@ export async function handleChannelCommand(cpbRoot, parsed, {
   }
 
   if (command.type === "approve" || command.type === "cancel" || command.type === "retry" || command.type === "logs") {
-    const job = await findChannelJobById(cpbRoot, command.job);
+    const job = await findChannelJobById(cpbRoot, command.job, { hubRoot });
     if (!job && command.type !== "logs") {
       const queueEntry = await findQueueEntryById(hubRoot, command.job);
       if (queueEntry) {

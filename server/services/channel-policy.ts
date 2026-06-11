@@ -1,12 +1,16 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
 import { redactSecrets } from "./secret-policy.js";
 
 type AnyRecord = Record<string, any>;
 
-function channelPolicyEventsPath(cpbRoot) {
-  return runtimeDataPath(cpbRoot, "channel-policy-events.jsonl");
+function controlDataRoot(cpbRoot, { dataRoot, hubRoot }: AnyRecord = {}) {
+  const root = dataRoot || hubRoot || process.env.CPB_HUB_ROOT;
+  return root ? path.resolve(root) : path.join(path.resolve(cpbRoot), "cpb-task");
+}
+
+function channelPolicyEventsPath(cpbRoot, options: AnyRecord = {}) {
+  return path.join(controlDataRoot(cpbRoot, options), "channel-policy-events.jsonl");
 }
 
 function asList(value) {
@@ -83,7 +87,7 @@ export function evaluateChannelPolicy(policy, request) {
   return { allowed: true, reason: "default allow", matchedRule: null };
 }
 
-export async function recordChannelPolicyDecision(cpbRoot, decision, request) {
+export async function recordChannelPolicyDecision(cpbRoot, decision, request, options: AnyRecord = {}) {
   const event = {
     type: "channel_policy_decision",
     allowed: Boolean(decision.allowed),
@@ -91,22 +95,22 @@ export async function recordChannelPolicyDecision(cpbRoot, decision, request) {
     request: redactSecrets(request),
     ts: new Date().toISOString(),
   };
-  const file = channelPolicyEventsPath(cpbRoot);
+  const file = channelPolicyEventsPath(cpbRoot, options);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
   return event;
 }
 
-export async function enforceChannelPolicy(cpbRoot, policy, request) {
+export async function enforceChannelPolicy(cpbRoot, policy, request, options: AnyRecord = {}) {
   const decision = evaluateChannelPolicy(policy, request);
-  await recordChannelPolicyDecision(cpbRoot, decision, request);
+  await recordChannelPolicyDecision(cpbRoot, decision, request, options);
   return decision;
 }
 
-export async function readChannelPolicyEvents(cpbRoot) {
+export async function readChannelPolicyEvents(cpbRoot, options: AnyRecord = {}) {
   let raw;
   try {
-    raw = await readFile(channelPolicyEventsPath(cpbRoot), "utf8");
+    raw = await readFile(channelPolicyEventsPath(cpbRoot, options), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;

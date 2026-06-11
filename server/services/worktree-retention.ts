@@ -1,15 +1,16 @@
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { listJobs } from "./job-store.js";
-import { runtimeDataPath } from "./runtime-root.js";
+import { resolveHubRoot } from "./hub-registry.js";
 
 const COMPLETED_ACTIONS = new Set(["preserve", "delete", "archive"]);
 
-function normalizePolicy(cpbRoot, policy: Record<string, any> = {}) {
+function normalizePolicy(cpbRoot, policy: Record<string, any> = {}, { hubRoot }: Record<string, any> = {}) {
+  const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
   const completed = COMPLETED_ACTIONS.has(policy.completed) ? policy.completed : "preserve";
   return {
     completed,
-    archiveRoot: path.resolve(policy.archiveRoot || runtimeDataPath(cpbRoot, "worktree-archive")),
+    archiveRoot: path.resolve(policy.archiveRoot || path.join(resolvedHubRoot, "worktree-archive")),
   };
 }
 
@@ -64,9 +65,9 @@ function entryForJob(job, policy): Record<string, any> {
   };
 }
 
-export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
-  const normalizedPolicy = normalizePolicy(cpbRoot, policy);
-  const jobs = await listJobs(cpbRoot);
+export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true, hubRoot, dataRoot }: Record<string, any> = {}) {
+  const normalizedPolicy = normalizePolicy(cpbRoot, policy, { hubRoot });
+  const jobs = await listJobs(cpbRoot, { hubRoot, dataRoot });
   const entries = jobs
     .filter((job) => job.jobId && job.worktree)
     .map((job) => entryForJob(job, normalizedPolicy))
@@ -85,8 +86,8 @@ export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun 
   };
 }
 
-export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
-  const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun });
+export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true, hubRoot, dataRoot }: Record<string, any> = {}) {
+  const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun, hubRoot, dataRoot });
   if (plan.dryRun) return plan;
 
   const results = [];

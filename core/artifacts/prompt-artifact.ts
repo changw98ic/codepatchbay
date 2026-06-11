@@ -5,7 +5,7 @@ const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
 const GITHUB_URL_TOKEN_PATTERN = /https:\/\/x-access-token:[^@\s"']+@github\.com\/[^\s"']*/gi;
 
-export async function writePromptArtifact(cpbRoot: string, { project, jobId, phase, role, agent, prompt }: { project: string; jobId: string; phase: string; role?: string; agent?: string; prompt: unknown }) {
+export async function writePromptArtifact(cpbRoot: string, { project, jobId, phase, role, agent, prompt, dataRoot }: { project: string; jobId: string; phase: string; role?: string; agent?: string; prompt: unknown; dataRoot?: string }) {
   const rawContent = String(prompt);
   const content = redactPromptContent(rawContent);
   const rawSha256 = sha256(rawContent);
@@ -15,6 +15,7 @@ export async function writePromptArtifact(cpbRoot: string, { project, jobId, pha
     jobId,
     kind: "prompt",
     content,
+    dataRoot,
     metadata: {
       phase,
       role,

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { defaultProjectRuntimeRoot, projectRuntimeRoot as resolveProjectRuntimeRoot } from "./runtime-root.js";
+import { projectRuntimeRoot as resolveProjectRuntimeRoot } from "./runtime-root.js";
 import { generateProjectCapabilityMaps } from "./project-capability-map.js";
 
 const REGISTRY_VERSION = 1;
@@ -167,6 +167,39 @@ function resolveProjectId(registry: AnyRecord, preferredId, sourcePath) {
   return `${base}-${pathHash(sourcePath)}`;
 }
 
+function overlapsPath(a: string, b: string) {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`);
+}
+
+export function assertProjectRuntimeRoot(hubRoot, projectId, candidate, sourcePath = null) {
+  if (!SAFE_ID.test(projectId)) throw new Error(`invalid project id: ${projectId}`);
+  const expected = resolveProjectRuntimeRoot(hubRoot, projectId);
+  const resolved = path.resolve(candidate || expected);
+  if (resolved !== expected) {
+    throw new Error(`invalid projectRuntimeRoot for ${projectId}: must be ${expected}`);
+  }
+  if (sourcePath && overlapsPath(resolved, sourcePath)) {
+    throw new Error(`invalid projectRuntimeRoot for ${projectId}: must not overlap sourcePath`);
+  }
+  return resolved;
+}
+
+function normalizeProjectRuntimeRoot(hubRoot, project, sourcePath = project?.sourcePath) {
+  if (!project?.id) return project;
+  if (!project.projectRuntimeRoot) return { ...project };
+  return {
+    ...project,
+    projectRuntimeRoot: assertProjectRuntimeRoot(
+      hubRoot,
+      project.id,
+      project.projectRuntimeRoot,
+      sourcePath,
+    ),
+  };
+}
+
 export async function registerProject(hubRoot, input: AnyRecord = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
   const generatedMetadata = input.skipCodeGraphGate
@@ -182,9 +215,12 @@ export async function registerProject(hubRoot, input: AnyRecord = {}) {
     const timestamp = nowIso();
     const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
 
-    const projectRuntimeRoot = input.projectRuntimeRoot
-      ? path.resolve(input.projectRuntimeRoot)
-      : existing.projectRuntimeRoot || resolveProjectRuntimeRoot(hubRoot, id);
+    const projectRuntimeRoot = assertProjectRuntimeRoot(
+      hubRoot,
+      id,
+      input.projectRuntimeRoot || existing.projectRuntimeRoot || resolveProjectRuntimeRoot(hubRoot, id),
+      sourcePath,
+    );
 
     const project = {
       ...existing,
@@ -213,13 +249,15 @@ export async function registerProject(hubRoot, input: AnyRecord = {}) {
 export async function listProjects(hubRoot, { enabledOnly = false } = {}) {
   const registry = await loadRegistry(hubRoot);
   return (Object.values(registry.projects) as AnyRecord[])
+    .map((project) => normalizeProjectRuntimeRoot(hubRoot, project))
     .filter((project) => !enabledOnly || project.enabled !== false)
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export async function getProject(hubRoot, id) {
   const registry = await loadRegistry(hubRoot);
-  return registry.projects[id] || null;
+  const project = registry.projects[id] || null;
+  return project ? normalizeProjectRuntimeRoot(hubRoot, project) : null;
 }
 
 export function parseGithubRepo(value) {
@@ -268,7 +306,12 @@ export async function updateProject(hubRoot, id, patch: AnyRecord = {}) {
       id,
       sourcePath: existing.sourcePath,
       projectRoot: patch.projectRoot ? path.resolve(patch.projectRoot) : existing.projectRoot,
-      projectRuntimeRoot: patch.projectRuntimeRoot ? path.resolve(patch.projectRuntimeRoot) : existing.projectRuntimeRoot,
+      projectRuntimeRoot: assertProjectRuntimeRoot(
+        hubRoot,
+        id,
+        patch.projectRuntimeRoot || existing.projectRuntimeRoot || resolveProjectRuntimeRoot(hubRoot, id),
+        existing.sourcePath,
+      ),
       updatedAt: nowIso(),
     };
     registry.projects[id] = updated;

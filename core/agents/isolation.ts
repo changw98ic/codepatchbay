@@ -83,6 +83,22 @@ async function inheritClaudeConfig(targetHome, parentEnv = {}) {
   return targetClaudeHome;
 }
 
+function hasProjectJobContext(parentEnv: StringRecord = {}) {
+  return Boolean(
+    (parentEnv.CPB_ACP_PROJECT || parentEnv.CPB_PROJECT) &&
+    (parentEnv.CPB_ACP_JOB_ID || parentEnv.CPB_JOB_ID)
+  );
+}
+
+function resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
+  const root = dataRoot || parentEnv.CPB_PROJECT_RUNTIME_ROOT;
+  if (root) return path.resolve(root);
+  if (hasProjectJobContext(parentEnv)) {
+    throw new Error("CPB_PROJECT_RUNTIME_ROOT is required for isolated agent HOME in project job context");
+  }
+  return runtimeDataPath(cpbRoot);
+}
+
 /**
  * Create an isolated HOME directory for an agent process.
  * Prevents concurrent agents of the same type from interfering
@@ -93,8 +109,8 @@ async function inheritClaudeConfig(targetHome, parentEnv = {}) {
  * linked from the user's agent home, so ACP adapters can reuse login without
  * sharing mutable session state.
  */
-export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {} }: { parentEnv?: StringRecord } = {}) {
-  const baseDir = runtimeDataPath(cpbRoot, "agent-homes", agentName, jobId || "default");
+export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {}, dataRoot = null }: { parentEnv?: StringRecord; dataRoot?: string | null } = {}) {
+  const baseDir = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv }), "agent-homes", agentName, jobId || "default");
   await mkdir(baseDir, { recursive: true });
 
   const configDir = path.join(baseDir, ".config");
@@ -128,8 +144,8 @@ export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {
  *   Returns true if the job has a non-stale lease. When provided,
  *   directories with active leases are never deleted regardless of age.
  */
-export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive }: StringRecord = {}) {
-  const homesRoot = runtimeDataPath(cpbRoot, "agent-homes");
+export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive, dataRoot }: StringRecord = {}) {
+  const homesRoot = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv: process.env }), "agent-homes");
   let agents;
   try {
     agents = await readdir(homesRoot);

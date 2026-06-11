@@ -12,12 +12,30 @@ import {
 const INDEX_VERSION = 1;
 
 async function setupJobsIndex(root, jobs) {
+  const hubRoot = path.join(root, "hub");
+  const sourcePath = path.join(root, "source");
+  const dataRoot = path.join(hubRoot, "projects", "test");
+  await mkdir(sourcePath, { recursive: true });
+  await writeJson(path.join(hubRoot, "projects.json"), {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    projects: {
+      test: {
+        id: "test",
+        name: "test",
+        sourcePath,
+        projectRuntimeRoot: dataRoot,
+        enabled: true,
+      },
+    },
+  });
   const index = {
     _meta: { version: INDEX_VERSION, updatedAt: new Date().toISOString(), jobCount: jobs.length },
     jobs: {},
   };
   for (const job of jobs) {
     const key = `${job.project}/${job.jobId}`;
+    const ts = new Date().toISOString();
     index.jobs[key] = {
       jobId: job.jobId,
       project: job.project,
@@ -27,13 +45,45 @@ async function setupJobsIndex(root, jobs) {
       worktree: job.worktree || null,
       worktreeBranch: job.worktreeBranch || null,
       worktreeBaseBranch: job.worktreeBaseBranch || null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: ts,
+      updatedAt: ts,
     };
+    const events: Record<string, any>[] = [
+      {
+        type: "job_created",
+        jobId: job.jobId,
+        project: job.project,
+        task: job.task || "test task",
+        workflow: "standard",
+        ts,
+      },
+    ];
+    if (job.worktree) {
+      events.push({
+        type: "worktree_created",
+        jobId: job.jobId,
+        project: job.project,
+        worktree: job.worktree,
+        branch: job.worktreeBranch || null,
+        baseBranch: job.worktreeBaseBranch || null,
+        ts,
+      });
+    }
+    if (job.status === "completed") {
+      events.push({ type: "job_completed", jobId: job.jobId, project: job.project, ts });
+    } else if (job.status === "failed") {
+      events.push({ type: "job_failed", jobId: job.jobId, project: job.project, reason: "test failure", ts });
+    } else if (job.status === "blocked") {
+      events.push({ type: "job_blocked", jobId: job.jobId, project: job.project, reason: "test blocked", ts });
+    }
+    const eventPath = path.join(dataRoot, "events", job.project, `${job.jobId}.jsonl`);
+    await mkdir(path.dirname(eventPath), { recursive: true });
+    await writeFile(eventPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
   }
-  const indexPath = path.join(root, "cpb-task", "jobs-index.json");
+  const indexPath = path.join(dataRoot, "jobs-index.json");
   await mkdir(path.dirname(indexPath), { recursive: true });
   await writeJson(indexPath, index);
+  return { hubRoot, dataRoot };
 }
 
 describe("worktree-retention: normalizePolicy defaults", () => {
@@ -76,13 +126,14 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-del");
     await mkdir(wtPath, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-del-001", status: "completed", worktree: wtPath },
     ]);
 
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.entries.length, 1);
     assert.equal(plan.entries[0].action, "delete");
@@ -94,13 +145,14 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-arch");
     await mkdir(wtPath, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-arch-001", status: "completed", worktree: wtPath },
     ]);
 
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "archive" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.entries.length, 1);
     assert.equal(plan.entries[0].action, "archive");
@@ -112,11 +164,11 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-keep");
     await mkdir(wtPath, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-keep-001", status: "completed", worktree: wtPath },
     ]);
 
-    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true });
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
     assert.equal(plan.entries.length, 1);
     assert.equal(plan.entries[0].action, "preserve");
   });
@@ -127,13 +179,14 @@ describe("worktree-retention: failed and blocked worktrees retained by default",
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-fail");
     await mkdir(wtPath, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-fail-001", status: "failed", worktree: wtPath },
     ]);
 
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.entries.length, 1);
     assert.equal(plan.entries[0].action, "preserve");
@@ -145,13 +198,14 @@ describe("worktree-retention: failed and blocked worktrees retained by default",
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-block");
     await mkdir(wtPath, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-block-001", status: "blocked", worktree: wtPath },
     ]);
 
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.entries.length, 1);
     assert.equal(plan.entries[0].action, "preserve");
@@ -167,7 +221,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
     const wt2 = path.join(root, "worktrees", "wt-beta");
     await mkdir(wt1, { recursive: true });
     await mkdir(wt2, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-dry-001", status: "completed", worktree: wt1 },
       { project: "test", jobId: "job-dry-002", status: "failed", worktree: wt2 },
     ]);
@@ -175,6 +229,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.dryRun, true);
     assert.equal(plan.entries.length, 2);
@@ -192,13 +247,14 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
     const wtPath = path.join(root, "worktrees", "wt-safe");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "marker.txt"), "still here", "utf8");
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-safe-001", status: "completed", worktree: wtPath },
     ]);
 
     await cleanupWorktrees(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     const marker = await readFile(path.join(wtPath, "marker.txt"), "utf8");
     assert.equal(marker, "still here", "dry-run must not delete the worktree");
@@ -208,7 +264,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
     const root = await tempRoot("cpb-wt-ret");
     const paths = ["wt-a", "wt-b", "wt-c"].map((s) => path.join(root, "worktrees", s));
     for (const p of paths) await mkdir(p, { recursive: true });
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-sum-001", status: "completed", worktree: paths[0] },
       { project: "test", jobId: "job-sum-002", status: "completed", worktree: paths[1] },
       { project: "test", jobId: "job-sum-003", status: "failed", worktree: paths[2] },
@@ -217,6 +273,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.summary.total, 3);
     assert.equal(plan.summary.delete, 2);
@@ -231,13 +288,14 @@ describe("worktree-retention: actual cleanup executes", () => {
     const wtPath = path.join(root, "worktrees", "wt-del");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "data", "utf8");
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-del-001", status: "completed", worktree: wtPath },
     ]);
 
     const result = await cleanupWorktrees(root, {
       policy: { completed: "delete" },
       dryRun: false,
+      hubRoot,
     });
     assert.equal(result.dryRun, false);
     const deletedEntry = result.entries.find((e) => e.jobId === "job-del-001");
@@ -251,13 +309,14 @@ describe("worktree-retention: actual cleanup executes", () => {
     const archiveRoot = path.join(root, "archive");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "archived data", "utf8");
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-arch-001", status: "completed", worktree: wtPath },
     ]);
 
     const result = await cleanupWorktrees(root, {
       policy: { completed: "archive", archiveRoot },
       dryRun: false,
+      hubRoot,
     });
     const archivedEntry = result.entries.find((e) => e.jobId === "job-arch-001");
     assert.equal(archivedEntry.result, "archived");
@@ -273,13 +332,14 @@ describe("worktree-retention: actual cleanup executes", () => {
     const wtPath = path.join(root, "worktrees", "wt-keep");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "kept", "utf8");
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-keep-001", status: "failed", worktree: wtPath },
     ]);
 
     const result = await cleanupWorktrees(root, {
       policy: { completed: "delete" },
       dryRun: false,
+      hubRoot,
     });
     const preservedEntry = result.entries.find((e) => e.jobId === "job-keep-001");
     assert.equal(preservedEntry.result, "preserved");
@@ -334,13 +394,14 @@ describe("worktree-retention: human-readable output", () => {
 describe("worktree-retention: jobs without worktrees are skipped", () => {
   test("jobs with no worktree field are excluded from plan", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    await setupJobsIndex(root, [
+    const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-no-wt-001", status: "completed" },
     ]);
 
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "delete" },
       dryRun: true,
+      hubRoot,
     });
     assert.equal(plan.entries.length, 0);
     assert.equal(plan.summary.total, 0);

@@ -76,6 +76,7 @@ async function usage() {
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
+  console.log(`  ${CYAN}migrate-runtime-root${NC} [--execute] [--dry-run]  One-time legacy runtime migration`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
   console.log(`  ${CYAN}ui${NC} [--port] [--host]                   Start Web UI`);
@@ -144,6 +145,7 @@ const COMMANDS = {
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",
   "merge-preview": "merge-preview.js",
+  "migrate-runtime-root": "migrate-runtime-root.js",
   release: "release-select.js",
   config: "config.js",
   provider: "provider.js",
@@ -191,7 +193,23 @@ async function main() {
 
   const mod = cmd in COMMANDS ? await import(path.join(CPB_EXECUTOR_ROOT, "cli", "commands", COMMANDS[cmd])) : null;
 
+  if (!mod) {
+    console.error(`${RED}Unknown command: ${cmd}${NC}`);
+    await usage();
+    return 1;
+  }
+
   // Resolve per-project runtime root from hub registry for project-scoped commands
+  const MIGRATION_COMMANDS = new Set(["migrate-runtime-root", "doctor", "health-check", "version", "codegraph"]);
+  if (!MIGRATION_COMMANDS.has(cmd)) {
+    try {
+      const { assertNoLegacyRuntimeData } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "runtime-migration-guard.js"));
+      await assertNoLegacyRuntimeData(CPB_ROOT);
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+  }
+
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
     const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "retry", "diff", "review", "inbox", "outputs", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
     if (PROJECT_COMMANDS.has(cmd)) {
@@ -202,22 +220,15 @@ async function main() {
         projectArg = cmdArgs[projectFlagIdx + 1];
       }
       if (projectArg) {
-        try {
-          const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub-registry.js"));
-          const hubRoot = resolveHubRoot(CPB_ROOT);
-          const project = await getProject(hubRoot, projectArg);
-          if (project?.projectRuntimeRoot) {
-            process.env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
-          }
-        } catch {}
+        const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub-registry.js"));
+        const hubRoot = resolveHubRoot(CPB_ROOT);
+        const project = await getProject(hubRoot, projectArg);
+        if (!project?.projectRuntimeRoot) {
+          throw new Error(`project runtime root required for project '${projectArg}'`);
+        }
+        process.env.CPB_PROJECT_RUNTIME_ROOT = project.projectRuntimeRoot;
       }
     }
-  }
-
-  if (!mod) {
-    console.error(`${RED}Unknown command: ${cmd}${NC}`);
-    await usage();
-    return 1;
   }
 
   if (typeof mod.run !== "function") {
