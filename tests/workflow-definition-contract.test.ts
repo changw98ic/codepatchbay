@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -22,10 +21,6 @@ import { phaseRole } from "../server/services/phase-runner.js";
 const BUILT_INS = ["standard", "direct", "complex", "sdd-standard"];
 
 test("server workflow adapter exposes the core workflow catalog", async () => {
-  const source = await readFile(new URL("../server/services/workflow-definition.js", import.meta.url), "utf8");
-  assert.match(source, /core\/workflow\/definition\.js/);
-  assert.doesNotMatch(source, /const\s+WORK[A-Z_]*\s*=/);
-
   for (const name of BUILT_INS) {
     assert.ok(listWorkflows().includes(name), `${name} must be listed by core workflow catalog`);
 

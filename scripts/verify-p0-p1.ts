@@ -31,7 +31,7 @@ const focusedTests = [
   "tests/engine-provider-event.test.js",
   "tests/queue-orchestrator.test.js",
   "tests/acp-supervisor.test.js",
-  "tests/dw-codegraph-gate.test.js",
+  "tests/codegraph-capability-map.test.js",
   "tests/integration/release-pack-smoke.test.js",
 ];
 
