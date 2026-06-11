@@ -21,6 +21,7 @@ const BLOCKED_PATH_PREFIXES = [
   '/etc', '/usr', '/bin', '/sbin', '/var', '/sys', '/proc', '/dev', '/boot', '/lib', '/lib64', '/snap',
 ];
 type LooseRecord = Record<string, any>;
+const DASHBOARD_JOBS_CACHE_TTL_MS = 500;
 
 function getProjectRoots() {
   const env = process.env.CPB_PROJECT_ROOTS;
@@ -108,7 +109,10 @@ export async function projectRoutes(fastify, opts) {
     const includeTest = ['true', '1'].includes(req.query.includeTest) ||
       ['true', '1'].includes(req.query.diagnostics);
     hubProjects = filterVisibleProjects(hubProjects, { includeTest, hubRoot });
-    const projectionStates = await listProjectPipelineStates(cpbRoot);
+    const projectionStates = await listProjectPipelineStates(cpbRoot, {
+      hubRoot,
+      cacheTtlMs: DASHBOARD_JOBS_CACHE_TTL_MS,
+    });
 
     const projectData = await Promise.all(
       hubProjects.map(async (project) => {
@@ -170,7 +174,7 @@ export async function projectRoutes(fastify, opts) {
       : ALL_FILES;
 
     const files = await loadProjectFiles(wikiDir, { files: requestedFiles }) as LooseRecord;
-    const pipelineState = await projectPipelineState(cpbRoot, projectId);
+    const pipelineState = await projectPipelineState(cpbRoot, projectId, { hubRoot });
     const projectIndex = await readProjectIndex(hubRoot, cpbRoot, projectId);
 
     return { name: project.name || projectId, context: files.context ?? null, tasks: files.tasks ?? null, decisions: files.decisions ?? null, log: files.log ?? null, pipelineState, projectIndex };
@@ -224,7 +228,7 @@ export async function projectRoutes(fastify, opts) {
     const hubRoot = req.cpbHubRoot;
     const cpbRoot = req.cpbRoot;
 
-    // Resolve through runtime root first, legacy fallback
+    // Resolve through the Hub project runtime root only.
     const fullPath = await resolveArtifactPath(hubRoot, cpbRoot, name, normalized);
 
     // Resolve real paths to defeat symlink-based escapes

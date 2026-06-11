@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { runtimeDataPath, runtimeDataRoot } from "./runtime.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -427,7 +426,9 @@ export async function runFakeAcpSmoke({
 export const LEASE_FORMAT_VERSION = 1;
 
 function leaseBase(cpbRoot: string, opts: AnyRecord) {
-  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  if (opts?.dataRoot) return path.resolve(opts.dataRoot);
+  if (opts?.includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
+  throw new Error("project runtime root required for lease storage");
 }
 
 const ownedLeaseTokens = new Map<string, string>();
@@ -635,9 +636,10 @@ export async function acquireLease(
     ownerPid = process.pid,
     lockTtlMs,
     dataRoot,
+    includeLegacyFallback = false,
   }: AnyRecord
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   const lease = createLease({
     leaseId,
     jobId,
@@ -678,13 +680,8 @@ export async function acquireLease(
   }
 }
 
-export async function readLease(cpbRoot: string, leaseId: string, { dataRoot }: AnyRecord = {}) {
-  if (dataRoot && dataRoot !== runtimeDataRoot(cpbRoot)) {
-    const rtFile = leaseFileFor(cpbRoot, leaseId, { dataRoot });
-    const rtLease = await readLeaseFile(rtFile);
-    if (rtLease !== null) return rtLease;
-  }
-  return await readLeaseFile(leaseFileFor(cpbRoot, leaseId));
+export async function readLease(cpbRoot: string, leaseId: string, { dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
+  return await readLeaseFile(leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback }));
 }
 
 export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
@@ -707,9 +704,9 @@ export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
 export async function renewLease(
   cpbRoot: string,
   leaseId: string,
-  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot }: AnyRecord = {}
+  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: AnyRecord = {}
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(
     file,
     async () => {
@@ -738,9 +735,9 @@ export async function renewLease(
 export async function releaseLease(
   cpbRoot: string,
   leaseId: string,
-  { ownerToken, lockTtlMs, dataRoot }: AnyRecord = {}
+  { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: AnyRecord = {}
 ) {
-  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot });
+  const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
 
   const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
   try {
@@ -863,13 +860,15 @@ function validateId(value: any, label: string) {
   }
 }
 
-function processDir(cpbRoot: string) {
-  return runtimeDataPath(cpbRoot, "processes");
+function processDir(cpbRoot: string, { dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
+  if (dataRoot) return path.join(path.resolve(dataRoot), "processes");
+  if (includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task", "processes");
+  throw new Error("project runtime root required for process registry");
 }
 
-function processFile(cpbRoot: string, jobId: string) {
+function processFile(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  return path.join(processDir(cpbRoot), `${jobId}.json`);
+  return path.join(processDir(cpbRoot, options), `${jobId}.json`);
 }
 
 function nowIso() {
@@ -892,9 +891,9 @@ async function writeJsonFile(file: string, data: any) {
   await renameFn(tmp, file);
 }
 
-export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot }: AnyRecord = {}) {
+export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  const file = processFile(cpbRoot, jobId);
+  const file = processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
   const entry = {
     jobId,
     project: project || null,
@@ -915,8 +914,8 @@ export async function registerProcess(cpbRoot: string, { jobId, project, phase, 
   return entry;
 }
 
-export async function updateHeartbeat(cpbRoot: string, jobId: string) {
-  const file = processFile(cpbRoot, jobId);
+export async function updateHeartbeat(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
+  const file = processFile(cpbRoot, jobId, options);
   const entry = await readJsonFile(file);
   if (!entry) return null;
   entry.lastHeartbeat = nowIso();
@@ -934,8 +933,8 @@ export async function markExited(cpbRoot: string, jobId: string, { exitCode, sta
   return entry;
 }
 
-export async function addChildPid(cpbRoot: string, jobId: string, childPid: number) {
-  const file = processFile(cpbRoot, jobId);
+export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, options: AnyRecord = {}) {
+  const file = processFile(cpbRoot, jobId, options);
   const entry = await readJsonFile(file);
   if (!entry) return null;
   if (!entry.childPids.includes(childPid)) {
@@ -945,12 +944,12 @@ export async function addChildPid(cpbRoot: string, jobId: string, childPid: numb
   return entry;
 }
 
-export async function getProcess(cpbRoot: string, jobId: string) {
-  return readJsonFile(processFile(cpbRoot, jobId));
+export async function getProcess(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
+  return readJsonFile(processFile(cpbRoot, jobId, options));
 }
 
-export async function listProcesses(cpbRoot: string) {
-  const dir = processDir(cpbRoot);
+export async function listProcesses(cpbRoot: string, options: AnyRecord = {}) {
+  const dir = processDir(cpbRoot, options);
   let entries;
   try {
     entries = await readdir(dir);
@@ -1083,9 +1082,9 @@ export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRec
   return { dryRun: false, removed, eligible };
 }
 
-export async function removeProcess(cpbRoot, jobId, { dryRun = false } = {}) {
+export async function removeProcess(cpbRoot, jobId, { dryRun = false, dataRoot }: AnyRecord = {}) {
   validateId(jobId, "jobId");
-  const file = processFile(cpbRoot, jobId);
+  const file = processFile(cpbRoot, jobId, { dataRoot });
   if (dryRun) {
     const entry = await readJsonFile(file);
     return { removed: false, wouldRemove: !!entry, jobId };

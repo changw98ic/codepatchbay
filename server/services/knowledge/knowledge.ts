@@ -50,17 +50,18 @@ export function assertKnowledgeWriteAllowed(kind, { automatic = false, markdown 
   return { kind, classification, automatic, markdown };
 }
 
-export function resolveKnowledgePath({ hubRoot, sourcePath, kind, sessionId = "session", name = "note" }) {
+export function resolveKnowledgePath({ hubRoot = null, sourcePath, dataRoot = null, projectRuntimeRoot = null, kind, sessionId = "session", name = "note" }: Record<string, any>) {
   const classification = classifyKnowledgeKind(kind);
   if (classification === "machine-state") {
     throw new Error(`${kind} must use runtime state storage, not knowledge paths`);
   }
   if (classification === "global-knowledge") {
     const file = kind === "global-soul" ? "soul.md" : kind === "global-profile" ? "profile.md" : "memory.md";
+    if (!hubRoot) throw new Error("hubRoot is required for global knowledge paths");
     return path.join(path.resolve(hubRoot), "profiles", name, file);
   }
   if (classification === "session") {
-    return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, `${name}.md`);
+    return path.join(sessionPath(sourcePath, sessionId, { dataRoot, projectRuntimeRoot }), `${name}.md`);
   }
   if (classification === "project-memory") {
     return path.join(path.resolve(sourcePath), ".cpb", "memory.md");
@@ -128,16 +129,21 @@ export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Reco
   return issues;
 }
 
-export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null } = {}) {
+export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null, projectRuntimeRoot = null, dataRoot = null }: Record<string, any> = {}) {
   const realFs = fs || await import("node:fs/promises");
   const src = path.resolve(sourcePath);
   const candidates = [];
 
-  const sessionBase = sessionId
-    ? path.join(src, "cpb-task", "sessions", sessionId)
-    : null;
+  if (sessionId) assertValidSessionId(sessionId);
+  const runtimeRoot = requireSessionRuntimeRoot({ dataRoot, projectRuntimeRoot });
+  const sessionsDir = path.join(runtimeRoot, "sessions");
+  const seen = new Set<string>();
 
-  if (sessionBase) {
+  async function maybeAddSession(sessionName: string) {
+    assertValidSessionId(sessionName);
+    if (seen.has(sessionName)) return;
+    seen.add(sessionName);
+    const sessionBase = path.join(sessionsDir, sessionName);
     const memFile = path.join(sessionBase, "memory.md");
     try {
       const content = await realFs.readFile(memFile, "utf8");
@@ -154,27 +160,15 @@ export async function findPromotionCandidates(sourcePath, { sessionId = null, fs
     } catch {}
   }
 
-  const sessionsDir = path.join(src, "cpb-task", "sessions");
+  if (sessionId) {
+    await maybeAddSession(sessionId);
+  }
+
   try {
     const entries = await realFs.readdir(sessionsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      if (sessionId && entry.name === sessionId) continue;
-      const memFile = path.join(sessionsDir, entry.name, "memory.md");
-      try {
-        const content = await realFs.readFile(memFile, "utf8");
-        if (content.trim().length > 0) {
-          candidates.push({
-            from: memFile,
-            kind: "session-memory",
-            targetKind: "project-memory",
-            targetPath: path.join(src, ".cpb", "memory.md"),
-            reason: `session ${entry.name} memory contains insights`,
-            session: entry.name,
-            size: content.length,
-          });
-        }
-      } catch {}
+      await maybeAddSession(entry.name);
     }
   } catch {}
 
@@ -192,6 +186,20 @@ function assertNoTraversal(raw: string) {
   }
 }
 
+function assertValidSessionId(sessionId: string) {
+  if (!sessionId || sessionId.includes("..") || sessionId.includes("/") || sessionId.includes(path.sep)) {
+    throw new Error(`invalid sessionId: ${sessionId}`);
+  }
+}
+
+function requireSessionRuntimeRoot(options: Record<string, any> = {}) {
+  const runtimeRoot = options.dataRoot || options.projectRuntimeRoot;
+  if (!runtimeRoot) {
+    throw new Error("projectRuntimeRoot or dataRoot is required for session knowledge paths");
+  }
+  return path.resolve(runtimeRoot);
+}
+
 export function projectWikiPath(sourcePath: string) {
   return path.join(path.resolve(sourcePath), ".cpb", "wiki");
 }
@@ -200,11 +208,12 @@ export function projectMemoryPath(sourcePath: string) {
   return path.join(path.resolve(sourcePath), ".cpb", "memory.md");
 }
 
-export function sessionPath(sourcePath: string, sessionId: string) {
-  return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId);
+export function sessionPath(sourcePath: string, sessionId: string, options: Record<string, any> = {}) {
+  assertValidSessionId(sessionId);
+  return path.join(requireSessionRuntimeRoot(options), "sessions", sessionId);
 }
 
-export async function initProjectWikiPaths(sourcePath: string) {
+export async function initProjectWikiPaths(sourcePath: string, _sessionId?: string, _options: Record<string, any> = {}) {
   assertNoTraversal(sourcePath);
   const wikiRoot = projectWikiPath(sourcePath);
   await fs.mkdir(wikiRoot, { recursive: true });
@@ -213,19 +222,17 @@ export async function initProjectWikiPaths(sourcePath: string) {
   }
 }
 
-export async function initSessionPaths(sourcePath: string, sessionId: string) {
+export async function initSessionPaths(sourcePath: string, sessionId: string, options: Record<string, any> = {}) {
   assertNoTraversal(sourcePath);
-  assertNoTraversal(sessionId);
-  if (sessionId.includes("/") || sessionId.includes(path.sep)) {
-    throw new Error(`path traversal detected in sessionId: ${sessionId}`);
-  }
-  const sessDir = sessionPath(sourcePath, sessionId);
+  assertValidSessionId(sessionId);
+  const sessDir = sessionPath(sourcePath, sessionId, options);
   await fs.mkdir(sessDir, { recursive: true });
 }
 
-export async function ensureKnowledgePaths(sourcePath: string, sessionId: string) {
-  await initProjectWikiPaths(sourcePath);
-  await initSessionPaths(sourcePath, sessionId);
+export async function ensureKnowledgePaths(sourcePath: string, sessionId: string, options: Record<string, any> = {}) {
+  assertValidSessionId(sessionId);
+  await initProjectWikiPaths(sourcePath, sessionId, options);
+  await initSessionPaths(sourcePath, sessionId, options);
 }
 
 // ── knowledge-promotion ───────────────────────────────────────────────
@@ -252,16 +259,16 @@ function assertSafeSessionId(sessionId: string) {
   }
 }
 
-function candidateDir(sourcePath: string, sessionId: string) {
+function candidateDir(sourcePath: string, sessionId: string, options: Record<string, any> = {}) {
   assertSafeSessionId(sessionId);
-  return path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotion-candidates");
+  return path.join(sessionPath(sourcePath, sessionId, options), "promotion-candidates");
 }
 
-export function promotionCandidatePath(sourcePath: string, sessionId: string, candidateId: string) {
+export function promotionCandidatePath(sourcePath: string, sessionId: string, candidateId: string, options: Record<string, any> = {}) {
   if (!SAFE_SEGMENT.test(candidateId)) {
     throw new Error(`invalid candidateId: ${candidateId}`);
   }
-  return path.join(candidateDir(sourcePath, sessionId), `${candidateId}.md`);
+  return path.join(candidateDir(sourcePath, sessionId, options), `${candidateId}.md`);
 }
 
 function renderCandidate({ title, content, sourceLinks = [] }: AnyRecord) {
@@ -278,14 +285,17 @@ export async function writePromotionCandidate({
   title = "Promotion Candidate",
   content,
   sourceLinks = [],
+  dataRoot = null,
+  projectRuntimeRoot = null,
 }: AnyRecord = {}) {
   if (!sourcePath) throw new Error("sourcePath is required");
   if (!sessionId) throw new Error("sessionId is required");
   if (!content || !String(content).trim()) throw new Error("content is required");
   assertKnowledgeWriteAllowed("session-memory", { automatic: true, markdown: true });
 
+  const runtimeRoot = requireSessionRuntimeRoot({ dataRoot, projectRuntimeRoot });
   const candidateId = slugifyPromo(title);
-  const filePath = promotionCandidatePath(sourcePath, sessionId, candidateId);
+  const filePath = promotionCandidatePath(sourcePath, sessionId, candidateId, { dataRoot: runtimeRoot, projectRuntimeRoot: runtimeRoot });
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, renderCandidate({ title, content, sourceLinks }), "utf8");
   return {
@@ -293,12 +303,13 @@ export async function writePromotionCandidate({
     filePath,
     sourcePath: path.resolve(sourcePath),
     sessionId,
+    dataRoot: runtimeRoot,
     createdAt: nowIso(),
   };
 }
 
-async function readCandidateContent(sourcePath: string, sessionId: string, candidateId: string) {
-  return await readFile(promotionCandidatePath(sourcePath, sessionId, candidateId), "utf8");
+async function readCandidateContent(sourcePath: string, sessionId: string, candidateId: string, options: Record<string, any> = {}) {
+  return await readFile(promotionCandidatePath(sourcePath, sessionId, candidateId, options), "utf8");
 }
 
 function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
@@ -309,8 +320,8 @@ function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
   return `${lines.join("\n").trim()}\n\n`;
 }
 
-async function appendPromotionRecord(sourcePath: string, sessionId: string, record: AnyRecord) {
-  const filePath = path.join(path.resolve(sourcePath), "cpb-task", "sessions", sessionId, "promotions.jsonl");
+async function appendPromotionRecord(sourcePath: string, sessionId: string, record: AnyRecord, options: Record<string, any> = {}) {
+  const filePath = path.join(sessionPath(sourcePath, sessionId, options), "promotions.jsonl");
   await mkdir(path.dirname(filePath), { recursive: true });
   await appendFile(filePath, `${JSON.stringify(record)}\n`, "utf8");
 }
@@ -326,6 +337,8 @@ export async function promoteKnowledge({
   content,
   sourceLinks = [],
   approved = false,
+  dataRoot = null,
+  projectRuntimeRoot = null,
 }: AnyRecord = {}) {
   if (!approved) {
     throw new Error("knowledge promotion requires explicit approval");
@@ -339,11 +352,14 @@ export async function promoteKnowledge({
   }
   assertKnowledgeWriteAllowed(targetKind, { automatic: false, markdown: true });
 
-  const body = content || await readCandidateContent(sourcePath, sessionId, candidateId);
+  const runtimeOptions = { dataRoot, projectRuntimeRoot };
+  const runtimeRoot = requireSessionRuntimeRoot(runtimeOptions);
+  const body = content || await readCandidateContent(sourcePath, sessionId, candidateId, runtimeOptions);
   const promotionTitle = title || name || candidateId || "Promoted Knowledge";
   const targetPath = resolveKnowledgePath({
     hubRoot,
     sourcePath,
+    ...runtimeOptions,
     kind: targetKind,
     sessionId,
     name: slugifyPromo(name || title || candidateId || targetKind, targetKind),
@@ -353,7 +369,7 @@ export async function promoteKnowledge({
   const rendered = renderPromotion({
     title: promotionTitle,
     content: body,
-    sourceLinks: sourceLinks.length > 0 ? sourceLinks : candidateId ? [promotionCandidatePath(sourcePath, sessionId, candidateId)] : [],
+    sourceLinks: sourceLinks.length > 0 ? sourceLinks : candidateId ? [promotionCandidatePath(sourcePath, sessionId, candidateId, runtimeOptions)] : [],
   });
   if (targetKind === "project-memory") {
     await appendFile(targetPath, rendered, "utf8");
@@ -367,7 +383,8 @@ export async function promoteKnowledge({
     targetPath,
     candidateId: candidateId || null,
     title: promotionTitle,
+    dataRoot: runtimeRoot,
   };
-  await appendPromotionRecord(sourcePath, sessionId, record);
+  await appendPromotionRecord(sourcePath, sessionId, record, runtimeOptions);
   return record;
 }

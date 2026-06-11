@@ -1,7 +1,6 @@
 import { spawn } from "child_process";
 import path from "path";
 import { readFile, rm } from "fs/promises";
-import { runtimeDataPath } from "../services/runtime.js";
 import { broadcast } from "../services/infra.js";
 import { makeJobId } from "../services/job/job-store.js";
 import {
@@ -45,19 +44,19 @@ export async function reviewRoutes(fastify, opts) {
       throw fastify.httpErrors.badRequest("intent required (min 3 chars)");
     }
 
-    const session = await createSession(req.cpbRoot, { project, intent: intent.trim() });
+    const session = await createSession(req.cpbRoot, { project, intent: intent.trim(), hubRoot: req.cpbHubRoot });
     notify({ type: "review:update", sessionId: session.sessionId, status: session.status, project, session });
     return session;
   });
 
   // List sessions
   fastify.get("/review", async (req) => {
-    return listSessions(req.cpbRoot);
+    return listSessions(req.cpbRoot, { hubRoot: req.cpbHubRoot });
   });
 
   // Get session
   fastify.get("/review/:id", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id, { hubRoot: req.cpbHubRoot });
     if (!session) throw fastify.httpErrors.notFound("session not found");
     return session;
   });
@@ -66,10 +65,10 @@ export async function reviewRoutes(fastify, opts) {
   fastify.post("/review/:id/start", async (req) => {
     let session;
     const key = req.headers['idempotency-key'] || `start-${Date.now()}`;
-    const existing = await getSession(req.cpbRoot, req.params.id);
+    const existing = await getSession(req.cpbRoot, req.params.id, { hubRoot: req.cpbHubRoot });
     const alreadyStarted = existing?.idempotency?.startKey === key;
     try {
-      session = await startSessionResearch(req.cpbRoot, req.params.id, key);
+      session = await startSessionResearch(req.cpbRoot, req.params.id, key, { hubRoot: req.cpbHubRoot });
     } catch (err) {
       if (err.message?.includes("invalid transition") || err.message?.includes("already in status")) {
         throw fastify.httpErrors.conflict(`session not in idle state`);
@@ -96,7 +95,7 @@ export async function reviewRoutes(fastify, opts) {
 
     const child = spawn("node", [scriptPath, req.cpbRoot, session.sessionId], {
       cwd: req.cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_EXECUTOR_ROOT: executorRoot }),
+      env: buildChildEnv(process.env, { CPB_ROOT: req.cpbRoot, CPB_EXECUTOR_ROOT: executorRoot, CPB_HUB_ROOT: req.cpbHubRoot }),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -109,7 +108,7 @@ export async function reviewRoutes(fastify, opts) {
 
   // User approves → dispatch pipeline via hub queue
   fastify.post("/review/:id/approve", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id, { hubRoot: req.cpbHubRoot });
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
@@ -168,13 +167,15 @@ export async function reviewRoutes(fastify, opts) {
 
   // User rejects → discard worktree, keep main tree clean
   fastify.post("/review/:id/reject", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id, { hubRoot: req.cpbHubRoot });
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review") {
       throw fastify.httpErrors.conflict(`session not awaiting approval (status: ${session.status})`);
     }
 
-    const result = await rejectSession(req.cpbRoot, req.params.id);
+    const result = await rejectSession(req.cpbRoot, req.params.id, {
+      hubRoot: req.cpbHubRoot,
+    });
     if (!result.ok) throw fastify.httpErrors.notFound(result.error);
 
     notify({ type: "review:update", sessionId: result.sessionId, status: "expired", project: result.project, session: result.session });
@@ -183,21 +184,25 @@ export async function reviewRoutes(fastify, opts) {
 
   // User accepts → merge worktree branch into main, clean up worktree
   fastify.post("/review/:id/cancel", async (req, reply) => {
-    const result = await cancelReviewDispatch(req.cpbRoot, req.params.id, req.body?.reason);
+    const result = await cancelReviewDispatch(req.cpbRoot, req.params.id, req.body?.reason, {
+      hubRoot: req.cpbHubRoot,
+    });
     if (!result.ok) return reply.code(404).send({ error: "not found" });
     notify({ type: "review:update", sessionId: result.sessionId, status: "cancelled", project: result.project, session: result.session });
     return { cancelled: true, sessionId: result.sessionId };
   });
 
   fastify.post("/review/:id/accept", async (req) => {
-    const session = await getSession(req.cpbRoot, req.params.id);
+    const session = await getSession(req.cpbRoot, req.params.id, { hubRoot: req.cpbHubRoot });
     if (!session) throw fastify.httpErrors.notFound("session not found");
     if (session.status !== "user_review" && session.status !== "dispatched") {
       throw fastify.httpErrors.conflict(`session not in reviewable state (status: ${session.status})`);
     }
 
     const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
-    const result = await acceptSession(req.cpbRoot, req.params.id);
+    const result = await acceptSession(req.cpbRoot, req.params.id, {
+      hubRoot: req.cpbHubRoot,
+    });
 
     // Persist project-index after successful merge (best-effort, stays in route)
     if (result.merged && result.session?.jobId) {
@@ -236,7 +241,9 @@ export async function reviewRoutes(fastify, opts) {
 
   // Analyze session for approval (ACP-triggered summary)
   fastify.post("/review/:id/analyze", async (req) => {
-    const result = await analyzeSession(req.cpbRoot, req.params.id);
+    const result = await analyzeSession(req.cpbRoot, req.params.id, {
+      hubRoot: req.cpbHubRoot,
+    });
     if (!result.ok && result.error === "session_not_found") {
       throw fastify.httpErrors.notFound("session not found");
     }

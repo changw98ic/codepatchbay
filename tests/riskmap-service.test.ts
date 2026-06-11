@@ -9,7 +9,7 @@ import { enqueue, listQueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
 const RISKMAP_MODULE_CANDIDATES = [
-  "../server/services/riskmap-service.js",
+  "../server/services/project/project-loader.js",
   "../core/riskmap/index.js",
   "../core/riskmap/riskmap-service.js",
 ];

@@ -492,10 +492,8 @@ describe("selectRelease", () => {
 
   test("does not mutate job state", async () => {
     const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-sel-root-"));
-    const eventsDir = path.join(cpbRoot, "cpb-task", "events");
-    await mkdir(eventsDir, { recursive: true });
-    const sentinelPath = path.join(eventsDir, "sentinel.jsonl");
-    await writeFile(sentinelPath, '{"type":"sentinel"}\n', "utf8");
+    const sentinelPath = path.join(cpbRoot, "sentinel.txt");
+    await writeFile(sentinelPath, "sentinel\n", "utf8");
 
     try {
       await installTestRelease(sourceRoot, destRoot, "no-mutate");
@@ -506,13 +504,15 @@ describe("selectRelease", () => {
       });
 
       const content = await readFile(sentinelPath, "utf8");
-      assert.equal(content, '{"type":"sentinel"}\n');
+      assert.equal(content, "sentinel\n");
+      assert.equal(await pathExists(path.join(cpbRoot, "cpb-task")), false);
 
       try {
         await selectRelease({ releaseId: "ghost", destRoot, env: { CPB_HOME: cpbHome, CPB_ROOT: cpbRoot } });
       } catch {}
       const contentAfter = await readFile(sentinelPath, "utf8");
-      assert.equal(contentAfter, '{"type":"sentinel"}\n');
+      assert.equal(contentAfter, "sentinel\n");
+      assert.equal(await pathExists(path.join(cpbRoot, "cpb-task")), false);
     } finally {
       await rm(cpbRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -785,6 +785,7 @@ describe("release use does not mutate job state", () => {
     cpbHome = await mkdtemp(path.join(tmpdir(), "cpb-nomut-home-"));
     cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-nomut-root-"));
     await buildFixtureSource(sourceRoot);
+    await writeFile(path.join(cpbRoot, "sentinel.txt"), "sentinel\n", "utf8");
   });
 
   afterEach(async () => {
@@ -801,6 +802,8 @@ describe("release use does not mutate job state", () => {
       "release", "use", "nomut-ok", "--json", "--dest-root", destRoot,
     ], { env: { ...process.env, CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: CPB_ROOT, CPB_HOME: cpbHome } });
 
+    const sentinel = await readFile(path.join(cpbRoot, "sentinel.txt"), "utf8");
+    assert.equal(sentinel, "sentinel\n");
     assert.equal(await pathExists(path.join(cpbRoot, "cpb-task")), false);
   });
 });

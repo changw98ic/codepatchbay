@@ -3,6 +3,7 @@ import * as feishu from "./channel-feishu.js";
 import * as dingtalk from "./channel-dingtalk.js";
 import { getJob } from "../job/job-store.js";
 import { getSession } from "../review/review-session.js";
+import { getProject, resolveHubRoot } from "../hub/hub-registry.js";
 
 const CHANNELS = { feishu, dingtalk };
 
@@ -51,9 +52,12 @@ export function initNotificationService(cpbRoot) {
   async function notifyJobUpdate(event, config) {
     if (!event.project || !event.jobId) return;
 
+    const dataRoot = await resolveJobDataRoot(event);
+    if (!dataRoot) return;
+
     let jobState;
     try {
-      jobState = await getJob(cpbRoot, event.project, event.jobId);
+      jobState = await getJob(cpbRoot, event.project, event.jobId, { dataRoot });
     } catch (err) {
       console.error(`[notification] getJob error: ${err.message}`);
       return;
@@ -67,6 +71,23 @@ export function initNotificationService(cpbRoot) {
 
     const eventType = STATUS_TO_EVENT[jobState.status] ?? "job_failed";
     await dispatchToChannels(eventType, jobState, config);
+  }
+
+  async function resolveJobDataRoot(event) {
+    if (typeof event.dataRoot === "string" && event.dataRoot.trim()) {
+      return event.dataRoot;
+    }
+
+    try {
+      const hubRoot = resolveHubRoot(cpbRoot);
+      const project = await getProject(hubRoot, event.project);
+      return typeof project?.projectRuntimeRoot === "string" && project.projectRuntimeRoot.trim()
+        ? project.projectRuntimeRoot
+        : null;
+    } catch (err) {
+      console.error(`[notification] resolve project dataRoot error: ${err.message}`);
+      return null;
+    }
   }
 
   async function notifyReviewUpdate(event, config) {

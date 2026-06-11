@@ -2,11 +2,12 @@ import { createHmac, timingSafeEqual, createPublicKey, verify, createHash } from
 import { parseChannelCommand } from "./channel-commands.js";
 import { channelPolicyRequest, enforceChannelPolicy } from "./channel-commands.js";
 import { approveGate } from "../auto-finalizer.js";
-import { createChannelQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../event-source.js";
+import { createChannelQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../event/event-source.js";
 import { appendEvent, readEvents } from "../event/event-store.js";
 import { listQueue, updateEntry } from "../hub/hub-queue.js";
 import { cancelJob, listJobsAcrossRuntimeRoots, retryJob } from "../job/job-store.js";
 import { jobToQueueRow } from "../job/job-projection.js";
+import { resolveProjectDataRoot } from "../runtime.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -70,9 +71,12 @@ export function channelQueueActionMetadata(queueEntryId) {
   };
 }
 
-export async function findChannelJobById(cpbRoot, jobId) {
-  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
-  return jobs.find((job) => job.jobId === jobId) || null;
+async function findChannelJobById(cpbRoot, jobId, { hubRoot = cpbRoot }: LooseRecord = {}) {
+  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot });
+  const job = jobs.find((entry) => entry.jobId === jobId) || null;
+  if (!job) return { job: null, dataRoot: null };
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, job.project, { hubRoot });
+  return { job, dataRoot };
 }
 
 function isQueueEntryId(value) {
@@ -223,7 +227,7 @@ async function handleQueueEntryAction(hubRoot, queueEntry, command, parsed, { ch
   };
 }
 
-async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActionMetadata }) {
+async function handleJobAction(cpbRoot, job, dataRoot, command, parsed, { channel, jobActionMetadata }) {
   const ts = new Date().toISOString();
   const actor = parsed.actor || {};
   const label = titleCaseChannel(channel);
@@ -233,6 +237,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
       actor,
       action: command,
       ts,
+      dataRoot,
     });
     return {
       ok: true,
@@ -248,6 +253,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
     const cancelled = await cancelJob(cpbRoot, job.project, job.jobId, {
       reason: `Cancelled from ${label} by ${actorId(actor)}`,
       ts,
+      dataRoot,
     });
     return {
       ok: true,
@@ -264,6 +270,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
       trigger: channel,
       force: true,
       ts,
+      dataRoot,
     });
     return {
       ok: true,
@@ -277,7 +284,7 @@ async function handleJobAction(cpbRoot, job, command, parsed, { channel, jobActi
     };
   }
 
-  const events = await readEvents(cpbRoot, job.project, job.jobId);
+  const events = await readEvents(cpbRoot, job.project, job.jobId, { dataRoot });
   return {
     ok: true,
     channel,
@@ -349,7 +356,7 @@ export async function handleChannelCommand(cpbRoot, parsed, {
   }
 
   if (command.type === "status") {
-    const job = await findChannelJobById(cpbRoot, command.job);
+    const { job } = await findChannelJobById(cpbRoot, command.job, { hubRoot });
     if (!job) {
       const queueEntry = await findQueueEntryById(hubRoot, command.job);
       if (queueEntry) {
@@ -415,7 +422,7 @@ export async function handleChannelCommand(cpbRoot, parsed, {
   }
 
   if (command.type === "approve" || command.type === "cancel" || command.type === "retry" || command.type === "logs") {
-    const job = await findChannelJobById(cpbRoot, command.job);
+    const { job, dataRoot } = await findChannelJobById(cpbRoot, command.job, { hubRoot });
     if (!job && command.type !== "logs") {
       const queueEntry = await findQueueEntryById(hubRoot, command.job);
       if (queueEntry) {
@@ -465,7 +472,7 @@ export async function handleChannelCommand(cpbRoot, parsed, {
         parsed,
       };
     }
-    return handleJobAction(cpbRoot, job, command, parsed, {
+    return handleJobAction(cpbRoot, job, dataRoot, command, parsed, {
       channel,
       jobActionMetadata,
     });
@@ -649,11 +656,6 @@ function jobSummary(job) {
   };
 }
 
-async function findJobById(cpbRoot, jobId) {
-  const jobs = await listJobsAcrossRuntimeRoots(cpbRoot);
-  return jobs.find((job) => job.jobId === jobId) || null;
-}
-
 function policyDenied(decision) {
   return {
     ok: false,
@@ -684,7 +686,7 @@ export async function handleSlackSlashCommand(cpbRoot, parsed, { policy = null, 
   });
 }
 
-export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null }: LooseRecord = {}) {
+export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = null, hubRoot = cpbRoot }: LooseRecord = {}) {
   if (!parsed?.ok || !parsed.action?.type || !parsed.action?.job) {
     return {
       ok: false,
@@ -695,7 +697,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
     };
   }
 
-  const job = await findJobById(cpbRoot, parsed.action.job);
+  const { job, dataRoot } = await findChannelJobById(cpbRoot, parsed.action.job, { hubRoot });
   if (!job) {
     return {
       ok: false,
@@ -726,6 +728,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
       actor: parsed.actor,
       action: parsed.action,
       ts,
+      dataRoot,
     });
     return {
       ok: true,
@@ -741,6 +744,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
     const cancelled = await cancelJob(cpbRoot, job.project, job.jobId, {
       reason: `Cancelled from Slack by ${parsed.actor.userId || "unknown user"}`,
       ts,
+      dataRoot,
     });
     return {
       ok: true,
@@ -757,6 +761,7 @@ export async function handleSlackInteractiveAction(cpbRoot, parsed, { policy = n
       trigger: "slack",
       force: true,
       ts,
+      dataRoot,
     });
     return {
       ok: true,

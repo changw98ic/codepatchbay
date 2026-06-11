@@ -1,7 +1,8 @@
 import { detectSecretInput, redactSecrets } from "../secret-policy.js";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "../runtime.js";
+import { runtimeDataRoot } from "../runtime.js";
+import { resolveHubRoot } from "../hub/hub-registry.js";
 
 // ============================================================
 // channel-commands (formerly channel-commands.ts)
@@ -309,8 +310,14 @@ export function parseChannelCommand(input) {
 
 type AnyRecord = Record<string, any>;
 
-function channelPolicyEventsPath(cpbRoot) {
-  return runtimeDataPath(cpbRoot, "channel-policy-events.jsonl");
+function channelPolicyRoot(cpbRoot, options: Record<string, any> = {}) {
+  if (options.controlRoot) return path.resolve(options.controlRoot);
+  if (options.hubRoot) return path.resolve(options.hubRoot);
+  return process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : runtimeDataRoot(cpbRoot);
+}
+
+function channelPolicyEventsPath(cpbRoot, options: Record<string, any> = {}) {
+  return path.join(channelPolicyRoot(cpbRoot, options), "channel-policy-events.jsonl");
 }
 
 function asList(value) {
@@ -387,7 +394,7 @@ export function evaluateChannelPolicy(policy, request) {
   return { allowed: true, reason: "default allow", matchedRule: null };
 }
 
-export async function recordChannelPolicyDecision(cpbRoot, decision, request) {
+export async function recordChannelPolicyDecision(cpbRoot, decision, request, options: Record<string, any> = {}) {
   const event = {
     type: "channel_policy_decision",
     allowed: Boolean(decision.allowed),
@@ -395,22 +402,22 @@ export async function recordChannelPolicyDecision(cpbRoot, decision, request) {
     request: redactSecrets(request),
     ts: new Date().toISOString(),
   };
-  const file = channelPolicyEventsPath(cpbRoot);
+  const file = channelPolicyEventsPath(cpbRoot, options);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
   return event;
 }
 
-export async function enforceChannelPolicy(cpbRoot, policy, request) {
+export async function enforceChannelPolicy(cpbRoot, policy, request, _options: Record<string, any> = {}) {
   const decision = evaluateChannelPolicy(policy, request);
-  await recordChannelPolicyDecision(cpbRoot, decision, request);
+  await recordChannelPolicyDecision(cpbRoot, decision, request, _options);
   return decision;
 }
 
-export async function readChannelPolicyEvents(cpbRoot) {
+export async function readChannelPolicyEvents(cpbRoot, options: Record<string, any> = {}) {
   let raw;
   try {
-    raw = await readFile(channelPolicyEventsPath(cpbRoot), "utf8");
+    raw = await readFile(channelPolicyEventsPath(cpbRoot, options), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;

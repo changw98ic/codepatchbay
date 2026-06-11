@@ -168,8 +168,8 @@ export async function evaluateCandidate(cpbRoot, candidate, { availableAgents = 
 /**
  * Scan pending candidates and evaluate them for task generation.
  */
-export async function scanCandidates(cpbRoot, { availableAgents = [] } = {}) {
-  const pending = await listCandidates(cpbRoot, { status: "pending" });
+export async function scanCandidates(cpbRoot, { availableAgents = [], ...rootOptions }: Record<string, any> = {}) {
+  const pending = await listCandidates(cpbRoot, { status: "pending", ...rootOptions });
 
   const results = [];
   for (const candidate of pending) {
@@ -185,7 +185,7 @@ export async function scanCandidates(cpbRoot, { availableAgents = [] } = {}) {
 /**
  * Check if proactive mode is enabled and within budget.
  */
-export async function checkProactiveBudget(cpbRoot) {
+export async function checkProactiveBudget(cpbRoot, options: Record<string, any> = {}) {
   const enabled = process.env.CPB_PROACTIVE === "1";
   if (!enabled) {
     return { allowed: false, reason: "proactive disabled (CPB_PROACTIVE not set to 1)" };
@@ -194,11 +194,11 @@ export async function checkProactiveBudget(cpbRoot) {
   const dailyLimit = parseInt(process.env.CPB_PROACTIVE_DAILY_LIMIT, 10) || DEFAULT_DAILY_LIMIT;
   const failureLimit = parseInt(process.env.CPB_PROACTIVE_FAILURE_LIMIT, 10) || DEFAULT_CONSECUTIVE_FAILURE_LIMIT;
 
-  const jobs = await listJobs(cpbRoot);
+  const jobs = await listJobs(cpbRoot, { hubRoot: options.hubRoot });
   const windowMs = 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - windowMs;
   const windowProactive = jobs.filter((j) => {
-    if (j.trigger !== "proactive") return false;
+    if (j.trigger !== "proactive" && j.sourceContext?.type !== "proactive") return false;
     const ts = j.createdAt ? new Date(j.createdAt).getTime() : 0;
     return ts > cutoff;
   });
@@ -715,13 +715,14 @@ function assertProject(project) {
   }
 }
 
-export function evolveDir(projectRoot, project) {
+export function evolveDir(projectRoot, project, options: Record<string, any> = {}) {
   assertProject(project);
-  return path.join(path.resolve(projectRoot), "cpb-task", "evolve", project);
+  const dataRoot = options.dataRoot || options.projectRuntimeRoot;
+  return path.join(path.resolve(dataRoot || path.join(projectRoot, "cpb-task")), "evolve", project);
 }
 
-function statePath(projectRoot, project, file) {
-  return path.join(evolveDir(projectRoot, project), file);
+function statePath(projectRoot, project, file, options: Record<string, any> = {}) {
+  return path.join(evolveDir(projectRoot, project, options), file);
 }
 
 async function readJSON(filePath, fallback) {
@@ -741,8 +742,8 @@ async function writeAtomic(filePath, content) {
   await rename(tmp, filePath);
 }
 
-export async function loadProjectState(projectRoot, project) {
-  return readJSON(statePath(projectRoot, project, "state.json"), {
+export async function loadProjectState(projectRoot, project, options: Record<string, any> = {}) {
+  return readJSON(statePath(projectRoot, project, "state.json", options), {
     knownGoodCommit: null,
     round: 0,
     status: "idle",
@@ -751,23 +752,23 @@ export async function loadProjectState(projectRoot, project) {
   });
 }
 
-export async function saveProjectState(projectRoot, project, state) {
+export async function saveProjectState(projectRoot, project, state, options: Record<string, any> = {}) {
   const next = { ...state, updatedAt: new Date().toISOString() };
-  await writeAtomic(statePath(projectRoot, project, "state.json"), `${JSON.stringify(next, null, 2)}\n`);
+  await writeAtomic(statePath(projectRoot, project, "state.json", options), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
 
-export async function loadBacklog(projectRoot, project) {
-  return readJSON(statePath(projectRoot, project, "backlog.json"), []);
+export async function loadBacklog(projectRoot, project, options: Record<string, any> = {}) {
+  return readJSON(statePath(projectRoot, project, "backlog.json", options), []);
 }
 
-export async function saveBacklog(projectRoot, project, backlog) {
-  await writeAtomic(statePath(projectRoot, project, "backlog.json"), `${JSON.stringify(backlog, null, 2)}\n`);
+export async function saveBacklog(projectRoot, project, backlog, options: Record<string, any> = {}) {
+  await writeAtomic(statePath(projectRoot, project, "backlog.json", options), `${JSON.stringify(backlog, null, 2)}\n`);
   return backlog;
 }
 
-async function withBacklogLock(projectRoot, project, callback) {
-  const lockDir = statePath(projectRoot, project, "backlog.json.lock");
+async function withBacklogLock(projectRoot, project, callback, options: Record<string, any> = {}) {
+  const lockDir = statePath(projectRoot, project, "backlog.json.lock", options);
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -801,9 +802,9 @@ function issueKeyFn2(issue) {
   return issue.id || issue.description;
 }
 
-export async function pushIssues(projectRoot, project, issues) {
+export async function pushIssues(projectRoot, project, issues, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
-    const backlog = await loadBacklog(projectRoot, project);
+    const backlog = await loadBacklog(projectRoot, project, options);
     const existing = new Set(backlog.map(issueKeyFn2));
     let added = 0;
     for (const issue of issues) {
@@ -819,9 +820,9 @@ export async function pushIssues(projectRoot, project, issues) {
       existing.add(key);
       added += 1;
     }
-    await saveBacklog(projectRoot, project, backlog);
+    await saveBacklog(projectRoot, project, backlog, options);
     return { added, total: backlog.length, backlog };
-  });
+  }, options);
 }
 
 function priorityScore(priority) {
@@ -831,18 +832,18 @@ function priorityScore(priority) {
   return 3;
 }
 
-export async function popIssue(projectRoot, project) {
+export async function popIssue(projectRoot, project, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
-    const backlog = await loadBacklog(projectRoot, project);
+    const backlog = await loadBacklog(projectRoot, project, options);
     const pending = backlog.filter((issue) => issue.status === "pending");
     pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority));
     const issue = pending[0] || null;
     if (!issue) return null;
     issue.status = "in_progress";
     issue.updatedAt = new Date().toISOString();
-    await saveBacklog(projectRoot, project, backlog);
+    await saveBacklog(projectRoot, project, backlog, options);
     return { issue, backlog };
-  });
+  }, options);
 }
 
 function matchesIssue(issue, identity) {
@@ -850,9 +851,9 @@ function matchesIssue(issue, identity) {
     && (issue.id === identity || issue.description === identity || issueKeyFn2(issue) === identity);
 }
 
-export async function updateIssueStatus(projectRoot, project, identity, status, detail = {}) {
+export async function updateIssueStatus(projectRoot, project, identity, status, detail = {}, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
-    const backlog = await loadBacklog(projectRoot, project);
+    const backlog = await loadBacklog(projectRoot, project, options);
     const issue = backlog.find((item) => matchesIssue(item, identity));
     if (!issue) return null;
     issue.status = status;
@@ -860,36 +861,36 @@ export async function updateIssueStatus(projectRoot, project, identity, status, 
     if (detail && Object.keys(detail).length > 0) {
       issue.detail = { ...(issue.detail || {}), ...detail };
     }
-    await saveBacklog(projectRoot, project, backlog);
+    await saveBacklog(projectRoot, project, backlog, options);
     return { issue, backlog };
-  });
+  }, options);
 }
 
-export async function claimIssue(projectRoot, project, identity) {
+export async function claimIssue(projectRoot, project, identity, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
-    const backlog = await loadBacklog(projectRoot, project);
+    const backlog = await loadBacklog(projectRoot, project, options);
     const issue = backlog.find((item) => matchesIssue(item, identity) && item.status === "pending");
     if (!issue) return null;
     issue.status = "in_progress";
     issue.claimedAt = new Date().toISOString();
     issue.updatedAt = issue.claimedAt;
-    await saveBacklog(projectRoot, project, backlog);
+    await saveBacklog(projectRoot, project, backlog, options);
     return { issue, backlog };
-  });
+  }, options);
 }
 
-export async function completeIssue(projectRoot, project, identity, result: Record<string, any> = {}) {
+export async function completeIssue(projectRoot, project, identity, result: Record<string, any> = {}, options: Record<string, any> = {}) {
   const status = result.ok ? "completed" : "failed";
   return updateIssueStatus(projectRoot, project, identity, status, {
     exitCode: result.code ?? null,
     error: result.error || null,
     completedAt: new Date().toISOString(),
-  });
+  }, options);
 }
 
-export async function appendHistory(projectRoot, project, entry) {
-  await mkdir(evolveDir(projectRoot, project), { recursive: true });
-  const filePath = statePath(projectRoot, project, "history.jsonl");
+export async function appendHistory(projectRoot, project, entry, options: Record<string, any> = {}) {
+  await mkdir(evolveDir(projectRoot, project, options), { recursive: true });
+  const filePath = statePath(projectRoot, project, "history.jsonl", options);
   const line = JSON.stringify({ ...entry, project, timestamp: new Date().toISOString() }) + "\n";
   await writeFile(filePath, line, { flag: "a", encoding: "utf8" });
 }

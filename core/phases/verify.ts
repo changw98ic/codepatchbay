@@ -175,6 +175,7 @@ function formatCommandFailure(command, err) {
 
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "verifier";
   const cwd = sourcePath || cpbRoot;
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
@@ -227,6 +228,7 @@ export async function runVerify(ctx) {
     role,
     agent: resolvedAgent.agent,
     prompt,
+    dataRoot,
   });
 
   const agentResult: Record<string, any> = await runAgent({
@@ -279,6 +281,7 @@ export async function runVerify(ctx) {
     jobId,
     kind: "verdict",
     content: verdictMarkdown,
+    dataRoot,
     metadata: verdict,
   });
 

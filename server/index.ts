@@ -18,8 +18,9 @@ import { eventRoutes } from './routes/events.js';
 import { githubRoutes } from './routes/github.js';
 import { skillRoutes } from './routes/skills.js';
 import { inboxRoutes } from './routes/inbox.js';
-import { resolveHubRoot } from './services/hub/hub-registry.js';
+import { getProject, resolveHubRoot } from './services/hub/hub-registry.js';
 import { getHubRuntime } from './services/hub/hub-registry.js';
+import { assertNoLegacyRuntimeData } from './services/runtime-migration-guard.js';
 import { addClient, removeClient, broadcast, closeAll } from './services/infra.js';
 import { initNotificationService } from './services/notification/index.js';
 
@@ -28,8 +29,47 @@ const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.resolve(__dirname, '.
 const CPB_EXECUTOR_ROOT = path.resolve(process.env.CPB_EXECUTOR_ROOT || CPB_ROOT);
 const PORT = parseInt(process.env.CPB_PORT || process.argv.find(a => a.startsWith('--port='))?.split('=')[1] || '3456', 10);
 const HOST = process.env.CPB_HOST || '127.0.0.1';
+const HUB_ROOT = resolveHubRoot(CPB_ROOT);
+const DEFAULT_PROACTIVE_INTERVAL_MS = 300_000;
+const MIN_PROACTIVE_INTERVAL_MS = 10_000;
+const MIN_TEST_PROACTIVE_INTERVAL_MS = 10;
 
-const hubRuntime = getHubRuntime(CPB_ROOT, resolveHubRoot(CPB_ROOT));
+const hubRuntime = getHubRuntime(CPB_ROOT, HUB_ROOT);
+
+function parsePositiveInteger(value) {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+}
+
+function proactiveScanIntervalMs(env = process.env) {
+  const testInterval = env.NODE_ENV === 'test'
+    ? parsePositiveInteger(env.CPB_TEST_PROACTIVE_INTERVAL_MS)
+    : null;
+  if (testInterval !== null) return Math.max(MIN_TEST_PROACTIVE_INTERVAL_MS, testInterval);
+
+  const configured = parsePositiveInteger(env.CPB_PROACTIVE_INTERVAL_MS);
+  if (configured === null) return DEFAULT_PROACTIVE_INTERVAL_MS;
+  return Math.max(MIN_PROACTIVE_INTERVAL_MS, configured);
+}
+
+function isLoopbackHost(host) {
+  const normalized = String(host || '').trim().toLowerCase();
+  return normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized === '[::1]' ||
+    normalized === '0:0:0:0:0:0:0:1' ||
+    /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+function hasConfiguredApiKeys() {
+  return Boolean(process.env.CPB_API_KEYS?.split(',').map(k => k.trim()).filter(Boolean).length);
+}
+
+function requestPath(req) {
+  return String(req.url || '').split('?')[0];
+}
 
 try {
   accessSync(CPB_ROOT, constants.F_OK | constants.R_OK);
@@ -37,6 +77,18 @@ try {
   if (!stat.isDirectory()) throw new Error();
 } catch {
   console.error(`Invalid CPB_ROOT: ${CPB_ROOT}`);
+  process.exit(1);
+}
+
+try {
+  await assertNoLegacyRuntimeData(CPB_ROOT);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+if (!isLoopbackHost(HOST) && !hasConfiguredApiKeys()) {
+  console.error(`Refusing public CPB_HOST ${HOST}: public binds require CPB_API_KEYS; use CPB_HOST=127.0.0.1 for local unauthenticated UI.`);
   process.exit(1);
 }
 
@@ -133,11 +185,17 @@ app.addHook('onRequest', (req, _res, done) => {
 
 if (apiKeys && apiKeys.size > 0) {
   app.addHook('onRequest', (req, res, done) => {
-    if (req.url === '/api/health') return done();
+    if (requestPath(req) === '/api/health') return done();
     if (!hasValidApiKey(req)) return res.code(401).send({ error: 'Unauthorized: valid x-api-key required' });
     done();
   });
 }
+
+app.get('/api/health', async () => ({
+  ok: true,
+  status: 'ok',
+  uptimeMs: Math.round(process.uptime() * 1000),
+}));
 
 // File watcher + notification service
 const notifService = initNotificationService(CPB_ROOT);
@@ -166,7 +224,7 @@ app.register(inboxRoutes, { prefix: '/api' });
 const { collectAgentMetrics } = await import('./services/agent/agent-config.js');
 const agentStatusInterval = setInterval(async () => {
   try {
-    const metrics = await collectAgentMetrics(CPB_ROOT);
+    const metrics = await collectAgentMetrics(CPB_ROOT, { hubRoot: HUB_ROOT });
     broadcast({ type: 'agent:status', agents: metrics, ts: new Date().toISOString() });
   } catch {}
 }, 30_000);
@@ -180,19 +238,26 @@ if (process.env.CPB_PROACTIVE === '1') {
   const { updateCandidate } = await import('./services/event/event-source.js');
   const proactiveInterval = setInterval(async () => {
     try {
-      const budget = await checkProactiveBudget(CPB_ROOT);
+      const budget = await checkProactiveBudget(CPB_ROOT, { hubRoot: HUB_ROOT, logger: app.log });
       if (!budget.allowed) return;
 
-      const evaluations = await scanCandidates(CPB_ROOT);
+      const evaluations = await scanCandidates(CPB_ROOT, { hubRoot: HUB_ROOT });
       const safeAuto = evaluations.filter(e => e.recommendation.autoExecutable);
       let dispatched = 0;
       for (const { candidate, recommendation } of safeAuto) {
         if (dispatched >= budget.remaining) break;
         try {
+          const projectId = candidate.projectId || recommendation.candidateId;
+          const project = projectId ? await getProject(HUB_ROOT, projectId) : null;
+          const dataRoot = typeof project?.projectRuntimeRoot === 'string' && project.projectRuntimeRoot.trim()
+            ? project.projectRuntimeRoot
+            : null;
+          if (!dataRoot) continue;
           await createJob(CPB_ROOT, {
-            project: candidate.projectId || recommendation.candidateId,
+            project: projectId,
             task: recommendation.taskDescription,
             workflow: recommendation.recommendedWorkflow,
+            dataRoot,
             sourceContext: {
               type: 'proactive',
               candidateId: candidate.id,
@@ -203,7 +268,7 @@ if (process.env.CPB_PROACTIVE === '1') {
           await updateCandidate(CPB_ROOT, candidate.id, {
             status: 'dispatched',
             reason: 'proactive auto-scan',
-          });
+          }, { hubRoot: HUB_ROOT });
           dispatched++;
         } catch {}
       }
@@ -211,7 +276,7 @@ if (process.env.CPB_PROACTIVE === '1') {
         broadcast({ type: 'proactive:dispatched', count: dispatched, ts: new Date().toISOString() });
       }
     } catch {}
-  }, 300_000);
+  }, proactiveScanIntervalMs());
   proactiveInterval.unref();
 }
 

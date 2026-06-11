@@ -1,11 +1,13 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
-import { resolveArtifactDir, resolveArtifactPath } from "./artifact-paths.js";
+import { resolveArtifactDir, resolveArtifactDirForRoot, resolveArtifactPath, resolveArtifactPathForRoot } from "./artifact-paths.js";
 
-export async function writeArtifact(cpbRoot: string, { project, jobId, kind, content, metadata = {} }: { project: string; jobId: string; kind: string; content: string; metadata?: Record<string, unknown> }) {
-  const id = await allocateArtifactId(cpbRoot, project, kind);
-  const filePath = resolveArtifactPath(cpbRoot, project, kind, id);
+export async function writeArtifact(cpbRoot: string, { project, jobId, kind, content, metadata = {}, dataRoot }: { project: string; jobId: string; kind: string; content: string; metadata?: Record<string, unknown>; dataRoot?: string }) {
+  const id = await allocateArtifactId(cpbRoot, project, kind, { dataRoot });
+  const filePath = dataRoot
+    ? resolveArtifactPathForRoot(dataRoot, kind, id)
+    : resolveArtifactPath(cpbRoot, project, kind, id);
 
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf8");
@@ -21,8 +23,8 @@ export async function writeArtifact(cpbRoot: string, { project, jobId, kind, con
   };
 }
 
-export async function allocateArtifactId(cpbRoot: string, project: string, kind: string) {
-  const dir = resolveArtifactDir(cpbRoot, project, kind);
+export async function allocateArtifactId(cpbRoot: string, project: string, kind: string, { dataRoot }: { dataRoot?: string } = {}) {
+  const dir = dataRoot ? resolveArtifactDirForRoot(dataRoot, kind) : resolveArtifactDir(cpbRoot, project, kind);
   await mkdir(dir, { recursive: true });
 
   // Timestamp-based ID with collision retry

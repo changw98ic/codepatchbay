@@ -21,7 +21,7 @@ import { generateDynamicAgentPlan, validateDynamicAgentPlan } from "../agents/dy
 import { evaluateCompletionGate, parseVerdict, completionGateEvent } from "./completion-gate.js";
 import { validateScopeConstraint, stripGitStatusPrefix } from "./scope-guard.js";
 import { readyNodes, getNode } from "../workflow/dag-executor.js";
-import { resolveArtifactPath } from "../artifacts/artifact-paths.js";
+import { resolveArtifactPath, resolveArtifactPathForRoot } from "../artifacts/artifact-paths.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -104,22 +104,24 @@ function artifactKindForPhase(phase) {
   return phase || "artifact";
 }
 
-function artifactPathFromName({ cpbRoot, project, kind, value }: AnyRecord) {
+function artifactPathFromName({ cpbRoot, project, kind, value, dataRoot }: AnyRecord) {
   if (!value || typeof value !== "string") return null;
   if (path.isAbsolute(value)) return value;
   if (value.includes("/") || value.includes("\\")) return path.resolve(cpbRoot, value);
   const base = value.endsWith(".md") ? value.slice(0, -3) : value;
   const prefix = `${kind}-`;
   if (!base.startsWith(prefix)) return null;
-  return resolveArtifactPath(cpbRoot, project, kind, base.slice(prefix.length));
+  return dataRoot
+    ? resolveArtifactPathForRoot(dataRoot, kind, base.slice(prefix.length))
+    : resolveArtifactPath(cpbRoot, project, kind, base.slice(prefix.length));
 }
 
-function recoveredArtifactForPhase(sourceContext: AnyRecord = {}, phase: string, { cpbRoot, project }: AnyRecord = {}) {
+function recoveredArtifactForPhase(sourceContext: AnyRecord = {}, phase: string, { cpbRoot, project, dataRoot }: AnyRecord = {}) {
   const raw = sourceContext?.retry?.artifacts?.[phase] || sourceContext?.previousFailure?.artifacts?.[phase] || null;
   if (!raw) return null;
   const kind = artifactKindForPhase(phase);
   if (typeof raw === "string") {
-    return { kind, name: raw, path: artifactPathFromName({ cpbRoot, project, kind, value: raw }) };
+    return { kind, name: raw, path: artifactPathFromName({ cpbRoot, project, kind, value: raw, dataRoot }) };
   }
   if (typeof raw === "object") {
     const name = raw.name || raw.path || `${phase}-recovered`;
@@ -127,7 +129,7 @@ function recoveredArtifactForPhase(sourceContext: AnyRecord = {}, phase: string,
       kind,
       ...raw,
       name,
-      path: raw.path || artifactPathFromName({ cpbRoot, project, kind, value: raw.name }),
+      path: raw.path || artifactPathFromName({ cpbRoot, project, kind, value: raw.name, dataRoot }),
     };
   }
   return null;
@@ -372,6 +374,7 @@ export async function runJob(ctx) {
     planMode = "full",
     sourcePath,
     sourceContext,
+    dataRoot,
     maxRetries,
     timeoutMin,
     // Injected services
@@ -389,6 +392,7 @@ export async function runJob(ctx) {
 
   process.env.CPB_ROOT = cpbRoot;
   if (hubRoot) process.env.CPB_HUB_ROOT = hubRoot;
+  if (dataRoot) process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
   if (sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
 
   // 1. Create job
@@ -633,7 +637,7 @@ export async function runJob(ctx) {
     const nodeId = dagNode.id || phase;
     const role = dagNode.role || fallbackRole;
     if (resumeCompletedNodes.has(nodeId)) {
-      const artifact = recoveredArtifactForPhase(phaseSourceContext, phase, { cpbRoot, project });
+      const artifact = recoveredArtifactForPhase(phaseSourceContext, phase, { cpbRoot, project, dataRoot });
       if (artifact) {
         const artifactId = extractArtifactId(artifact);
         if (phase === "plan") state.planId = artifactId;
@@ -876,6 +880,7 @@ export async function runJob(ctx) {
       workflow,
       planMode,
       cpbRoot,
+      dataRoot,
       sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
       sourceContext: phaseSourceContext,
       pool,
@@ -1058,6 +1063,7 @@ export async function runJob(ctx) {
         workflow,
         planMode,
         cpbRoot,
+        dataRoot,
         sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
         sourceContext: continuationContext
           ? { ...phaseSourceContext, handoff: continuationContext }
@@ -1124,6 +1130,7 @@ export async function runJob(ctx) {
             jobId,
             job,
             cpbRoot,
+            dataRoot,
             sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
             sourceContext: phaseSourceContext,
             pool,
@@ -1187,6 +1194,7 @@ export async function runJob(ctx) {
           workflow,
           planMode,
           cpbRoot,
+          dataRoot,
           sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
           sourceContext: { ...phaseSourceContext, retry },
           pool,

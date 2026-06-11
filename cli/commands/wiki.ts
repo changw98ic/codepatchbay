@@ -145,7 +145,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     const {
       extractExperienceFromVerdict,
       rebuildExperienceIndex,
-    } = await import("../../server/services/event/event-source.js");
+    } = await import("../../server/services/experience-extractor.js");
     const { readFile, readdir } = await import("node:fs/promises");
 
     if (expSub === "list") {
@@ -243,7 +243,8 @@ async function searchExperiences(cpbRoot: string, keyword: string, { category, p
 async function backfillExperiences(cpbRoot: string, { project, force }: LooseRecord = {}) {
   const { readdir } = await import("node:fs/promises");
   const { listEventFiles, readEvents } = await import("../../server/services/event/event-store.js");
-  const { extractExperienceFromVerdict } = await import("../../server/services/event/event-source.js");
+  const { listRuntimeDataRoots } = await import("../../server/services/runtime.js");
+  const { extractExperienceFromVerdict } = await import("../../server/services/experience-extractor.js");
   const wikiDir = path.join(cpbRoot, "wiki", "projects");
 
   let projects;
@@ -256,18 +257,27 @@ async function backfillExperiences(cpbRoot: string, { project, force }: LooseRec
 
   // Build artifact→jobId map from event logs for all relevant projects
   const verdictToJob = new Map(); // key: `${project}/${artifactBasename}`, value: jobId
-  const allEventFiles = await listEventFiles(cpbRoot);
-  for (const ef of allEventFiles) {
-    if (project && ef.project !== project) continue;
-    try {
-      const events = await readEvents(cpbRoot, ef.project, ef.jobId);
-      for (const ev of events as LooseRecord[]) {
-        if (typeof ev.artifact === "string" && ev.artifact.startsWith("verdict-")) {
-          const key = `${ef.project}/${ev.artifact.replace(/\.(?:md|patch|diff|txt|json)$/i, "")}`;
-          if (!verdictToJob.has(key)) verdictToJob.set(key, ef.jobId);
+  const roots = await listRuntimeDataRoots(cpbRoot, { includeLegacy: false });
+  for (const root of roots) {
+    const allEventFiles = await listEventFiles(cpbRoot, {
+      dataRoot: root.dataRoot,
+      includeLegacyFallback: false,
+    });
+    for (const ef of allEventFiles) {
+      if (project && ef.project !== project) continue;
+      try {
+        const events = await readEvents(cpbRoot, ef.project, ef.jobId, {
+          dataRoot: root.dataRoot,
+          includeLegacyFallback: false,
+        });
+        for (const ev of events as LooseRecord[]) {
+          if (typeof ev.artifact === "string" && ev.artifact.startsWith("verdict-")) {
+            const key = `${ef.project}/${ev.artifact.replace(/\.(?:md|patch|diff|txt|json)$/i, "")}`;
+            if (!verdictToJob.has(key)) verdictToJob.set(key, ef.jobId);
+          }
         }
-      }
-    } catch { /* skip unreadable event logs */ }
+      } catch { /* skip unreadable event logs */ }
+    }
   }
 
   let extracted = 0;
@@ -299,7 +309,7 @@ async function backfillExperiences(cpbRoot: string, { project, force }: LooseRec
     } catch { /* no outputs dir */ }
   }
 
-  const { rebuildExperienceIndex } = await import("../../server/services/event/event-source.js");
+  const { rebuildExperienceIndex } = await import("../../server/services/experience-extractor.js");
   await rebuildExperienceIndex(cpbRoot);
 
   console.log(`\nBackfill complete: ${extracted} extracted, ${skipped} skipped, ${unmapped} unmapped (no event log).`);

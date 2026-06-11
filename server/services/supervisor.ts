@@ -7,6 +7,7 @@ import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from
 import { executorEnv, resolveExecutorRoot } from "./setup.js";
 import { buildChildEnv } from "./secret-policy.js";
 import { recoverAsNewJob } from "./job/job-store.js";
+import { listRuntimeDataRoots } from "./runtime.js";
 
 type AnyRecord = Record<string, any>;
 type RunChildResult = { exitCode: number; signal?: NodeJS.Signals | null; error?: any };
@@ -65,45 +66,55 @@ export function nextPhaseFor(state) {
 
 export async function recoverJobs(cpbRoot, { now }: AnyRecord = {}) {
   const { listJobs } = await import("./job/job-store.js");
-  const jobs = await listJobs(cpbRoot);
+  const roots = await listRuntimeDataRoots(cpbRoot);
+  const jobs = [];
+  for (const root of roots) {
+    const batch = await listJobs(cpbRoot, {
+      dataRoot: root.dataRoot,
+      includeLegacyFallback: false,
+    });
+    for (const job of batch) jobs.push({ ...job, _dataRoot: root.dataRoot });
+  }
   const recoverable = [];
   const activeJobIds = new Set();
 
   for (const job of jobs) {
-    activeJobIds.add(job.jobId);
+    const trackerKey = `${job._dataRoot}\0${job.jobId}`;
+    activeJobIds.add(trackerKey);
 
     // Cancel-requested jobs with no active lease should be terminated first
     if (job.cancelRequested) {
       if (job.leaseId) {
-        const lease = await readLease(cpbRoot, job.leaseId);
+        const lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job._dataRoot });
         if (lease !== null && !isLeaseStale(lease, now)) {
           continue;
         }
       }
-      staleTracker.delete(job.jobId);
+      staleTracker.delete(trackerKey);
       await cancelJob(cpbRoot, job.project, job.jobId, {
         reason: job.cancelReason ?? "cancelled during recovery",
+        dataRoot: job._dataRoot,
       });
       continue;
     }
 
     if (nextPhaseFor(job) === "") {
-      staleTracker.delete(job.jobId);
+      staleTracker.delete(trackerKey);
       continue;
     }
 
     let leaseIsStale = false;
     if (job.leaseId) {
-      const lease = await readLease(cpbRoot, job.leaseId);
+      const lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job._dataRoot });
       if (lease !== null && !isLeaseStale(lease, now)) {
-        staleTracker.delete(job.jobId);
+        staleTracker.delete(trackerKey);
         continue;
       }
       leaseIsStale = true;
     }
 
     if (!leaseIsStale && nextPhaseFor(job) === "complete") {
-      staleTracker.delete(job.jobId);
+      staleTracker.delete(trackerKey);
       recoverable.push(job);
       continue;
     }
@@ -113,24 +124,24 @@ export async function recoverJobs(cpbRoot, { now }: AnyRecord = {}) {
       const nowMs = now instanceof Date ? now.getTime() : Date.now();
       const activityAge = nowMs - new Date(job.lastActivityAt).getTime();
       if (activityAge < (parseInt(process.env.CPB_ACTIVITY_STALE_MS, 10) || 300_000)) {
-        staleTracker.delete(job.jobId);
+        staleTracker.delete(trackerKey);
         continue;
       }
     }
 
-    const entry = staleTracker.get(job.jobId);
+    const entry = staleTracker.get(trackerKey);
     if (entry) {
       entry.count += 1;
     } else {
-      staleTracker.set(job.jobId, { count: 1, firstStaleAt: Date.now() });
+      staleTracker.set(trackerKey, { count: 1, firstStaleAt: Date.now() });
     }
 
-    const current = staleTracker.get(job.jobId);
+    const current = staleTracker.get(trackerKey);
     if (current.count < STALE_GRACE_COUNT) {
       continue;
     }
 
-    staleTracker.delete(job.jobId);
+    staleTracker.delete(trackerKey);
     recoverable.push(job);
   }
 
@@ -247,7 +258,7 @@ export async function recoverOneJob(cpbRoot: string, job: AnyRecord, { executorR
 
   // "complete" phase: no bridge script, just mark done.
   if (phase === "complete") {
-    await completeJobStore(cpbRoot, job.project, job.jobId);
+    await completeJobStore(cpbRoot, job.project, job.jobId, { dataRoot: job._dataRoot });
     return { jobId: job.jobId, project: job.project, phase: "complete", exitCode: 0 };
   }
 
@@ -261,7 +272,9 @@ export async function recoverOneJob(cpbRoot: string, job: AnyRecord, { executorR
         trigger: "supervisor",
         useCurrentExecutor,
         currentExecutor: useCurrentExecutor ? { root: callerRoot } : null,
+        dataRoot: job._dataRoot,
       } as AnyRecord);
+      recoveryJob._dataRoot = job._dataRoot;
     } catch (err) {
       // If recovery job creation fails, proceed with original job (best-effort)
       recoveryJob = job;
@@ -299,6 +312,7 @@ export async function recoverOneJob(cpbRoot: string, job: AnyRecord, { executorR
     env: executorEnv(process.env, {
       cpbRoot,
       executorRoot: resolvedExecutorRoot,
+      extra: { CPB_PROJECT_RUNTIME_ROOT: recoveryJob._dataRoot || job._dataRoot },
     }),
   });
 

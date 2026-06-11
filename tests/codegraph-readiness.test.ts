@@ -16,6 +16,18 @@ test("CodeGraph index-only flag is allowed through child env policy", () => {
   assert.equal(env.NOT_ALLOWED_FLAG, undefined);
 });
 
+test("project runtime root is only passed to child env through explicit overrides", () => {
+  const fromParent = buildChildEnv({
+    CPB_PROJECT_RUNTIME_ROOT: "/tmp/poisoned-runtime-root",
+  }) as Record<string, any>;
+  assert.equal(fromParent.CPB_PROJECT_RUNTIME_ROOT, undefined);
+
+  const explicit = buildChildEnv({}, {
+    CPB_PROJECT_RUNTIME_ROOT: "/tmp/verified-runtime-root",
+  }) as Record<string, any>;
+  assert.equal(explicit.CPB_PROJECT_RUNTIME_ROOT, "/tmp/verified-runtime-root");
+});
+
 test("CodeGraph readiness can explicitly accept a static index without daemon state", async () => {
   const sourcePath = await tempRoot("cpb-codegraph-index-only");
   const cgDir = path.join(sourcePath, ".codegraph");
@@ -35,9 +47,10 @@ test("CodeGraph readiness can explicitly accept a static index without daemon st
 
 test("CodeGraph index-only mode ignores mismatched CPB root daemon state", async () => {
   const cpbRoot = await tempRoot("cpb-codegraph-index-only-cpb");
+  const hubRoot = await tempRoot("cpb-codegraph-index-only-hub");
   const sourcePath = await tempRoot("cpb-codegraph-index-only-source");
-  await mkdir(path.join(cpbRoot, "cpb-task"), { recursive: true });
-  await writeFile(path.join(cpbRoot, "cpb-task", "codegraph-state.json"), `${JSON.stringify({
+  await mkdir(hubRoot, { recursive: true });
+  await writeFile(path.join(hubRoot, "codegraph-state.json"), `${JSON.stringify({
     pid: process.pid,
     codebaseRoot: cpbRoot,
   }, null, 2)}\n`);
@@ -51,6 +64,6 @@ test("CodeGraph index-only mode ignores mismatched CPB root daemon state", async
     socketPath: path.join(cgDir, "daemon.sock"),
   }) + "\n", "utf8");
 
-  const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
+  const readiness = await checkCodeGraphReady({ cpbRoot, hubRoot, sourcePath });
   assert.equal(readiness.available, true);
 });

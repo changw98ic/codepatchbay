@@ -15,11 +15,15 @@ export async function run(args, { cpbRoot }) {
   const { listJobs } = await import("../../server/services/job/job-store.js");
   const { readLease, isLeaseStale } = await import("../../server/services/infra.js");
   const hubRoot = resolveHubRoot(cpbRoot);
-  const wdir = path.join(cpbRoot, "wiki/projects", project);
 
   console.log(`${BOLD}Project: ${project}${NC}`);
 
   const registered = await getProject(hubRoot, project);
+  if (!registered?.projectRuntimeRoot) {
+    throw new Error(`project runtime root required for project '${project}'`);
+  }
+  const dataRoot = registered.projectRuntimeRoot;
+  const wdir = path.join(dataRoot, "wiki");
   if (registered?.sourcePath) console.log(`  ${CYAN}Source:${NC} ${registered.sourcePath}`);
   console.log("");
 
@@ -49,7 +53,7 @@ export async function run(args, { cpbRoot }) {
 
   // Job state
   try {
-    const jobs = await listJobs(cpbRoot);
+    const jobs = await listJobs(cpbRoot, { dataRoot });
     const projJobs = jobs.filter((j) => j.project === project);
     if (projJobs.length > 0) {
       const terminal = new Set(["completed", "failed", "blocked", "cancelled"]);
@@ -58,7 +62,7 @@ export async function run(args, { cpbRoot }) {
       let leaseState = "-";
       if (latest.leaseId) {
         try {
-          const l = await readLease(cpbRoot, latest.leaseId);
+          const l = await readLease(cpbRoot, latest.leaseId, { dataRoot });
           leaseState = l === null ? "missing" : isLeaseStale(l) ? "stale" : "active";
         } catch {
           leaseState = "error";

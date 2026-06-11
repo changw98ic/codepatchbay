@@ -11,6 +11,7 @@ import { inboxRoutes } from "../server/routes/inbox.js";
 import { hubRoutes } from "../server/routes/hub.js";
 import { buildAttentionProjection } from "../server/services/hub/hub-registry.js";
 import { createSession, updateSession } from "../server/services/review/review-session.js";
+import { registerProject } from "../server/services/hub/hub-registry.js";
 import { tempRoot } from "./helpers.js";
 
 async function makeApp(route, { cpbRoot, hubRoot, runtimeHealth = null }) {
@@ -30,6 +31,18 @@ async function makeApp(route, { cpbRoot, hubRoot, runtimeHealth = null }) {
 
 function bodyOf(response) {
   return JSON.parse(response.body);
+}
+
+async function registerRuntimeProject(cpbRoot, hubRoot, project) {
+  const sourcePath = await tempRoot(`cpb-attention-${project}-source`);
+  const registration = await registerProject(hubRoot, {
+    id: project,
+    name: project,
+    sourcePath,
+    cpbRoot,
+    skipCodeGraphGate: true,
+  });
+  return registration.projectRuntimeRoot;
 }
 
 test("buildAttentionProjection ranks by severity, kind, age, priority, and id", () => {
@@ -202,12 +215,14 @@ test("buildAttentionProjection recognizes dotted waiting.approval statuses", () 
 test("inbox attentionOnly projects dotted waiting.approval jobs and queue entries", async () => {
   const cpbRoot = await tempRoot("cpb-attention-approval-cpb");
   const hubRoot = await tempRoot("cpb-attention-approval-hub");
+  const dataRoot = await registerRuntimeProject(cpbRoot, hubRoot, "proj-approval");
 
   await createJob(cpbRoot, {
     project: "proj-approval",
     task: "job approval",
     jobId: "job-approval",
     ts: "2026-06-11T08:00:00.000Z",
+    dataRoot,
   });
   await appendEvent(cpbRoot, "proj-approval", "job-approval", {
     type: "approval_required",
@@ -216,8 +231,8 @@ test("inbox attentionOnly projects dotted waiting.approval jobs and queue entrie
     phase: "execute",
     reason: "needs approval",
     ts: "2026-06-11T09:00:00.000Z",
-  });
-  await rebuildJobsIndex(cpbRoot);
+  }, { dataRoot });
+  await rebuildJobsIndex(cpbRoot, { dataRoot });
 
   const queueEntry = await enqueue(hubRoot, {
     projectId: "proj-queue-approval",
@@ -295,18 +310,21 @@ test("buildAttentionProjection uses lexical id as final tie-break", () => {
 test("inbox attentionOnly returns canonical attention rows and preserves legacy nextHumanAction otherwise", async () => {
   const cpbRoot = await tempRoot("cpb-attention-inbox-cpb");
   const hubRoot = await tempRoot("cpb-attention-inbox-hub");
+  const dataRoot = await registerRuntimeProject(cpbRoot, hubRoot, "proj-failed");
 
   await createJob(cpbRoot, {
     project: "proj-failed",
     task: "failed job",
     jobId: "job-failed",
     ts: "2026-06-11T08:00:00.000Z",
+    dataRoot,
   });
   await failJob(cpbRoot, "proj-failed", "job-failed", {
     reason: "boom",
     code: "FATAL",
     phase: "execute",
     ts: "2026-06-11T09:00:00.000Z",
+    dataRoot,
   });
 
   const queueEntry = await enqueue(hubRoot, {
@@ -350,12 +368,14 @@ test("inbox attentionOnly returns canonical attention rows and preserves legacy 
 test("inbox attaches dag_node_failed and review_ready attention without route-specific remapping", async () => {
   const cpbRoot = await tempRoot("cpb-attention-dag-cpb");
   const hubRoot = await tempRoot("cpb-attention-dag-hub");
+  const dataRoot = await registerRuntimeProject(cpbRoot, hubRoot, "proj-dag");
 
   await createJob(cpbRoot, {
     project: "proj-dag",
     task: "dag work",
     jobId: "job-dag",
     ts: "2026-06-11T08:00:00.000Z",
+    dataRoot,
   });
   await appendEvent(cpbRoot, "proj-dag", "job-dag", {
     type: "dag_node_failed",
@@ -366,16 +386,17 @@ test("inbox attaches dag_node_failed and review_ready attention without route-sp
     reason: "verification failed",
     code: "VERIFY_FAILED",
     ts: "2026-06-11T09:00:00.000Z",
-  });
+  }, { dataRoot });
   await failJob(cpbRoot, "proj-dag", "job-dag", {
     reason: "verification failed",
     code: "VERIFY_FAILED",
     phase: "verify",
     ts: "2026-06-11T09:01:00.000Z",
+    dataRoot,
   });
 
-  const review = await createSession(cpbRoot, { project: "proj-review", intent: "inspect patch" });
-  await updateSession(cpbRoot, review.sessionId, { status: "user_review" }, { skipTransitionCheck: true });
+  const review = await createSession(cpbRoot, { project: "proj-review", intent: "inspect patch", hubRoot });
+  await updateSession(cpbRoot, review.sessionId, { status: "user_review" }, { hubRoot, skipTransitionCheck: true });
 
   const app = await makeApp(inboxRoutes, { cpbRoot, hubRoot });
   const attention = bodyOf(await app.inject({ method: "GET", url: "/inbox?attentionOnly=1" }));

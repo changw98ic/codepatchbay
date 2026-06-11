@@ -396,7 +396,7 @@ function buildScoreInput(stats, performance, quality) {
   };
 }
 
-export async function collectAgentMetrics(cpbRoot) {
+export async function collectAgentMetrics(cpbRoot, _options: Record<string, any> = {}) {
   let descriptors = [];
   try {
     await agentRegistry.loadRegistry(undefined);

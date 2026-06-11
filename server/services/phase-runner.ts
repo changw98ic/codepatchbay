@@ -1,13 +1,16 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { access, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
-import { getJob } from "./job/job-store.js";
+import { getJob, listJobsFromIndex } from "./job/job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
+import { resolveProjectDataRoot } from "./runtime.js";
 
 type AnyRecord = Record<string, any>;
 type RunChildResult = { exitCode: number; stdout: string; error?: any };
+const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function roleForBridge(scriptPath) {
   const base = path.basename(scriptPath);
@@ -52,7 +55,14 @@ export async function validatePhaseInputs(cpbRoot, project, jobId, phase) {
     errors.push(`project not found: ${project}`);
   }
 
-  const job = await getJob(cpbRoot, project, jobId);
+  let dataRoot = null;
+  try {
+    dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+  } catch (err) {
+    errors.push(err?.message || `project runtime root required for project: ${project}`);
+  }
+
+  const job = dataRoot ? await getJob(cpbRoot, project, jobId, { dataRoot }) : null;
   if (!job?.jobId) {
     errors.push(`job not found: ${jobId}`);
   }
@@ -61,14 +71,15 @@ export async function validatePhaseInputs(cpbRoot, project, jobId, phase) {
 }
 
 export async function checkPhasePermissions(cpbRoot, project, jobId, phase, targetPath, action) {
-  const job = await getJob(cpbRoot, project, jobId);
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
+  const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   const workflow = getWorkflow(job?.workflow);
   const role = workflowRoleForPhase(workflow, phase) || phaseRole(phase);
   if (!role) return { allowed: true };
 
   const sourcePath = job?.worktree || process.env.CPB_PROJECT_PATH_OVERRIDE || null;
 
-  return checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId });
+  return checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId, dataRoot });
 }
 
 async function fileExists(file) {
@@ -77,6 +88,333 @@ async function fileExists(file) {
   } catch {
     return false;
   }
+}
+
+function requireParentPlanDataRoot(dataRoot?: string | null) {
+  if (!dataRoot) {
+    throw new Error("project runtime root required for parent plan cache");
+  }
+  return path.resolve(dataRoot);
+}
+
+export function parentPlanStoreDir(_cpbRoot: string, project: string, { dataRoot }: { dataRoot?: string | null } = {}) {
+  return path.join(requireParentPlanDataRoot(dataRoot), "plan-cache", project);
+}
+
+export function parentPlanRecordPath(cpbRoot: string, project: string, planCacheKey: string, opts: { dataRoot?: string | null } = {}) {
+  return path.join(parentPlanStoreDir(cpbRoot, project, opts), `${planCacheKey}.json`);
+}
+
+async function writeAtomic(filePath: string, content: string) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, content, "utf8");
+  await rename(tmp, filePath);
+}
+
+export async function readParentPlanRecord(cpbRoot: string, project: string, planCacheKey?: string | null, opts: { dataRoot?: string | null } = {}) {
+  if (!planCacheKey) return null;
+  const file = parentPlanRecordPath(cpbRoot, project, planCacheKey, opts);
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch (error: any) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function writeParentPlanRecord(cpbRoot: string, project: string, planCacheKey: string, record: AnyRecord, opts: { dataRoot?: string | null } = {}) {
+  if (!planCacheKey) throw new Error("planCacheKey is required");
+  const file = parentPlanRecordPath(cpbRoot, project, planCacheKey, opts);
+  await writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`);
+  return { ...record, cachePath: file };
+}
+
+function normalizeWords(text = "") {
+  return text.toLowerCase().split(/\W+/).filter((word) => word.length > 2);
+}
+
+function wordOverlap(a, b) {
+  const sa = new Set(normalizeWords(a));
+  const sb = new Set(normalizeWords(b));
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let common = 0;
+  for (const word of sa) if (sb.has(word)) common++;
+  return common / Math.min(sa.size, sb.size);
+}
+
+async function planFileExists(cpbRoot, project, planId, { dataRoot }: AnyRecord = {}) {
+  try {
+    if (!dataRoot) throw new Error("project runtime root required for parent plan artifact lookup");
+    await access(path.join(path.resolve(dataRoot), "wiki", "inbox", `plan-${planId}.md`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stableParentPlanPayload({ project, task, sourceContext = {} }: AnyRecord = {}) {
+  const planGroupId = sourceContext?.planGroupId || sourceContext?.sddTask?.planGroupId || null;
+  if (planGroupId) {
+    return {
+      project,
+      planGroupId,
+      source: {
+        repo: sourceContext?.repo || null,
+        issueNumber: sourceContext?.issueNumber ?? null,
+      },
+    };
+  }
+  return {
+    project,
+    task: String(task || "").trim().replace(/\s+/g, " "),
+    source: {
+      repo: sourceContext?.repo || null,
+      issueNumber: sourceContext?.issueNumber ?? null,
+      issueUrl: sourceContext?.issueUrl || null,
+      sddTraceId: sourceContext?.sddTrace?.traceId || null,
+      sourceFingerprint: sourceContext?.sourceFingerprint || null,
+      specHash: sourceContext?.specHash || sourceContext?.sddTrace?.hashes?.spec || null,
+      designHash: sourceContext?.designHash || sourceContext?.sddTrace?.hashes?.design || null,
+      tasksHash: sourceContext?.tasksHash || sourceContext?.sddTrace?.hashes?.tasks || null,
+      taskId: sourceContext?.sddTask?.id || sourceContext?.taskId || null,
+      parentPlanId: sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null,
+    },
+  };
+}
+
+function explicitParentPlanId(sourceContext: AnyRecord = {}) {
+  const value = sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null;
+  return value ? String(value).replace(/^plan-/, "") : null;
+}
+
+function hashPayload(payload) {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function planArtifactPath(_cpbRoot, _project, planArtifact, { dataRoot }: AnyRecord = {}) {
+  if (!dataRoot) throw new Error("project runtime root required for parent plan artifact path");
+  const artifact = String(planArtifact || "").replace(/^plan-/, "");
+  return path.join(path.resolve(dataRoot), "wiki", "inbox", `plan-${artifact}.md`);
+}
+
+async function artifactExists(filePath) {
+  try {
+    const info = await stat(filePath);
+    return info.isFile() && info.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: AnyRecord = {}) {
+  const payload = stableParentPlanPayload({ project, task, sourceContext });
+  const digest = hashPayload(payload);
+  return {
+    planGroupId: `plan-group-${digest.slice(0, 12)}`,
+    planCacheKey: digest.slice(0, 16),
+    payload,
+  };
+}
+
+async function resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot }: AnyRecord = {}) {
+  return await resolveProjectDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+}
+
+export async function resolveParentPlanCache(cpbRoot, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+  if (!project) throw new Error("project is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+  const identity = parentPlanCacheIdentity({ project, task, sourceContext });
+  const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+
+  const explicitPlanId = explicitParentPlanId(sourceContext);
+  const planId = cached?.parentPlanId || cached?.planId || explicitPlanId || null;
+  const planArtifact = cached?.planArtifact || (planId ? `plan-${planId}` : null);
+  const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact, { dataRoot: resolvedDataRoot }) : null;
+  const cacheHit = Boolean(planId && artifactPath && await artifactExists(artifactPath));
+
+  return {
+    schemaVersion: 1,
+    source: "parent_plan_cache",
+    project,
+    dataRoot: resolvedDataRoot,
+    task,
+    ...identity,
+    cachePath: file,
+    cacheHit,
+    parentPlanId: cacheHit ? planId : null,
+    reusedPlanId: cacheHit ? planId : null,
+    reusedPlanArtifact: cacheHit ? planArtifact : null,
+    mergedPlanIds: cacheHit ? [...new Set([planId, ...(cached?.mergedPlanIds || [])])] : [],
+    stale: Boolean(cached && !cacheHit),
+    cachedAt: cached?.updatedAt || null,
+  };
+}
+
+export async function writeParentPlanCache(cpbRoot, {
+  project,
+  task,
+  sourceContext = {},
+  dataRoot,
+  hubRoot,
+  planGroupId = null,
+  planCacheKey = null,
+  planId,
+  planArtifact = null,
+  mergedPlanIds = [],
+}: AnyRecord = {}) {
+  if (!project) throw new Error("project is required");
+  if (!planId) throw new Error("planId is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+  const identity = planCacheKey && planGroupId
+    ? { planGroupId, planCacheKey, payload: stableParentPlanPayload({ project, task, sourceContext }) }
+    : parentPlanCacheIdentity({ project, task, sourceContext });
+  const artifact = planArtifact || `plan-${planId}`;
+  const record = {
+    schemaVersion: 1,
+    source: "parent_plan_cache",
+    project,
+    task,
+    planGroupId: identity.planGroupId,
+    planCacheKey: identity.planCacheKey,
+    parentPlanId: String(planId),
+    planId: String(planId),
+    planArtifact: artifact,
+    planArtifactPath: planArtifactPath(cpbRoot, project, artifact, { dataRoot: resolvedDataRoot }),
+    mergedPlanIds: [...new Set([String(planId), ...mergedPlanIds.filter(Boolean).map(String)])],
+    payload: identity.payload,
+    updatedAt: new Date().toISOString(),
+  };
+  const stored = await writeParentPlanRecord(cpbRoot, project, identity.planCacheKey, record, { dataRoot: resolvedDataRoot });
+  return {
+    ...stored,
+    dataRoot: resolvedDataRoot,
+    cacheHit: true,
+    planCacheKey: record.planCacheKey,
+    parentPlanId: record.parentPlanId,
+    reusedPlanId: record.planId,
+    reusedPlanArtifact: record.planArtifact,
+  };
+}
+
+function parentPlanHitResult(identity: AnyRecord, { source, planId, artifact, parentJobId = null, cachedAt = null }: AnyRecord) {
+  return {
+    schemaVersion: 2,
+    cacheHit: true,
+    source,
+    project: identity.payload.project,
+    task: identity.payload.task,
+    ...identity,
+    parentPlanId: planId,
+    reusedPlanId: planId,
+    reusedPlanArtifact: artifact,
+    mergedPlanIds: [planId],
+    parentJobId,
+    stale: false,
+    cachedAt,
+  };
+}
+
+function parentPlanMissResult(identity: AnyRecord, stale = false, cachedAt = null) {
+  return {
+    schemaVersion: 2,
+    cacheHit: false,
+    source: null,
+    project: identity.payload.project,
+    task: identity.payload.task,
+    ...identity,
+    parentPlanId: null,
+    reusedPlanId: null,
+    reusedPlanArtifact: null,
+    mergedPlanIds: [],
+    parentJobId: null,
+    stale,
+    cachedAt,
+  };
+}
+
+async function findParentPlanJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot }: AnyRecord = {}) {
+  const allJobs = await listJobsFromIndex(cpbRoot, { dataRoot });
+  const cutoff = Date.now() - PARENT_PLAN_MAX_AGE_MS;
+  const candidates = (allJobs as AnyRecord[])
+    .filter((job) => job.project === project)
+    .filter((job) => job.completedPhases?.includes("plan"))
+    .filter((job) => job.artifacts?.plan)
+    .filter((job) => job.status !== "cancelled")
+    .filter((job) => {
+      const updatedAt = new Date(job.updatedAt || job.createdAt).getTime();
+      return !Number.isNaN(updatedAt) && updatedAt >= cutoff;
+    })
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+  if (candidates.length === 0) return null;
+
+  const issueNumber = sourceContext?.issueNumber;
+  if (issueNumber) {
+    for (const job of candidates) {
+      const jobIssue = job.sourceContext?.issueNumber;
+      if (jobIssue && String(jobIssue) === String(issueNumber)) {
+        const planId = job.artifacts.plan.replace(/^plan-/, "");
+        if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
+          return { planId, parentJobId: job.jobId, source: "same_issue" };
+        }
+      }
+    }
+  }
+
+  for (const job of candidates) {
+    const overlap = wordOverlap(task || "", job.task || "");
+    if (overlap >= 0.5) {
+      const planId = job.artifacts.plan.replace(/^plan-/, "");
+      if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
+        return { planId, parentJobId: job.jobId, source: "task_overlap" };
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function resolveParentPlan(cpbRoot, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+  if (!project) throw new Error("project is required");
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+  const identity = parentPlanCacheIdentity({ project, task, sourceContext });
+
+  const explicitPlanId = explicitParentPlanId(sourceContext);
+  if (explicitPlanId) {
+    const artifact = `plan-${explicitPlanId}`;
+    if (await planFileExists(cpbRoot, project, explicitPlanId, { dataRoot: resolvedDataRoot })) {
+      return parentPlanHitResult(identity, { source: "explicit", planId: explicitPlanId, artifact });
+    }
+  }
+
+  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const cachedPlanId = cached?.parentPlanId || cached?.planId || null;
+  if (cachedPlanId) {
+    const artifact = cached?.planArtifact || `plan-${cachedPlanId}`;
+    if (await planFileExists(cpbRoot, project, cachedPlanId, { dataRoot: resolvedDataRoot })) {
+      return parentPlanHitResult(identity, {
+        source: "cache",
+        planId: cachedPlanId,
+        artifact,
+        cachedAt: cached?.updatedAt || null,
+      });
+    }
+  }
+
+  const indexHit = await findParentPlanJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot: resolvedDataRoot });
+  if (indexHit) {
+    const artifact = `plan-${indexHit.planId}`;
+    return parentPlanHitResult(identity, {
+      source: indexHit.source,
+      planId: indexHit.planId,
+      artifact,
+      parentJobId: indexHit.parentJobId,
+    });
+  }
+
+  return parentPlanMissResult(identity, Boolean(cached), cached?.updatedAt || null);
 }
 
 function runChild(command: string, args: string[], cwd: string, options: AnyRecord = {}): Promise<RunChildResult> {

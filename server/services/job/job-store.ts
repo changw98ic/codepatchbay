@@ -20,7 +20,7 @@ import {
   selectAgentWithFallback,
 } from "../../../core/agents/routing.js";
 import { validatePolicy } from "../../../core/policy/team-policy.js";
-import { runtimeDataPath, runtimeDataRoot } from "../runtime.js";
+import { runtimeDataPath, runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // jobs-index.ts (merged)
@@ -28,11 +28,13 @@ import { runtimeDataPath, runtimeDataRoot } from "../runtime.js";
 
 const INDEX_VERSION = 1;
 const LOCK_TTL_MS = 30_000;
+const LOCK_RETRY_COUNT = 6_000;
+const LOCK_RETRY_DELAY_MS = 10;
 
 async function withIndexLock(lockDir, callback) {
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
     try {
       await mkdir(lockDir);
       acquired = true;
@@ -48,7 +50,7 @@ async function withIndexLock(lockDir, callback) {
       } catch {
         // Race: someone else removed it, retry
       }
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
     }
   }
   if (!acquired) throw new Error(`jobs-index lock busy: ${path.basename(lockDir)}`);
@@ -71,7 +73,9 @@ function enqueueWrite(cpbRoot, opts, fn) {
 }
 
 function _base(cpbRoot, opts) {
-  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  if (opts?.dataRoot) return path.resolve(opts.dataRoot);
+  if (opts?.legacyOnly === true) return runtimeDataRoot(cpbRoot);
+  throw new Error("dataRoot is required for project jobs-index paths");
 }
 
 function indexFilePath(cpbRoot, opts = {}) {
@@ -79,7 +83,8 @@ function indexFilePath(cpbRoot, opts = {}) {
 }
 
 function tempIndexFilePath(cpbRoot, opts = {}) {
-  return path.join(_base(cpbRoot, opts), "jobs-index.tmp");
+  const suffix = `${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}`;
+  return path.join(_base(cpbRoot, opts), `jobs-index.${suffix}.tmp`);
 }
 
 function compositeKey(project, jobId) {
@@ -87,14 +92,16 @@ function compositeKey(project, jobId) {
 }
 
 export async function readJobsIndex(cpbRoot, opts = {}) {
+  const indexFile = indexFilePath(cpbRoot, opts);
   try {
-    const raw = await readFile(indexFilePath(cpbRoot, opts), "utf8");
+    const raw = await readFile(indexFile, "utf8");
     const parsed = JSON.parse(raw);
     if (!parsed || parsed._meta?.version !== INDEX_VERSION || typeof parsed.jobs !== "object") {
       return null;
     }
     return parsed;
-  } catch {
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
     return null;
   }
 }
@@ -123,34 +130,44 @@ export async function updateJobsIndexEntry(cpbRoot, project, jobId, state, opts 
 }
 
 export async function rebuildJobsIndex(cpbRoot, opts = {}) {
-  const files = await listEventFiles(cpbRoot, opts);
-  const jobs = {};
+  return enqueueWrite(cpbRoot, opts, async () => {
+    const files = await listEventFiles(cpbRoot, opts);
+    const jobs = {};
 
-  for (const { project, jobId } of files) {
-    const events = await readEvents(cpbRoot, project, jobId, opts);
-    if (events.length === 0) continue;
-    const state = materializeJob(events);
-    if (state.createdAt && state.project && state.jobId) {
-      jobs[compositeKey(project, jobId)] = state;
+    for (const { project, jobId } of files) {
+      const events = await readEvents(cpbRoot, project, jobId, opts);
+      if (events.length === 0) continue;
+      const state = materializeJob(events);
+      if (state.createdAt && state.project && state.jobId) {
+        jobs[compositeKey(project, jobId)] = state;
+      }
     }
-  }
 
-  const index = {
-    _meta: {
-      version: INDEX_VERSION,
-      updatedAt: new Date().toISOString(),
-      jobCount: Object.keys(jobs).length,
-    },
-    jobs,
-  };
+    const index = {
+      _meta: {
+        version: INDEX_VERSION,
+        updatedAt: new Date().toISOString(),
+        jobCount: Object.keys(jobs).length,
+      },
+      jobs,
+    };
 
-  await writeJobsIndex(cpbRoot, index, opts);
-  return index;
+    await writeJobsIndex(cpbRoot, index, opts);
+    return index;
+  });
 }
 
 async function mergeMissingEventStreams(cpbRoot, index, opts = {}) {
   const files = await listEventFiles(cpbRoot, opts);
+  const validKeys = new Set(files.map(({ project, jobId }) => compositeKey(project, jobId)));
   let changed = false;
+
+  for (const key of Object.keys(index.jobs)) {
+    if (!validKeys.has(key)) {
+      delete index.jobs[key];
+      changed = true;
+    }
+  }
 
   for (const { project, jobId } of files) {
     const key = compositeKey(project, jobId);
@@ -977,8 +994,12 @@ export async function getJob(cpbRoot: string, project: string, jobId: string, { 
 }
 
 export async function listJobs(cpbRoot: string, options: Record<string, any> = {}) {
-  const { dataRoot, ...rest } = options;
-  const jobs: any[] = await listJobsFromIndex(cpbRoot, { dataRoot });
+  const { dataRoot, legacyOnly, ...rest } = options;
+  if (!dataRoot && legacyOnly !== true) {
+    const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
+    return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+  }
+  const jobs: any[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
   return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
 }
 
@@ -994,7 +1015,10 @@ export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Recor
   const seen = new Set();
   const jobs = [];
   for (const root of roots) {
-    const batch = await listJobs(cpbRoot, { dataRoot: root.kind === "legacy" ? undefined : root.dataRoot });
+    const runtimeOptions = root.kind === "legacy"
+      ? { legacyOnly: true, includeLegacyFallback: true }
+      : { dataRoot: root.dataRoot, includeLegacyFallback: false };
+    const batch = await listJobs(cpbRoot, runtimeOptions);
     for (const job of batch) {
       const key = `${job.project}/${job.jobId}`;
       if (seen.has(key)) continue;
@@ -1019,8 +1043,25 @@ export function isRecoverable(job) {
   return ["failed", "blocked", "cancelled"].includes(job.status);
 }
 
-export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
-  const original = await getJob(cpbRoot, project, jobId);
+async function resolveRecoveryRuntimeOptions(cpbRoot, project, options: Record<string, any> = {}) {
+  if (options.dataRoot) {
+    return { dataRoot: options.dataRoot, includeLegacyFallback: false };
+  }
+  if (options.hubRoot || process.env.CPB_HUB_ROOT) {
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+      hubRoot: options.hubRoot || process.env.CPB_HUB_ROOT,
+      dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
+    });
+    return { dataRoot, includeLegacyFallback: false };
+  }
+  return {};
+}
+
+export async function recoverAsNewJob(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+  const { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null } = options;
+  const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
+  const dataRoot = runtimeOpts.dataRoot;
+  const original = await getJob(cpbRoot, project, jobId, runtimeOpts);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
@@ -1051,11 +1092,15 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, { ts, reason, tri
     ts,
     executor: selectedExecutor,
     executorSelection,
+    dataRoot,
   });
 }
 
-export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null }: Record<string, any> = {}) {
-  const original = await getJob(cpbRoot, project, jobId);
+export async function retryAsNewJob(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+  const { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null } = options;
+  const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
+  const dataRoot = runtimeOpts.dataRoot;
+  const original = await getJob(cpbRoot, project, jobId, runtimeOpts);
   if (!original?.jobId) {
     throw new Error(`job not found: ${jobId}`);
   }
@@ -1083,18 +1128,20 @@ export async function retryAsNewJob(cpbRoot, project, jobId, { ts, fromPhase, tr
     ts,
     executor: selectedExecutor,
     executorSelection,
+    dataRoot,
   });
 }
 
-export async function verifyTerminalImmutability(cpbRoot, project, jobId) {
-  const before = await getJob(cpbRoot, project, jobId);
+export async function verifyTerminalImmutability(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+  const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
+  const before = await getJob(cpbRoot, project, jobId, runtimeOpts);
   if (!before?.jobId) return { immutable: false, reason: "job not found" };
 
   if (!TERMINAL_STATUSES.has(before.status)) {
     return { immutable: false, reason: `job is not terminal: ${before.status}` };
   }
 
-  const after = await getJob(cpbRoot, project, jobId);
+  const after = await getJob(cpbRoot, project, jobId, runtimeOpts);
   const fields = ["status", "phase", "blockedReason", "failureCode", "failurePhase", "retryCount"];
   for (const field of fields) {
     if (before[field] !== after[field]) {

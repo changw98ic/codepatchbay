@@ -380,12 +380,10 @@ import { appendEvent, eventFileFor } from "../event/event-store.js";
 
 const PERFORMANCE_DIR = "performance";
 
-function perfDir(cpbRoot) {
-  return runtimeDataPath(cpbRoot, PERFORMANCE_DIR);
+function perfDir(cpbRoot, options: Record<string, any> = {}) {
+  if (!options.dataRoot) throw new Error("dataRoot is required");
+  return path.join(path.resolve(options.dataRoot), PERFORMANCE_DIR);
 }
-
-// Re-export runtimeDataPath for local use
-import { runtimeDataPath } from "../runtime.js";
 
 function agentKey(agent, role, phase) {
   return `${agent}:${role}:${phase}`;
@@ -398,6 +396,7 @@ function agentKey(agent, role, phase) {
 export async function recordPerformance(cpbRoot, project, jobId, entry) {
   const { agent, role, phase, status, durationMs, error, ts } = entry;
   if (!agent || !phase) return;
+  if (!entry.dataRoot) throw new Error("dataRoot is required");
 
   try {
     await appendEvent(cpbRoot, project, jobId, {
@@ -409,10 +408,10 @@ export async function recordPerformance(cpbRoot, project, jobId, entry) {
       durationMs: durationMs || null,
       error: error || null,
       ts: ts || new Date().toISOString(),
-    });
+    }, entry.dataRoot ? { dataRoot: entry.dataRoot, includeLegacyFallback: false } : {});
   } catch {}
 
-  const dir = perfDir(cpbRoot);
+  const dir = perfDir(cpbRoot, entry);
   await mkdirPerf(dir, { recursive: true });
   const file = path.join(dir, `${agent}.jsonl`);
 
@@ -433,8 +432,8 @@ export async function recordPerformance(cpbRoot, project, jobId, entry) {
 /**
  * Get aggregated performance metrics for an agent.
  */
-export async function getAgentPerformance(cpbRoot, agent) {
-  const dir = perfDir(cpbRoot);
+export async function getAgentPerformance(cpbRoot, agent, options: Record<string, any> = {}) {
+  const dir = perfDir(cpbRoot, options);
   const file = path.join(dir, `${agent}.jsonl`);
 
   let lines;

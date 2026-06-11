@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
-import Dashboard from './Dashboard';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import Dashboard, { isInternalAttentionHref, resolveAttentionHref } from './Dashboard';
 import type { AttentionItem } from '@/types/api';
 
 const mocks = vi.hoisted(() => ({
@@ -55,9 +56,18 @@ function attention(overrides: Partial<AttentionItem>): AttentionItem {
   };
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
+}
+
 describe('Dashboard attention queue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('preserves canonical attention API order and renders priority attention before today brief', async () => {
@@ -103,5 +113,43 @@ describe('Dashboard attention queue', () => {
       expect(mocks.fetchHubData).toHaveBeenCalled();
       expect(mocks.fetchJobs).toHaveBeenCalled();
     });
+  });
+
+  it('maps hub attention actions to reachable UI routes', () => {
+    expect(resolveAttentionHref('/hub/runtime')).toBe('/?tab=health');
+    expect(resolveAttentionHref('/hub/queue')).toBe('/inbox');
+    expect(resolveAttentionHref('/project/flow?tab=overview')).toBe('/project/flow?tab=overview');
+    expect(isInternalAttentionHref('/inbox')).toBe(true);
+    expect(isInternalAttentionHref('https://example.test')).toBe(false);
+    expect(isInternalAttentionHref('//example.test')).toBe(false);
+  });
+
+  it('routes hub runtime attention clicks to the dashboard health tab', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [
+          attention({
+            id: 'runtime-warning',
+            title: 'Runtime warning',
+            reason: 'Runtime needs repair',
+            nextHumanAction: { kind: 'repair_runtime', label: 'Open runtime', href: '/hub/runtime' },
+          }),
+        ],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="*" element={<><Dashboard /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Open runtime' }));
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/?tab=health');
   });
 });

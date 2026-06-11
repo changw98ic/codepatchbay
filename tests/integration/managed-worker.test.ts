@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { createIsolatedWorktreeWithRetry } from "../../runtime/worker/worktree-manager.js";
 import { finalizeAndWriteSuccessfulResult } from "../../runtime/worker/assignment-finalizer.js";
+import { registerProject } from "../../server/services/hub/hub-registry.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import { readJson, tempRoot, writeJson } from "../helpers.js";
 
@@ -121,6 +122,12 @@ async function writeWorkerScenario(root) {
       {
         name: "execute",
         matchRegex: "software execution agent",
+        writes: [
+          {
+            path: "{{cwd}}/README.md",
+            content: "# Managed Worker Fixture\n\nFake ACP touched this file.\n",
+          },
+        ],
         output: jsonEnvelope({
           status: "ok",
           summary: "Fake ACP completed the managed worker fixture and referenced README.md.",
@@ -167,6 +174,7 @@ async function writeValidAssignment({
   planMode?: string;
   attemptToken?: string;
 }) {
+  const project = await registerProject(hubRoot, { id: "proj", name: "proj", sourcePath, skipCodeGraphGate: true });
   const attemptDir = path.join(hubRoot, "assignments", assignmentId, "attempts", "001");
   await mkdir(path.join(attemptDir, "control"), { recursive: true });
   await writeJson(path.join(attemptDir, "attempt.json"), {
@@ -200,7 +208,7 @@ async function writeValidAssignment({
     attemptToken,
     orchestratorEpoch: 7,
   });
-  return { assignmentId, attemptDir };
+  return { assignmentId, attemptDir, project };
 }
 
 test("createIsolatedWorktreeWithRetry refuses source checkout and cleans failed worktree state", async () => {
@@ -320,7 +328,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-fixture", private: true }, null, 2)}\n`, "utf8");
   const scenarioPath = await writeWorkerScenario(root);
   const transcriptPath = path.join(root, "transcript.jsonl");
-  const { assignmentId, attemptDir } = await writeValidAssignment({ hubRoot, workerId, sourcePath });
+  const { assignmentId, attemptDir, project } = await writeValidAssignment({ hubRoot, workerId, sourcePath });
 
   const worker = spawnWorker({
     workerId,
@@ -371,6 +379,11 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(result.status, "completed");
   assert.equal(result.jobResult.status, "completed");
   assert.deepEqual(result.jobResult.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
+  assert.equal(existsSync(path.join(project.projectRuntimeRoot, "events", "proj", "job-managed-success.jsonl")), true);
+  assert.equal(existsSync(path.join(project.projectRuntimeRoot, "jobs-index.json")), true);
+  assert.equal(existsSync(path.join(project.projectRuntimeRoot, "wiki", "inbox")), true);
+  assert.equal(existsSync(path.join(project.projectRuntimeRoot, "wiki", "outputs")), true);
+  assert.equal(existsSync(path.join(cpbRoot, "cpb-task")), false);
 
   const registry = await readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`));
   assert.equal(registry.status, "ready");

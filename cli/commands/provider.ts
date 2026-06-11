@@ -3,6 +3,7 @@ import { readdir } from "node:fs";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import { resolveHubRoot } from "../../server/services/hub/hub-registry.js";
 
 const execFile = promisify(execFileCb);
 const TEMPLATES_DIR = path.join(import.meta.dirname, "..", "..", "core", "agents", "templates");
@@ -20,7 +21,7 @@ function optionValues(args: string[], name: string) {
 }
 
 function configDir(cpbRoot: string) {
-  return process.env.CPB_AGENTS_CONFIG_DIR || path.join(cpbRoot, "cpb-task", "agents");
+  return process.env.CPB_AGENTS_CONFIG_DIR || path.join(resolveHubRoot(cpbRoot), "agents");
 }
 
 function fillTemplate(template: string, vars: Record<string, string>) {

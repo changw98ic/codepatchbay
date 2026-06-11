@@ -62,7 +62,7 @@ test("scanner catches shared export re-export from runtime layer (negative)", ()
 });
 
 test("scanner catches shared require from server layer (negative)", () => {
-  const source = `const server = require("../server/services/event-store.js")`;
+  const source = `const server = require("../server/services/event/event-store.js")`;
   const fakeFile = path.join(REPO_ROOT, "shared/test.js");
   const violations = detectImportViolations(source, fakeFile, FORBIDDEN_SHARED_TARGETS);
   assert.equal(violations.length, 1);

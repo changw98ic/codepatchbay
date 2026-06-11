@@ -1,6 +1,5 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { getProject } from "./hub/hub-registry.js";
 import { createJob as createJobStore } from "./job/job-store.js";
@@ -19,12 +18,20 @@ const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standa
 
 type AnyRecord = Record<string, any>;
 
-function sourceDir(cpbRoot) {
-  return runtimeDataPath(cpbRoot, EVENT_SOURCE_DIR);
+function controlRoot(cpbRoot, { hubRoot, controlRoot: explicitControlRoot }: AnyRecord = {}) {
+  const root = explicitControlRoot || hubRoot || cpbRoot;
+  if (!root || typeof root !== "string" || !root.trim()) {
+    throw new Error("hubRoot or controlRoot is required for event source storage");
+  }
+  return path.resolve(root);
 }
 
-function candidateFile(cpbRoot) {
-  return path.join(sourceDir(cpbRoot), CANDIDATE_QUEUE_FILE);
+function sourceDir(cpbRoot, options: AnyRecord = {}) {
+  return path.join(controlRoot(cpbRoot, options), EVENT_SOURCE_DIR);
+}
+
+function candidateFile(cpbRoot, options: AnyRecord = {}) {
+  return path.join(sourceDir(cpbRoot, options), CANDIDATE_QUEUE_FILE);
 }
 
 function generateId() {
@@ -37,8 +44,8 @@ function dedupeKey(source, externalId) {
 
 const candidateChains = new Map<string, Promise<any>>();
 
-async function withCandidateFileLock(cpbRoot, fn: () => Promise<any>) {
-  const file = candidateFile(cpbRoot);
+async function withCandidateFileLock(cpbRoot, options: AnyRecord, fn: () => Promise<any>) {
+  const file = candidateFile(cpbRoot, options);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
 
@@ -72,10 +79,10 @@ async function withCandidateFileLock(cpbRoot, fn: () => Promise<any>) {
   }
 }
 
-function withCandidateLock(cpbRoot, fn: () => Promise<any>) {
-  const key = path.resolve(cpbRoot);
+function withCandidateLock(cpbRoot, options: AnyRecord, fn: () => Promise<any>) {
+  const key = controlRoot(cpbRoot, options);
   const prev = candidateChains.get(key) || Promise.resolve();
-  const next = prev.then(() => withCandidateFileLock(cpbRoot, fn));
+  const next = prev.then(() => withCandidateFileLock(cpbRoot, options, fn));
   candidateChains.set(key, next.catch(() => {}));
   const cleanup = () => {
     if (candidateChains.get(key) === next) candidateChains.delete(key);
@@ -111,7 +118,7 @@ async function readQueue(file): Promise<AnyRecord[]> {
  * Ingest an external event into the candidate queue.
  * Returns the created candidate entry.
  */
-export async function ingestEvent(cpbRoot, event: AnyRecord) {
+export async function ingestEvent(cpbRoot, event: AnyRecord, options: AnyRecord = {}) {
   const {
     source,
     externalId,
@@ -137,11 +144,11 @@ export async function ingestEvent(cpbRoot, event: AnyRecord) {
     status: "pending",
   };
 
-  return withCandidateLock(cpbRoot, async () => {
-    const dir = sourceDir(cpbRoot);
+  return withCandidateLock(cpbRoot, options, async () => {
+    const dir = sourceDir(cpbRoot, options);
     await mkdir(dir, { recursive: true });
 
-    const file = candidateFile(cpbRoot);
+    const file = candidateFile(cpbRoot, options);
     const queue = await readQueue(file);
 
     const existing = queue.find((e) => e.dedupeKey === entry.dedupeKey);
@@ -390,6 +397,11 @@ function sourcePathForQueue(explicitSourcePath, project: AnyRecord | null) {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
+function projectRuntimeRootForImmediateJob(project: AnyRecord | null) {
+  const dataRoot = project?.projectRuntimeRoot;
+  return typeof dataRoot === "string" && dataRoot.trim() ? dataRoot : null;
+}
+
 async function maybeGenerateQueueContextPack(project, hubRoot, task) {
   return null;
 }
@@ -567,7 +579,7 @@ export async function createGithubIssueQueueJob(
     projectId: event.projectId,
     priority: githubPriority(event.labels),
     payload,
-  });
+  }, { hubRoot });
 
   if (entry.status === "duplicate") {
     return { status: "duplicate", entry, candidateEntry: entry, queueEntry: null, job: null };
@@ -630,16 +642,18 @@ export async function createGithubIssueQueueJob(
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
     reason: `queued hub entry ${queueEntry.id}`,
-  });
+  }, { hubRoot });
 
   let job = null;
-  if (!sddAutomation?.requiresApproval) {
+  const immediateJobDataRoot = projectRuntimeRootForImmediateJob(project);
+  if (!sddAutomation?.requiresApproval && immediateJobDataRoot) {
     const effective = effectiveRoute(route);
     job = await createJobStore(cpbRoot, {
       project: event.projectId,
       task: payload.title || `GitHub issue #${payload.issueNumber}`,
       workflow: effective.workflow || match.workflow || "standard",
       planMode: match.planMode || effective.planMode || "full",
+      dataRoot: immediateJobDataRoot,
       queueEntryId: queueEntry.id,
       sourceContext: {
         source: "github",
@@ -785,7 +799,7 @@ export async function createChannelQueueJob(
     externalId: channelExternalId(source, context),
     projectId: command.project,
     payload,
-  });
+  }, { hubRoot });
 
   if (entry.status === "duplicate") {
     return { status: "duplicate", entry, candidateEntry: entry, queueEntry: null, job: null };
@@ -809,16 +823,18 @@ export async function createChannelQueueJob(
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
     reason: `queued hub entry ${queueEntry.id}`,
-  });
+  }, { hubRoot });
 
   let job = null;
-  if (command.type === "run" && createJobFn) {
+  const immediateJobDataRoot = projectRuntimeRootForImmediateJob(project);
+  if (command.type === "run" && createJobFn && immediateJobDataRoot) {
     try {
       job = await createJobFn(cpbRoot, {
         project: command.project,
         task: payload.task || command.task,
         workflow: payload.workflow || "standard",
         planMode: payload.planMode || null,
+        dataRoot: immediateJobDataRoot,
         queueEntryId: queueEntry.id,
         sourceContext: {
           source,
@@ -849,8 +865,8 @@ export async function createChannelQueueJob(
 /**
  * List candidate events, optionally filtered by status or source.
  */
-export async function listCandidates(cpbRoot, { status, source }: AnyRecord = {}) {
-  const file = candidateFile(cpbRoot);
+export async function listCandidates(cpbRoot, { status, source, ...rootOptions }: AnyRecord = {}) {
+  const file = candidateFile(cpbRoot, rootOptions);
   const queue = await readQueue(file);
 
   return queue.filter((e) => {
@@ -863,9 +879,10 @@ export async function listCandidates(cpbRoot, { status, source }: AnyRecord = {}
 /**
  * Update a candidate's status (pending → processed | dismissed).
  */
-export async function updateCandidate(cpbRoot, candidateId, { status, reason }: AnyRecord) {
-  return withCandidateLock(cpbRoot, async () => {
-    const file = candidateFile(cpbRoot);
+export async function updateCandidate(cpbRoot, candidateId, { status, reason, ...inlineRootOptions }: AnyRecord, options: AnyRecord = {}) {
+  const rootOptions = { ...inlineRootOptions, ...options };
+  return withCandidateLock(cpbRoot, rootOptions, async () => {
+    const file = candidateFile(cpbRoot, rootOptions);
     const queue = await readQueue(file);
     if (!queue.length) return null;
 
@@ -923,6 +940,3 @@ export function ciFailureToCandidate(failure: AnyRecord, { projectId }: AnyRecor
     },
   };
 }
-
-// ── Re-exports from experience-extractor ──
-export { categorizeVerdictEnvelope, writeExperience, extractExperienceFromVerdict, extractExperienceFromTerminalState, extractExperienceForJob, rebuildExperienceIndex } from "./experience-extractor.js";

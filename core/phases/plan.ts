@@ -27,6 +27,7 @@ Rules:
 
 export async function runPlan(ctx) {
   const { task, project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "planner";
 
   // Build prompt — reuse existing prompt-builder if available, else minimal
@@ -39,6 +40,7 @@ export async function runPlan(ctx) {
     role,
     agent: resolvedAgent.agent,
     prompt,
+    dataRoot,
   });
 
   const agentResult: Record<string, any> = await runAgent({
@@ -106,6 +108,7 @@ export async function runPlan(ctx) {
     jobId,
     kind: "plan",
     content: parsed.planMarkdown,
+    dataRoot,
     metadata: { task, agent: agentResult.agent },
   });
 

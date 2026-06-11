@@ -22,4 +22,4 @@ export {
   extractExperienceFromTerminalState,
   extractExperienceForJob,
   rebuildExperienceIndex,
-} from "../event-source.js";
+} from "../experience-extractor.js";

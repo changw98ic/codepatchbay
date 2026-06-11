@@ -7,7 +7,6 @@ import { listSessions, getSession } from "../services/review/review-session.js";
 import { buildReviewBundle } from "../services/review/review-session.js";
 import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from "../services/review/review-session.js";
 import { resolveProjectDataRoot } from "../services/runtime.js";
-import { runtimeDataRoot } from "../services/runtime.js";
 import { getProject } from "../services/hub/hub-registry.js";
 import { broadcast } from "../services/infra.js";
 import { buildAttentionProjection } from "../services/hub/hub-registry.js";
@@ -15,6 +14,7 @@ import { collectRuntimeHealth } from "../services/runtime.js";
 
 const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
 type LooseRecord = Record<string, any>;
+const DASHBOARD_JOBS_CACHE_TTL_MS = 500;
 
 function sendReviewLoopError(reply, error) {
   if (!isReviewLoopError(error)) throw error;
@@ -136,9 +136,9 @@ export function inboxRoutes(fastify) {
     const attentionOnly = ["1", "true"].includes(String(req.query.attentionOnly || ""));
 
     const [jobs, queueEntries, reviews] = await Promise.all([
-      listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot }).catch(() => []),
+      listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot, cacheTtlMs: DASHBOARD_JOBS_CACHE_TTL_MS }).catch(() => []),
       hubRoot ? listQueue(hubRoot).catch(() => []) : [],
-      listSessions(cpbRoot).catch(() => []),
+      listSessions(cpbRoot, { hubRoot }).catch(() => []),
     ]);
 
     const runtimeHealth = await resolveRuntimeHealth(req, cpbRoot);
@@ -248,7 +248,7 @@ export function inboxRoutes(fastify) {
     }
 
     // Try review session
-    const session = await getSession(cpbRoot, requestId);
+    const session = await getSession(cpbRoot, requestId, { hubRoot });
     if (session) {
       const reviewRow = requestRowFromReview(session);
       return {
@@ -348,7 +348,7 @@ export function inboxRoutes(fastify) {
     const [jobs, queueEntries, reviews] = await Promise.all([
       listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot }).catch(() => []),
       hubRoot ? listQueue(hubRoot).catch(() => []) : [],
-      listSessions(cpbRoot).catch(() => []),
+      listSessions(cpbRoot, { hubRoot }).catch(() => []),
     ]);
 
     const projectMap = new Map();
@@ -514,7 +514,7 @@ async function buildInboxReviewBundle(cpbRoot, hubRoot, job) {
 function runtimeWikiDirFor(cpbRoot, dataRoot) {
   if (!dataRoot) return null;
   const resolvedDataRoot = path.resolve(dataRoot);
-  if (resolvedDataRoot === path.resolve(runtimeDataRoot(cpbRoot))) return null;
+  if (resolvedDataRoot === path.join(path.resolve(cpbRoot), "cpb-task")) return null;
   return path.join(resolvedDataRoot, "wiki");
 }
 

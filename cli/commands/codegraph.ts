@@ -1,10 +1,11 @@
 import path from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { resolveHubRoot } from "../../server/services/hub/hub-registry.js";
 
 const DEFAULT_PORT = 3100;
 
 function stateFilePath(cpbRoot) {
-  return path.join(cpbRoot, "cpb-task", "codegraph-state.json");
+  return path.join(resolveHubRoot(cpbRoot), "codegraph-state.json");
 }
 
 function readState(cpbRoot) {

@@ -40,8 +40,24 @@ function worktreePathFor(cpbRoot, jobId) {
  * Shared by approve and auto-approve routes.
  */
 export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
-  const session = await getSession(cpbRoot, sessionId);
+  const storageOptions = { hubRoot: hubRootOverride };
+  const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
+
+  const dispatchKey = `review:${session.sessionId}`;
+  if (session.status === "dispatched" && session.jobId) {
+    return {
+      ok: true,
+      sessionId: session.sessionId,
+      taskId: session.queueEntryId || session.jobId,
+      jobId: session.jobId,
+      session,
+      project: session.project,
+    };
+  }
+  if (session.status !== "user_review" && session.status !== "dispatched") {
+    return { ok: false, error: "invalid_state", status: session.status };
+  }
 
   const jobId = makeJobId();
   const wtPath = worktreePathFor(cpbRoot, jobId);
@@ -59,6 +75,7 @@ export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOver
     metadata: {
       source: "review",
       reviewSessionId: session.sessionId,
+      queueDedupeKey: dispatchKey,
       jobId,
       workflow: "standard",
       autoFinalize: true,
@@ -66,28 +83,50 @@ export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOver
     },
   });
 
-  const updated = await updateSession(cpbRoot, session.sessionId, {
-    status: "dispatched",
-    userVerdict: "approved",
-    jobId,
-    worktreePath: wtPath,
-  });
+  try {
+    const updated = await updateSession(cpbRoot, session.sessionId, {
+      status: "dispatched",
+      userVerdict: "approved",
+      jobId,
+      queueEntryId: entry.id,
+      worktreePath: wtPath,
+      idempotency: {
+        ...session.idempotency,
+        dispatchKey,
+      },
+    }, storageOptions);
 
-  return {
-    ok: true,
-    sessionId: session.sessionId,
-    taskId: entry.id,
-    jobId,
-    session: updated,
-    project: session.project,
-  };
+    return {
+      ok: true,
+      sessionId: session.sessionId,
+      taskId: entry.id,
+      jobId,
+      session: updated,
+      project: session.project,
+    };
+  } catch (err) {
+    if (err?.message?.includes("already in status: dispatched")) {
+      const current = await getSession(cpbRoot, session.sessionId, storageOptions);
+      if (current?.status === "dispatched" && current.jobId) {
+        return {
+          ok: true,
+          sessionId: current.sessionId,
+          taskId: current.queueEntryId || entry.id,
+          jobId: current.jobId,
+          session: current,
+          project: current.project || session.project,
+        };
+      }
+    }
+    throw err;
+  }
 }
 
 /**
  * Auto-approve path: handles already-dispatched sessions idempotently.
  */
 export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
-  const session = await getSession(cpbRoot, sessionId);
+  const session = await getSession(cpbRoot, sessionId, { hubRoot: hubRootOverride });
   if (!session) return { ok: false, error: "session_not_found" };
 
   if (!["dispatched", "user_review"].includes(session.status)) {
@@ -124,14 +163,14 @@ export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootO
 /**
  * Cancel a review session.
  */
-export async function cancelReviewDispatch(cpbRoot, sessionId, reason) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function cancelReviewDispatch(cpbRoot, sessionId, reason, options: Record<string, any> = {}) {
+  const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
   const updated = await updateSession(cpbRoot, session.sessionId, {
     status: "cancelled",
     detail: reason || "cancelled",
-  }, { skipTransitionCheck: true });
+  }, { ...options, skipTransitionCheck: true });
 
   return { ok: true, sessionId, session: updated, project: session.project };
 }
@@ -139,8 +178,8 @@ export async function cancelReviewDispatch(cpbRoot, sessionId, reason) {
 /**
  * Run ACP analysis on a review session.
  */
-export async function analyzeSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function analyzeSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+  const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
   const sections = [];
@@ -262,8 +301,8 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 /**
  * Accept a review session — merge worktree branch into main.
  */
-export async function acceptSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function acceptSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+  const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review" && session.status !== "dispatched") {
     return { ok: false, error: "invalid_state", status: session.status };
@@ -289,8 +328,14 @@ export async function acceptSession(cpbRoot, sessionId) {
         }
         await gitExec(sourcePath, "worktree", "remove", "--force", session.worktreePath).catch(() => {});
         await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
+      } else {
+        mergeError = "sourcePath missing";
+        await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
       }
-    } catch {}
+    } catch (err) {
+      mergeError = mergeError || (err?.code === "ENOENT" ? "sourcePath missing" : err.message || "sourcePath missing");
+      await rm(session.worktreePath, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   const finalStatus = (!merged && mergeError) ? "merge_failed" : "completed";
@@ -299,7 +344,7 @@ export async function acceptSession(cpbRoot, sessionId) {
     userVerdict: "accepted",
     merged,
     ...(mergeError && { mergeError }),
-  });
+  }, options);
 
   return {
     ok: true,
@@ -315,8 +360,8 @@ export async function acceptSession(cpbRoot, sessionId) {
 /**
  * Reject a review session — discard worktree.
  */
-export async function rejectSession(cpbRoot, sessionId) {
-  const session = await getSession(cpbRoot, sessionId);
+export async function rejectSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+  const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review") {
     return { ok: false, error: "invalid_state", status: session.status };
@@ -336,7 +381,7 @@ export async function rejectSession(cpbRoot, sessionId) {
   const updated = await updateSession(cpbRoot, session.sessionId, {
     status: "expired",
     userVerdict: "rejected",
-  });
+  }, options);
 
   return { ok: true, sessionId, session: updated, project: session.project };
 }
@@ -951,9 +996,11 @@ export async function collectTestResults(sourcePath, { timeout = 30_000 } = {}) 
   }
 }
 
-export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50 } = {}) {
+export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50, dataRoot = null } = {}) {
   try {
-    const events = await readEvents(cpbRoot, project, jobId);
+    const events = await readEvents(cpbRoot, project, jobId, dataRoot
+      ? { dataRoot, includeLegacyFallback: false }
+      : {});
     if (events.length === 0) {
       return { available: false, reason: "event log is empty or missing" };
     }
@@ -964,9 +1011,9 @@ export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50 
   }
 }
 
-export async function collectProjectContext(cpbRoot, project) {
-  const ctx = await readFile(contextPath(cpbRoot, project), "utf8").catch(() => null);
-  const decisions = await readFile(decisionsPath(cpbRoot, project), "utf8").catch(() => null);
+export async function collectProjectContext(cpbRoot, project, options: Record<string, any> = {}) {
+  const ctx = await readFile(contextPath(cpbRoot, project, options), "utf8").catch(() => null);
+  const decisions = await readFile(decisionsPath(cpbRoot, project, options), "utf8").catch(() => null);
 
   return {
     available: Boolean(ctx || decisions),
@@ -975,10 +1022,10 @@ export async function collectProjectContext(cpbRoot, project) {
   };
 }
 
-export async function collectDeliverable(cpbRoot, project, deliverableId) {
+export async function collectDeliverable(cpbRoot, project, deliverableId, options: Record<string, any> = {}) {
   if (!deliverableId) return { available: false, reason: "no deliverable ID" };
 
-  const file = path.join(outputsDir(cpbRoot, project), `deliverable-${deliverableId}.md`);
+  const file = path.join(outputsDir(cpbRoot, project, options), `deliverable-${deliverableId}.md`);
   try {
     const content = await readFile(file, "utf8");
     return { available: true, content, path: file };
@@ -987,7 +1034,7 @@ export async function collectDeliverable(cpbRoot, project, deliverableId) {
   }
 }
 
-export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourcePath, deliverableId }: Record<string, any> = {}) {
+export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourcePath, deliverableId, dataRoot: explicitDataRoot = null }: Record<string, any> = {}) {
   const jobState = await reconstructJobState(cpbRoot, project, jobId);
 
   const evidence = {
@@ -1001,10 +1048,12 @@ export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourceP
     diagnostics: [],
   };
 
-  const resolvedSourcePath = sourcePath || jobState?.worktree || null;
+  const dataRoot = explicitDataRoot || jobState?.stateRoot || null;
+  const runtimeOptions = dataRoot ? { dataRoot } : {};
+  const resolvedSourcePath = sourcePath || jobState?.sourcePath || jobState?.worktree || null;
 
   const [deliverable, diff, uncommittedDiff, eventLog, projectContext, testResults] = await Promise.all([
-    collectDeliverable(cpbRoot, project, deliverableId).catch((err) => ({
+    collectDeliverable(cpbRoot, project, deliverableId, runtimeOptions).catch((err) => ({
       available: false,
       reason: err.message,
     })),
@@ -1016,11 +1065,11 @@ export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourceP
       available: false,
       reason: err.message,
     })),
-    collectEventLog(cpbRoot, project, jobId).catch((err) => ({
+    collectEventLog(cpbRoot, project, jobId, runtimeOptions).catch((err) => ({
       available: false,
       reason: err.message,
     })),
-    collectProjectContext(cpbRoot, project).catch((err) => ({
+    collectProjectContext(cpbRoot, project, runtimeOptions).catch((err) => ({
       available: false,
       reason: err.message,
     })),
@@ -1066,10 +1115,23 @@ import { readJobsIndex, updateJobsIndexEntry as updateJobsIndexEntryRem } from "
 import { resolveHubRoot as resolveHubRootRem } from "../hub/hub-registry.js";
 import { enqueue as enqueueRem, listQueue } from "../hub/hub-queue.js";
 import { allocateArtifactId } from "../artifact-locator.js";
-import { runtimeDataRoot } from "../runtime.js";
+import { runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
 
-function remediationDataRoot(cpbRoot) {
-  return process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+function remediationDataRoot(cpbRoot, options: Record<string, any> = {}) {
+  return options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+}
+
+async function resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}) {
+  if (dataRoot) return dataRoot;
+  if (lockDir) {
+    const marker = `${path.sep}remediation-locks${path.sep}`;
+    const markerIndex = lockDir.indexOf(marker);
+    if (markerIndex > 0) return lockDir.slice(0, markerIndex);
+  }
+  return resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
 }
 
 function validateIdRem(name, value) {
@@ -1078,8 +1140,8 @@ function validateIdRem(name, value) {
   }
 }
 
-async function acquireRemediationLock(cpbRoot, project, jobId) {
-  const lockDir = path.join(remediationDataRoot(cpbRoot), "remediation-locks", project, `${jobId}.lock`);
+async function acquireRemediationLock(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+  const lockDir = path.join(remediationDataRoot(cpbRoot, options), "remediation-locks", project, `${jobId}.lock`);
   await mkdirRem(path.dirname(lockDir), { recursive: true });
   try {
     await mkdirRem(lockDir);
@@ -1098,105 +1160,122 @@ async function releaseRemediationLock(lockDir) {
   } catch {}
 }
 
-async function recordRemediationEvent(cpbRoot, project, jobId, event) {
-  await appendEventRem(cpbRoot, project, jobId, event);
-  await checkpointJobRem(cpbRoot, project, jobId).catch(() => {});
-  const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId));
-  await updateJobsIndexEntryRem(cpbRoot, project, jobId, state).catch(() => {});
+async function recordRemediationEvent(cpbRoot, project, jobId, event, options: Record<string, any> = {}) {
+  await appendEventRem(cpbRoot, project, jobId, event, options);
+  await checkpointJobRem(cpbRoot, project, jobId, options).catch(() => {});
+  const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, options));
+  await updateJobsIndexEntryRem(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRemediation(cpbRoot, { project, jobId, executorRoot }) {
+export async function runRemediation(cpbRoot, { project, jobId, executorRoot = null, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
   validateIdRem("project", project);
   validateIdRem("jobId", jobId);
 
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: explicitDataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
+  const wikiDir = path.join(dataRoot, "wiki");
   const outputsDir = path.join(wikiDir, "outputs");
+  const eventOpts = { dataRoot, includeLegacyFallback: false };
+  const lockDir = await acquireRemediationLock(cpbRoot, project, jobId, eventOpts);
 
-  let events;
   try {
-    events = await readEventsRem(cpbRoot, project, jobId);
-  } catch {
-    events = [];
+    let events;
+    try {
+      events = await readEventsRem(cpbRoot, project, jobId, eventOpts);
+    } catch {
+      events = [];
+    }
+    if (events.length === 0) {
+      throw new Error(`event file not found or empty for job ${jobId}`);
+    }
+    const job = materializeJobRem(events);
+
+    const remediationId = await allocateArtifactId(outputsDir, "remediation");
+    const remediationFile = path.join(outputsDir, `remediation-${remediationId}.md`);
+    const remediationArtifact = `remediation-${remediationId}`;
+
+    let sourcePath = "";
+    try {
+      const metaFile = path.join(wikiDir, "project.json");
+      const meta = JSON.parse(await readFileRem(metaFile, "utf8"));
+      sourcePath = meta.sourcePath || "";
+    } catch {}
+
+    return { remediationId, remediationFile, remediationArtifact, workflow: job?.workflow || "", sourcePath, dataRoot, lockDir };
+  } catch (err) {
+    await releaseRemediationLock(lockDir);
+    throw err;
   }
-  if (events.length === 0) {
-    throw new Error(`event file not found or empty for job ${jobId}`);
-  }
-  const job = materializeJobRem(events);
-
-  const remediationId = await allocateArtifactId(outputsDir, "remediation");
-  const remediationFile = path.join(outputsDir, `remediation-${remediationId}.md`);
-  const remediationArtifact = `remediation-${remediationId}`;
-
-  let sourcePath = "";
-  try {
-    const metaFile = path.join(wikiDir, "project.json");
-    const meta = JSON.parse(await readFileRem(metaFile, "utf8"));
-    sourcePath = meta.sourcePath || "";
-  } catch {}
-
-  return { remediationId, remediationFile, remediationArtifact, workflow: job?.workflow || "", sourcePath };
 }
 
-export async function completeRemediation(cpbRoot, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot }) {
-  if (status === "failed") {
-    await recordRemediationEvent(cpbRoot, project, jobId, {
-      type: "external_remediation_failed",
-      jobId,
-      project,
-      artifact: remediationArtifact,
-      file: remediationFile,
-      error: error || "unknown error",
-      ts: new Date().toISOString(),
-    });
-    return;
-  }
-
-  let remediationContent;
+export async function completeRemediation(cpbRoot, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+  const dataRoot = await resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
+  const eventOpts = { dataRoot, includeLegacyFallback: false };
   try {
-    remediationContent = await readFileRem(remediationFile, "utf8");
-  } catch {
+    if (status === "failed") {
+      await recordRemediationEvent(cpbRoot, project, jobId, {
+        type: "external_remediation_failed",
+        jobId,
+        project,
+        artifact: remediationArtifact,
+        file: remediationFile,
+        error: error || "unknown error",
+        ts: new Date().toISOString(),
+      }, eventOpts);
+      return;
+    }
+
+    let remediationContent;
+    try {
+      remediationContent = await readFileRem(remediationFile, "utf8");
+    } catch {
+      await recordRemediationEvent(cpbRoot, project, jobId, {
+        type: "external_remediation_failed",
+        jobId,
+        project,
+        artifact: remediationArtifact,
+        file: remediationFile,
+        error: "remediation report not created",
+        ts: new Date().toISOString(),
+      }, eventOpts);
+      throw new Error("remediation report not created");
+    }
+
+    const remediationStatus = parseRemediationStatus(remediationContent);
+    if (!remediationStatus) {
+      await recordRemediationEvent(cpbRoot, project, jobId, {
+        type: "external_remediation_failed",
+        jobId,
+        project,
+        artifact: remediationArtifact,
+        file: remediationFile,
+        error: `invalid remediation status: ${remediationStatus === null ? "missing" : remediationStatus}`,
+        ts: new Date().toISOString(),
+      }, eventOpts);
+      throw new Error("invalid remediation status");
+    }
+
     await recordRemediationEvent(cpbRoot, project, jobId, {
-      type: "external_remediation_failed",
+      type: "external_remediation_completed",
       jobId,
       project,
       artifact: remediationArtifact,
       file: remediationFile,
-      error: "remediation report not created",
+      remediationStatus,
       ts: new Date().toISOString(),
-    });
-    throw new Error("remediation report not created");
+    }, eventOpts);
+
+    if (remediationStatus === "FIXED") {
+      await markJobSuperseded(cpbRoot, project, jobId, eventOpts);
+      await createRemediationLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot });
+    }
+
+    return remediationStatus;
+  } finally {
+    if (lockDir) await releaseRemediationLock(lockDir);
   }
-
-  const remediationStatus = parseRemediationStatus(remediationContent);
-  if (!remediationStatus) {
-    await recordRemediationEvent(cpbRoot, project, jobId, {
-      type: "external_remediation_failed",
-      jobId,
-      project,
-      artifact: remediationArtifact,
-      file: remediationFile,
-      error: `invalid remediation status: ${remediationStatus === null ? "missing" : remediationStatus}`,
-      ts: new Date().toISOString(),
-    });
-    throw new Error("invalid remediation status");
-  }
-
-  await recordRemediationEvent(cpbRoot, project, jobId, {
-    type: "external_remediation_completed",
-    jobId,
-    project,
-    artifact: remediationArtifact,
-    file: remediationFile,
-    remediationStatus,
-    ts: new Date().toISOString(),
-  });
-
-  if (remediationStatus === "FIXED") {
-    await markJobSuperseded(cpbRoot, project, jobId);
-    await createRemediationLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot });
-  }
-
-  return remediationStatus;
 }
 
 function parseRemediationStatus(content) {
@@ -1207,30 +1286,31 @@ function parseRemediationStatus(content) {
   return null;
 }
 
-async function markJobSuperseded(cpbRoot, project, jobId) {
+async function markJobSuperseded(cpbRoot, project, jobId, options: Record<string, any> = {}) {
   await recordRemediationEvent(cpbRoot, project, jobId, {
     type: "job_superseded",
     jobId,
     project,
     reason: "external_remediation_fixed",
     ts: new Date().toISOString(),
-  });
-  const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId));
+  }, options);
+  const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, options));
   if (state) {
     state.status = "superseded";
-    await updateJobsIndexEntryRem(cpbRoot, project, jobId, state).catch(() => {});
+    await updateJobsIndexEntryRem(cpbRoot, project, jobId, state, options).catch(() => {});
   }
 }
 
-async function createRemediationLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot }) {
-  const job = materializeJobRem(await readEventsRem(cpbRoot, project, jobId));
+async function createRemediationLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }) {
+  const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
+  const job = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
   }
 
   // Skip if a completed job already exists for the same task
   try {
-    const index = await readJobsIndex(cpbRoot);
+    const index = await readJobsIndex(cpbRoot, eventOpts);
     const jobs = index?.jobs || {};
     const alreadyCompleted = Object.values(jobs).some(
       (j) => {
@@ -1319,8 +1399,9 @@ function validateIdRepair(name, value) {
   }
 }
 
-async function acquireRepairLock(cpbRoot, project, jobId) {
-  const lockDir = path.join(cpbRoot, "cpb-task", "repair-locks", project, `${jobId}.lock`);
+async function acquireRepairLock(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+  const root = options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  const lockDir = path.join(root, "repair-locks", project, `${jobId}.lock`);
   await mkdirRepair(path.dirname(lockDir), { recursive: true });
   try {
     await mkdirRepair(lockDir);
@@ -1333,45 +1414,70 @@ async function acquireRepairLock(cpbRoot, project, jobId) {
   return lockDir;
 }
 
+async function resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}) {
+  if (dataRoot) return dataRoot;
+  if (lockDir) {
+    const marker = `${path.sep}repair-locks${path.sep}`;
+    const markerIndex = lockDir.indexOf(marker);
+    if (markerIndex > 0) return lockDir.slice(0, markerIndex);
+  }
+  return resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
+}
+
 async function releaseRepairLock(lockDir) {
   try {
     await rmdirRepair(lockDir);
   } catch {}
 }
 
-async function recordRepairEvent(cpbRoot, project, jobId, event) {
-  await appendEventRepair(cpbRoot, project, jobId, event);
-  await checkpointJobRepair(cpbRoot, project, jobId).catch(() => {});
-  const state = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId));
-  await updateJobsIndexEntryRepair(cpbRoot, project, jobId, state).catch(() => {});
+async function recordRepairEvent(cpbRoot, project, jobId, event, options: Record<string, any> = {}) {
+  await appendEventRepair(cpbRoot, project, jobId, event, options);
+  await checkpointJobRepair(cpbRoot, project, jobId, options).catch(() => {});
+  const state = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, options));
+  await updateJobsIndexEntryRepair(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRepair(cpbRoot, { project, jobId, executorRoot }) {
+export async function runRepair(cpbRoot, { project, jobId, executorRoot, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
   validateIdRepair("project", project);
   validateIdRepair("jobId", jobId);
 
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
-  const outputsDir = path.join(wikiDir, "outputs");
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: explicitDataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
+  const outputsDir = path.join(dataRoot, "wiki", "outputs");
+  const eventOpts = { dataRoot, includeLegacyFallback: false };
+  const lockDir = await acquireRepairLock(cpbRoot, project, jobId, eventOpts);
 
-  const eventFile = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
-  let events;
   try {
-    events = await readEventsRepair(cpbRoot, project, jobId);
-  } catch {
-    events = [];
-  }
-  if (events.length === 0) {
-    throw new Error(`event file not found or empty: ${eventFile}`);
-  }
+    const eventFile = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
+    let events;
+    try {
+      events = await readEventsRepair(cpbRoot, project, jobId, eventOpts);
+    } catch {
+      events = [];
+    }
+    if (events.length === 0) {
+      throw new Error(`event file not found or empty: ${eventFile}`);
+    }
 
-  const repairId = await allocateArtifactIdRepair(outputsDir, "repair");
-  const repairFile = path.join(outputsDir, `repair-${repairId}.md`);
-  const repairArtifact = `repair-${repairId}`;
+    const repairId = await allocateArtifactIdRepair(outputsDir, "repair");
+    const repairFile = path.join(outputsDir, `repair-${repairId}.md`);
+    const repairArtifact = `repair-${repairId}`;
 
-  return { repairId, repairFile, repairArtifact };
+    return { repairId, repairFile, repairArtifact, dataRoot, lockDir };
+  } catch (err) {
+    await releaseRepairLock(lockDir);
+    throw err;
+  }
 }
 
-export async function completeRepair(cpbRoot, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot }) {
+export async function completeRepair(cpbRoot, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+  const dataRoot = await resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
+  const eventOpts = { dataRoot, includeLegacyFallback: false };
   if (status === "failed") {
     await recordRepairEvent(cpbRoot, project, jobId, {
       type: "external_repair_failed",
@@ -1381,7 +1487,8 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
       file: repairFile,
       error: error || "unknown error",
       ts: new Date().toISOString(),
-    });
+    }, eventOpts);
+    if (lockDir) await releaseRepairLock(lockDir);
     return;
   }
 
@@ -1397,7 +1504,8 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
       file: repairFile,
       error: "repair report not created",
       ts: new Date().toISOString(),
-    });
+    }, eventOpts);
+    if (lockDir) await releaseRepairLock(lockDir);
     throw new Error("repair report not created");
   }
 
@@ -1411,7 +1519,8 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
       file: repairFile,
       error: `invalid repair status: ${repairStatus === null ? "missing" : repairStatus}`,
       ts: new Date().toISOString(),
-    });
+    }, eventOpts);
+    if (lockDir) await releaseRepairLock(lockDir);
     throw new Error("invalid repair status");
   }
 
@@ -1423,12 +1532,13 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
     file: repairFile,
     repairStatus,
     ts: new Date().toISOString(),
-  });
+  }, eventOpts);
 
   if (repairStatus === "FIXED") {
-    await createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot });
+    await createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot });
   }
 
+  if (lockDir) await releaseRepairLock(lockDir);
   return repairStatus;
 }
 
@@ -1440,8 +1550,9 @@ function parseRepairStatus(content) {
   return null;
 }
 
-async function createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot }) {
-  const job = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId));
+async function createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }) {
+  const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
+  const job = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
   }
@@ -1463,6 +1574,7 @@ async function createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact
     } catch {}
   }
 
+  const jobRecord = job as Record<string, any>;
   const entry = await enqueueRepair(hubRoot, {
     projectId: project,
     sourcePath,
@@ -1480,6 +1592,37 @@ async function createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact
       repairArtifact,
       repairStatus,
       lineageReason: "external_repair_fixed_cpb_self_bug",
+      sourceContext: {
+        ...(origin?.metadata?.sourceContext || job.sourceContext || {}),
+        repair: {
+          previousJobId: jobId,
+          previousQueueEntryId: origin?.id || null,
+          repairArtifact,
+          repairStatus,
+          lineageReason: "external_repair_fixed_cpb_self_bug",
+          failureReason: job.blockedReason || null,
+          failurePhase: job.failurePhase || null,
+          failureCode: job.failureCode || null,
+          artifacts: job.artifacts || {},
+        },
+        retry: {
+          failureKind: job.failureCode || "external_repair",
+          failureReason: job.blockedReason || "external repair requested",
+          previousJobId: jobId,
+          previousPhase: job.failurePhase || null,
+          previousOutput: "",
+          artifacts: job.artifacts || {},
+        },
+        previousFailure: {
+          kind: job.failureCode || "external_repair",
+          reason: job.blockedReason || "external repair requested",
+          jobId,
+          phase: job.failurePhase || null,
+          artifacts: job.artifacts || {},
+          verdict: jobRecord.verdict || null,
+          adversarialVerdict: jobRecord.adversarialVerdict || null,
+        },
+      },
     },
   });
 

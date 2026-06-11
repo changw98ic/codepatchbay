@@ -1,8 +1,8 @@
 // ── reconcile ──
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "../runtime.js";
-import { listEventFiles, readEvents, materializeJob, recoverEventFile } from "../event/event-store.js";
+import { listRuntimeDataRoots, resolveProjectDataRoot, runtimeDataPath, runtimeDataRoot } from "../runtime.js";
+import { eventFileFor, listEventFiles, readEvents, materializeJob, recoverEventFile } from "../event/event-store.js";
 import { appendEvent } from "../event/event-store.js";
 import { readLease, releaseLease, isLeaseStale } from "../infra.js";
 import { listJobs, failJob, blockJob } from "../job/job-store.js";
@@ -43,10 +43,78 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export async function validateEventStream(cpbRoot, project, jobId, { dryRun = false } = {}) {
+function resolvedHubRoot(cpbRoot, options: Record<string, any> = {}) {
+  return options.hubRoot ? path.resolve(options.hubRoot) : resolveHubRoot(cpbRoot);
+}
+
+async function cleanupRuntimeRoots(cpbRoot, options: Record<string, any> = {}) {
+  if (options.dataRoot) {
+    return [{ kind: "project", dataRoot: path.resolve(options.dataRoot), projectId: options.project || null }];
+  }
+  if (options.legacyOnly === true) {
+    return [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
+  }
+
+  const includeLegacy = options.includeLegacyFallback === true;
+  const hubRoot = resolvedHubRoot(cpbRoot, options);
+  try {
+    return await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy });
+  } catch {
+    return [];
+  }
+}
+
+async function listJobsForCleanup(cpbRoot, options: Record<string, any> = {}) {
+  const roots = await cleanupRuntimeRoots(cpbRoot, options);
+  const jobs = [];
+  const seen = new Set();
+  for (const root of roots) {
+    const batch = await listJobs(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+    for (const job of batch) {
+      const key = `${job.project}/${job.jobId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      jobs.push({ ...job, __dataRoot: root.dataRoot });
+    }
+  }
+  return jobs;
+}
+
+async function listProcessesForCleanup(cpbRoot, options: Record<string, any> = {}) {
+  const roots = await cleanupRuntimeRoots(cpbRoot, options);
+  const entries = [];
+  const seen = new Set();
+  for (const root of roots) {
+    const batch = await listProcesses(cpbRoot, { dataRoot: root.dataRoot });
+    for (const entry of batch) {
+      const key = `${root.dataRoot}/${entry.jobId || entry.id || JSON.stringify(entry)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ ...entry, __dataRoot: root.dataRoot });
+    }
+  }
+  return entries;
+}
+
+async function eventOptionsForProject(cpbRoot, project, options: Record<string, any> = {}) {
+  if (options.legacyOnly === true) {
+    return { ...options, legacyOnly: true };
+  }
+  if (options.dataRoot) {
+    return { ...options, dataRoot: path.resolve(options.dataRoot), includeLegacyFallback: false };
+  }
+  if (options.hubRoot) {
+    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: options.hubRoot });
+    return { ...options, dataRoot, includeLegacyFallback: false };
+  }
+  throw new Error("dataRoot is required for project event store paths");
+}
+
+export async function validateEventStream(cpbRoot, project, jobId, { dryRun = false, ...options }: Record<string, any> = {}) {
   const events = [];
   let raw;
-  const file = path.join(runtimeDataPath(cpbRoot, "events"), project, `${jobId}.jsonl`);
+  const eventOptions = await eventOptionsForProject(cpbRoot, project, options);
+  const file = eventFileFor(cpbRoot, project, jobId, eventOptions);
 
   try {
     raw = await readFile(file, "utf8");
@@ -86,7 +154,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
             error: null,
           };
         }
-        const recoveryResult = await recoverEventFile(cpbRoot, project, jobId);
+        const recoveryResult = await recoverEventFile(cpbRoot, project, jobId, eventOptions);
         return {
           valid: true,
           events: recoveredEvents,
@@ -122,7 +190,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
   return { valid: true, events, recovered: false, repaired: false, wouldRepair: false, error: null };
 }
 
-export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
+export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Record<string, any> = {}) {
   const streamRecoveries = [];
   const report: Record<string, any> = {
     staleJobs: [],
@@ -136,16 +204,17 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
     reconciledQueueEntries: [],
   };
 
-  const jobs = await listJobs(cpbRoot);
+  const roots = await cleanupRuntimeRoots(cpbRoot, options);
+  const jobs = await listJobsForCleanup(cpbRoot, options);
   const now = new Date();
 
-  const processEntries = await listProcesses(cpbRoot);
+  const processEntries = await listProcessesForCleanup(cpbRoot, options);
   const processByJobId = new Map();
   for (const pe of processEntries) {
     if (pe.jobId) processByJobId.set(pe.jobId, pe);
   }
 
-  const hubRoot = resolveHubRoot(cpbRoot);
+  const hubRoot = resolvedHubRoot(cpbRoot, options);
   let queueEntries = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
@@ -187,7 +256,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
     // Fall back to lease-based detection
     if (!isStale && job.leaseId) {
-      const lease = await readLease(cpbRoot, job.leaseId);
+      const lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job.__dataRoot });
       if (lease === null) {
         isStale = true;
         staleReason = "lease file missing";
@@ -253,6 +322,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         project: job.project,
         reason: staleReason,
         worktree: job.worktree || null,
+        dataRoot: job.__dataRoot || null,
       };
       if (cause) {
         jobReport.failureReason = cause.failureReason;
@@ -282,6 +352,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
             leaseId: job.leaseId,
             jobId: job.jobId,
             reason: "would clean with reconciled stale job",
+            dataRoot: job.__dataRoot || null,
           });
         }
       } else {
@@ -291,6 +362,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
             code: "FATAL",
             phase: cause?.phase || job.phase,
             cause,
+            dataRoot: job.__dataRoot,
           });
         } catch (err) {
           if (err.message?.includes("job is terminal") || err.message?.includes("job not found")) {
@@ -329,7 +401,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
         if (processEntry) {
           try {
-            await removeProcess(cpbRoot, job.jobId);
+            await removeProcess(cpbRoot, job.jobId, { dataRoot: processEntry.__dataRoot || job.__dataRoot });
             report.reconciledProcesses.push({ jobId: job.jobId, removed: true });
           } catch {
             report.reconciledProcesses.push({ jobId: job.jobId, removed: false, error: "cleanup failed" });
@@ -338,7 +410,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
         if (job.leaseId) {
           try {
-            const leasesDir = runtimeDataPath(cpbRoot, "leases");
+            const leasesDir = path.join(job.__dataRoot, "leases");
             await rm(path.join(leasesDir, `${job.leaseId}.json`), { force: true });
             try { await rm(path.join(leasesDir, `${job.leaseId}.json.lock`), { recursive: true, force: true }); } catch {}
           } catch {}
@@ -349,46 +421,49 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
 
   // 2. Detect orphan leases
   const activeJobIds = new Set(jobs.map((j) => j.jobId));
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
-  let leaseFiles;
-  try {
-    leaseFiles = await readdir(leasesDir);
-  } catch {
-    leaseFiles = [];
-  }
-
-  for (const f of leaseFiles) {
-    if (!f.endsWith(".json")) continue;
-    const leaseId = f.slice(0, -".json".length);
-
-    let lease;
+  for (const root of roots) {
+    const leasesDir = path.join(root.dataRoot, "leases");
+    let leaseFiles;
     try {
-      const raw = await readFile(path.join(leasesDir, f), "utf8");
-      lease = JSON.parse(raw);
+      leaseFiles = await readdir(leasesDir);
     } catch {
-      continue;
+      leaseFiles = [];
     }
 
-    if (!lease || !lease.jobId) continue;
-    if (TERMINAL_STATUSES.has(lease.phase) && !lease.jobId) continue;
+    for (const f of leaseFiles) {
+      if (!f.endsWith(".json")) continue;
+      const leaseId = f.slice(0, -".json".length);
 
-    const jobExists = activeJobIds.has(lease.jobId);
-    const ownerAlive = lease.ownerPid ? isProcessAlive(lease.ownerPid) : false;
-    const leaseExpired = isLeaseStale(lease, now);
+      let lease;
+      try {
+        const raw = await readFile(path.join(leasesDir, f), "utf8");
+        lease = JSON.parse(raw);
+      } catch {
+        continue;
+      }
 
-    if ((!jobExists || (leaseExpired && !ownerAlive))) {
-      report.orphanLeases.push({
-        leaseId,
-        jobId: lease.jobId || null,
-        reason: !jobExists ? "job not found" : "expired with dead owner",
-      });
+      if (!lease || !lease.jobId) continue;
+      if (TERMINAL_STATUSES.has(lease.phase) && !lease.jobId) continue;
 
-      if (!dryRun) {
-        try {
-          const lockDir = path.join(leasesDir, `${leaseId}.json.lock`);
-          await rm(path.join(leasesDir, f), { force: true });
-          try { await rm(lockDir, { recursive: true, force: true }); } catch {}
-        } catch {}
+      const jobExists = activeJobIds.has(lease.jobId);
+      const ownerAlive = lease.ownerPid ? isProcessAlive(lease.ownerPid) : false;
+      const leaseExpired = isLeaseStale(lease, now);
+
+      if ((!jobExists || (leaseExpired && !ownerAlive))) {
+        report.orphanLeases.push({
+          leaseId,
+          jobId: lease.jobId || null,
+          reason: !jobExists ? "job not found" : "expired with dead owner",
+          dataRoot: root.dataRoot,
+        });
+
+        if (!dryRun) {
+          try {
+            const lockDir = path.join(leasesDir, `${leaseId}.json.lock`);
+            await rm(path.join(leasesDir, f), { force: true });
+            try { await rm(lockDir, { recursive: true, force: true }); } catch {}
+          } catch {}
+        }
       }
     }
   }
@@ -441,38 +516,42 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
   } catch { /* hub not initialized */ }
 
   // 4. Validate and recover JSONL event streams
-  const eventFiles = await listEventFiles(cpbRoot);
-  for (const { project, jobId } of eventFiles) {
-    const result = await validateEventStream(cpbRoot, project, jobId, { dryRun });
-    if (result.error) {
-      report.streamErrors.push({
-        project,
-        jobId,
-        file: result.error.file,
-        lineNumber: result.error.lineNumber,
-        reason: result.error.reason,
-      });
-    } else if (result.recovered || result.wouldRecover || result.wouldRepair) {
-      report.streamRecoveries.push({
-        project,
-        jobId,
-        wouldRecover: result.wouldRecover || false,
-        wouldRepair: result.wouldRepair || false,
-        repaired: result.repaired || false,
-      });
+  for (const root of roots) {
+    const eventFiles = await listEventFiles(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+    for (const { project, jobId } of eventFiles) {
+      const result = await validateEventStream(cpbRoot, project, jobId, { dryRun, dataRoot: root.dataRoot });
+      if (result.error) {
+        report.streamErrors.push({
+          project,
+          jobId,
+          file: result.error.file,
+          lineNumber: result.error.lineNumber,
+          reason: result.error.reason,
+        });
+      } else if (result.recovered || result.wouldRecover || result.wouldRepair) {
+        report.streamRecoveries.push({
+          project,
+          jobId,
+          wouldRecover: result.wouldRecover || false,
+          wouldRepair: result.wouldRepair || false,
+          repaired: result.repaired || false,
+        });
+      }
     }
   }
 
   // 5. Rebuild jobs-index from authoritative state (only when no stream errors)
   if (!dryRun && report.streamErrors.length === 0) {
-    await rebuildJobsIndex(cpbRoot);
-    report.indexRebuilt = true;
+    for (const root of roots) {
+      await rebuildJobsIndex(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+      report.indexRebuilt = true;
+    }
   }
 
   // 6. Clean up test/fixture pollution and orphan runtime dirs
   if (dryRun) {
     try {
-      const preview = await cleanupDryRun(cpbRoot);
+      const preview = await cleanupDryRun(cpbRoot, options);
       report.pollutionPreview = {
         testProjectsToRemove: preview.testProjectsToRemove?.length || 0,
         orphanRuntimeDirsToRemove: preview.orphanRuntimeDirsToRemove?.length || 0,
@@ -480,16 +559,16 @@ export async function reconcileJobs(cpbRoot, { dryRun = false } = {}) {
         orphanDirs: preview.orphanRuntimeDirsToRemove,
       };
     } catch {}
-  } else {
+  } else if (options.cleanupPollution === true) {
     try {
-      report.pollution = await cleanupPollution(cpbRoot);
+      report.pollution = await cleanupPollution(cpbRoot, options);
     } catch {}
   }
 
   return report;
 }
 
-export async function cleanupDryRun(cpbRoot) {
+export async function cleanupDryRun(cpbRoot, options: Record<string, any> = {}) {
   const report = {
     leasesToRemove: [],
     worktreesPreserved: [],
@@ -500,7 +579,8 @@ export async function cleanupDryRun(cpbRoot) {
     orphanRuntimeDirsToRemove: [],
   };
 
-  const jobs = await listJobs(cpbRoot);
+  const roots = await cleanupRuntimeRoots(cpbRoot, options);
+  const jobs = await listJobsForCleanup(cpbRoot, options);
   report.totalJobCount = jobs.length;
 
   const terminalLeaseIds = new Set(
@@ -510,30 +590,32 @@ export async function cleanupDryRun(cpbRoot) {
     jobs.filter((j) => TERMINAL_STATUSES.has(j.status)).map((j) => j.jobId)
   );
 
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
-  let leaseFiles;
-  try {
-    leaseFiles = await readdir(leasesDir);
-  } catch {
-    leaseFiles = [];
-  }
-  report.totalLeaseFiles = leaseFiles.filter((f) => f.endsWith(".json")).length;
-
-  for (const f of leaseFiles) {
-    if (!f.endsWith(".json")) continue;
-    const leaseId = f.slice(0, -".json".length);
-
-    let leaseJobId = null;
+  for (const root of roots) {
+    const leasesDir = path.join(root.dataRoot, "leases");
+    let leaseFiles;
     try {
-      const raw = await readFile(path.join(leasesDir, f), "utf8");
-      const lease = JSON.parse(raw);
-      leaseJobId = lease.jobId || null;
-    } catch {}
+      leaseFiles = await readdir(leasesDir);
+    } catch {
+      leaseFiles = [];
+    }
+    report.totalLeaseFiles += leaseFiles.filter((f) => f.endsWith(".json")).length;
 
-    const shouldClean = terminalLeaseIds.has(leaseId) ||
-      (leaseJobId && terminalJobIds.has(leaseJobId));
-    if (shouldClean) {
-      report.leasesToRemove.push(leaseId);
+    for (const f of leaseFiles) {
+      if (!f.endsWith(".json")) continue;
+      const leaseId = f.slice(0, -".json".length);
+
+      let leaseJobId = null;
+      try {
+        const raw = await readFile(path.join(leasesDir, f), "utf8");
+        const lease = JSON.parse(raw);
+        leaseJobId = lease.jobId || null;
+      } catch {}
+
+      const shouldClean = terminalLeaseIds.has(leaseId) ||
+        (leaseJobId && terminalJobIds.has(leaseJobId));
+      if (shouldClean) {
+        report.leasesToRemove.push(leaseId);
+      }
     }
   }
 
@@ -549,7 +631,7 @@ export async function cleanupDryRun(cpbRoot) {
   }
 
   // Scan for test/polluted projects and orphan runtime dirs
-  const hubRoot = resolveHubRoot(cpbRoot);
+  const hubRoot = resolvedHubRoot(cpbRoot, options);
   try {
     const pollution = await scanHubPollution(hubRoot);
     report.testProjectsToRemove = pollution.candidates;
@@ -559,8 +641,9 @@ export async function cleanupDryRun(cpbRoot) {
   return report;
 }
 
-export async function cleanupJobs(cpbRoot) {
-  const jobs = await listJobs(cpbRoot);
+export async function cleanupJobs(cpbRoot, options: Record<string, any> = {}) {
+  const roots = await cleanupRuntimeRoots(cpbRoot, options);
+  const jobs = await listJobsForCleanup(cpbRoot, options);
   const terminal = new Set(["completed", "failed", "blocked", "cancelled"]);
   const terminalJobIds = new Set(
     jobs.filter((j) => terminal.has(j.status)).map((j) => j.jobId)
@@ -569,10 +652,15 @@ export async function cleanupJobs(cpbRoot) {
     jobs.filter((j) => terminal.has(j.status) && j.leaseId).map((j) => j.leaseId)
   );
 
-  const leasesDir = runtimeDataPath(cpbRoot, "leases");
   let cleaned = 0;
-  try {
-    const files = await readdir(leasesDir);
+  for (const root of roots) {
+    const leasesDir = path.join(root.dataRoot, "leases");
+    let files;
+    try {
+      files = await readdir(leasesDir);
+    } catch {
+      files = [];
+    }
     for (const f of files) {
       if (!f.endsWith(".json")) continue;
       const leaseId = f.slice(0, -".json".length);
@@ -594,7 +682,7 @@ export async function cleanupJobs(cpbRoot) {
         cleaned++;
       }
     }
-  } catch {}
+  }
 
   return { cleaned };
 }
@@ -656,8 +744,8 @@ function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }) {
   return { canDelete: false, reason: "unsafe-runtime-root" };
 }
 
-export async function cleanupPollution(cpbRoot) {
-  const hubRoot = resolveHubRoot(cpbRoot);
+export async function cleanupPollution(cpbRoot, options: Record<string, any> = {}) {
+  const hubRoot = resolvedHubRoot(cpbRoot, options);
   let projectsRemoved = 0;
   let orphanDirsRemoved = 0;
   const sourcePathsPreserved = [];
@@ -786,9 +874,9 @@ function entryForJob(job, policy): Record<string, any> {
   };
 }
 
-export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
+export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
-  const jobs = await listJobs(cpbRoot);
+  const jobs = await listJobsForCleanup(cpbRoot, options);
   const entries = jobs
     .filter((job) => job.jobId && job.worktree)
     .map((job) => entryForJob(job, normalizedPolicy))
@@ -807,8 +895,8 @@ export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun 
   };
 }
 
-export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true }: Record<string, any> = {}) {
-  const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun });
+export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
+  const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun, ...options });
   if (plan.dryRun) return plan;
 
   const results = [];
@@ -966,7 +1054,7 @@ export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQue
 }
 
 export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo = null, runCommand = execFileAsync } = {}) {
-  const jobs = await listJobs(cpbRoot);
+  const jobs = await listJobsForCleanup(cpbRoot, { hubRoot });
   const queueEntries = await listHubQueue(hubRoot);
   const { readGithubIssues } = await import("../github/github-issues.js");
   const githubIssues = await readGithubIssues(hubRoot);
@@ -1136,6 +1224,6 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
 }
 
 export async function runBacklogHygiene(cpbRoot, { dryRun = false, repo = null, runCommand = execFileAsync } = {}) {
-  const hubRoot = resolveHubRoot(cpbRoot);
+  const hubRoot = resolvedHubRoot(cpbRoot);
   return scanStaleComments(cpbRoot, hubRoot, { dryRun, repo, runCommand });
 }

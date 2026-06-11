@@ -269,6 +269,7 @@ function acpMetadataEnv(options: Record<string, any> = {}) {
   const meta: Record<string, any> = {};
   if (options.projectId) meta.CPB_ACP_PROJECT = options.projectId;
   if (options.jobId) meta.CPB_ACP_JOB_ID = options.jobId;
+  if (options.dataRoot) meta.CPB_PROJECT_RUNTIME_ROOT = options.dataRoot;
   if (options.phase) meta.CPB_ACP_PHASE = options.phase;
   if (options.role) meta.CPB_ACP_ROLE = options.role;
   if (options.poolScope) meta.CPB_ACP_POOL_SCOPE = options.poolScope;
@@ -409,6 +410,7 @@ export class AcpPool {
       CPB_ROOT: this.cpbRoot,
       CPB_ACP_CPB_ROOT: this.cpbRoot,
       CPB_HUB_ROOT: this.hubRoot,
+      ...(parentEnv.CPB_PROJECT_RUNTIME_ROOT ? { CPB_PROJECT_RUNTIME_ROOT: parentEnv.CPB_PROJECT_RUNTIME_ROOT } : {}),
     });
     this.limits = normalizeLimits(opts.limits || opts);
     this.runner = opts.runner || null;
@@ -875,12 +877,14 @@ export class AcpPool {
   }
 
   #executionEnv(agent: string, options: Record<string, any> = {}): AnyRecord {
+    const projectRuntimeRoot = options.dataRoot || this.env.CPB_PROJECT_RUNTIME_ROOT;
     return (buildChildEnv as any)(
       envForAgent(agent, this.env, options.variant),
       {
         CPB_ROOT: this.cpbRoot,
         CPB_ACP_CPB_ROOT: this.cpbRoot,
         CPB_HUB_ROOT: this.hubRoot,
+        ...(projectRuntimeRoot ? { CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot } : {}),
         ...acpMetadataEnv(options),
       },
       { agent },

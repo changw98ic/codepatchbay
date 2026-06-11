@@ -20,6 +20,10 @@ function wikiProjectDir(cpbRoot, project, wikiDir) {
   return path.join(path.resolve(cpbRoot), "wiki", "projects", project);
 }
 
+function runtimeWikiDir(dataRoot) {
+  return path.join(path.resolve(dataRoot), "wiki");
+}
+
 function inboxDir(cpbRoot, project, wikiDir) {
   return path.join(wikiProjectDir(cpbRoot, project, wikiDir), "inbox");
 }
@@ -148,12 +152,13 @@ function artifactReferences(events) {
 
 export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir, restrictToWiki = false }: Record<string, any> = {}) {
   const sourceEvents = events || await readEvents(cpbRoot, project, jobId, { dataRoot });
+  const effectiveWikiDir = wikiDir || (dataRoot ? runtimeWikiDir(dataRoot) : undefined);
   const entries = [];
   const seen = new Set();
 
   for (const ref of artifactReferences(sourceEvents)) {
     const { event, artifact, kind } = ref;
-    const blocked = blockedWikiReference(cpbRoot, project, kind, artifact, wikiDir, restrictToWiki);
+    const blocked = blockedWikiReference(cpbRoot, project, kind, artifact, effectiveWikiDir, restrictToWiki);
     if (blocked) {
       const key = `${kind}:${event.phase || ""}:${blocked.path}`;
       if (seen.has(key)) continue;
@@ -174,7 +179,7 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
       continue;
     }
 
-    const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir);
+    const artifactPath = await resolveArtifactPath(cpbRoot, project, kind, artifact, effectiveWikiDir);
     const key = `${kind}:${event.phase || ""}:${artifactPath}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -672,14 +677,14 @@ export function jobToGithubStatusUpdate(job) {
   };
 }
 
-async function allJobs(cpbRoot) {
+async function allJobs(cpbRoot, options: Record<string, any> = {}) {
   // Import from sibling job-store module
   const { listJobsAcrossRuntimeRoots } = await import("./job-store.js");
-  return listJobsAcrossRuntimeRoots(cpbRoot);
+  return listJobsAcrossRuntimeRoots(cpbRoot, options);
 }
 
-export async function projectPipelineState(cpbRoot, project) {
-  const jobs = await allJobs(cpbRoot);
+export async function projectPipelineState(cpbRoot, project, options: Record<string, any> = {}) {
+  const jobs = await allJobs(cpbRoot, options);
   const matching = jobs.filter((j) => j.project === project);
   if (matching.length === 0) return null;
 
@@ -687,12 +692,12 @@ export async function projectPipelineState(cpbRoot, project) {
   return jobToPipelineState(running ?? matching[0]);
 }
 
-export async function listProjectPipelineStates(cpbRoot) {
-  const jobs = await allJobs(cpbRoot);
+export async function listProjectPipelineStates(cpbRoot, options: Record<string, any> = {}) {
+  const jobs = await allJobs(cpbRoot, options);
   const byProject = new Map();
   for (const job of jobs) {
     const existing = byProject.get(job.project);
-    if (!existing || existing.status !== "running") {
+    if (!existing || (job.status === "running" && existing.status !== "running")) {
       byProject.set(job.project, job);
     }
   }

@@ -1,9 +1,7 @@
-// Moved from: ../event-store.ts (no content changes)
-
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { deriveDagResumeState } from "../../../core/workflow/dag-executor.js";
-import { runtimeDataRoot, runtimeDataPath } from "../runtime.js";
+import { resolveCachedProjectRuntimeRoot } from "../phase-locator.js";
 import {
   isSecretArtifact,
   isSecretContent,
@@ -47,9 +45,29 @@ async function withEventLock(eventFile: string, callback: () => Promise<any>) {
 }
 
 export const JOBS_EVENTS_FORMAT_VERSION = 1;
+const eventWriteListeners = new Set<(payload: Record<string, any>) => void | Promise<void>>();
+
+export function onEventWritten(listener) {
+  eventWriteListeners.add(listener);
+  return () => eventWriteListeners.delete(listener);
+}
+
+async function notifyEventWritten(payload) {
+  for (const listener of eventWriteListeners) {
+    try {
+      await listener(payload);
+    } catch {}
+  }
+}
 
 function _base(cpbRoot: string, opts: Record<string, any>) {
-  return opts?.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  if (opts?.dataRoot) return opts.dataRoot;
+  if (opts?.legacyOnly === true) return legacyRuntimeRoot(cpbRoot);
+  throw new Error("dataRoot is required for project event store paths");
+}
+
+function legacyRuntimeRoot(cpbRoot: string) {
+  return path.join(path.resolve(cpbRoot), "cpb-task");
 }
 
 function validatePathComponent(name: string, value: unknown) {
@@ -139,8 +157,13 @@ async function _scanEventsDir(eventsRoot: string) {
 }
 
 export async function listEventFiles(cpbRoot: string, opts: Record<string, any> = {}) {
-  const rtRoot = opts.dataRoot ? path.join(opts.dataRoot, "events") : null;
-  const legacyRoot = runtimeDataPath(cpbRoot, "events");
+  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
+  if (!opts.dataRoot && !includeLegacyFallback) {
+    throw new Error("dataRoot is required for project event store paths");
+  }
+
+  const rtRoot = opts.dataRoot && opts.legacyOnly !== true ? path.join(opts.dataRoot, "events") : null;
+  const legacyRoot = path.join(legacyRuntimeRoot(cpbRoot), "events");
 
   const seen = new Set();
   const allFiles = [];
@@ -151,9 +174,11 @@ export async function listEventFiles(cpbRoot: string, opts: Record<string, any> 
       if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
     }
   }
-  for (const f of await _scanEventsDir(legacyRoot)) {
-    const key = `${f.project}/${f.jobId}`;
-    if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
+  if (includeLegacyFallback) {
+    for (const f of await _scanEventsDir(legacyRoot)) {
+      const key = `${f.project}/${f.jobId}`;
+      if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
+    }
   }
 
   return allFiles.sort((a, b) => a.file.localeCompare(b.file));
@@ -199,9 +224,9 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
 
   const file = eventFileFor(cpbRoot, project, jobId, opts);
 
-  return withEventLock(file, async () => {
+  const written = await withEventLock(file, async () => {
     // Terminal seal: reject business-state mutations on terminal job event logs.
-    const existing = await readEvents(cpbRoot, project, jobId, opts);
+    const existing = await readEvents(cpbRoot, project, jobId, opts.dataRoot ? { ...opts, includeLegacyFallback: false } : opts);
     if (existing.length > 0) {
       const state = materializeJob(existing);
       if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
@@ -250,6 +275,10 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
     await appendFile(file, `${serialized}\n`, "utf8");
     return redacted;
   });
+  if (written) {
+    await notifyEventWritten({ cpbRoot, project, jobId, file, dataRoot: opts.dataRoot ?? null, event: written });
+  }
+  return written;
 }
 
 async function _parseEventFileReadOnly(file) {
@@ -296,26 +325,40 @@ async function _parseEventFile(file) {
 }
 
 export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
-  // Try runtime root first when dataRoot is provided and differs from legacy
-  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
-    const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
+  const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
+
+  // Try runtime root first when we have one and it differs from legacy.
+  if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
+    const rtFile = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot: cachedDataRoot });
     const rtEvents = await _parseEventFile(rtFile);
     if (rtEvents !== null) return rtEvents;
   }
+  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
+  if (!includeLegacyFallback) {
+    if (!cachedDataRoot) throw new Error("dataRoot is required for project event store paths");
+    return [];
+  }
 
   // Legacy path
-  const file = eventFileFor(cpbRoot, project, jobId);
+  const file = eventFileFor(cpbRoot, project, jobId, { legacyOnly: true });
   const result = await _parseEventFile(file);
   return result ?? [];
 }
 
 export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
-  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
-    const rtFile = eventFileFor(cpbRoot, project, jobId, opts);
+  const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
+
+  if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
+    const rtFile = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot: cachedDataRoot });
     const rtEvents = await _parseEventFileReadOnly(rtFile);
     if (rtEvents !== null) return rtEvents;
   }
-  const file = eventFileFor(cpbRoot, project, jobId);
+  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
+  if (!includeLegacyFallback) {
+    if (!cachedDataRoot) throw new Error("dataRoot is required for project event store paths");
+    return [];
+  }
+  const file = eventFileFor(cpbRoot, project, jobId, { legacyOnly: true });
   const result = await _parseEventFileReadOnly(file);
   return result ?? [];
 }
@@ -829,7 +872,7 @@ export async function writeCheckpoint(cpbRoot, project, jobId, state, opts = {})
 
 export async function readCheckpoint(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
   // Try runtime root first
-  if (opts.dataRoot && opts.dataRoot !== runtimeDataRoot(cpbRoot)) {
+  if (opts.legacyOnly !== true && opts.dataRoot && opts.dataRoot !== legacyRuntimeRoot(cpbRoot)) {
     const rtFile = checkpointFileFor(cpbRoot, project, jobId, opts);
     try {
       const raw = await readFile(rtFile, "utf8");
@@ -837,7 +880,12 @@ export async function readCheckpoint(cpbRoot: string, project: string, jobId: st
       return parsed.state ?? null;
     } catch {}
   }
-  const file = checkpointFileFor(cpbRoot, project, jobId);
+  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
+  if (!includeLegacyFallback) {
+    if (!opts.dataRoot) throw new Error("dataRoot is required for project event store paths");
+    return null;
+  }
+  const file = checkpointFileFor(cpbRoot, project, jobId, { legacyOnly: true });
   try {
     const raw = await readFile(file, "utf8");
     const parsed = JSON.parse(raw);

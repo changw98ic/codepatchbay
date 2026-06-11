@@ -5,9 +5,9 @@ import path from "node:path";
 import test, { describe, beforeEach, afterEach } from "node:test";
 
 import { ProjectWorker, parseArgs } from "../bridges/project-worker.js";
-import { registerProject, heartbeatWorker, getProject } from "../server/services/hub/hub-registry.js";
+import { registerProject, heartbeatWorker, getProject, loadRegistry, saveRegistry } from "../server/services/hub/hub-registry.js";
 import { enqueue, listQueue, queueStatus } from "../server/services/hub/hub-queue.js";
-import { listDispatches } from "../server/services/dispatch/dispatch.js";
+import { listDispatches } from "../server/services/dispatch-state.js";
 
 let activeWorkers;
 
@@ -132,9 +132,10 @@ describe("ProjectWorker", () => {
     assert.equal(capturedEntry.id, queued.id);
   });
 
-  test("runPipeline executes from executorRoot while preserving cpbRoot state path", async () => {
+  test("runPipeline executes from executorRoot while preserving cpbRoot state path and project runtime root", async () => {
     const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-state-root-"));
     const executorRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-executor-root-"));
+    const project = await getProject(hubRoot, projectId);
     const capturePath = path.join(executorRoot, "capture.json");
     await mkdir(path.join(executorRoot, "bridges"), { recursive: true });
     await writeFile(
@@ -145,6 +146,7 @@ describe("ProjectWorker", () => {
         "  cwd: process.cwd(),",
         "  cpbRoot: process.env.CPB_ROOT,",
         "  executorRoot: process.env.CPB_EXECUTOR_ROOT,",
+        "  projectRuntimeRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,",
         "  acpCwd: process.env.CPB_ACP_CWD,",
         "  args: process.argv.slice(2),",
         "}, null, 2));",
@@ -173,8 +175,88 @@ describe("ProjectWorker", () => {
     assert.equal(capture.cwd, await realpath(cpbRoot));
     assert.equal(capture.cpbRoot, path.resolve(cpbRoot));
     assert.equal(capture.executorRoot, path.resolve(executorRoot));
+    assert.equal(capture.projectRuntimeRoot, project.projectRuntimeRoot);
     assert.equal(capture.acpCwd, path.resolve(sourceDir));
     assert.ok(capture.args.includes("--source-path"));
+  });
+
+  test("runPipeline fails closed when registry lacks project runtime root", async () => {
+    const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-state-root-"));
+    const executorRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-executor-root-"));
+    const capturePath = path.join(executorRoot, "capture.json");
+    await mkdir(path.join(executorRoot, "bridges"), { recursive: true });
+    await writeFile(
+      path.join(executorRoot, "bridges", "run-pipeline.js"),
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        `await writeFile(${JSON.stringify(capturePath)}, 'spawned');`,
+      ].join("\n"),
+      "utf8",
+    );
+
+    const registry = await loadRegistry(hubRoot);
+    delete registry.projects[projectId].projectRuntimeRoot;
+    await saveRegistry(hubRoot, registry);
+
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "missing runtime root",
+    });
+    const worker = new ProjectWorker({
+      projectId,
+      hubRoot,
+      cpbRoot,
+      executorRoot,
+      once: true,
+      agentHealthFn: async () => ({ codex: true, claude: true }),
+    });
+    await worker.init();
+    const result = await worker.executeEntry(queued);
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /projectRuntimeRoot missing/);
+    await assert.rejects(() => readFile(capturePath, "utf8"), /ENOENT/);
+  });
+
+  test("runPipeline in pool mode uses queue entry project runtime root", async () => {
+    const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-state-root-"));
+    const executorRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-executor-root-"));
+    const project = await getProject(hubRoot, projectId);
+    const capturePath = path.join(executorRoot, "capture.json");
+    await mkdir(path.join(executorRoot, "bridges"), { recursive: true });
+    await writeFile(
+      path.join(executorRoot, "bridges", "run-pipeline.js"),
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        `await writeFile(${JSON.stringify(capturePath)}, JSON.stringify({`,
+        "  projectRuntimeRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,",
+        "  project: process.argv[process.argv.indexOf('--project') + 1],",
+        "}, null, 2));",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const queued = await enqueue(hubRoot, {
+      projectId,
+      sourcePath: sourceDir,
+      description: "pool runtime root run",
+    });
+    const worker = new ProjectWorker({
+      pool: true,
+      hubRoot,
+      cpbRoot,
+      executorRoot,
+      once: true,
+      agentHealthFn: async () => ({ codex: true, claude: true }),
+    });
+    await worker.init();
+    const result = await worker.executeEntry(queued);
+
+    assert.equal(result.ok, true);
+    const capture = JSON.parse(await readFile(capturePath, "utf8"));
+    assert.equal(capture.project, projectId);
+    assert.equal(capture.projectRuntimeRoot, project.projectRuntimeRoot);
   });
 
   test("executeEntry fails on sourcePath guard mismatch when dispatch enabled", async () => {

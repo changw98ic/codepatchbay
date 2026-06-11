@@ -29,6 +29,7 @@ Rules:
 
 export async function runAdversarialVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
+  const { dataRoot } = ctx;
   const role = ctx.role || "adversarial_verifier";
   const prompt = await buildAdversarialPrompt(ctx) + JSON_INSTRUCTION;
   const resolvedAgent = resolveAgent(ctx, "codex");
@@ -39,6 +40,7 @@ export async function runAdversarialVerify(ctx) {
     role,
     agent: resolvedAgent.agent,
     prompt,
+    dataRoot,
   });
 
   const agentResult: Record<string, any> = await runAgent({
@@ -91,6 +93,7 @@ export async function runAdversarialVerify(ctx) {
     jobId,
     kind: "adversarial_verdict",
     content: renderAdversarialVerdictMarkdown(verdict, ctx.sourceContext?.riskMap),
+    dataRoot,
     metadata: {
       ...verdict,
       adversarial: true,

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { registerProject } from "../server/services/hub/hub-registry.js";
 import { collectRuntimeHealth } from "../server/services/runtime.js";
 
 async function tempRoot(prefix) {
@@ -105,38 +106,55 @@ test("runtime health warns when selected active release metadata is unavailable"
 
 test("runtime health divergence scan is read-only for malformed event logs", async () => {
   const cpbRoot = await tempRoot("cpb-health-readonly-events");
-  const dataRoot = path.join(cpbRoot, "cpb-task");
-  const eventsDir = path.join(dataRoot, "events", "proj");
-  await mkdir(eventsDir, { recursive: true });
-  await writeFile(
-    path.join(dataRoot, "jobs-index.json"),
-    JSON.stringify({
-      _meta: { version: 1, updatedAt: "2026-06-11T00:00:00.000Z", jobCount: 1 },
-      jobs: {
-        "proj/job-1": { project: "proj", jobId: "job-1", status: "running" },
+  const hubRoot = await tempRoot("cpb-health-readonly-hub");
+  const previousHubRoot = process.env.CPB_HUB_ROOT;
+  process.env.CPB_HUB_ROOT = hubRoot;
+
+  try {
+    const project = await registerProject(hubRoot, {
+      id: "proj",
+      sourcePath: cpbRoot,
+      skipCodeGraphGate: true,
+    });
+    const dataRoot = project.projectRuntimeRoot;
+    const eventsDir = path.join(dataRoot, "events", "proj");
+    await mkdir(eventsDir, { recursive: true });
+    await writeFile(
+      path.join(dataRoot, "jobs-index.json"),
+      JSON.stringify({
+        _meta: { version: 1, updatedAt: "2026-06-11T00:00:00.000Z", jobCount: 1 },
+        jobs: {
+          "proj/job-1": { project: "proj", jobId: "job-1", status: "running" },
+        },
+      }) + "\n",
+      "utf8",
+    );
+    const eventFile = path.join(eventsDir, "job-1.jsonl");
+    const raw = `${JSON.stringify({ type: "job_created", project: "proj", jobId: "job-1", task: "t", ts: "2026-06-11T00:00:00.000Z" })}\n{"type":"phase_started"`;
+    await writeFile(eventFile, raw, "utf8");
+
+    const health = await collectRuntimeHealth({
+      cpbRoot,
+      executorRoot: process.cwd(),
+      probes: {
+        sourceVersion: "1.0.0",
+        activeReleaseVersion: "1.0.0",
+        launcherReleaseVersion: "1.0.0",
+        initialized: true,
+        queueEntries: [],
+        staleJobs: [],
       },
-    }) + "\n",
-    "utf8",
-  );
-  const eventFile = path.join(eventsDir, "job-1.jsonl");
-  const raw = `${JSON.stringify({ type: "job_created", project: "proj", jobId: "job-1", task: "t", ts: "2026-06-11T00:00:00.000Z" })}\n{"type":"phase_started"`;
-  await writeFile(eventFile, raw, "utf8");
+    });
 
-  const health = await collectRuntimeHealth({
-    cpbRoot,
-    executorRoot: process.cwd(),
-    probes: {
-      sourceVersion: "1.0.0",
-      activeReleaseVersion: "1.0.0",
-      launcherReleaseVersion: "1.0.0",
-      initialized: true,
-      queueEntries: [],
-      staleJobs: [],
-    },
-  });
-
-  assert.equal(health.jobsIndexDivergence.count, 1);
-  assert.equal(await readFile(eventFile, "utf8"), raw);
+    assert.equal(health.jobsIndexDivergence.count, 1);
+    assert.equal(await readFile(eventFile, "utf8"), raw);
+  } finally {
+    if (previousHubRoot === undefined) {
+      delete process.env.CPB_HUB_ROOT;
+    } else {
+      process.env.CPB_HUB_ROOT = previousHubRoot;
+    }
+  }
 });
 
 test("first-observed jobs-index divergence is a needs_reconcile warning", async () => {

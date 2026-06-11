@@ -56,9 +56,10 @@ export async function evolveRoutes(fastify, opts) {
     const hubRoot = req.cpbHubRoot || resolveHubRoot(req.cpbRoot);
     const projects = await listProjects(hubRoot, { enabledOnly: false });
     const rows = await Promise.all(projects.map(async (project) => {
+      const stateOpts = { projectRuntimeRoot: project.projectRuntimeRoot };
       const [state, backlog] = await Promise.all([
-        loadMultiProjectState(project.sourcePath, project.id),
-        loadMultiBacklog(project.sourcePath, project.id),
+        loadMultiProjectState(project.sourcePath, project.id, stateOpts),
+        loadMultiBacklog(project.sourcePath, project.id, stateOpts),
       ]);
       return {
         id: project.id,

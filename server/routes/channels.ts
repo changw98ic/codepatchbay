@@ -125,7 +125,7 @@ function reviewPolicyAction(action) {
   return action;
 }
 
-async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, channel = "channel", actor = null }: LooseRecord = {}) {
+async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, channel = "channel", actor = null, hubRoot = null }: LooseRecord = {}) {
   if (!policy) return { allowed: true, reason: "channel policy not configured" };
   return enforceChannelPolicy(cpbRoot, policy, channelPolicyRequest({
     channel,
@@ -133,7 +133,7 @@ async function authorizeReviewCommand(cpbRoot, cmd, session, { policy = null, ch
     project: cmd.project || session?.project || null,
     job: session?.jobId || null,
     actor,
-  } as LooseRecord));
+  } as LooseRecord), { hubRoot });
 }
 
 function reviewPolicyDenied(decision, cmd, session, { channel = "channel", actor = null }: LooseRecord = {}) {
@@ -155,7 +155,8 @@ async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {})
     const decision = await authorizeReviewCommand(cpbRoot, cmd, null, options);
     if (!decision.allowed) return reviewPolicyDenied(decision, cmd, null, options);
 
-    const session = await createSession(cpbRoot, { project: cmd.project, intent: cmd.intent });
+    const storageOptions = { hubRoot: options.hubRoot };
+    const session = await createSession(cpbRoot, { project: cmd.project, intent: cmd.intent, ...storageOptions });
     broadcast({ type: "review:update", sessionId: session.sessionId, status: session.status, project: cmd.project, session });
 
     // Auto-start the review
@@ -163,7 +164,7 @@ async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {})
     const scriptPath = path.join(executorRoot, "server/services/review-dispatch-runner.js");
     spawn("node", [scriptPath, cpbRoot, session.sessionId], {
       cwd: cpbRoot,
-      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: executorRoot }),
+      env: buildChildEnv(process.env, { CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: executorRoot, CPB_HUB_ROOT: options.hubRoot }),
       stdio: "ignore",
       detached: true,
     }).unref();
@@ -171,7 +172,8 @@ async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {})
     return { ok: true, sessionId: session.sessionId, action: "created" };
   }
 
-  const session = await getSession(cpbRoot, cmd.sessionId);
+  const storageOptions = { hubRoot: options.hubRoot };
+  const session = await getSession(cpbRoot, cmd.sessionId, storageOptions);
   if (!session) return { ok: false, error: "session not found" };
 
   const decision = await authorizeReviewCommand(cpbRoot, cmd, session, options);
@@ -181,9 +183,9 @@ async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {})
     if (session.status !== "user_review") {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
-    await updateSession(cpbRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" });
+    await updateSession(cpbRoot, session.sessionId, { status: "dispatched", userVerdict: "approved" }, storageOptions);
     const result = await queueReviewPipeline(cpbRoot, session.project, session.intent, log, options);
-    await updateSession(cpbRoot, session.sessionId, { jobId: result.taskId });
+    await updateSession(cpbRoot, session.sessionId, { jobId: result.taskId }, storageOptions);
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "dispatched", jobId: result.taskId, project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "approved", taskId: result.taskId };
   }
@@ -192,7 +194,7 @@ async function handleReviewCommand(cpbRoot, cmd, log, options: LooseRecord = {})
     if (session.status !== "user_review") {
       return { ok: false, error: `session not awaiting approval (status: ${session.status})` };
     }
-    const updated = await updateSession(cpbRoot, session.sessionId, { status: "expired", userVerdict: "rejected" });
+    const updated = await updateSession(cpbRoot, session.sessionId, { status: "expired", userVerdict: "rejected" }, storageOptions);
     broadcast({ type: "review:update", sessionId: session.sessionId, status: "expired", project: session.project });
     return { ok: true, sessionId: session.sessionId, action: "rejected" };
   }
@@ -288,7 +290,10 @@ export async function channelRoutes(fastify, opts: LooseRecord = {}) {
 
     const parsed = parseSlackInteractiveAction(payload);
     const policy = opts.channelPolicy || null;
-    const result = await handleSlackInteractiveAction(req.cpbRoot, parsed, { policy });
+    const result = await handleSlackInteractiveAction(req.cpbRoot, parsed, {
+      policy,
+      hubRoot: req.cpbHubRoot || req.cpbRoot,
+    });
     const response = result as LooseRecord;
     return reply.code(response.statusCode || (response.ok ? 200 : 400)).send(result);
   });

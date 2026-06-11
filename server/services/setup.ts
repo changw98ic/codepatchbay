@@ -326,7 +326,7 @@ export function getRunningTasks() {
   }));
 }
 
-export async function getDurableTasks(cpbRoot: string, { hubRoot }: { hubRoot?: string } = {}) {
+export async function getDurableTasks(cpbRoot: string, { hubRoot, cacheTtlMs }: { hubRoot?: string; cacheTtlMs?: number } = {}) {
   const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, {
     hubRoot,
     includeHubProjects: Boolean(hubRoot),

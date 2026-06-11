@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -23,9 +23,19 @@ import {
   getLineage,
 } from "../server/services/job/job-store.js";
 import { appendEvent, readEvents } from "../server/services/event/event-store.js";
+import { registerProject } from "../server/services/hub/hub-registry.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-job-recovery-"));
 const project = "recovery-test";
+const hubRoot = path.join(root, "hub");
+const sourcePath = path.join(root, "source");
+await mkdir(sourcePath, { recursive: true });
+const registeredProject = await registerProject(hubRoot, {
+  id: project,
+  sourcePath,
+  skipCodeGraphGate: true,
+});
+const dataRoot = registeredProject.projectRuntimeRoot;
 
 // --- isTerminal ---
 const running = { jobId: "j1", status: "running" };
@@ -50,21 +60,24 @@ const failedJob = await createJob(root, {
   task: "Test recovery from failure",
   workflow: "standard",
   ts: "2026-05-20T00:00:00.000Z",
+  dataRoot,
 });
-await startPhase(root, project, failedJob.jobId, { phase: "execute", leaseId: "lease-1" });
+await startPhase(root, project, failedJob.jobId, { phase: "execute", leaseId: "lease-1", dataRoot });
 await failJob(root, project, failedJob.jobId, {
   reason: "execute crashed",
   code: FAILURE_CODES.RECOVERABLE,
   phase: "execute",
   ts: "2026-05-20T00:05:00.000Z",
+  dataRoot,
 });
 
-const originalFailedState = await getJob(root, project, failedJob.jobId);
+const originalFailedState = await getJob(root, project, failedJob.jobId, { dataRoot });
 assert.equal(originalFailedState.status, "failed");
 
 const recovered = await recoverAsNewJob(root, project, failedJob.jobId, {
   ts: "2026-05-20T00:10:00.000Z",
   reason: "automated recovery",
+  dataRoot,
 });
 assert.ok(recovered.jobId);
 assert.notEqual(recovered.jobId, failedJob.jobId, "recovery creates a new job");
@@ -73,13 +86,13 @@ assert.equal(recovered.workflow, "standard");
 assert.equal(recovered.status, "running");
 
 // Verify the original job is unchanged
-const originalAfterRecovery = await getJob(root, project, failedJob.jobId);
+const originalAfterRecovery = await getJob(root, project, failedJob.jobId, { dataRoot });
 assert.equal(originalAfterRecovery.status, "failed", "original job stays failed");
 assert.equal(originalAfterRecovery.blockedReason, "execute crashed");
 assert.equal(originalAfterRecovery.failureCode, FAILURE_CODES.RECOVERABLE);
 
 // Verify lineage in new job events
-const newJobEvents = await readEvents(root, project, recovered.jobId);
+const newJobEvents = await readEvents(root, project, recovered.jobId, { dataRoot });
 const recoveryEvent = newJobEvents.find((e) => e.type === "recovery_created");
 assert.ok(recoveryEvent, "should have recovery_created event");
 assert.equal(recoveryEvent.lineage.parentJobId, failedJob.jobId);
@@ -94,14 +107,17 @@ const blockedJob = await createJob(root, {
   task: "Test retry from blocked",
   workflow: "standard",
   ts: "2026-05-20T01:00:00.000Z",
+  dataRoot,
 });
 await blockJob(root, project, blockedJob.jobId, {
   reason: "operator blocked",
   ts: "2026-05-20T01:01:00.000Z",
+  dataRoot,
 });
 
 const retried = await retryAsNewJob(root, project, blockedJob.jobId, {
   ts: "2026-05-20T01:05:00.000Z",
+  dataRoot,
 });
 assert.ok(retried.jobId);
 assert.notEqual(retried.jobId, blockedJob.jobId);
@@ -109,10 +125,10 @@ assert.equal(retried.status, "running");
 assert.equal(retried.task, "Test retry from blocked");
 
 // Original stays blocked
-const blockedAfterRetry = await getJob(root, project, blockedJob.jobId);
+const blockedAfterRetry = await getJob(root, project, blockedJob.jobId, { dataRoot });
 assert.equal(blockedAfterRetry.status, "blocked");
 
-const retryEvents = await readEvents(root, project, retried.jobId);
+const retryEvents = await readEvents(root, project, retried.jobId, { dataRoot });
 const retryLineage = retryEvents.find((e) => e.type === "recovery_created");
 assert.ok(retryLineage);
 assert.equal(retryLineage.lineage.parentJobId, blockedJob.jobId);
@@ -123,9 +139,10 @@ const runningJob = await createJob(root, {
   project,
   task: "Test cannot recover running",
   ts: "2026-05-20T02:00:00.000Z",
+  dataRoot,
 });
 await assert.rejects(
-  () => recoverAsNewJob(root, project, runningJob.jobId),
+  () => recoverAsNewJob(root, project, runningJob.jobId, { dataRoot }),
   /not terminal/
 );
 
@@ -134,16 +151,17 @@ const completedJob = await createJob(root, {
   project,
   task: "Test cannot recover completed",
   ts: "2026-05-20T02:00:00.000Z",
+  dataRoot,
 });
-await completeJob(root, project, completedJob.jobId, { ts: "2026-05-20T02:01:00.000Z" });
+await completeJob(root, project, completedJob.jobId, { ts: "2026-05-20T02:01:00.000Z", dataRoot });
 await assert.rejects(
-  () => recoverAsNewJob(root, project, completedJob.jobId),
+  () => recoverAsNewJob(root, project, completedJob.jobId, { dataRoot }),
   /completed job does not need recovery/
 );
 
 // --- cannot retry a completed job ---
 await assert.rejects(
-  () => retryAsNewJob(root, project, completedJob.jobId),
+  () => retryAsNewJob(root, project, completedJob.jobId, { dataRoot }),
   /not recoverable/
 );
 
@@ -152,24 +170,25 @@ const cancelledJob = await createJob(root, {
   project,
   task: "Test fresh retry for cancelled",
   ts: "2026-05-20T03:00:00.000Z",
+  dataRoot,
 });
-await requestCancelJob(root, project, cancelledJob.jobId, { reason: "user cancel" });
-const cancelledRetry = await retryAsNewJob(root, project, cancelledJob.jobId);
+await requestCancelJob(root, project, cancelledJob.jobId, { reason: "user cancel", dataRoot });
+const cancelledRetry = await retryAsNewJob(root, project, cancelledJob.jobId, { dataRoot });
 assert.notEqual(cancelledRetry.jobId, cancelledJob.jobId);
 assert.equal(cancelledRetry.task, "Test fresh retry for cancelled");
 
 // --- verifyTerminalImmutability ---
-const immutableResult = await verifyTerminalImmutability(root, project, completedJob.jobId);
+const immutableResult = await verifyTerminalImmutability(root, project, completedJob.jobId, { dataRoot });
 assert.equal(immutableResult.immutable, true);
 
-const notFound = await verifyTerminalImmutability(root, project, "nonexistent");
+const notFound = await verifyTerminalImmutability(root, project, "nonexistent", { dataRoot });
 assert.equal(notFound.immutable, false);
 
-const runningImmutable = await verifyTerminalImmutability(root, project, runningJob.jobId);
+const runningImmutable = await verifyTerminalImmutability(root, project, runningJob.jobId, { dataRoot });
 assert.equal(runningImmutable.immutable, false);
 
 // --- getLineage ---
-const jobWithLineage = await getJob(root, project, recovered.jobId);
+const jobWithLineage = await getJob(root, project, recovered.jobId, { dataRoot });
 const lineage = getLineage(jobWithLineage);
 assert.equal(lineage.parentJobId, failedJob.jobId);
 assert.equal(lineage.parentStatus, "failed");
@@ -202,14 +221,17 @@ const parentWithExecutor = await createJob(root, {
   workflow: "standard",
   executor: oldExecutor,
   ts: "2026-05-20T10:00:00.000Z",
+  dataRoot,
 });
 await failJob(root, project, parentWithExecutor.jobId, {
   reason: "boom", code: FAILURE_CODES.RECOVERABLE, phase: "execute",
   ts: "2026-05-20T10:01:00.000Z",
+  dataRoot,
 });
 
 const preservedRecovery = await recoverAsNewJob(root, project, parentWithExecutor.jobId, {
   ts: "2026-05-20T10:05:00.000Z",
+  dataRoot,
 });
 assert.deepEqual(preservedRecovery.executor, oldExecutor,
   "recoverAsNewJob preserves parent executor by default");
@@ -218,12 +240,13 @@ const overrideRecovery = await recoverAsNewJob(root, project, parentWithExecutor
   ts: "2026-05-20T10:10:00.000Z",
   useCurrentExecutor: true,
   currentExecutor,
+  dataRoot,
 });
 assert.deepEqual(overrideRecovery.executor, currentExecutor,
   "recoverAsNewJob uses current executor when override is explicit");
 
 // Audit metadata on recoverAsNewJob
-const preservedEvents = await readEvents(root, project, preservedRecovery.jobId);
+const preservedEvents = await readEvents(root, project, preservedRecovery.jobId, { dataRoot });
 const preservedAudit = preservedEvents.find((e) => e.type === "recovery_created");
 assert.ok(preservedAudit.executorSelection);
 assert.equal(preservedAudit.executorSelection.mode, "preserve-parent");
@@ -231,7 +254,7 @@ assert.equal(preservedAudit.executorSelection.override, false);
 assert.equal(preservedAudit.executorSelection.parentRoot, "/tmp/cpb-old");
 assert.equal(preservedAudit.executorSelection.selectedRoot, "/tmp/cpb-old");
 
-const overrideEvents = await readEvents(root, project, overrideRecovery.jobId);
+const overrideEvents = await readEvents(root, project, overrideRecovery.jobId, { dataRoot });
 const overrideAudit = overrideEvents.find((e) => e.type === "recovery_created");
 assert.ok(overrideAudit.executorSelection);
 assert.equal(overrideAudit.executorSelection.mode, "use-current");
@@ -248,13 +271,15 @@ const blockedWithExecutor = await createJob(root, {
   workflow: "standard",
   executor: oldExecutor,
   ts: "2026-05-20T11:00:00.000Z",
+  dataRoot,
 });
 await blockJob(root, project, blockedWithExecutor.jobId, {
-  reason: "stuck", ts: "2026-05-20T11:01:00.000Z",
+  reason: "stuck", ts: "2026-05-20T11:01:00.000Z", dataRoot,
 });
 
 const preservedRetry = await retryAsNewJob(root, project, blockedWithExecutor.jobId, {
   ts: "2026-05-20T11:05:00.000Z",
+  dataRoot,
 });
 assert.deepEqual(preservedRetry.executor, oldExecutor,
   "retryAsNewJob preserves parent executor by default");
@@ -263,12 +288,13 @@ const overrideRetry = await retryAsNewJob(root, project, blockedWithExecutor.job
   ts: "2026-05-20T11:10:00.000Z",
   useCurrentExecutor: true,
   currentExecutor,
+  dataRoot,
 });
 assert.deepEqual(overrideRetry.executor, currentExecutor,
   "retryAsNewJob uses current executor when override is explicit");
 
 // Materialized lineage includes executorSelection
-const lineageJob = await getJob(root, project, preservedRecovery.jobId);
+const lineageJob = await getJob(root, project, preservedRecovery.jobId, { dataRoot });
 assert.ok(lineageJob.lineage.executorSelection);
 assert.equal(lineageJob.lineage.executorSelection.mode, "preserve-parent");
 
@@ -287,6 +313,7 @@ const nodeAwareParent = await createJob(root, {
   task: "Node-aware retry lineage",
   workflow: "standard",
   ts: "2026-05-20T12:00:00.000Z",
+  dataRoot,
 });
 await appendEvent(root, project, nodeAwareParent.jobId, {
   type: "workflow_dag_materialized",
@@ -295,7 +322,7 @@ await appendEvent(root, project, nodeAwareParent.jobId, {
   workflow: "standard",
   workflowDag: nodeAwareDag,
   ts: "2026-05-20T12:00:01.000Z",
-});
+}, { dataRoot });
 await appendEvent(root, project, nodeAwareParent.jobId, {
   type: "dag_node_completed",
   jobId: nodeAwareParent.jobId,
@@ -303,7 +330,7 @@ await appendEvent(root, project, nodeAwareParent.jobId, {
   nodeId: "plan",
   phase: "plan",
   ts: "2026-05-20T12:00:02.000Z",
-});
+}, { dataRoot });
 await appendEvent(root, project, nodeAwareParent.jobId, {
   type: "dag_node_failed",
   jobId: nodeAwareParent.jobId,
@@ -312,16 +339,18 @@ await appendEvent(root, project, nodeAwareParent.jobId, {
   phase: "execute",
   reason: "node failed",
   ts: "2026-05-20T12:00:03.000Z",
-});
+}, { dataRoot });
 await failJob(root, project, nodeAwareParent.jobId, {
   reason: "node failed",
   code: FAILURE_CODES.RECOVERABLE,
   phase: "execute",
   ts: "2026-05-20T12:00:04.000Z",
+  dataRoot,
 });
 
 const nodeAwareRetry = await retryAsNewJob(root, project, nodeAwareParent.jobId, {
   ts: "2026-05-20T12:05:00.000Z",
+  dataRoot,
 });
 assert.equal(nodeAwareRetry.sourceContext.dagResume.failedNodeId, "execute_b");
 assert.deepEqual(nodeAwareRetry.sourceContext.dagResume.resumeTarget, {

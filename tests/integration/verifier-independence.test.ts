@@ -11,27 +11,39 @@ import { promisify } from "node:util";
 import { bridgeForPhase } from "../../server/services/supervisor.js";
 import { collectVerifierEvidence } from "../../server/services/review/review-dispatch.js";
 import { createJob, startPhase, completePhase } from "../../server/services/job/job-store.js";
-import { wikiProjectDir, outputsDir, contextPath } from "../../server/services/phase-locator.js";
+import { registerProject } from "../../server/services/hub/hub-registry.js";
 import { parseVerdict } from "../../bridges/run-pipeline.js";
 
 const execFileAsync = promisify(execFile);
-const repoRoot = path.resolve(".");
+const distRoot = path.resolve(import.meta.dirname, "..", "..");
+const repoRoot = path.resolve(distRoot, "..");
+const verifierBridge = path.join(repoRoot, "bridges", "verifier.sh");
+const commonBridge = path.join(repoRoot, "bridges", "common.sh");
+const pipelineBridge = path.join(distRoot, "bridges", "run-pipeline.js");
 
 async function setupFixture(prefix = "cpb-verify-indep-") {
   const root = await mkdtemp(path.join(tmpdir(), prefix));
   const cpbRoot = path.join(root, "cpb");
+  const hubRoot = path.join(root, "hub");
+  const sourcePath = path.join(root, "source");
   const project = "testproj";
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(sourcePath, { recursive: true });
+  const projectRegistration = await registerProject(hubRoot, {
+    id: project,
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
+  const dataRoot = projectRegistration.projectRuntimeRoot;
+  const wikiDir = path.join(dataRoot, "wiki");
 
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
-  await mkdir(path.join(cpbRoot, "wiki", "system"), { recursive: true });
-  await writeFile(path.join(cpbRoot, "wiki", "system", "dashboard.md"), "# Dashboard\n## 活跃项目\n", "utf8");
-  await writeFile(path.join(wikiDir, "project.json"), JSON.stringify({ sourcePath: null }, null, 2), "utf8");
+  await writeFile(path.join(wikiDir, "project.json"), JSON.stringify({ sourcePath }, null, 2), "utf8");
   await writeFile(path.join(wikiDir, "context.md"), "# Test Context\n", "utf8");
   await writeFile(path.join(wikiDir, "decisions.md"), "# Test Decisions\n", "utf8");
 
-  return { root, cpbRoot, project, wikiDir };
+  return { root, cpbRoot, hubRoot, sourcePath, project, dataRoot, wikiDir };
 }
 
 describe("verifier independence from deliverable artifacts", () => {
@@ -65,7 +77,7 @@ describe("verifier independence from deliverable artifacts", () => {
         [
           "-c",
           [
-            "source bridges/common.sh",
+            `source ${JSON.stringify(commonBridge)}`,
             "rtk_verifier_job testproj job-20260520-120000-feedbe /tmp/verdict.md",
           ].join(" && "),
         ],
@@ -74,7 +86,9 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: repoRoot,
+            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_HUB_ROOT: fixture.hubRoot,
+            CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_DANGEROUS: "1",
           },
         },
@@ -110,13 +124,15 @@ describe("verifier independence from deliverable artifacts", () => {
 
       const { stdout } = await execFileAsync(
         "bash",
-        ["bridges/verifier.sh", "testproj", "--job-id", jobId],
+        [verifierBridge, "testproj", "--job-id", jobId],
         {
           cwd: repoRoot,
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: repoRoot,
+            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_HUB_ROOT: fixture.hubRoot,
+            CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
           },
         },
@@ -157,13 +173,15 @@ describe("verifier independence from deliverable artifacts", () => {
 
       const { stdout } = await execFileAsync(
         "bash",
-        ["bridges/verifier.sh", "testproj", "--job-id", jobId],
+        [verifierBridge, "testproj", "--job-id", jobId],
         {
           cwd: repoRoot,
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: repoRoot,
+            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_HUB_ROOT: fixture.hubRoot,
+            CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
           },
         },
@@ -177,27 +195,44 @@ describe("verifier independence from deliverable artifacts", () => {
 
   it("collectVerifierEvidence produces diagnostics, not crash, when deliverable is absent", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cpb-verify-nodeliver-"));
+    const hubRoot = path.join(root, "hub");
+    const sourcePath = path.join(root, "source");
     const project = "evidence-test";
-    const wikiDir = wikiProjectDir(root, project);
+    await mkdir(sourcePath, { recursive: true });
+    const projectRegistration = await registerProject(hubRoot, {
+      id: project,
+      sourcePath,
+      skipCodeGraphGate: true,
+    });
+    const dataRoot = projectRegistration.projectRuntimeRoot;
+    const wikiDir = path.join(dataRoot, "wiki");
+    const previousHubRoot = process.env.CPB_HUB_ROOT;
 
     try {
+      process.env.CPB_HUB_ROOT = hubRoot;
       await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
       await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
-      await writeFile(
-        path.join(wikiDir, "project.json"),
-        JSON.stringify({ name: project, sourcePath: null }, null, 2),
-        "utf8",
-      );
-      await writeFile(contextPath(root, project), "# Context\n", "utf8");
+      await writeFile(path.join(wikiDir, "context.md"), "# Context\n", "utf8");
 
       const job = await createJob(root, {
         project,
         task: "Test without deliverable",
         ts: "2026-05-20T00:00:00.000Z",
+        dataRoot,
       });
 
-      await startPhase(root, project, job.jobId, { phase: "execute", attempt: 1, ts: "2026-05-20T00:01:00.000Z" });
-      await completePhase(root, project, job.jobId, { phase: "execute", artifact: "", ts: "2026-05-20T00:05:00.000Z" });
+      await startPhase(root, project, job.jobId, {
+        phase: "execute",
+        attempt: 1,
+        ts: "2026-05-20T00:01:00.000Z",
+        dataRoot,
+      });
+      await completePhase(root, project, job.jobId, {
+        phase: "execute",
+        artifact: "",
+        ts: "2026-05-20T00:05:00.000Z",
+        dataRoot,
+      });
 
       const evidence = await collectVerifierEvidence(root, project, job.jobId);
 
@@ -213,6 +248,11 @@ describe("verifier independence from deliverable artifacts", () => {
       assert.ok(missingDeliverableDiag, "should diagnose missing deliverable");
       assert.equal(missingDeliverableDiag.level, "info", "missing deliverable is info-level diagnostic");
     } finally {
+      if (previousHubRoot === undefined) {
+        delete process.env.CPB_HUB_ROOT;
+      } else {
+        process.env.CPB_HUB_ROOT = previousHubRoot;
+      }
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -235,14 +275,20 @@ describe("verifier independence from deliverable artifacts", () => {
   it("run-pipeline verifies by job id when execute produces no deliverable", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cpb-pipeline-job-verify-"));
     const cpbRoot = path.join(root, "cpb");
+    const hubRoot = path.join(root, "hub");
     const sourcePath = path.join(root, "source");
     const stub = path.join(root, "acp-stub.sh");
     const project = "pipeline-job-verify";
 
     try {
+      await mkdir(cpbRoot, { recursive: true });
       await mkdir(sourcePath, { recursive: true });
-      await mkdir(path.join(cpbRoot, "wiki", "system"), { recursive: true });
-      await writeFile(path.join(cpbRoot, "wiki", "system", "dashboard.md"), "# Dashboard\n", "utf8");
+      const projectRegistration = await registerProject(hubRoot, {
+        id: project,
+        sourcePath,
+        skipCodeGraphGate: true,
+      });
+      const dataRoot = projectRegistration.projectRuntimeRoot;
       await writeFile(
         stub,
         `#!/usr/bin/env bash
@@ -281,7 +327,7 @@ esac
       await chmod(stub, 0o755);
 
       await execFileAsync(process.execPath, [
-        "bridges/run-pipeline.js",
+        pipelineBridge,
         "--project", project,
         "--task", "verifier independence regression",
         "--source-path", sourcePath,
@@ -291,18 +337,20 @@ esac
         env: {
           ...process.env,
           CPB_ROOT: cpbRoot,
+          CPB_HUB_ROOT: hubRoot,
+          CPB_PROJECT_RUNTIME_ROOT: dataRoot,
           CPB_ACP_CLIENT: stub,
           CPB_WORKER_DISPATCH_ENABLED: "0",
         },
       });
 
-      const outputs = await readdir(path.join(cpbRoot, "wiki", "projects", project, "outputs"));
+      const outputs = await readdir(path.join(dataRoot, "wiki", "outputs"));
       assert.equal(outputs.some((name) => name.startsWith("deliverable-")), false);
       const verdictFile = outputs.find((name) => /^verdict-job-/.test(name));
       assert.ok(verdictFile, "pipeline should write verdict keyed by job id");
 
-      const [eventFileName] = await readdir(path.join(cpbRoot, "cpb-task", "events", project));
-      const events = (await readFile(path.join(cpbRoot, "cpb-task", "events", project, eventFileName), "utf8"))
+      const [eventFileName] = await readdir(path.join(dataRoot, "events", project));
+      const events = (await readFile(path.join(dataRoot, "events", project, eventFileName), "utf8"))
         .trim()
         .split(/\r?\n/)
         .map((line) => JSON.parse(line));

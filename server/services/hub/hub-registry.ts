@@ -177,6 +177,20 @@ function resolveProjectId(registry: AnyRecord, preferredId, sourcePath) {
   return `${base}-${pathHash(sourcePath)}`;
 }
 
+function isPathInsideOrEqual(parentPath, childPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function validateProjectRuntimeRoot(hubRoot, id, projectRuntimeRoot) {
+  const expectedRoot = resolveProjectRuntimeRoot(hubRoot, id);
+  const resolvedRoot = path.resolve(projectRuntimeRoot);
+  if (!isPathInsideOrEqual(expectedRoot, resolvedRoot)) {
+    throw new Error(`invalid projectRuntimeRoot: expected path under ${expectedRoot}`);
+  }
+  return resolvedRoot;
+}
+
 export async function registerProject(hubRoot, input: AnyRecord = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
   const generatedMetadata = input.skipCodeGraphGate
@@ -193,7 +207,7 @@ export async function registerProject(hubRoot, input: AnyRecord = {}) {
     const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
 
     const projectRuntimeRoot = input.projectRuntimeRoot
-      ? path.resolve(input.projectRuntimeRoot)
+      ? validateProjectRuntimeRoot(hubRoot, id, input.projectRuntimeRoot)
       : existing.projectRuntimeRoot || resolveProjectRuntimeRoot(hubRoot, id);
 
     const project = {
@@ -278,7 +292,7 @@ export async function updateProject(hubRoot, id, patch: AnyRecord = {}) {
       id,
       sourcePath: existing.sourcePath,
       projectRoot: patch.projectRoot ? path.resolve(patch.projectRoot) : existing.projectRoot,
-      projectRuntimeRoot: patch.projectRuntimeRoot ? path.resolve(patch.projectRuntimeRoot) : existing.projectRuntimeRoot,
+      projectRuntimeRoot: patch.projectRuntimeRoot ? validateProjectRuntimeRoot(hubRoot, id, patch.projectRuntimeRoot) : existing.projectRuntimeRoot,
       updatedAt: nowIso(),
     };
     registry.projects[id] = updated;

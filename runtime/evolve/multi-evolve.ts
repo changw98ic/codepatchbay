@@ -162,6 +162,14 @@ function ageScore(issue: any) {
   return Math.max(1, Date.now() - ts);
 }
 
+function evolveStateOpts(project: any) {
+  return { projectRuntimeRoot: project.projectRuntimeRoot || project.dataRoot };
+}
+
+function issueStateOpts(issue: any) {
+  return { projectRuntimeRoot: issue.projectRuntimeRoot || issue.dataRoot };
+}
+
 function sourceContextForQueueEntry(entry: any) {
   const metadata = entry?.metadata || {};
   const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
@@ -209,11 +217,18 @@ export class CrossProjectPriorityQueue {
 
     for (const project of this.projects) {
       if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
-      const backlog = await loadBacklog(project.sourcePath, project.id);
+      const backlog = await loadBacklog(project.sourcePath, project.id, evolveStateOpts(project));
       for (const issue of backlog.filter((item) => item.status === "pending")) {
         const key = `${project.id}::${issue.description}`;
         seen.add(key);
-        candidates.push({ ...issue, project: project.id, sourcePath: project.sourcePath, weight: project.weight || 1 });
+        candidates.push({
+          ...issue,
+          project: project.id,
+          sourcePath: project.sourcePath,
+          projectRuntimeRoot: project.projectRuntimeRoot,
+          dataRoot: project.projectRuntimeRoot,
+          weight: project.weight || 1,
+        });
       }
     }
 
@@ -235,6 +250,8 @@ export class CrossProjectPriorityQueue {
             createdAt: entry.createdAt,
             project: entry.projectId,
             sourcePath: entry.sourcePath || project.sourcePath,
+            projectRuntimeRoot: project.projectRuntimeRoot,
+            dataRoot: project.projectRuntimeRoot,
             weight: project.weight || 1,
             _source: "hub_queue",
           });
@@ -290,7 +307,7 @@ export class MultiEvolveController {
     const fixture = process.env.CPB_MULTI_EVOLVE_SCAN_FIXTURE;
     const output = fixture || (await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs)).output;
     const issues = parseScanResults(output);
-    const result = await pushIssues(project.sourcePath, project.id, issues);
+    const result = await pushIssues(project.sourcePath, project.id, issues, evolveStateOpts(project));
 
     if (this.hubRoot && issues.length > 0) {
       const sessionId = process.env.CPB_SESSION_ID || "";
@@ -309,7 +326,7 @@ export class MultiEvolveController {
       }
     }
 
-    await appendHistory(project.sourcePath, project.id, { action: "scan", issues: issues.length, agent });
+    await appendHistory(project.sourcePath, project.id, { action: "scan", issues: issues.length, agent }, evolveStateOpts(project));
     return { project: project.id, issues, ...result };
   }
 
@@ -326,7 +343,7 @@ export class MultiEvolveController {
           error: error.message,
           rateLimited,
           rateLimitedUntil: project.rateLimitedUntil,
-        });
+        }, evolveStateOpts(project));
         results.push({ project: project.id, error: error.message, rateLimited, rateLimitedUntil: project.rateLimitedUntil });
       }
     }
@@ -337,8 +354,8 @@ export class MultiEvolveController {
     const rows = [];
     for (const project of this.projects) {
       const [state, backlog] = await Promise.all([
-        loadProjectState(project.sourcePath, project.id),
-        loadBacklog(project.sourcePath, project.id),
+        loadProjectState(project.sourcePath, project.id, evolveStateOpts(project)),
+        loadBacklog(project.sourcePath, project.id, evolveStateOpts(project)),
       ]);
       rows.push({
         id: project.id,
@@ -500,7 +517,7 @@ export class MultiEvolveController {
   }
 
   async completeIssueAndSync(issue, result) {
-    await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result);
+    await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result, issueStateOpts(issue));
     if (!this.hubRoot) return;
     await hubSyncBacklogResult(this.hubRoot, {
       projectId: issue.project,
@@ -526,12 +543,12 @@ export class MultiEvolveController {
       return response;
     }
     const identity = next.id || next.description;
-    const claimed = await claimIssue(next.sourcePath, next.project, identity);
+    const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next));
     if (!claimed) {
       return { skipped: true, reason: "issue_not_pending", next };
     }
     const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
-    await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description });
+    await appendHistory(issue.sourcePath, issue.project, { action: "execute_started", issue: issue.description }, issueStateOpts(issue));
     const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
     await this.completeIssueAndSync(issue, result);
     await appendHistory(issue.sourcePath, issue.project, {
@@ -539,7 +556,7 @@ export class MultiEvolveController {
       issue: issue.description,
       exitCode: result.code ?? null,
       error: result.error || null,
-    });
+    }, issueStateOpts(issue));
     return { next: issue, result };
   }
 
@@ -581,7 +598,7 @@ export class MultiEvolveController {
               rateLimited: error instanceof RateLimitError,
               rateLimitedUntil: error instanceof RateLimitError ? error.untilTs : null,
               round: totalRounds,
-            });
+            }, evolveStateOpts(project));
           }
         }
       }
@@ -598,7 +615,7 @@ export class MultiEvolveController {
             dryRun: !execute,
             candidates: candidates.length,
             executed: false,
-          });
+          }, evolveStateOpts(project));
         }
         if (intervalMs > 0 && !this._stopRequested && (maxRounds === 0 || totalRounds < maxRounds)) {
           await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -607,13 +624,13 @@ export class MultiEvolveController {
       }
 
       const identity = next.id || next.description;
-      const claimed = await claimIssue(next.sourcePath, next.project, identity);
+      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next));
       if (!claimed) {
         continue;
       }
 
       const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
-      await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description });
+      await appendHistory(issue.sourcePath, issue.project, { action: "continuous_round", round: totalRounds, dryRun: false, issue: issue.description }, issueStateOpts(issue));
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
       await this.completeIssueAndSync(issue, result);
@@ -678,13 +695,13 @@ export class MultiEvolveController {
         policyBlocked++;
         await updateIssueStatus(next.sourcePath, next.project, next.id || next.description, "policy_blocked", {
           reasons: policy.reasons,
-        });
+        }, issueStateOpts(next));
         await appendHistory(next.sourcePath, next.project, {
           action: "guarded_blocked",
           round: totalRounds,
           issue: next.description,
           reasons: policy.reasons,
-        });
+        }, issueStateOpts(next));
         continue;
       }
 
@@ -695,13 +712,13 @@ export class MultiEvolveController {
           action: "guarded_budget_exhausted",
           round: totalRounds,
           budget,
-        });
+        }, issueStateOpts(next));
         break;
       }
       budget = budgetCheck.budget;
 
       const identity = next.id || next.description;
-      const claimed = await claimIssue(next.sourcePath, next.project, identity);
+      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next));
       if (!claimed) continue;
 
       const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
@@ -709,7 +726,7 @@ export class MultiEvolveController {
         action: "guarded_execute",
         round: totalRounds,
         issue: issue.description,
-      });
+      }, issueStateOpts(issue));
 
       const result = await this.executeIssue(issue, { workflow: opts.workflow || "standard", timeoutMs: opts.timeoutMs || 300_000 });
       await this.completeIssueAndSync(issue, result);

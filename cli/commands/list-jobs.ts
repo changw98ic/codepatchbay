@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { listJobs } from "../../server/services/job/job-store.js";
+import { resolveHubRoot } from "../../server/services/hub/hub-registry.js";
+import { listJobsAcrossRuntimeRoots } from "../../server/services/job/job-store.js";
 
 type ListedJob = {
   jobId: string;
@@ -17,7 +18,9 @@ type ListedJob = {
 };
 
 const cpbRoot = path.resolve(process.env.CPB_ROOT || path.join(import.meta.dirname, ".."));
-const jobs = await listJobs(cpbRoot) as ListedJob[];
+const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, {
+  hubRoot: process.env.CPB_HUB_ROOT || resolveHubRoot(cpbRoot),
+}) as ListedJob[];
 
 for (const job of jobs) {
   let lineageTag = "-";

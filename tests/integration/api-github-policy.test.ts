@@ -257,11 +257,19 @@ test("task pipeline route validates project, task, and ACP lane before queueing"
 test("inbox route aggregates jobs, queue entries, and reviews with filters and project summaries", async () => {
   const cpbRoot = await tempRoot("cpb-api-inbox-cpb");
   const hubRoot = await tempRoot("cpb-api-inbox-hub");
+  const jobSourcePath = await tempRoot("cpb-api-inbox-job-source");
+  const jobProject = await registerProject(hubRoot, {
+    id: "proj-job",
+    sourcePath: jobSourcePath,
+    skipCodeGraphGate: true,
+  });
+  const jobDataRoot = jobProject.projectRuntimeRoot;
   await createJob(cpbRoot, {
     project: "proj-job",
     task: "completed job",
     workflow: "standard",
     jobId: "job-api-inbox",
+    dataRoot: jobDataRoot,
   });
   await appendEvent(cpbRoot, "proj-job", "job-api-inbox", {
     type: "riskmap_generated",
@@ -278,16 +286,16 @@ test("inbox route aggregates jobs, queue entries, and reviews with filters and p
       adversarialRequired: true,
     },
     ts: new Date().toISOString(),
-  });
-  await completeJob(cpbRoot, "proj-job", "job-api-inbox");
+  }, { dataRoot: jobDataRoot });
+  await completeJob(cpbRoot, "proj-job", "job-api-inbox", { dataRoot: jobDataRoot });
   const queueEntry = await enqueue(hubRoot, {
     projectId: "proj-queue",
     description: "queued item",
     priority: "P1",
   });
   await updateEntry(hubRoot, queueEntry.id, { status: "scheduled" });
-  const review = await createSession(cpbRoot, { project: "proj-review", intent: "review item" });
-  await updateSession(cpbRoot, review.sessionId, { status: "user_review" }, { skipTransitionCheck: true });
+  const review = await createSession(cpbRoot, { project: "proj-review", intent: "review item", hubRoot });
+  await updateSession(cpbRoot, review.sessionId, { status: "user_review" }, { hubRoot, skipTransitionCheck: true });
   const app = await makeApp(inboxRoutes, { cpbRoot, hubRoot });
 
   const all = bodyOf(await app.inject({ method: "GET", url: "/inbox?limit=20" }));
@@ -339,21 +347,21 @@ test("review routes are idempotent and update queue, cleanup, merge success, and
   assert.equal(startTwo.statusCode, 200);
   assert.equal(startConflict.statusCode, 409);
 
-  const approvalSession = await createSession(cpbRoot, { project: "proj", intent: "approved review" });
-  await updateSession(cpbRoot, approvalSession.sessionId, { status: "user_review" }, { skipTransitionCheck: true });
+  const approvalSession = await createSession(cpbRoot, { project: "proj", intent: "approved review", hubRoot });
+  await updateSession(cpbRoot, approvalSession.sessionId, { status: "user_review" }, { hubRoot, skipTransitionCheck: true });
   const approve = bodyOf(await app.inject({ method: "POST", url: `/review/${approvalSession.sessionId}/approve` }));
   assert.equal(approve.dispatched, true);
-  assert.equal((await getSession(cpbRoot, approvalSession.sessionId)).status, "dispatched");
+  assert.equal((await getSession(cpbRoot, approvalSession.sessionId, { hubRoot })).status, "dispatched");
   assert.ok((await listQueue(hubRoot)).some((entry) => entry.id === approve.taskId));
   const autoApprove = bodyOf(await app.inject({ method: "POST", url: `/review/${approvalSession.sessionId}/auto-approve` }));
   assert.equal(autoApprove.note, "already_dispatched");
 
-  const rejectSession = await createSession(cpbRoot, { project: "proj", intent: "reject review" });
+  const rejectSession = await createSession(cpbRoot, { project: "proj", intent: "reject review", hubRoot });
   const rejectWorktree = await tempRoot("cpb-api-review-reject-wt");
   await updateSession(cpbRoot, rejectSession.sessionId, {
     status: "user_review",
     worktreePath: rejectWorktree,
-  }, { skipTransitionCheck: true });
+  }, { hubRoot, skipTransitionCheck: true });
   const reject = bodyOf(await app.inject({ method: "POST", url: `/review/${rejectSession.sessionId}/reject` }));
   assert.equal(reject.status, "expired");
   assert.equal(existsSync(rejectWorktree), false);
@@ -365,32 +373,32 @@ test("review routes are idempotent and update queue, cleanup, merge success, and
   await git(sourcePath, ["add", "feature.txt"]);
   await git(sourcePath, ["commit", "-m", "feature"]);
   await git(sourcePath, ["checkout", baseBranch]);
-  const acceptSuccess = await createSession(cpbRoot, { project: "proj", intent: "accept success" });
+  const acceptSuccess = await createSession(cpbRoot, { project: "proj", intent: "accept success", hubRoot });
   const successWorktree = await tempRoot("cpb-api-review-success-wt");
   await updateSession(cpbRoot, acceptSuccess.sessionId, {
     status: "user_review",
     jobId: successJobId,
     worktreePath: successWorktree,
-  }, { skipTransitionCheck: true });
+  }, { hubRoot, skipTransitionCheck: true });
   const accepted = bodyOf(await app.inject({ method: "POST", url: `/review/${acceptSuccess.sessionId}/accept` }));
   assert.equal(accepted.accepted, true);
   assert.equal(accepted.merged, true);
-  assert.equal((await getSession(cpbRoot, acceptSuccess.sessionId)).status, "completed");
+  assert.equal((await getSession(cpbRoot, acceptSuccess.sessionId, { hubRoot })).status, "completed");
   let projectIndex = await readProjectIndex(hubRoot, cpbRoot, "proj");
   assert.equal(projectIndex.state, "indexed");
   assert.equal(projectIndex.indexedFrom, `merge:${successJobId}`);
 
-  const failureSession = await createSession(cpbRoot, { project: "proj", intent: "accept failure" });
+  const failureSession = await createSession(cpbRoot, { project: "proj", intent: "accept failure", hubRoot });
   const failureWorktree = await tempRoot("cpb-api-review-failure-wt");
   await updateSession(cpbRoot, failureSession.sessionId, {
     status: "user_review",
     jobId: "job-review-missing-branch",
     worktreePath: failureWorktree,
-  }, { skipTransitionCheck: true });
+  }, { hubRoot, skipTransitionCheck: true });
   const failedAccept = bodyOf(await app.inject({ method: "POST", url: `/review/${failureSession.sessionId}/accept` }));
   assert.equal(failedAccept.accepted, true);
   assert.equal(failedAccept.mergeFailed, true);
-  assert.equal((await getSession(cpbRoot, failureSession.sessionId)).status, "merge_failed");
+  assert.equal((await getSession(cpbRoot, failureSession.sessionId, { hubRoot })).status, "merge_failed");
   projectIndex = await readProjectIndex(hubRoot, cpbRoot, "proj");
   assert.equal(projectIndex.state, "failed");
   assert.equal(projectIndex.indexedFrom, "merge:job-review-missing-branch");
@@ -535,6 +543,12 @@ test("channel policy deny wins over allow, default deny applies, and secret comm
   assert.deepEqual(await listQueue(hubRoot), before);
 
   const cpbRoot = await tempRoot("cpb-api-secret-events");
+  const sourcePath = await tempRoot("cpb-api-secret-source");
+  const project = await registerProject(hubRoot, {
+    id: "proj",
+    sourcePath,
+    skipCodeGraphGate: true,
+  });
   await appendEvent(cpbRoot, "proj", "job-secret-route", {
     type: "phase_result",
     jobId: "job-secret-route",
@@ -544,6 +558,6 @@ test("channel policy deny wins over allow, default deny applies, and secret comm
     artifact: "artifact.md",
     body: "Bearer sk-1234567890abcdef",
     ts: new Date().toISOString(),
-  });
+  }, { dataRoot: project.projectRuntimeRoot });
   await rm(cpbRoot, { recursive: true, force: true });
 });

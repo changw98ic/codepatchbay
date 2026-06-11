@@ -27,6 +27,8 @@ const FORBIDDEN_CLI_LAYER_FRAGMENTS = [
   "'runtime'",
 ];
 
+const ALLOWED_CLI_LAYER_VIOLATIONS = [];
+
 test("cli commands do not route through deleted bridge adapters", async () => {
   const violations = await scanTextFragments({
     scanDir: path.join(REPO_ROOT, "cli"),
@@ -36,10 +38,10 @@ test("cli commands do not route through deleted bridge adapters", async () => {
 });
 
 test("cli commands do not call bridges or runtime directly", async () => {
-  const violations = await scanTextFragments({
+  const violations = (await scanTextFragments({
     scanDir: path.join(REPO_ROOT, "cli"),
     fragments: FORBIDDEN_CLI_LAYER_FRAGMENTS,
-  });
+  })).filter((hit: string) => !ALLOWED_CLI_LAYER_VIOLATIONS.includes(hit));
   assert.deepEqual(violations, []);
 });
 

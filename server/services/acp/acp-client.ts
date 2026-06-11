@@ -37,6 +37,7 @@ function buildPermissionEnv(env: any = process.env) {
     phase: env.CPB_ACP_PHASE || null,
     cpbRoot: env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || null,
     sourcePath: env.CPB_PROJECT_PATH_OVERRIDE || env.CPB_ACP_CWD || null,
+    dataRoot: env.CPB_PROJECT_RUNTIME_ROOT || null,
   };
   return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
 }
@@ -76,7 +77,7 @@ async function enforcePermission(action: string, targetPath: string, env: any = 
     const decision = _permEvaluate(
       permEnv.role, permEnv.phase, action, targetPath,
       permEnv.cpbRoot, permEnv.project,
-      { sourcePath: permEnv.sourcePath }
+      { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
     );
 
     if (decision.allowed) return decision;
@@ -94,6 +95,7 @@ async function enforcePermission(action: string, targetPath: string, env: any = 
         phase: permEnv.phase,
         allowedBoundary: "",
         recoveryGuidance: decision.recoveryGuidance || "",
+        dataRoot: permEnv.dataRoot,
       }).catch(() => {});
     }
 
@@ -104,6 +106,7 @@ async function enforcePermission(action: string, targetPath: string, env: any = 
   const result = _permCheck(permEnv.role, action, targetPath, permEnv.cpbRoot, permEnv.project, {
     sourcePath: permEnv.sourcePath,
     jobId: permEnv.jobId,
+    dataRoot: permEnv.dataRoot,
   });
 
   if (result.allowed) return result;
@@ -120,6 +123,7 @@ async function enforcePermission(action: string, targetPath: string, env: any = 
       phase: permEnv.phase,
       allowedBoundary: result.allowedBoundary || "",
       recoveryGuidance: result.recoveryGuidance || "",
+      dataRoot: permEnv.dataRoot,
     }).catch(() => {});
   }
 
@@ -136,7 +140,7 @@ function enforcePermissionSync(action: string, target: string, env: any = proces
     const decision = _permEvaluate(
       permEnv.role, permEnv.phase, action, target,
       permEnv.cpbRoot, permEnv.project,
-      { sourcePath: permEnv.sourcePath }
+      { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
     );
     if (decision.allowed) return decision;
 
@@ -150,6 +154,7 @@ function enforcePermissionSync(action: string, target: string, env: any = proces
         reason: decision.reason || "action denied by permission matrix",
         phase: permEnv.phase,
         recoveryGuidance: decision.recoveryGuidance || "",
+        dataRoot: permEnv.dataRoot,
       }).catch(() => {});
     }
     return decision;
@@ -159,6 +164,7 @@ function enforcePermissionSync(action: string, target: string, env: any = proces
   const result = _permCheck(permEnv.role, action, target, permEnv.cpbRoot, permEnv.project, {
     sourcePath: permEnv.sourcePath,
     jobId: permEnv.jobId,
+    dataRoot: permEnv.dataRoot,
   });
   if (result.allowed) return result;
   denialHistory.push({ targetPath: target, action, ts: Date.now() });
@@ -170,6 +176,7 @@ function enforcePermissionSync(action: string, target: string, env: any = proces
       targetPath: target,
       reason: result.reason || "action denied by permission matrix",
       phase: permEnv.phase,
+      dataRoot: permEnv.dataRoot,
     }).catch(() => {});
   }
   return result;
@@ -314,14 +321,13 @@ export function resolveAcpAuditFile(env = process.env) {
   if (env.CPB_ACP_AUDIT_FILE) return path.resolve(env.CPB_ACP_AUDIT_FILE);
   if (env.CPB_ACP_AUDIT === "0") return null;
 
-  const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT;
+  const dataRoot = env.CPB_PROJECT_RUNTIME_ROOT;
   const project = env.CPB_ACP_PROJECT || env.CPB_PROJECT;
   const jobId = env.CPB_ACP_JOB_ID || env.CPB_JOB_ID;
-  if (!cpbRoot || !project || !jobId) return null;
+  if (!dataRoot || !project || !jobId) return null;
 
   return path.join(
-    path.resolve(cpbRoot),
-    "cpb-task",
+    path.resolve(dataRoot),
     "acp-audit",
     safeAuditSegment(project, "project"),
     `${safeAuditSegment(jobId, "job")}.jsonl`,
@@ -762,7 +768,7 @@ export class AcpClient {
         cpbRoot,
         this.agent,
         env.CPB_ACP_JOB_ID || env.CPB_JOB_ID || null,
-        { parentEnv: env },
+        { parentEnv: env, dataRoot: env.CPB_PROJECT_RUNTIME_ROOT || null },
       );
       Object.assign(env, homeEnv);
     }

@@ -17,12 +17,23 @@ import { createJob, getJob } from "../../server/services/job/job-store.js";
 import { wikiProjectDir } from "../../server/services/phase-locator.js";
 import { readEvents } from "../../server/services/event/event-store.js";
 import { registerDagWorkflow } from "../../core/workflow/definition.js";
+import { registerProject } from "../../server/services/hub/hub-registry.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-runner-"));
+const hubRoot = path.join(root, "hub");
+process.env.CPB_HUB_ROOT = hubRoot;
 const project = "runner-test";
+const dataRoot = path.join(hubRoot, "projects", project);
 
 // Setup wiki project
-const wikiDir = wikiProjectDir(root, project);
+await registerProject(hubRoot, {
+  id: project,
+  name: project,
+  sourcePath: root,
+  projectRuntimeRoot: dataRoot,
+  skipCodeGraphGate: true,
+});
+const wikiDir = path.join(dataRoot, "wiki");
 await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
 await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
 await writeFile(
@@ -69,6 +80,7 @@ const job = await createJob(root, {
   project,
   task: "Test phase runner validation",
   ts: "2026-05-20T00:00:00.000Z",
+  dataRoot,
 });
 
 const validResult = await validatePhaseInputs(root, project, job.jobId, "plan");
@@ -123,6 +135,7 @@ const auditJob = await createJob(root, {
   task: "Test custom workflow phase permissions",
   workflow: auditWorkflow,
   ts: "2026-05-20T00:30:00.000Z",
+  dataRoot,
 });
 const auditWriteInbox = await checkPhasePermissions(
   root,
@@ -139,6 +152,7 @@ const realProjectRoot = path.resolve(path.dirname(new URL(import.meta.url).pathn
 
 // dispatchPhase returns error when job-runner.js is missing
 const noRunnerRoot = await mkdtemp(path.join(tmpdir(), "cpb-no-runner-"));
+const noRunnerDataRoot = path.join(hubRoot, "projects", "no-runner-test");
 const noRunnerWikiDir = wikiProjectDir(noRunnerRoot, "no-runner-test");
 await mkdir(path.join(noRunnerWikiDir, "inbox"), { recursive: true });
 await mkdir(path.join(noRunnerWikiDir, "outputs"), { recursive: true });
@@ -147,10 +161,18 @@ await writeFile(
   JSON.stringify({ name: "no-runner-test" }, null, 2),
   "utf8"
 );
+await registerProject(hubRoot, {
+  id: "no-runner-test",
+  name: "no-runner-test",
+  sourcePath: noRunnerRoot,
+  projectRuntimeRoot: noRunnerDataRoot,
+  skipCodeGraphGate: true,
+});
 const noRunnerJob = await createJob(noRunnerRoot, {
   project: "no-runner-test",
   task: "Test missing job-runner",
   ts: "2026-05-20T00:00:00.000Z",
+  dataRoot: noRunnerDataRoot,
 });
 const noRunnerResult = await dispatchPhase(noRunnerRoot, {
   project: "no-runner-test",
@@ -165,6 +187,7 @@ assert.ok(noRunnerResult.error.message.includes("job-runner not found"));
 // dispatchPhase delegates to job-runner.js, Node APIs record lifecycle events
 const dispatchRoot = await mkdtemp(path.join(tmpdir(), "cpb-dispatch-"));
 const dispatchProject = "dispatch-test";
+const dispatchDataRoot = path.join(hubRoot, "projects", dispatchProject);
 const dispatchWikiDir = wikiProjectDir(dispatchRoot, dispatchProject);
 await mkdir(path.join(dispatchWikiDir, "inbox"), { recursive: true });
 await mkdir(path.join(dispatchWikiDir, "outputs"), { recursive: true });
@@ -173,6 +196,13 @@ await writeFile(
   JSON.stringify({ name: dispatchProject }, null, 2),
   "utf8"
 );
+await registerProject(hubRoot, {
+  id: dispatchProject,
+  name: dispatchProject,
+  sourcePath: dispatchRoot,
+  projectRuntimeRoot: dispatchDataRoot,
+  skipCodeGraphGate: true,
+});
 
 const dummyScript = path.join(dispatchRoot, "dummy-bridge.sh");
 await writeFile(dummyScript, "#!/bin/bash\nexit 0\n", "utf8");
@@ -182,6 +212,7 @@ const dispatchJob = await createJob(dispatchRoot, {
   project: dispatchProject,
   task: "Test dispatchPhase lifecycle through job-runner",
   ts: "2026-05-20T00:00:00.000Z",
+  dataRoot: dispatchDataRoot,
 });
 
 const dispatchResult = await dispatchPhase(dispatchRoot, {
@@ -191,6 +222,7 @@ const dispatchResult = await dispatchPhase(dispatchRoot, {
   script: dummyScript,
   scriptArgs: [dispatchProject, "test-task"],
   executorRoot: realProjectRoot,
+  env: { ...process.env, CPB_PROJECT_RUNTIME_ROOT: dispatchDataRoot },
 });
 
 assert.equal(dispatchResult.exitCode, 0, `dispatchPhase should succeed: ${dispatchResult.error?.message || ""}`);
@@ -198,7 +230,7 @@ assert.ok(dispatchResult.envelope, "dispatchPhase returns envelope");
 assert.equal(dispatchResult.envelope.project, dispatchProject);
 
 // Verify Node APIs recorded phase_started and phase_completed events
-const dispatchEvents = await readEvents(dispatchRoot, dispatchProject, dispatchJob.jobId);
+const dispatchEvents = await readEvents(dispatchRoot, dispatchProject, dispatchJob.jobId, { dataRoot: dispatchDataRoot });
 const dispatchTypes = dispatchEvents.map((e) => e.type);
 assert.ok(dispatchTypes.includes("phase_started"), "phase_started recorded via Node API");
 assert.ok(dispatchTypes.includes("phase_completed"), "phase_completed recorded via Node API");
@@ -209,7 +241,7 @@ assert.ok(startedEvent.leaseId, "phase_started includes leaseId from job-runner"
 assert.ok(startedEvent.phase === "plan", "phase_started records correct phase");
 
 // Verify job state reflects phase completion through Node API
-const jobAfterDispatch = await getJob(dispatchRoot, dispatchProject, dispatchJob.jobId);
+const jobAfterDispatch = await getJob(dispatchRoot, dispatchProject, dispatchJob.jobId, { dataRoot: dispatchDataRoot });
 assert.equal(jobAfterDispatch.phase, "plan");
 assert.equal(jobAfterDispatch.leaseId, null, "lease released after phase completion");
 
@@ -222,6 +254,7 @@ const failJob = await createJob(dispatchRoot, {
   project: dispatchProject,
   task: "Test dispatchPhase failure",
   ts: "2026-05-20T01:00:00.000Z",
+  dataRoot: dispatchDataRoot,
 });
 
 const failResult = await dispatchPhase(dispatchRoot, {
@@ -231,10 +264,11 @@ const failResult = await dispatchPhase(dispatchRoot, {
   script: failScript,
   scriptArgs: [],
   executorRoot: realProjectRoot,
+  env: { ...process.env, CPB_PROJECT_RUNTIME_ROOT: dispatchDataRoot },
 });
 
 assert.equal(failResult.exitCode, 1, "dispatchPhase propagates bridge failure");
-const failEvents = await readEvents(dispatchRoot, dispatchProject, failJob.jobId);
+const failEvents = await readEvents(dispatchRoot, dispatchProject, failJob.jobId, { dataRoot: dispatchDataRoot });
 const failTypes = failEvents.map((e) => e.type);
 assert.ok(failTypes.includes("phase_started"), "phase_started recorded even for failing bridge");
 assert.ok(failTypes.includes("phase_failed"), "phase_failed recorded via Node API for failed bridge");
