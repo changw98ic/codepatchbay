@@ -48,7 +48,6 @@ async function usage() {
   console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
-  console.log(`  ${CYAN}demo${NC} [--json]                         Local mock plan/diff/tests/verdict/risk demo`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
   console.log(`  ${CYAN}sdd${NC} <init|bootstrap|verify|drift> <project> [--json]  Spec-driven development skeleton`);
@@ -114,7 +113,6 @@ const COMMANDS = {
   pipeline: "pipeline.js",
   profile: "profile.js",
   run: "run.js",
-  demo: "demo.js",
   research: "research.js",
   status: "status.js",
   list: "list.js",

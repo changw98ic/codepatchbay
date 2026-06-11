@@ -362,7 +362,6 @@ export const REQUIRED_EXECUTOR_FILES = [
   "server/services/review-dispatch-runner.js",
   "server/services/test-acp-agent.js",
   "web/dist/index.html",
-  "scripts/provider-soak.js",
   "scripts/validate-scan-readiness.js",
   "runtime/evolve/multi-evolve.js",
   "runtime/worker/managed-worker.js",
