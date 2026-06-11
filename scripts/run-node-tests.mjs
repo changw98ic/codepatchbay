@@ -58,6 +58,7 @@ const isolatedIntegrationFiles = new Set([
   "tests/integration/acp-test-agent.test.mjs",
   "tests/integration/managed-worker.test.mjs",
   "tests/integration/worker-supervisor.test.mjs",
+  "tests/integration/reconcile.test.mjs",
 ]);
 const isolatedFiles = integrationFiles.filter((f) => isolatedIntegrationFiles.has(f));
 const parallelIntegrationFiles = integrationFiles.filter((f) => !isolatedFiles.includes(f));
