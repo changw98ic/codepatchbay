@@ -5,9 +5,9 @@ import path from "node:path";
 import test, { describe, beforeEach, afterEach } from "node:test";
 
 import { ProjectWorker, parseArgs } from "../bridges/project-worker.js";
-import { registerProject, heartbeatWorker, getProject } from "../server/services/hub-registry.js";
-import { enqueue, listQueue, queueStatus } from "../server/services/hub-queue.js";
-import { listDispatches } from "../server/services/dispatch-state.js";
+import { registerProject, heartbeatWorker, getProject } from "../server/services/hub/hub-registry.js";
+import { enqueue, listQueue, queueStatus } from "../server/services/hub/hub-queue.js";
+import { listDispatches } from "../server/services/dispatch/dispatch.js";
 
 let activeWorkers;
 
@@ -470,7 +470,7 @@ describe("ProjectWorker stale queue recovery", () => {
   }
 
   async function claimAs(workerId, entryId, claimedAtIso) {
-    const { updateEntry } = await import("../server/services/hub-queue.js");
+    const { updateEntry } = await import("../server/services/hub/hub-queue.js");
     return updateEntry(hubRoot, entryId, {
       status: "in_progress",
       claimedBy: workerId,
@@ -845,7 +845,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
     // (no releaseOwnEntries, no final status update)
 
     // Phase 2: Make the claim old enough to be stale
-    const { updateEntry } = await import("../server/services/hub-queue.js");
+    const { updateEntry } = await import("../server/services/hub/hub-queue.js");
     await updateEntry(hubRoot, queued.id, {
       claimedAt: new Date(Date.now() - 5_000).toISOString(),
     });

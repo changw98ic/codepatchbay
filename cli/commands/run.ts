@@ -127,7 +127,7 @@ export async function run(args, { cpbRoot, executorRoot }: Record<string, any> =
 
   if (!projectId) {
     try {
-      const { resolveHubRoot, loadRegistry } = await import("../../server/services/hub-registry.js");
+      const { resolveHubRoot, loadRegistry } = await import("../../server/services/hub/hub-registry.js");
       const hubRoot = resolveHubRoot(cpbRoot);
       const registry = await loadRegistry(hubRoot);
       const cwd = path.resolve(process.cwd());

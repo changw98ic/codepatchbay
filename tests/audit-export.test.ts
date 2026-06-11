@@ -3,8 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildJobAuditExport } from "../server/services/audit-export.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { buildJobAuditExport } from "../server/services/readiness-checks.js";
+import { appendEvent } from "../server/services/event/event-store.js";
 import { tempRoot } from "./helpers.js";
 
 test("audit export marks absolute artifact references broken without hashing host paths", async () => {

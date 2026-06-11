@@ -80,7 +80,7 @@ async function collectAllLogFiles(hubRoot, workerId, jobId, cpbRoot) {
   } catch {}
   // JSONL event files (use listEventFiles to cover all runtime roots)
   try {
-    const { listEventFiles } = await import("../../server/services/event-store.js");
+    const { listEventFiles } = await import("../../server/services/event/event-store.js");
     const eventFiles = await listEventFiles(cpbRoot);
     for (const ef of eventFiles) {
       if (jobId) {
@@ -201,7 +201,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const sinceIdx = args.indexOf("--since");
   const sinceStr = sinceIdx >= 0 && args[sinceIdx + 1] ? args[sinceIdx + 1] : null;
 
-  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
   const sinceMs = parseSince(sinceStr);

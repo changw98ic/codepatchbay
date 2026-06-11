@@ -1,11 +1,11 @@
 import { runJob } from "../../core/engine/run-job.js";
-import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job-store.js";
-import { appendEvent } from "./event-store.js";
-import { getManagedAcpPool } from "./acp-pool.js";
-import { resolveHubRoot, getProject } from "./hub-registry.js";
+import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job/job-store.js";
+import { appendEvent } from "./event/event-store.js";
+import { getManagedAcpPool } from "./acp/acp-pool.js";
+import { resolveHubRoot, getProject } from "./hub/hub-registry.js";
 import { assertProviderAvailable } from "./provider-quota.js";
-import { getProviderAdapter } from "./provider-adapters.js";
-import { prepareTask } from "./riskmap-service.js";
+import { getProviderAdapter } from "./provider-quota.js";
+import { prepareTask } from "./project/project-loader.js";
 import {
   delegateMarkProviderUnavailable,
   delegateEnqueueProviderUsage,
@@ -77,3 +77,7 @@ async function resolveSourcePath(cpbRoot, project) {
     return { sourcePath: null, hubRoot: null };
   }
 }
+
+// ── Re-exports from merged modules ──
+export { getProviderAdapter } from "./provider-adapters.js";
+export { prepareTask } from "./project/project-loader.js";

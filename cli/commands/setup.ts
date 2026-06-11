@@ -102,7 +102,7 @@ export async function run(args = [], { cpbRoot }: Record<string, any> = {}) {
       || args.find((arg) => arg.startsWith("--agents="))?.slice("--agents=".length)
       || "";
     const { runSetupWizard, setupProfilePath } = await import("../../core/setup/wizard.js");
-    const { runInstallPlanWithEvents } = await import("../../server/services/setup-events.js");
+    const { runInstallPlanWithEvents } = await import("../../server/services/setup.js");
     const result = await runSetupWizard({
       cpbRoot,
       mode: wizardMode(args),

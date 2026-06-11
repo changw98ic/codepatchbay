@@ -6,9 +6,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { deriveDagResumeState } from "../core/workflow/dag-executor.js";
-import { materializeJob, appendEvent } from "../server/services/event-store.js";
-import { createJob, failJob, getJob, retryJob } from "../server/services/job-store.js";
-import { jobToPipelineState } from "../server/services/job-projection.js";
+import { materializeJob, appendEvent } from "../server/services/event/event-store.js";
+import { createJob, failJob, getJob, retryJob } from "../server/services/job/job-store.js";
+import { jobToPipelineState } from "../server/services/job/job-projection.js";
 
 const workflowDag = {
   name: "parallel-execute",

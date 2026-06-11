@@ -145,7 +145,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     const {
       extractExperienceFromVerdict,
       rebuildExperienceIndex,
-    } = await import("../../server/services/experience-extractor.js");
+    } = await import("../../server/services/event/event-source.js");
     const { readFile, readdir } = await import("node:fs/promises");
 
     if (expSub === "list") {
@@ -242,8 +242,8 @@ async function searchExperiences(cpbRoot: string, keyword: string, { category, p
 
 async function backfillExperiences(cpbRoot: string, { project, force }: LooseRecord = {}) {
   const { readdir } = await import("node:fs/promises");
-  const { listEventFiles, readEvents } = await import("../../server/services/event-store.js");
-  const { extractExperienceFromVerdict } = await import("../../server/services/experience-extractor.js");
+  const { listEventFiles, readEvents } = await import("../../server/services/event/event-store.js");
+  const { extractExperienceFromVerdict } = await import("../../server/services/event/event-source.js");
   const wikiDir = path.join(cpbRoot, "wiki", "projects");
 
   let projects;
@@ -299,7 +299,7 @@ async function backfillExperiences(cpbRoot: string, { project, force }: LooseRec
     } catch { /* no outputs dir */ }
   }
 
-  const { rebuildExperienceIndex } = await import("../../server/services/experience-extractor.js");
+  const { rebuildExperienceIndex } = await import("../../server/services/event/event-source.js");
   await rebuildExperienceIndex(cpbRoot);
 
   console.log(`\nBackfill complete: ${extracted} extracted, ${skipped} skipped, ${unmapped} unmapped (no event log).`);

@@ -1,7 +1,7 @@
-import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, ciFailureToCandidate } from "../services/event-source.js";
-import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/task-brain.js";
-import { enqueue } from "../services/hub-queue.js";
-import { getProject } from "../services/hub-registry.js";
+import { ingestEvent, listCandidates, updateCandidate, githubIssueToCandidate, ciFailureToCandidate } from "../services/event/event-source.js";
+import { scanCandidates, evaluateCandidate, checkProactiveBudget } from "../services/evolve/evolve.js";
+import { enqueue } from "../services/hub/hub-queue.js";
+import { getProject } from "../services/hub/hub-registry.js";
 import { registerJobArtifactDetailRoute } from "./job-artifacts.js";
 
 async function projectDataRoot(req, project) {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildJobAuditExport, writeJobAuditExport } from "../../server/services/audit-export.js";
+import { buildJobAuditExport, writeJobAuditExport } from "../../server/services/readiness-checks.js";
 import { findJobForCli } from "./artifacts.js";
 
 function usage() {

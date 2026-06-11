@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { collectRuntimeHealth } from "../server/services/runtime-health.js";
+import { collectRuntimeHealth } from "../server/services/runtime.js";
 
 async function tempRoot(prefix) {
   return mkdtemp(path.join(os.tmpdir(), `${prefix}-`));

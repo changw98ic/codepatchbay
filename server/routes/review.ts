@@ -1,18 +1,18 @@
 import { spawn } from "child_process";
 import path from "path";
 import { readFile, rm } from "fs/promises";
-import { runtimeDataPath } from "../services/runtime-root.js";
-import { broadcast } from "../services/ws-broadcast.js";
-import { makeJobId } from "../services/job-store.js";
+import { runtimeDataPath } from "../services/runtime.js";
+import { broadcast } from "../services/infra.js";
+import { makeJobId } from "../services/job/job-store.js";
 import {
   createSession,
   getSession,
   listSessions,
   startSessionResearch,
-} from "../services/review-session.js";
+} from "../services/review/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
-import { writeProjectIndex } from "../services/project-index.js";
-import { resolveHubRoot, getProject } from "../services/hub-registry.js";
+import { writeProjectIndex } from "../services/project/project-index.js";
+import { resolveHubRoot, getProject } from "../services/hub/hub-registry.js";
 import {
   dispatchSession,
   autoApproveSession,
@@ -20,7 +20,7 @@ import {
   analyzeSession,
   acceptSession,
   rejectSession,
-} from "../services/review-dispatch.js";
+} from "../services/review/review-dispatch.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 

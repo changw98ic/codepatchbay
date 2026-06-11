@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Scheduler } from "../server/orchestrator/scheduler.js";
-import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
 import { tempRoot, writeJson } from "./helpers.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import path from "node:path";

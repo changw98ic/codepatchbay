@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { CodeGraphUnavailableError, checkCodeGraphReady } from "./codegraph-readiness.js";
+import { CodeGraphUnavailableError, checkCodeGraphReady } from "./infra.js";
 
 const execFileAsync = promisify(execFile);
 const CAPABILITY_SCHEMA_VERSION = 1;

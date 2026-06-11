@@ -7,7 +7,7 @@ import { FailureKind } from "../core/contracts/failure.js";
 import { AcpSupervisor } from "../server/orchestrator/acp-supervisor.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
-import { AcpPool } from "../server/services/acp-pool.js";
+import { AcpPool } from "../server/services/acp/acp-pool.js";
 import { tempRoot, readJson } from "./helpers.js";
 
 function supervisorInput() {

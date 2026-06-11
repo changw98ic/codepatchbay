@@ -4,8 +4,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind, isValidFailureKind } from "../core/contracts/failure.js";
-import { materializeJob } from "../server/services/event-store.js";
-import { enqueue, listQueue } from "../server/services/hub-queue.js";
+import { materializeJob } from "../server/services/event/event-store.js";
+import { enqueue, listQueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
 const RISKMAP_MODULE_CANDIDATES = [

@@ -137,7 +137,7 @@ export function ArtifactPanel({ project, jobId, apiBase = '/api/tasks' }: Artifa
   if (error) return <div className={warningBox}>{error}</div>;
   if (!data) return null;
 
-  const entries = data.artifactIndex?.entries || [];
+  const entries: ArtifactIndexEntry[] = Array.isArray(data.artifactIndex) ? data.artifactIndex : [];
   const warnings = data.warnings || [];
 
   return (

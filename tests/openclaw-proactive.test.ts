@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { autoEnqueueSyncedIssues, matchAutomationRule, isExcluded, issueToNormalizedEvent } from "../server/services/auto-enqueue.js";
-import { writeGithubIssues } from "../server/services/github-issues.js";
-import { registerProject, bindProjectGithub, updateProject } from "../server/services/hub-registry.js";
-import { enqueue } from "../server/services/hub-queue.js";
+import { autoEnqueueSyncedIssues, matchAutomationRule, isExcluded, issueToNormalizedEvent } from "../server/services/hub/hub-queue.js";
+import { writeGithubIssues } from "../server/services/github/github-issues.js";
+import { registerProject, bindProjectGithub, updateProject } from "../server/services/hub/hub-registry.js";
+import { enqueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
 const FIXTURE_ISSUES = [

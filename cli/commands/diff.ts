@@ -6,7 +6,7 @@ export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
     console.error("Usage: cpb diff <project>");
     process.exit(1);
   }
-  const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const registered = await getProject(hubRoot, project);
   if (!registered?.sourcePath) {

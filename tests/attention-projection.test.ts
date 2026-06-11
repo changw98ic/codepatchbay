@@ -3,14 +3,14 @@ import Fastify from "fastify";
 import sensible from "@fastify/sensible";
 import { test } from "node:test";
 
-import { appendEvent } from "../server/services/event-store.js";
-import { createJob, failJob } from "../server/services/job-store.js";
-import { enqueue, updateEntry } from "../server/services/hub-queue.js";
-import { rebuildJobsIndex } from "../server/services/jobs-index.js";
+import { appendEvent } from "../server/services/event/event-store.js";
+import { createJob, failJob } from "../server/services/job/job-store.js";
+import { enqueue, updateEntry } from "../server/services/hub/hub-queue.js";
+import { rebuildJobsIndex } from "../server/services/job/job-store.js";
 import { inboxRoutes } from "../server/routes/inbox.js";
 import { hubRoutes } from "../server/routes/hub.js";
-import { buildAttentionProjection } from "../server/services/attention-projection.js";
-import { createSession, updateSession } from "../server/services/review-session.js";
+import { buildAttentionProjection } from "../server/services/hub/hub-registry.js";
+import { createSession, updateSession } from "../server/services/review/review-session.js";
 import { tempRoot } from "./helpers.js";
 
 async function makeApp(route, { cpbRoot, hubRoot, runtimeHealth = null }) {

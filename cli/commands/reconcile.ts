@@ -19,7 +19,7 @@ type ReconcileReport = {
 
 export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const dryRun = args.includes("--dry-run");
-  const { reconcileJobs } = await import("../../server/services/reconcile.js");
+  const { reconcileJobs } = await import("../../server/services/cleanup/cleanup.js");
   const report = await reconcileJobs(cpbRoot, { dryRun }) as ReconcileReport;
 
   if (dryRun) {

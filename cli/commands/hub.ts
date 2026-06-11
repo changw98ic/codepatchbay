@@ -3,18 +3,18 @@ type AnyRecord = Record<string, any>;
 export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) {
   const sub = args[0] || "status";
   const json = args.includes("--json");
-  const { getProject, hubStatus, listProjects, resolveHubRoot } = await import("../../server/services/hub-registry.js").then(m => ({
+  const { getProject, hubStatus, listProjects, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js").then(m => ({
     getProject: m.getProject, hubStatus: m.hubStatus, listProjects: m.listProjects, resolveHubRoot: m.resolveHubRoot,
   }));
-  const { readHubLiveness } = await import("../../server/services/hub-runtime.js");
+  const { readHubLiveness } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
   if (sub === "status") {
     const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
     const { WorkerStore, summarizeWorkers } = await import("../../shared/orchestrator/worker-store.js");
-    const { queueStatus } = await import("../../server/services/hub-queue.js");
-    const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
-    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
+    const { queueStatus } = await import("../../server/services/hub/hub-queue.js");
+    const { getManagedAcpPool } = await import("../../server/services/acp/acp-pool.js");
+    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/infra.js");
     const workerStore = new WorkerStore(hubRoot);
     const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
     const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
@@ -77,14 +77,14 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
       }
     }
   } else if (sub === "start") {
-    const { cmdStart } = await import("../../server/services/hub-cli.js");
+    const { cmdStart } = await import("../../server/services/hub/hub-registry.js");
     await cmdStart();
   } else if (sub === "stop") {
-    const { cmdStop } = await import("../../server/services/hub-cli.js");
+    const { cmdStop } = await import("../../server/services/hub/hub-registry.js");
     await cmdStop();
   } else if (sub === "acp") {
-    const { getManagedAcpPool } = await import("../../server/services/acp-pool.js");
-    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/concurrency-limits.js");
+    const { getManagedAcpPool } = await import("../../server/services/acp/acp-pool.js");
+    const { hubConcurrencyEnv, resolveHubConcurrencyLimits } = await import("../../server/services/infra.js");
     const poolEnv = { ...process.env, ...hubConcurrencyEnv(await resolveHubConcurrencyLimits(hubRoot)) };
     const pool = getManagedAcpPool({ cpbRoot, hubRoot, env: poolEnv });
     const status: AnyRecord = { ...pool.status(), providerQuotas: await pool.readProviderQuotas() };
@@ -99,7 +99,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
       }
     }
   } else if (sub === "queue" || sub === "queue-status") {
-    const { listQueue, queueStatus } = await import("../../server/services/hub-queue.js");
+    const { listQueue, queueStatus } = await import("../../server/services/hub/hub-queue.js");
     if (sub === "queue-status") {
       const qs = await queueStatus(hubRoot);
       if (json) console.log(JSON.stringify(qs, null, 2));
@@ -137,10 +137,10 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
   } else if (sub === "github-sync") {
     const syncProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
     const shouldAutoEnqueue = !args.includes("--no-enqueue");
-    const { syncConfiguredGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
+    const { syncConfiguredGithubIssuesFromGh } = await import("../../server/services/github/github-issues.js");
     const result: AnyRecord = await syncConfiguredGithubIssuesFromGh(hubRoot, { projectId: syncProject, state: "open", limit: 1000, cwd: cpbRoot });
     if (shouldAutoEnqueue && result.projects?.length) {
-      const { autoEnqueueSyncedIssues } = await import("../../server/services/auto-enqueue.js");
+      const { autoEnqueueSyncedIssues } = await import("../../server/services/hub/hub-queue.js");
       result.autoEnqueue = [];
       for (const project of result.projects) {
         result.autoEnqueue.push({
@@ -185,8 +185,8 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
     const syncFirst = args.includes("--sync-first");
 
     if (syncFirst) {
-      const { syncGithubIssuesFromGh } = await import("../../server/services/github-issues.js");
-      const proj = await (await import("../../server/services/hub-registry.js")).getProject(hubRoot, eqProject);
+      const { syncGithubIssuesFromGh } = await import("../../server/services/github/github-issues.js");
+      const proj = await (await import("../../server/services/hub/hub-registry.js")).getProject(hubRoot, eqProject);
       const repo = proj?.github?.fullName;
       if (repo) {
         const syncResult = await syncGithubIssuesFromGh(hubRoot, { repo, projectId: eqProject, state: "open", limit: 500, cwd: proj.sourcePath || cpbRoot });
@@ -197,7 +197,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
       }
     }
 
-    const { autoEnqueueSyncedIssues } = await import("../../server/services/auto-enqueue.js");
+    const { autoEnqueueSyncedIssues } = await import("../../server/services/hub/hub-queue.js");
     const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, eqProject, { dryRun });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
@@ -212,7 +212,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
       }
     }
   } else if (sub === "diagnostics") {
-    const { gatherDiagnostics } = await import("../../server/services/diagnostics-bundle.js");
+    const { gatherDiagnostics } = await import("../../server/services/observability/observability.js");
     const diag = await gatherDiagnostics({ cpbRoot, hubRoot } as any);
     if (json) console.log(JSON.stringify(diag, null, 2));
     else {
@@ -222,7 +222,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
       console.log(`Queue: ${diag.queue.total} (${diag.queue.pending} pending, ${diag.queue.inProgress} active)`);
     }
   } else if (sub === "observe") {
-    const { buildChainSnapshot, analyzeChainSnapshot } = await import("../../server/services/observer.js");
+    const { buildChainSnapshot, analyzeChainSnapshot } = await import("../../server/services/observability/observability.js");
     const observeProject = args[1] && !args[1].startsWith("--") ? args[1] : null;
     const observeJobId = args[2] && !args[2].startsWith("--") ? args[2] : null;
 

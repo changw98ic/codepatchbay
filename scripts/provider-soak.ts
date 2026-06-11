@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { MultiEvolveController } from "../runtime/evolve/multi-evolve.js";
-import { resolveHubRoot } from "../server/services/hub-registry.js";
+import { resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { runChecks as runReadinessChecks } from "./validate-scan-readiness.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

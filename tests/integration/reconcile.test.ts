@@ -9,12 +9,12 @@ import {
   reconcileJobs,
   cleanupDryRun,
   cleanupJobs,
-} from "../../server/services/reconcile.js";
-import { appendEvent } from "../../server/services/event-store.js";
-import { createJob, failJob, completeJob } from "../../server/services/job-store.js";
-import { acquireLease } from "../../server/services/lease-manager.js";
-import { rebuildJobsIndex, readJobsIndex } from "../../server/services/jobs-index.js";
-import { resolveHubRoot } from "../../server/services/hub-registry.js";
+} from "../../server/services/cleanup/cleanup.js";
+import { appendEvent } from "../../server/services/event/event-store.js";
+import { createJob, failJob, completeJob } from "../../server/services/job/job-store.js";
+import { acquireLease } from "../../server/services/infra.js";
+import { rebuildJobsIndex, readJobsIndex } from "../../server/services/job/job-store.js";
+import { resolveHubRoot } from "../../server/services/hub/hub-registry.js";
 
 function mkdtemp(prefix) {
   const dir = path.join(os.tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -127,7 +127,7 @@ describe("reconcileJobs - stale jobs", () => {
     assert.match(found.reason, /owner process dead|no lease|expired/);
 
     // Dry-run: job should still be running
-    const { listJobs } = await import("../../server/services/job-store.js");
+    const { listJobs } = await import("../../server/services/job/job-store.js");
     const jobs = await listJobs(cpbRoot);
     const afterDryRun = jobs.find((j) => j.jobId === job.jobId);
     assert.equal(afterDryRun.status, "running");
@@ -269,7 +269,7 @@ describe("cleanupJobs", () => {
     const result = await cleanupJobs(cpbRoot);
     assert.ok(result.cleaned >= 1, "should clean at least the completed job's lease");
 
-    const { readLease } = await import("../../server/services/lease-manager.js");
+    const { readLease } = await import("../../server/services/infra.js");
     const runningLease = await readLease(cpbRoot, runningLeaseId);
     assert.ok(runningLease, "running job's lease should NOT be cleaned");
 

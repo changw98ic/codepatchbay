@@ -71,8 +71,8 @@ async function runConnect(args: string[], { cpbRoot }: LooseRecord = {}) {
     return 1;
   }
 
-  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
-  const { saveGithubAppConfig: save } = await import("../../server/services/github-app.js");
+  const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const { saveGithubAppConfig: save } = await import("../../server/services/github/github-api.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
   const raw: LooseRecord = {
@@ -131,9 +131,9 @@ function buildTransportSummary(transport: LooseRecord | null) {
 
 async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   const json = args.includes("--json");
-  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
-  const { loadGithubAppConfig, resolveGithubWebhookSecret } = await import("../../server/services/github-app.js");
-  const { resolveGithubTransport } = await import("../../server/services/github-api.js");
+  const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const { loadGithubAppConfig, resolveGithubWebhookSecret } = await import("../../server/services/github/github-api.js");
+  const { resolveGithubTransport } = await import("../../server/services/github/github-api.js");
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const execFileAsync = promisify(execFile);
@@ -174,7 +174,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   // Layer 4: Private key
   if (config?.privateKeyRef) {
     try {
-      const { resolvePrivateKey } = await import("../../server/services/github-api.js");
+      const { resolvePrivateKey } = await import("../../server/services/github/github-api.js");
       resolvePrivateKey(config);
       layers.push({ id: "github-app-private-key", status: "ok", message: `Private key: ${config.privateKeyRef.split(":")[0]}:* available` });
     } catch {
@@ -202,7 +202,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
 
   // Layer 6: Repo bindings
   try {
-    const { listProjects } = await import("../../server/services/hub-registry.js");
+    const { listProjects } = await import("../../server/services/hub/hub-registry.js");
     const projects = await listProjects(hubRoot);
     const bound = projects.filter((p) => p.github?.fullName);
     if (bound.length > 0) {
@@ -300,7 +300,7 @@ export async function run(args: string[] = [], { cpbRoot }: LooseRecord = {}) {
   }
 
   try {
-    const { bindProjectGithub, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+    const { bindProjectGithub, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
     const hubRoot = resolveHubRoot(cpbRoot);
     const project = await bindProjectGithub(hubRoot, parsed.projectId, parsed.repo);
     if (!project) {

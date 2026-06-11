@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveInstallBinExecutorRoot, installBin } from "../../server/services/install-bin.js";
+import { resolveInstallBinExecutorRoot, installBin } from "../../server/services/setup.js";
 
 function usage() {
   return [

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import { accessSync, constants, existsSync, statSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { registerWatcher } from './services/watcher.js';
+import { registerWatcher } from './services/infra.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
 import { channelRoutes } from './routes/channels.js';
@@ -18,9 +18,9 @@ import { eventRoutes } from './routes/events.js';
 import { githubRoutes } from './routes/github.js';
 import { skillRoutes } from './routes/skills.js';
 import { inboxRoutes } from './routes/inbox.js';
-import { resolveHubRoot } from './services/hub-registry.js';
-import { getHubRuntime } from './services/hub-runtime.js';
-import { addClient, removeClient, broadcast, closeAll } from './services/ws-broadcast.js';
+import { resolveHubRoot } from './services/hub/hub-registry.js';
+import { getHubRuntime } from './services/hub/hub-registry.js';
+import { addClient, removeClient, broadcast, closeAll } from './services/infra.js';
 import { initNotificationService } from './services/notification/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -163,7 +163,7 @@ app.register(skillRoutes, { prefix: '/api' });
 app.register(inboxRoutes, { prefix: '/api' });
 
 // Low-frequency agent status broadcast (every 30s)
-const { collectAgentMetrics } = await import('./services/agent-metrics.js');
+const { collectAgentMetrics } = await import('./services/agent/agent-config.js');
 const agentStatusInterval = setInterval(async () => {
   try {
     const metrics = await collectAgentMetrics(CPB_ROOT);
@@ -174,10 +174,10 @@ agentStatusInterval.unref();
 
 // Proactive auto-scan (only when CPB_PROACTIVE=1, every 5 minutes)
 if (process.env.CPB_PROACTIVE === '1') {
-  const { scanCandidates } = await import('./services/task-brain.js');
-  const { checkProactiveBudget } = await import('./services/task-brain.js');
-  const { createJob } = await import('./services/job-store.js');
-  const { updateCandidate } = await import('./services/event-source.js');
+  const { scanCandidates } = await import('./services/evolve/evolve.js');
+  const { checkProactiveBudget } = await import('./services/evolve/evolve.js');
+  const { createJob } = await import('./services/job/job-store.js');
+  const { updateCandidate } = await import('./services/event/event-source.js');
   const proactiveInterval = setInterval(async () => {
     try {
       const budget = await checkProactiveBudget(CPB_ROOT);

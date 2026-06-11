@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { checkCodeGraphReady } from "../server/services/codegraph-readiness.js";
+import { checkCodeGraphReady } from "../server/services/infra.js";
 import { buildChildEnv } from "../core/policy/child-env.js";
 import { tempRoot } from "./helpers.js";
 

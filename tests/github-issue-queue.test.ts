@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
-import { matchGithubTrigger } from "../server/services/github-triggers.js";
-import { createGithubIssueQueueJob } from "../server/services/event-source.js";
-import { createJob, getJobByQueueEntryId } from "../server/services/job-store.js";
-import { enqueue } from "../server/services/hub-queue.js";
+import { normalizeGithubWebhookEvent } from "../server/services/github/github-adapter.js";
+import { matchGithubTrigger } from "../server/services/github/github-adapter.js";
+import { createGithubIssueQueueJob } from "../server/services/event/event-source.js";
+import { createJob, getJobByQueueEntryId } from "../server/services/job/job-store.js";
+import { enqueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
 function makeIssuePayload(overrides: Record<string, any> = {}) {

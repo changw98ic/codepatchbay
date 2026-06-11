@@ -4,14 +4,14 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { appendEvent, materializeJob, readEvents } from "../server/services/event-store.js";
+import { appendEvent, materializeJob, readEvents } from "../server/services/event/event-store.js";
 import {
   _internalMarkProviderUnavailable,
   assertProviderAvailable,
   QuotaStatus,
   readProviderQuotas,
 } from "../server/services/provider-quota.js";
-import { getProviderAdapter } from "../server/services/provider-adapters.js";
+import { getProviderAdapter } from "../server/services/provider-quota.js";
 import {
   delegateEnqueueProviderUsage,
   delegateMarkProviderUnavailable,

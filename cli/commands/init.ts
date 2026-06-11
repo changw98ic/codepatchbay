@@ -220,7 +220,7 @@ cpb:
 
   // 6. Auto-register with Hub (if hub root exists)
   try {
-    const { registerProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+    const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
     const hubRoot = resolveHubRoot(cpbRoot);
     await registerProject(hubRoot, { name: projectName, sourcePath: resolvedPath });
     console.log(`Registered with Hub.`);

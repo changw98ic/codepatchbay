@@ -13,7 +13,7 @@ import {
   requestCancelJob,
   FAILURE_CODES,
   getJob,
-} from "../server/services/job-store.js";
+} from "../server/services/job/job-store.js";
 import {
   isTerminal,
   isRecoverable,
@@ -21,8 +21,8 @@ import {
   retryAsNewJob,
   verifyTerminalImmutability,
   getLineage,
-} from "../server/services/job-recovery.js";
-import { appendEvent, readEvents } from "../server/services/event-store.js";
+} from "../server/services/job/job-store.js";
+import { appendEvent, readEvents } from "../server/services/event/event-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-job-recovery-"));
 const project = "recovery-test";

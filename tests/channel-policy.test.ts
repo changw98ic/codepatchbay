@@ -6,7 +6,7 @@ import {
   enforceChannelPolicy,
   evaluateChannelPolicy,
   readChannelPolicyEvents,
-} from "../server/services/channel-policy.js";
+} from "../server/services/channel/channel-commands.js";
 import { tempRoot } from "./helpers.js";
 
 test("channel policy deny wins over allow and default deny blocks unmatched writes", () => {

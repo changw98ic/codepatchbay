@@ -1,6 +1,6 @@
-import { getProject } from "./hub-registry.js";
-import { updateEntry } from "./hub-queue.js";
-import { checkCodeGraphReady } from "./codegraph-readiness.js";
+import { getProject } from "./hub/hub-registry.js";
+import { updateEntry } from "./hub/hub-queue.js";
+import { checkCodeGraphReady } from "./readiness-checks.js";
 import { generateDynamicAgentPlan } from "../../core/agents/dynamic-agent-plan.js";
 
 export class ProjectCapabilityMapUnavailableError extends Error {

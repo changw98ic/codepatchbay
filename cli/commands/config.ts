@@ -6,7 +6,7 @@ import {
   writeProjectJson,
   mergeAgentConfig,
   isValidSchedulerMode,
-} from "../../server/services/agent-config.js";
+} from "../../server/services/agent/agent-config.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -164,7 +164,7 @@ export async function run(args: string[], { cpbRoot }: LooseRecord = {}) {
 
   const isHub = args.includes("--hub");
   if (!cpbRoot) cpbRoot = process.env.CPB_ROOT || process.cwd();
-  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
 
   // ── Hub-level config ──
@@ -272,7 +272,7 @@ export async function run(args: string[], { cpbRoot }: LooseRecord = {}) {
   // ─── Automation config ───
 
   if (args.includes("--show-automation")) {
-    const { getProject } = await import("../../server/services/hub-registry.js");
+    const { getProject } = await import("../../server/services/hub/hub-registry.js");
     const hubProject = await getProject(hubRoot, project);
     if (!hubProject?.github?.automation) {
       console.log(`No automation config for project '${project}'.`);
@@ -308,7 +308,7 @@ export async function run(args: string[], { cpbRoot }: LooseRecord = {}) {
   const clearRules = args.includes("--automation-clear-rules");
 
   if (automationEnabled !== null || syncInterval !== null || ruleStrings.length > 0 || excludeLabels !== null || clearRules) {
-    const { getProject, updateProject } = await import("../../server/services/hub-registry.js");
+    const { getProject, updateProject } = await import("../../server/services/hub/hub-registry.js");
     const hubProject = await getProject(hubRoot, project);
     if (!hubProject?.github) {
       console.error(`Project '${project}' has no GitHub binding. Run: cpb github bind ${project} <owner/repo>`);

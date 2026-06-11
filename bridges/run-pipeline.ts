@@ -1,39 +1,27 @@
 #!/usr/bin/env node
-// run-pipeline.js — Full automated pipeline using job-store as single source of truth
+// run-pipeline.js — CLI shim for the pipeline orchestrator
+// Delegates to engine-runner.runJobWithServices() for the actual state machine.
+//
 // Usage: node bridges/run-pipeline.js --project <name> --task "<desc>" [--source-path <repo>] [--max-retries N] [--timeout-min M]
 
-import { access, mkdir, readFile, realpath, stat, writeFile, rm } from "node:fs/promises";
-import { readFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { access, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeDataPath } from "../server/services/runtime-root.js";
-import { appendEvent } from "../server/services/event-store.js";
-import { getProject, resolveHubRoot } from "../server/services/hub-registry.js";
+import { runtimeDataPath } from "../server/services/runtime.js";
+import { appendEvent } from "../server/services/event/event-store.js";
+import { getProject, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
-import {
-  completeJob,
-  completePhase,
-  createJob,
-  cancelJob,
-  consumeRedirect,
-  FAILURE_CODES,
-  failJob,
-  getJob,
-} from "../server/services/job-store.js";
-import { bridgeForPhase, getWorkflow } from "../server/services/workflow-definition.js";
-import { dispatchPhase } from "../server/services/phase-runner.js";
 import {
   dispatchEnabled,
   guardSourcePath as guardDispatchSourcePath,
-  lookupDispatch,
   markDispatchCompleted,
   markDispatchFailed,
   markDispatchStarted,
   recordDispatch,
-} from "../server/services/worker-dispatch.js";
+} from "../server/services/dispatch/dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
-import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
+import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/setup.js";
+import { runJobWithServices } from "../server/services/setup.js";
 
 // ─── CLI arg parsing ───
 
@@ -76,12 +64,11 @@ function parseArgs(argv) {
   return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath };
 }
 
-// ─── Logging helpers (compatible with bash version format) ───
+// ─── Logging helpers ───
 
 const CYAN = "\x1b[0;36m";
 const GREEN = "\x1b[0;32m";
 const RED = "\x1b[0;31m";
-const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
 function tag(project) {
@@ -100,19 +87,7 @@ function fail(msg: string) {
   console.log(`${RED}[FAIL]${NC} ${msg}`);
 }
 
-function warn(msg: string) {
-  console.log(`${YELLOW}[WARN]${NC} ${msg}`);
-}
-
-function failure(reason: any, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, any> = {}): any {
-  return {
-    reason,
-    code,
-    phase,
-    retryable: retryable ?? code === FAILURE_CODES.RECOVERABLE,
-    cause,
-  };
-}
+// ─── Exported utilities (used by tests) ───
 
 export async function canonicalSourcePath(sourcePath: string) {
   const canonical = await realpath(path.resolve(sourcePath));
@@ -123,180 +98,14 @@ export async function canonicalSourcePath(sourcePath: string) {
   return canonical;
 }
 
-function printFailureSummary(cpbRoot: string, project: string, jobId: string, { phase, reason, deliverableId, verdictFile }: Record<string, any>) {
-  console.log("");
-  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
-  console.log(`${RED}  PIPELINE FAILED${NC}`);
-  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
-  console.log("");
-  console.log(`  ${CYAN}Project:${NC}   ${project}`);
-  console.log(`  ${CYAN}Job:${NC}       ${jobId}`);
-  if (phase) console.log(`  ${CYAN}Phase:${NC}     ${phase}`);
-  if (reason) console.log(`  ${CYAN}Reason:${NC}    ${reason}`);
-  if (deliverableId) console.log(`  ${CYAN}Deliverable:${NC} deliverable-${deliverableId}`);
-  if (verdictFile) {
-    try {
-      const content = readFileSync(verdictFile, "utf8");
-      const verdict = content.match(/^VERDICT:\s*(\S+)/m)?.[1] || "unknown";
-      const firstEvidence = content.split("\n").filter(l => l.trim() && !l.startsWith("VERDICT:")).slice(0, 3).join(" | ");
-      console.log(`  ${CYAN}Verdict:${NC}    ${verdict}`);
-      if (firstEvidence) console.log(`  ${CYAN}Evidence:${NC}   ${firstEvidence.slice(0, 120)}`);
-    } catch {}
-  }
-  console.log("");
-  console.log(`  ${YELLOW}Next steps:${NC}`);
-  if (phase === "execute" || phase === "plan") {
-    console.log(`    cpb status ${project}          # check current state`);
-    console.log(`    cpb review ${project}          # review deliverable`);
-  } else if (phase === "verify") {
-    console.log(`    cpb review ${project}          # review verdict & diff`);
-    console.log(`    cpb execute ${project} <id>    # retry with fixes`);
-  } else {
-    console.log(`    cpb status ${project}          # check current state`);
-    console.log(`    cpb doctor                     # diagnose issues`);
-  }
-  console.log("");
-  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
-  console.log("");
-}
-
-// ─── Timestamp helper ───
-
-function ts() {
-  return new Date().toISOString();
-}
-
-// ─── Run a bridge script as child process ───
-
-function killChildProcess(proc) {
+export async function parseVerdict(verdictPath) {
   try {
-    if (proc.detached && process.platform !== "win32") {
-      process.kill(-proc.pid, "SIGTERM");
-    } else {
-      proc.kill("SIGTERM");
-    }
+    const content = await readFile(verdictPath, "utf8");
+    const envelope = parseVerdictEnvelope(content);
+    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
+    return mapped[envelope.status] || "UNKNOWN";
   } catch {
-    try { proc.kill("SIGTERM"); } catch {}
-  }
-  setTimeout(() => {
-    try {
-      if (proc.detached && process.platform !== "win32") {
-        process.kill(-proc.pid, "SIGKILL");
-      } else {
-        proc.kill("SIGKILL");
-      }
-    } catch {
-      try { proc.kill("SIGKILL"); } catch {}
-    }
-  }, 2_000).unref?.();
-}
-
-function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<any> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const stdoutChunks: any[] = [];
-    const detached = Boolean(options.signal) && process.platform !== "win32";
-
-    function finish(result: any) {
-      if (settled) return;
-      settled = true;
-      if (options.signal && proc) {
-        options.signal.removeEventListener("abort", onAbort);
-      }
-      resolve(result);
-    }
-
-    let proc: any;
-    const onAbort = () => {
-      if (!settled && proc) {
-        killChildProcess(proc);
-      }
-    };
-    try {
-      proc = spawn(command, commandArgs, {
-        cwd,
-        env: options.env || process.env,
-        detached,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      finish({ exitCode: 1, stdout: "", childPid: null, error: err });
-      return;
-    }
-    proc.detached = detached;
-    const childPid = proc.pid || null;
-    if (options.signal) {
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    proc.stdout.on("data", (chunk) => {
-      stdoutChunks.push(chunk);
-      process.stdout.write(chunk);
-    });
-    proc.stderr.on("data", (chunk) => {
-      process.stderr.write(chunk);
-    });
-    proc.on("error", (err) => {
-      finish({ exitCode: 1, stdout: combineChunks(stdoutChunks), childPid, error: err });
-    });
-    proc.on("close", (code, signal) => {
-      finish({
-        exitCode: code ?? 1,
-        stdout: combineChunks(stdoutChunks),
-        childPid,
-        signal,
-      });
-    });
-  });
-}
-
-function combineChunks(chunks) {
-  if (chunks.length === 0) return "";
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function writeIfMissing(filePath, content) {
-  try {
-    await access(filePath);
-  } catch {
-    await writeFile(filePath, content, "utf8");
-  }
-}
-
-async function readJsonObject(filePath) {
-  try {
-    const parsed = JSON.parse(await readFile(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function sourcePathRebindAllowed() {
-  return process.env.CPB_ALLOW_SOURCEPATH_REBIND === "1";
-}
-
-async function canonicalSourcePathOrThrow(sourcePath, label) {
-  try {
-    return await canonicalSourcePath(sourcePath);
-  } catch (err) {
-    throw new Error(`${label} sourcePath is invalid: ${err.message}`);
-  }
-}
-
-async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
-  if (!process.env.CPB_HUB_ROOT) return;
-
-  const hubRoot = resolveHubRoot(cpbRoot);
-  const registered = await getProject(hubRoot, project);
-  if (!registered?.sourcePath) return;
-
-  const registeredSourcePath = await canonicalSourcePathOrThrow(registered.sourcePath, "registered project");
-  if (registeredSourcePath !== sourcePath) {
-    throw new Error(
-      `project/sourcePath mismatch: project '${project}' is registered to ${registeredSourcePath}, not ${sourcePath}`
-    );
+    return null;
   }
 }
 
@@ -339,50 +148,53 @@ export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath) {
   await writeIfMissing(path.join(wikiDir, "log.md"), `# ${project} Log\n`);
 }
 
-// ─── ID extraction from bridge stdout ───
+// ─── Internal helpers ───
 
-function extractPlanId(stdout) {
-  const match = stdout.match(/^Plan: .*\/plan-(\d+)\.md$/m);
-  return match ? match[1] : null;
+function sourcePathRebindAllowed() {
+  return process.env.CPB_ALLOW_SOURCEPATH_REBIND === "1";
 }
 
-function extractDeliverableId(stdout) {
-  const match = stdout.match(/^Deliverable: .*\/deliverable-(\d+)\.md$/m);
-  return match ? match[1] : null;
-}
-
-// ─── Verdict parsing from verdict file ───
-
-export async function parseVerdict(verdictPath) {
+async function canonicalSourcePathOrThrow(sourcePath, label) {
   try {
-    const content = await readFile(verdictPath, "utf8");
-    const envelope = parseVerdictEnvelope(content);
-    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
-    return mapped[envelope.status] || "UNKNOWN";
-  } catch {
-    return null;
+    return await canonicalSourcePath(sourcePath);
+  } catch (err) {
+    throw new Error(`${label} sourcePath is invalid: ${err.message}`);
   }
 }
 
-async function parseReviewVerdict(reviewPath) {
-  try {
-    const content = await readFile(reviewPath, "utf8");
-    const lines = content.split(/\r?\n/).slice(0, 20);
-    for (const line of lines) {
-      const structured = line.match(/^REVIEW:\s*(PASS|FAIL)\b/i);
-      if (structured) return structured[1].toUpperCase();
-    }
-    for (const line of lines) {
-      const inline = line.match(/\bREVIEW:\s*(PASS|FAIL)\b/i);
-      if (inline) return inline[1].toUpperCase();
-    }
-    return "UNKNOWN";
-  } catch {
-    return null;
+async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
+  if (!process.env.CPB_HUB_ROOT) return;
+
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const registered = await getProject(hubRoot, project);
+  if (!registered?.sourcePath) return;
+
+  const registeredSourcePath = await canonicalSourcePathOrThrow(registered.sourcePath, "registered project");
+  if (registeredSourcePath !== sourcePath) {
+    throw new Error(
+      `project/sourcePath mismatch: project '${project}' is registered to ${registeredSourcePath}, not ${sourcePath}`
+    );
   }
 }
 
-// ─── Phase execution ───
+async function writeIfMissing(filePath, content) {
+  try {
+    await access(filePath);
+  } catch {
+    await writeFile(filePath, content, "utf8");
+  }
+}
+
+async function readJsonObject(filePath) {
+  try {
+    const parsed = JSON.parse(await readFile(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// ─── Worktree creation ───
 
 async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePathOverride = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
@@ -401,6 +213,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   }
   if (!sourcePath) return null;
 
+  const { spawn } = await import("node:child_process");
   const worktreesRoot = runtimeDataPath(cpbRoot, "worktrees");
   const result = await runCommand(
     process.execPath,
@@ -432,26 +245,78 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
     project,
     worktree: created.path,
     branch: created.branch,
-    ts: ts(),
+    ts: new Date().toISOString(),
   });
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string): Promise<any> {
-  const job = await getJob(cpbRoot, project, jobId);
-  if (job.cancelRequested) {
-    await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}` });
-    fail(`Cancelled before ${phase}`);
-    return { cancelled: true, redirect: null };
-  }
-  let redirect = null;
-  if (job.redirectEventId && !job.consumedRedirectIds.includes(job.redirectEventId)) {
-    redirect = { instructions: job.redirectContext, reason: job.redirectReason, eventId: job.redirectEventId };
-  }
-  return { cancelled: false, redirect };
+function runCommand(command, commandArgs, cwd, options: Record<string, any> = {}): Promise<any> {
+  const { spawn } = require("node:child_process");
+  return new Promise((resolve) => {
+    let settled = false;
+    const stdoutChunks: any[] = [];
+
+    function finish(result: any) {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    }
+
+    let proc: any;
+    try {
+      proc = spawn(command, commandArgs, {
+        cwd,
+        env: options.env || process.env,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      finish({ exitCode: 1, stdout: "", childPid: null, error: err });
+      return;
+    }
+
+    proc.stdout.on("data", (chunk) => {
+      stdoutChunks.push(chunk);
+      process.stdout.write(chunk);
+    });
+    proc.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+    });
+    proc.on("error", (err) => {
+      finish({ exitCode: 1, stdout: Buffer.concat(stdoutChunks).toString("utf8"), childPid: proc.pid, error: err });
+    });
+    proc.on("close", (code) => {
+      finish({
+        exitCode: code ?? 1,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        childPid: proc.pid,
+      });
+    });
+  });
 }
 
-// ─── Main pipeline ───
+// ─── Failure summary ───
+
+function printFailureSummary(cpbRoot: string, project: string, jobId: string, { phase, reason }: Record<string, any>) {
+  console.log("");
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log(`${RED}  PIPELINE FAILED${NC}`);
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log("");
+  console.log(`  ${CYAN}Project:${NC}   ${project}`);
+  console.log(`  ${CYAN}Job:${NC}       ${jobId}`);
+  if (phase) console.log(`  ${CYAN}Phase:${NC}     ${phase}`);
+  if (reason) console.log(`  ${CYAN}Reason:${NC}    ${reason}`);
+  console.log("");
+  console.log(`  ${CYAN}Next steps:${NC}`);
+  console.log(`    cpb status ${project}          # check current state`);
+  console.log(`    cpb doctor                     # diagnose issues`);
+  console.log("");
+  console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
+  console.log("");
+}
+
+// ─── Main pipeline (thin shim) ───
 
 async function main() {
   let parsed;
@@ -495,556 +360,57 @@ async function main() {
     }
   }
 
-  async function markDispatchDone(ok) {
+  async function markDispatchDone(ok: boolean) {
     if (!dispatchEnabled() || !hubRoot || !dispatchId) return;
     const fn = ok ? markDispatchCompleted : markDispatchFailed;
     await fn(hubRoot, dispatchId).catch(() => {});
   }
 
-  let pipelineOk = false;
-  const workflowDef = getWorkflow(workflow);
-  const phaseTotal = workflowDef.phases.length || 0;
-  const phaseIndex = (phase) => {
-    const idx = workflowDef.phases.indexOf(phase);
-    return idx >= 0 ? idx + 1 : "?";
-  };
-
-  // Timeout support: set a flag via setTimeout
-  let timedOut = false;
-  let watchdogTimer = null;
-
-  if (timeoutMin > 0) {
-    watchdogTimer = setTimeout(() => {
-      timedOut = true;
-      fail(`Total timeout (${timeoutMin} min) exceeded`);
-    }, timeoutMin * 60_000);
-    watchdogTimer.unref?.();
-  }
-
-  function checkTimeout() {
-    if (timedOut) {
-      fail(`Timed out.`);
-      return true;
-    }
-    return false;
-  }
-
-  // Create job
-  const job = await createJob(cpbRoot, {
-    project,
-    task,
-    workflow,
-    jobId: jobIdOverride,
-    executor: await executorMetadata(executorRoot, { codeVersion: process.env.CPB_VERSION }),
-  });
-  const jobId = job.jobId;
-
-  const meta = buildMeta({
-    sourcePath,
-    sessionId: process.env.CPB_SESSION_ID || null,
-    workerId: process.env.CPB_WORKER_ID || null,
-  });
-
-  if (meta.sourcePath) {
-    await appendEvent(cpbRoot, project, jobId, executionBoundaryEvent(meta, { jobId, project, ts: ts() }));
-  }
-
+  // Worktree setup
   const wikiDir = path.resolve(cpbRoot, "wiki", "projects", project);
+  const jobId = jobIdOverride || `job-${Date.now()}`;
   await maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, sourcePath);
+
   log(project, `Job ${jobId} started (max ${maxRetries} retries${timeoutMin > 0 ? `, ${timeoutMin}min timeout` : ""}, workflow: ${workflow})`);
 
-  // Blocked workflow: record and exit without launching agents
-  if (workflow === "blocked") {
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "workflow_selected",
-      jobId,
-      project,
-      workflow,
-      default: false,
-      reason: "blocked by operator",
-      ts: ts(),
-    });
-    const { blockJob } = await import("../server/services/job-store.js");
-    await blockJob(cpbRoot, project, jobId, { reason: "blocked by operator" });
-    log(project, `Job ${jobId} blocked. No agents launched.`);
-    pipelineOk = true;
-    await markDispatchDone(true);
-    return 0;
-  }
-
-  // Record workflow selection for standard
-  if (workflow !== "standard") {
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "workflow_selected",
-      jobId,
-      project,
-      workflow,
-      default: false,
-      ts: ts(),
-    });
-  }
-
+  let pipelineOk = false;
   try {
-    // ─── Phase 1: Plan ───
-    {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "plan");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled before plan", { code: FAILURE_CODES.BLOCKED, phase: "plan" }));
-        return 1;
-      }
-    }
-    log(project, `Phase ${phaseIndex("plan")}/${phaseTotal}: Plan (Codex)`);
-    const planResult = await dispatchPhase(cpbRoot, {
-      project, jobId, phase: "plan",
-      script: `bridges/${bridgeForPhase(workflowDef, "plan")}`,
-      scriptArgs: [project, task],
-      executorRoot,
-      env: executorEnv(process.env, { cpbRoot, executorRoot }),
+    const result = await runJobWithServices({
+      cpbRoot,
+      hubRoot,
+      project,
+      task,
+      workflow,
+      sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE || null,
+      maxRetries,
+      timeoutMin,
+      jobId: jobIdOverride,
+      env: process.env,
     });
 
-    if (planResult.error) {
-      fail(`Plan spawn failed: ${planResult.error.message}`);
-      await failJob(cpbRoot, project, jobId, failure(`plan spawn error: ${planResult.error.message}`, {
-        code: FAILURE_CODES.RECOVERABLE,
-        phase: "plan",
-        cause: { message: planResult.error.message },
-      }));
-      return 1;
+    if (result.status === "completed") {
+      ok(`Pipeline complete! Job ${result.jobId}`);
+      pipelineOk = true;
+      return 0;
     }
 
-    if (checkTimeout()) {
-      await failJob(cpbRoot, project, jobId, failure("timed out after plan phase", {
-        code: FAILURE_CODES.RECOVERABLE,
-        phase: "plan",
-      }));
-      return 1;
+    if (result.status === "blocked") {
+      log(project, `Job ${result.jobId} blocked.`);
+      pipelineOk = true;
+      return 0;
     }
 
-    const planId = extractPlanId(planResult.stdout);
-
-    if (!planId) {
-      fail("Plan not created. Aborting.");
-      await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: "" });
-      await failJob(cpbRoot, project, jobId, failure("plan not created", {
-        code: FAILURE_CODES.FATAL,
-        phase: "plan",
-      }));
-      return 1;
-    }
-
-    ok(`plan-${planId}`);
-    await completePhase(cpbRoot, project, jobId, { phase: "plan", artifact: `plan-${planId}` });
-
-    // Cancel check after plan
-    {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "execute");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after plan", { code: FAILURE_CODES.BLOCKED, phase: "execute" }));
-        return 1;
-      }
-    }
-
-    // ─── Phase 2: Execute (+ retry) ───
-    let deliverableId = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during execute phase", {
-          code: FAILURE_CODES.RECOVERABLE,
-          phase: "execute",
-        }));
-        return 1;
-      }
-
-      log(project, `Phase ${phaseIndex("execute")}/${phaseTotal}: Execute (Claude) attempt ${attempt}/${maxRetries}`);
-      const execResult = await dispatchPhase(cpbRoot, {
-        project, jobId,
-        phase: `execute${attempt > 1 ? `-retry-${attempt}` : ""}`,
-        script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-        scriptArgs: [project, planId],
-        executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
-      });
-
-      deliverableId = extractDeliverableId(execResult.stdout);
-
-      if (deliverableId) {
-        ok(`deliverable-${deliverableId}`);
-        await completePhase(cpbRoot, project, jobId, {
-          phase: "execute",
-          artifact: `deliverable-${deliverableId}`,
-        });
-        break;
-      }
-
-      warn(`No deliverable. Retry ${attempt}/${maxRetries}`);
-      await completePhase(cpbRoot, project, jobId, {
-        phase: `execute-retry-${attempt}`,
-        artifact: "",
-      });
-    }
-
-    if (!deliverableId) {
-      warn(`Execute completed without deliverable after ${maxRetries} attempts. Proceeding to verify by job state.`);
-      await completePhase(cpbRoot, project, jobId, {
-        phase: "execute",
-        artifact: "",
-      });
-    }
-
-    if (deliverableId && workflowDef.phases.includes("review")) {
-      let reviewPassed = false;
-      let lastReviewVerdict = null;
-
-      for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
-        if (checkTimeout()) {
-          await failJob(cpbRoot, project, jobId, failure("timed out during review phase", {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "review",
-          }));
-          return 1;
-        }
-
-        const reviewPhaseName = reviewCycle === 1 ? "review" : `review-retry-${reviewCycle}`;
-        log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review (Codex) attempt ${reviewCycle}/${maxRetries}`);
-        const reviewResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: reviewPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-          scriptArgs: [project, deliverableId],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-        });
-
-        if (reviewResult.error) {
-          fail(`Review spawn failed: ${reviewResult.error.message}`);
-          await failJob(cpbRoot, project, jobId, failure(`review spawn error: ${reviewResult.error.message}`, {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "review",
-            cause: { message: reviewResult.error.message },
-          }));
-          return 1;
-        }
-
-        const reviewPath = path.resolve(wikiDir, "outputs", `review-${deliverableId}.md`);
-        const reviewVerdict = await parseReviewVerdict(reviewPath);
-        lastReviewVerdict = reviewVerdict;
-
-        if (reviewVerdict === "PASS") {
-          ok(`review-${deliverableId}`);
-          await completePhase(cpbRoot, project, jobId, {
-            phase: "review",
-            artifact: `review-${deliverableId}`,
-          });
-          reviewPassed = true;
-          break;
-        }
-
-        warn(`Review did not pass: ${reviewVerdict ?? "missing"}`);
-        await completePhase(cpbRoot, project, jobId, {
-          phase: reviewPhaseName,
-          artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
-        });
-
-        if (reviewVerdict === null || reviewCycle >= maxRetries) {
-          break;
-        }
-
-        log(project, "Re-executing (Claude review fix)...");
-        const fixPhaseName = `review-fix-${reviewCycle}`;
-        const fixResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: fixPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: [project, planId, reviewPath],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-        });
-
-        const newDeliverableId = extractDeliverableId(fixResult.stdout);
-        if (newDeliverableId) {
-          deliverableId = newDeliverableId;
-          ok(`deliverable-${deliverableId} (review fix)`);
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: `deliverable-${deliverableId}`,
-          });
-        } else {
-          warn("Review fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: "",
-          });
-        }
-      }
-
-      if (!reviewPassed) {
-        await failJob(cpbRoot, project, jobId, failure(`review did not pass: ${lastReviewVerdict ?? "missing"}`, {
-          code: FAILURE_CODES.QUALITY_FAIL,
-          phase: "review",
-          retryable: false,
-        }));
-        return 1;
-      }
-
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after review", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
-        return 1;
-      }
-    }
-
-    // Cancel check after execute
-    {
-      const check = await checkCancelAndRedirect(cpbRoot, project, jobId, "verify");
-      if (check.cancelled) {
-        await failJob(cpbRoot, project, jobId, failure("cancelled after execute", { code: FAILURE_CODES.BLOCKED, phase: "verify" }));
-        return 1;
-      }
-    }
-
-    // ─── Phase 3: Verify (+ fix loop) ───
-    let verifyAttempt = 0;
-    let verdictRetryCount = 0;
-    let qualityFailureCount = 0;
-
-    while (qualityFailureCount < maxRetries) {
-      if (checkTimeout()) {
-        await failJob(cpbRoot, project, jobId, failure("timed out during verify phase", {
-          code: FAILURE_CODES.RECOVERABLE,
-          phase: "verify",
-        }));
-        return 1;
-      }
-
-      verifyAttempt += 1;
-      log(project, `Phase ${phaseIndex("verify")}/${phaseTotal}: Verify (Codex) attempt ${verifyAttempt}`);
-
-      const verifyPhaseName = verifyAttempt === 1 ? "verify" : `verify-retry-${verifyAttempt}`;
-      const verifyArgs = deliverableId ? [project, deliverableId] : [project, "--job-id", jobId];
-      await dispatchPhase(cpbRoot, {
-        project, jobId, phase: verifyPhaseName,
-        script: `bridges/${bridgeForPhase(workflowDef, "verify")}`,
-        scriptArgs: verifyArgs,
-        executorRoot,
-        env: executorEnv(process.env, { cpbRoot, executorRoot }),
-      });
-
-      const verdictId = deliverableId || jobId;
-      const verdictPath = path.resolve(wikiDir, "outputs", `verdict-${verdictId}.md`);
-      const verdict = await parseVerdict(verdictPath);
-
-      if (verdict === null) {
-        verdictRetryCount += 1;
-        warn(`No verdict file. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (verdictRetryCount >= maxRetries) {
-          await failJob(cpbRoot, project, jobId, failure("verification verdict missing after retries", {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "verify",
-            retryable: true,
-          }));
-          printFailureSummary(cpbRoot, project, jobId, {
-            phase: "verify",
-            reason: "verification verdict missing after retries",
-            deliverableId,
-            verdictFile: verdictPath,
-          });
-          return 1;
-        }
-        continue;
-      }
-
-      if (verdict === "UNKNOWN" || verdict === "INFRA_FAILURE") {
-        verdictRetryCount += 1;
-        const label = verdict === "INFRA_FAILURE" ? "infra error" : "unclear verdict";
-        warn(`${label}: ${verdict}. Verification retry ${verdictRetryCount}/${maxRetries}`);
-        await completePhase(cpbRoot, project, jobId, { phase: verifyPhaseName, artifact: "" });
-        if (verdictRetryCount >= maxRetries) {
-          const reason = verdict === "INFRA_FAILURE"
-            ? "verification infra errors after retries"
-            : "verification verdict unclear after retries";
-          await failJob(cpbRoot, project, jobId, failure(reason, {
-            code: FAILURE_CODES.RECOVERABLE,
-            phase: "verify",
-            retryable: true,
-          }));
-          printFailureSummary(cpbRoot, project, jobId, {
-            phase: "verify",
-            reason,
-            deliverableId,
-            verdictFile: verdictPath,
-          });
-          return 1;
-        }
-        continue;
-      }
-
-      if (verdict === "PASS") {
-        ok("Pipeline complete!");
-        await completePhase(cpbRoot, project, jobId, {
-          phase: "verify",
-          artifact: `verdict-${verdictId}`,
-        });
-        await completeJob(cpbRoot, project, jobId);
-        pipelineOk = true;
-        return 0;
-      }
-
-      // FAIL or PARTIAL — fix loop
-      qualityFailureCount += 1;
-      warn(`Verdict: ${verdict}. Quality failure ${qualityFailureCount}/${maxRetries}`);
-
-      await completePhase(cpbRoot, project, jobId, {
-        phase: verifyPhaseName,
-        artifact: `verdict-${verdictId}`,
-      });
-
-      if (qualityFailureCount < maxRetries) {
-        log(project, "Re-executing (Claude fix)...");
-        const fixPhaseName = `fix-${qualityFailureCount}`;
-        const fixResult = await dispatchPhase(cpbRoot, {
-          project, jobId, phase: fixPhaseName,
-          script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-          scriptArgs: [project, planId, verdictPath],
-          executorRoot,
-          env: executorEnv(process.env, { cpbRoot, executorRoot }),
-        });
-
-        const newDeliverableId = extractDeliverableId(fixResult.stdout);
-        if (newDeliverableId) {
-          deliverableId = newDeliverableId;
-          ok(`deliverable-${deliverableId} (fix)`);
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: `deliverable-${deliverableId}`,
-          });
-
-          if (workflowDef.phases.includes("review")) {
-            let reviewPassed = false;
-            let lastReviewVerdict = null;
-
-            for (let reviewCycle = 1; reviewCycle <= maxRetries; reviewCycle++) {
-              if (checkTimeout()) {
-                await failJob(cpbRoot, project, jobId, failure("timed out during post-verify review phase", {
-                  code: FAILURE_CODES.RECOVERABLE,
-                  phase: "review",
-                }));
-                return 1;
-              }
-
-              const reviewPhaseName = `post-verify-review-${qualityFailureCount}-${reviewCycle}`;
-              log(project, `Phase ${phaseIndex("review")}/${phaseTotal}: Review after verify fix attempt ${reviewCycle}/${maxRetries}`);
-              const reviewResult = await dispatchPhase(cpbRoot, {
-                project, jobId, phase: reviewPhaseName,
-                script: `bridges/${bridgeForPhase(workflowDef, "review")}`,
-                scriptArgs: [project, deliverableId],
-                executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
-              });
-
-              if (reviewResult.error) {
-                fail(`Review spawn failed: ${reviewResult.error.message}`);
-                await failJob(cpbRoot, project, jobId, failure(`post-verify review spawn error: ${reviewResult.error.message}`, {
-                  code: FAILURE_CODES.RECOVERABLE,
-                  phase: "review",
-                  cause: { message: reviewResult.error.message },
-                }));
-                return 1;
-              }
-
-              const reviewPath = path.resolve(wikiDir, "outputs", `review-${deliverableId}.md`);
-              const reviewVerdict = await parseReviewVerdict(reviewPath);
-              lastReviewVerdict = reviewVerdict;
-
-              if (reviewVerdict === "PASS") {
-                ok(`review-${deliverableId} (post-verify fix)`);
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewPhaseName,
-                  artifact: `review-${deliverableId}`,
-                });
-                reviewPassed = true;
-                break;
-              }
-
-              warn(`Post-verify review did not pass: ${reviewVerdict ?? "missing"}`);
-              await completePhase(cpbRoot, project, jobId, {
-                phase: reviewPhaseName,
-                artifact: reviewVerdict === null ? "" : `review-${deliverableId}`,
-              });
-
-              if (reviewVerdict === null || reviewCycle >= maxRetries) {
-                break;
-              }
-
-              log(project, "Re-executing (Claude post-verify review fix)...");
-              const reviewFixPhaseName = `post-verify-review-fix-${qualityFailureCount}-${reviewCycle}`;
-              const reviewFixResult = await dispatchPhase(cpbRoot, {
-                project, jobId, phase: reviewFixPhaseName,
-                script: `bridges/${bridgeForPhase(workflowDef, "execute")}`,
-                scriptArgs: [project, planId, reviewPath],
-                executorRoot,
-                env: executorEnv(process.env, { cpbRoot, executorRoot }),
-              });
-
-              const reviewedDeliverableId = extractDeliverableId(reviewFixResult.stdout);
-              if (reviewedDeliverableId) {
-                deliverableId = reviewedDeliverableId;
-                ok(`deliverable-${deliverableId} (post-verify review fix)`);
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewFixPhaseName,
-                  artifact: `deliverable-${deliverableId}`,
-                });
-              } else {
-                warn("Post-verify review fix produced no deliverable.");
-                await completePhase(cpbRoot, project, jobId, {
-                  phase: reviewFixPhaseName,
-                  artifact: "",
-                });
-              }
-            }
-
-            if (!reviewPassed) {
-              await failJob(cpbRoot, project, jobId, failure(`post-verify review did not pass: ${lastReviewVerdict ?? "missing"}`, {
-                code: FAILURE_CODES.QUALITY_FAIL,
-                phase: "review",
-                retryable: false,
-              }));
-              return 1;
-            }
-          }
-        } else {
-          warn("Fix produced no deliverable.");
-          await completePhase(cpbRoot, project, jobId, {
-            phase: fixPhaseName,
-            artifact: "",
-          });
-        }
-      }
-    }
-
-    fail(`Pipeline failed after ${maxRetries} quality verification failures.`);
-    await failJob(cpbRoot, project, jobId, failure(`pipeline failed after ${maxRetries} quality verification failures`, {
-      code: FAILURE_CODES.FATAL,
-      phase: "verify",
-    }));
-    const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
-    printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
+    // Failed
+    const phase = result.failure?.phase || "unknown";
+    const reason = result.failure?.reason || "unknown";
+    fail(`Pipeline failed: ${reason}`);
+    printFailureSummary(cpbRoot, project, result.jobId, { phase, reason });
     return 1;
   } catch (err) {
     fail(`Unhandled error: ${err.message}`);
-    try {
-      await failJob(cpbRoot, project, jobId, failure(`unhandled: ${err.message}`, {
-        code: FAILURE_CODES.FATAL,
-        cause: { message: err.message },
-      }));
-    } catch {
-      // Best effort — job may already be in terminal state
-    }
     printFailureSummary(cpbRoot, project, jobId, { reason: err.message });
     return 1;
   } finally {
-    if (watchdogTimer !== null) {
-      clearTimeout(watchdogTimer);
-    }
     await markDispatchDone(pipelineOk);
   }
 }

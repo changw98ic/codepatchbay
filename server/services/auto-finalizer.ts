@@ -8,13 +8,14 @@ import {
   MERGE_CLASSIFICATION,
   normalizeMergePath,
   summarizeMergeFiles,
-} from "./merge-steward.js";
-import { appendEvent, readEvents } from "./event-store.js";
-import { openDraftPullRequest } from "./github-pr.js";
-import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
+} from "./evolve/evolve.js";
+import { appendEvent, readEvents } from "./event/event-store.js";
+import { getJob } from "./job/job-store.js";
+import { openDraftPullRequest } from "./github/github-issues.js";
+import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { actualDiffRiskGuard } from "../../core/triage/rules.js";
 import { normalizeRoute, scopesContainCritical } from "../../core/triage/schema.js";
-import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "./review-bundle.js";
+import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "./review/review-session.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -925,4 +926,68 @@ export async function finalizeSuccessfulQueueEntry({
       await stashPop(canonicalSourcePath, { runCommand });
     }
   }
+}
+
+// ── Approval gate (from approval-gate.ts) ──────────────────────────────────
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+export async function requestApprovalGate(
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { operation, phase, channels = [], reason = "approval required", timeoutAt = null, ts = nowIso(), dataRoot }: Record<string, any> = {},
+) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "approval_required",
+    jobId,
+    project,
+    operation,
+    phase,
+    channels,
+    reason,
+    timeoutAt,
+    ts,
+  }, { dataRoot });
+  return getJob(cpbRoot, project, jobId, { dataRoot });
+}
+
+export async function approveGate(
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { actor = null, action = null, ts = nowIso(), dataRoot }: Record<string, any> = {},
+) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "job_approved",
+    jobId,
+    project,
+    actor,
+    action,
+    ts,
+  }, { dataRoot });
+  return getJob(cpbRoot, project, jobId, { dataRoot });
+}
+
+export async function timeoutApprovalGate(
+  cpbRoot: string,
+  project: string,
+  jobId: string,
+  { reason = "approval timed out", ts = nowIso(), dataRoot }: Record<string, any> = {},
+) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "approval_timed_out",
+    jobId,
+    project,
+    reason,
+    ts,
+  }, { dataRoot });
+
+  const { extractExperienceFromTerminalState } = await import("./event/event-source.js");
+  const state = await getJob(cpbRoot, project, jobId, { dataRoot });
+  await extractExperienceFromTerminalState(cpbRoot, project, jobId, state, "approval_timed_out").catch(() => {});
+
+  return state;
 }

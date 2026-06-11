@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { FailureKind, failure, isValidFailureKind } from "../core/contracts/failure.js";
 import { runJob } from "../core/engine/run-job.js";
 import { registerDagWorkflow } from "../core/workflow/definition.js";
-import { materializeJob } from "../server/services/event-store.js";
-import { jobToPipelineState } from "../server/services/job-projection.js";
+import { materializeJob } from "../server/services/event/event-store.js";
+import { jobToPipelineState } from "../server/services/job/job-projection.js";
 import { tempRoot } from "./helpers.js";
 
 type AnyRecord = Record<string, any>;

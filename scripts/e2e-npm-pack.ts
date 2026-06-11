@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { REQUIRED_EXECUTOR_FILES } from "../server/services/executor-root.js";
+import { REQUIRED_EXECUTOR_FILES } from "../server/services/setup.js";
 
 const args = process.argv.slice(2);
 const KEEP_STATE = args.includes("--keep-state");

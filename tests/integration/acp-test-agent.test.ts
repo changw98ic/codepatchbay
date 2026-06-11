@@ -5,9 +5,9 @@ import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "../helpers.js";
 import { runAgent } from "../../core/agents/agent-runner.js";
-import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../../server/services/acp-pool.js";
+import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../../server/services/acp/acp-pool.js";
 import { buildAcpPoolEnv } from "../../core/policy/child-env.js";
-import { AcpClient, resolveAgentCommand } from "../../server/services/acp-client-core.js";
+import { AcpClient, resolveAgentCommand } from "../../server/services/acp/acp-client.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.js");

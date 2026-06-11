@@ -15,8 +15,8 @@ function runtimeWikiDir(dataRoot) {
 }
 
 export async function findJobForCli(cpbRoot, jobId) {
-  const { listRuntimeDataRoots } = await import("../../server/services/runtime-context.js");
-  const { listJobs } = await import("../../server/services/job-store.js");
+  const { listRuntimeDataRoots } = await import("../../server/services/runtime.js");
+  const { listJobs } = await import("../../server/services/job/job-store.js");
   const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot: process.env.CPB_HUB_ROOT });
 
   for (const root of roots) {
@@ -52,7 +52,7 @@ export function formatArtifactsHuman(index) {
 export async function buildArtifactsForJob(cpbRoot, jobId) {
   const found = await findJobForCli(cpbRoot, jobId);
   if (!found) return null;
-  const { buildArtifactIndex } = await import("../../server/services/artifact-index.js");
+  const { buildArtifactIndex } = await import("../../server/services/job/job-projection.js");
   const index = await buildArtifactIndex(cpbRoot, found.job.project, jobId, {
     dataRoot: found.dataRoot,
     wikiDir: found.wikiDir,

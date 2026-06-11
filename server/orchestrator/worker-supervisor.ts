@@ -4,7 +4,7 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
-import { executorEnv, resolveExecutorRoot } from "../services/executor-root.js";
+import { executorEnv, resolveExecutorRoot } from "../services/setup.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy

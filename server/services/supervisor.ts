@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { isLeaseStale, readLease } from "./lease-manager.js";
-import { cancelJob, completeJob as completeJobStore } from "./job-store.js";
+import { isLeaseStale, readLease } from "./infra.js";
+import { cancelJob, completeJob as completeJobStore } from "./job/job-store.js";
 import { getWorkflow, nextPhase, bridgeForPhase as workflowBridgeForPhase } from "./workflow-definition.js";
-import { executorEnv, resolveExecutorRoot } from "./executor-root.js";
+import { executorEnv, resolveExecutorRoot } from "./setup.js";
 import { buildChildEnv } from "./secret-policy.js";
-import { recoverAsNewJob } from "./job-recovery.js";
+import { recoverAsNewJob } from "./job/job-store.js";
 
 type AnyRecord = Record<string, any>;
 type RunChildResult = { exitCode: number; signal?: NodeJS.Signals | null; error?: any };
@@ -64,7 +64,7 @@ export function nextPhaseFor(state) {
 }
 
 export async function recoverJobs(cpbRoot, { now }: AnyRecord = {}) {
-  const { listJobs } = await import("./job-store.js");
+  const { listJobs } = await import("./job/job-store.js");
   const jobs = await listJobs(cpbRoot);
   const recoverable = [];
   const activeJobIds = new Set();

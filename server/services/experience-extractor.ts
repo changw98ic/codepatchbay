@@ -386,7 +386,7 @@ export async function extractExperienceForJob(
   jobId,
   { dataRoot, force = false, skipIndexRebuild = false }: AnyRecord = {},
 ) {
-  const { getJob } = await import("./job-store.js");
+  const { getJob } = await import("./job/job-store.js");
 
   const state = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (!state?.jobId) return null;
@@ -413,7 +413,7 @@ export async function extractExperienceForJob(
 async function findVerdictArtifactPath(cpbRoot, project, jobId, state, { dataRoot }: AnyRecord = {}) {
   // Primary: use artifact index for authoritative path resolution
   try {
-    const { buildArtifactIndex } = await import("./artifact-index.js");
+    const { buildArtifactIndex } = await import("./job/job-projection.js");
     const index = await (buildArtifactIndex as any)(cpbRoot, project, jobId, { dataRoot });
     const verdictEntry = [...index.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
     if (verdictEntry?.path) return verdictEntry.path;

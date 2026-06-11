@@ -9,12 +9,12 @@ import sensible from "@fastify/sensible";
 import { test } from "node:test";
 
 import { githubRoutes } from "../server/routes/github.js";
-import { matchGithubTrigger } from "../server/services/github-triggers.js";
-import { DEFAULT_GITHUB_TRIGGERS } from "../server/services/hub-registry.js";
-import { normalizeGithubWebhookEvent } from "../server/services/github-events.js";
-import { saveGithubAppConfig } from "../server/services/github-app.js";
-import { registerProject, updateProject } from "../server/services/hub-registry.js";
-import { listQueue } from "../server/services/hub-queue.js";
+import { matchGithubTrigger } from "../server/services/github/github-adapter.js";
+import { DEFAULT_GITHUB_TRIGGERS } from "../server/services/hub/hub-registry.js";
+import { normalizeGithubWebhookEvent } from "../server/services/github/github-adapter.js";
+import { saveGithubAppConfig } from "../server/services/github/github-api.js";
+import { registerProject, updateProject } from "../server/services/hub/hub-registry.js";
+import { listQueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
 const execFile = promisify(execFileCb);

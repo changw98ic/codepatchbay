@@ -33,7 +33,10 @@ test("server services do not call the runtime-facing engine bridge", async () =>
   const violations = (await scanTextFragments({
     scanDir: path.join(REPO_ROOT, "server", "services"),
     fragments: ["engine-bridge.js"],
-  })).filter((hit: string) => !hit.startsWith("server/services/executor-root.js:"));
+  })).filter((hit: string) =>
+    !hit.startsWith("server/services/executor-root.js:") &&
+    !hit.startsWith("server/services/setup.js:")
+  );
   assert.deepEqual(violations, []);
 });
 

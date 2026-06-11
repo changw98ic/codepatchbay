@@ -162,7 +162,7 @@ export async function check({
     try {
       let runFakeAcpSmoke = fakeAcpSmokeFn;
       if (!runFakeAcpSmoke) {
-        ({ runFakeAcpSmoke } = await import("../../server/services/local-smoke.js"));
+        ({ runFakeAcpSmoke } = await import("../../server/services/infra.js"));
       }
       const smoke = await runFakeAcpSmoke({ executorRoot: executorRoot || cpbRoot });
       checks.push({ name: "fake-acp-smoke", ok: smoke.ok, artifacts: smoke.artifacts });

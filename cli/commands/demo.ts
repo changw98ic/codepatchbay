@@ -1,4 +1,4 @@
-import { runDemo } from "../../server/services/demo-runner.js";
+import { runDemo } from "../../server/services/setup.js";
 
 function usage() {
   return `Usage: cpb demo [--json] [--project <name>] [--task <text>]

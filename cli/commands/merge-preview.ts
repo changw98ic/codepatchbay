@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getProject, resolveHubRoot } from "../../server/services/hub-registry.js";
-import { previewMerge } from "../../server/services/merge-steward.js";
+import { getProject, resolveHubRoot } from "../../server/services/hub/hub-registry.js";
+import { previewMerge } from "../../server/services/evolve/evolve.js";
 
 function usage() {
   return [

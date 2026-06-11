@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, stat, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { runDemo } from "../../server/services/demo-runner.js";
+import { runDemo } from "../../server/services/setup.js";
 
 test("demo produces all required artifacts and a passing verdict", async () => {
   const result = await runDemo();

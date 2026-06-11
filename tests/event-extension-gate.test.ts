@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const EVENT_STORE = readFileSync(
-  path.resolve('server/services/event-store.js'), 'utf8'
+  path.resolve('server/services/event/event-store.js'), 'utf8'
 );
 
 const EVENT_REGISTRY = {

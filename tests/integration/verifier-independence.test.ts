@@ -9,8 +9,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { bridgeForPhase } from "../../server/services/supervisor.js";
-import { collectVerifierEvidence } from "../../server/services/verifier-evidence.js";
-import { createJob, startPhase, completePhase } from "../../server/services/job-store.js";
+import { collectVerifierEvidence } from "../../server/services/review/review-dispatch.js";
+import { createJob, startPhase, completePhase } from "../../server/services/job/job-store.js";
 import { wikiProjectDir, outputsDir, contextPath } from "../../server/services/phase-locator.js";
 import { parseVerdict } from "../../bridges/run-pipeline.js";
 

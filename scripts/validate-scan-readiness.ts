@@ -22,9 +22,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { AcpPool } from "../server/services/acp-pool.js";
-import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub-queue.js";
-import { resolveHubRoot } from "../server/services/hub-registry.js";
+import { AcpPool } from "../server/services/acp/acp-pool.js";
+import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub/hub-queue.js";
+import { resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { assertProviderAvailable, ProviderQuotaError } from "../server/services/provider-quota.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

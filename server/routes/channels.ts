@@ -1,19 +1,19 @@
 import path from "path";
 import { spawn } from "child_process";
 import { readFile } from "node:fs/promises";
-import { broadcast } from "../services/ws-broadcast.js";
-import { createSession, getSession, updateSession } from "../services/review-session.js";
+import { broadcast } from "../services/infra.js";
+import { createSession, getSession, updateSession } from "../services/review/review-session.js";
 import { buildChildEnv } from "../services/secret-policy.js";
-import { enqueue } from "../services/hub-queue.js";
-import { getProject } from "../services/hub-registry.js";
-import { parseChannelCommand } from "../services/channel-commands.js";
+import { enqueue } from "../services/hub/hub-queue.js";
+import { getProject } from "../services/hub/hub-registry.js";
+import { parseChannelCommand } from "../services/channel/channel-commands.js";
 import {
   authorizeDiscordInteraction,
   parseDiscordInteraction,
   verifyDiscordSignature,
-} from "../services/channel-discord.js";
-import { channelPolicyDenied, handleChannelCommand } from "../services/channel-queue-actions.js";
-import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
+} from "../services/channel/channel-platforms.js";
+import { channelPolicyDenied, handleChannelCommand } from "../services/channel/channel-platforms.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel/channel-commands.js";
 import {
   handleSlackInteractiveAction,
   handleSlackSlashCommand,
@@ -21,7 +21,7 @@ import {
   parseSlackFormBody,
   parseSlackSlashCommand,
   verifySlackSignature,
-} from "../services/channel-slack.js";
+} from "../services/channel/channel-platforms.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 

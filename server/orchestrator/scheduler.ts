@@ -4,17 +4,17 @@ import {
   positiveInt,
   resolveHubConcurrencyLimits,
   resolveProjectConcurrencyLimits,
-} from "../services/concurrency-limits.js";
+} from "../services/infra.js";
 import {
   priorityScore,
   isMutatingEntry,
   isActiveEntry,
   recoverStaleInProgressAsync,
-} from "../services/queue-rules.js";
-import { readHubConfig, readSchedulerConfig } from "../services/agent-config.js";
-import { ensureIndexFresh } from "../services/index-freshness.js";
-import { projectCapabilityMapGate } from "../services/project-capability-map.js";
-import { checkCodeGraphReady } from "../services/codegraph-readiness.js";
+} from "../services/hub/hub-queue.js";
+import { readHubConfig, readSchedulerConfig } from "../services/agent/agent-config.js";
+import { ensureIndexFresh } from "../services/infra.js";
+import { projectCapabilityMapGate } from "../services/project/project-index.js";
+import { checkCodeGraphReady } from "../services/infra.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
 type AnyRecord = Record<string, any>;
@@ -87,7 +87,7 @@ export class Scheduler {
    * Shared by nextCandidate() and nextCandidates().
    */
   async _preparePendingPool() {
-    const { listQueue, updateEntry } = await import("../services/hub-queue.js");
+    const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
     const allEntries = await listQueue(this.hubRoot);
 
     const { recovered, refreshed } = await recoverStaleInProgressAsync(allEntries, {
@@ -234,7 +234,7 @@ export class Scheduler {
     for (const entry of pending) {
       const project = await this.getProjectFn(this.hubRoot, entry.projectId);
       if (!project) {
-        const { updateEntry } = await import("../services/hub-queue.js");
+        const { updateEntry } = await import("../services/hub/hub-queue.js");
         const metadata = {
           ...(entry.metadata || {}),
           projectReadiness: {
@@ -339,7 +339,7 @@ export class Scheduler {
           },
         },
       };
-      const { updateEntry } = await import("../services/hub-queue.js");
+      const { updateEntry } = await import("../services/hub/hub-queue.js");
       await updateEntry(this.hubRoot, entry.id, { metadata: nextMetadata });
       entry.metadata = nextMetadata;
       entry.indexSnapshotId = fresh.indexSnapshotId;
@@ -350,7 +350,7 @@ export class Scheduler {
 
   async _markCodegraphUnavailable(entry: AnyRecord, metadataPatch: AnyRecord) {
     const metadata = { ...(entry.metadata || {}), ...metadataPatch };
-    const { updateEntry } = await import("../services/hub-queue.js");
+    const { updateEntry } = await import("../services/hub/hub-queue.js");
     await updateEntry(this.hubRoot, entry.id, {
       status: "codegraph_unavailable",
       updatedAt: nowIso(),

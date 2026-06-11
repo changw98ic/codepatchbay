@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { loadBacklog, pushIssues } from "../../server/services/multi-evolve-state.js";
+import { loadBacklog, pushIssues } from "../../server/services/evolve/evolve.js";
 
 const execFileAsync = promisify(execFile);
 

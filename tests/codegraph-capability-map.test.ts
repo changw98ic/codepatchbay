@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { checkCodeGraphReady } from "../server/services/codegraph-readiness.js";
-import { registerProject } from "../server/services/hub-registry.js";
+import { checkCodeGraphReady } from "../server/services/infra.js";
+import { registerProject } from "../server/services/hub/hub-registry.js";
 import { readJson, tempRoot } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);

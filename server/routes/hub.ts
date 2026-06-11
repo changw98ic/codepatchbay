@@ -9,29 +9,29 @@ import {
   registerProject,
   resolveHubRoot,
   updateProject,
-} from "../services/hub-registry.js";
-import { readProjectIndex, writeProjectIndex } from "../services/project-index.js";
-import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge-policy.js";
-import { getManagedAcpPool } from "../services/acp-pool.js";
-import { gatherDiagnostics } from "../services/diagnostics-bundle.js";
-import { readHubConfig, writeHubConfig, isValidSchedulerMode } from "../services/agent-config.js";
-import { buildObservabilitySummary } from "../services/observability.js";
-import { buildTaskHistory } from "../services/task-history.js";
-import { buildTaskLedger } from "../services/task-ledger.js";
-import { buildAttentionProjection } from "../services/attention-projection.js";
-import { listJobsAcrossRuntimeRoots } from "../services/job-store.js";
-import { listSessions } from "../services/review-session.js";
-import { collectRuntimeHealth } from "../services/runtime-health.js";
-import { readGithubIssues, syncConfiguredGithubIssuesFromGh, syncGithubIssuesFromGh } from "../services/github-issues.js";
-import { autoEnqueueSyncedIssues } from "../services/auto-enqueue.js";
+} from "../services/hub/hub-registry.js";
+import { readProjectIndex, writeProjectIndex } from "../services/project/project-index.js";
+import { knowledgePolicySummary, findPromotionCandidates } from "../services/knowledge/knowledge.js";
+import { getManagedAcpPool } from "../services/acp/acp-pool.js";
+import { gatherDiagnostics } from "../services/observability/observability.js";
+import { readHubConfig, writeHubConfig, isValidSchedulerMode } from "../services/agent/agent-config.js";
+import { buildObservabilitySummary } from "../services/observability/observability.js";
+import { buildTaskHistory } from "../services/dispatch/dispatch.js";
+import { buildTaskLedger } from "../services/dispatch/dispatch.js";
+import { buildAttentionProjection } from "../services/hub/hub-registry.js";
+import { listJobsAcrossRuntimeRoots } from "../services/job/job-store.js";
+import { listSessions } from "../services/review/review-session.js";
+import { collectRuntimeHealth } from "../services/runtime.js";
+import { readGithubIssues, syncConfiguredGithubIssuesFromGh, syncGithubIssuesFromGh } from "../services/github/github-issues.js";
+import { autoEnqueueSyncedIssues } from "../services/hub/hub-queue.js";
 import {
   claimEligible,
   enqueue,
   listQueue,
   queueStatus,
   updateEntry,
-} from "../services/hub-queue.js";
-import { listDispatches } from "../services/dispatch-state.js";
+} from "../services/hub/hub-queue.js";
+import { listDispatches } from "../services/dispatch/dispatch.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   guardSourcePath,
@@ -39,8 +39,8 @@ import {
   markDispatchCompleted,
   markDispatchFailed,
   recordDispatch,
-} from "../services/worker-dispatch.js";
-import { classifyProject, filterVisibleProjects } from "../services/project-pollution.js";
+} from "../services/dispatch/dispatch.js";
+import { classifyProject, filterVisibleProjects } from "../services/project/project-index.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -351,7 +351,7 @@ export async function hubRoutes(fastify) {
     // Extend with provider quota/usage summary
     try {
       const { listProviderQuotas } = await import("../services/provider-quota.js");
-      const { readSystemUsageRollup } = await import("../services/provider-usage.js");
+      const { readSystemUsageRollup } = await import("../services/provider-quota.js");
       const [quotas, usage] = await Promise.all([
         listProviderQuotas(hr).catch(() => []),
         readSystemUsageRollup(hr).catch(() => null),
@@ -368,7 +368,7 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.get("/hub/provider-usage", async (req) => {
-    const { readProviderUsageRollup, readSystemUsageRollup } = await import("../services/provider-usage.js");
+    const { readProviderUsageRollup, readSystemUsageRollup } = await import("../services/provider-quota.js");
     const hr = hubRoot(req);
     const rollup = req.query.system === "true"
       ? await readSystemUsageRollup(hr)
@@ -492,7 +492,7 @@ export async function hubRoutes(fastify) {
   });
 
   fastify.post("/hub/dispatches/:dispatchId/start", async (req) => {
-    const { lookupDispatch, markDispatchStarted: start } = await import("../services/worker-dispatch.js");
+    const { lookupDispatch, markDispatchStarted: start } = await import("../services/dispatch/dispatch.js");
     const dispatch = await lookupDispatch(hubRoot(req), req.params.dispatchId);
     if (!dispatch) throw fastify.httpErrors.notFound(`Dispatch '${req.params.dispatchId}' not found`);
     if (dispatch.sourcePath) {

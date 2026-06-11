@@ -114,7 +114,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   console.log(dContent.split("\n").slice(0, 20).join("\n"));
   console.log("");
 
-  const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const registered = await getProject(hubRoot, project);
   const src = registered?.sourcePath;

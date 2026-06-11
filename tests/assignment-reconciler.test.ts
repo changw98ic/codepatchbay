@@ -7,7 +7,7 @@ import { WorkerStore } from "../shared/orchestrator/worker-store.js";
 import { FailureKind } from "../core/contracts/failure.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { Reconciler, buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
-import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
 
 function attemptDir(hubRoot, assignmentId, attempt = 1) {

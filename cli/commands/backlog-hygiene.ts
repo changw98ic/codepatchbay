@@ -6,7 +6,7 @@ export async function run(args: string[], { cpbRoot }: { cpbRoot: string }) {
   const repoFlag = args.indexOf("--repo");
   const repo = repoFlag >= 0 && args[repoFlag + 1] ? args[repoFlag + 1] : null;
 
-  const { runBacklogHygiene } = await import("../../server/services/backlog-hygiene.js");
+  const { runBacklogHygiene } = await import("../../server/services/cleanup/cleanup.js");
   const report = await runBacklogHygiene(cpbRoot, { dryRun, repo }) as Record<string, any>;
 
   if (dryRun) {

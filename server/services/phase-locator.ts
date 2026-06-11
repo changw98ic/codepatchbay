@@ -1,8 +1,8 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
-import { runtimeDataPath, runtimeDataRoot } from "./runtime-root.js";
-import { resolveProjectDataRoot } from "./runtime-context.js";
-import { getJob } from "./job-store.js";
+import { runtimeDataPath, runtimeDataRoot } from "./runtime.js";
+import { resolveProjectDataRoot } from "./runtime.js";
+import { getJob } from "./job/job-store.js";
 import { getWorkflow } from "../../core/workflow/definition.js";
 
 type AnyRecord = Record<string, any>;
@@ -92,7 +92,7 @@ export async function buildLocator(cpbRoot, project, jobId, { phase, executorRoo
 
     // Derive issue metadata from queue or task metadata
     try {
-      const { listQueue } = await import("./hub-queue.js");
+      const { listQueue } = await import("./hub/hub-queue.js");
       const hubRoot = process.env.CPB_HUB_ROOT || cpbRoot;
       const queueEntries = await listQueue(hubRoot, { projectId: project });
       const matching = queueEntries.find((e) => {
@@ -181,7 +181,7 @@ export async function projectExists(cpbRoot, project) {
     if (info.isDirectory()) return true;
   } catch {}
   try {
-    const { resolveHubRoot, getProject } = await import("./hub-registry.js");
+    const { resolveHubRoot, getProject } = await import("./hub/hub-registry.js");
     const hubRoot = resolveHubRoot(cpbRoot);
     const p = await getProject(hubRoot, project);
     return !!p;

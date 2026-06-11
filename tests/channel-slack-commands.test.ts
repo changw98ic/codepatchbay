@@ -3,15 +3,15 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { parseChannelCommand } from "../server/services/channel-commands.js";
-import { parseSlackSlashCommand, slackActionMetadata, slackQueueActionMetadata } from "../server/services/channel-slack.js";
-import { handleSlackSlashCommand } from "../server/services/channel-slack.js";
-import { createChannelQueueJob } from "../server/services/event-source.js";
-import { handleChannelCommand, queueEntryStatus } from "../server/services/channel-queue-actions.js";
-import { createJob, getJob } from "../server/services/job-store.js";
-import { enqueue, listQueue } from "../server/services/hub-queue.js";
-import { registerProject } from "../server/services/hub-registry.js";
-import { appendEvent } from "../server/services/event-store.js";
+import { parseChannelCommand } from "../server/services/channel/channel-commands.js";
+import { parseSlackSlashCommand, slackActionMetadata, slackQueueActionMetadata } from "../server/services/channel/channel-platforms.js";
+import { handleSlackSlashCommand } from "../server/services/channel/channel-platforms.js";
+import { createChannelQueueJob } from "../server/services/event/event-source.js";
+import { handleChannelCommand, queueEntryStatus } from "../server/services/channel/channel-platforms.js";
+import { createJob, getJob } from "../server/services/job/job-store.js";
+import { enqueue, listQueue } from "../server/services/hub/hub-queue.js";
+import { registerProject } from "../server/services/hub/hub-registry.js";
+import { appendEvent } from "../server/services/event/event-store.js";
 import { tempRoot } from "./helpers.js";
 
 async function makeRoots(prefix = "cpb-chan") {

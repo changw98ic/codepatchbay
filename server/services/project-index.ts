@@ -1,6 +1,6 @@
 import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { loadRegistry, saveRegistry } from "./hub-registry.js";
+import { loadRegistry, saveRegistry } from "./hub/hub-registry.js";
 
 const VALID_STATES = new Set(["indexed", "stale", "failed", "indexing", "unmerged"]);
 
@@ -141,3 +141,7 @@ export function formatProjectIndexLine(idx) {
   if (idx.raw) parts.push(`raw:${idx.raw}`);
   return parts.join(" ");
 }
+
+// ── Re-exports from project-capability-map and project-pollution ──
+export { projectCapabilityMapGate, generateProjectCapabilityMaps } from "./project-capability-map.js";
+export { isUnderTestPath, classifyProject, filterVisibleProjects, scanHubPollution } from "./project-pollution.js";

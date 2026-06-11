@@ -493,3 +493,7 @@ export function sanitizeProviderReason(reason) {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
     .slice(0, 500);
 }
+
+// ── Re-exports from merged modules ──
+export { getProviderAdapter } from "./provider-adapters.js";
+export { readProviderUsageRollup, readSystemUsageRollup } from "./provider-usage.js";

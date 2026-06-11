@@ -3,7 +3,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const result = await runReadinessChecks({ cpbRoot });
 
   // Hub-specific consistency checks
-  const { resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const results = { errors: [], warnings: [] };
 
@@ -35,7 +35,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 }
 
 async function checkQueueAssignments(hubRoot, results) {
-  const { listQueue } = await import("../../server/services/hub-queue.js");
+  const { listQueue } = await import("../../server/services/hub/hub-queue.js");
   const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
   const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
 
@@ -176,7 +176,7 @@ async function checkDeadPidAssignments(hubRoot, results) {
 }
 
 async function checkRuntimeHealth(cpbRoot, executorRoot, results) {
-  const { collectRuntimeHealth } = await import("../../server/services/runtime-health.js");
+  const { collectRuntimeHealth } = await import("../../server/services/runtime.js");
   const health = await collectRuntimeHealth({ cpbRoot, executorRoot });
   results.runtimeHealth = health;
 

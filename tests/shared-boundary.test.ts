@@ -30,7 +30,7 @@ test("shared modules do not construct paths into implementation layers", async (
 });
 
 test("scanner catches shared static import from server layer (negative)", () => {
-  const source = `import { appendEvent } from "../server/services/event-store.js"`;
+  const source = `import { appendEvent } from "../server/services/event/event-store.js"`;
   const fakeFile = path.join(REPO_ROOT, "shared/test.js");
   const violations = detectImportViolations(source, fakeFile, FORBIDDEN_SHARED_TARGETS);
   assert.equal(violations.length, 1);

@@ -19,7 +19,7 @@ test("core modules do not import infrastructure layers", async () => {
 });
 
 test("scanner catches static import from core to server (negative)", () => {
-  const source = `import { run } from "../../server/services/executor-root.js"`;
+  const source = `import { run } from "../../server/services/setup.js"`;
   const fakeFile = path.join(REPO_ROOT, "core/engine/test.js");
   const violations = detectImportViolations(source, fakeFile, FORBIDDEN);
   assert.equal(violations.length, 1);

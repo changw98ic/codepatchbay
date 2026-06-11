@@ -7,7 +7,7 @@ import {
   buildWorktreeRetentionPlan,
   cleanupWorktrees,
   formatWorktreeRetentionHuman,
-} from "../server/services/worktree-retention.js";
+} from "../server/services/cleanup/cleanup.js";
 
 const INDEX_VERSION = 1;
 

@@ -18,8 +18,8 @@ import {
   retryJob,
   startPhase,
   FAILURE_CODES,
-} from "../server/services/job-store.js";
-import { readEvents, materializeJob } from "../server/services/event-store.js";
+} from "../server/services/job/job-store.js";
+import { readEvents, materializeJob } from "../server/services/event/event-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-terminal-immutable-"));
 const P = "immu-test";

@@ -153,7 +153,7 @@ export async function triageIssueWithAcp(input = {}, {
   let acpError = null;
 
   try {
-    const pool = acpPool || (await import("./acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
+    const pool = acpPool || (await import("./acp/acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
     const _r = await pool.execute(agent, prompt, cwd, timeoutMs);
     acpResponse = _r.output;
   } catch (error) {

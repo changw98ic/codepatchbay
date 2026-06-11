@@ -11,7 +11,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { taskRoutes } from '../server/routes/tasks.js';
-import { registerProject } from '../server/services/hub-registry.js';
+import { registerProject } from '../server/services/hub/hub-registry.js';
 
 /**
  * Build a test Fastify app with task routes.

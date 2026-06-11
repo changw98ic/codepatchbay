@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
-import { getJob } from "./job-store.js";
+import { getJob } from "./job/job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
 

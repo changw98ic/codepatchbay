@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
-const client = path.join(root, "bridges", "acp-client.js");
+const client = path.join(root, "server", "services", "acp", "acp-client.js");
 const fakeAgent = path.join(root, "tests", "fixtures", "fake-acp-agent.js");
 const fakeActiveAgent = path.join(root, "tests", "fixtures", "fake-active-acp-agent.js");
 const fakeHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-handoff.js");

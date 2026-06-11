@@ -91,7 +91,7 @@ export async function scanHubPollution(hubRoot: string) {
   // Read registry
   let registry;
   try {
-    const { loadRegistry } = await import("./hub-registry.js");
+    const { loadRegistry } = await import("./hub/hub-registry.js");
     registry = await loadRegistry(hubRoot);
   } catch {
     registry = { projects: {} };

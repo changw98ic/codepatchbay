@@ -1,16 +1,16 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { runtimeDataPath } from "./runtime-root.js";
-import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub-queue.js";
-import { getProject } from "./hub-registry.js";
-import { createJob as createJobStore } from "./job-store.js";
+import { runtimeDataPath } from "./runtime.js";
+import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
+import { getProject } from "./hub/hub-registry.js";
+import { createJob as createJobStore } from "./job/job-store.js";
 import {
   triageChannelCommand,
   triageChannelCommandWithAcp,
   triageGithubIssue,
   triageGithubIssueWithAcp,
-} from "./issue-triage.js";
-import { bootstrapSddFromIssue } from "./sdd-automation.js";
+} from "./project/project-loader.js";
+import { bootstrapSddFromIssue } from "./sdd/sdd.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -923,3 +923,6 @@ export function ciFailureToCandidate(failure: AnyRecord, { projectId }: AnyRecor
     },
   };
 }
+
+// ── Re-exports from experience-extractor ──
+export { categorizeVerdictEnvelope, writeExperience, extractExperienceFromVerdict, extractExperienceFromTerminalState, extractExperienceForJob, rebuildExperienceIndex } from "./experience-extractor.js";

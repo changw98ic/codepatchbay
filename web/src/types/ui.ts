@@ -9,9 +9,3 @@ export interface ToastItem {
   type: 'success' | 'error' | 'info' | 'warning';
   createdAt: number;
 }
-
-export interface NavItem {
-  to: string;
-  labelKey: string;
-  icon?: string;
-}

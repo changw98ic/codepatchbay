@@ -2,11 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { listProjects, getProject } from '../services/hub-registry.js';
-import { classifyProject, filterVisibleProjects } from '../services/project-pollution.js';
-import { projectPipelineState, listProjectPipelineStates } from '../services/job-projection.js';
-import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project-loader.js';
-import { readProjectIndex } from '../services/project-index.js';
+import { listProjects, getProject } from '../services/hub/hub-registry.js';
+import { classifyProject, filterVisibleProjects } from '../services/project/project-index.js';
+import { projectPipelineState, listProjectPipelineStates } from '../services/job/job-projection.js';
+import { loadProjectFiles, extractLogTail, ALL_FILES } from '../services/project/project-loader.js';
+import { readProjectIndex } from '../services/project/project-index.js';
 import {
   resolveInboxDir,
   resolveOutputsDir,

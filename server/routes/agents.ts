@@ -1,5 +1,5 @@
-import { collectAgentMetrics, getAgentDetail, getAgentJobs } from "../services/agent-metrics.js";
-import { collectAgentSetupReadiness } from "../services/agent-setup-readiness.js";
+import { collectAgentMetrics, getAgentDetail, getAgentJobs } from "../services/agent/agent-config.js";
+import { collectAgentSetupReadiness } from "../services/agent/agent-config.js";
 
 export function agentRoutes(fastify: any, _opts: any, done: () => void) {
   const notifBroadcast = fastify.notifBroadcast;

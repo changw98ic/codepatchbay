@@ -21,7 +21,7 @@ import {
   checkReleaseCompatibility,
   selectRelease,
   ReleaseCompatibilityError,
-} from "../../server/services/release-store.js";
+} from "../../server/services/release/release-store.js";
 
 const execFileAsync = promisify(execFile);
 const CPB_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -32,7 +32,7 @@ async function pathExists(p: string) {
 }
 
 async function buildFixtureSource(root: string) {
-  const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/executor-root.js");
+  const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/setup.js");
 
   const dirs = [
     "bridges", "cli", "server/services", "profiles", "templates",
@@ -785,14 +785,6 @@ describe("release use does not mutate job state", () => {
     cpbHome = await mkdtemp(path.join(tmpdir(), "cpb-nomut-home-"));
     cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-nomut-root-"));
     await buildFixtureSource(sourceRoot);
-
-    const eventsDir = path.join(cpbRoot, "cpb-task", "events");
-    await mkdir(eventsDir, { recursive: true });
-    await writeFile(
-      path.join(eventsDir, "sentinel.jsonl"),
-      '{"type":"sentinel"}\n',
-      "utf8",
-    );
   });
 
   afterEach(async () => {
@@ -809,7 +801,6 @@ describe("release use does not mutate job state", () => {
       "release", "use", "nomut-ok", "--json", "--dest-root", destRoot,
     ], { env: { ...process.env, CPB_ROOT: cpbRoot, CPB_EXECUTOR_ROOT: CPB_ROOT, CPB_HOME: cpbHome } });
 
-    const sentinel = await readFile(path.join(cpbRoot, "cpb-task", "events", "sentinel.jsonl"), "utf8");
-    assert.equal(sentinel, '{"type":"sentinel"}\n');
+    assert.equal(await pathExists(path.join(cpbRoot, "cpb-task")), false);
   });
 });

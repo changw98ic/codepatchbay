@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { appendEvent } from "../server/services/event-store.js";
+import { appendEvent } from "../server/services/event/event-store.js";
 import {
   acquireLease,
   releaseLease,
   renewLease,
-} from "../server/services/lease-manager.js";
-import { cancelJob, getJob } from "../server/services/job-store.js";
+} from "../server/services/infra.js";
+import { cancelJob, getJob } from "../server/services/job/job-store.js";
 import {
   classifyDeleteRisk,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "../server/services/delete-guard.js";
+} from "../server/services/infra.js";
 import {
   registerProcess,
   updateHeartbeat as updateProcessHeartbeat,
   markExited as markProcessExited,
   addChildPid,
-} from "../server/services/process-registry.js";
+} from "../server/services/infra.js";
 
 type AnyRecord = Record<string, any>;
 type GuardedError = Error & { guardResult?: AnyRecord };

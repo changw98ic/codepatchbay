@@ -4,7 +4,7 @@
  * Routed as: cpb cancel <project> <jobId> [reason]
  *            cpb redirect <project> <jobId> "<instructions>" [reason]
  */
-import { requestCancelJob, requestRedirectJob } from "../../server/services/job-store.js";
+import { requestCancelJob, requestRedirectJob } from "../../server/services/job/job-store.js";
 
 function printUsage(command) {
   if (command === "redirect") {

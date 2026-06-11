@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { listEventFiles } from "../server/services/event-store.js";
+import { listEventFiles } from "../server/services/event/event-store.js";
 import {
   blockJob,
   budgetExceeded,
@@ -16,7 +16,7 @@ import {
   listJobs,
   retryJob,
   startPhase,
-} from "../server/services/job-store.js";
+} from "../server/services/job/job-store.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-job-store-"));
 const project = "demo";

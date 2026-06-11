@@ -4,7 +4,7 @@ import {
   listReleases,
   inspectCurrentRelease,
   selectRelease,
-} from "../../server/services/release-store.js";
+} from "../../server/services/release/release-store.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -174,7 +174,7 @@ async function cmdGc({ json, rest }: LooseRecord) {
     executeReleaseGc,
     formatGcPlanHuman,
     formatGcResultHuman,
-  } = await import("../../server/services/release-gc.js");
+  } = await import("../../server/services/release/release-store.js");
 
   const plan = await (buildReleaseGcPlan as any)({ cpbRoot: process.env.CPB_ROOT });
 

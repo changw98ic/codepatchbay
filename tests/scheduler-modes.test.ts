@@ -5,9 +5,9 @@ import { test } from "node:test";
 import { Scheduler } from "../server/orchestrator/scheduler.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { FailureKind } from "../core/contracts/failure.js";
-import { enqueue, listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
 import { tempRoot, readJson, writeJson } from "./helpers.js";
-import { readSchedulerConfig, isValidSchedulerMode, readHubConfig, writeHubConfig } from "../server/services/agent-config.js";
+import { readSchedulerConfig, isValidSchedulerMode, readHubConfig, writeHubConfig } from "../server/services/agent/agent-config.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 
 const noAssignmentStore = { getAssignment: async () => null };

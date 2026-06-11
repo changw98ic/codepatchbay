@@ -327,7 +327,7 @@ export class Reconciler {
             aLog.info(`assignment ${assignment.assignmentId} accepted by worker, markRunning`);
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
             // Update queue to in_progress so scheduler doesn't reset it
-            const { updateEntry } = await import("../services/hub-queue.js");
+            const { updateEntry } = await import("../services/hub/hub-queue.js");
             await updateEntry(this.hubRoot, assignment.entryId, {
               status: "in_progress",
               claimedAt: new Date().toISOString(),
@@ -345,7 +345,7 @@ export class Reconciler {
           if (accepted) {
             aLog.info(`assignment ${assignment.assignmentId} accepted by worker, markRunning`);
             await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
-            const { updateEntry } = await import("../services/hub-queue.js");
+            const { updateEntry } = await import("../services/hub/hub-queue.js");
             await updateEntry(this.hubRoot, assignment.entryId, {
               status: "in_progress",
               claimedAt: new Date().toISOString(),
@@ -357,7 +357,7 @@ export class Reconciler {
           // writing accepted.json — the dual-path race.  If the queue entry is
           // in_progress with a fresh claim, treat it as accepted.
           {
-            const { listQueue } = await import("../services/hub-queue.js");
+            const { listQueue } = await import("../services/hub/hub-queue.js");
             const claimed = await listQueue(this.hubRoot, { status: "in_progress", projectId: assignment.projectId });
             const match = claimed.find((e) => e.id === assignment.entryId);
             if (match?.claimedAt) {
@@ -726,7 +726,7 @@ export class Reconciler {
 
   async _finalizeQueue(assignment, attempt, result) {
     await this._guardLeader();
-    const { updateEntry } = await import("../services/hub-queue.js");
+    const { updateEntry } = await import("../services/hub/hub-queue.js");
 
     if (result && result.status === "completed") {
       this.log.info(`entry ${assignment.entryId} completed`);
@@ -908,7 +908,7 @@ export class Reconciler {
 
   async reconcileQueue() {
     await this._guardLeader();
-    const { listQueue, updateEntry } = await import("../services/hub-queue.js");
+    const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
     const assignments = await this.assignments.listAssignments();
 
     const byEntry = new Map();

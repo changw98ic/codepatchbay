@@ -10,10 +10,10 @@ export async function run(args, { cpbRoot }) {
     console.error("Usage: cpb status <project>");
     process.exit(1);
   }
-  const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
-  const { readProjectIndex, formatProjectIndexLine } = await import("../../server/services/project-index.js");
-  const { listJobs } = await import("../../server/services/job-store.js");
-  const { readLease, isLeaseStale } = await import("../../server/services/lease-manager.js");
+  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const { readProjectIndex, formatProjectIndexLine } = await import("../../server/services/project/project-index.js");
+  const { listJobs } = await import("../../server/services/job/job-store.js");
+  const { readLease, isLeaseStale } = await import("../../server/services/infra.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const wdir = path.join(cpbRoot, "wiki/projects", project);
 

@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub-registry.js";
-import { claimEligible, listQueue, updateEntry } from "../server/services/hub-queue.js";
+import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub/hub-registry.js";
+import { claimEligible, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
 import {
   dispatchEnabled,
   guardSourcePath,
@@ -15,8 +15,8 @@ import {
   markDispatchFailed,
   markDispatchStarted,
   recordDispatch,
-} from "../server/services/worker-dispatch.js";
-import { executorEnv, resolveExecutorRoot } from "../server/services/executor-root.js";
+} from "../server/services/dispatch/dispatch.js";
+import { executorEnv, resolveExecutorRoot } from "../server/services/setup.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

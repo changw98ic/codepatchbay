@@ -8,8 +8,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import os from 'node:os';
 
-import { cpbHome, defaultProjectRuntimeRoot, projectRuntimeRoot, projectRuntimePath, resolveDataRoot, dataPath } from '../server/services/runtime-root.js';
-import { registerProject, getProject, listProjects } from '../server/services/hub-registry.js';
+import { cpbHome, defaultProjectRuntimeRoot, projectRuntimeRoot, projectRuntimePath, resolveDataRoot, dataPath } from '../server/services/runtime.js';
+import { registerProject, getProject, listProjects } from '../server/services/hub/hub-registry.js';
 import { resolveWikiDir, resolveInboxDir, resolveOutputsDir, resolveArtifactPath } from '../server/services/artifact-locator.js';
 
 // ── AC1: registerProject defaults projectRuntimeRoot ──

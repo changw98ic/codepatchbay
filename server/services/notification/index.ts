@@ -1,8 +1,8 @@
 import { loadConfig } from "./config.js";
 import * as feishu from "./channel-feishu.js";
 import * as dingtalk from "./channel-dingtalk.js";
-import { getJob } from "../job-store.js";
-import { getSession } from "../review-session.js";
+import { getJob } from "../job/job-store.js";
+import { getSession } from "../review/review-session.js";
 
 const CHANNELS = { feishu, dingtalk };
 

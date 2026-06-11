@@ -51,7 +51,7 @@ test("scanner catches static import from cli to deleted bridge adapters (negativ
 });
 
 test("scanner catches dynamic import from cli to deleted bridge adapters (negative)", () => {
-  const source = `const mod = await import("../../bridges/cli/services/hub-queue.js")`;
+  const source = `const mod = await import("../../bridges/cli/services/hub/hub-queue.js")`;
   const violations = detectTextFragments(source, DELETED_CLI_BRIDGE_FRAGMENTS);
   assert.equal(violations.length, 1);
   assert.equal(violations[0], "bridges/cli");

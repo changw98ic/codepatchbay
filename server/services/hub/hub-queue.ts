@@ -1,0 +1,1245 @@
+/**
+ * hub-queue.ts — merged from:
+ *   server/services/hub-queue.ts
+ *   server/services/queue-rules.ts
+ *   server/services/auto-enqueue.ts
+ *   server/services/inbox-mail.ts
+ */
+
+// ─── queue-rules.ts ─────────────────────────────────────────────────────────
+
+/**
+ * Single source of truth for queue claim / stale-recovery rules.
+ * Scheduler, claimEligible API, and any future caller all go through here.
+ */
+
+export function priorityScore(priority) {
+  if (priority === "P0") return 0;
+  if (priority === "P1") return 1;
+  if (priority === "P2") return 2;
+  return 3;
+}
+
+export function isMutatingEntry(entry) {
+  return entry.metadata?.mutating !== false;
+}
+
+export function isActiveEntry(entry) {
+  return entry.status === "in_progress" || entry.status === "scheduled";
+}
+
+export function clearClaim(entry) {
+  entry.claimedBy = null;
+  entry.claimedAt = null;
+  entry.workerId = null;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+export function isCodegraphUnavailableStatus(status) {
+  return status === "codegraph_unavailable" || status === "index_unavailable";
+}
+
+/**
+ * Recover stale in_progress / scheduled entries (sync variant).
+ *
+ * Requires an assignmentStore — entries with an active assignment
+ * (status "running" or "assigned") get their claimedAt refreshed
+ * instead of being reset to pending.
+ *
+ * @param {Array} entries  — mutable queue entries array
+ * @param {object} opts
+ * @param {number} opts.claimTimeoutMs
+ * @param {import("../../shared/orchestrator/assignment-store.js").AssignmentStore} opts.assignmentStore
+ * @returns {{ recovered: string[], refreshed: string[] }}
+ */
+export function recoverStaleInProgress(entries, opts) {
+  const { claimTimeoutMs, assignmentStore } = opts;
+  if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
+  if (!assignmentStore) throw new Error("recoverStaleInProgress requires assignmentStore");
+
+  const now = Date.now();
+  const recovered = [];
+  const refreshed = [];
+
+  for (const e of entries) {
+    if (e.status !== "in_progress" && e.status !== "scheduled") continue;
+    const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
+    if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
+
+    const assignmentId = `a-${e.id}`;
+    const assignment = assignmentStore.getAssignmentSync
+      ? assignmentStore.getAssignmentSync(assignmentId)
+      : null;
+    if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
+      e.claimedAt = nowIso();
+      e.updatedAt = nowIso();
+      refreshed.push(e.id);
+      continue;
+    }
+
+    // No active assignment — safe to reset
+    e.status = "pending";
+    clearClaim(e);
+    e.updatedAt = nowIso();
+    recovered.push(e.id);
+  }
+  return { recovered, refreshed };
+}
+
+/**
+ * Async variant for callers that have an AssignmentStore with async getAssignment().
+ * Used by Scheduler and claimEligible.  assignmentStore is required.
+ */
+export async function recoverStaleInProgressAsync(entries, opts) {
+  const { claimTimeoutMs, assignmentStore } = opts;
+  if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
+  if (!assignmentStore) throw new Error("recoverStaleInProgressAsync requires assignmentStore");
+
+  const now = Date.now();
+  const recovered = [];
+  const refreshed = [];
+
+  for (const e of entries) {
+    if (e.status !== "in_progress" && e.status !== "scheduled") continue;
+    const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
+    if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
+
+    const assignment = await assignmentStore.getAssignment(`a-${e.id}`);
+    if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
+      // Active assignment — refresh claimedAt so next tick doesn't re-trigger
+      e.claimedAt = nowIso();
+      e.updatedAt = nowIso();
+      refreshed.push(e.id);
+      continue;
+    }
+
+    // No active assignment — safe to reset
+    e.status = "pending";
+    clearClaim(e);
+    e.updatedAt = nowIso();
+    recovered.push(e.id);
+  }
+  return { recovered, refreshed };
+}
+
+/**
+ * Recover codegraph_unavailable entries whose retry window has elapsed.
+ */
+export function recoverCodegraphUnavailable(entries, retryMs) {
+  if (!retryMs || retryMs <= 0) return { recovered: [] };
+  const now = Date.now();
+  const recovered = [];
+  for (const e of entries) {
+    if (!isCodegraphUnavailableStatus(e.status)) continue;
+    const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
+    if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
+    e.status = "pending";
+    e.updatedAt = nowIso();
+    if (e.metadata) delete e.metadata.indexFreshness;
+    recovered.push(e.id);
+  }
+  return { recovered };
+}
+
+// ─── hub-queue.ts ───────────────────────────────────────────────────────────
+
+type AnyRecord = Record<string, any>;
+
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { buildMeta, REQUIRED_EXECUTION_BOUNDARY } from "../../../core/job/meta.js";
+import { ensureIndexFresh } from "../infra.js";
+import { projectCapabilityMapGate } from "../project/project-index.js";
+import { checkCodeGraphReady } from "../infra.js";
+import { resolveAgentsForEntry } from "../agent/agent-config.js";
+import { getProject } from "./hub-registry.js";
+import {
+  DEFAULT_MAX_ACTIVE_PER_PROJECT,
+  positiveInt,
+  resolveHubConcurrencyLimits,
+  resolveProjectConcurrencyLimits,
+} from "../infra.js";
+
+
+export const QUEUE_VERSION = 1;
+const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+
+function queuePath(hubRoot: string) {
+  return path.join(path.resolve(hubRoot), "queue", "queue.json");
+}
+
+function defaultQueue(): QueueState {
+  return { version: QUEUE_VERSION, entries: [] };
+}
+
+function normalizeQueue(raw: any): QueueState {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultQueue();
+  return {
+    version: raw.version || QUEUE_VERSION,
+    entries: Array.isArray(raw.entries) ? raw.entries : [],
+  };
+}
+
+type QueueEntry = Record<string, any>;
+type QueueState = { version: number; entries: QueueEntry[] };
+
+const QUEUE_LOCK_TTL_MS = 120_000;
+
+async function queueLockIsStale(lockDir: string) {
+  const now = Date.now();
+  try {
+    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+    const lock = JSON.parse(raw);
+    const acquiredAt = new Date(lock.acquiredAt).getTime();
+    return Number.isNaN(acquiredAt) || now - acquiredAt >= QUEUE_LOCK_TTL_MS;
+  } catch {
+    try {
+      const info = await stat(lockDir);
+      return now - info.mtimeMs >= QUEUE_LOCK_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function queueLockOwnerPid(lockDir: string) {
+  try {
+    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+    const lock = JSON.parse(raw);
+    return lock.ownerPid || null;
+  } catch {
+    return null;
+  }
+}
+
+async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
+  const file = queuePath(hubRoot);
+  const lockDir = `${file}.lock`;
+  const ownerPid = process.pid;
+  await mkdir(path.dirname(file), { recursive: true });
+
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(
+        path.join(lockDir, "lock.json"),
+        `${JSON.stringify({ acquiredAt: nowIso(), ownerPid }, null, 2)}\n`,
+        "utf8",
+      );
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      if (await queueLockIsStale(lockDir)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  if (!acquired) {
+    throw new Error(`queue lock busy: ${path.basename(file)}`);
+  }
+
+  const acquiredAt = nowIso();
+  try {
+    return await callback();
+  } finally {
+    // Check both PID and timestamp window to guard against PID reuse
+    const currentOwner = await queueLockOwnerPid(lockDir);
+    if (currentOwner === ownerPid && !(await queueLockIsStale(lockDir))) {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  }
+}
+
+export async function loadQueue(hubRoot) {
+  try {
+    const raw = await readFile(queuePath(hubRoot), "utf8");
+    return normalizeQueue(JSON.parse(raw));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return defaultQueue();
+    throw err;
+  }
+}
+
+async function saveQueue(hubRoot, queue) {
+  const normalized = { version: QUEUE_VERSION, entries: queue.entries };
+  await writeAtomic(queuePath(hubRoot), `${JSON.stringify(normalized, null, 2)}\n`);
+  return normalized;
+}
+
+async function writeAtomic(filePath: string, content: string) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, content, "utf8");
+  await rename(tmp, filePath);
+}
+
+function generateId() {
+  return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function hasIssueLink(metadata) {
+  if (!metadata || typeof metadata !== "object") return false;
+  return Boolean(metadata.issueNumber || metadata.issueUrl);
+}
+
+export function validateIssueLink(entry) {
+  if (!entry) return { linked: false, reason: "no entry" };
+  if (entry.status === "needs_issue_link") return { linked: false, reason: "awaiting issue link" };
+  if (entry.status === "archived") return { linked: false, reason: "archived" };
+  return { linked: hasIssueLink(entry.metadata), reason: null };
+}
+
+function entryKey(entry: QueueEntry) {
+  const lineage = entry.metadata?.queueDedupeKey || entry.metadata?.originJobId || "";
+  return `${entry.projectId}::${entry.description}::${lineage}`;
+}
+
+export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
+  if (!input.projectId) throw new Error("projectId is required");
+
+  const meta = buildMeta(input);
+  const normalizedInput: QueueEntry = {
+    ...input,
+    sourcePath: meta.sourcePath,
+    sessionId: meta.sessionId,
+    workerId: meta.workerId,
+    cwd: meta.cwd,
+    executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
+  };
+  if (!normalizedInput.metadata) normalizedInput.metadata = {};
+  normalizedInput.metadata.acpProfile = normalizedInput.metadata.acpProfile || "headless";
+  normalizedInput.metadata.uiLane = Boolean(normalizedInput.metadata.uiLane);
+  normalizedInput.metadata.uiLaneReason = normalizedInput.metadata.uiLaneReason || "";
+  if (normalizedInput.metadata.acpProfile === "ui" && !normalizedInput.metadata.uiLaneReason) {
+    throw new Error("ui profile requires a non-empty uiLaneReason in queue metadata");
+  }
+
+  // Resolve agent config from hub + project + metadata overrides
+  const cpbRoot = normalizedInput.cwd || process.cwd();
+  const resolvedMeta = await resolveAgentsForEntry(hubRoot, cpbRoot, normalizedInput.projectId, normalizedInput.metadata);
+  normalizedInput.metadata = resolvedMeta;
+
+  // Resolve sourcePath from hub registry when not provided
+  if (!meta.sourcePath && normalizedInput.projectId) {
+    try {
+      const project = await getProject(hubRoot, normalizedInput.projectId);
+      if (project?.sourcePath) {
+        meta.sourcePath = project.sourcePath;
+        normalizedInput.sourcePath = project.sourcePath;
+        if (!normalizedInput.cwd) normalizedInput.cwd = project.sourcePath;
+      }
+    } catch { /* project not found in registry — keep null */ }
+  }
+
+  return withQueueLock(hubRoot, async () => {
+    const queue = await loadQueue(hubRoot);
+    const key = entryKey(normalizedInput);
+    const existing = queue.entries.find((e) => entryKey(e) === key && e.status === "pending");
+    if (existing) return existing;
+
+    const entry: QueueEntry = {
+      id: generateId(),
+      projectId: normalizedInput.projectId,
+      sourcePath: meta.sourcePath,
+      sessionId: meta.sessionId,
+      workerId: meta.workerId,
+      cwd: meta.cwd,
+      executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
+      type: normalizedInput.type || "candidate",
+      status: "pending",
+      priority: normalizedInput.priority || "P2",
+      description: normalizedInput.description || "",
+      metadata: normalizedInput.metadata || {},
+      claimedBy: null,
+      claimedAt: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    queue.entries.push(entry);
+    await saveQueue(hubRoot, queue);
+    return entry;
+  });
+}
+
+export async function peekQueue(hubRoot: string) {
+  const queue = await loadQueue(hubRoot);
+  const pending = queue.entries.filter((e) => e.status === "pending");
+  if (pending.length === 0) return null;
+
+  pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt));
+  return pending[0];
+}
+
+export async function updateEntry(hubRoot: string, entryId: string, patch: QueueEntry = {}) {
+  return withQueueLock(hubRoot, async () => {
+    const queue = await loadQueue(hubRoot);
+    const entry = queue.entries.find((e) => e.id === entryId);
+    if (!entry) return null;
+
+    if (patch.status !== undefined) entry.status = patch.status;
+    if (patch.metadata) entry.metadata = { ...entry.metadata, ...patch.metadata };
+    if (patch.claimedBy !== undefined) entry.claimedBy = patch.claimedBy;
+    if (patch.claimedAt !== undefined) entry.claimedAt = patch.claimedAt;
+    if (patch.workerId !== undefined) entry.workerId = patch.workerId;
+    if (patch.reason !== undefined) entry.reason = patch.reason;
+    if (patch.completedAt !== undefined) entry.completedAt = patch.completedAt;
+    if (entry.status === "pending") clearClaim(entry);
+    entry.updatedAt = patch.updatedAt !== undefined ? patch.updatedAt : nowIso();
+
+    await saveQueue(hubRoot, queue);
+    return entry;
+  });
+}
+
+export async function listQueue(hubRoot: string, { status, projectId }: QueueEntry = {}) {
+  const queue = await loadQueue(hubRoot);
+  return queue.entries.filter((e) => {
+    if (status && e.status !== status) return false;
+    if (projectId && e.projectId !== projectId) return false;
+    return true;
+  });
+}
+
+export async function syncBacklogResult(hubRoot: string, { projectId, description, result }: QueueEntry = {}) {
+  if (!projectId || !description) return { synced: 0, entries: [] };
+
+  return withQueueLock(hubRoot, async () => {
+    const queue = await loadQueue(hubRoot);
+    const targetStatus = result.ok ? "completed" : "failed";
+    const key = entryKey({ projectId, description, metadata: {} });
+
+    const matches = queue.entries.filter(
+      (e) => entryKey(e) === key && (e.status === "pending" || e.status === "in_progress"),
+    );
+
+    if (matches.length === 0) return { synced: 0, entries: [] };
+
+    const metadata: QueueEntry = {
+      syncedFrom: "backlog",
+      backlogIssueId: result.backlogIssueId || null,
+      syncReason: result.ok ? "backlog_completed" : "backlog_failed",
+    };
+    if (result.error) metadata.error = result.error;
+
+    for (const entry of matches) {
+      entry.status = targetStatus;
+      entry.metadata = { ...entry.metadata, ...metadata };
+      entry.updatedAt = nowIso();
+    }
+
+    await saveQueue(hubRoot, queue);
+    return { synced: matches.length, entries: matches };
+  });
+}
+
+export async function queueStatus(hubRoot: string) {
+  const queue = await loadQueue(hubRoot);
+  const failedTargetStatus = summarizeFailedTargets(queue.entries);
+  const counts: Record<string, any> = {
+    total: queue.entries.length,
+    pending: 0,
+    scheduled: 0,
+    inProgress: 0,
+    completed: 0,
+    failed: 0,
+    blocked: 0,
+    cancelled: 0,
+    needsIssueLink: 0,
+    indexUnavailable: 0,
+    codegraphUnavailable: 0,
+    ...failedTargetStatus,
+  };
+  for (const e of queue.entries) {
+    if (e.status === "pending") counts.pending++;
+    else if (e.status === "scheduled") counts.scheduled++;
+    else if (e.status === "in_progress") counts.inProgress++;
+    else if (e.status === "completed") counts.completed++;
+    else if (e.status === "failed") counts.failed++;
+    else if (e.status === "blocked") counts.blocked++;
+    else if (e.status === "cancelled") counts.cancelled++;
+    else if (e.status === "needs_issue_link") counts.needsIssueLink++;
+    else if (isCodegraphUnavailableStatus(e.status)) {
+      counts.indexUnavailable++;
+      counts.codegraphUnavailable++;
+    }
+  }
+  const hubLimits = await resolveHubConcurrencyLimits(hubRoot);
+  const projectLimits = await resolveProjectConcurrencyLimits(
+    hubRoot,
+    queue.entries.map((entry) => entry.projectId),
+    { maxActivePerProject: hubLimits.maxActivePerProject },
+  );
+  counts.activeMutatingTotal = queue.entries.filter(
+    (entry) => isActiveEntry(entry) && isMutatingEntry(entry),
+  ).length;
+  counts.projects = buildProjectQueueStatus(queue.entries, {
+    maxActivePerProject: hubLimits.maxActivePerProject,
+    projectLimits,
+  });
+  counts.activeProjects = (Object.entries(counts.projects) as Array<[string, any]>)
+    .filter(([, ps]) => ps.activeMutating > 0)
+    .map(([projectId, ps]) => ({ projectId, ...ps }));
+  counts.eligibleQueued = 0;
+  counts.eligibleProjects = [];
+  for (const [pid, ps] of Object.entries(counts.projects) as Array<[string, any]>) {
+    counts.eligibleQueued += ps.eligiblePending;
+    if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
+  }
+  return counts;
+}
+
+const ACTIVE_RETRY_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
+
+function failedTargetKey(entry) {
+  const targetJobId = entry.type === "cli_retry"
+    ? entry.metadata?.retryJobId
+    : `job-${entry.id}`;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+function activeRetryTargetKey(entry) {
+  if (entry.type !== "cli_retry" || !ACTIVE_RETRY_STATUSES.has(entry.status)) return null;
+  const targetJobId = entry.metadata?.retryJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+function completedRetryTargetKey(entry) {
+  if (entry.type !== "cli_retry" || entry.status !== "completed") return null;
+  const targetJobId = entry.metadata?.retryJobId;
+  if (!entry.projectId || !targetJobId) return null;
+  return `${entry.projectId}\t${targetJobId}`;
+}
+
+export function summarizeFailedTargets(entries = []) {
+  const failedTargets = new Set();
+  const activeRetryTargets = new Set();
+  const completedRetryTargets = new Set();
+  for (const entry of entries) {
+    const activeRetry = activeRetryTargetKey(entry);
+    if (activeRetry) activeRetryTargets.add(activeRetry);
+    const completedRetry = completedRetryTargetKey(entry);
+    if (completedRetry) completedRetryTargets.add(completedRetry);
+    if (entry.status === "failed") {
+      const failedTarget = failedTargetKey(entry);
+      if (failedTarget) failedTargets.add(failedTarget);
+    }
+  }
+
+  let retryingFailedTargets = 0;
+  let retriedFailedTargets = 0;
+  for (const target of failedTargets) {
+    if (activeRetryTargets.has(target)) {
+      retryingFailedTargets++;
+    } else if (completedRetryTargets.has(target)) {
+      retriedFailedTargets++;
+    }
+  }
+  return {
+    failedEntries: entries.filter((entry) => entry.status === "failed").length,
+    failedTargets: failedTargets.size,
+    retryingFailedTargets,
+    retriedFailedTargets,
+    unretriedFailedTargets: failedTargets.size - retryingFailedTargets - retriedFailedTargets,
+  };
+}
+
+function limitForProject(projectLimits: any, projectId: string, fallback: number) {
+  if (projectLimits instanceof Map) {
+    return positiveInt(projectLimits.get(projectId), fallback);
+  }
+  return positiveInt(projectLimits?.[projectId], fallback);
+}
+
+export function buildProjectQueueStatus(entries: QueueEntry[], {
+  maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
+  projectLimits = new Map(),
+}: Record<string, any> = {}) {
+  const byProject: Record<string, any> = {};
+  for (const e of entries) {
+    if (!byProject[e.projectId]) {
+      const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
+      byProject[e.projectId] = {
+        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0, codegraphUnavailable: 0,
+        activeMutating: 0, busy: false, busyReason: null,
+        maxActivePerProject: limit,
+        claimedBy: null, claimedAt: null, workerId: null,
+        activeEntryIds: [],
+        eligiblePending: 0, eligibleEntryIds: [],
+      };
+    }
+    const ps = byProject[e.projectId];
+    if (e.status === "pending") ps.pending++;
+    else if (e.status === "scheduled") ps.scheduled++;
+    else if (e.status === "in_progress") ps.inProgress++;
+    else if (e.status === "completed") ps.completed++;
+    else if (e.status === "failed") ps.failed++;
+    else if (e.status === "blocked") ps.blocked++;
+    else if (e.status === "cancelled") ps.cancelled++;
+    else if (isCodegraphUnavailableStatus(e.status)) {
+      ps.indexUnavailable++;
+      ps.codegraphUnavailable++;
+    }
+    if (isActiveEntry(e) && isMutatingEntry(e)) {
+      ps.activeMutating++;
+      ps.activeEntryIds.push(e.id);
+      ps.busy = true;
+      ps.busyReason = e.status === "scheduled" ? "scheduled-mutating-task" : "active-mutating-task";
+      ps.claimedBy = e.claimedBy;
+      ps.claimedAt = e.claimedAt;
+      ps.workerId = e.workerId;
+    }
+  }
+  for (const [projectId, ps] of Object.entries(byProject)) {
+    Object.assign(
+      ps,
+      summarizeFailedTargets(entries.filter((entry) => entry.projectId === projectId)),
+    );
+  }
+  // Second pass: compute eligible pending entries
+  for (const e of entries) {
+    if (e.status !== "pending") continue;
+    const ps = byProject[e.projectId];
+    if (!isMutatingEntry(e)) {
+      // Non-mutating pending entries are always eligible
+      ps.eligiblePending++;
+      ps.eligibleEntryIds.push(e.id);
+    } else if (ps.activeMutating < ps.maxActivePerProject) {
+      // Mutating pending entries eligible when project not at capacity
+      ps.eligiblePending++;
+      ps.eligibleEntryIds.push(e.id);
+    } else {
+      ps.busy = true;
+      ps.busyReason = "project-active-mutating-cap";
+    }
+  }
+  return byProject;
+}
+
+export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
+  const {
+    workerId = `worker-${process.pid}`,
+    projectId = null,
+    maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
+    claimTimeoutMs = 120_000,
+    providerSlotsAvailable = true,
+    requireIssueLink = false,
+    getProjectFn = null,
+    cpbRoot = null,
+    indexUnavailableRetryMs = 300_000,
+    assignmentStore = null,
+  } = opts;
+
+  if (!providerSlotsAvailable) {
+    return { entry: null, reason: "provider-slots-exhausted", recovered: [], activeProjects: [] };
+  }
+
+  return withQueueLock(hubRoot, async () => {
+    const queue = await loadQueue(hubRoot);
+    const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, { claimTimeoutMs, assignmentStore });
+    const { recovered: recoveredIdx } = recoverCodegraphUnavailable(queue.entries, indexUnavailableRetryMs);
+    if (recoveredIdx.length > 0) {
+      recovered.push(...recoveredIdx);
+    }
+    if (recovered.length > 0 || refreshed.length > 0) {
+      await saveQueue(hubRoot, queue);
+    }
+
+    const hubLimits = await resolveHubConcurrencyLimits(hubRoot, {
+      maxActivePerProject,
+    });
+
+    const activeMutatingByProject = {};
+    for (const e of queue.entries) {
+      if (isActiveEntry(e) && isMutatingEntry(e)) {
+        activeMutatingByProject[e.projectId] = (activeMutatingByProject[e.projectId] || 0) + 1;
+      }
+    }
+
+    let pending = queue.entries.filter((e) => e.status === "pending");
+    if (requireIssueLink) {
+      pending = pending.filter((e) => hasIssueLink(e.metadata));
+    }
+    if (projectId) pending = pending.filter((e) => e.projectId === projectId);
+
+    pending.sort((a, b) => {
+      // Platform/architecture-fix entries get priority boost
+      const aIsPlatformFix = /platform|architecture.fix/i.test(a.type || "") ? -1 : 0;
+      const bIsPlatformFix = /platform|architecture.fix/i.test(b.type || "") ? -1 : 0;
+      if (aIsPlatformFix !== bIsPlatformFix) return aIsPlatformFix - bIsPlatformFix;
+      return priorityScore(a.priority) - priorityScore(b.priority) || a.createdAt.localeCompare(b.createdAt);
+    });
+
+    const projectLimits = await resolveProjectConcurrencyLimits(
+      hubRoot,
+      queue.entries.map((entry) => entry.projectId),
+      { maxActivePerProject: hubLimits.maxActivePerProject, getProjectFn },
+    );
+
+    let chosen = null;
+    let reason = null;
+    const skippedBusy = [];
+    const indexUnavailableIds = [];
+
+    for (const candidate of pending) {
+      if (isMutatingEntry(candidate)) {
+        const projectLimit = limitForProject(projectLimits, candidate.projectId, maxActivePerProject);
+        if ((activeMutatingByProject[candidate.projectId] || 0) >= projectLimit) {
+          if (!skippedBusy.includes(candidate.projectId)) skippedBusy.push(candidate.projectId);
+          continue;
+        }
+      }
+
+      // Index freshness gate: when getProjectFn is provided, check freshness
+      // for registered projects. Unregistered projects skip the gate.
+      if (getProjectFn) {
+        const project = await getProjectFn(hubRoot, candidate.projectId);
+        if (project && (!project.sourcePath || !project.projectRuntimeRoot)) {
+          candidate.status = "codegraph_unavailable";
+          candidate.updatedAt = nowIso();
+          candidate.metadata = {
+            ...candidate.metadata,
+            indexFreshness: {
+              available: false,
+              indexDirty: true,
+              indexStale: false,
+              worktreeDirty: false,
+              dirtyReasons: ["missing_source_or_runtime_root"],
+            },
+          };
+          indexUnavailableIds.push(candidate.id);
+          continue;
+        }
+        if (project?.sourcePath && project.projectRuntimeRoot) {
+          const capabilityGate = projectCapabilityMapGate(project);
+          if (!capabilityGate.available) {
+            candidate.status = "codegraph_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              capabilityMap: capabilityGate,
+              indexFreshness: {
+                available: false,
+                indexDirty: true,
+                indexStale: false,
+                worktreeDirty: false,
+                dirtyReasons: [capabilityGate.reason],
+              },
+            };
+            indexUnavailableIds.push(candidate.id);
+            continue;
+          }
+
+          let codegraphReadiness;
+          try {
+            codegraphReadiness = await checkCodeGraphReady({
+              cpbRoot: cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
+              sourcePath: project.sourcePath,
+            });
+          } catch (err) {
+            const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
+            candidate.status = "codegraph_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              codegraphReadiness: {
+                available: false,
+                reason,
+                details: err?.details || null,
+              },
+              indexFreshness: {
+                available: false,
+                indexDirty: true,
+                indexStale: false,
+                worktreeDirty: false,
+                dirtyReasons: [reason],
+              },
+            };
+            indexUnavailableIds.push(candidate.id);
+            continue;
+          }
+
+          const fresh = await ensureIndexFresh(project);
+          if (!fresh.available) {
+            candidate.status = "codegraph_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              indexFreshness: {
+                available: false,
+                indexDirty: fresh.indexDirty ?? true,
+                indexStale: fresh.indexStale ?? false,
+                worktreeDirty: fresh.worktreeDirty ?? false,
+                dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
+              },
+            };
+            indexUnavailableIds.push(candidate.id);
+            continue;
+          }
+          candidate.indexSnapshotId = fresh.indexSnapshotId;
+          candidate.metadata = {
+            ...candidate.metadata,
+            codegraphReadiness: {
+              available: true,
+              sourcePath: codegraphReadiness.sourcePath,
+              indexFile: codegraphReadiness.indexFile,
+            },
+            indexSnapshot: {
+              indexSnapshotId: fresh.indexSnapshotId,
+              sourceFingerprint: fresh.sourceFingerprint,
+              indexFreshness: {
+                available: true,
+                indexDirty: false,
+                indexStale: false,
+                worktreeDirty: fresh.worktreeDirty ?? false,
+                dirtyReasons: [],
+              },
+            },
+          };
+        }
+      }
+
+      chosen = candidate;
+      break;
+    }
+
+    if (indexUnavailableIds.length > 0) {
+      await saveQueue(hubRoot, queue);
+    }
+
+    if (!chosen) {
+      const projectStatus = buildProjectQueueStatus(queue.entries, {
+        maxActivePerProject: hubLimits.maxActivePerProject,
+        projectLimits,
+      });
+      const activeProjects = Object.entries(projectStatus)
+        .filter(([, ps]) => ps.activeMutating > 0)
+        .map(([pid, ps]) => ({ projectId: pid, ...ps }));
+      if (pending.length === 0 && !projectId) {
+        reason = "no-pending-entries";
+      } else if (pending.length === 0 && projectId) {
+        reason = "no-pending-for-project";
+      } else {
+        reason = "all-projects-busy";
+      }
+      return { entry: null, reason, recovered, activeProjects, skippedBusy };
+    }
+
+    const now = nowIso();
+    chosen.status = "in_progress";
+    chosen.claimedBy = workerId;
+    chosen.workerId = workerId;
+    chosen.claimedAt = now;
+    chosen.updatedAt = now;
+
+    await saveQueue(hubRoot, queue);
+
+    const projectStatus = buildProjectQueueStatus(queue.entries, {
+      maxActivePerProject: hubLimits.maxActivePerProject,
+      projectLimits,
+    });
+    const activeProjects = Object.entries(projectStatus)
+      .filter(([, ps]) => ps.activeMutating > 0)
+      .map(([pid, ps]) => ({ projectId: pid, ...ps }));
+
+    return { entry: chosen, reason: null, recovered, activeProjects, skippedBusy };
+  });
+}
+
+// ─── auto-enqueue.ts ────────────────────────────────────────────────────────
+
+import { readGithubIssues } from "../github/github-issues.js";
+
+export function matchAutomationRule(issue, rules) {
+  if (!Array.isArray(rules) || rules.length === 0) return null;
+  for (const rule of rules) {
+    const m = rule.match || {};
+    if (m.labels && Array.isArray(m.labels)) {
+      const issueLabels = new Set(issue.labels || []);
+      const hasAll = m.labels.every((l) => issueLabels.has(l));
+      if (!hasAll) continue;
+    }
+    if (m.titlePattern) {
+      try {
+        if (!new RegExp(m.titlePattern, "i").test(issue.title || "")) continue;
+      } catch {
+        continue;
+      }
+    }
+    return rule;
+  }
+  return null;
+}
+
+export function isExcluded(issue, exclude) {
+  if (!exclude) return false;
+  if (exclude.labels && Array.isArray(exclude.labels)) {
+    const issueLabels = new Set(issue.labels || []);
+    if (exclude.labels.some((l) => issueLabels.has(l))) return true;
+  }
+  return false;
+}
+
+export function issueToNormalizedEvent(issue, project) {
+  return {
+    status: "ok",
+    type: "github_issue",
+    event: "issues",
+    action: "opened",
+    delivery: `auto-enqueue-${Date.now()}-${issue.number}`,
+    repo: project.github?.fullName || issue.repository || "",
+    projectId: project.id,
+    issueNumber: issue.number,
+    actor: "auto-enqueue",
+    labels: issue.labels || [],
+    url: issue.url || "",
+    title: issue.title || "",
+    body: issue.body || "",
+  };
+}
+
+function issueMatchesProject(issue, project) {
+  if (issue.projectId === project.id) return true;
+  if (issue.projectId && issue.projectId !== "flow") return false;
+  const repo = project.github?.fullName;
+  return Boolean(repo && (issue.repository || issue.repo || issue.repositoryFullName) === repo);
+}
+
+function issueQueueKey(repo, number) {
+  return `${repo || ""}#${Number(number)}`;
+}
+
+export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { createJobFn = null, dryRun = false } = {}) {
+  const project = await getProject(hubRoot, projectId);
+  if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
+
+  const automation = project.github?.automation;
+  if (!automation?.enabled) return { enqueued: 0, skipped: 0, duplicates: 0, total: 0, reason: "automation not enabled" };
+
+  const issues = await readGithubIssues(hubRoot);
+  const projectIssues = issues.filter((i) => i.state === "OPEN" && issueMatchesProject(i, project));
+
+  const queue = await loadQueue(hubRoot);
+  const queuedIssueKeys = new Set(
+    queue.entries
+      .filter((e) => e.projectId === project.id && e.metadata?.issueNumber && (e.type === "github_issue" || e.metadata?.source === "github"))
+      .map((e) => issueQueueKey(e.metadata?.repo || e.metadata?.repository || project.github?.fullName, e.metadata.issueNumber)),
+  );
+
+  let enqueued = 0;
+  let skipped = 0;
+  let duplicates = 0;
+  const matched = [];
+
+  for (const issue of projectIssues) {
+    const key = issueQueueKey(issue.repository || (issue as Record<string, any>).repo || project.github?.fullName, issue.number);
+    if (queuedIssueKeys.has(key)) { duplicates++; continue; }
+    if (isExcluded(issue, automation.exclude)) { skipped++; continue; }
+
+    const rule = matchAutomationRule(issue, automation.rules);
+    if (!rule) { skipped++; continue; }
+
+    matched.push({ number: issue.number, title: issue.title, rule: rule.name, action: rule.action });
+
+    if (dryRun) { enqueued++; continue; }
+
+    try {
+      const event = issueToNormalizedEvent(issue, project);
+      const match = { matched: true, workflow: rule.action?.workflow || "standard", ...(rule.action || {}) };
+      if (createJobFn) {
+        await createJobFn(cpbRoot, event, match, { hubRoot, sourcePath: project.sourcePath });
+      } else {
+        const { createGithubIssueQueueJob } = await import("../event/event-source.js");
+        await createGithubIssueQueueJob(cpbRoot, event, match, { hubRoot, sourcePath: project.sourcePath });
+      }
+      enqueued++;
+    } catch (err) {
+      if (err.message?.includes("duplicate")) { duplicates++; }
+      else { skipped++; }
+    }
+  }
+
+  return { enqueued, skipped, duplicates, total: projectIssues.length, matched: dryRun ? matched : undefined };
+}
+
+// ─── inbox-mail.ts ──────────────────────────────────────────────────────────
+
+import { readdir } from "node:fs/promises";
+
+const SCHEMA = "cpb.inbox-mail.v1";
+const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);
+const VALID_TRANSITIONS = {
+  pending: "acknowledged",
+  acknowledged: "completed",
+};
+
+function inboxDir(cpbRoot, project) {
+  return path.join(cpbRoot, "wiki", "projects", project, "inbox");
+}
+
+function safeId(id) {
+  if (!id || typeof id !== "string") return false;
+  if (id.includes("..") || id.includes("/") || id.includes(path.sep) || id.includes("\\")) return false;
+  if (!/^msg-\d{8}-\d{6}-[0-9a-f]{4,}$/.test(id)) return false;
+  return true;
+}
+
+function safeMessagePath(cpbRoot, project, id) {
+  const dir = inboxDir(cpbRoot, project);
+  const resolved = path.resolve(dir, `${id}.md`);
+  if (resolved !== dir && !resolved.startsWith(dir + path.sep)) {
+    throw new Error("invalid message id: path escape");
+  }
+  return resolved;
+}
+
+let _seq = 0;
+const _pidHex = process.pid.toString(16).padStart(4, "0");
+function generateMessageId() {
+  const date = new Date();
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const seq = String(++_seq).padStart(6, "0");
+  return `msg-${y}${m}${d}-${seq}-${_pidHex}`;
+}
+
+function serializeFrontmatter(meta) {
+  const lines = ["---"];
+  for (const [key, value] of Object.entries(meta)) {
+    if (value === undefined || value === null) {
+      lines.push(`${key}: ""`);
+    } else if (typeof value === "object") {
+      lines.push(`${key}: ${JSON.stringify(value)}`);
+    } else {
+      lines.push(`${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  lines.push("---");
+  return lines.join("\n");
+}
+
+function parseFrontmatter(raw) {
+  if (!raw.startsWith("---")) return null;
+  const end = raw.indexOf("---", 3);
+  if (end === -1) return null;
+
+  const fmText = raw.slice(3, end).trim();
+  const content = raw.slice(end + 3).trimStart();
+  const meta: AnyRecord = {};
+
+  for (const line of fmText.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = trimmed.slice(0, colonIdx).trim();
+    let value = trimmed.slice(colonIdx + 1).trim();
+
+    try {
+      meta[key] = JSON.parse(value);
+    } catch {
+      meta[key] = value.replace(/^"|"$/g, "");
+    }
+  }
+
+  return { meta, content };
+}
+
+async function withInboxLock(cpbRoot, project, callback) {
+  const dir = inboxDir(cpbRoot, project);
+  const lockDir = `${dir}.lock`;
+  await mkdir(dir, { recursive: true });
+
+  let acquired = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await mkdir(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      // Check staleness (30s)
+      try {
+        const info = await stat(lockDir);
+        if (Date.now() - info.mtimeMs >= 30_000) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // Race: someone else removed it, retry
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  if (!acquired) {
+    throw new Error(`inbox lock busy for project: ${project}`);
+  }
+
+  try {
+    return await callback();
+  } finally {
+    try {
+      await rm(lockDir, { recursive: true, force: true });
+    } catch {
+      // Already cleaned up
+    }
+  }
+}
+
+function messageToOutput(meta) {
+  return { ...meta };
+}
+
+export async function writeInboxMessage(cpbRoot, project, input) {
+  const id = generateMessageId();
+  const ts = nowIso();
+
+  const meta = {
+    schema: SCHEMA,
+    id,
+    type: input.type || "plan",
+    project,
+    jobId: input.jobId || "",
+    phase: input.phase || input.type || "plan",
+    from: input.from || "",
+    to: input.to || "",
+    status: "pending",
+    owner: "",
+    locator: input.locator || {},
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  const content = input.content || "";
+  const fileContent = `${serializeFrontmatter(meta)}\n${content}\n`;
+  const filePath = safeMessagePath(cpbRoot, project, id);
+
+  await withInboxLock(cpbRoot, project, async () => {
+    await writeAtomic(filePath, fileContent);
+  });
+
+  return messageToOutput(meta);
+}
+
+export async function listInboxMessages(cpbRoot, project, filters: AnyRecord = {}) {
+  const dir = inboxDir(cpbRoot, project);
+  let files;
+  try {
+    files = (await readdir(dir))
+      .filter((f) => f.endsWith(".md"))
+      .sort();
+  } catch {
+    return [];
+  }
+
+  const messages = [];
+  for (const f of files) {
+    try {
+      const raw = await readFile(path.join(dir, f), "utf8");
+      const parsed = parseFrontmatter(raw);
+      if (!parsed) continue;
+
+      const msg = parsed.meta;
+
+      if (filters.type && msg.type !== filters.type) continue;
+      if (filters.status && msg.status !== filters.status) continue;
+      if (filters.to && msg.to !== filters.to) continue;
+      if (filters.owner && msg.owner !== filters.owner) continue;
+      if (filters.jobId && msg.jobId !== filters.jobId) continue;
+
+      messages.push(messageToOutput(msg));
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  // Sort by createdAt to guarantee creation order (filename hex suffix is random)
+  messages.sort((a, b) => a.id.localeCompare(b.id));
+  return messages;
+}
+
+export async function readInboxMessage(cpbRoot, project, id) {
+  if (!safeId(id)) return null;
+  const filePath = safeMessagePath(cpbRoot, project, id);
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = parseFrontmatter(raw);
+    if (!parsed) return null;
+    return { ...messageToOutput(parsed.meta), content: parsed.content };
+  } catch {
+    return null;
+  }
+}
+
+export async function ackInboxMessage(cpbRoot, project, id, { owner }: AnyRecord = {}) {
+  if (!safeId(id)) return null;
+  return withInboxLock(cpbRoot, project, async () => {
+    const filePath = safeMessagePath(cpbRoot, project, id);
+    let raw;
+    try {
+      raw = await readFile(filePath, "utf8");
+    } catch {
+      return null;
+    }
+
+    const parsed = parseFrontmatter(raw);
+    if (!parsed) return null;
+
+    const currentStatus = parsed.meta.status;
+    const expected = VALID_TRANSITIONS[currentStatus];
+    if (expected !== "acknowledged") {
+      throw new Error(`invalid transition: ${currentStatus} -> acknowledged`);
+    }
+
+    parsed.meta.status = "acknowledged";
+    parsed.meta.owner = owner || "";
+    parsed.meta.updatedAt = nowIso();
+
+    const fileContent = `${serializeFrontmatter(parsed.meta)}\n${parsed.content}\n`;
+    await writeAtomic(filePath, fileContent);
+
+    return messageToOutput(parsed.meta);
+  });
+}
+
+export async function completeInboxMessage(cpbRoot, project, id) {
+  if (!safeId(id)) return null;
+  return withInboxLock(cpbRoot, project, async () => {
+    const filePath = safeMessagePath(cpbRoot, project, id);
+    let raw;
+    try {
+      raw = await readFile(filePath, "utf8");
+    } catch {
+      return null;
+    }
+
+    const parsed = parseFrontmatter(raw);
+    if (!parsed) return null;
+
+    const currentStatus = parsed.meta.status;
+    const expected = VALID_TRANSITIONS[currentStatus];
+    if (expected !== "completed") {
+      throw new Error(`invalid transition: ${currentStatus} -> completed`);
+    }
+
+    parsed.meta.status = "completed";
+    parsed.meta.updatedAt = nowIso();
+
+    const fileContent = `${serializeFrontmatter(parsed.meta)}\n${parsed.content}\n`;
+    await writeAtomic(filePath, fileContent);
+
+    return messageToOutput(parsed.meta);
+  });
+}

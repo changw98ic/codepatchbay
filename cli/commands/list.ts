@@ -5,7 +5,7 @@ const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
 export async function run(_args: string[], { cpbRoot }: { cpbRoot: string }) {
-  const { listProjects, resolveHubRoot } = await import("../../server/services/hub-registry.js");
+  const { listProjects, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const projects = await listProjects(hubRoot) as Array<Record<string, any>>;
 

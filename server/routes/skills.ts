@@ -1,5 +1,5 @@
-import { extractSkillFromJob, reviewSkill, listExtractedSkills, loadActiveExtractedSkills } from "../services/skill-extractor.js";
-import { getJob } from "../services/job-store.js";
+import { extractSkillFromJob, reviewSkill, listExtractedSkills, loadActiveExtractedSkills } from "../services/prompt/prompt-resources.js";
+import { getJob } from "../services/job/job-store.js";
 
 export function skillRoutes(fastify: any, _opts: any, done: () => void) {
   // GET /api/skills/:role — list extracted skills for a role

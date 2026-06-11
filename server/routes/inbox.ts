@@ -1,17 +1,17 @@
 import path from "node:path";
 
-import { listJobsAcrossRuntimeRoots } from "../services/job-store.js";
-import { jobToQueueRow, jobToPipelineState } from "../services/job-projection.js";
-import { listQueue } from "../services/hub-queue.js";
-import { listSessions, getSession } from "../services/review-session.js";
-import { buildReviewBundle } from "../services/review-bundle.js";
-import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from "../services/review-loop.js";
-import { resolveProjectDataRoot } from "../services/runtime-context.js";
-import { runtimeDataRoot } from "../services/runtime-root.js";
-import { getProject } from "../services/hub-registry.js";
-import { broadcast } from "../services/ws-broadcast.js";
-import { buildAttentionProjection } from "../services/attention-projection.js";
-import { collectRuntimeHealth } from "../services/runtime-health.js";
+import { listJobsAcrossRuntimeRoots } from "../services/job/job-store.js";
+import { jobToQueueRow, jobToPipelineState } from "../services/job/job-projection.js";
+import { listQueue } from "../services/hub/hub-queue.js";
+import { listSessions, getSession } from "../services/review/review-session.js";
+import { buildReviewBundle } from "../services/review/review-session.js";
+import { acceptReviewBundle, rejectReviewBundle, isReviewLoopError } from "../services/review/review-session.js";
+import { resolveProjectDataRoot } from "../services/runtime.js";
+import { runtimeDataRoot } from "../services/runtime.js";
+import { getProject } from "../services/hub/hub-registry.js";
+import { broadcast } from "../services/infra.js";
+import { buildAttentionProjection } from "../services/hub/hub-registry.js";
+import { collectRuntimeHealth } from "../services/runtime.js";
 
 const PRIORITY_ORDER = { P0: 0, P1: 1, P2: 2 };
 type LooseRecord = Record<string, any>;

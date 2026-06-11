@@ -8,7 +8,7 @@
 import {
   buildServices as buildServerServices,
   runJobWithServices as runJobWithServerServices,
-} from "../server/services/engine-runner.js";
+} from "../server/services/setup.js";
 
 export function buildServices(cpbRoot: string, opts: Record<string, unknown> = {}) {
   return buildServerServices(cpbRoot, opts);

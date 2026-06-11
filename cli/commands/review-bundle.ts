@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 
-import { buildReviewBundle, writeReviewBundle } from "../../server/services/review-bundle.js";
+import { buildReviewBundle, writeReviewBundle } from "../../server/services/review/review-session.js";
 import { findJobForCli } from "./artifacts.js";
 
 function usage() {

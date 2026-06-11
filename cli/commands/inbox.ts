@@ -54,7 +54,7 @@ export async function run(args, { cpbRoot }) {
 }
 
 async function listMessages(cpbRoot, project, flags) {
-  const { listInboxMessages } = await import("../../server/services/inbox-mail.js");
+  const { listInboxMessages } = await import("../../server/services/hub/hub-queue.js");
 
   const messages = await listInboxMessages(cpbRoot, project);
 
@@ -85,7 +85,7 @@ async function readMessage(cpbRoot, project, id) {
     process.exit(1);
   }
 
-  const { readInboxMessage } = await import("../../server/services/inbox-mail.js");
+  const { readInboxMessage } = await import("../../server/services/hub/hub-queue.js");
   const msg = await readInboxMessage(cpbRoot, project, id);
 
   if (!msg) {
@@ -121,7 +121,7 @@ async function ackMessage(cpbRoot, project, id, flags) {
     process.exit(1);
   }
 
-  const { ackInboxMessage } = await import("../../server/services/inbox-mail.js");
+  const { ackInboxMessage } = await import("../../server/services/hub/hub-queue.js");
 
   try {
     const result = await ackInboxMessage(cpbRoot, project, id, { owner });
@@ -142,7 +142,7 @@ async function doneMessage(cpbRoot, project, id) {
     process.exit(1);
   }
 
-  const { completeInboxMessage } = await import("../../server/services/inbox-mail.js");
+  const { completeInboxMessage } = await import("../../server/services/hub/hub-queue.js");
 
   try {
     const result = await completeInboxMessage(cpbRoot, project, id);

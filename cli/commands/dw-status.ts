@@ -11,7 +11,7 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { collectRuntimeHealth } from "../../server/services/runtime-health.js";
+import { collectRuntimeHealth } from "../../server/services/runtime.js";
 
 const CYAN = "\x1b[0;36m";
 const GREEN = "\x1b[0;32m";

@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { listProfiles, loadProfile, loadProfileSkills } from "../../server/services/profile-loader.js";
+import { listProfiles, loadProfile, loadProfileSkills } from "../../server/services/prompt/prompt-resources.js";
 
 function optionValue(args, name) {
   const idx = args.indexOf(name);

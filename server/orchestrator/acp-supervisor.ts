@@ -81,7 +81,7 @@ export class AcpSupervisor {
     if (this._poolPromise) return this._poolPromise;
     this._poolPromise = (async () => {
       try {
-        const { getManagedAcpPool } = await import("../services/acp-pool.js");
+        const { getManagedAcpPool } = await import("../services/acp/acp-pool.js");
         this.pool = getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true });
         return this.pool;
       } catch {

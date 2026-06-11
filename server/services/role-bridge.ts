@@ -1,4 +1,4 @@
-import { loadProfile } from "./profile-loader.js";
+import { loadProfile } from "./prompt/prompt-resources.js";
 
 const ROLE_BRIDGE_MAP: Record<string, string> = {
   planner: "planner.sh",

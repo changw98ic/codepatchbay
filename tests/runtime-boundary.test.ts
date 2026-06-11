@@ -23,12 +23,10 @@ const DELETED_RUNTIME_ENTRIES = [
 
 const FORBIDDEN_RUNTIME_IMPORTS = new Set(["server"]);
 const BRIDGE_ENTRY_FILES = [
-  "bridges/acp-client.js",
   "bridges/common.sh",
   "bridges/engine-bridge.js",
   "bridges/job-runner.js",
   "bridges/project-worker.js",
-  "bridges/run-phase.js",
   "bridges/run-pipeline.js",
   "bridges/run-pipeline.sh",
   "bridges/runtime-services.js",
@@ -109,7 +107,7 @@ test("scanner catches deleted runtime ACP entry references (negative)", () => {
 });
 
 test("scanner catches runtime static import from server layer (negative)", () => {
-  const source = `import { appendEvent } from "../server/services/event-store.js"`;
+  const source = `import { appendEvent } from "../server/services/event/event-store.js"`;
   const fakeFile = path.join(REPO_ROOT, "runtime/test.js");
   const violations = detectImportViolations(source, fakeFile, FORBIDDEN_RUNTIME_IMPORTS);
   assert.equal(violations.length, 1);

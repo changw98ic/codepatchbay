@@ -9,11 +9,11 @@ import { pathToFileURL } from "node:url";
 import {
   REQUIRED_EXECUTOR_FILES,
   assertExecutorRoot,
-} from "../../server/services/executor-root.js";
+} from "../../server/services/setup.js";
 import {
   checkReleaseCompatibility,
   installRelease,
-} from "../../server/services/release-store.js";
+} from "../../server/services/release/release-store.js";
 
 const TEST_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const EXECUTOR_ROOT = existsSync(path.join(TEST_ROOT, "cli", "cpb.js"))

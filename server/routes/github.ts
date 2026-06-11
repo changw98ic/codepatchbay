@@ -2,19 +2,19 @@ import {
   loadGithubAppConfig,
   resolveGithubWebhookSecret,
   verifyGithubWebhookSignature,
-} from "../services/github-app.js";
-import { normalizeGithubWebhookEvent } from "../services/github-events.js";
-import { matchGithubTrigger } from "../services/github-triggers.js";
-import { createGithubIssueQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../services/event-source.js";
-import { listProjects } from "../services/hub-registry.js";
-import { resolveGithubTransport } from "../services/github-api.js";
+} from "../services/github/github-api.js";
+import { normalizeGithubWebhookEvent } from "../services/github/github-adapter.js";
+import { matchGithubTrigger } from "../services/github/github-adapter.js";
+import { createGithubIssueQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../services/event/event-source.js";
+import { listProjects } from "../services/hub/hub-registry.js";
+import { resolveGithubTransport } from "../services/github/github-api.js";
 import {
   buildSddApprovedComment,
   postGithubQueuedComment,
-} from "../services/github-comments.js";
-import { parseChannelCommand } from "../services/channel-commands.js";
-import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel-policy.js";
-import { loadQueue, updateEntry } from "../services/hub-queue.js";
+} from "../services/github/github-issues.js";
+import { parseChannelCommand } from "../services/channel/channel-commands.js";
+import { channelPolicyRequest, enforceChannelPolicy } from "../services/channel/channel-commands.js";
+import { loadQueue, updateEntry } from "../services/hub/hub-queue.js";
 
 type AnyRecord = Record<string, any>;
 

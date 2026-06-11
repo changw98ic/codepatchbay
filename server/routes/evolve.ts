@@ -1,10 +1,10 @@
 import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
-import { listProjects, resolveHubRoot } from "../services/hub-registry.js";
+import { listProjects, resolveHubRoot } from "../services/hub/hub-registry.js";
 import {
   loadProjectState as loadMultiProjectState,
   loadBacklog as loadMultiBacklog,
-} from "../services/multi-evolve-state.js";
+} from "../services/evolve/evolve.js";
 import { buildChildEnv } from "../services/secret-policy.js";
 
 let activeProcess = null;

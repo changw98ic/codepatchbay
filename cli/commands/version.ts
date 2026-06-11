@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { readReleaseMetadata } from "../../server/services/release-store.js";
+import { readReleaseMetadata } from "../../server/services/release/release-store.js";
 
 const CPB_VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 

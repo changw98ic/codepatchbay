@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { listJobs } from "../../server/services/job-store.js";
+import { listJobs } from "../../server/services/job/job-store.js";
 
 type ListedJob = {
   jobId: string;

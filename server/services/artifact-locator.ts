@@ -1,8 +1,8 @@
 import { mkdir, readdir, writeFile, access, stat } from "node:fs/promises";
 import path from "node:path";
-import { projectRuntimePath } from "./runtime-root.js";
+import { projectRuntimePath } from "./runtime.js";
 
-export { buildArtifactIndex } from "./artifact-index.js";
+export { buildArtifactIndex } from "./job/job-projection.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 

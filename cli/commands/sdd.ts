@@ -66,7 +66,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
   }
 
   if (subcommand === "verify") {
-    const { verifySddProject } = await import("../../server/services/sdd.js");
+    const { verifySddProject } = await import("../../server/services/sdd/sdd.js");
     const result = await verifySddProject(cpbRoot, project);
     if (json) {
       console.log(JSON.stringify(result, null, 2));
@@ -81,8 +81,8 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
   if (subcommand === "drift") {
     const taskFlag = args.indexOf("--task");
     const task = taskFlag >= 0 ? args[taskFlag + 1] || "" : args.slice(2).filter((arg) => !arg.startsWith("--")).join(" ");
-    const { getProject, resolveHubRoot } = await import("../../server/services/hub-registry.js");
-    const { analyzeSddDrift } = await import("../../server/services/sdd.js");
+    const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+    const { analyzeSddDrift } = await import("../../server/services/sdd/sdd.js");
     const hubRoot = resolveHubRoot(cpbRoot);
     const projectRecord = await getProject(hubRoot, project);
     if (!projectRecord) {

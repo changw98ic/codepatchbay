@@ -7,9 +7,9 @@ import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
 import { createLogger } from "../../shared/logger.js";
-import { resolveExecutorRoot } from "../services/executor-root.js";
-import { resolveHubConcurrencyLimits } from "../services/concurrency-limits.js";
-import { getProject } from "../services/hub-registry.js";
+import { resolveExecutorRoot } from "../services/setup.js";
+import { resolveHubConcurrencyLimits } from "../services/infra.js";
+import { getProject } from "../services/hub/hub-registry.js";
 
 const TICK_MS = 2_000;
 const JANITOR_MS = 30_000;
@@ -132,7 +132,7 @@ export class HubOrchestrator {
 
     this.acpSupervisor = acpSupervisor || new AcpSupervisor({ cpbRoot, hubRoot });
     const readModeFn = async () => {
-      const { readHubConfig: rhc, readSchedulerConfig: rsc } = await import("../services/agent-config.js");
+      const { readHubConfig: rhc, readSchedulerConfig: rsc } = await import("../services/agent/agent-config.js");
       return rsc(await rhc(hubRoot)).mode;
     };
     const failureRouter = new FailureRouter(this.acpSupervisor, { readModeFn });
@@ -317,7 +317,7 @@ export class HubOrchestrator {
         }
 
         // Update queue entry
-        const { updateEntry } = await import("../services/hub-queue.js");
+        const { updateEntry } = await import("../services/hub/hub-queue.js");
         await updateEntry(this.hubRoot, candidate.id, {
           status: "scheduled",
           claimedBy: worker.workerId,
@@ -342,7 +342,7 @@ export class HubOrchestrator {
         });
         // Attach dispatch failure metadata to the entry so it's visible
         try {
-          const { updateEntry } = await import("../services/hub-queue.js");
+          const { updateEntry } = await import("../services/hub/hub-queue.js");
           await updateEntry(this.hubRoot, candidate.id, {
             metadata: {
               dispatchFailure: {
@@ -374,7 +374,7 @@ export class HubOrchestrator {
     const providerKey = agentKey || providerAgentForEntry(entry);
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot);
     const total = hubLimits.acpProviderMax;
-    const { listQueue } = await import("../services/hub-queue.js");
+    const { listQueue } = await import("../services/hub/hub-queue.js");
     const entries = await listQueue(this.hubRoot);
     const active = entries.filter((e) => (
       (e.status === "in_progress" || e.status === "scheduled") &&
@@ -393,7 +393,7 @@ export class HubOrchestrator {
   }
 
   async reconcileQueueVsAssignments() {
-    const { listQueue, updateEntry } = await import("../services/hub-queue.js");
+    const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
     const entries = await listQueue(this.hubRoot, { status: "in_progress" });
     const scheduled = await listQueue(this.hubRoot, { status: "scheduled" });
     const allEntries = [...entries, ...scheduled];
@@ -445,7 +445,7 @@ export class HubOrchestrator {
 
   async status() {
     const [{ queueStatus }, workers, leaderStatus] = await Promise.all([
-      import("../services/hub-queue.js"),
+      import("../services/hub/hub-queue.js"),
       this.workerStore.listWorkers(),
       readLeaderStatus(this.hubRoot),
     ]);

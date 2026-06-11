@@ -6,7 +6,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { loadProfile, listProfiles } from '../server/services/profile-loader.js';
+import { loadProfile, listProfiles } from '../server/services/prompt/prompt-resources.js';
 import { bridgeEnvFromProfile } from '../server/services/role-bridge.js';
 
 describe('profile-loader', () => {

@@ -6,8 +6,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test, { describe, beforeEach, afterEach } from "node:test";
 
-import { installBin, renderLauncher, resolveInstallBinExecutorRoot, shellQuoteSingle } from "../../server/services/install-bin.js";
-import { installRelease } from "../../server/services/release-store.js";
+import { installBin, renderLauncher, resolveInstallBinExecutorRoot, shellQuoteSingle } from "../../server/services/setup.js";
+import { installRelease } from "../../server/services/release/release-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,7 +19,7 @@ async function pathExists(p) {
 }
 
 async function buildFixtureSource(root) {
-  const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/executor-root.js");
+  const { REQUIRED_EXECUTOR_FILES } = await import("../../server/services/setup.js");
 
   const dirs = [
     "bridges", "cli", "server/services", "profiles", "templates",

@@ -9,10 +9,10 @@ import {
   listQueue,
   queueStatus,
   updateEntry,
-} from "../server/services/hub-queue.js";
+} from "../server/services/hub/hub-queue.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
-import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/concurrency-limits.js";
-import { registerProject } from "../server/services/hub-registry.js";
+import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/infra.js";
+import { registerProject } from "../server/services/hub/hub-registry.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
 
 // Mock assignmentStore: always returns null (no active assignment)

@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildArtifactIndex } from "../server/services/artifact-index.js";
+import { buildArtifactIndex } from "../server/services/job/job-projection.js";
 import {
   allocateArtifactId,
   buildArtifactIndex as locatorBuildArtifactIndex,

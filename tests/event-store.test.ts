@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { materializeJob } from "../server/services/event-store.js";
+import { materializeJob } from "../server/services/event/event-store.js";
 
 type AnyRecord = Record<string, any>;
 

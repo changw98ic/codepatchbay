@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
 
-import { verifyGithubWebhookSignature } from "../server/services/github-app.js";
+import { verifyGithubWebhookSignature } from "../server/services/github/github-api.js";
 
 function sign(payload, secret) {
   const body = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), "utf8");

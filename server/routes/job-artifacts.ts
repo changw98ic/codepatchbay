@@ -1,4 +1,4 @@
-import { buildJobArtifactDetail } from "../services/job-artifact-detail.js";
+import { buildJobArtifactDetail } from "../services/job/job-projection.js";
 
 export function registerJobArtifactDetailRoute(
   fastify: any,
