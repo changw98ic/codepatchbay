@@ -30,17 +30,23 @@ jobs:
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
         if: runner.os == 'Linux'
 
-      - name: Run Node tests
-        run: npm run test:node
+      - name: Run Node and shell tests
+        run: npm test
+
+      - name: Run Node typecheck
+        run: npm run typecheck:node
 
       - name: Run web tests
         run: cd web && npm test -- --run
+
+      - name: Run web typecheck
+        run: npm run typecheck:web
 
       - name: Build web UI
         run: npm run build:web
 
       - name: CI smoke test (cpb setup + demo)
-        run: node scripts/ci-smoke.mjs
+        run: npm run build:node && node dist/scripts/ci-smoke.js
 
   lint:
     runs-on: ubuntu-latest
@@ -55,6 +61,7 @@ jobs:
 
       - name: Check node scripts syntax
         run: |
-          find bridges cli core runtime server -name '*.js' -o -name '*.mjs' | while read -r f; do
+          npm run build:node
+          find dist/bridges dist/cli dist/core dist/runtime dist/server -name '*.js' | while read -r f; do
             node --check "$f" || exit 1
           done

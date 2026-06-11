@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // cpb — CodePatchbay CLI (Node.js entrypoint)
-// Replaces legacy Bash entrypoint. Delegates to cli/cpb.mjs.
+// Delegates to the compiled TypeScript output.
 
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distRoot = path.resolve(__dirname, "dist");
 process.env.CPB_ROOT = process.env.CPB_ROOT || path.resolve(__dirname);
-process.env.CPB_EXECUTOR_ROOT = process.env.CPB_EXECUTOR_ROOT || path.resolve(__dirname);
+process.env.CPB_EXECUTOR_ROOT = process.env.CPB_EXECUTOR_ROOT || distRoot;
 
-const { main } = await import("./cli/cpb.mjs");
+const { main } = await import("./dist/cli/cpb.js");
 const code = await main();
 if (Number.isInteger(code)) {
   process.exitCode = code;

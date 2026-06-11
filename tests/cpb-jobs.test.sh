@@ -16,7 +16,7 @@ cat > "$TMP/cpb-task/events/demo/$job_id.jsonl" <<JSONL
 {"type":"job_created","jobId":"job-20260513-000001-abc123","project":"demo","task":"Add login","workflow":"standard","ts":"2026-05-13T00:00:00.000Z"}
 JSONL
 
-CPB_ROOT="$TMP" node "$ROOT/bridges/list-jobs.mjs" | grep -q "$job_id"
+CPB_ROOT="$TMP" "$ROOT/cpb" jobs | grep -q "$job_id"
 
 mkdir -p "$ROOT/cpb-task/events/$project"
 cat > "$ROOT/cpb-task/events/$project/$job_id.jsonl" <<JSONL

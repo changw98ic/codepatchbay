@@ -8,6 +8,7 @@ import { Tabs } from '@/components/shared/Tabs';
 import { Toggle } from '@/components/shared/Toggle';
 import { Breadcrumb } from '@/components/shared/Breadcrumb';
 import { useProjectsStore, useWebSocketStore } from '@/app/store';
+import type { PipelineState } from '@/types/api';
 import { getStatusInfo } from '@/utils/format';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
@@ -332,13 +333,7 @@ function useCappedList<T>(items: T[], cap: number, deps: unknown[]) {
 const KNOWN_PHASES = ['plan', 'execute', 'verify'];
 const PHASE_ICONS: Record<string, string> = { plan: '📋', execute: '⚡', verify: '✅' };
 
-function PipelineGraph({ state }: { state: {
-  status?: string;
-  phase?: string;
-  phases?: string[];
-  nodes?: Array<{ id: string; phase?: string; status?: string }>;
-  retryCount?: number;
-} | null | undefined }) {
+function PipelineGraph({ state }: { state: PipelineState | null | undefined }) {
   if (!state) return null;
 
   if (state.nodes && state.nodes.length > 0) {

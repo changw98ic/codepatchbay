@@ -3,7 +3,7 @@
   "displayName": "Fake ACP Agent",
   "command": "cpb-test-acp-agent",
   "fallbackCommand": "node",
-  "fallbackArgs": ["server/services/test-acp-agent.mjs"],
+  "fallbackArgs": ["server/services/test-acp-agent.js"],
   "args": [],
   "capabilities": ["plan", "execute", "verify", "review", "remediate"],
   "defaultRoles": [],

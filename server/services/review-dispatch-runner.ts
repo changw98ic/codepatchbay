@@ -1,0 +1,541 @@
+#!/usr/bin/env node
+// @ts-nocheck
+
+import { spawn, spawnSync } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import readline from "node:readline";
+import { createSession, getSession, updateSession, parseIssues, startSessionResearch, noteReviewAcpCall, assertReviewBudget } from "./review-session.js";
+import { buildChildEnv } from "../../core/policy/child-env.js";
+
+const CPB_ROOT = path.resolve(".");
+const PROTOCOL_VERSION = 1;
+const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
+
+// --- Persistent ACP connection ---
+
+function commandExists(cmd) {
+  return spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", cmd]).status === 0;
+}
+
+// ACP adapter lookup table — mirrors acp-client-core.js
+const ACP_ADAPTERS = {
+  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
+  claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
+  reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
+};
+
+function resolveAgentCommand(agent, env = process.env) {
+  const upper = agent.toUpperCase();
+  const envCmd = env[`CPB_ACP_${upper}_COMMAND`];
+  if (envCmd) {
+    const raw = env[`CPB_ACP_${upper}_ARGS`];
+    let args = [];
+    if (raw) {
+      try { args = JSON.parse(raw); } catch { args = raw.split(/\s+/).filter(Boolean); }
+    }
+    return { command: envCmd, args };
+  }
+  const entry = ACP_ADAPTERS[agent];
+  if (!entry) throw new Error(`Unknown agent: '${agent}'. Set CPB_ACP_${upper}_COMMAND.`);
+  if (commandExists(entry.command)) return { command: entry.command, args: [...entry.args] };
+  if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
+  return { command: entry.command, args: [...entry.args] };
+}
+
+class PersistentAcp {
+  constructor(agent) {
+    this.agent = agent;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.child = null;
+    this.initialized = false;
+    this.closed = false;
+    this.lastActivity = Date.now();
+    this.watchdog = null;
+    this.sessionId = null;
+  }
+
+  async start() {
+    const env = buildChildEnv(process.env, {}, { agent: this.agent });
+    const { command, args } = resolveAgentCommand(this.agent, env);
+    if (command === "npx" && !env.npm_config_cache) {
+      const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
+      await mkdir(cache, { recursive: true });
+      env.npm_config_cache = cache;
+    }
+
+    this.child = spawn(command, args, {
+      cwd: CPB_ROOT,
+      env: buildChildEnv(env, { CPB_ROOT }, { agent: this.agent }),
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const rl = readline.createInterface({ input: this.child.stdout, crlfDelay: Infinity });
+    rl.on("line", (line) => {
+      this.lastActivity = Date.now();
+      this.handleLine(line);
+    });
+
+    this.child.stderr.on("data", (chunk) => {
+      this.lastActivity = Date.now();
+      process.stderr.write(`[${this.agent}] ${chunk}`);
+    });
+
+    this.child.on("exit", () => {
+      this.closed = true;
+      this.clearWatchdog();
+      for (const { reject } of this.pending.values()) {
+        reject(new Error(`${this.agent} process exited`));
+      }
+      this.pending.clear();
+    });
+
+    this.child.on("error", (err) => {
+      this.closed = true;
+      for (const { reject } of this.pending.values()) reject(err);
+      this.pending.clear();
+    });
+
+    const init = await this.request("initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
+      clientInfo: { name: "cpb-review", title: "CodePatchbay Review", version: "0.1.0" },
+    });
+
+    if (init.protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error(`unsupported ACP protocol version: ${init.protocolVersion}`);
+    }
+    this.initialized = true;
+
+    this.startWatchdog();
+    return this;
+  }
+
+  async sendPrompt(prompt) {
+    if (this.closed) throw new Error(`${this.agent} connection closed`);
+    this.lastActivity = Date.now();
+
+    await this.#ensureSession();
+
+    let response = "";
+    const startedAt = Date.now();
+    let lastTextAt = Date.now();
+    const STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
+    const MAX_MS = parseInt(process.env.ACP_PROMPT_MAX_MS || "600000", 10);
+
+    const collectUpdate = (params) => {
+      const update = params?.update;
+      if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
+        response += update.content.text;
+        lastTextAt = Date.now();
+      }
+    };
+
+    let stuckTimer = null;
+    const stuckGuard = new Promise((_, reject) => {
+      stuckTimer = setInterval(() => {
+        const noText = Date.now() - lastTextAt > STUCK_MS;
+        const tooLong = Date.now() - startedAt > MAX_MS;
+        if (noText || tooLong) {
+          clearInterval(stuckTimer);
+          const reason = tooLong ? `exceeded max ${MAX_MS}ms` : `no text output for ${STUCK_MS}ms`;
+          reject(new Error(`${this.agent} prompt stuck: ${reason}`));
+        }
+      }, 15000);
+    });
+
+    const origHandle = this.handleClientRequest;
+    this.handleClientRequest = async (msg) => {
+      if (msg.method === "session/update") {
+        collectUpdate(msg.params);
+        if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
+      } else {
+        origHandle.call(this, msg);
+      }
+    };
+
+    try {
+      await Promise.race([
+        this.request("session/prompt", {
+          sessionId: this.sessionId,
+          prompt: [{ type: "text", text: prompt }],
+        }),
+        stuckGuard,
+      ]);
+    } catch (err) {
+      console.error(`[${this.agent}] sendPrompt error: ${err.message}`);
+      await this.#closeSession();
+      throw err;
+    } finally {
+      clearInterval(stuckTimer);
+      this.handleClientRequest = origHandle;
+    }
+
+    return response.trim();
+  }
+
+  async #ensureSession() {
+    if (this.sessionId) return;
+    const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
+    this.sessionId = session.sessionId;
+  }
+
+  async #closeSession() {
+    if (!this.sessionId) return;
+    const sid = this.sessionId;
+    this.sessionId = null;
+    try {
+      this.write({ jsonrpc: "2.0", method: "session/close", params: { sessionId: sid } });
+    } catch {}
+  }
+
+  async resetSession() {
+    await this.#closeSession();
+  }
+
+  request(method, params) {
+    if (this.closed) return Promise.reject(new Error(`${this.agent} connection closed`));
+    const id = this.nextId++;
+    this.lastActivity = Date.now();
+    this.write({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+    });
+  }
+
+  respond(id, result) {
+    this.write({ jsonrpc: "2.0", id, result });
+  }
+
+  write(msg) {
+    if (this.child?.stdin.destroyed) throw new Error("stdin closed");
+    this.child.stdin.write(JSON.stringify(msg) + "\n");
+  }
+
+  handleLine(line) {
+    if (!line.trim()) return;
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+
+    if (Object.hasOwn(msg, "id") && (Object.hasOwn(msg, "result") || Object.hasOwn(msg, "error"))) {
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      this.pending.delete(msg.id);
+      if (msg.error) p.reject(new Error(msg.error.message || `ACP error ${msg.error.code}`));
+      else p.resolve(msg.result);
+      return;
+    }
+
+    if (msg.method) this.handleClientRequest(msg);
+  }
+
+  handleClientRequest(msg) {
+    if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
+  }
+
+  startWatchdog() {
+    this.watchdog = setInterval(() => {
+      if (Date.now() - this.lastActivity > ACP_STUCK_MS) {
+        this.close();
+        for (const { reject } of this.pending.values()) {
+          reject(new Error(`${this.agent} heartbeat timeout: no activity for ${ACP_STUCK_MS}ms`));
+        }
+        this.pending.clear();
+      }
+    }, 10000);
+  }
+
+  clearWatchdog() {
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+  }
+
+  async restart() {
+    this.close();
+    this.closed = false;
+    this.pending.clear();
+    this.nextId = 1;
+    this.sessionId = null;
+    return this.start();
+  }
+
+  close() {
+    this.clearWatchdog();
+    if (this.sessionId) {
+      try { this.#closeSession(); } catch {}
+    }
+    if (this.child && !this.closed) {
+      try {
+        this.child.stdin.end();
+        setTimeout(() => {
+          try { process.kill(-this.child.pid, "SIGTERM"); } catch { this.child?.kill("SIGTERM"); }
+        }, 500).unref();
+      } catch {}
+    }
+    this.closed = true;
+  }
+}
+
+// --- Prompt builders ---
+
+function researchPrompt(intent, project) {
+  return `You are CodePatchbay Research Agent. Analyze this task intent for project "${project}":
+
+**Task**: ${intent}
+
+Provide:
+1. Feasibility assessment (technical complexity, estimated effort)
+2. Key risks and dependencies
+3. Suggested approach (high-level)
+4. Questions or ambiguities that need clarification
+
+Be concise and structured.`;
+}
+
+function planPrompt(intent, codexResearch, claudeResearch) {
+  return `You are CodePatchbay Planner. Based on the research below, create an implementation plan.
+
+**Task**: ${intent}
+
+**Codex Research**:
+${codexResearch || "N/A"}
+
+**Claude Research**:
+${claudeResearch || "N/A"}
+
+Create a structured plan with:
+1. Clear phases with deliverables
+2. File-by-file changes
+3. Risk mitigation strategies
+4. Acceptance criteria
+
+Output the plan as markdown.`;
+}
+
+function reviewPrompt(plan, reviewer) {
+  return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer.
+Review this plan critically. For each issue found, use severity tags [P0] [P1] [P2] [P3]:
+
+- [P0] Critical: Will cause system failure or data loss
+- [P1] High: Major functional defect or security vulnerability
+- [P2] Medium: Performance issue, poor design, or missing edge case
+- [P3] Low: Style, naming, or minor improvement
+
+If the plan has no P2+ issues, respond with: "REVIEW: PASS"
+
+**Plan to review**:
+${plan}`;
+}
+
+function followUpReviewPrompt(reviewer, previousIssues, revisedPlan) {
+  const issueSummary = previousIssues
+    .filter(i => i.severity >= 2)
+    .map(i => `[P${i.severity}] ${i.description}`)
+    .join("\n") || "None";
+
+  return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer (follow-up).
+This is a revised plan addressing previous review issues.
+
+**Previous issues**:
+${issueSummary}
+
+**Revised plan**:
+${revisedPlan}
+
+Review ONLY whether the previous issues were adequately addressed. For new issues use [P0]-[P3] tags. If all previous P2+ issues are resolved and no new P2+ issues exist, respond with: "REVIEW: PASS"`;
+}
+
+function revisePrompt(plan, codexIssues, claudeIssues) {
+  const allIssues = [...codexIssues, ...claudeIssues]
+    .filter(i => i.severity >= 2)
+    .map(i => `[P${i.severity}] ${i.description}`)
+    .join("\n");
+
+  return `You are CodePatchbay Plan Reviser. Revise this plan to address the issues below.
+
+**Issues found by reviewers**:
+${allIssues}
+
+**Original plan**:
+${plan}
+
+Provide the revised plan as markdown, addressing each issue.`;
+}
+
+// --- Main review cpb ---
+
+const MAX_RETRIES = parseInt(process.env.ACP_MAX_RETRIES || "2", 10);
+const MAX_REVIEW_ROUNDS = parseInt(process.env.CPB_REVIEW_MAX_ROUNDS || "5", 10);
+
+async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      return await acp.sendPrompt(prompt);
+    } catch (err) {
+      console.error(`[review] ${agent} attempt ${attempt}/${retries + 1} failed: ${err.message}`);
+      if (attempt <= retries) {
+        console.log(`[review] restarting ${agent} ACP connection`);
+        await acp.restart();
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+async function runReview(cpbRoot, sessionId) {
+  const session = await getSession(cpbRoot, sessionId);
+  if (!session) throw new Error(`session not found: ${sessionId}`);
+
+  let codex, claude;
+
+  try {
+    [codex, claude] = await Promise.all([
+      new PersistentAcp("codex").start(),
+      new PersistentAcp("claude").start(),
+    ]);
+
+    // Phase 1: Research. HTTP routes may already have moved the session into
+    // researching to enforce idempotency before spawning this runner.
+    const initialSession = await getSession(cpbRoot, sessionId);
+    if (initialSession?.status === "idle") {
+      await startSessionResearch(cpbRoot, sessionId, `dispatch-${sessionId}`);
+    }
+    console.log(`[review] ${sessionId} phase 1: researching`);
+
+    let currentBudget = await getSession(cpbRoot, sessionId);
+    assertReviewBudget(currentBudget);
+
+    const codexResearchPrompt = researchPrompt(session.intent, session.project);
+    const claudeResearchPrompt = researchPrompt(session.intent, session.project);
+    const [codexRes, claudeRes] = await Promise.allSettled([
+      sendWithRetry(codex, codexResearchPrompt, "codex"),
+      sendWithRetry(claude, claudeResearchPrompt, "claude"),
+    ]);
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: codexResearchPrompt.length });
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "claude", promptBytes: claudeResearchPrompt.length });
+
+    const codexResearch = codexRes.status === "fulfilled" ? codexRes.value : "";
+    const claudeResearch = claudeRes.status === "fulfilled" ? claudeRes.value : "";
+    if (!codexResearch && !claudeResearch) throw new Error("both research agents failed");
+    await updateSession(cpbRoot, sessionId, {
+      research: { codex: codexResearch, claude: claudeResearch },
+    });
+
+    // Phase 2: Plan
+    await updateSession(cpbRoot, sessionId, { status: "planning" });
+    console.log(`[review] ${sessionId} phase 2: planning`);
+    currentBudget = await getSession(cpbRoot, sessionId);
+    assertReviewBudget(currentBudget);
+    const planPromptText = planPrompt(session.intent, codexResearch, claudeResearch);
+    const plan = await sendWithRetry(codex, planPromptText, "codex");
+    await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: planPromptText.length });
+    await updateSession(cpbRoot, sessionId, { plan });
+
+    // Phase 3: Review Loop
+    let currentPlan = plan;
+    let prevCodexIssues = [];
+    let prevClaudeIssues = [];
+    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
+      await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
+      console.log(`[review] ${sessionId} round ${round}: reviewing`);
+
+      // Budget check before review round
+      currentBudget = await getSession(cpbRoot, sessionId);
+      try {
+        assertReviewBudget(currentBudget);
+      } catch (budgetErr) {
+        await updateSession(cpbRoot, sessionId, { status: "expired", detail: budgetErr.message });
+        console.log(`[review] ${sessionId} expired: ${budgetErr.message}`);
+        return;
+      }
+
+      // Reset sessions between rounds for independent reviews
+      await codex.resetSession().catch(() => null);
+      await claude.resetSession().catch(() => null);
+
+      const codexPrompt = round === 1
+        ? reviewPrompt(currentPlan, "codex")
+        : followUpReviewPrompt("codex", prevCodexIssues, currentPlan);
+      const claudePrompt = round === 1
+        ? reviewPrompt(currentPlan, "claude")
+        : followUpReviewPrompt("claude", prevClaudeIssues, currentPlan);
+
+      const results = await Promise.allSettled([
+        sendWithRetry(codex, codexPrompt, "codex"),
+        sendWithRetry(claude, claudePrompt, "claude"),
+      ]);
+      await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: codexPrompt.length });
+      await noteReviewAcpCall(cpbRoot, sessionId, { agent: "claude", promptBytes: claudePrompt.length });
+
+      const codexReview = results[0].status === "fulfilled" ? results[0].value : "";
+      const claudeReview = results[1].status === "fulfilled" ? results[1].value : "";
+      if (results[0].status === "rejected") console.error(`[review] codex review failed: ${results[0].reason?.message}`);
+      if (results[1].status === "rejected") console.error(`[review] claude review failed: ${results[1].reason?.message}`);
+      if (!codexReview && !claudeReview) throw new Error("both reviewers failed");
+
+      const codexIssues = parseIssues(codexReview);
+      const claudeIssues = parseIssues(claudeReview);
+      prevCodexIssues = codexIssues;
+      prevClaudeIssues = claudeIssues;
+
+      const reviews = (await getSession(cpbRoot, sessionId)).reviews;
+      await updateSession(cpbRoot, sessionId, {
+        reviews: [...reviews, { round, codex: codexReview, claude: claudeReview, codexIssues, claudeIssues }],
+      });
+
+      const hasP2 = [...codexIssues, ...claudeIssues].some((i) => i.severity >= 2);
+      console.log(`[review] ${sessionId} round ${round}: codex=${codexIssues.length} claude=${claudeIssues.length} hasP2=${hasP2}`);
+      if (!hasP2) {
+        await updateSession(cpbRoot, sessionId, { status: "user_review" });
+        console.log(`[review] ${sessionId} passed at round ${round}`);
+        return;
+      }
+
+      if (round < MAX_REVIEW_ROUNDS) {
+        await updateSession(cpbRoot, sessionId, { status: "revising" });
+        console.log(`[review] ${sessionId} revising for round ${round + 1}`);
+
+        // Budget check before revise
+        currentBudget = await getSession(cpbRoot, sessionId);
+        try {
+          assertReviewBudget(currentBudget);
+        } catch (budgetErr) {
+          await updateSession(cpbRoot, sessionId, { status: "expired", detail: budgetErr.message });
+          console.log(`[review] ${sessionId} expired: ${budgetErr.message}`);
+          return;
+        }
+
+        const revisePromptText = revisePrompt(currentPlan, codexIssues, claudeIssues);
+        const revised = await sendWithRetry(codex, revisePromptText, "codex");
+        await noteReviewAcpCall(cpbRoot, sessionId, { agent: "codex", promptBytes: revisePromptText.length });
+        currentPlan = revised;
+        await updateSession(cpbRoot, sessionId, { plan: revised });
+      }
+    }
+
+    await updateSession(cpbRoot, sessionId, { status: "expired" });
+    console.log(`[review] ${sessionId} expired after ${MAX_REVIEW_ROUNDS} rounds`);
+  } catch (err) {
+    console.error(`[review] ${sessionId} error: ${err.message}`);
+    try { await updateSession(cpbRoot, sessionId, { status: "expired" }); } catch {}
+  } finally {
+    codex?.close();
+    claude?.close();
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const cpbRoot = process.argv[2];
+  const sessionId = process.argv[3];
+  if (!cpbRoot || !sessionId) {
+    console.error("Usage: review-dispatch-runner.js <cpbRoot> <sessionId>");
+    process.exit(1);
+  }
+
+  runReview(cpbRoot, sessionId);
+}

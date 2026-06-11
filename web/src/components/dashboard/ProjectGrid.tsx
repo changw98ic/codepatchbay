@@ -5,6 +5,7 @@ import { GlassPanel } from '@/components/glass/GlassPanel';
 import { Input } from '@/components/shared/Input';
 import { Badge } from '@/components/shared/Badge';
 import { PipelineStatus } from '@/components/project/PipelineStatus';
+import type { PipelineState, WorkerStatus } from '@/types/api';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight, radius, transition } from '@/design-system/tokens';
@@ -98,9 +99,11 @@ function formatAge(ageMs: number | undefined | null): string | null {
 interface ProjectData {
   id?: string;
   name: string;
-  pipelineState?: { status: string; phase?: string; error?: string; nodes?: Array<{ id: string; phase?: string; status?: string; durationMs?: number; attempt?: number; error?: string; reason?: string }>; phases?: string[]; retryCount?: number };
+  path?: string;
+  sourcePath?: string;
+  pipelineState?: PipelineState;
   workerDerivedStatus?: string;
-  worker?: { status: string };
+  worker?: WorkerStatus | { status: string };
   inbox?: number;
   outputs?: number;
   _pollution?: { visibility: string };

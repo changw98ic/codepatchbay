@@ -15,7 +15,7 @@ Gold patches and test patches are not passed to CPB during inference.
 Start with a smoke run:
 
 ```bash
-node scripts/swebench-lite/run.mjs \
+node scripts/swebench-lite/run.js \
   --run-dir /tmp/cpb-swe-lite-runs/smoke \
   --instance-ids psf__requests-1963 \
   --agent codex \
@@ -25,7 +25,7 @@ node scripts/swebench-lite/run.mjs \
 For the full Lite split, omit `--instance-ids` and `--limit`:
 
 ```bash
-node scripts/swebench-lite/run.mjs \
+node scripts/swebench-lite/run.js \
   --run-dir /data/cpb-swe-lite-runs/20260606-cpb-codex \
   --run-id 20260606-cpb-codex \
   --agent codex \
@@ -42,7 +42,7 @@ SWE-bench instance id, CPB project id, queue id, job id, and repo checkout path.
 After CPB workers finish, collect review bundles and create predictions:
 
 ```bash
-node scripts/swebench-lite/collect.mjs \
+node scripts/swebench-lite/collect.js \
   --run-dir /data/cpb-swe-lite-runs/20260606-cpb-codex \
   --model-name cpb-codex-20260606 \
   --wait
@@ -93,7 +93,7 @@ resolved_instances / 300
 Fork and clone `SWE-bench/experiments`, then package the run:
 
 ```bash
-node scripts/swebench-lite/pack.mjs \
+node scripts/swebench-lite/pack.js \
   --run-dir /data/cpb-swe-lite-runs/20260606-cpb-codex \
   --experiments-dir /data/SWE-bench-experiments \
   --submission-name 20260606_cpb_codex \

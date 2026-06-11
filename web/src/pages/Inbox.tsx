@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { GlassPanel } from '@/components/glass/GlassPanel';
 import { Button } from '@/components/shared/Button';
 import { Badge } from '@/components/shared/Badge';
@@ -10,7 +10,7 @@ import { Input } from '@/components/shared/Input';
 import { Skeleton } from '@/components/shared/Skeleton';
 import { ArtifactPanel } from '@/components/shared/ArtifactPanel';
 import { useInboxStore, useWebSocketStore } from '@/app/store';
-import type { InboxRequestRow, InboxRequestDetail, RetryChainEntry } from '@/types/api';
+import type { InboxRequestDetail, RetryChainEntry } from '@/types/api';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -222,11 +222,15 @@ function timeAgo(dateStr: string | null): string {
 function formatEvidence(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
-  return JSON.stringify(value, null, 2);
+  return JSON.stringify(value, null, 2) ?? '';
 }
 
 function hasJobArtifactDetail(detail: InboxRequestDetail): boolean {
-  return detail.type === 'pipeline' && /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(detail.id || '');
+  return (
+    detail.type === 'pipeline' &&
+    typeof detail.project === 'string' &&
+    /^job-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(detail.id || '')
+  );
 }
 
 const STATUS_OPTIONS = [
@@ -392,7 +396,7 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
         </div>
       )}
 
-      {hasJobArtifactDetail(detail) && (
+      {hasJobArtifactDetail(detail) && detail.project && (
         <div className={detailSection}>
           <div className={detailLabel}>{t('inbox.detail.artifacts')}</div>
           <ArtifactPanel project={detail.project} jobId={detail.id} />
@@ -492,7 +496,7 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
               <pre className={codeBlock}>{detail.reviewBundle.evidence.deliverable.content}</pre>
             </details>
           )}
-          {detail.reviewBundle.evidence?.verdict && (
+          {detail.reviewBundle.evidence?.verdict != null && (
             <details style={{ marginBottom: space[2] }}>
               <summary style={{ cursor: 'pointer', fontSize: fontSize.xs, color: theme.textDim }}>{t('inbox.detail.verdict')}</summary>
               <pre className={codeBlock}>{formatEvidence(detail.reviewBundle.evidence.verdict)}</pre>
@@ -611,8 +615,6 @@ function RequestDetail({ detail }: { detail: InboxRequestDetail | null; loading:
 
 export default function Inbox() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const [searchInput, setSearchInput] = useState('');
 
   const {

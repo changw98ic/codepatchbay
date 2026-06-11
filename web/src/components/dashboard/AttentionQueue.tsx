@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '@/components/glass/GlassPanel';
 import { Button } from '@/components/shared/Button';
+import { Badge } from '@/components/shared/Badge';
+import type { AttentionItem, AttentionSeverity } from '@/types/api';
 import { style, keyframes } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -22,6 +24,7 @@ const headerStyle = style({
   fontSize: fontSize.lg,
   fontWeight: fontWeight.semibold,
   color: theme.text,
+  marginTop: 0,
   marginBottom: space[3],
 });
 
@@ -53,34 +56,68 @@ const emptyStyle = style({
 const rowStyle = style({
   padding: space[3],
   borderBottom: `1px solid ${theme.border}`,
-  display: 'flex',
-  alignItems: 'center',
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr) auto',
+  alignItems: 'start',
   gap: space[4],
   selectors: {
     '&:last-child': { borderBottom: 'none' },
   },
 });
 
+const itemMain = style({
+  minWidth: 0,
+});
+
+const itemMeta = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: space[2],
+  flexWrap: 'wrap',
+  marginBottom: space[1],
+});
+
 const projectName = style({
   fontWeight: fontWeight.semibold,
-  fontSize: fontSize.base,
+  fontSize: fontSize.sm,
   color: theme.text,
-  minWidth: '120px',
 });
 
 const reasonStyle = style({
-  flex: 1,
   fontSize: fontSize.sm,
   color: theme.textDim,
+  lineHeight: 1.5,
+  marginBottom: space[1],
 });
 
-interface AttentionItem {
-  id: string;
-  project: string;
-  reason: string;
-  impact: string;
-  action: string;
-  link: string;
+const impactStyle = style({
+  fontSize: fontSize.xs,
+  color: theme.textMuted,
+  lineHeight: 1.5,
+});
+
+const ageStyle = style({
+  fontSize: fontSize.xs,
+  color: theme.textMuted,
+});
+
+function severityVariant(severity: AttentionSeverity): 'error' | 'warning' | 'muted' {
+  if (severity === 'critical') return 'error';
+  if (severity === 'warning') return 'warning';
+  return 'muted';
+}
+
+function formatAge(item: AttentionItem): string {
+  const ageMs = typeof item.ageMs === 'number'
+    ? item.ageMs
+    : item.updatedAt
+      ? Date.now() - new Date(item.updatedAt).getTime()
+      : null;
+  if (ageMs === null || Number.isNaN(ageMs) || ageMs < 0) return 'age unknown';
+  if (ageMs < 60_000) return 'just now';
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)}m old`;
+  if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3_600_000)}h old`;
+  return `${Math.floor(ageMs / 86_400_000)}d old`;
 }
 
 interface AttentionQueueProps {
@@ -96,10 +133,10 @@ export function AttentionQueue({ items, onNavigate }: AttentionQueueProps) {
   if (items.length === 0) {
     return (
       <GlassPanel depth="medium" padding="md" className={sectionStyle}>
-        <div className={headerStyle}>
+        <h3 className={headerStyle}>
           <span className={pulseOk} />
           {t('dashboard.attentionQueue')}
-        </div>
+        </h3>
         <p className={emptyStyle}>{t('dashboard.noAttention')}</p>
       </GlassPanel>
     );
@@ -107,16 +144,25 @@ export function AttentionQueue({ items, onNavigate }: AttentionQueueProps) {
 
   return (
     <GlassPanel depth="medium" padding="md" className={sectionStyle}>
-      <div className={headerStyle}>
+      <h3 className={headerStyle}>
         <span className={pulseError} />
         {t('dashboard.attentionQueue')}
-      </div>
+      </h3>
       {displayed.map((item) => (
         <div key={item.id} className={rowStyle}>
-          <span className={projectName}>{item.project}</span>
-          <span className={reasonStyle}>{item.reason}</span>
-          <Button variant="ghost" size="sm" onClick={() => onNavigate(item.link)}>
-            {item.action}
+          <div className={itemMain}>
+            <div className={itemMeta}>
+              <Badge variant={severityVariant(item.severity)}>{item.severity}</Badge>
+              <span className={projectName}>
+                {item.project ? `${item.project} - ${item.title}` : item.title}
+              </span>
+              <span className={ageStyle}>{formatAge(item)}</span>
+            </div>
+            <div className={reasonStyle}>{item.reason}</div>
+            <div className={impactStyle}>{item.impact}</div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => onNavigate(item.nextHumanAction.href)}>
+            {item.nextHumanAction.label}
           </Button>
         </div>
       ))}

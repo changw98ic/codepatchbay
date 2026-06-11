@@ -13,6 +13,7 @@ interface InboxFilters {
   type?: string;
   sort?: 'newest' | 'oldest';
   search?: string;
+  attentionOnly?: boolean;
 }
 
 interface InboxStore {
@@ -27,7 +28,7 @@ interface InboxStore {
   loading: boolean;
   detailLoading: boolean;
 
-  setFilter: (key: keyof InboxFilters, value: string | undefined) => void;
+  setFilter: <K extends keyof InboxFilters>(key: K, value: InboxFilters[K] | undefined) => void;
   clearFilters: () => void;
   fetchInbox: () => Promise<void>;
   fetchProjects: () => Promise<void>;
@@ -43,6 +44,7 @@ function buildQueryString(filters: InboxFilters): string {
   if (filters.project) params.set('project', filters.project);
   if (filters.type) params.set('type', filters.type);
   if (filters.sort) params.set('sort', filters.sort);
+  if (filters.attentionOnly) params.set('attentionOnly', '1');
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }

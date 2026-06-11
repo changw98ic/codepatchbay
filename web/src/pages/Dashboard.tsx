@@ -12,6 +12,7 @@ import { AttentionQueue } from '@/components/dashboard/AttentionQueue';
 import { ProjectGrid } from '@/components/dashboard/ProjectGrid';
 import { HubHealthPanel } from '@/components/dashboard/HubHealthPanel';
 import { useProjectsStore, useHubStore, useWebSocketStore, useAgentsStore } from '@/app/store';
+import type { AttentionItem } from '@/types/api';
 import { style } from '@vanilla-extract/css';
 import { theme } from '@/styles/theme.css';
 import { space, fontSize, fontWeight } from '@/design-system/tokens';
@@ -67,9 +68,48 @@ const mutedStyle = style({
 
 const ATTENTION_STATUSES = new Set(['failed', 'blocked', 'cancelled']);
 
-function projectAttentionStatus(p: { pipelineState?: { status: string } }): string | null {
+function projectAttentionStatus(p: { pipelineState?: { status?: string | null } }): string | null {
   const status = p.pipelineState?.status;
   return status && ATTENTION_STATUSES.has(status) ? status : null;
+}
+
+function isAttentionItem(value: unknown): value is AttentionItem {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<AttentionItem>;
+  return (
+    typeof item.id === 'string' &&
+    (item.severity === 'critical' || item.severity === 'warning' || item.severity === 'info') &&
+    typeof item.kind === 'string' &&
+    typeof item.title === 'string' &&
+    typeof item.reason === 'string' &&
+    typeof item.impact === 'string' &&
+    !!item.nextHumanAction &&
+    typeof item.nextHumanAction.label === 'string' &&
+    typeof item.nextHumanAction.href === 'string'
+  );
+}
+
+function extractAttentionItems(data: unknown): AttentionItem[] {
+  if (!data || typeof data !== 'object') return [];
+  const response = data as {
+    items?: unknown[];
+    attention?: unknown[];
+    attentionItems?: unknown[];
+  };
+  const canonicalItems = response.attention ?? response.attentionItems;
+  if (Array.isArray(canonicalItems)) {
+    return canonicalItems.filter(isAttentionItem);
+  }
+  if (!Array.isArray(response.items)) return [];
+  return response.items
+    .map((item) => {
+      if (isAttentionItem(item)) return item;
+      if (item && typeof item === 'object' && 'attention' in item) {
+        return (item as { attention?: unknown }).attention;
+      }
+      return null;
+    })
+    .filter(isAttentionItem);
 }
 
 export default function Dashboard() {
@@ -84,21 +124,38 @@ export default function Dashboard() {
   const hubStore = useHubStore();
   const { subscribe } = useWebSocketStore();
   const { jobs, fetchJobs } = useAgentsStore();
+  const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
+
+  const fetchAttentionItems = useCallback(async () => {
+    try {
+      const res = await fetch('/api/inbox?attentionOnly=1&limit=5');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAttentionItems(extractAttentionItems(data));
+    } catch {
+      setAttentionItems([]);
+    }
+  }, []);
 
   useEffect(() => {
     fetchProjects(diagnostics);
     hubStore.fetchHubData(diagnostics);
     fetchJobs();
-  }, [diagnostics]);
+    fetchAttentionItems();
+  }, [diagnostics, fetchAttentionItems]);
 
   useEffect(() => {
     const unsub = subscribe('pipeline:update', () => {
       fetchProjects(diagnostics);
       hubStore.fetchHubData(diagnostics);
+      fetchAttentionItems();
     });
-    const unsubFile = subscribe('file:created', () => fetchProjects(diagnostics));
+    const unsubFile = subscribe('file:created', () => {
+      fetchProjects(diagnostics);
+      fetchAttentionItems();
+    });
     return () => { unsub(); unsubFile(); };
-  }, [subscribe, diagnostics]);
+  }, [subscribe, diagnostics, fetchAttentionItems]);
 
   const setActiveTab = useCallback((tab: string) => {
     setSearchParams((prev) => {
@@ -152,35 +209,15 @@ export default function Dashboard() {
   const blockedProjectsCount = allProjects.filter(projectAttentionStatus).length;
   const completedRunsCount = dispatchObs?.dispatchSummary?.completed ?? 0;
 
-  const attentionItems = useMemo(() => {
-    const items: Array<{ id: string; project: string; reason: string; impact: string; action: string; link: string }> = [];
-    allProjects.forEach(p => {
-      const status = projectAttentionStatus(p);
-      if (status) {
-        items.push({
-          id: `proj-${p.id || p.name}`,
-          project: p.name || p.id || 'unknown',
-          reason: p.pipelineState?.error || `Pipeline status: ${status}`,
-          impact: 'Downstream deployments on hold.',
-          action: status === 'failed' ? 'Retry Pipeline' : 'Review Project',
-          link: `/project/${p.name || p.id}?tab=overview`,
-        });
-      }
-    });
-    jobs.forEach(job => {
-      if (job.status === 'failed') {
-        items.push({
-          id: `job-${job.jobId}`,
-          project: job.project,
-          reason: `Durable job failed in phase: ${job.phase}`,
-          impact: 'Workspace lock active. Task incomplete.',
-          action: 'View Job Logs',
-          link: `/project/${job.project}?tab=overview`,
-        });
-      }
-    });
-    return items;
-  }, [allProjects, jobs]);
+  const hasPriorityAttention = attentionItems.some((item) => item.severity === 'critical' || item.severity === 'warning');
+
+  const handleAttentionNavigate = useCallback((href: string) => {
+    if (/^https?:\/\//i.test(href)) {
+      window.location.assign(href);
+      return;
+    }
+    navigate(href);
+  }, [navigate]);
 
   const recentDispatches = useMemo(() =>
     hubDispatches
@@ -225,13 +262,18 @@ export default function Dashboard() {
 
       {activeTab === 'overview' && (
         <div>
+          {hasPriorityAttention && (
+            <AttentionQueue items={attentionItems} onNavigate={handleAttentionNavigate} />
+          )}
           <TodayBrief
             activeTasks={activeTasksCount}
             failedRuns={failedRunsCount}
             blockedProjects={blockedProjectsCount}
             completedRuns={completedRunsCount}
           />
-          <AttentionQueue items={attentionItems} onNavigate={(link) => navigate(link)} />
+          {!hasPriorityAttention && (
+            <AttentionQueue items={attentionItems} onNavigate={handleAttentionNavigate} />
+          )}
           {hasNoData ? (
             <EmptyState
               icon="📋"

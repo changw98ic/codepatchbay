@@ -17,7 +17,7 @@ JOB_ID="${6:-}"
 JOB_ID_ARG=""
 [ -n "$JOB_ID" ] && JOB_ID_ARG="--job-id $JOB_ID"
 
-exec node "$CPB_EXECUTOR_ROOT/bridges/run-pipeline.mjs" \
+exec node "$CPB_EXECUTOR_ROOT/bridges/run-pipeline.js" \
   --project "$PROJECT" \
   --task "$TASK" \
   --max-retries "$MAX_RETRIES" \

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node ../dist/server/index.js",
+    "dev": "npm --prefix .. run build:node && node --watch ../dist/server/index.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

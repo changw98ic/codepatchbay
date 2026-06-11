@@ -13,30 +13,22 @@
   "type": "module",
   "bin": {
     "cpb": "cpb",
-    "cpb-browser-agent-acp": "server/services/browser-agent-acp.mjs",
-    "cpb-test-acp-agent": "server/services/test-acp-agent.mjs"
+    "cpb-browser-agent-acp": "dist/server/services/browser-agent-acp.js",
+    "cpb-test-acp-agent": "dist/server/services/test-acp-agent.js"
   },
   "files": [
     "cpb",
-    "cli/",
-    "bridges/",
-    "core/",
-    "shared/",
-    "runtime/",
-    "server/index.js",
-    "server/orchestrator/",
-    "server/routes/",
-    "server/services/",
-    "server/notification/",
+    "dist/",
     "profiles/",
     "skills/",
     "templates/",
     "wiki/schema.md",
-    "wiki/system/",
-    "web/dist/",
-    "scripts/",
     "README.md",
     "docs/",
+    "!dist/tests/",
+    "!dist/server/.omc/",
+    "!dist/wiki/system/",
+    "!wiki/system/",
     "!core/**/*.tmp",
     "!runtime/cpb-runtime/",
     "!*.tgz"
@@ -49,14 +41,20 @@
     "web"
   ],
   "scripts": {
-    "prepack": "npm run build:pack --workspace codepatchbay-web",
-    "pretest:node": "npm run build:pack --workspace codepatchbay-web",
-    "test": "npm run test:node",
-    "test:node": "node scripts/run-node-tests.mjs",
-    "test:unit": "node scripts/run-node-tests.mjs --unit",
-    "test:integration": "node scripts/run-node-tests.mjs --integration",
+    "prepack": "npm run build",
+    "pretest:node": "npm run build:pack --workspace codepatchbay-web && npm run build:node && npm run build:tests",
+    "test": "npm run test:node && npm run test:shell",
+    "test:node": "node dist/scripts/run-node-tests.js",
+    "test:shell": "bash tests/cpb-bridges.test.sh && bash tests/cpb-jobs.test.sh",
+    "test:unit": "node dist/scripts/run-node-tests.js --unit",
+    "test:integration": "node dist/scripts/run-node-tests.js --integration",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "typecheck:web": "npm run typecheck --workspace codepatchbay-web",
+    "build:node": "rm -rf dist && tsc -p tsconfig.node.json && find cli core server runtime bridges shared scripts \\( -path '*/.*' -o -path '*/node_modules/*' \\) -prune -o -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.html' \\) -exec sh -c 'for f do mkdir -p \"dist/$(dirname \"$f\")\"; cp \"$f\" \"dist/$f\"; done' sh {} + && for d in profiles skills templates; do if [ -d \"$d\" ]; then cp -R \"$d\" \"dist/$d\"; fi; done && if [ -f wiki/schema.md ]; then mkdir -p dist/wiki && cp wiki/schema.md dist/wiki/schema.md; fi && if [ -d wiki/projects/_template ]; then mkdir -p dist/wiki/projects && cp -R wiki/projects/_template dist/wiki/projects/_template; fi && if [ -d web/dist ]; then mkdir -p dist/web && cp -R web/dist dist/web/dist; fi && node dist/scripts/write-dist-metadata.js",
+    "build:tests": "rm -rf dist-tests && tsc -p tsconfig.tests.json && find tests -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' \\) -exec sh -c 'for f do mkdir -p \"dist-tests/$(dirname \"$f\")\"; cp \"$f\" \"dist-tests/$f\"; done' sh {} + && rm -rf dist/tests && cp -R dist-tests/tests dist/tests",
+    "build": "npm run build:web && npm run build:node",
     "build:web": "npm run build --workspace codepatchbay-web",
-    "verify:p0p1": "node scripts/verify-p0-p1.mjs"
+    "verify:p0p1": "npm run build && npm run build:tests && node dist/scripts/verify-p0-p1.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
@@ -68,5 +66,9 @@
     "glob": "^11.0.0",
     "playwright": "^1.50.0",
     "supergateway": "^3.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.3",
+    "typescript": "6.0.3"
   }
 }

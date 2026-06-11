@@ -10,7 +10,7 @@ echo ""
 
 # 1. Stop legacy workers
 echo "[1/5] Stopping legacy workers..."
-node "${CPB_ROOT:-$(dirname "$0")/..}/scripts/stop-legacy-workers.mjs" 2>/dev/null || true
+node "${CPB_ROOT:-$(dirname "$0")/..}/scripts/stop-legacy-workers.js" 2>/dev/null || true
 
 # 2. Stop hub if running
 echo "[2/5] Stopping hub..."

@@ -97,6 +97,36 @@ export interface HubDashboard {
   taskLedger: TaskLedger | null;
 }
 
+export type AttentionSeverity = 'critical' | 'warning' | 'info';
+
+export type AttentionKind =
+  | 'workflow_failed'
+  | 'dag_node_failed'
+  | 'waiting_approval'
+  | 'codegraph_unavailable'
+  | 'agent_rate_limited'
+  | 'jobs_index_divergent'
+  | 'stale_runtime'
+  | 'review_ready';
+
+export interface AttentionItem {
+  id: string;
+  severity: AttentionSeverity;
+  kind: AttentionKind;
+  project: string | null;
+  title: string;
+  reason: string;
+  impact: string;
+  ageMs: number | null;
+  updatedAt: string | null;
+  nextHumanAction: {
+    label: string;
+    href: string;
+    kind: string;
+  };
+  evidence: Array<{ type: string; id: string; path?: string }>;
+}
+
 export interface HubProject {
   id: string;
   name: string;
@@ -273,9 +303,9 @@ export interface OutputFile {
 
 // --- Inbox / Audit Workbench types ---
 
-export type InboxRequestType = 'pipeline' | 'queued' | 'review';
+export type InboxRequestType = 'pipeline' | 'queued' | 'review' | 'attention';
 export type InboxPriority = 'P0' | 'P1' | 'P2';
-export type InboxStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'passed' | 'pr-opened' | 'cancelled';
+export type InboxStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'passed' | 'pr-opened' | 'cancelled' | 'attention';
 
 export interface RequestSource {
   type: string;
@@ -288,12 +318,13 @@ export interface RequestSource {
 export interface NextHumanAction {
   kind: string;
   label: string;
+  href?: string;
 }
 
 export interface InboxRequestRow {
   id: string;
   type: InboxRequestType;
-  project: string;
+  project: string | null;
   task: string;
   status: InboxStatus | string;
   rawStatus: string | null;
@@ -303,6 +334,7 @@ export interface InboxRequestRow {
   retryCount: number;
   source: RequestSource;
   nextHumanAction: NextHumanAction | null;
+  attention?: AttentionItem | null;
   pr: { url?: string; number?: number } | null;
   failureCode: string | null;
   failurePhase: string | null;
@@ -319,6 +351,8 @@ export interface InboxRequestRow {
 
 export interface InboxResponse {
   items: InboxRequestRow[];
+  attention?: AttentionItem[];
+  attentionItems?: AttentionItem[];
   projects: string[];
   statusCounts: Record<string, number>;
   total: number;

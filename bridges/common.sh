@@ -23,7 +23,7 @@ If data is missing, return a diagnostic verdict instead of crashing.
 
 ## Instructions
 1. Inspect the job event log and current project state.
-2. MANDATORY: Run \`node --check\` on every added or modified .js/.mjs file in the diff.
+2. MANDATORY: Run \`node --check\` on every relevant compiled .js file.
 3. MANDATORY: If a package.json with a "test" script exists, run \`npm test\`.
 4. Write the verdict to: ${verdict_file}
 PROMPT
