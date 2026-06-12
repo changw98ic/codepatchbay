@@ -132,7 +132,7 @@ const COMMANDS = {
   github: "github.js",
   "webhook-serve": "webhook-serve.js",
   doctor: "doctor.js",
-  "health-check": "health-check.js",
+  "health-check": "doctor.js",
   gc: "reconcile.js",
   recover: "reconcile.js",
   wiki: "wiki.js",
@@ -143,16 +143,16 @@ const COMMANDS = {
   "migrate-runtime-root": "migrate-runtime-root.js",
   release: "release-select.js",
   config: "config.js",
-  provider: "provider.js",
-  quickstart: "quickstart.js",
-  "model-profile": "model-profile.js",
+  provider: "config.js",
+  quickstart: "setup.js",
+  "model-profile": "profile.js",
   "install-bin": "install-bin.js",
   install: "install-bin.js",
   audit: "audit.js",
-  "review-bundle": "review-bundle.js",
+  "review-bundle": "audit.js",
   "backlog-hygiene": "backlog-hygiene.js",
   codegraph: "codegraph.js",
-  "hub-orch": "hub-orch.js",
+  "hub-orch": "hub.js",
   logs: "logs.js",
 };
 
@@ -183,6 +183,12 @@ async function main() {
 
   if (cmd === "--version") {
     cmd = "version";
+  }
+
+  // quickstart is an alias for setup --quickstart
+  if (cmd === "quickstart") {
+    cmd = "setup";
+    cmdArgs.unshift("--quickstart");
   }
 
   const mod = cmd in COMMANDS ? await import(path.join(CPB_EXECUTOR_ROOT, "cli", "commands", COMMANDS[cmd])) : null;

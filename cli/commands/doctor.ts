@@ -1,11 +1,30 @@
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+type CommandResult = { ok: boolean; output: string };
+
+function runCmd(cmd: string, args: string[], cwd = process.cwd()): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd, stdio: "pipe" });
+    let output = "";
+    child.stdout.on("data", (c) => (output += c));
+    child.stderr.on("data", (c) => (output += c));
+    child.on("error", (err) => resolve({ ok: false, output: err.message }));
+    child.on("exit", (code) => resolve({ ok: code === 0, output }));
+  });
+}
+
 export async function run(args, { cpbRoot, executorRoot }) {
+  const smoke = args.includes("--smoke") || args.includes("--fake-acp-smoke");
+  const json = args.includes("--json");
+
   const { runReadinessChecks, formatReadinessHuman, formatReadinessJson } = await import("../../server/services/readiness-checks.js");
   const result = await runReadinessChecks({ cpbRoot });
 
   // Hub-specific consistency checks
   const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
-  const results = { errors: [], warnings: [] };
+  const results: Record<string, any> = { errors: [], warnings: [] };
 
   await Promise.all([
     checkQueueAssignments(hubRoot, results),
@@ -17,9 +36,23 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   if (results.errors.length > 0) result.summary.success = false;
 
-  if (args.includes("--json")) {
-    const json = formatReadinessJson(result);
-    const parsed = JSON.parse(json);
+  // Smoke test (migrated from health-check.ts)
+  if (smoke) {
+    try {
+      const { runFakeAcpSmoke } = await import("../../server/services/infra.js");
+      const execRoot = path.resolve(executorRoot || process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+      const smokeResult = await runFakeAcpSmoke({ executorRoot: execRoot });
+      results.smokeTest = { ok: smokeResult.ok, inbox: smokeResult.artifacts.inbox.length, outputs: smokeResult.artifacts.outputs.length };
+      if (!smokeResult.ok) result.summary.success = false;
+    } catch (err: any) {
+      results.errors.push(`Smoke test failed: ${err.message}`);
+      result.summary.success = false;
+    }
+  }
+
+  if (json) {
+    const jsonStr = formatReadinessJson(result);
+    const parsed = JSON.parse(jsonStr);
     parsed.consistency = results;
     console.log(JSON.stringify(parsed, null, 2));
   } else {
@@ -28,6 +61,10 @@ export async function run(args, { cpbRoot, executorRoot }) {
       console.log("\n--- Consistency Checks ---");
       for (const e of results.errors) console.log(`  ERROR: ${e}`);
       for (const w of results.warnings) console.log(`  WARN:  ${w}`);
+    }
+    if (results.smokeTest) {
+      console.log(`\n--- Smoke Test ---`);
+      console.log(`  ${results.smokeTest.ok ? "PASS" : "FAIL"}: ${results.smokeTest.inbox} inbox, ${results.smokeTest.outputs} outputs`);
     }
   }
 

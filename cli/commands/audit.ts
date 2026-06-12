@@ -1,24 +1,29 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildJobAuditExport, writeJobAuditExport } from "../../server/services/readiness-checks.js";
+import { buildReviewBundle, writeReviewBundle } from "../../server/services/review/review-session.js";
 import { findJobForCli } from "./artifacts.js";
 
 function usage() {
   return [
     "Usage: cpb audit <project> <job-id> [--json] [--out <dir>]",
+    "       cpb review-bundle <project> <job-id> [--json] [--out <dir>]",
     "",
-    "Export a deterministic, redacted audit package for a job.",
+    "Export a deterministic audit package for a job.",
+    "With --review, generate a local review bundle instead.",
   ].join("\n");
 }
 
 function parseArgs(argv) {
   const positional = [];
-  const options = { json: false, out: null, help: false };
+  const options = { json: false, out: null, help: false, review: false };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--json") {
       options.json = true;
+    } else if (arg === "--review") {
+      options.review = true;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else if (arg === "--out") {
@@ -57,18 +62,28 @@ export async function run(args, context: Record<string, any> = {}) {
     throw new Error(`job ${options.jobId} belongs to project ${found.job.project}, not ${options.project}`);
   }
 
-  const pkg = await buildJobAuditExport(cpbRoot, options.project, options.jobId, found ? {
-    dataRoot: found.dataRoot,
-    wikiDir: found.wikiDir,
-  } : {});
+  const ctx = found ? { dataRoot: found.dataRoot, wikiDir: found.wikiDir } : {};
 
-  if (options.out) {
-    const filePath = await writeJobAuditExport(options.out, pkg);
-    if (!options.json) console.log(`Audit export written to ${filePath}`);
-  }
-
-  if (options.json || !options.out) {
-    console.log(JSON.stringify(pkg, null, 2));
+  if (options.review) {
+    // review-bundle mode
+    const bundle = await buildReviewBundle(cpbRoot, options.project, options.jobId, ctx);
+    if (options.out) {
+      const filePath = await writeReviewBundle(options.out, bundle);
+      if (!options.json) console.log(`Review bundle written to ${filePath}`);
+    }
+    if (options.json || !options.out) {
+      console.log(JSON.stringify(bundle, null, 2));
+    }
+  } else {
+    // audit mode (default)
+    const pkg = await buildJobAuditExport(cpbRoot, options.project, options.jobId, ctx);
+    if (options.out) {
+      const filePath = await writeJobAuditExport(options.out, pkg);
+      if (!options.json) console.log(`Audit export written to ${filePath}`);
+    }
+    if (options.json || !options.out) {
+      console.log(JSON.stringify(pkg, null, 2));
+    }
   }
 
   return 0;
