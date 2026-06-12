@@ -57,6 +57,7 @@ async function usage() {
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
+  console.log(`  ${CYAN}stream${NC} [--port PORT] [--host HOST]       Start streaming server`);
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>"     Redirect a job`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
@@ -99,6 +100,7 @@ const COMMANDS = {
   agents: "agents.js",
   github: "github.js",
   doctor: "doctor.js",
+  stream: "stream.js",
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",
   version: "version.js",

@@ -1,0 +1,92 @@
+name: cpb
+version: "1.0.0"
+description: CodePatchbay — Multi-agent pipeline orchestration with streaming data
+author: cpb
+
+tools:
+  - name: cpb_pipeline
+    description: "Enqueue a plan-execute-verify pipeline task and return the jobId"
+    command: "cpb pipeline"
+    args: ["{{project}}", "{{task}}"]
+    returns: jobId
+
+  - name: cpb_run
+    description: "Enqueue a pipeline task with auto-detected project from cwd"
+    command: "cpb run"
+    args: ["{{task}}", "--project", "{{project}}"]
+    returns: jobId
+
+  - name: cpb_status
+    description: "Show project status: latest plan, verdict, job state, lease"
+    command: "cpb status"
+    args: ["{{project}}"]
+    returns: jobState
+
+  - name: cpb_jobs
+    description: "List active jobs across all projects"
+    command: "cpb jobs"
+    args: []
+    returns: jobList
+
+  - name: cpb_retry
+    description: "Retry a failed job by projectId and jobId"
+    command: "cpb retry"
+    args: ["{{project}}", "{{jobId}}"]
+    returns: jobId
+
+  - name: cpb_cancel
+    description: "Cancel a running job"
+    command: "cpb cancel"
+    args: ["{{project}}", "{{jobId}}", "{{reason}}"]
+    returns: status
+
+  - name: cpb_stream
+    description: "Start streaming event server for real-time monitoring"
+    command: "cpb stream"
+    args: ["--port", "9741"]
+    returns: streamUrl
+
+streaming:
+  protocol: sse
+  host: "127.0.0.1"
+  port: 9741
+  endpoint: "http://127.0.0.1:9741/stream"
+  events:
+    # Job lifecycle
+    - job_created
+    - job_started
+    - job_completed
+    - job_failed
+    - job_blocked
+    - job_cancelled
+    - job_cancel_requested
+    - job_approved
+    - job_redirect_requested
+    # Phase lifecycle
+    - phase_started
+    - phase_completed
+    - phase_failed
+    - phase_activity
+    - phase_hook_diagnostic
+    # Infrastructure
+    - permission_denied
+    - budget_exceeded
+    - pool_exhausted
+    - recovery_created
+    # Performance
+    - performance_recorded
+    - agent_quality_scored
+  wiki_endpoint: "http://127.0.0.1:9741/wiki/{{project}}/"
+
+hooks:
+  on_task_start:
+    - action: subscribe_stream
+      project: "{{project}}"
+  on_task_complete:
+    - action: read_verdict
+      path: "wiki/projects/{{project}}/outputs/verdict-{{jobId}}.md"
+  on_task_failed:
+    - action: read_last_events
+      project: "{{project}}"
+      jobId: "{{jobId}}"
+      count: 5
