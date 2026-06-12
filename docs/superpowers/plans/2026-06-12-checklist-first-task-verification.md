@@ -108,16 +108,25 @@ test("artifact index recognizes checklist artifact kinds from artifact_created e
     }, { dataRoot });
   }
 
-  const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
-  assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
+	  const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
+	  assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
     "acceptance-checklist",
     "checklist-verdict",
     "evidence-ledger",
     "execution-map",
   ]);
-  assert.equal(index.entries.every((entry) => entry.broken === false), true);
-});
-```
+	  assert.equal(index.entries.every((entry) => entry.broken === false), true);
+	  assert.equal(index.schemaVersion >= 2, true);
+	  assert.equal(index.entries.every((entry) => entry.attemptId === "job-1" || entry.attemptId === null), true);
+	});
+	```
+
+Add migration/downstream cases:
+
+- A legacy `verdict` artifact and a new `checklist-verdict` artifact can coexist; `review-session` and `experience-extractor` still select only legacy `verdict` where they expect legacy verdict content.
+- `artifact_created.attemptId` is preserved in index entries.
+- In a synthetic multi-attempt event set, a checklist artifact without `attemptId` is marked ambiguous for checklist completion instead of being selected as latest.
+- Checklist artifact kinds are not inferred as `deliverable` or legacy `verdict` by filename or phase fallback.
 
 - [ ] **Step 2: Add event-store materialization test**
 
@@ -137,9 +146,10 @@ test("artifact_created materializes artifacts by kind", () => {
     sha256: "abc",
     ts: ts(100),
   }]);
-  assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
-  assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
-});
+	  assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
+	  assert.equal(state.artifactsByKind["checklist-verdict"].attemptId, null);
+	  assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
+	});
 ```
 
 - [ ] **Step 3: Run tests and confirm failure**
@@ -175,6 +185,8 @@ if (/^checklist-verdict-/i.test(name)) return "checklist-verdict";
 
 The existing `event.artifactKind` branch already handles explicit `artifact_created` events once the kind is known.
 
+Add `schemaVersion: 2` or another explicit version marker to artifact-index output when entries include checklist fields. Each entry must preserve `attemptId`, `artifactKind`, `sha256`, and `broken` without changing legacy selectors for `verdict` and `deliverable` consumers.
+
 - [ ] **Step 5: Update event store**
 
 In `server/services/event/event-store.ts`, include `"artifact_created"` in `POST_TERMINAL_ALLOWED`.
@@ -189,11 +201,12 @@ artifact_created(state, event) {
   if (!kind || !event.artifact) return;
   state.artifactsByKind = {
     ...(state.artifactsByKind || {}),
-    [kind]: {
-      kind,
-      name: event.artifact,
-      id: event.artifactId || null,
-      phase: event.phase || null,
+	    [kind]: {
+	      kind,
+	      name: event.artifact,
+	      id: event.artifactId || null,
+	      attemptId: event.attemptId || null,
+	      phase: event.phase || null,
       sha256: event.sha256 || null,
       ts: event.ts || null,
     },
@@ -242,6 +255,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  normalizeRepoRelativePaths,
   validateAcceptanceChecklist,
   validateChecklistVerdict,
   evaluateChecklistCompletion,
@@ -259,6 +273,8 @@ function checklist(overrides = {}) {
         id: "AC-001",
         requirement: "cpb status supports --json",
         source: "user_task",
+        sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: "sha256:task" }],
+        predicateId: "PRED-001",
         required: true,
         area: "cli",
         risk: "medium",
@@ -281,9 +297,15 @@ const ledger = {
   finalWorktree: { head: "abc", diffHash: "sha256:one" },
   evidence: [
     {
-      id: "EV-001",
-      type: "command",
-      command: "npm test",
+	      id: "EV-001",
+	      type: "evidence_claim",
+	      observationType: "command",
+	      checklistId: "AC-001",
+	      verificationMethod: "command",
+	      predicateId: "PRED-001",
+	      probeId: "probe-status-json",
+	      result: "pass",
+	      command: "npm test",
       exitCode: 0,
       summary: "passed",
       worktreeHead: "abc",
@@ -302,6 +324,21 @@ test("validateAcceptanceChecklist rejects silently accepted high-risk assumption
   }));
   assert.equal(result.ok, false);
   assert.match(result.reason, /high-risk/i);
+});
+
+test("validateAcceptanceChecklist rejects assumptions that smuggle requirements", () => {
+  const result = validateAcceptanceChecklist(checklist({
+    assumptions: [{ id: "ASM-001", text: "Existing status output must remain unchanged", risk: "medium", acceptedForExecution: true }],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /assumption/i);
+});
+
+test("validateAcceptanceChecklist rejects missing source refs and predicate ids", () => {
+  const item = { ...checklist().items[0], sourceRefs: [], predicateId: "" };
+  const result = validateAcceptanceChecklist(checklist({ items: [item] }));
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /source|predicate/i);
 });
 
 test("validateAcceptanceChecklist rejects non-normalized path fields", () => {
@@ -340,6 +377,33 @@ test("validateChecklistVerdict rejects top-level pass when a required item is un
   const result = validateChecklistVerdict(verdict, checklist());
   assert.equal(result.ok, false);
   assert.match(result.reason, /status/i);
+});
+
+test("validateChecklistVerdict rejects duplicate item results and free-text blocking criteria", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "fail",
+    items: [
+      { checklistId: "AC-001", result: "unchecked", evidenceRefs: [], actualResult: "", reason: "not run", fixScope: [] },
+      { checklistId: "AC-001", result: "unchecked", evidenceRefs: [], actualResult: "", reason: "duplicate", fixScope: [] },
+    ],
+    blocking: [{ criterion: "new verifier-authored criterion", evidence: "prose" }],
+    fixScope: [],
+    reason: "wrong shape",
+  };
+  const result = validateChecklistVerdict(verdict, checklist());
+  assert.equal(result.ok, false);
+});
+
+test("normalizeRepoRelativePaths strips porcelain status and rejects unsafe paths", () => {
+  assert.deepEqual(normalizeRepoRelativePaths([" M cli/status.ts", "?? tests/status.test.ts", "cli/status.ts"]), [
+    "cli/status.ts",
+    "tests/status.test.ts",
+  ]);
+  assert.throws(() => normalizeRepoRelativePaths(["/abs.ts"]));
+  assert.throws(() => normalizeRepoRelativePaths(["../escape.ts"]));
+  assert.throws(() => normalizeRepoRelativePaths(["dir\\file.ts"]));
 });
 
 test("evaluateChecklistCompletion blocks stale evidence", () => {
@@ -382,6 +446,21 @@ test("evaluateChecklistCompletion blocks missing evidence refs", () => {
   };
   const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: ledger, executionMap: { unmappedChangedFiles: [] } });
   assert.equal(result.outcome, "evidence_missing");
+});
+
+test("evaluateChecklistCompletion rejects unrelated fresh evidence claims", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const unrelatedLedger = { ...ledger, evidence: [{ ...ledger.evidence[0], checklistId: "AC-OTHER" }] };
+  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: unrelatedLedger, executionMap: { unmappedChangedFiles: [] } });
+  assert.equal(result.outcome, "evidence_mismatch");
 });
 
 test("evaluateChecklistCompletion blocks poisoned runtime evidence", () => {
@@ -468,6 +547,7 @@ type AnyRecord = Record<string, any>;
 const ITEM_RESULTS = new Set(["pass", "fail", "unchecked"]);
 const TOP_STATUSES = new Set(["pass", "fail"]);
 const RISK_VALUES = new Set(["low", "medium", "high"]);
+const VERIFICATION_METHODS = new Set(["command", "test", "static", "runtime_event", "artifact_event", "audit_export", "dag_event", "worker_lifecycle", "manual", "absence_check"]);
 
 function text(value: any) {
   return typeof value === "string" ? value.trim() : "";
@@ -477,6 +557,22 @@ function isRepoRelativePosixPath(value: any) {
   const path = text(value);
   return Boolean(path) && !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
 }
+
+function stripGitStatusPrefix(value: any) {
+  return text(value).replace(/^[ MADRCU?!]{1,2}\s+/, "");
+}
+
+export function normalizeRepoRelativePaths(values: unknown) {
+  const normalized = new Set<string>();
+  for (const value of Array.isArray(values) ? values : [values]) {
+    const path = stripGitStatusPrefix(value);
+    if (!isRepoRelativePosixPath(path)) throw new Error(`invalid repo-relative path: ${String(value)}`);
+    normalized.add(path);
+  }
+  return [...normalized].sort();
+}
+
+export const normalizeFixScope = normalizeRepoRelativePaths;
 
 function fail(reason: string, details: AnyRecord = {}) {
   return { ok: false, reason, details };
@@ -497,6 +593,9 @@ export function validateAcceptanceChecklist(checklist: AnyRecord) {
     if (assumption?.risk === "high" && assumption.acceptedForExecution === true) {
       return fail(`assumptions[${index}] high-risk assumption cannot be silently accepted`);
     }
+    if (/\b(must|should|required|remain unchanged|non-regression)\b/i.test(text(assumption?.text))) {
+      return fail(`assumptions[${index}] appears to contain an acceptance requirement`);
+    }
   }
   const ids = new Set<string>();
   for (const [index, item] of checklist.items.entries()) {
@@ -506,10 +605,13 @@ export function validateAcceptanceChecklist(checklist: AnyRecord) {
     ids.add(item.id);
     if (!text(item.requirement)) return fail(`${prefix}.requirement is required`);
     if (!text(item.source)) return fail(`${prefix}.source is required`);
+    if (!Array.isArray(item.sourceRefs) || item.sourceRefs.length === 0) return fail(`${prefix}.sourceRefs is required`);
+    if (!text(item.predicateId)) return fail(`${prefix}.predicateId is required`);
     if (typeof item.required !== "boolean") return fail(`${prefix}.required must be boolean`);
     if (!text(item.area)) return fail(`${prefix}.area is required`);
     if (!RISK_VALUES.has(item.risk)) return fail(`${prefix}.risk must be low, medium, or high`);
-    if (!text(item.verificationMethod)) return fail(`${prefix}.verificationMethod is required`);
+    if (!VERIFICATION_METHODS.has(item.verificationMethod)) return fail(`${prefix}.verificationMethod is invalid`);
+    if (item.verificationMethod === "manual" && item.required === true) return fail(`${prefix}.manual verification requires human approval before completion`);
     if (!text(item.expectedEvidence)) return fail(`${prefix}.expectedEvidence is required`);
     if (item.dependsOn !== undefined && !Array.isArray(item.dependsOn)) return fail(`${prefix}.dependsOn must be an array`);
     if (item.allowedFiles !== undefined && !Array.isArray(item.allowedFiles)) return fail(`${prefix}.allowedFiles must be an array`);
@@ -536,6 +638,7 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
     const checklistId = text(item?.checklistId);
     if (!checklistId) return fail(`${prefix}.checklistId is required`);
     if (!checklistIds.has(checklistId)) return fail(`${prefix}.checklistId does not exist in checklist: ${checklistId}`);
+    if (seen.has(checklistId)) return fail(`duplicate verdict item for checklist id: ${checklistId}`);
     seen.add(checklistId);
     if (!ITEM_RESULTS.has(item.result)) return fail(`${prefix}.result must be pass, fail, or unchecked`);
     if (!Array.isArray(item.evidenceRefs)) return fail(`${prefix}.evidenceRefs must be an array`);
@@ -552,11 +655,23 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
   if (verdict.status === "pass" && !allRequiredPassed) return fail("verdict.status pass requires every required item to pass");
   if (verdict.status === "fail" && allRequiredPassed) return fail("verdict.status fail conflicts with all required items passing");
   if (!Array.isArray(verdict.fixScope)) return fail("verdict.fixScope must be an array");
+  for (const [index, entry] of (Array.isArray(verdict.blocking) ? verdict.blocking : []).entries()) {
+    if (!checklistIds.has(text(entry?.checklistId))) return fail(`blocking[${index}].checklistId must reference the frozen checklist`);
+    if (entry.criterion !== undefined || entry.evidence !== undefined) return fail(`blocking[${index}] must not define criterion/evidence prose; use requirementSnapshot/evidenceIssue`);
+  }
   for (const file of verdict.fixScope) {
     if (!isRepoRelativePosixPath(file)) return fail("verdict.fixScope contains invalid repo-relative path");
   }
   if (!text(verdict.reason)) return fail("verdict.reason is required");
   return { ok: true };
+}
+
+function evidenceMatchesChecklistItem(entry: AnyRecord, checklistItem: AnyRecord) {
+  return entry?.type === "evidence_claim"
+    && text(entry.checklistId) === text(checklistItem.id)
+    && text(entry.verificationMethod) === text(checklistItem.verificationMethod)
+    && text(entry.predicateId) === text(checklistItem.predicateId)
+    && text(entry.result) === "pass";
 }
 
 function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {}) {
@@ -566,6 +681,7 @@ function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {
     failedChecklistIds: [],
     uncheckedChecklistIds: [],
     missingEvidenceRefs: [],
+    mismatchedEvidenceRefs: [],
     staleEvidenceRefs: [],
     poisonedEvidenceRefs: [],
     runtimeFailureRefs: [],
@@ -625,6 +741,7 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
   const failedChecklistIds: string[] = [];
   const uncheckedChecklistIds: string[] = [];
   const missingEvidenceRefs: AnyRecord[] = [];
+  const mismatchedEvidenceRefs: AnyRecord[] = [];
   const staleEvidenceRefs: AnyRecord[] = [];
   const poisonedEvidenceRefs: AnyRecord[] = [];
   for (const item of verdict.items) {
@@ -639,6 +756,9 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
           missingEvidenceRefs.push(ref);
           continue;
         }
+        if (!evidenceMatchesChecklistItem(entry, checklistItem)) {
+          mismatchedEvidenceRefs.push(ref);
+        }
         if (text(entry.worktreeHead) !== finalHead || text(entry.diffHash) !== finalDiffHash) {
           staleEvidenceRefs.push(ref);
         }
@@ -648,11 +768,12 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
       }
     }
   }
-  const common = { failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs, poisonedEvidenceRefs, unmappedChangedFiles };
+  const common = { failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, mismatchedEvidenceRefs, staleEvidenceRefs, poisonedEvidenceRefs, unmappedChangedFiles };
   if (poisonedEvidenceRefs.length > 0) return checklistOutcome("poisoned_session", "pass verdict references poisoned-session evidence", common);
   if (failedChecklistIds.length > 0) return checklistOutcome("checklist_failed", "required checklist items failed", common);
   if (uncheckedChecklistIds.length > 0) return checklistOutcome("checklist_incomplete", "required checklist items were not checked", common);
   if (missingEvidenceRefs.length > 0) return checklistOutcome("evidence_missing", "pass verdict references missing evidence", common);
+  if (mismatchedEvidenceRefs.length > 0) return checklistOutcome("evidence_mismatch", "pass verdict references evidence that does not prove the checklist item", common);
   if (staleEvidenceRefs.length > 0) return checklistOutcome("evidence_stale", "pass verdict references stale evidence", common);
   return checklistOutcome("complete", "all required checklist items passed with fresh evidence", common);
 }
@@ -1131,7 +1252,7 @@ Add a negative case where a changed production file is not included in any mappi
 In `core/phases/execute.ts`, after changed files are computed:
 
 ```ts
-const normalizedChangedFiles = normalizeRepoRelativePaths(stripGitStatusPrefix(changedFiles));
+const normalizedChangedFiles = normalizeRepoRelativePaths(changedFiles);
 const mappedFiles = normalizeRepoRelativePaths((parsed.checklistMapping || []).flatMap((entry) => entry.changedFiles || []));
 const executionMap = {
   schemaVersion: 1,
@@ -1150,6 +1271,8 @@ const executionMapArtifact = await writeArtifact(cpbRoot, {
   metadata: executionMap,
 });
 ```
+
+Import `normalizeRepoRelativePaths` from `core/workflow/acceptance-checklist.ts`. It handles git porcelain prefixes per entry, validates repo-relative POSIX paths, sorts, and dedupes. Do not call `stripGitStatusPrefix` on an array.
 
 Return it in diagnostics:
 
@@ -1208,6 +1331,8 @@ Create `tests/checklist-verifier-gate.test.ts` with two cases:
 
 - checklist-aware job with legacy verifier pass and no `checklistVerdict` fails with `VERDICT_INVALID` and still emits event-visible `evidence-ledger` plus a synthesized failing `checklist-verdict`
 - checklist-aware job with `checklistVerdict` and fresh evidence passes verify and emits `evidence-ledger` plus `checklist-verdict` artifact events
+- verifier prompt includes predeclared ledger ids before verifier output, and a verifier response that cites an invented `EV-*` id fails as `evidence_missing`
+- a fresh hard-gate observation without matching `{ checklistId, verificationMethod, predicateId }` cannot prove a checklist item
 
 Assert event visibility and replayability, not diagnostics only:
 
@@ -1221,7 +1346,7 @@ const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
 assert.equal(persistedVerdict.status, "fail");
 ```
 
-- [ ] **Step 2: Build evidence ledger with finalWorktree**
+- [ ] **Step 2: Build predeclared evidence ledger before verifier prompt**
 
 In `core/phases/verify.ts`, import:
 
@@ -1245,10 +1370,10 @@ evidence.head = head.stdout.trim() || null;
 evidence.diffHash = diff.stdout ? `sha256:${createHash("sha256").update(diff.stdout).digest("hex")}` : "sha256:empty";
 ```
 
-Create ledger:
+Create a deterministic ledger before `buildVerifyPrompt` so the verifier sees the exact `ledgerId` and claim ids it may cite. Generic hard-gate checks are audit context only unless they declare a checklist-bound probe.
 
 ```ts
-function buildEvidenceLedger({ jobId, project, verificationEvidence, ledgerId }: any) {
+function buildEvidenceLedger({ jobId, project, acceptanceChecklist, verificationEvidence, ledgerId }: any) {
   const finalWorktree = {
     head: verificationEvidence.git?.head || null,
     diffHash: verificationEvidence.git?.diffHash || null,
@@ -1256,9 +1381,18 @@ function buildEvidenceLedger({ jobId, project, verificationEvidence, ledgerId }:
   const evidence = [];
   let index = 1;
   for (const check of verificationEvidence.hardGate?.checks || []) {
+    if (!check.checklistId || !check.predicateId || !check.probeId) continue;
+    const checklistItem = acceptanceChecklist.items.find((item) => item.id === check.checklistId);
+    if (!checklistItem) continue;
     evidence.push({
       id: `EV-${String(index++).padStart(3, "0")}`,
-      type: "command",
+      type: "evidence_claim",
+      observationType: "command",
+      checklistId: check.checklistId,
+      verificationMethod: checklistItem.verificationMethod,
+      predicateId: check.predicateId,
+      probeId: check.probeId,
+      result: check.ok ? "pass" : "fail",
       command: check.command || check.gate,
       exitCode: check.ok ? 0 : check.exitCode ?? 1,
       summary: check.ok ? `${check.gate || check.command} passed` : check.reason || `${check.gate || check.command} failed`,
@@ -1273,15 +1407,22 @@ function buildEvidenceLedger({ jobId, project, verificationEvidence, ledgerId }:
 
 Ledger-level `poisonedSession` is only a mirror for verifier-collected command evidence. Runtime-classified `phase_poisoned_session` and `job_panic` events are authoritative and are collected by the completion gate from event replay in Task 8.
 
+Before the verifier prompt:
+
+```ts
+const ledgerId = `evidence-ledger-${jobId}-${Date.now()}`;
+const evidenceLedger = buildEvidenceLedger({ jobId, project, acceptanceChecklist, verificationEvidence, ledgerId });
+```
+
+Pass `evidenceLedger` into `buildVerifyPrompt`. A verifier may cite only ids already present in this ledger. If an item needs a probe that is not present, the verifier must return `unchecked` or `fail`; it must not invent `EV-*` ids.
+
 - [ ] **Step 3: Persist evidence ledger and checklist verdict**
 
 When `acceptanceChecklist` exists in `ctx.sourceContext`, require an event-visible `checklist-verdict`. If the verifier omits or returns an invalid `checklistVerdict`, synthesize a failing verdict with every required item marked `unchecked`, persist it, emit its `artifact_created` event, and then return `phaseFailed`.
 
-Choose the ledger id before writing the artifact so artifact JSON, evidence refs, and metadata cannot diverge:
+Write the predeclared ledger after verifier response, without changing ids or claim bindings:
 
 ```ts
-const ledgerId = `evidence-ledger-${jobId}-${Date.now()}`;
-const evidenceLedger = buildEvidenceLedger({ jobId, project, verificationEvidence, ledgerId });
 const evidenceLedgerArtifact = await writeArtifact(cpbRoot, {
   project,
   jobId,
@@ -1328,8 +1469,10 @@ Return `evidenceLedgerArtifact` and `checklistVerdictArtifact` handles in diagno
 In `buildVerifyPrompt`, add:
 
 ```text
-This is a checklist-aware job. You MUST return checklistVerdict. Cover every required checklist id. A pass item must cite evidenceRefs from the evidence ledger. Do not use executor summary as pass evidence.
+This is a checklist-aware job. You MUST return checklistVerdict. Cover every required checklist id. A pass item must cite evidenceRefs from the provided evidence ledger. You may only cite existing evidence ids whose checklistId, verificationMethod, and predicateId match the item. Do not invent evidence ids. Do not use executor summary or generic hard-gate output as pass evidence.
 ```
+
+Include the predeclared `evidenceLedger` JSON in prompt context, or a compact table of `{ evidenceId, checklistId, verificationMethod, predicateId, probeId, result, summary }` derived from it.
 
 - [ ] **Step 5: Verify**
 
@@ -1616,6 +1759,7 @@ Not-tested: audit UI rendering of checklist gate fields"
 **Files:**
 - Modify: `server/orchestrator/reconciler.ts`
 - Modify: `server/orchestrator/failure-router.ts`
+- Modify: `core/workflow/acceptance-checklist.ts`
 - Modify: `core/engine/run-job.ts`
 - Create: `tests/checklist-retry-routing.test.ts`
 - Modify: `tests/assignment-reconciler.test.ts`
@@ -1689,11 +1833,28 @@ test("failure router can retry verifier for missing evidence without file scope"
       },
     },
   });
-  assert.equal(decision.action, "retry_same_worker");
-  assert.equal(decision.retryPhase, "verify");
-  assert.equal(decision.retryable, true);
+	  assert.equal(decision.action, "retry_same_worker");
+	  assert.equal(decision.retryPhase, "verify");
+	  assert.equal(decision.retryable, true);
+	});
+
+test("failure router fails closed for ambiguous runtime artifacts without retry", async () => {
+  const router = new FailureRouter();
+  const decision = await router.route({
+    assignment: { attempts: 0 },
+    attempt: 1,
+    result: {
+      failure: {
+        kind: FailureKind.ARTIFACT_INVALID,
+        reason: "runtime failure missing attempt ownership",
+        cause: { routingLabel: "runtime_failure_ambiguous" },
+      },
+    },
+  });
+  assert.equal(decision.action, "mark_failed");
+  assert.equal(decision.retryable, false);
 });
-```
+	```
 
 - [ ] **Step 2: Extract checklist retry state in reconciler**
 
@@ -1705,6 +1866,13 @@ const failedChecklistIds = checklistItems.filter((item) => item.result === "fail
 const uncheckedChecklistIds = checklistItems.filter((item) => item.result === "unchecked").map((item) => item.checklistId).filter(Boolean);
 const passedChecklistIds = checklistItems.filter((item) => item.result === "pass").map((item) => item.checklistId).filter(Boolean);
 const previousEvidenceRefs = checklistItems.filter((item) => item.result === "pass").flatMap((item) => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : []);
+const impactedChecklistIds = computeImpactedChecklistIds({
+  changedFiles: result.executionMap?.changedFiles || result.changedFiles || [],
+  acceptanceChecklist,
+  previousExecutionMap: result.previousExecutionMap || null,
+  lockedPassedChecklistIds: passedChecklistIds,
+});
+const lockedPassedChecklistIds = passedChecklistIds.filter((id) => !impactedChecklistIds.includes(id));
 const checklistFixScope = [
   ...(Array.isArray(verdict.checklistVerdict?.fixScope) ? verdict.checklistVerdict.fixScope : []),
   ...checklistItems.flatMap((item) => Array.isArray(item.fixScope) ? item.fixScope : []),
@@ -1715,14 +1883,17 @@ Return:
 
 ```ts
 checklistVerdict: {
-  failedChecklistIds,
-  uncheckedChecklistIds,
-  lockedPassedChecklistIds: passedChecklistIds,
-  previousEvidenceRefs,
-  targetChecklistIds: [...new Set([...failedChecklistIds, ...uncheckedChecklistIds])],
-},
+	  failedChecklistIds,
+	  uncheckedChecklistIds,
+	  lockedPassedChecklistIds,
+	  previousEvidenceRefs,
+	  impactedChecklistIds,
+	  targetChecklistIds: [...new Set([...failedChecklistIds, ...uncheckedChecklistIds, ...impactedChecklistIds])],
+	},
 fixScope: [...new Set([...retryScope, ...checklistFixScope])],
 ```
+
+Implement `computeImpactedChecklistIds` in `core/workflow/acceptance-checklist.ts`. It must normalize changed files, compare them with each locked item's `allowedFiles`, previous `execution-map.mappings[*].changedFiles`, and dependency closure from `dependsOn`, then return sorted checklist ids requiring fresh evidence. Unknown changed production files fail closed through `unmappedChangedFiles` rather than silently preserving locked passes.
 
 - [ ] **Step 3: Extract file-only scope in failure router**
 
@@ -1734,9 +1905,33 @@ addMany(checklistVerdict.fixScope);
 for (const item of Array.isArray(checklistVerdict.items) ? checklistVerdict.items : []) {
   addMany(item?.fixScope);
 }
-```
+	```
 
 Do not add checklist ids to this scope set.
+
+Then update the `VERIFICATION_FAILED` no-scope guard before it marks failed:
+
+```ts
+// Task 9 introduces the minimal checklist mapping needed for evidence_missing
+// and checklist_incomplete verifier-only retry. Task 10 extends this to the
+// full closed routing matrix, including scope_violation.
+const routing = failure.cause?.routingLabel
+  ? mapChecklistRoutingLabel(failure.cause.routingLabel, failure.cause)
+  : null;
+if (routing?.action === "retry_same_worker" && routing.retryPhase === "verify") {
+  return {
+    action: "retry_same_worker",
+    reason: routing.reason || failure.reason,
+    retryable: true,
+    retryPhase: "verify",
+  };
+}
+if (failure.kind === FailureKind.VERIFICATION_FAILED && retryScope.length === 0) {
+  return { action: "mark_failed", reason: `verification failed without actionable retry scope: ${failure.reason}`, retryable: false };
+}
+```
+
+This preserves fail-closed behavior for execute repair failures without file scope while allowing verifier-only evidence repair for `evidence_missing` and `checklist_incomplete`.
 
 - [ ] **Step 4: Feed retry context without checklist ids as paths**
 
@@ -1764,8 +1959,12 @@ assert.deepEqual(sourceContext.retry.targetChecklistIds, ["AC-002"]);
 assert.deepEqual(sourceContext.retry.lockedPassedChecklistIds, ["AC-001"]);
 assert.deepEqual(sourceContext.retry.previousEvidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
 assert.deepEqual(sourceContext.retry.fixScope, ["cli/commands/status.ts"]);
+assert.equal(sourceContext.retry.retryPhase, "execute");
 assert.equal(JSON.stringify(sourceContext.retry.fixScope).includes("AC-002"), false);
 ```
+
+Add a verify-only case where `sourceContext.retry.retryPhase === "verify"` and `fixScope` is `[]`; the queued retry must still carry `targetChecklistIds`.
+Add an impacted-invalidation case where a retry changes a file mapped to a previously passed item; that item must be removed from `lockedPassedChecklistIds`, added to `targetChecklistIds`, and require fresh active-attempt evidence.
 
 - [ ] **Step 5: Verify**
 
@@ -1781,7 +1980,7 @@ Expected: retry routing tests pass; existing reconciler tests pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/orchestrator/reconciler.ts server/orchestrator/failure-router.ts core/engine/run-job.ts tests/checklist-retry-routing.test.ts tests/assignment-reconciler.test.ts
+git add server/orchestrator/reconciler.ts server/orchestrator/failure-router.ts core/workflow/acceptance-checklist.ts core/engine/run-job.ts tests/checklist-retry-routing.test.ts tests/assignment-reconciler.test.ts
 git commit -m "Route checklist retries with item targets and file scope
 
 Retry now carries logical checklist targets separately from file paths used by
@@ -1812,6 +2011,7 @@ import { test } from "node:test";
 
 import { FailureKind, failure } from "../core/contracts/failure.js";
 import { mapChecklistRoutingLabel } from "../core/workflow/acceptance-checklist.js";
+import { FailureRouter } from "../server/orchestrator/failure-router.js";
 
 test("scope violation is a valid failure kind for checklist routing", () => {
   const result = failure({
@@ -1867,6 +2067,25 @@ test("checklist routing labels map to closed failure contracts", () => {
     retryable: false,
   });
   assert.equal(mapChecklistRoutingLabel("unknown_label", {}).action, "mark_failed");
+	});
+
+test("failure router applies closed actions for checklist routing labels", async () => {
+  const router = new FailureRouter();
+  const scopeDecision = await router.route({
+    assignment: { attempts: 0 },
+    attempt: 1,
+    result: { failure: { kind: FailureKind.SCOPE_VIOLATION, reason: "outside fix scope", retryable: false, cause: { routingLabel: "scope_violation" } } },
+  });
+  assert.equal(scopeDecision.action, "mark_failed");
+  assert.equal(scopeDecision.retryable, false);
+
+  const ambiguousDecision = await router.route({
+    assignment: { attempts: 0 },
+    attempt: 1,
+    result: { failure: { kind: FailureKind.ARTIFACT_INVALID, reason: "ambiguous attempt", retryable: false, cause: { routingLabel: "runtime_failure_ambiguous" } } },
+  });
+  assert.equal(ambiguousDecision.action, "mark_failed");
+  assert.equal(ambiguousDecision.retryable, false);
 });
 ```
 
@@ -2107,6 +2326,8 @@ executionMap: await readJsonArtifact(executionMapEntry),
 evidenceLedger: await readJsonArtifact(evidenceLedgerEntry),
 checklistVerdict: await readJsonArtifact(checklistVerdictEntry),
 runtimeFailures: collectRuntimeFailureRefs(events),
+runtimeContext: materialized.runtimeContext || null,
+auditFinalized: materialized.auditFinalized || null,
 completionGate: materialized.completionGate || null,
 ```
 
@@ -2157,6 +2378,8 @@ Create `tests/checklist-attempt-boundary.test.ts` with cases inspired by durable
 - A `phase_poisoned_session` or `job_panic` from attempt `001` does not block attempt `002` when `attemptId` is explicit.
 - A multi-attempt job with checklist artifacts or runtime failures missing `attemptId` fails closed as `runtime_failure_ambiguous`.
 - `completion_gate_evaluated` preserves `attemptId`.
+- `job_failed` followed by `audit_finalized` still replays the finalization event after terminal state.
+- `runtime_context_snapshot` is materialized and exported without being usable as pass evidence for command/static checklist items.
 
 Expected assertion shape:
 
@@ -2219,24 +2442,51 @@ await appendEvent(cpbRoot, project, jobId, {
 
 Do not let finalization mark a failed job as successful. The event is audit closure only.
 
-- [ ] **Step 5: Export runtime context without treating it as pass evidence**
-
-In `server/services/readiness-checks.ts`, add `runtimeContext` to checklist-aware audit JSON:
+In `server/services/event/event-store.ts`, include `"audit_finalized"` in `POST_TERMINAL_ALLOWED` and materialize it:
 
 ```ts
-runtimeContext: {
-  assignmentId: materialized.assignmentId || assignment?.assignmentId || null,
-  attemptId: materialized.completionGate?.attemptId || activeAttempt?.attemptToken || null,
-  workerId: activeAttempt?.workerId || null,
-  acceptedAt: accepted?.acceptedAt || null,
-  heartbeatAt: heartbeat?.ts || null,
-  progressKind: heartbeat?.progressKind || heartbeat?.lastProgressType || null,
-  rateLimitedUntil: assignment?.rateLimitedUntil || null,
-  blocker: materialized.blocker || null,
+audit_finalized(state, event) {
+  state.auditFinalized = {
+    attemptId: event.attemptId || null,
+    status: event.status || null,
+    reason: event.reason || null,
+    ts: event.ts || null,
+  };
 }
 ```
 
-This data explains routing, availability, and worker health. It can support checklist items whose `verificationMethod` is `runtime_event` or `worker_lifecycle`, but it must not be accepted as proof for unrelated product behavior.
+- [ ] **Step 5: Export runtime context without treating it as pass evidence**
+
+Emit runtime context as an event before or during finalization. Prefer event/materialized state over direct reads from managed-worker internals:
+
+```ts
+await appendEvent(cpbRoot, project, jobId, {
+  type: "runtime_context_snapshot",
+  jobId,
+  project,
+  attemptId,
+  assignmentId: assignment.assignmentId || null,
+  workerId: assignment.workerId || null,
+  model: assignment.metadata?.model || null,
+  runtime: assignment.metadata?.runtime || assignment.workflow || null,
+  queueId: assignment.entryId || null,
+  queuePriority: assignment.priority || null,
+  concurrencyKey: assignment.metadata?.concurrencyKey || null,
+  rateLimitedUntil: assignment.rateLimitedUntil || null,
+  heartbeatAt: heartbeatState.ts || null,
+  progressKind: heartbeatState.progressKind || heartbeatState.lastProgressType || null,
+  blocker: result.failure?.kind === FailureKind.HUMAN_APPROVAL_REQUIRED ? result.failure.reason : null,
+  ts: ts(),
+});
+```
+
+Materialize `runtime_context_snapshot` into `state.runtimeContext`, and have `buildJobAuditExport` return:
+
+```ts
+runtimeContext: materialized.runtimeContext || null,
+```
+
+This data explains routing, availability, model/runtime selection, queue state, concurrency/rate limits, and worker health. It is audit context, not pass evidence. Runtime checklist items must cite a checklist-bound evidence claim generated from a positive runtime event or bounded `absence_check` snapshot; they cannot cite `runtimeContext` directly for unrelated product behavior.
 
 - [ ] **Step 6: Verify**
 

@@ -69,7 +69,11 @@ The reference projects suggest several reliability patterns that become CPB desi
 - `artifact`: durable JSON-content file written through `writeArtifact`, with `kind`, `id`, `name`, `path`, and `metadata`. The JSON content is the contract source.
 - `artifact event`: event-log record that makes an artifact discoverable by projection and audit. It is an index/replay entry, not a substitute for artifact JSON content.
 - `diagnostics`: phase-result metadata; useful in-process as a cache or artifact handle carrier, but never authoritative for completion, audit, or replay.
-- `evidenceRef`: `{ ledgerId, evidenceId }`, not a bare global id.
+- `observation`: raw result from a command, static check, event query, artifact read, approval event, or worker lifecycle probe.
+- `evidenceClaim`: a gate-checkable claim that binds an observation to `{ checklistId, verificationMethod, predicateId, probeId, result }`.
+- `evidenceRef`: `{ ledgerId, evidenceId }` pointing at an `evidenceClaim`, not a bare observation or verifier prose.
+- `proof`: completion-gate acceptance of an item after a cited evidence claim matches the checklist item, method, predicate, attempt, freshness, and result constraints.
+- `verdict`: verifier judgment over checklist items. It can cite evidence claims and explain failures, but it cannot create proof or rewrite criteria.
 - `attemptId`: attempt/run identity used to scope artifact events, DAG node events, runtime failures, completion gate results, and audit export. When CPB runs without managed assignments, `jobId` is the compatibility attempt id.
 - `targetChecklistIds`: logical checklist item ids targeted by retry or focused verification.
 - `fixScope`: canonical file path list used by scope guard. Paths must be repo-relative POSIX paths, sorted, deduplicated, and must not be absolute, empty, or contain `..`.
@@ -100,6 +104,14 @@ The reference projects suggest several reliability patterns that become CPB desi
       "id": "AC-001",
       "requirement": "cpb status supports --json output",
       "source": "user_task",
+      "sourceRefs": [
+        {
+          "kind": "task_text",
+          "locator": "task:0",
+          "sha256": "sha256:..."
+        }
+      ],
+      "predicateId": "PRED-001",
       "required": true,
       "area": "cli",
       "risk": "medium",
@@ -112,7 +124,7 @@ The reference projects suggest several reliability patterns that become CPB desi
   "assumptions": [
     {
       "id": "ASM-001",
-      "text": "Existing status command semantics remain unchanged outside --json mode",
+      "text": "The existing status command entry point remains cli/commands/status.ts",
       "risk": "medium",
       "acceptedForExecution": true
     }
@@ -123,7 +135,10 @@ The reference projects suggest several reliability patterns that become CPB desi
 Rules:
 
 - Every required user-visible requirement must map to at least one checklist item.
-- Every checklist item must have a source, area, risk, verification method, and expected evidence.
+- Every checklist item must have source refs, area, risk, verification method, predicate id, and expected evidence.
+- V1 must run a source coverage validator before freeze. Every user/doc/system requirement source span or digest classified as acceptance-relevant must map to at least one checklist item; missing coverage blocks as `needs_clarification`.
+- Checklist generation is not requirement authority. Unsupported checklist items, missing source refs, or source refs that do not exist in the task/doc corpus fail closed before execution.
+- Assumptions are defeasible factual premises only. They must not express user-visible behavior, non-regression, "must/should/remain unchanged" acceptance outcomes, or hidden acceptance criteria; those must become checklist items or explicit non-goals with approval.
 - High-risk assumptions cannot be silently accepted; they must map to `human_approval_required` or a higher-strength planning path.
 - V1 forbids in-place post-freeze checklist mutation. If the checklist is materially wrong, the current job fails with an audit reason and V2 revision/change-log work can address it later.
 
@@ -210,7 +225,13 @@ Rules:
   "evidence": [
     {
       "id": "EV-001",
-      "type": "command",
+      "type": "evidence_claim",
+      "observationType": "command",
+      "checklistId": "AC-001",
+      "verificationMethod": "command",
+      "predicateId": "PRED-001",
+      "probeId": "probe-status-json",
+      "result": "pass",
       "command": "node dist/cli/cpb.js status demo --json",
       "cwd": "/repo",
       "exitCode": 0,
@@ -227,6 +248,10 @@ Rules:
 Rules:
 
 - Evidence ids are ledger-scoped. Cross-artifact references use `{ "ledgerId": "...", "evidenceId": "EV-001" }`.
+- A pass evidence ref must resolve to an evidence claim for the same `checklistId`, `verificationMethod`, and `predicateId`; fresh but unrelated observations are not proof.
+- Generic hard-gate output is audit context unless it is converted into a checklist-bound evidence claim by a declared probe.
+- Runtime absence is not positive item evidence by itself. If an item requires absence checking, it must cite a bounded `absence_check` evidence claim with query window, event types, attempt id, and result; the separate "no unresolved runtime failure" condition remains a hard completion gate.
+- `manual` evidence requires a durable approval artifact/event with approver, timestamp, scope, and checklist id. Without that artifact/event, manual items remain `unchecked` or route to `human_approval_required`.
 - A pass result cannot rely on executor summary or unverifiable prose.
 - Evidence is stale when its `worktreeHead` or `diffHash` differs from `evidenceLedger.finalWorktree`.
 - Completion fails when pass evidence is missing or stale.
@@ -266,8 +291,8 @@ Rules:
   "blocking": [
     {
       "checklistId": "AC-002",
-      "criterion": "Missing-project error path must return stable JSON",
-      "evidence": "No evidence ref was produced for this required negative case",
+      "requirementSnapshot": "Missing-project error path must return stable JSON",
+      "evidenceIssue": "No evidence claim was produced for this required negative case",
       "file": "cli/commands/status.ts",
       "fixHint": "Add an error-path command probe and update JSON error output if needed"
     }
@@ -286,6 +311,7 @@ Rules:
 - `pass` without at least one non-stale evidence ref is invalid.
 - Verifier output that does not cover every required checklist id is invalid.
 - `fixScope` is a file path list and should be the minimal file set needed for retry.
+- `blocking[*]` references frozen `checklistId` values and may include a copied `requirementSnapshot` for readability. It must not introduce new criteria, and `evidenceIssue` is explanation only, not pass evidence.
 
 ### DAG Binding
 
@@ -401,6 +427,7 @@ Required checks:
 - Every required pass item has at least one evidence ref.
 - Every evidence ref resolves to an evidence entry in the referenced ledger.
 - Every pass evidence entry is fresh against `evidenceLedger.finalWorktree`.
+- Every pass evidence entry is an evidence claim matching the item `checklistId`, `verificationMethod`, `predicateId`, attempt id, and required result.
 - No required item is `fail` or `unchecked`.
 - `execution-map.unmappedChangedFiles` is empty.
 - Every required verify DAG node completed.

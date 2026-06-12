@@ -1,11 +1,7 @@
 export async function run(args: string[], { cpbRoot }: { cpbRoot: string; executorRoot?: string }) {
   const sub = args[0] || "";
-  if (sub === "reconcile") {
-    const mod = await import("./reconcile.js");
-    await mod.run(args.slice(1), { cpbRoot });
-  } else if (sub === "cleanup" || sub === "gc") {
-    const mod = await import("./reconcile.js");
-    await mod.run(args.slice(1), { cpbRoot });
+  if (sub === "reconcile" || sub === "cleanup" || sub === "gc") {
+    console.error("gc/reconcile has been removed. Use: jobs report");
   } else if (sub === "report") {
     const { buildJobRunReport, formatReportHuman } = await import("../../server/services/job/job-projection.js");
     const report = await (buildJobRunReport as any)({ cpbRoot });

@@ -43,42 +43,23 @@ async function usage() {
   console.log("");
   console.log(`${BOLD}Commands:${NC}`);
   console.log(`  ${CYAN}init${NC} <path> [name]                  Initialize project`);
-  console.log(`  ${CYAN}attach${NC} [path] [name]                  Attach project to Hub`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
-  console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
   console.log(`  ${CYAN}jobs${NC} [reconcile|cleanup|report]         Job management`);
-  console.log(`  ${CYAN}artifacts${NC} <job-id> [--json]              List job artifacts`);
-  console.log(`  ${CYAN}verdict${NC} <job-id> [--json]                Show job verdict`);
-  console.log(`  ${CYAN}gc${NC} [--dry-run]                          Clean stale jobs, orphan leases, pollution`);
-  console.log(`  ${CYAN}recover${NC} [--dry-run]                     Alias for gc`);
   console.log(`  ${CYAN}diff${NC} <project>                         Git diff`);
   console.log(`  ${CYAN}review${NC} <project> [id] [--agent]          Review deliverable`);
   console.log(`  ${CYAN}inbox${NC} <project>                        List plans`);
   console.log(`  ${CYAN}outputs${NC} <project>                      List outputs`);
   console.log(`  ${CYAN}setup${NC} [--json]                         Run the setup wizard`);
   console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
-  console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration: bind, connect, health`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
-  console.log(`  ${CYAN}health-check${NC}                            Test suite + fake ACP smoke`);
-  console.log(`  ${CYAN}wiki${NC} [lint|list|experience ...]         Wiki operations`);
-  console.log(`  ${CYAN}release${NC} <list|use|install|doctor|gc>    Release management`);
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
-  console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
-  console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
-  console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
-  console.log(`  ${CYAN}webhook-serve${NC} [port]                      GitHub webhook server`);
-  console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
-  console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
-  console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
-  console.log(`  ${CYAN}logs${NC} [--follow] [--worker <id>] [--job <id>] [--level <lvl>] [--since <5m|1h|1d>]  View logs`);
-  console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
   console.log(`${BOLD}Global flags:${NC}`);
@@ -104,16 +85,12 @@ async function checkDeps() {
 
 const COMMANDS = {
   init: "init.js",
-  attach: "attach.js",
   hub: "hub.js",
   pipeline: "pipeline.js",
-  profile: "profile.js",
   run: "run.js",
   status: "status.js",
   list: "list.js",
   jobs: "jobs.js",
-  artifacts: "artifacts.js",
-  verdict: "verdict.js",
   retry: "retry.js",
   diff: "diff.js",
   review: "review.js",
@@ -121,31 +98,13 @@ const COMMANDS = {
   outputs: "outputs.js",
   setup: "setup.js",
   agents: "agents.js",
-  auth: "auth.js",
   github: "github.js",
-  "webhook-serve": "webhook-serve.js",
   doctor: "doctor.js",
   "health-check": "doctor.js",
-  gc: "reconcile.js",
-  recover: "reconcile.js",
-  wiki: "wiki.js",
-  version: "version.js",
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",
-  "merge-preview": "merge-preview.js",
-release: "release-select.js",
-  config: "config.js",
-  provider: "config.js",
+  version: "version.js",
   quickstart: "setup.js",
-  "model-profile": "profile.js",
-  "install-bin": "install-bin.js",
-  install: "install-bin.js",
-  audit: "audit.js",
-  "review-bundle": "audit.js",
-  "backlog-hygiene": "backlog-hygiene.js",
-  codegraph: "codegraph.js",
-  "hub-orch": "hub.js",
-  logs: "logs.js",
 };
 
 // --- Main ---
@@ -203,7 +162,7 @@ async function main() {
   }
 
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally

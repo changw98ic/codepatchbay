@@ -236,8 +236,9 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: Record<s
   // Configure agent binding
   if (selectedAgent && !demo) {
     try {
-      const configMod = await import("./config.js");
-      await configMod.run([projectName, "--agent", selectedAgent], { cpbRoot });
+      const { resolveHubRoot, updateProject } = await import("../../server/services/hub/hub-registry.js");
+      const hubRoot = resolveHubRoot(cpbRoot);
+      await updateProject(hubRoot, projectName, { agent: selectedAgent });
       qOk(`Agent '${selectedAgent}' bound to project`);
     } catch {
       qWarn("Could not save agent binding");
@@ -256,10 +257,7 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: Record<s
   console.log(`    cpb status ${projectName}`);
   console.log(`    cpb jobs report\n`);
   console.log(`  ${Q_CYAN}Configure agent instructions:${Q_NC}`);
-  console.log(`    cpb config ${projectName} --instructions "Focus on performance and memory safety"\n`);
-  console.log(`  ${Q_CYAN}Add a new model provider:${Q_NC}`);
-  console.log(`    cpb provider add --name kimi --command kimi-acp --template generic-cli`);
-  console.log(`    cpb config ${projectName} --agent kimi\n`);
+  console.log(`    cpb setup ${projectName}\n`);
   console.log(`  ${Q_CYAN}Web UI:${Q_NC}`);
   console.log(`    cpb ui\n`);
   console.log(`  ${Q_CYAN}Help:${Q_NC}`);

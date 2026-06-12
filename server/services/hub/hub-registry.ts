@@ -638,13 +638,7 @@ export async function cmdStart() {
       } catch (e) {
         console.error(`Quota delegate start failed: ${e.message}`);
       }
-      // Auto-start CodeGraph MCP server
-      try {
-        const { run: codegraphRun } = await import("../../../cli/commands/codegraph.js");
-        await codegraphRun(["start"], { cpbRoot, executorRoot });
-      } catch (e) {
-        console.error(`CodeGraph start failed: ${e.message}`);
-      }
+      // CodeGraph auto-start removed (codegraph CLI command removed)
       return;
     }
   }
@@ -785,12 +779,7 @@ export async function cmdStop() {
     }
   } catch {}
 
-  // Auto-stop CodeGraph MCP server
-  try {
-    const { cpbRoot: r2, executorRoot: e2 } = resolveRoots();
-    const { run: codegraphRun } = await import("../../../cli/commands/codegraph.js");
-    await codegraphRun(["stop"], { cpbRoot: r2, executorRoot: e2 });
-  } catch {}
+  // CodeGraph auto-stop removed (codegraph CLI command removed)
 
   for (let i = 0; i < 50; i++) {
     await new Promise((r) => setTimeout(r, 100));
