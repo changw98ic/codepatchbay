@@ -5,10 +5,9 @@ import {
   resolveGithubTransport,
 } from "./github-api.js";
 import { normalizeGithubWebhookEvent, matchGithubTrigger } from "./github-adapter.js";
-import { createGithubIssueQueueJob, enqueueSddTaskEntriesForApprovedParent } from "../event/event-source.js";
+import { createGithubIssueQueueJob } from "../event/event-source.js";
 import { listProjects } from "../hub/hub-registry.js";
 import {
-  buildSddApprovedComment,
   postGithubQueuedComment,
 } from "./github-issues.js";
 import { parseChannelCommand, channelPolicyRequest, enforceChannelPolicy } from "../channel/channel-commands.js";
@@ -28,10 +27,6 @@ export interface WebhookOptions {
   channelPolicy?: any;
   githubDryRun?: boolean;
   githubPostComment?: Function;
-  sddDrafterMode?: string;
-  sddAcpPool?: string;
-  sddDrafterAgent?: string;
-  sddDrafterTimeoutMs?: number;
 }
 
 export interface WebhookResponse {
@@ -146,40 +141,18 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
       }
 
       const ts = new Date().toISOString();
-      const sddTaskQueueEntries = await enqueueSddTaskEntriesForApprovedParent(hubRoot, entry);
       await updateEntry(hubRoot, entry.id, {
-        status: entry.metadata?.sddApproval?.requiresApproval ? "completed" : "pending",
+        status: "pending",
         metadata: {
           approvedAt: ts,
           approvedBy: normalized.actor || null,
-          finalDisposition: "approved.children_queued",
-          sddApproval: entry.metadata?.sddApproval ? {
-            ...entry.metadata.sddApproval,
-            status: "approved",
-            approvedAt: ts,
-            approvedBy: normalized.actor || null,
-            childQueueEntryIds: sddTaskQueueEntries.map((e: any) => e.id),
-          } : undefined,
+          finalDisposition: "approved",
         },
       });
 
-      const transport = await resolveGithubTransport(hubRoot);
-      const postComment = opts.githubPostComment || transport.postComment;
-      if (!opts.githubDryRun && typeof postComment === "function") {
-        await postComment({
-          repo: normalized.repo,
-          issueNumber: normalized.issueNumber,
-          body: buildSddApprovedComment({
-            actor: normalized.actor,
-            childCount: sddTaskQueueEntries.length,
-            queueEntryId: entry.id,
-          }),
-        }).catch(() => {});
-      }
-
       return {
         statusCode: 202,
-        body: { ...base, normalized, projectId: project.id, commandHandled: "approve", approved: { queueEntryId: entry.id, childCount: sddTaskQueueEntries.length } },
+        body: { ...base, normalized, projectId: project.id, commandHandled: "approve", approved: { queueEntryId: entry.id } },
       };
     }
   }
@@ -192,10 +165,6 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
   const queueResult: AnyRecord = await createGithubIssueQueueJob(cpbRoot, normalized, match, {
     hubRoot,
     sourcePath: project.sourcePath || null,
-    sddDrafterMode: opts.sddDrafterMode,
-    sddAcpPool: opts.sddAcpPool,
-    sddDrafterAgent: opts.sddDrafterAgent,
-    sddDrafterTimeoutMs: opts.sddDrafterTimeoutMs,
   } as any);
   const transport = await resolveGithubTransport(hubRoot);
   const comment: AnyRecord = await (postGithubQueuedComment as any)({

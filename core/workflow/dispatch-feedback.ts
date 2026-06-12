@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 export const ROUTING_FEEDBACK_EXIT_CODE = 42;
 export const DISPATCH_FEEDBACK_SCHEMA_VERSION = 1;
 
-const WORKFLOWS = new Set(["standard", "complex", "sdd-standard"]);
+const WORKFLOWS = new Set(["standard", "complex"]);
 const PLAN_MODES = new Set(["light", "full", "parent"]);
 
 export function dispatchFeedbackPath(cpbRoot, project, jobId) {

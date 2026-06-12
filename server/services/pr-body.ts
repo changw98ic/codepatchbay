@@ -21,21 +21,6 @@ function testLines(tests) {
   return tests.map((test) => `- ${test}`);
 }
 
-function sddTraceLines(trace: LooseRecord | null | undefined) {
-  if (!trace) return [];
-  const artifacts = trace.artifacts || {};
-  return [
-    "",
-    "## SDD Trace",
-    "",
-    `- Trace: ${valueOrUnavailable(trace.traceId)}`,
-    `- Status: ${valueOrUnavailable(trace.status)}`,
-    `- Spec: ${valueOrUnavailable(trace.spec || artifacts.spec)}`,
-    `- Design: ${valueOrUnavailable(trace.design || artifacts.design)}`,
-    `- Tasks: ${valueOrUnavailable(trace.tasks || artifacts.tasks)}`,
-  ];
-}
-
 function routingDecisionLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
@@ -74,23 +59,6 @@ function triageStrategyLines(rc: LooseRecord | null | undefined) {
     ...(r.reasons?.length ? [
       `- Reasons: ${r.reasons.join("; ")}`,
     ] : []),
-  ];
-}
-
-function sddBootstrapLines(rc: LooseRecord | null | undefined) {
-  if (!rc?.sddBootstrap) return [];
-  const bs = rc.sddBootstrap;
-  const gen = bs.generationEvent || {};
-  const files = gen.generatedFiles || bs.files || {};
-  return [
-    "",
-    "## SDD Generation",
-    "",
-    `- Source: ${valueOrUnavailable(gen.source || bs.source)}`,
-    `- Generator: ${valueOrUnavailable(gen.generator)}`,
-    `- Spec: ${valueOrUnavailable(files.spec?.path || bs.files?.spec?.path)}`,
-    `- Design: ${valueOrUnavailable(files.design?.path || bs.files?.design?.path)}`,
-    `- Tasks: ${valueOrUnavailable(files.tasks?.path || bs.files?.tasks?.path)}`,
   ];
 }
 
@@ -158,7 +126,6 @@ export function buildCodePatchBayPrBody({
   tests = [],
   verdict = {},
   audit = {},
-  sddTrace = null,
   routingContext = null,
 }: LooseRecord = {}) {
   const issue = job.sourceContext?.issueNumber ? `#${job.sourceContext.issueNumber}` : "unavailable";
@@ -189,10 +156,8 @@ export function buildCodePatchBayPrBody({
     `- Deliverable: ${artifactRef(artifacts.deliverable)}`,
     `- Review: ${artifactRef(artifacts.review)}`,
     `- Diff: ${artifactRef(artifacts.diff)}`,
-    ...sddTraceLines(sddTrace || job.sddTrace || job.sourceContext?.sddTrace),
     ...(routingContext ? routingDecisionLines(routingContext) : []),
     ...(routingContext ? triageStrategyLines(routingContext) : []),
-    ...(routingContext?.sddBootstrap ? sddBootstrapLines(routingContext) : []),
     ...(routingContext?.contextPack?.path ? contextPackLines(routingContext) : []),
     ...(routingContext?.childTaskIds?.length ? childTaskLines(routingContext) : []),
     ...(routingContext?.planCache ? planCacheLines(routingContext) : []),

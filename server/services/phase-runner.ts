@@ -154,7 +154,7 @@ async function planFileExists(cpbRoot, project, planId, { dataRoot }: AnyRecord 
 }
 
 function stableParentPlanPayload({ project, task, sourceContext = {} }: AnyRecord = {}) {
-  const planGroupId = sourceContext?.planGroupId || sourceContext?.sddTask?.planGroupId || null;
+  const planGroupId = sourceContext?.planGroupId || null;
   if (planGroupId) {
     return {
       project,
@@ -172,19 +172,18 @@ function stableParentPlanPayload({ project, task, sourceContext = {} }: AnyRecor
       repo: sourceContext?.repo || null,
       issueNumber: sourceContext?.issueNumber ?? null,
       issueUrl: sourceContext?.issueUrl || null,
-      sddTraceId: sourceContext?.sddTrace?.traceId || null,
       sourceFingerprint: sourceContext?.sourceFingerprint || null,
-      specHash: sourceContext?.specHash || sourceContext?.sddTrace?.hashes?.spec || null,
-      designHash: sourceContext?.designHash || sourceContext?.sddTrace?.hashes?.design || null,
-      tasksHash: sourceContext?.tasksHash || sourceContext?.sddTrace?.hashes?.tasks || null,
-      taskId: sourceContext?.sddTask?.id || sourceContext?.taskId || null,
-      parentPlanId: sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null,
+      specHash: sourceContext?.specHash || null,
+      designHash: sourceContext?.designHash || null,
+      tasksHash: sourceContext?.tasksHash || null,
+      taskId: sourceContext?.taskId || null,
+      parentPlanId: sourceContext?.parentPlanId || null,
     },
   };
 }
 
 function explicitParentPlanId(sourceContext: AnyRecord = {}) {
-  const value = sourceContext?.parentPlanId || sourceContext?.sddTask?.parentPlanId || null;
+  const value = sourceContext?.parentPlanId || null;
   return value ? String(value).replace(/^plan-/, "") : null;
 }
 

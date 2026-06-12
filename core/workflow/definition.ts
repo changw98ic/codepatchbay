@@ -45,12 +45,6 @@ const WORKFLOWS: Record<string, WorkflowDefinition> = {
     roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
   },
-  "sdd-standard": {
-    name: "sdd-standard",
-    phases: ["plan", "execute", "verify"],
-    roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-    dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
-  },
   blocked: {
     name: "blocked",
     phases: [],

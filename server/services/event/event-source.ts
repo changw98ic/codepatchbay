@@ -4,8 +4,6 @@
 // ── event-source.ts ───────────────────────────────────────────────────────
 export {
   ingestEvent,
-  enqueueSddTaskEntries,
-  enqueueSddTaskEntriesForApprovedParent,
   createGithubIssueQueueJob,
   createChannelQueueJob,
   listCandidates,

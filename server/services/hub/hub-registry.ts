@@ -24,7 +24,6 @@ const REGISTRY_LOCK_TTL_MS = 30_000;
 type AnyRecord = Record<string, any>;
 
 export const DEFAULT_GITHUB_TRIGGERS = [
-  { event: "issues.labeled", label: "sdd", workflow: "sdd-standard", planMode: "parent" },
   { event: "issues.labeled", label: "cpb", workflow: "standard" },
   { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
 ];

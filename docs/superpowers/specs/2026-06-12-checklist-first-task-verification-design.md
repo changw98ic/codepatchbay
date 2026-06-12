@@ -46,6 +46,20 @@ These are intentionally out of V1 unless a later plan explicitly pulls them forw
 - Do not add new dependencies.
 - Do not let executor self-reports count as pass evidence.
 - Do not rely on phase diagnostics as the durable source of truth for checklist artifacts.
+- Do not adopt Temporal, Airflow, Argo Workflows, Hatchet, Multica, or MonkeyCode as a runtime dependency. V1 borrows their proven workflow invariants and adapts them to CPB's current event store, artifact index, worker assignments, and DAG engine.
+
+## Reference Project Invariants
+
+The reference projects suggest several reliability patterns that become CPB design constraints:
+
+- Event history is the durable state machine. Completion, audit, retry, and recovery must be reconstructable from append-only events plus event-visible artifact JSON, not from in-process diagnostics.
+- Attempt boundaries are first-class. A retry creates a new attempt/run boundary; old attempt artifacts remain audit history but cannot authorize completion for the active attempt.
+- DAG topology is explicit state. Dependencies and side-effecting nodes must be validated before execution; a DAG node completing only proves coverage progress, never checklist item pass.
+- Retry policy is typed. Infrastructure failures, worker timeouts, verifier evidence repair, execute repair, poisoned sessions, and panics have separate routing labels, retry phases, budgets, and stop rules.
+- Lifecycle finalization is mandatory. Success, failure, blocked, and panic paths must still emit completion/audit events so reviewers can see the terminal reason.
+- Worker and queue state is observable context. Assignment id, attempt token, worker id, heartbeat/progress, blockers, model/runtime selection, and rate/concurrency state are audit data. They are not pass evidence unless a checklist item explicitly requires `runtime_event` or `worker_lifecycle` verification.
+- Artifact durability beats local-only files. A verifier cannot rely on files that are not discoverable through artifact events or a declared replay path.
+- Reusable skills and agent routing are versioned inputs. They can explain how work was routed, but cannot replace checklist evidence.
 
 ## Vocabulary
 
@@ -56,11 +70,13 @@ These are intentionally out of V1 unless a later plan explicitly pulls them forw
 - `artifact event`: event-log record that makes an artifact discoverable by projection and audit. It is an index/replay entry, not a substitute for artifact JSON content.
 - `diagnostics`: phase-result metadata; useful in-process as a cache or artifact handle carrier, but never authoritative for completion, audit, or replay.
 - `evidenceRef`: `{ ledgerId, evidenceId }`, not a bare global id.
+- `attemptId`: attempt/run identity used to scope artifact events, DAG node events, runtime failures, completion gate results, and audit export. When CPB runs without managed assignments, `jobId` is the compatibility attempt id.
 - `targetChecklistIds`: logical checklist item ids targeted by retry or focused verification.
 - `fixScope`: canonical file path list used by scope guard. Paths must be repo-relative POSIX paths, sorted, deduplicated, and must not be absolute, empty, or contain `..`.
 - `fix_scope`: legacy parser input only; normalize to `fixScope` before it enters V1 contracts.
 - `retryScope`: router/internal file-only scope field; never put checklist ids in it.
 - `routing label`: planner/router classification; it must map to a valid `FailureKind` before entering failure contracts.
+- `runtimeFailureRef`: normalized reference to an unresolved runtime failure event or failure kind that can block completion.
 
 ## Core Contracts
 
@@ -140,6 +156,12 @@ Each artifact must be written with `writeArtifact()` and referenced by a first-c
 
 Projection, artifact index, audit export, and event materialization must use event-visible artifacts, not phase diagnostics, as their durable source of truth.
 If an artifact has been written, an `artifact_created` event must be emitted before a phase returns success, failure, or blocked status. Artifact `metadata` and diagnostics may mirror JSON content, but cannot supersede it.
+
+Attempt rules:
+
+- `artifact_created`, DAG node, runtime failure, and `completion_gate_evaluated` events should include `attemptId` whenever the worker assignment has an active attempt token.
+- Completion reads artifacts and runtime failures from the active `attemptId`. Earlier attempts remain visible in audit history but cannot provide pass evidence for the active attempt.
+- In a multi-attempt job, missing or conflicting attempt ownership fails closed as `runtime_failure_ambiguous` or `artifact_invalid`; CPB must not guess across attempts.
 
 ### Execution Map
 
@@ -312,7 +334,7 @@ Signals:
 - `risk`: `low`, `medium`, `high`.
 - `scope`: expected changed files and directories.
 - `verificationMethod`: `command`, `test`, `static`, `runtime_event`, `artifact_event`, `audit_export`, `dag_event`, `worker_lifecycle`, `manual`.
-- `routingLabel`: `artifact_invalid`, `verdict_invalid`, `checklist_invalid`, `checklist_failed`, `checklist_incomplete`, `evidence_missing`, `evidence_stale`, `scope_violation`, `dag_uncovered`, `poisoned_session`, `runjob_panic`, `infra_error`, `needs_clarification`.
+- `routingLabel`: `artifact_invalid`, `verdict_invalid`, `checklist_invalid`, `checklist_failed`, `checklist_incomplete`, `evidence_missing`, `evidence_stale`, `scope_violation`, `dag_uncovered`, `runtime_failure_ambiguous`, `poisoned_session`, `runjob_panic`, `infra_error`, `needs_clarification`.
 - `dependencyState`: blocked, ready, completed, failed.
 
 Completion outcomes, routing labels, `FailureKind`, router action, and retry phase are separate layers. V1 must implement a production mapping helper such as `mapChecklistRoutingLabel(label, context)` that returns `{ kind, action, retryPhase, requiresFixScope }` and fails closed for unknown labels. Tests must call this helper and the existing router path; a documentation-only table is not sufficient.
@@ -326,6 +348,7 @@ Routing labels must map to valid `FailureKind` values before they enter failure 
 | `checklist_failed` | `verification_failed` | `retry_same_worker` only with actionable `fixScope`; otherwise mark failed | execute | yes |
 | `checklist_incomplete` / `evidence_missing` / `evidence_stale` | `verification_failed` | `retry_same_worker` when no file change is needed; otherwise execute repair with `fixScope` | verify or execute | conditional |
 | `dag_uncovered` | `artifact_invalid` | block or mark failed | none | no |
+| `runtime_failure_ambiguous` | `artifact_invalid` | block or mark failed | none | no |
 | `scope_violation` | `scope_violation` | mark failed, no blind retry | none | no |
 | `poisoned_session` | `poisoned_session` | mark failed, no blind retry | none | no |
 | `runjob_panic` | `runjob_panic` | mark failed, no blind retry | none | no |
@@ -385,6 +408,7 @@ Required checks:
 - Every checklist-aware side-effecting or verifier DAG node is covered by `checklistIds` or explicitly `checklistNeutral: true`.
 - No unresolved scope violation exists.
 - No unresolved `phase_poisoned_session` or `job_panic` event exists for the completed attempt.
+- Checklist artifacts, DAG events, runtime failures, and completion gate results belong to the same `attemptId`, or the gate fails closed.
 - Top-level checklist verdict status is consistent with item results.
 
 The legacy `VERDICT: PASS` gate remains a compatibility fallback only for jobs without an `acceptance-checklist` artifact.
@@ -399,6 +423,7 @@ The `completion_gate_evaluated` event and reducer must preserve checklist fields
 - `poisonedEvidenceRefs`
 - `runtimeFailureRefs`
 - `runtimeFailureCount`
+- `attemptId`
 - `unmappedChangedFiles`
 - `unmappedChangedFileCount`
 
@@ -420,11 +445,12 @@ The audit JSON must include:
   "evidenceLedger": {},
   "checklistVerdict": {},
   "runtimeFailures": [],
+  "runtimeContext": {},
   "completionGate": {}
 }
 ```
 
-The export reads checklist sections from the artifact index and artifact JSON files produced by `artifact_created` events. It reads runtime failures from event replay or materialized job state. It must still work when phase diagnostics and source context are unavailable.
+The export reads checklist sections from the artifact index and artifact JSON files produced by `artifact_created` events. It reads runtime failures and worker/queue context from event replay, materialized job state, or managed-assignment attempt files. It must still work when phase diagnostics and source context are unavailable.
 
 The export should let a reviewer answer:
 

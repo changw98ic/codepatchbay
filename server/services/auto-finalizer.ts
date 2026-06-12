@@ -215,14 +215,13 @@ function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []) {
   const wf = route?.workflow;
   const pm = route?.planMode;
 
-  if (wf === "sdd-standard" && pm === "parent") {
+  if (wf === "standard" && pm === "parent") {
     if (!hasCritical) {
       return { allowed: true, escalation: null, reviewer: true };
     }
-    // Critical scopes: keep SDD workflow, upgrade to full plan + reviewer
     return {
       allowed: false,
-      escalation: { workflow: "sdd-standard", planMode: "full", reviewer: true },
+      escalation: { workflow: "standard", planMode: "full", reviewer: true },
       reviewer: true,
     };
   }
@@ -366,8 +365,6 @@ function buildRoutingContext(entry: any, job: any, routeGuard: any = null) {
   return {
     routing,
     planMode: metadata.planMode || job.planMode || null,
-    sddBootstrap: metadata.sddBootstrap || null,
-    childTaskIds: metadata.sddApproval?.childQueueEntryIds || null,
     contextPack: metadata.contextPack || null,
     planCache: job?.sourceContext?.parentPlan || metadata.planCache || null,
     finalDiffGuard,

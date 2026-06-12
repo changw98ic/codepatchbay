@@ -157,15 +157,7 @@ export function classifyIssueRules(input: Record<string, any> = {}) {
   const reasons = [];
   let route;
 
-  if (includesLabel(labels, "sdd")) {
-    route = {
-      category: "sdd",
-      workflow: "sdd-standard",
-      planMode: "parent",
-      reason: "sdd label",
-      source: "rules",
-    };
-  } else if (isComplexImplementationTask(text)) {
+  if (isComplexImplementationTask(text)) {
     route = {
       category: "implementation",
       workflow: "standard",

@@ -257,71 +257,6 @@ function agentLine(label, value) {
   return `- ${label}: ${value || "not selected"}`;
 }
 
-function isSddApprovalQueue(queueEntry) {
-  const approval = queueEntry?.metadata?.sddApproval || {};
-  return Boolean(
-    approval.requiresApproval
-    && (
-      queueEntry?.status === "waiting.approval"
-      || approval.status === "waiting_approval"
-    )
-  );
-}
-
-function sddFilePath(metadata, name) {
-  return metadata?.sddBootstrap?.files?.[name]?.path
-    || metadata?.sddBootstrap?.generationEvent?.generatedFiles?.[name]?.path
-    || null;
-}
-
-function displaySddPath(filePath) {
-  if (!filePath) return "unavailable";
-  const normalized = String(filePath).replace(/\\/g, "/");
-  const sddIndex = normalized.lastIndexOf("/sdd/");
-  if (sddIndex >= 0) return normalized.slice(sddIndex + 1);
-  const parts = normalized.split("/").filter(Boolean);
-  return parts.slice(-2).join("/") || normalized;
-}
-
-function buildSddApprovalComment({ queueEntry = null, agents = {} }: LooseRecord = {}) {
-  const metadata = queueEntry?.metadata || {};
-  const workflow = metadata.workflow || "sdd-standard";
-  const taskCount = Array.isArray(metadata.sddTasks) ? metadata.sddTasks.length : 0;
-  const queueId = queueEntry?.id;
-  const approveCmd = queueId ? `\`/cpb approve ${queueId}\`` : "a connected channel command";
-  return [
-    "### SDD Draft Requires Approval",
-    "",
-    "A Spec-Driven Development draft has been generated for this issue. Review the artifacts below, then approve to start execution.",
-    "",
-    `- **Spec**: \`${displaySddPath(sddFilePath(metadata, "spec"))}\``,
-    `- **Design**: \`${displaySddPath(sddFilePath(metadata, "design"))}\``,
-    `- **Tasks**: \`${displaySddPath(sddFilePath(metadata, "tasks"))}\``,
-    `- **Parsed tasks**: ${taskCount}`,
-    queueId ? `- **Queue ID**: \`${queueId}\`` : null,
-    `- **Workflow**: \`${workflow}\``,
-    "",
-    agentLine("Planner", agents.planner),
-    agentLine("Executor", agents.executor),
-    agentLine("Verifier", agents.verifier),
-    "",
-    "---",
-    "",
-    `To approve, comment ${approveCmd} on this issue.`,
-    "",
-  ].filter((line) => line !== null).join("\n");
-}
-
-export function buildSddApprovedComment({ actor, childCount, queueEntryId }: LooseRecord = {}) {
-  return [
-    "### SDD Draft Approved",
-    "",
-    `Approved by @${actor || "unknown"}.`,
-    childCount > 0 ? `${childCount} child task(s) queued for execution.` : "No child tasks were queued.",
-    "",
-  ].join("\n");
-}
-
 function hashBody(body) {
   return createHash("sha256").update(body || "", "utf8").digest("hex");
 }
@@ -388,10 +323,6 @@ function statusDetailLines(projection) {
 }
 
 export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} }: LooseRecord = {}) {
-  if (isSddApprovalQueue(queueEntry)) {
-    return buildSddApprovalComment({ queueEntry, agents });
-  }
-
   const normalizedJob = job || {};
   const workflow = normalizedJob.workflow || queueEntry?.payload?.workflow || queueEntry?.metadata?.workflow || "standard";
   return [
@@ -627,7 +558,6 @@ function prBody(job, routingContext = null, agents = {}, bodyContext: AnyRecord 
     tests = [],
     audit = {},
     verdict = { status: "pass" },
-    sddTrace = null,
   } = bodyContext || {};
   return buildCodePatchBayPrBody({
     job,
@@ -637,7 +567,6 @@ function prBody(job, routingContext = null, agents = {}, bodyContext: AnyRecord 
     artifacts,
     tests,
     audit,
-    sddTrace,
   });
 }
 
@@ -813,7 +742,6 @@ export async function openDraftPullRequest({
   tests = [],
   audit = {},
   verdictDetail = null,
-  sddTrace = null,
 }: AnyRecord = {}): Promise<AnyRecord> {
   if (!isPass(verdict)) {
     return {
@@ -828,7 +756,6 @@ export async function openDraftPullRequest({
     tests,
     audit,
     verdict: verdictForBody(verdict, verdictDetail),
-    sddTrace,
   });
   const evidence = {
     repo: request.repo,
@@ -899,7 +826,6 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options
     tests: options.tests || [],
     audit: options.audit || {},
     verdictDetail: options.verdictDetail || null,
-    sddTrace: options.sddTrace || null,
   });
 
   if (result.status === "pr.opened") {

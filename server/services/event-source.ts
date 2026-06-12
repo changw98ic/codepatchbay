@@ -9,12 +9,11 @@ import {
   triageGithubIssue,
   triageGithubIssueWithAcp,
 } from "./project/project-loader.js";
-import { bootstrapSddFromIssue } from "./sdd/sdd.js";
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
-const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
+const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 
 type AnyRecord = Record<string, any>;
 
@@ -406,19 +405,8 @@ async function maybeGenerateQueueContextPack(project, hubRoot, task) {
   return null;
 }
 
-function isSddRoute(route: AnyRecord) {
-  const effective = effectiveRoute(route);
-  const requested = requestedRoute(route);
-  return effective.workflow === "sdd-standard"
-    || requested?.workflow === "sdd-standard"
-    || route?.ruleRoute?.workflow === "sdd-standard"
-    || requested?.category === "sdd"
-    || route?.ruleRoute?.category === "sdd";
-}
-
-function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, sddAutomation = null, contextPackResult = null }: AnyRecord) {
+function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, contextPackResult = null }: AnyRecord) {
   const route = payload.route;
-  const sddMetadata = sddAutomation?.queueMetadata || {};
   const contextPack = contextPackResult?.contextPack || null;
   return {
     projectId: event.projectId,
@@ -441,7 +429,6 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
       triggerReason: payload.triggerReason,
       workflow: payload.workflow || match.workflow || "standard",
       planMode: payload.planMode || "full",
-      ...sddMetadata,
       contextPackPath: contextPack?.path || null,
       contextPack,
       contextPackError: contextPackResult?.error || null,
@@ -450,89 +437,6 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
       autoFinalize: true,
     },
   };
-}
-
-export async function enqueueSddTaskEntries({
-  hubRoot,
-  enqueueFn = enqueueHubQueue,
-  event,
-  parentQueueEntry,
-  sourcePath,
-  sddAutomation,
-  route,
-  contextPackResult = null,
-}: AnyRecord) {
-  if (!sddAutomation?.tasks?.length) return [];
-  const parentMetadata = parentQueueEntry?.metadata || {};
-  const contextPack = contextPackResult?.contextPack || parentMetadata.contextPack || null;
-  const contextPackError = contextPackResult?.error || parentMetadata.contextPackError || null;
-  const effectiveRouting = route ? routingMetadata(route) : parentMetadata.routing || null;
-  const effectiveRequestedRoute = route ? requestedRoute(route) : parentMetadata.requestedRoute || null;
-  const entries = [];
-  for (const task of sddAutomation.tasks) {
-    const entry = await enqueueFn(hubRoot, {
-      projectId: event.projectId,
-      sourcePath,
-      priority: "P2",
-      description: `SDD task: ${task.title}`,
-      type: "sdd_task",
-      metadata: {
-        source: "github",
-        parentQueueEntryId: parentQueueEntry.id,
-        issueNumber: event.issueNumber,
-        issueUrl: event.url,
-        repo: event.repo,
-        issueTitle: event.title,
-        workflow: task.workflow,
-        planMode: task.planMode,
-        planGroupId: task.planGroupId || null,
-        parentPlanId: task.parentPlanId || null,
-        planCacheKey: task.planCacheKey || null,
-        requestedRoute: effectiveRequestedRoute,
-        routing: effectiveRouting,
-        sddTask: task,
-        sddTrace: sddAutomation.queueMetadata?.sddTrace || null,
-        contextPackPath: contextPack?.path || parentMetadata.contextPackPath || null,
-        contextPack,
-        contextPackError,
-        queueDedupeKey: `${parentQueueEntry.metadata?.queueDedupeKey || parentQueueEntry.id}:sdd-task:${task.id}`,
-        autoFinalize: true,
-      },
-    });
-    entries.push(entry);
-  }
-  return entries;
-}
-
-export async function enqueueSddTaskEntriesForApprovedParent(hubRoot, parentQueueEntry, {
-  enqueueFn = enqueueHubQueue,
-}: AnyRecord = {}) {
-  const metadata = parentQueueEntry?.metadata || {};
-  if (!metadata.sddApproval?.requiresApproval || !Array.isArray(metadata.sddTasks)) return [];
-  return enqueueSddTaskEntries({
-    hubRoot,
-    enqueueFn,
-    event: {
-      projectId: parentQueueEntry.projectId,
-      issueNumber: metadata.issueNumber ?? null,
-      url: metadata.issueUrl || null,
-      repo: metadata.repo || null,
-      title: metadata.issueTitle || parentQueueEntry.description || null,
-    },
-    parentQueueEntry,
-    sourcePath: parentQueueEntry.sourcePath || null,
-    sddAutomation: {
-      tasks: metadata.sddTasks,
-      queueMetadata: {
-        sddTrace: metadata.sddTrace || null,
-      },
-    },
-    route: null,
-    contextPackResult: {
-      contextPack: metadata.contextPack || null,
-      error: metadata.contextPackError || null,
-    },
-  });
 }
 
 export async function createGithubIssueQueueJob(
@@ -548,10 +452,6 @@ export async function createGithubIssueQueueJob(
     acpPool = null,
     triageAgent = "claude",
     triageTimeoutMs = 60_000,
-    sddDrafterMode = null,
-    sddAcpPool = null,
-    sddDrafterAgent = "claude",
-    sddDrafterTimeoutMs = 60_000,
   }: AnyRecord = {},
 ) {
   if (!event || event.status !== "ok") {
@@ -592,17 +492,7 @@ export async function createGithubIssueQueueJob(
     hubRoot,
     [payload.title, payload.body].filter(Boolean).join("\n\n"),
   );
-  const sddAutomation = isSddRoute(route)
-    ? await bootstrapSddFromIssue(cpbRoot, event.projectId, event, {
-        sddDrafterMode: sddDrafterMode || process.env.CPB_SDD_DRAFTER_MODE || "template",
-        acpPool: sddAcpPool,
-        hubRoot,
-        cwd: sourcePathForEntry || process.cwd(),
-        agent: sddDrafterAgent,
-        timeoutMs: sddDrafterTimeoutMs,
-      })
-    : null;
-  let queueEntry = await enqueueFn(
+  const queueEntry = await enqueueFn(
     hubRoot,
     githubHubQueueInput({
       event,
@@ -610,35 +500,9 @@ export async function createGithubIssueQueueJob(
       payload,
       candidateEntry: entry,
       sourcePath: sourcePathForEntry,
-      sddAutomation,
       contextPackResult,
     }),
   );
-  if (sddAutomation?.requiresApproval) {
-    queueEntry = await updateHubQueueEntry(hubRoot, queueEntry.id, {
-      status: "waiting.approval",
-      metadata: {
-        sddApproval: {
-          ...(queueEntry.metadata?.sddApproval || {}),
-          requiresApproval: true,
-          status: "waiting_approval",
-          blockedAt: new Date().toISOString(),
-        },
-      },
-    }) || queueEntry;
-  }
-  const sddTaskQueueEntries = sddAutomation?.requiresApproval
-    ? []
-    : await enqueueSddTaskEntries({
-        hubRoot,
-        enqueueFn,
-        event,
-        parentQueueEntry: queueEntry,
-        sourcePath: sourcePathForEntry,
-        sddAutomation,
-        route,
-        contextPackResult,
-      });
   const updated = await updateCandidate(cpbRoot, entry.id, {
     status: "queued",
     reason: `queued hub entry ${queueEntry.id}`,
@@ -646,7 +510,7 @@ export async function createGithubIssueQueueJob(
 
   let job = null;
   const immediateJobDataRoot = projectRuntimeRootForImmediateJob(project);
-  if (!sddAutomation?.requiresApproval && immediateJobDataRoot) {
+  if (immediateJobDataRoot) {
     const effective = effectiveRoute(route);
     job = await createJobStore(cpbRoot, {
       project: event.projectId,
@@ -675,7 +539,6 @@ export async function createGithubIssueQueueJob(
     entry: updated || entry,
     candidateEntry: updated || entry,
     queueEntry,
-    sddTaskQueueEntries,
     job,
   };
 }

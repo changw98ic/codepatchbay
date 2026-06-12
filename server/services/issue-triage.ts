@@ -74,7 +74,7 @@ export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision = null
     "Return only JSON. Do not execute code or modify files.",
     "",
     "Choose a requestedRoute only; policy will merge it with actor trust and protected-scope rules.",
-    "Valid workflows: direct, standard, complex, sdd-standard.",
+    "Valid workflows: direct, standard, complex.",
     "Valid planMode values: none, light, full, parent.",
     "Use complex/full/reviewer for security, auth, database, or payment risk.",
     "",
@@ -91,7 +91,7 @@ export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision = null
       protectedScopes: rules.protectedScopes,
       outputSchema: {
         requestedRoute: {
-          workflow: "direct|standard|complex|sdd-standard",
+          workflow: "direct|standard|complex",
           planMode: "none|light|full|parent",
           reviewer: "boolean",
           reason: "short reason",

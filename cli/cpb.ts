@@ -50,7 +50,6 @@ async function usage() {
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
   console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
   console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
-  console.log(`  ${CYAN}sdd${NC} <init|bootstrap|verify|drift> <project> [--json]  Spec-driven development skeleton`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
@@ -120,8 +119,7 @@ const COMMANDS = {
   artifacts: "artifacts.js",
   verdict: "verdict.js",
   "evolve-multi": "evolve-multi.js",
-  sdd: "sdd.js",
-  retry: "retry.js",
+retry: "retry.js",
   diff: "diff.js",
   review: "review.js",
   inbox: "inbox.js",
@@ -211,7 +209,7 @@ async function main() {
   }
 
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "retry", "diff", "review", "inbox", "outputs", "sdd", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "research", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect", "merge-preview", "config", "review-bundle", "audit"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
       // Commands like `run` pass project via --project flag, not positionally

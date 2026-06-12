@@ -578,7 +578,7 @@ Before modifying files, decide whether this route is strong enough for the task.
   "signals": ["security", "auth", "db", "payment"]
 }
 \`\`\`
-Valid requested.workflow values are "standard", "complex", and "sdd-standard"; use "complex" for security/auth/db/payment risk. Valid requested.planMode values are "light", "full", and "parent"; use "full" for protected or complex work.
+Valid requested.workflow values are "standard" and "complex"; use "complex" for security/auth/db/payment risk. Valid requested.planMode values are "light", "full", and "parent"; use "full" for protected or complex work.
 
 ## Instructions
 1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}

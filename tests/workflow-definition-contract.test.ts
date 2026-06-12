@@ -18,7 +18,7 @@ import {
 import { nextPhaseFor } from "../server/services/workflow-definition.js";
 import { phaseRole } from "../server/services/phase-runner.js";
 
-const BUILT_INS = ["standard", "direct", "complex", "sdd-standard"];
+const BUILT_INS = ["standard", "direct", "complex"];
 
 test("server workflow adapter exposes the core workflow catalog", async () => {
   for (const name of BUILT_INS) {

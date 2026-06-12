@@ -19,6 +19,10 @@
 - Checklist artifacts are JSON content stored in current `.md` artifact files because `writeArtifact()` writes `${kind}-${id}.md`.
 - V1 extends JSON audit export. A full file bundle with replay scripts is V2.
 - Completion, audit, and replay must read event-indexed artifact JSON. `sourceContext`, phase diagnostics, artifact metadata, prompt text, and executor summaries are not authoritative checklist facts.
+- Event history and attempt boundaries are first-class. New checklist-aware events should carry `attemptId` when managed assignments expose one; `jobId` is the compatibility attempt id for direct runs.
+- Completion must fail closed when checklist artifacts or runtime failures cannot be scoped to the active attempt in a multi-attempt job.
+- Success, failure, blocked, and panic paths must still produce completion/audit events; terminal finalization is not optional.
+- Worker assignment, heartbeat, blocker, runtime selection, and rate/concurrency context are audit context, not pass evidence unless a checklist item explicitly asks for `runtime_event` or `worker_lifecycle`.
 
 ## File Map
 
@@ -44,6 +48,15 @@
 - Legacy `VERDICT: PASS` cannot complete a checklist-aware job by itself.
 - New checklist artifacts must be discoverable through events and artifact index. Diagnostics-only persistence is not sufficient.
 - If a checklist artifact file has been written, `artifact_created` must be emitted before the phase returns success, failure, or blocked status.
+- In a retry run, old attempt artifacts and runtime failures remain audit history but cannot authorize or block the active attempt unless their `attemptId` matches. If events lack attempt ownership and the job has multiple attempts, completion fails closed.
+
+## Reference-Project Lessons Applied
+
+- Temporal and Hatchet: replayable event history is the completion source; retries need run/attempt boundaries; durability is designed for debugging, retries, and replay.
+- Airflow and Argo Workflows: tasks belong to explicit DAGs; dependency state is separate from task result; artifacts and final handlers must be durable and visible.
+- Argo Workflows: finalization behaves like an exit handler and must run for both success and failure.
+- Hatchet: queues, retries, rate limits, monitoring, alerting, and logging are operational signals that should appear in audit context.
+- Multica and MonkeyCode: agent tasks need visible lifecycle, blockers, runtime/model selection, reusable skills, workspace isolation, and team-facing status; these should enrich CPB audit records without replacing evidence.
 
 ## Task 1: Add Artifact Event And Index Foundation
 
@@ -410,7 +423,7 @@ test("evaluateChecklistCompletion blocks unresolved runtime failure events", () 
     runtimeFailures: [{ type: "job_panic", phase: "verify", reason: "panic while writing artifact" }],
   });
   assert.equal(result.outcome, "runjob_panic");
-  assert.deepEqual(result.runtimeFailureRefs, [{ type: "job_panic", phase: "verify", nodeId: null, reason: "panic while writing artifact" }]);
+  assert.deepEqual(result.runtimeFailureRefs, [{ type: "job_panic", attemptId: null, phase: "verify", nodeId: null, reason: "panic while writing artifact" }]);
 });
 
 test("evaluateChecklistCompletion blocks unmapped execution changes", () => {
@@ -556,32 +569,43 @@ function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {
     staleEvidenceRefs: [],
     poisonedEvidenceRefs: [],
     runtimeFailureRefs: [],
+    attemptId: null,
     unmappedChangedFiles: [],
     ...fields,
   };
 }
 
-function normalizeRuntimeFailureRefs(runtimeFailures: unknown) {
+function normalizeRuntimeFailureRefs(runtimeFailures: unknown, { attemptId, multiAttempt = false }: AnyRecord = {}) {
   const allowed = new Set(["phase_poisoned_session", "poisoned_session", "job_panic", "runjob_panic"]);
-  return (Array.isArray(runtimeFailures) ? runtimeFailures : [])
+  const activeAttemptId = text(attemptId);
+  const ambiguous: AnyRecord[] = [];
+  const refs = (Array.isArray(runtimeFailures) ? runtimeFailures : [])
     .map((entry: AnyRecord) => {
       const type = text(entry?.type || entry?.kind || entry?.code);
       if (!allowed.has(type)) return null;
-      return {
+      const ref = {
         type,
+        attemptId: text(entry.attemptId) || null,
         phase: text(entry.phase) || null,
         nodeId: text(entry.nodeId) || null,
         reason: text(entry.reason) || null,
       };
+      if (multiAttempt && !ref.attemptId) ambiguous.push(ref);
+      if (activeAttemptId && ref.attemptId && ref.attemptId !== activeAttemptId) return null;
+      return ref;
     })
     .filter(Boolean);
+  return { refs, ambiguous };
 }
 
-export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger, executionMap, runtimeFailures }: AnyRecord) {
-  const runtimeFailureRefs = normalizeRuntimeFailureRefs(runtimeFailures);
+export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger, executionMap, runtimeFailures, attemptId, multiAttempt }: AnyRecord) {
+  const { refs: runtimeFailureRefs, ambiguous } = normalizeRuntimeFailureRefs(runtimeFailures, { attemptId, multiAttempt });
+  if (ambiguous.length > 0) {
+    return checklistOutcome("runtime_failure_ambiguous", "runtime failure event is missing attempt ownership", { runtimeFailureRefs: ambiguous, attemptId: text(attemptId) || null });
+  }
   if (runtimeFailureRefs.length > 0) {
     const hasPanic = runtimeFailureRefs.some((entry: AnyRecord) => entry.type === "job_panic" || entry.type === "runjob_panic");
-    return checklistOutcome(hasPanic ? "runjob_panic" : "poisoned_session", "runtime failure event blocks checklist completion", { runtimeFailureRefs });
+    return checklistOutcome(hasPanic ? "runjob_panic" : "poisoned_session", "runtime failure event blocks checklist completion", { runtimeFailureRefs, attemptId: text(attemptId) || null });
   }
   const validation = validateChecklistVerdict(verdict, checklist);
   if (!validation.ok) {
@@ -1393,12 +1417,13 @@ test("completion gate blocks stale checklist evidence", () => {
 test("completion gate blocks unresolved runtime failures", () => {
   const result = evaluateCompletionGate({
     job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
+    attemptId: "attempt-002",
     parsedVerdict: { status: "pass", raw: "PASS" },
     checklist: { schemaVersion: 1, jobId: "job-1", project: "flow", status: "frozen", source: { task: "task", issue: null, documents: [] }, items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", required: true, area: "runtime", risk: "high", verificationMethod: "runtime_event", expectedEvidence: "no runtime failure event", dependsOn: [], allowedFiles: [] }], assumptions: [] },
     checklistVerdict: { schemaVersion: 1, jobId: "job-1", status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }], blocking: [], fixScope: [], reason: "ok" },
     evidenceLedger: { ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:one" }] },
     executionMap: { unmappedChangedFiles: [] },
-    runtimeFailures: [{ type: "phase_poisoned_session", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
+    runtimeFailures: [{ type: "phase_poisoned_session", attemptId: "attempt-002", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
   });
   assert.equal(result.outcome, "poisoned_session");
   assert.equal(result.details.checklist.runtimeFailureRefs[0].type, "phase_poisoned_session");
@@ -1408,6 +1433,7 @@ test("completion gate event preserves checklist fields in materialized state", (
   const event = completionGateEvent("job-1", "flow", {
     outcome: "checklist_failed",
     reason: "required checklist items failed",
+    attemptId: "attempt-002",
     missingGates: ["checklist"],
     details: {
       checklist: {
@@ -1417,12 +1443,13 @@ test("completion gate event preserves checklist fields in materialized state", (
         missingEvidenceRefs: [],
         staleEvidenceRefs: [],
         poisonedEvidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }],
-        runtimeFailureRefs: [{ type: "phase_poisoned_session", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
+        runtimeFailureRefs: [{ type: "phase_poisoned_session", attemptId: "attempt-002", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
         unmappedChangedFiles: [],
       },
     },
   });
   const state = materializeJob([event]);
+  assert.equal(state.completionGate.attemptId, "attempt-002");
   assert.equal(state.completionGate.checklistOutcome, "checklist_failed");
   assert.deepEqual(state.completionGate.failedChecklistIds, ["AC-002"]);
   assert.equal(state.completionGate.runtimeFailureCount, 1);
@@ -1437,6 +1464,8 @@ Add integration-style negative cases:
 - `artifactsByKind` without a readable artifact JSON file must fail closed as `artifact_invalid`.
 - `execution-map.unmappedChangedFiles` non-empty must block completion even when every checklist item is `pass` and evidence is fresh.
 - An unresolved `phase_poisoned_session` or `job_panic` event for the completed attempt must block completion even when every checklist artifact is valid and fresh.
+- A runtime failure from a previous attempt must remain in audit but not block the active attempt when `attemptId` differs.
+- A multi-attempt job with runtime failures or artifacts missing `attemptId` must fail closed as `runtime_failure_ambiguous`.
 
 - [ ] **Step 2: Extend completion gate**
 
@@ -1454,13 +1483,14 @@ checklistVerdict,
 evidenceLedger,
 executionMap,
 runtimeFailures,
+attemptId,
 ```
 
 Before legacy verdict pass/fail check:
 
 ```ts
 if (checklist) {
-  const checklistResult = evaluateChecklistCompletion({ checklist, verdict: checklistVerdict, evidenceLedger, executionMap, runtimeFailures });
+  const checklistResult = evaluateChecklistCompletion({ checklist, verdict: checklistVerdict, evidenceLedger, executionMap, runtimeFailures, attemptId });
   if (checklistResult.outcome !== "complete") {
     return gateResult(checklistResult.outcome, checklistResult.reason, ["checklist"], {
       ...details,
@@ -1478,6 +1508,7 @@ return {
   type: "completion_gate_evaluated",
   jobId,
   project,
+  attemptId: gateResult.attemptId || checklist.attemptId || null,
   outcome: gateResult.outcome,
   reason: gateResult.reason,
   missingGates: gateResult.missingGates,
@@ -1516,6 +1547,7 @@ const runtimeFailures = await readRuntimeFailureRefsFromEventReplay({
   dataRoot,
   project,
   jobId,
+  attemptId,
   eventTypes: ["phase_poisoned_session", "job_panic"],
   failureKinds: ["poisoned_session", "runjob_panic"],
 });
@@ -1535,6 +1567,7 @@ In `server/services/event/event-store.ts`, update `completion_gate_evaluated` re
 completion_gate_evaluated(state, event) {
   state.completionGate = {
     outcome: event.outcome ?? null,
+    attemptId: event.attemptId ?? null,
     reason: event.reason ?? null,
     missingGates: Array.isArray(event.missingGates) ? event.missingGates : [],
     checklistOutcome: event.checklistOutcome ?? null,
@@ -1826,6 +1859,13 @@ test("checklist routing labels map to closed failure contracts", () => {
     requiresFixScope: false,
     retryable: false,
   });
+  assert.deepEqual(mapChecklistRoutingLabel("runtime_failure_ambiguous", {}), {
+    kind: FailureKind.ARTIFACT_INVALID,
+    action: "mark_failed",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
+  });
   assert.equal(mapChecklistRoutingLabel("unknown_label", {}).action, "mark_failed");
 });
 ```
@@ -1999,6 +2039,7 @@ test("audit export includes checklist artifacts from artifact index", async () =
     type: "phase_poisoned_session",
     jobId: "job-audit-checklist",
     project: "proj",
+    attemptId: "job-audit-checklist",
     phase: "verify",
     nodeId: "verify",
     reasons: ["provider output was poisoned"],
@@ -2049,6 +2090,7 @@ function collectRuntimeFailureRefs(events) {
     .filter((event) => event.type === "phase_poisoned_session" || event.type === "job_panic")
     .map((event) => ({
       type: event.type,
+      attemptId: event.attemptId || null,
       phase: event.phase || null,
       nodeId: event.nodeId || null,
       reason: event.reason || (Array.isArray(event.reasons) ? event.reasons.join(", ") : null),
@@ -2096,7 +2138,134 @@ Tested: audit export focused tests
 Not-tested: full filesystem review bundle"
 ```
 
-## Task 13: Document The Runtime Contract
+## Task 13: Add Attempt Boundary And Runtime Context Hardening
+
+**Files:**
+- Modify: `core/engine/run-job.ts`
+- Modify: `server/services/event/event-store.ts`
+- Modify: `server/services/readiness-checks.ts`
+- Modify: `runtime/worker/assignment-finalizer.ts`
+- Modify: `runtime/worker/managed-worker.ts`
+- Create: `tests/checklist-attempt-boundary.test.ts`
+- Create: `tests/checklist-runtime-context-audit.test.ts`
+
+- [ ] **Step 1: Add attempt-boundary tests**
+
+Create `tests/checklist-attempt-boundary.test.ts` with cases inspired by durable workflow run histories:
+
+- Checklist artifacts from attempt `001` remain in audit history but cannot complete attempt `002`.
+- A `phase_poisoned_session` or `job_panic` from attempt `001` does not block attempt `002` when `attemptId` is explicit.
+- A multi-attempt job with checklist artifacts or runtime failures missing `attemptId` fails closed as `runtime_failure_ambiguous`.
+- `completion_gate_evaluated` preserves `attemptId`.
+
+Expected assertion shape:
+
+```ts
+assert.equal(result.outcome, "runtime_failure_ambiguous");
+assert.equal(result.details.checklist.attemptId, "attempt-002");
+assert.equal(result.details.checklist.runtimeFailureRefs[0].attemptId, null);
+```
+
+- [ ] **Step 2: Stamp attempt identity on checklist-aware events**
+
+In `core/engine/run-job.ts`, derive an `attemptId` for checklist-aware runs:
+
+```ts
+const activeAttempt = ctx.sourceContext?.assignment?.attemptToken
+  || ctx.sourceContext?.assignment?.attempt
+  || ctx.sourceContext?.attemptToken
+  || ctx.sourceContext?.attempt;
+const attemptId = activeAttempt ? String(activeAttempt) : jobId;
+```
+
+Include `attemptId` on:
+
+- `artifact_created`
+- `dag_node_started`
+- `dag_node_completed`
+- `dag_node_failed`
+- `phase_poisoned_session`
+- `job_panic`
+- `completion_gate_evaluated`
+
+Direct runs without managed assignments use `jobId` as the compatibility attempt id. Retry jobs with managed assignment data must use the active attempt token or active attempt number, never the previous retry attempt.
+
+- [ ] **Step 3: Scope event replay by active attempt**
+
+Update `readChecklistArtifactsFromEventIndex` and `readRuntimeFailureRefsFromEventReplay` so checklist-aware completion selects records for the active `attemptId`.
+
+Rules:
+
+- If all relevant records have `attemptId`, use only the active attempt.
+- If the job has one attempt and records have no `attemptId`, treat `jobId` as the compatibility attempt.
+- If the job has multiple attempts and any relevant record lacks `attemptId`, return `runtime_failure_ambiguous` or `artifact_invalid`.
+- Always keep old attempts in audit export.
+
+- [ ] **Step 4: Add exit-handler-style finalization**
+
+Completion/audit finalization must run for success, failure, blocked, and panic paths. In `run-job.ts`, use a finalization helper that appends a terminal audit event even after phase failure or panic recovery:
+
+```ts
+await appendEvent(cpbRoot, project, jobId, {
+  type: "audit_finalized",
+  jobId,
+  project,
+  attemptId,
+  status: result.status || "failed",
+  reason: result.failure?.reason || result.reason || null,
+  ts: ts(),
+});
+```
+
+Do not let finalization mark a failed job as successful. The event is audit closure only.
+
+- [ ] **Step 5: Export runtime context without treating it as pass evidence**
+
+In `server/services/readiness-checks.ts`, add `runtimeContext` to checklist-aware audit JSON:
+
+```ts
+runtimeContext: {
+  assignmentId: materialized.assignmentId || assignment?.assignmentId || null,
+  attemptId: materialized.completionGate?.attemptId || activeAttempt?.attemptToken || null,
+  workerId: activeAttempt?.workerId || null,
+  acceptedAt: accepted?.acceptedAt || null,
+  heartbeatAt: heartbeat?.ts || null,
+  progressKind: heartbeat?.progressKind || heartbeat?.lastProgressType || null,
+  rateLimitedUntil: assignment?.rateLimitedUntil || null,
+  blocker: materialized.blocker || null,
+}
+```
+
+This data explains routing, availability, and worker health. It can support checklist items whose `verificationMethod` is `runtime_event` or `worker_lifecycle`, but it must not be accepted as proof for unrelated product behavior.
+
+- [ ] **Step 6: Verify**
+
+Run:
+
+```bash
+npm run build:node && npm run build:tests
+node dist/scripts/run-node-tests.js --unit tests/checklist-attempt-boundary.test.ts tests/checklist-runtime-context-audit.test.ts tests/checklist-completion-gate.test.ts tests/audit-export.test.ts
+```
+
+Expected: attempt-scoping, audit finalization, and runtime-context tests pass without weakening existing gate behavior.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add core/engine/run-job.ts server/services/event/event-store.ts server/services/readiness-checks.ts runtime/worker/assignment-finalizer.ts runtime/worker/managed-worker.ts tests/checklist-attempt-boundary.test.ts tests/checklist-runtime-context-audit.test.ts
+git commit -m "Scope checklist completion by active attempt
+
+Checklist-aware completion now follows durable workflow run boundaries: prior
+attempts remain auditable, while only the active attempt can authorize or block
+completion.
+
+Confidence: medium
+Scope-risk: moderate
+Tested: checklist attempt boundary and runtime context audit tests
+Not-tested: live multi-worker retry race"
+```
+
+## Task 14: Document The Runtime Contract
 
 **Files:**
 - Modify: `docs/architecture/runtime-boundaries.md`
@@ -2156,7 +2325,7 @@ Tested: git diff --check
 Not-tested: rendered README layout"
 ```
 
-## Task 14: Final Integration Verification
+## Task 15: Final Integration Verification
 
 **Files:**
 - No new files expected.
@@ -2196,6 +2365,8 @@ node dist/scripts/run-node-tests.js --unit \
   tests/checklist-completion-gate.test.ts \
   tests/checklist-retry-routing.test.ts \
   tests/checklist-dag-binding.test.ts \
+  tests/checklist-attempt-boundary.test.ts \
+  tests/checklist-runtime-context-audit.test.ts \
   tests/audit-export.test.ts
 ```
 
@@ -2220,7 +2391,7 @@ Not-tested: live provider task run"
 
 ## Self-Review Checklist
 
-- Spec coverage: tasks cover prepare-time checklist generation, artifact event/index visibility, execution mapping, verifier evidence, completion gate, retry, DAG metadata, failure taxonomy, and audit export.
+- Spec coverage: tasks cover prepare-time checklist generation, artifact event/index visibility, execution mapping, verifier evidence, completion gate, retry, DAG metadata, failure taxonomy, attempt boundary, runtime context, and audit export.
 - Compatibility: legacy verdict-only jobs remain supported until a job has an `acceptance-checklist` artifact.
 - Test shape: every runtime behavior change starts with a focused failing test.
 - Risk control: V1 avoids per-item DAG splitting, checklist mutation, and full bundle generation.

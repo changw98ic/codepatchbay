@@ -1217,8 +1217,6 @@ export function isCpbComment(body) {
     || body.includes("CodePatchBay updated this run.")
     || body.includes("Verified patch ready.")
     || body.includes("Draft PR opened.")
-    || body.includes("SDD Draft Requires Approval")
-    || body.includes("SDD Draft Approved")
     || body.includes("<!-- cpb-stale-marker -->");
 }
 
@@ -1243,10 +1241,6 @@ export function parseCpbCommentMeta(body) {
   } else if (body.includes("Draft PR opened.")) {
     meta.kind = "terminal";
     meta.status = "pr-opened";
-  } else if (body.includes("SDD Draft Requires Approval")) {
-    meta.kind = "sdd-approval";
-  } else if (body.includes("SDD Draft Approved")) {
-    meta.kind = "sdd-approved";
   } else if (body.includes("CodePatchBay updated this run.")) {
     meta.kind = "update";
   } else if (body.includes("<!-- cpb-stale-marker -->")) {

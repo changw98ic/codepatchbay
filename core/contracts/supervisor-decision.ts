@@ -16,7 +16,7 @@ const ACTION_SCHEMAS = {
     params: {
       required: ["workflow", "planMode"],
       properties: {
-        workflow: { type: "enum", values: ["standard", "complex", "direct", "blocked", "sdd-standard"] },
+        workflow: { type: "enum", values: ["standard", "complex", "direct", "blocked"] },
         planMode: { type: "enum", values: ["full", "light", "none", "auto", "parent"] },
       },
     },

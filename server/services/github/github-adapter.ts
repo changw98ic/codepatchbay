@@ -160,7 +160,7 @@ export function matchGithubTrigger(event, rules = DEFAULT_GITHUB_TRIGGERS) {
     return {
       matched: true,
       workflow: rule.workflow || "standard",
-      planMode: rule.planMode || null,
+      planMode: (rule as any).planMode || null,
       rule,
       reason,
     };

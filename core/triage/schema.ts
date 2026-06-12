@@ -1,12 +1,11 @@
-export const WORKFLOWS = new Set(["direct", "standard", "complex", "sdd-standard", "blocked"]);
+export const WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 export const PLAN_MODES = new Set(["none", "light", "full", "parent"]);
 
 const WORKFLOW_RANK = {
   direct: 0,
   standard: 1,
-  "sdd-standard": 2,
-  complex: 3,
-  blocked: 4,
+  complex: 2,
+  blocked: 3,
 };
 
 const PLAN_MODE_RANK = {
@@ -19,7 +18,6 @@ const PLAN_MODE_RANK = {
 const WORKFLOW_DEFAULT_PLAN_MODE = {
   direct: "none",
   standard: "full",
-  "sdd-standard": "parent",
   complex: "full",
   blocked: "none",
 };
