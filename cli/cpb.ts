@@ -73,7 +73,6 @@ async function usage() {
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>" [reason]  Redirect a job`);
   console.log(`  ${CYAN}merge-preview${NC} <project> <ref> [--base <branch>] [--json]  Preview merge`);
-  console.log(`  ${CYAN}migrate-runtime-root${NC} [--execute] [--dry-run]  One-time legacy runtime migration`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
   console.log(`  ${CYAN}webhook-serve${NC} [port]                      GitHub webhook server`);
@@ -138,8 +137,7 @@ retry: "retry.js",
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",
   "merge-preview": "merge-preview.js",
-  "migrate-runtime-root": "migrate-runtime-root.js",
-  release: "release-select.js",
+release: "release-select.js",
   config: "config.js",
   provider: "config.js",
   quickstart: "setup.js",
@@ -198,7 +196,7 @@ async function main() {
   }
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
-  const MIGRATION_COMMANDS = new Set(["migrate-runtime-root", "doctor", "version", "codegraph"]);
+  const MIGRATION_COMMANDS = new Set(["doctor", "version", "codegraph"]);
   if (!MIGRATION_COMMANDS.has(cmd)) {
     try {
       const { assertNoLegacyRuntimeData } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "runtime-migration-guard.js"));
