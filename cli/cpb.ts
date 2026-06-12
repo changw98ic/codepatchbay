@@ -48,8 +48,6 @@ async function usage() {
   console.log(`  ${CYAN}codegraph${NC} [status|start|stop]         CodeGraph MCP server`);
   console.log(`  ${CYAN}pipeline${NC} [--interactive] <project> "<task>" [retries]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
-  console.log(`  ${CYAN}research${NC} <project> "<task>"              Dual-agent research`);
-  console.log(`  ${CYAN}evolve-multi${NC} [--once|--scan|--continuous] [options]  Multi-phase evolution`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
@@ -111,14 +109,12 @@ const COMMANDS = {
   pipeline: "pipeline.js",
   profile: "profile.js",
   run: "run.js",
-  research: "research.js",
   status: "status.js",
   list: "list.js",
   jobs: "jobs.js",
   artifacts: "artifacts.js",
   verdict: "verdict.js",
-  "evolve-multi": "evolve-multi.js",
-retry: "retry.js",
+  retry: "retry.js",
   diff: "diff.js",
   review: "review.js",
   inbox: "inbox.js",
