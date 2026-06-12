@@ -82,7 +82,6 @@ async function usage() {
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
   console.log(`  ${CYAN}logs${NC} [--follow] [--worker <id>] [--job <id>] [--level <lvl>] [--since <5m|1h|1d>]  View logs`);
-  console.log(`  ${CYAN}dw-status${NC}                              Dynamic Workflow readiness check`);
   console.log(`  ${CYAN}profile${NC} [list|show|use]                Profile management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
@@ -155,7 +154,6 @@ const COMMANDS = {
   codegraph: "codegraph.js",
   "hub-orch": "hub-orch.js",
   logs: "logs.js",
-  "dw-status": "dw-status.js",
 };
 
 // --- Main ---
@@ -196,7 +194,7 @@ async function main() {
   }
 
   // Resolve per-project runtime root from hub registry for project-scoped commands
-  const MIGRATION_COMMANDS = new Set(["migrate-runtime-root", "doctor", "health-check", "version", "codegraph"]);
+  const MIGRATION_COMMANDS = new Set(["migrate-runtime-root", "doctor", "version", "codegraph"]);
   if (!MIGRATION_COMMANDS.has(cmd)) {
     try {
       const { assertNoLegacyRuntimeData } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "runtime-migration-guard.js"));

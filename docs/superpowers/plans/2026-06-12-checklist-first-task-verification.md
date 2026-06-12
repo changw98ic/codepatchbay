@@ -352,7 +352,7 @@ test("evaluateChecklistCompletion blocks stale evidence", () => {
     fixScope: [],
     reason: "passed",
   };
-  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: staleLedger });
+  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: staleLedger, executionMap: { unmappedChangedFiles: [] } });
   assert.equal(result.outcome, "evidence_stale");
   assert.deepEqual(result.staleEvidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
 });
@@ -367,8 +367,70 @@ test("evaluateChecklistCompletion blocks missing evidence refs", () => {
     fixScope: [],
     reason: "passed",
   };
-  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: ledger });
+  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: ledger, executionMap: { unmappedChangedFiles: [] } });
   assert.equal(result.outcome, "evidence_missing");
+});
+
+test("evaluateChecklistCompletion blocks poisoned runtime evidence", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({
+    checklist: checklist(),
+    verdict,
+    evidenceLedger: { ...ledger, evidence: [{ ...ledger.evidence[0], diffHash: "sha256:old", poisonedSession: true }] },
+    executionMap: { unmappedChangedFiles: [] },
+  });
+  assert.equal(result.outcome, "poisoned_session");
+  assert.deepEqual(result.poisonedEvidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
+  assert.deepEqual(result.staleEvidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
+});
+
+test("evaluateChecklistCompletion blocks unresolved runtime failure events", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({
+    checklist: checklist(),
+    verdict,
+    evidenceLedger: ledger,
+    executionMap: { unmappedChangedFiles: [] },
+    runtimeFailures: [{ type: "job_panic", phase: "verify", reason: "panic while writing artifact" }],
+  });
+  assert.equal(result.outcome, "runjob_panic");
+  assert.deepEqual(result.runtimeFailureRefs, [{ type: "job_panic", phase: "verify", nodeId: null, reason: "panic while writing artifact" }]);
+});
+
+test("evaluateChecklistCompletion blocks unmapped execution changes", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({
+    checklist: checklist(),
+    verdict,
+    evidenceLedger: ledger,
+    executionMap: { unmappedChangedFiles: ["core/engine/run-job.ts"] },
+  });
+  assert.equal(result.outcome, "scope_violation");
+  assert.deepEqual(result.unmappedChangedFiles, ["core/engine/run-job.ts"]);
 });
 ```
 
@@ -484,10 +546,50 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
   return { ok: true };
 }
 
-export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger }: AnyRecord) {
+function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {}) {
+  return {
+    outcome,
+    reason,
+    failedChecklistIds: [],
+    uncheckedChecklistIds: [],
+    missingEvidenceRefs: [],
+    staleEvidenceRefs: [],
+    poisonedEvidenceRefs: [],
+    runtimeFailureRefs: [],
+    unmappedChangedFiles: [],
+    ...fields,
+  };
+}
+
+function normalizeRuntimeFailureRefs(runtimeFailures: unknown) {
+  const allowed = new Set(["phase_poisoned_session", "poisoned_session", "job_panic", "runjob_panic"]);
+  return (Array.isArray(runtimeFailures) ? runtimeFailures : [])
+    .map((entry: AnyRecord) => {
+      const type = text(entry?.type || entry?.kind || entry?.code);
+      if (!allowed.has(type)) return null;
+      return {
+        type,
+        phase: text(entry.phase) || null,
+        nodeId: text(entry.nodeId) || null,
+        reason: text(entry.reason) || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger, executionMap, runtimeFailures }: AnyRecord) {
+  const runtimeFailureRefs = normalizeRuntimeFailureRefs(runtimeFailures);
+  if (runtimeFailureRefs.length > 0) {
+    const hasPanic = runtimeFailureRefs.some((entry: AnyRecord) => entry.type === "job_panic" || entry.type === "runjob_panic");
+    return checklistOutcome(hasPanic ? "runjob_panic" : "poisoned_session", "runtime failure event blocks checklist completion", { runtimeFailureRefs });
+  }
   const validation = validateChecklistVerdict(verdict, checklist);
   if (!validation.ok) {
-    return { outcome: "checklist_invalid", reason: validation.reason, failedChecklistIds: [], uncheckedChecklistIds: [], missingEvidenceRefs: [], staleEvidenceRefs: [] };
+    return checklistOutcome("checklist_invalid", validation.reason);
+  }
+  const unmappedChangedFiles = Array.isArray(executionMap?.unmappedChangedFiles) ? executionMap.unmappedChangedFiles : [];
+  if (unmappedChangedFiles.length > 0) {
+    return checklistOutcome("scope_violation", "execution map contains unmapped changed files", { unmappedChangedFiles });
   }
   const ledgerId = text(evidenceLedger?.ledgerId);
   const finalHead = text(evidenceLedger?.finalWorktree?.head);
@@ -500,6 +602,7 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
   const uncheckedChecklistIds: string[] = [];
   const missingEvidenceRefs: AnyRecord[] = [];
   const staleEvidenceRefs: AnyRecord[] = [];
+  const poisonedEvidenceRefs: AnyRecord[] = [];
   for (const item of verdict.items) {
     const checklistItem = checklist.items.find((entry: AnyRecord) => entry.id === item.checklistId);
     if (!checklistItem?.required) continue;
@@ -515,14 +618,19 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
         if (text(entry.worktreeHead) !== finalHead || text(entry.diffHash) !== finalDiffHash) {
           staleEvidenceRefs.push(ref);
         }
+        if (entry.poisonedSession === true) {
+          poisonedEvidenceRefs.push(ref);
+        }
       }
     }
   }
-  if (failedChecklistIds.length > 0) return { outcome: "checklist_failed", reason: "required checklist items failed", failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs };
-  if (uncheckedChecklistIds.length > 0) return { outcome: "checklist_incomplete", reason: "required checklist items were not checked", failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs };
-  if (missingEvidenceRefs.length > 0) return { outcome: "evidence_missing", reason: "pass verdict references missing evidence", failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs };
-  if (staleEvidenceRefs.length > 0) return { outcome: "evidence_stale", reason: "pass verdict references stale evidence", failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs };
-  return { outcome: "complete", reason: "all required checklist items passed with fresh evidence", failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs };
+  const common = { failedChecklistIds, uncheckedChecklistIds, missingEvidenceRefs, staleEvidenceRefs, poisonedEvidenceRefs, unmappedChangedFiles };
+  if (poisonedEvidenceRefs.length > 0) return checklistOutcome("poisoned_session", "pass verdict references poisoned-session evidence", common);
+  if (failedChecklistIds.length > 0) return checklistOutcome("checklist_failed", "required checklist items failed", common);
+  if (uncheckedChecklistIds.length > 0) return checklistOutcome("checklist_incomplete", "required checklist items were not checked", common);
+  if (missingEvidenceRefs.length > 0) return checklistOutcome("evidence_missing", "pass verdict references missing evidence", common);
+  if (staleEvidenceRefs.length > 0) return checklistOutcome("evidence_stale", "pass verdict references stale evidence", common);
+  return checklistOutcome("complete", "all required checklist items passed with fresh evidence", common);
 }
 ```
 
@@ -1132,11 +1240,14 @@ function buildEvidenceLedger({ jobId, project, verificationEvidence, ledgerId }:
       summary: check.ok ? `${check.gate || check.command} passed` : check.reason || `${check.gate || check.command} failed`,
       worktreeHead: finalWorktree.head,
       diffHash: finalWorktree.diffHash,
+      ...(check.poisonedSession === true ? { poisonedSession: true, poisonedReasons: check.poisonedReasons || [] } : {}),
     });
   }
   return { schemaVersion: 1, jobId, project, ledgerId, finalWorktree, evidence };
 }
 ```
+
+Ledger-level `poisonedSession` is only a mirror for verifier-collected command evidence. Runtime-classified `phase_poisoned_session` and `job_panic` events are authoritative and are collected by the completion gate from event replay in Task 8.
 
 - [ ] **Step 3: Persist evidence ledger and checklist verdict**
 
@@ -1269,8 +1380,28 @@ test("completion gate blocks stale checklist evidence", () => {
       finalWorktree: { head: "abc", diffHash: "sha256:new" },
       evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:old" }],
     },
+    executionMap: {
+      schemaVersion: 1,
+      mappings: [{ checklistId: "AC-001", changedFiles: ["cli/commands/status.ts"] }],
+      changedFiles: ["cli/commands/status.ts"],
+      unmappedChangedFiles: [],
+    },
   });
   assert.equal(result.outcome, "evidence_stale");
+});
+
+test("completion gate blocks unresolved runtime failures", () => {
+  const result = evaluateCompletionGate({
+    job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
+    parsedVerdict: { status: "pass", raw: "PASS" },
+    checklist: { schemaVersion: 1, jobId: "job-1", project: "flow", status: "frozen", source: { task: "task", issue: null, documents: [] }, items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", required: true, area: "runtime", risk: "high", verificationMethod: "runtime_event", expectedEvidence: "no runtime failure event", dependsOn: [], allowedFiles: [] }], assumptions: [] },
+    checklistVerdict: { schemaVersion: 1, jobId: "job-1", status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }], blocking: [], fixScope: [], reason: "ok" },
+    evidenceLedger: { ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:one" }] },
+    executionMap: { unmappedChangedFiles: [] },
+    runtimeFailures: [{ type: "phase_poisoned_session", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
+  });
+  assert.equal(result.outcome, "poisoned_session");
+  assert.equal(result.details.checklist.runtimeFailureRefs[0].type, "phase_poisoned_session");
 });
 
 test("completion gate event preserves checklist fields in materialized state", () => {
@@ -1285,20 +1416,27 @@ test("completion gate event preserves checklist fields in materialized state", (
         uncheckedChecklistIds: [],
         missingEvidenceRefs: [],
         staleEvidenceRefs: [],
+        poisonedEvidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }],
+        runtimeFailureRefs: [{ type: "phase_poisoned_session", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
+        unmappedChangedFiles: [],
       },
     },
   });
   const state = materializeJob([event]);
   assert.equal(state.completionGate.checklistOutcome, "checklist_failed");
   assert.deepEqual(state.completionGate.failedChecklistIds, ["AC-002"]);
+  assert.equal(state.completionGate.runtimeFailureCount, 1);
 });
 ```
 
 Add integration-style negative cases:
 
 - A checklist-aware job with `phaseSourceContext` and diagnostics claiming pass, but no `acceptance-checklist artifact_created`, must not complete through the checklist path.
+- A checklist-aware `workflow: "readonly"` or `planMode: "none"` job with an event-indexed `acceptance-checklist` and legacy `VERDICT: PASS`, but no `checklist-verdict`, must fail the checklist gate instead of using legacy fallback.
 - Clearing phase diagnostics after artifacts are emitted must not change completion output; the gate must replay from artifact events, artifact index, and artifact JSON.
 - `artifactsByKind` without a readable artifact JSON file must fail closed as `artifact_invalid`.
+- `execution-map.unmappedChangedFiles` non-empty must block completion even when every checklist item is `pass` and evidence is fresh.
+- An unresolved `phase_poisoned_session` or `job_panic` event for the completed attempt must block completion even when every checklist artifact is valid and fresh.
 
 - [ ] **Step 2: Extend completion gate**
 
@@ -1314,13 +1452,15 @@ Add optional args:
 checklist,
 checklistVerdict,
 evidenceLedger,
+executionMap,
+runtimeFailures,
 ```
 
 Before legacy verdict pass/fail check:
 
 ```ts
-if (details.isMutating && checklist) {
-  const checklistResult = evaluateChecklistCompletion({ checklist, verdict: checklistVerdict, evidenceLedger });
+if (checklist) {
+  const checklistResult = evaluateChecklistCompletion({ checklist, verdict: checklistVerdict, evidenceLedger, executionMap, runtimeFailures });
   if (checklistResult.outcome !== "complete") {
     return gateResult(checklistResult.outcome, checklistResult.reason, ["checklist"], {
       ...details,
@@ -1346,6 +1486,11 @@ return {
   uncheckedChecklistIds: checklist.uncheckedChecklistIds || [],
   missingEvidenceRefs: checklist.missingEvidenceRefs || [],
   staleEvidenceRefs: checklist.staleEvidenceRefs || [],
+  poisonedEvidenceRefs: checklist.poisonedEvidenceRefs || [],
+  runtimeFailureRefs: checklist.runtimeFailureRefs || [],
+  runtimeFailureCount: Array.isArray(checklist.runtimeFailureRefs) ? checklist.runtimeFailureRefs.length : 0,
+  unmappedChangedFiles: checklist.unmappedChangedFiles || [],
+  unmappedChangedFileCount: Array.isArray(checklist.unmappedChangedFiles) ? checklist.unmappedChangedFiles.length : 0,
   ts: new Date().toISOString(),
 };
 ```
@@ -1360,16 +1505,27 @@ const checklistArtifacts = await readChecklistArtifactsFromEventIndex({
   dataRoot,
   project,
   jobId,
-  requiredKinds: ["acceptance-checklist", "evidence-ledger", "checklist-verdict"],
+  requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
 });
 const acceptanceChecklist = checklistArtifacts["acceptance-checklist"];
+const executionMap = checklistArtifacts["execution-map"];
 const checklistVerdict = checklistArtifacts["checklist-verdict"];
 const evidenceLedger = checklistArtifacts["evidence-ledger"];
+const runtimeFailures = await readRuntimeFailureRefsFromEventReplay({
+  cpbRoot,
+  dataRoot,
+  project,
+  jobId,
+  eventTypes: ["phase_poisoned_session", "job_panic"],
+  failureKinds: ["poisoned_session", "runjob_panic"],
+});
 ```
 
-Pass these to `evaluateCompletionGate`.
+Pass artifact inputs and `runtimeFailures` to `evaluateCompletionGate`.
 
 Do not use `phaseSourceContext`, phase diagnostics, prompt text, legacy parsed verdict, or artifact metadata as authoritative checklist inputs. They may remain in process only as handles or compatibility context.
+Do not allow fresh artifact JSON to clear runtime failures. Only retry attempt boundaries or explicit recovery events may make older runtime failures irrelevant, and V1 should fail closed if attempt ownership is ambiguous.
+The checklist-aware branch is selected by readable event-indexed `acceptance-checklist`, not by mutating/non-mutating workflow classification. Legacy verdict fallback runs only when no readable acceptance checklist artifact exists.
 
 - [ ] **Step 4: Materialize checklist gate fields**
 
@@ -1386,6 +1542,11 @@ completion_gate_evaluated(state, event) {
     uncheckedChecklistIds: Array.isArray(event.uncheckedChecklistIds) ? event.uncheckedChecklistIds : [],
     missingEvidenceRefs: Array.isArray(event.missingEvidenceRefs) ? event.missingEvidenceRefs : [],
     staleEvidenceRefs: Array.isArray(event.staleEvidenceRefs) ? event.staleEvidenceRefs : [],
+    poisonedEvidenceRefs: Array.isArray(event.poisonedEvidenceRefs) ? event.poisonedEvidenceRefs : [],
+    runtimeFailureRefs: Array.isArray(event.runtimeFailureRefs) ? event.runtimeFailureRefs : [],
+    runtimeFailureCount: Number.isFinite(event.runtimeFailureCount) ? event.runtimeFailureCount : 0,
+    unmappedChangedFiles: Array.isArray(event.unmappedChangedFiles) ? event.unmappedChangedFiles : [],
+    unmappedChangedFileCount: Number.isFinite(event.unmappedChangedFileCount) ? event.unmappedChangedFileCount : 0,
     evaluatedAt: event.ts ?? null,
   };
 }
@@ -1495,7 +1656,8 @@ test("failure router can retry verifier for missing evidence without file scope"
       },
     },
   });
-  assert.equal(decision.action, "retry_verify");
+  assert.equal(decision.action, "retry_same_worker");
+  assert.equal(decision.retryPhase, "verify");
   assert.equal(decision.retryable, true);
 });
 ```
@@ -1602,7 +1764,9 @@ Not-tested: long-running worker recovery job"
 
 **Files:**
 - Modify: `core/contracts/failure.ts`
+- Modify: `core/workflow/acceptance-checklist.ts`
 - Modify: `core/engine/run-job.ts`
+- Modify: `server/orchestrator/failure-router.ts`
 - Create: `tests/checklist-failure-kind.test.ts`
 
 - [ ] **Step 1: Add failure-kind and routing matrix tests**
@@ -1614,6 +1778,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { FailureKind, failure } from "../core/contracts/failure.js";
+import { mapChecklistRoutingLabel } from "../core/workflow/acceptance-checklist.js";
 
 test("scope violation is a valid failure kind for checklist routing", () => {
   const result = failure({
@@ -1626,15 +1791,42 @@ test("scope violation is a valid failure kind for checklist routing", () => {
 });
 
 test("checklist routing labels map to closed failure contracts", () => {
-  const matrix = [
-    { routingLabel: "artifact_invalid", kind: FailureKind.ARTIFACT_INVALID, action: "block_or_mark_failed", retryPhase: null, requiresFixScope: false },
-    { routingLabel: "verdict_invalid", kind: FailureKind.VERDICT_INVALID, action: "retry_verify", retryPhase: "verify", requiresFixScope: false },
-    { routingLabel: "checklist_failed", kind: FailureKind.VERIFICATION_FAILED, action: "retry_execute_with_scope", retryPhase: "execute", requiresFixScope: true },
-    { routingLabel: "evidence_missing", kind: FailureKind.VERIFICATION_FAILED, action: "retry_verify_without_scope", retryPhase: "verify", requiresFixScope: false },
-    { routingLabel: "scope_violation", kind: FailureKind.SCOPE_VIOLATION, action: "mark_failed", retryPhase: null, requiresFixScope: false },
-    { routingLabel: "needs_clarification", kind: FailureKind.HUMAN_APPROVAL_REQUIRED, action: "block", retryPhase: null, requiresFixScope: false },
-  ];
-  for (const row of matrix) assert.ok(row.kind, row.routingLabel);
+  assert.deepEqual(mapChecklistRoutingLabel("scope_violation", {}), {
+    kind: FailureKind.SCOPE_VIOLATION,
+    action: "mark_failed",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("checklist_failed", { fixScope: ["cli/status.ts"] }), {
+    kind: FailureKind.VERIFICATION_FAILED,
+    action: "retry_same_worker",
+    retryPhase: "execute",
+    requiresFixScope: true,
+    retryable: true,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("evidence_missing", { fixScope: [] }), {
+    kind: FailureKind.VERIFICATION_FAILED,
+    action: "retry_same_worker",
+    retryPhase: "verify",
+    requiresFixScope: false,
+    retryable: true,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("poisoned_session", {}), {
+    kind: FailureKind.POISONED_SESSION,
+    action: "mark_failed",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("runjob_panic", {}), {
+    kind: FailureKind.RUNJOB_PANIC,
+    action: "mark_failed",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
+  });
+  assert.equal(mapChecklistRoutingLabel("unknown_label", {}).action, "mark_failed");
 });
 ```
 
@@ -1646,9 +1838,11 @@ In `core/contracts/failure.ts`, add:
 SCOPE_VIOLATION: "scope_violation",
 ```
 
-Use existing `HUMAN_APPROVAL_REQUIRED` for `needs_clarification` routing and existing runtime/timeout kinds for infrastructure labels.
+Use existing `HUMAN_APPROVAL_REQUIRED` for `needs_clarification` routing. Preserve current runtime hardening kinds `RUNJOB_PANIC` and `POISONED_SESSION`; checklist routing must fail closed on both.
 
-Document the closed routing matrix in the failure module or adjacent tests. `SCOPE_VIOLATION` is non-retryable by default; adding it to the enum is not enough unless `FailureRouter.route()` has a deterministic action for it.
+Add `mapChecklistRoutingLabel(label, context)` in `core/workflow/acceptance-checklist.ts` or an adjacent workflow contract module. It must return `{ kind, action, retryPhase, requiresFixScope, retryable }` using only router actions the current reconciler supports. V1 uses `action: "retry_same_worker"` plus `retryPhase: "verify"` for verifier-only retry; it does not introduce a new router action.
+
+Document the closed routing matrix in the failure module or adjacent tests. `SCOPE_VIOLATION` is non-retryable by default; adding it to the enum is not enough unless `FailureRouter.route()` has a deterministic action for it. Unknown labels must fail closed instead of falling back to `UNKNOWN`.
 
 - [ ] **Step 3: Use SCOPE_VIOLATION in scope guard failures**
 
@@ -1659,6 +1853,7 @@ kind: FailureKind.SCOPE_VIOLATION,
 ```
 
 Keep `cause.routingLabel = "scope_violation"` when useful for audit.
+Runtime event/code names such as `scope_guard_violation` may remain as event diagnostics, but shared failure contracts must use `FailureKind.SCOPE_VIOLATION` and `cause.routingLabel = "scope_violation"`.
 
 - [ ] **Step 4: Verify**
 
@@ -1674,7 +1869,7 @@ Expected: failure kind test passes and scope guard tests remain valid.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/contracts/failure.ts core/engine/run-job.ts tests/checklist-failure-kind.test.ts
+git add core/contracts/failure.ts core/workflow/acceptance-checklist.ts core/engine/run-job.ts server/orchestrator/failure-router.ts tests/checklist-failure-kind.test.ts
 git commit -m "Represent scope violations as a first-class failure kind
 
 Checklist routing needs executable failure taxonomy instead of labels that
@@ -1690,6 +1885,7 @@ Not-tested: external scheduler display of new kind"
 
 **Files:**
 - Modify: `core/engine/run-job.ts`
+- Modify: `core/workflow/acceptance-checklist.ts`
 - Create: `tests/checklist-dag-binding.test.ts`
 
 - [ ] **Step 1: Add DAG event tests**
@@ -1703,7 +1899,10 @@ assert.deepEqual(events.find((event) => event.type === "dag_node_started" && eve
 assert.deepEqual(events.find((event) => event.type === "dag_node_completed" && event.phase === "verify").checklistIds, ["AC-001"]);
 ```
 
-Add a negative fixture with a custom mutating/dynamic node that lacks `checklistIds` and is not `checklistNeutral: true`; checklist-aware completion must fail closed.
+Add negative fixtures:
+
+- A custom mutating/dynamic node lacks `checklistIds` and is not `checklistNeutral: true`; checklist-aware completion fails with `dag_uncovered`.
+- A verify node does not depend on an execute node covering the same required ids; checklist-aware completion fails with `dag_uncovered`.
 
 - [ ] **Step 2: Emit checklist ids on DAG node events**
 
@@ -1722,6 +1921,16 @@ Add DAG validation for checklist-aware jobs:
 - Side-effecting or verifier nodes must have `checklistIds`, or `checklistNeutral: true`.
 - Verify nodes must depend on execute nodes covering the same required ids.
 - DAG completion is coverage evidence only. Item pass still requires `checklist-verdict.items[*].result === "pass"` and fresh evidence refs.
+
+Implement this as a production helper:
+
+```ts
+export function validateChecklistDagCoverage(workflowDag: AnyRecord, acceptanceChecklist: AnyRecord) {
+  // returns { ok: boolean, violations: [], outcome: "complete" | "dag_uncovered" }
+}
+```
+
+Call it after DAG materialization for checklist-aware jobs and inside completion gate before accepting checklist completion. Unknown/custom dynamic nodes fail closed unless they carry non-empty `checklistIds` or `checklistNeutral: true`.
 
 - [ ] **Step 4: Verify**
 
@@ -1786,18 +1995,29 @@ test("audit export includes checklist artifacts from artifact index", async () =
       ts: "2026-06-12T00:00:00Z",
     }, { dataRoot });
   }
+  await appendEvent(cpbRoot, "proj", "job-audit-checklist", {
+    type: "phase_poisoned_session",
+    jobId: "job-audit-checklist",
+    project: "proj",
+    phase: "verify",
+    nodeId: "verify",
+    reasons: ["provider output was poisoned"],
+    classifier: "poisoned-session-v1",
+    ts: "2026-06-12T00:00:01Z",
+  }, { dataRoot });
   const audit = await buildJobAuditExport(cpbRoot, "proj", "job-audit-checklist", { dataRoot });
   assert.equal(audit.checklist.items[0].id, "AC-001");
   assert.deepEqual(audit.executionMap.changedFiles, ["README.md"]);
   assert.equal(audit.evidenceLedger.finalWorktree.diffHash, "sha256:one");
   assert.deepEqual(audit.checklistVerdict.items[0].evidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
+  assert.equal(audit.runtimeFailures[0].type, "phase_poisoned_session");
   assert.equal(audit.completionGate?.checklistOutcome ?? null, null);
 });
 ```
 
 - [ ] **Step 2: Read checklist artifacts safely**
 
-In `server/services/readiness-checks.ts`, inside `buildJobAuditExport`, find entries:
+In `server/services/readiness-checks.ts`, inside `buildJobAuditExport`, import both `readEventsReadOnly` and `materializeJob` from the event store, then find entries:
 
 ```ts
 const latestByKind = (kind) => [...artifactIndex.entries].reverse().find((entry) => entry.kind === kind && !entry.broken);
@@ -1805,6 +2025,7 @@ const checklistEntry = latestByKind("acceptance-checklist");
 const executionMapEntry = latestByKind("execution-map");
 const evidenceLedgerEntry = latestByKind("evidence-ledger");
 const checklistVerdictEntry = latestByKind("checklist-verdict");
+const materialized = materializeJob(events);
 ```
 
 Add helper:
@@ -1820,6 +2041,22 @@ async function readJsonArtifact(entry) {
 }
 ```
 
+Add helper:
+
+```ts
+function collectRuntimeFailureRefs(events) {
+  return events
+    .filter((event) => event.type === "phase_poisoned_session" || event.type === "job_panic")
+    .map((event) => ({
+      type: event.type,
+      phase: event.phase || null,
+      nodeId: event.nodeId || null,
+      reason: event.reason || (Array.isArray(event.reasons) ? event.reasons.join(", ") : null),
+      ts: event.ts || null,
+    }));
+}
+```
+
 Return:
 
 ```ts
@@ -1827,10 +2064,11 @@ checklist: await readJsonArtifact(checklistEntry),
 executionMap: await readJsonArtifact(executionMapEntry),
 evidenceLedger: await readJsonArtifact(evidenceLedgerEntry),
 checklistVerdict: await readJsonArtifact(checklistVerdictEntry),
+runtimeFailures: collectRuntimeFailureRefs(events),
 completionGate: materialized.completionGate || null,
 ```
 
-This code path must not read checklist content from phase diagnostics or source context. If an artifact index entry points to a missing or invalid JSON file, include `null` for that section and preserve the broken entry in `artifactIndex` rather than fabricating success.
+This code path must not read checklist content from phase diagnostics or source context. Runtime failures come from event replay, not artifact metadata. If an artifact index entry points to a missing or invalid JSON file, include `null` for that section and preserve the broken entry in `artifactIndex` rather than fabricating success.
 
 - [ ] **Step 3: Keep audit safety tests passing**
 

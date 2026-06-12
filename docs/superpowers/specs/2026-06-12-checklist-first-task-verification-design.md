@@ -208,7 +208,9 @@ Rules:
 - A pass result cannot rely on executor summary or unverifiable prose.
 - Evidence is stale when its `worktreeHead` or `diffHash` differs from `evidenceLedger.finalWorktree`.
 - Completion fails when pass evidence is missing or stale.
-- Negative-path evidence is required for CLI, API, validation, auth, retry, and runtime lifecycle tasks.
+- Output classified by the runtime as a poisoned session is not valid pass evidence. `phase_poisoned_session`, `job_panic`, `poisoned_session`, and `runjob_panic` records are completion-gate inputs from the event log or materialized attempt state; artifact JSON cannot clear or override them.
+- If runtime failure information is mirrored into `evidence-ledger`, the evidence entry must include `poisonedSession: true` and preserve classifier reasons, but ledger mirroring is audit detail only. Runtime events remain the authoritative failure signal.
+- Negative-path evidence is required for CLI, validation, retry, runtime lifecycle, artifact/event/audit, DAG, reconciler/failure-router, and worker tasks.
 
 ### Checklist Verdict
 
@@ -297,6 +299,7 @@ Rules:
 - Verify nodes must depend on execute nodes that claim their checklist ids.
 - High-risk checklist ids can require grouped `adversarial_verify` nodes.
 - In checklist-aware jobs, side-effecting execute, remediate, verify, review, adversarial, or custom dynamic nodes must either carry `checklistIds` or be explicitly marked `checklistNeutral: true`. Unmarked mutating/custom nodes fail the completion gate.
+- V1 must implement a production DAG coverage validator such as `validateChecklistDagCoverage(workflowDag, acceptanceChecklist)`. The validator fails closed when a required verify node is missing, a verify node does not depend on execute coverage for the same required ids, or an unknown/custom dynamic node is neither covered by `checklistIds` nor explicitly `checklistNeutral: true`.
 - Per-item split DAG nodes are V2.
 
 ## Routing Model
@@ -308,23 +311,31 @@ Signals:
 - `area`: `cli`, `server`, `runtime`, `bridge`, `core`, `web`, `security`, `docs`, `tests`.
 - `risk`: `low`, `medium`, `high`.
 - `scope`: expected changed files and directories.
-- `evidenceRequirement`: `command`, `test`, `api`, `static`, `runtime_event`, `visual`, `manual`.
-- `routingLabel`: `scope_violation`, `infra_error`, `needs_clarification`, `checklist_failed`, `checklist_unchecked`.
+- `verificationMethod`: `command`, `test`, `static`, `runtime_event`, `artifact_event`, `audit_export`, `dag_event`, `worker_lifecycle`, `manual`.
+- `routingLabel`: `artifact_invalid`, `verdict_invalid`, `checklist_invalid`, `checklist_failed`, `checklist_incomplete`, `evidence_missing`, `evidence_stale`, `scope_violation`, `dag_uncovered`, `poisoned_session`, `runjob_panic`, `infra_error`, `needs_clarification`.
 - `dependencyState`: blocked, ready, completed, failed.
+
+Completion outcomes, routing labels, `FailureKind`, router action, and retry phase are separate layers. V1 must implement a production mapping helper such as `mapChecklistRoutingLabel(label, context)` that returns `{ kind, action, retryPhase, requiresFixScope }` and fails closed for unknown labels. Tests must call this helper and the existing router path; a documentation-only table is not sufficient.
 
 Routing labels must map to valid `FailureKind` values before they enter failure contracts:
 
-| Routing label | FailureKind | Router action | Retry phase | File scope required |
+| Routing label / outcome | FailureKind | Router action | Retry phase | File scope required |
 | --- | --- | --- | --- | --- |
 | `artifact_invalid` | `artifact_invalid` | block or mark failed | none | no |
-| `verdict_invalid` | `verdict_invalid` | retry when verifier can repair shape | verify | no |
-| `checklist_failed` | `verification_failed` | retry only with actionable `fixScope`; otherwise mark failed | execute | yes |
-| `evidence_missing` / `checklist_unchecked` | `verification_failed` | retry verifier when no file change is needed; otherwise execute repair with `fixScope` | verify or execute | conditional |
+| `verdict_invalid` / `checklist_invalid` | `verdict_invalid` or `artifact_invalid` | `retry_same_worker` when verifier can repair shape | verify | no |
+| `checklist_failed` | `verification_failed` | `retry_same_worker` only with actionable `fixScope`; otherwise mark failed | execute | yes |
+| `checklist_incomplete` / `evidence_missing` / `evidence_stale` | `verification_failed` | `retry_same_worker` when no file change is needed; otherwise execute repair with `fixScope` | verify or execute | conditional |
+| `dag_uncovered` | `artifact_invalid` | block or mark failed | none | no |
 | `scope_violation` | `scope_violation` | mark failed, no blind retry | none | no |
+| `poisoned_session` | `poisoned_session` | mark failed, no blind retry | none | no |
+| `runjob_panic` | `runjob_panic` | mark failed, no blind retry | none | no |
 | `needs_clarification` | `human_approval_required` | block | none | no |
 | `infra_error` | existing runtime, timeout, worker, or agent failure kind | existing infra policy | existing policy | no |
 
 The matrix is part of the contract. A fallback `UNKNOWN` or generic verification failure is not enough for checklist-aware routing.
+The router action must use actions the current reconciler supports. V1 represents verifier-only retry as `action: "retry_same_worker"` plus `retryPhase: "verify"`; it does not introduce a standalone verify-retry router action.
+`scope_guard_violation` is a runtime event/code describing where the guard fired. `scope_violation` is the shared `FailureKind` value. Do not use these names interchangeably.
+`phase_poisoned_session` and `job_panic` are runtime events. Their shared failure kinds are `poisoned_session` and `runjob_panic`.
 
 ## Retry Semantics
 
@@ -358,7 +369,8 @@ Rules:
 
 The completion gate evaluates checklist state, DAG state, evidence integrity, and scope state.
 
-The gate must build checklist inputs from event-indexed artifact JSON: `acceptance-checklist`, `execution-map`, `evidence-ledger`, and `checklist-verdict`. It must not use `sourceContext`, phase diagnostics, prompt text, executor summary, legacy `VERDICT: PASS`, or artifact metadata that conflicts with JSON content as authoritative checklist facts.
+The gate must build checklist inputs from event-indexed artifact JSON: `acceptance-checklist`, `execution-map`, `evidence-ledger`, and `checklist-verdict`. It must also read unresolved runtime failure refs for the completed attempt from event replay or materialized job state: `phase_poisoned_session`, `job_panic`, `poisoned_session`, and `runjob_panic`. It must not use `sourceContext`, phase diagnostics, prompt text, executor summary, legacy `VERDICT: PASS`, or artifact metadata that conflicts with JSON content as authoritative checklist facts.
+Checklist-aware status is defined by a readable event-indexed `acceptance-checklist` artifact, not by mutating/non-mutating workflow classification. Legacy verdict fallback is allowed only when no readable event-indexed `acceptance-checklist` exists.
 
 Required checks:
 
@@ -367,10 +379,12 @@ Required checks:
 - Every evidence ref resolves to an evidence entry in the referenced ledger.
 - Every pass evidence entry is fresh against `evidenceLedger.finalWorktree`.
 - No required item is `fail` or `unchecked`.
+- `execution-map.unmappedChangedFiles` is empty.
 - Every required verify DAG node completed.
 - Required adversarial verify nodes completed for high-risk items.
 - Every checklist-aware side-effecting or verifier DAG node is covered by `checklistIds` or explicitly `checklistNeutral: true`.
 - No unresolved scope violation exists.
+- No unresolved `phase_poisoned_session` or `job_panic` event exists for the completed attempt.
 - Top-level checklist verdict status is consistent with item results.
 
 The legacy `VERDICT: PASS` gate remains a compatibility fallback only for jobs without an `acceptance-checklist` artifact.
@@ -382,6 +396,11 @@ The `completion_gate_evaluated` event and reducer must preserve checklist fields
 - `uncheckedChecklistIds`
 - `missingEvidenceRefs`
 - `staleEvidenceRefs`
+- `poisonedEvidenceRefs`
+- `runtimeFailureRefs`
+- `runtimeFailureCount`
+- `unmappedChangedFiles`
+- `unmappedChangedFileCount`
 
 ## Audit Export
 
@@ -400,11 +419,12 @@ The audit JSON must include:
   "executionMap": {},
   "evidenceLedger": {},
   "checklistVerdict": {},
+  "runtimeFailures": [],
   "completionGate": {}
 }
 ```
 
-The export reads checklist sections from the artifact index and artifact JSON files produced by `artifact_created` events. It must still work when phase diagnostics and source context are unavailable.
+The export reads checklist sections from the artifact index and artifact JSON files produced by `artifact_created` events. It reads runtime failures from event replay or materialized job state. It must still work when phase diagnostics and source context are unavailable.
 
 The export should let a reviewer answer:
 
