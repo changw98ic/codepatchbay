@@ -359,7 +359,7 @@ Signals:
 - `area`: `cli`, `server`, `runtime`, `bridge`, `core`, `web`, `security`, `docs`, `tests`.
 - `risk`: `low`, `medium`, `high`.
 - `scope`: expected changed files and directories.
-- `verificationMethod`: `command`, `test`, `static`, `runtime_event`, `artifact_event`, `audit_export`, `dag_event`, `worker_lifecycle`, `manual`.
+- `verificationMethod`: `command`, `test`, `static`, `runtime_event`, `artifact_event`, `audit_export`, `dag_event`, `worker_lifecycle`, `manual`, `absence_check`.
 - `routingLabel`: `artifact_invalid`, `verdict_invalid`, `checklist_invalid`, `checklist_failed`, `checklist_incomplete`, `evidence_missing`, `evidence_stale`, `scope_violation`, `dag_uncovered`, `runtime_failure_ambiguous`, `poisoned_session`, `runjob_panic`, `infra_error`, `needs_clarification`.
 - `dependencyState`: blocked, ready, completed, failed.
 
@@ -446,6 +446,7 @@ The `completion_gate_evaluated` event and reducer must preserve checklist fields
 - `failedChecklistIds`
 - `uncheckedChecklistIds`
 - `missingEvidenceRefs`
+- `mismatchedEvidenceRefs`
 - `staleEvidenceRefs`
 - `poisonedEvidenceRefs`
 - `runtimeFailureRefs`

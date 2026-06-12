@@ -28,7 +28,7 @@ export async function run(args, { cpbRoot }) {
   const { positional, flags } = parseArgs(args);
   const project = positional[0];
   if (!project) {
-    console.error("Usage: cpb inbox <project> [read|ack|done <id>] [--json] [--owner <role>]");
+    console.error("Usage: cpb inbox <project> [read|ack|done|outputs] [--json] [--owner <role>]");
     process.exit(1);
   }
 
@@ -46,9 +46,11 @@ export async function run(args, { cpbRoot }) {
       return ackMessage(cpbRoot, project, targetId, flags);
     case "done":
       return doneMessage(cpbRoot, project, targetId);
+    case "outputs":
+      return listOutputs(cpbRoot, project);
     default:
       console.error(`Unknown subcommand: ${subcommand}`);
-      console.error("Usage: cpb inbox <project> [read|ack|done <id>] [--json] [--owner <role>]");
+      console.error("Usage: cpb inbox <project> [read|ack|done|outputs] [--json] [--owner <role>]");
       process.exit(1);
   }
 }
@@ -154,5 +156,29 @@ async function doneMessage(cpbRoot, project, id) {
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);
+  }
+}
+
+async function listOutputs(cpbRoot, project) {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const dir = path.join(cpbRoot, "wiki/projects", project, "outputs");
+  console.log(`${BOLD}Outputs: ${project}${NC}`);
+  try {
+    const files = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort();
+    for (const f of files) {
+      const name = f.replace(/\.md$/, "");
+      let type = "other";
+      if (name.startsWith("verdict-")) type = "verdict";
+      else if (name.startsWith("deliverable-")) type = "deliverable";
+      let verdict = "";
+      if (type === "verdict") {
+        const content = await readFile(path.join(dir, f), "utf8");
+        const match = content.match(/^VERDICT:\s*(\w+)/m);
+        verdict = match?.[1] || "";
+      }
+      console.log(`  ${name.padEnd(18)} ${type.padEnd(12)} ${verdict}`);
+    }
+  } catch {
+    console.log("  (empty)");
   }
 }

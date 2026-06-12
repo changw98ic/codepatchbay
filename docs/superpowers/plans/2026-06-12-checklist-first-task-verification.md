@@ -108,18 +108,18 @@ test("artifact index recognizes checklist artifact kinds from artifact_created e
     }, { dataRoot });
   }
 
-	  const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
-	  assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
+    const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
+    assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
     "acceptance-checklist",
     "checklist-verdict",
     "evidence-ledger",
     "execution-map",
   ]);
-	  assert.equal(index.entries.every((entry) => entry.broken === false), true);
-	  assert.equal(index.schemaVersion >= 2, true);
-	  assert.equal(index.entries.every((entry) => entry.attemptId === "job-1" || entry.attemptId === null), true);
-	});
-	```
+    assert.equal(index.entries.every((entry) => entry.broken === false), true);
+    assert.equal(index.schemaVersion >= 2, true);
+    assert.equal(index.entries.every((entry) => entry.attemptId === "job-1" || entry.attemptId === null), true);
+  });
+```
 
 Add migration/downstream cases:
 
@@ -146,10 +146,10 @@ test("artifact_created materializes artifacts by kind", () => {
     sha256: "abc",
     ts: ts(100),
   }]);
-	  assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
-	  assert.equal(state.artifactsByKind["checklist-verdict"].attemptId, null);
-	  assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
-	});
+    assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
+    assert.equal(state.artifactsByKind["checklist-verdict"].attemptId, null);
+    assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
+  });
 ```
 
 - [ ] **Step 3: Run tests and confirm failure**
@@ -201,12 +201,12 @@ artifact_created(state, event) {
   if (!kind || !event.artifact) return;
   state.artifactsByKind = {
     ...(state.artifactsByKind || {}),
-	    [kind]: {
-	      kind,
-	      name: event.artifact,
-	      id: event.artifactId || null,
-	      attemptId: event.attemptId || null,
-	      phase: event.phase || null,
+    [kind]: {
+      kind,
+      name: event.artifact,
+      id: event.artifactId || null,
+      attemptId: event.attemptId || null,
+      phase: event.phase || null,
       sha256: event.sha256 || null,
       ts: event.ts || null,
     },
@@ -257,6 +257,7 @@ import { test } from "node:test";
 import {
   normalizeRepoRelativePaths,
   validateAcceptanceChecklist,
+  validateChecklistSourceCoverage,
   validateChecklistVerdict,
   evaluateChecklistCompletion,
 } from "../core/workflow/acceptance-checklist.js";
@@ -297,15 +298,15 @@ const ledger = {
   finalWorktree: { head: "abc", diffHash: "sha256:one" },
   evidence: [
     {
-	      id: "EV-001",
-	      type: "evidence_claim",
-	      observationType: "command",
-	      checklistId: "AC-001",
-	      verificationMethod: "command",
-	      predicateId: "PRED-001",
-	      probeId: "probe-status-json",
-	      result: "pass",
-	      command: "npm test",
+      id: "EV-001",
+      type: "evidence_claim",
+      observationType: "command",
+      checklistId: "AC-001",
+      verificationMethod: "command",
+      predicateId: "PRED-001",
+      probeId: "probe-status-json",
+      result: "pass",
+      command: "npm test",
       exitCode: 0,
       summary: "passed",
       worktreeHead: "abc",
@@ -339,6 +340,21 @@ test("validateAcceptanceChecklist rejects missing source refs and predicate ids"
   const result = validateAcceptanceChecklist(checklist({ items: [item] }));
   assert.equal(result.ok, false);
   assert.match(result.reason, /source|predicate/i);
+});
+
+test("validateAcceptanceChecklist allows required manual items as explicit approval criteria", () => {
+  const item = { ...checklist().items[0], verificationMethod: "manual", expectedEvidence: "approval artifact" };
+  const result = validateAcceptanceChecklist(checklist({ items: [item] }));
+  assert.equal(result.ok, true);
+});
+
+test("validateChecklistSourceCoverage rejects missing required source coverage", () => {
+  const candidate = checklist({
+    source: { task: "add json output and keep text output", issue: null, documents: [], requiredSourceLocators: ["task:0", "task:1"] },
+  });
+  const result = validateChecklistSourceCoverage({ checklist: candidate, task: "add json output and keep text output" });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not covered/i);
 });
 
 test("validateAcceptanceChecklist rejects non-normalized path fields", () => {
@@ -461,6 +477,69 @@ test("evaluateChecklistCompletion rejects unrelated fresh evidence claims", () =
   const unrelatedLedger = { ...ledger, evidence: [{ ...ledger.evidence[0], checklistId: "AC-OTHER" }] };
   const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: unrelatedLedger, executionMap: { unmappedChangedFiles: [] } });
   assert.equal(result.outcome, "evidence_mismatch");
+});
+
+test("evaluateChecklistCompletion rejects runtime context as product evidence", () => {
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "runtime-context", evidenceId: "worker-ok" }], actualResult: "ok", reason: "ok", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({ checklist: checklist(), verdict, evidenceLedger: ledger, executionMap: { unmappedChangedFiles: [] } });
+  assert.equal(result.outcome, "evidence_missing");
+});
+
+test("evaluateChecklistCompletion rejects manual pass without approval artifact or event", () => {
+  const manualChecklist = checklist({
+    items: [{ ...checklist().items[0], verificationMethod: "manual", expectedEvidence: "approval artifact with approver, timestamp, and scope" }],
+  });
+  const manualLedger = {
+    ...ledger,
+    evidence: [{ ...ledger.evidence[0], verificationMethod: "manual", summary: "approved in prose only" }],
+  };
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "approved", reason: "approved", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] } });
+  assert.equal(result.outcome, "evidence_mismatch");
+});
+
+test("evaluateChecklistCompletion accepts manual pass with durable approval evidence", () => {
+  const manualChecklist = checklist({
+    items: [{ ...checklist().items[0], verificationMethod: "manual", expectedEvidence: "approval artifact with approver, timestamp, and scope" }],
+  });
+  const manualLedger = {
+    ...ledger,
+    evidence: [{
+      ...ledger.evidence[0],
+      verificationMethod: "manual",
+      approver: "owner",
+      approvedAt: "2026-06-12T00:00:00Z",
+      scope: ["AC-001"],
+      approvalArtifactId: "manual-approval-001",
+    }],
+  };
+  const verdict = {
+    schemaVersion: 1,
+    jobId: "job-1",
+    status: "pass",
+    items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "approved", reason: "approved", fixScope: [] }],
+    blocking: [],
+    fixScope: [],
+    reason: "passed",
+  };
+  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] } });
+  assert.equal(result.outcome, "pass");
 });
 
 test("evaluateChecklistCompletion blocks poisoned runtime evidence", () => {
@@ -611,7 +690,6 @@ export function validateAcceptanceChecklist(checklist: AnyRecord) {
     if (!text(item.area)) return fail(`${prefix}.area is required`);
     if (!RISK_VALUES.has(item.risk)) return fail(`${prefix}.risk must be low, medium, or high`);
     if (!VERIFICATION_METHODS.has(item.verificationMethod)) return fail(`${prefix}.verificationMethod is invalid`);
-    if (item.verificationMethod === "manual" && item.required === true) return fail(`${prefix}.manual verification requires human approval before completion`);
     if (!text(item.expectedEvidence)) return fail(`${prefix}.expectedEvidence is required`);
     if (item.dependsOn !== undefined && !Array.isArray(item.dependsOn)) return fail(`${prefix}.dependsOn must be an array`);
     if (item.allowedFiles !== undefined && !Array.isArray(item.allowedFiles)) return fail(`${prefix}.allowedFiles must be an array`);
@@ -620,6 +698,29 @@ export function validateAcceptanceChecklist(checklist: AnyRecord) {
     }
   }
   return { ok: true, ids: [...ids] };
+}
+
+export function validateChecklistSourceCoverage({ checklist, task, documents = [] }: AnyRecord) {
+  const validation = validateAcceptanceChecklist(checklist);
+  if (!validation.ok) return validation;
+  const corpus = [
+    { kind: "task_text", locator: "task:0", text: text(task) },
+    ...documents.map((doc: AnyRecord, index: number) => ({ kind: doc.kind || "document", locator: doc.locator || `document:${index}`, text: text(doc.text || doc.content) })),
+  ].filter((entry) => entry.text);
+  const sourceKeys = new Set(corpus.map((entry) => `${entry.kind}:${entry.locator}`));
+  for (const item of checklist.items) {
+    for (const ref of item.sourceRefs || []) {
+      if (!sourceKeys.has(`${text(ref.kind)}:${text(ref.locator)}`)) return fail(`missing checklist source ref: ${text(ref.kind)}:${text(ref.locator)}`);
+    }
+  }
+  // V1 uses explicit source refs plus planner classification. If prepare metadata
+  // provides requiredSourceLocators, all must be represented.
+  for (const required of checklist.source?.requiredSourceLocators || []) {
+    if (!checklist.items.some((item: AnyRecord) => (item.sourceRefs || []).some((ref: AnyRecord) => text(ref.locator) === text(required)))) {
+      return fail(`acceptance-relevant source not covered: ${required}`);
+    }
+  }
+  return { ok: true };
 }
 
 export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecord) {
@@ -667,11 +768,15 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
 }
 
 function evidenceMatchesChecklistItem(entry: AnyRecord, checklistItem: AnyRecord) {
-  return entry?.type === "evidence_claim"
+  const baseMatch = entry?.type === "evidence_claim"
     && text(entry.checklistId) === text(checklistItem.id)
     && text(entry.verificationMethod) === text(checklistItem.verificationMethod)
     && text(entry.predicateId) === text(checklistItem.predicateId)
     && text(entry.result) === "pass";
+  if (!baseMatch) return false;
+  if (checklistItem.verificationMethod !== "manual") return true;
+  const approvalRef = text(entry.approvalArtifactId) || text(entry.approvalEventId) || text(entry.artifactId) || text(entry.eventId);
+  return Boolean(text(entry.approver) && (text(entry.approvedAt) || text(entry.ts)) && approvalRef && Array.isArray(entry.scope) && entry.scope.includes(checklistItem.id));
 }
 
 function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {}) {
@@ -840,6 +945,8 @@ function checklist() {
         id: "AC-001",
         requirement: "README is updated",
         source: "user_task",
+        sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: "sha256:task" }],
+        predicateId: "PRED-001",
         required: true,
         area: "docs",
         risk: "low",
@@ -918,7 +1025,7 @@ In `core/engine/run-job.ts`, import:
 
 ```ts
 import { writeArtifact } from "../artifacts/artifact-store.js";
-import { validateAcceptanceChecklist } from "../workflow/acceptance-checklist.js";
+import { validateAcceptanceChecklist, validateChecklistSourceCoverage } from "../workflow/acceptance-checklist.js";
 ```
 
 Add helper:
@@ -958,6 +1065,22 @@ if (acceptanceChecklist) {
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     return { status: "blocked", jobId, exitCode: 2, failure: fail };
   }
+  const coverage = validateChecklistSourceCoverage({
+    checklist: acceptanceChecklist,
+    task,
+    documents: phaseSourceContext?.documents || [],
+  });
+  if (!coverage.ok) {
+    const fail = failure({
+      kind: FailureKind.HUMAN_APPROVAL_REQUIRED,
+      phase: "prepare_task",
+      reason: `acceptance checklist source coverage incomplete: ${coverage.reason}`,
+      retryable: false,
+      cause: { routingLabel: "needs_clarification", coverage },
+    });
+    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+    return { status: "blocked", jobId, exitCode: 2, failure: fail };
+  }
   acceptanceChecklistArtifact = await writeArtifact(cpbRoot, {
     project,
     jobId,
@@ -984,11 +1107,11 @@ function attachChecklistIdsToWorkflowDag(workflowDag: AnyRecord, acceptanceCheck
   return {
     ...workflowDag,
     nodes: workflowDag.nodes.map((node: AnyRecord) => {
-      if (node.phase === "execute" || node.phase === "verify" || node.phase === "adversarial_verify") {
+      if ((node.phase === "execute" || node.phase === "verify" || node.phase === "adversarial_verify") && !node.custom && !node.sideEffecting) {
         return { ...node, checklistIds: requiredIds };
       }
-      if (node.sideEffecting || node.phase === "remediate" || node.phase === "review") {
-        return { ...node, checklistIds: node.checklistNeutral ? [] : requiredIds };
+      if (node.sideEffecting || node.custom || node.phase === "remediate" || node.phase === "review") {
+        return node.checklistNeutral ? { ...node, checklistIds: [] } : node;
       }
       return node;
     }),
@@ -1023,7 +1146,10 @@ Add negative assertions before this task is considered complete:
 
 - `workflow_dag_materialized` must occur after `acceptance-checklist artifact_created`.
 - A prebuilt `dynamicAgentPlan` that does not reference the frozen checklist artifact is rejected or rebuilt.
+- A user task with acceptance-relevant requirements A and B but checklist coverage for only A fails before freeze as `needs_clarification` or `artifact_invalid`.
+- A checklist item with a source ref that does not exist in the supplied task/doc corpus fails before freeze.
 - A checklist-aware custom mutating node without `checklistIds` and without `checklistNeutral: true` fails DAG validation.
+- A checklist-aware custom mutating node that was auto-stamped with all required ids by a helper still fails unless that binding came from explicit node config or dynamic plan metadata.
 
 - [ ] **Step 6: Commit**
 
@@ -1530,7 +1656,7 @@ test("completion gate blocks stale checklist evidence", () => {
       project: "flow",
       status: "frozen",
       source: { task: "task", issue: null, documents: [] },
-      items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", required: true, area: "cli", risk: "medium", verificationMethod: "command", expectedEvidence: "command output", dependsOn: [], allowedFiles: [] }],
+      items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", sourceRefs: [{ kind: "task_text", locator: "task:0" }], predicateId: "PRED-001", required: true, area: "cli", risk: "medium", verificationMethod: "command", expectedEvidence: "command output", dependsOn: [], allowedFiles: [] }],
       assumptions: [],
     },
     checklistVerdict: {
@@ -1545,7 +1671,7 @@ test("completion gate blocks stale checklist evidence", () => {
     evidenceLedger: {
       ledgerId: "evidence-ledger-001",
       finalWorktree: { head: "abc", diffHash: "sha256:new" },
-      evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:old" }],
+      evidence: [{ id: "EV-001", type: "evidence_claim", checklistId: "AC-001", verificationMethod: "command", predicateId: "PRED-001", result: "pass", worktreeHead: "abc", diffHash: "sha256:old" }],
     },
     executionMap: {
       schemaVersion: 1,
@@ -1562,9 +1688,9 @@ test("completion gate blocks unresolved runtime failures", () => {
     job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
     attemptId: "attempt-002",
     parsedVerdict: { status: "pass", raw: "PASS" },
-    checklist: { schemaVersion: 1, jobId: "job-1", project: "flow", status: "frozen", source: { task: "task", issue: null, documents: [] }, items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", required: true, area: "runtime", risk: "high", verificationMethod: "runtime_event", expectedEvidence: "no runtime failure event", dependsOn: [], allowedFiles: [] }], assumptions: [] },
+    checklist: { schemaVersion: 1, jobId: "job-1", project: "flow", status: "frozen", source: { task: "task", issue: null, documents: [] }, items: [{ id: "AC-001", requirement: "required behavior", source: "user_task", sourceRefs: [{ kind: "task_text", locator: "task:0" }], predicateId: "PRED-001", required: true, area: "runtime", risk: "high", verificationMethod: "command", expectedEvidence: "command evidence plus no unresolved runtime failure hard gate", dependsOn: [], allowedFiles: [] }], assumptions: [] },
     checklistVerdict: { schemaVersion: 1, jobId: "job-1", status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }], blocking: [], fixScope: [], reason: "ok" },
-    evidenceLedger: { ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:one" }] },
+    evidenceLedger: { ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", type: "evidence_claim", checklistId: "AC-001", verificationMethod: "command", predicateId: "PRED-001", result: "pass", worktreeHead: "abc", diffHash: "sha256:one" }] },
     executionMap: { unmappedChangedFiles: [] },
     runtimeFailures: [{ type: "phase_poisoned_session", attemptId: "attempt-002", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
   });
@@ -1584,6 +1710,7 @@ test("completion gate event preserves checklist fields in materialized state", (
         failedChecklistIds: ["AC-002"],
         uncheckedChecklistIds: [],
         missingEvidenceRefs: [],
+        mismatchedEvidenceRefs: [],
         staleEvidenceRefs: [],
         poisonedEvidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }],
         runtimeFailureRefs: [{ type: "phase_poisoned_session", attemptId: "attempt-002", phase: "verify", nodeId: "verify", reason: "provider output was poisoned" }],
@@ -1659,6 +1786,7 @@ return {
   failedChecklistIds: checklist.failedChecklistIds || [],
   uncheckedChecklistIds: checklist.uncheckedChecklistIds || [],
   missingEvidenceRefs: checklist.missingEvidenceRefs || [],
+  mismatchedEvidenceRefs: checklist.mismatchedEvidenceRefs || [],
   staleEvidenceRefs: checklist.staleEvidenceRefs || [],
   poisonedEvidenceRefs: checklist.poisonedEvidenceRefs || [],
   runtimeFailureRefs: checklist.runtimeFailureRefs || [],
@@ -1717,6 +1845,7 @@ completion_gate_evaluated(state, event) {
     failedChecklistIds: Array.isArray(event.failedChecklistIds) ? event.failedChecklistIds : [],
     uncheckedChecklistIds: Array.isArray(event.uncheckedChecklistIds) ? event.uncheckedChecklistIds : [],
     missingEvidenceRefs: Array.isArray(event.missingEvidenceRefs) ? event.missingEvidenceRefs : [],
+    mismatchedEvidenceRefs: Array.isArray(event.mismatchedEvidenceRefs) ? event.mismatchedEvidenceRefs : [],
     staleEvidenceRefs: Array.isArray(event.staleEvidenceRefs) ? event.staleEvidenceRefs : [],
     poisonedEvidenceRefs: Array.isArray(event.poisonedEvidenceRefs) ? event.poisonedEvidenceRefs : [],
     runtimeFailureRefs: Array.isArray(event.runtimeFailureRefs) ? event.runtimeFailureRefs : [],
@@ -1833,10 +1962,10 @@ test("failure router can retry verifier for missing evidence without file scope"
       },
     },
   });
-	  assert.equal(decision.action, "retry_same_worker");
-	  assert.equal(decision.retryPhase, "verify");
-	  assert.equal(decision.retryable, true);
-	});
+  assert.equal(decision.action, "retry_same_worker");
+  assert.equal(decision.retryPhase, "verify");
+  assert.equal(decision.retryable, true);
+});
 
 test("failure router fails closed for ambiguous runtime artifacts without retry", async () => {
   const router = new FailureRouter();
@@ -1854,7 +1983,7 @@ test("failure router fails closed for ambiguous runtime artifacts without retry"
   assert.equal(decision.action, "mark_failed");
   assert.equal(decision.retryable, false);
 });
-	```
+```
 
 - [ ] **Step 2: Extract checklist retry state in reconciler**
 
@@ -1883,13 +2012,13 @@ Return:
 
 ```ts
 checklistVerdict: {
-	  failedChecklistIds,
-	  uncheckedChecklistIds,
-	  lockedPassedChecklistIds,
-	  previousEvidenceRefs,
-	  impactedChecklistIds,
-	  targetChecklistIds: [...new Set([...failedChecklistIds, ...uncheckedChecklistIds, ...impactedChecklistIds])],
-	},
+  failedChecklistIds,
+  uncheckedChecklistIds,
+  lockedPassedChecklistIds,
+  previousEvidenceRefs,
+  impactedChecklistIds,
+  targetChecklistIds: [...new Set([...failedChecklistIds, ...uncheckedChecklistIds, ...impactedChecklistIds])],
+},
 fixScope: [...new Set([...retryScope, ...checklistFixScope])],
 ```
 
@@ -1905,7 +2034,7 @@ addMany(checklistVerdict.fixScope);
 for (const item of Array.isArray(checklistVerdict.items) ? checklistVerdict.items : []) {
   addMany(item?.fixScope);
 }
-	```
+```
 
 Do not add checklist ids to this scope set.
 
@@ -2067,7 +2196,7 @@ test("checklist routing labels map to closed failure contracts", () => {
     retryable: false,
   });
   assert.equal(mapChecklistRoutingLabel("unknown_label", {}).action, "mark_failed");
-	});
+});
 
 test("failure router applies closed actions for checklist routing labels", async () => {
   const router = new FailureRouter();
@@ -2236,7 +2365,7 @@ test("audit export includes checklist artifacts from artifact index", async () =
   const artifacts = {
     "acceptance-checklist": { schemaVersion: 1, jobId: "job-audit-checklist", project: "proj", status: "frozen", items: [{ id: "AC-001", required: true }] },
     "execution-map": { schemaVersion: 1, mappings: [{ checklistId: "AC-001", changedFiles: ["README.md"] }], changedFiles: ["README.md"], unmappedChangedFiles: [] },
-    "evidence-ledger": { schemaVersion: 1, ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", worktreeHead: "abc", diffHash: "sha256:one" }] },
+    "evidence-ledger": { schemaVersion: 1, ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", type: "evidence_claim", checklistId: "AC-001", verificationMethod: "command", predicateId: "PRED-001", result: "pass", worktreeHead: "abc", diffHash: "sha256:one" }] },
     "checklist-verdict": { schemaVersion: 1, status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], fixScope: [] }] },
   };
   for (const [kind, content] of Object.entries(artifacts)) {
