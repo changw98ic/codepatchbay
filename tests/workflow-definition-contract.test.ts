@@ -15,7 +15,7 @@ import {
   nextPhase as serverNextPhase,
   bridgeForPhase as serverBridgeForPhase,
 } from "../server/services/workflow-definition.js";
-import { nextPhaseFor } from "../server/services/supervisor.js";
+import { nextPhaseFor } from "../server/services/workflow-definition.js";
 import { phaseRole } from "../server/services/phase-runner.js";
 
 const BUILT_INS = ["standard", "direct", "complex", "sdd-standard"];

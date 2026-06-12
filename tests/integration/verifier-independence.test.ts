@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { bridgeForPhase } from "../../server/services/supervisor.js";
+import { bridgeForPhaseJob } from "../../server/services/workflow-definition.js";
 import { collectVerifierEvidence } from "../../server/services/review/review-dispatch.js";
 import { createJob, startPhase, completePhase } from "../../server/services/job/job-store.js";
 import { registerProject } from "../../server/services/hub/hub-registry.js";
@@ -48,7 +48,7 @@ async function setupFixture(prefix = "cpb-verify-indep-") {
 
 describe("verifier independence from deliverable artifacts", () => {
   it("bridgeForPhase falls back to --job-id when execute has no artifact", () => {
-    const result = bridgeForPhase("verify", "myapp", {
+    const result = bridgeForPhaseJob("verify", "myapp", {
       jobId: "job-20260520-000000-abc123",
       artifacts: {},
     });
@@ -59,7 +59,7 @@ describe("verifier independence from deliverable artifacts", () => {
   });
 
   it("bridgeForPhase uses deliverable when execute artifact exists", () => {
-    const result = bridgeForPhase("verify", "myapp", {
+    const result = bridgeForPhaseJob("verify", "myapp", {
       jobId: "job-20260520-000000-abc123",
       artifacts: { execute: "deliverable-001" },
     });
