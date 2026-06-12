@@ -10,8 +10,8 @@ import { buildAcpPoolEnv } from "../../core/policy/child-env.js";
 import { AcpClient, resolveAgentCommand } from "../../server/services/acp/acp-client.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-const acpClient = path.join(repoRoot, "server", "services", "acp-client-core.js");
-const testAgent = path.join(repoRoot, "server", "services", "test-acp-agent.js");
+const acpClient = path.join(repoRoot, "server", "services", "acp", "acp-client.js");
+const testAgent = path.join(repoRoot, "tests", "fixtures", "test-acp-agent.js");
 
 type ClientRunResult = {
   stdout: string;

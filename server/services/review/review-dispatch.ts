@@ -222,7 +222,7 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 - "risks": array of strings describing risks or concerns found
 - "recommendation": string with clear approve/reject advice and reasoning`;
 
-  const scriptPath = path.join(cpbRoot, "server", "services", "acp-client-core.js");
+  const scriptPath = path.join(cpbRoot, "server", "services", "acp", "acp-client.js");
   const env = buildChildEnv(
     process.env,
     { CPB_ROOT: cpbRoot, CPB_ACP_TIMEOUT_MS: "90000" },
@@ -400,7 +400,7 @@ const CPB_ROOT = path.resolve(".");
 const PROTOCOL_VERSION = 1;
 const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
 
-// ACP adapter lookup table — mirrors acp-client-core.js
+// ACP adapter lookup table — mirrors acp-client.js
 const ACP_ADAPTERS = {
   codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
   claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },

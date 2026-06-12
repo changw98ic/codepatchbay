@@ -51,9 +51,9 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
 
     // ACP client
     try {
-      await access(path.join(executorRoot, "server", "services", "acp-client-core.js"), constants.R_OK);
+      await access(path.join(executorRoot, "server", "services", "acp", "acp-client.js"), constants.R_OK);
     } catch {
-      console.log("  server/services/acp-client-core.js missing");
+      console.log("  server/services/acp/acp-client.js missing");
       issues++;
     }
 

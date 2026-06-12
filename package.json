@@ -12,8 +12,7 @@
   },
   "type": "module",
   "bin": {
-    "cpb": "cpb",
-    "cpb-test-acp-agent": "dist/server/services/test-acp-agent.js"
+    "cpb": "cpb"
   },
   "files": [
     "cpb",
@@ -34,9 +33,6 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "workspaces": [
-    "server"
-  ],
   "scripts": {
     "prepack": "npm run build",
     "pretest:node": "npm run build:node && npm run build:tests",
@@ -53,15 +49,7 @@
     "verify:p0p1": "npm run build && npm run build:tests && node dist/scripts/verify-p0-p1.js"
   },
   "dependencies": {
-    "@fastify/cors": "^10.0.0",
-    "@fastify/sensible": "^6.0.4",
-    "@fastify/websocket": "^11.0.0",
-    "@playwright/test": "1.60.0",
-    "chokidar": "^4.0.0",
-    "fastify": "^5.0.0",
-    "glob": "^11.0.0",
-    "playwright": "^1.50.0",
-    "supergateway": "^3.4.3"
+    "chokidar": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "25.9.3",

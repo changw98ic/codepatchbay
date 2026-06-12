@@ -1121,14 +1121,14 @@ export class AcpPool {
       }
     }
     if (this.env.CPB_ACP_CLIENT) return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
-    if (this.persistentProcesses || agent === "browser-agent") return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
+    if (this.persistentProcesses) return this.#runPersistent(agent, prompt, cwd, timeoutMs, options);
     return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
   }
 
   async #runOneShot(agent: string, prompt: string, cwd: string, timeoutMs: number, options: Record<string, any> = {}) {
     const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
     const customClient = this.env.CPB_ACP_CLIENT;
-    const clientPath = customClient || path.join(__dirname, "acp-client-core.js");
+    const clientPath = customClient || path.join(__dirname, "acp-client.js");
     const command = customClient ? clientPath : process.execPath;
     const args = customClient ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
     try {

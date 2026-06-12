@@ -19,6 +19,7 @@ import {
   markExited as markProcessExited,
   addChildPid,
 } from "../server/services/infra.js";
+import { pinSessionToJob } from "../core/engine/session-pin.js";
 
 type AnyRecord = Record<string, any>;
 type GuardedError = Error & { guardResult?: AnyRecord };
@@ -376,7 +377,18 @@ async function main() {
     }, {
       signal: abortController.signal,
       env: childEnv,
-      onSpawn: (child) => addChildPid(cpbRoot, jobId, child.pid, { dataRoot }),
+      onSpawn: async (child) => {
+        await addChildPid(cpbRoot, jobId, child.pid, { dataRoot });
+        const sessionId = process.env.CPB_SESSION_ID;
+        if (sessionId) {
+          await pinSessionToJob(cpbRoot, project, jobId, {
+            phase,
+            sessionId,
+            agentPid: child.pid,
+            dataRoot,
+          });
+        }
+      },
     });
     if (leaseLostError) {
       childResult = {

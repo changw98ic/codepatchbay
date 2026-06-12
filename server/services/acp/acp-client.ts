@@ -564,7 +564,7 @@ export async function resolveAgentCommand(agent: string, env: AnyRecord = proces
 
 export function shouldIsolateAgentHome(agent: string, env: AnyRecord = process.env): boolean {
   if (env.CPB_AGENT_ISOLATE_HOME === "0") return false;
-  return agent !== "browser-agent";
+  return true;
 }
 
 function jsonRpcError(code: number, message: string, data?: any): AnyRecord {
@@ -1517,7 +1517,7 @@ export class AcpClient {
   }
 }
 
-const usage = `Usage: acp-client-core.js --agent <name> [--cwd <path>]
+const usage = `Usage: acp-client.js --agent <name> [--cwd <path>]
 
 Reads a prompt from stdin and sends it to an ACP agent over stdio.
 

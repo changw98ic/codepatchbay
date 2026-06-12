@@ -259,8 +259,8 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
       if (layer.action) console.log(`    → ${layer.action}`);
     }
     console.log("");
-    console.log("Webhook URL:");
-    console.log("  http://127.0.0.1:3456/api/github/webhook");
+    console.log("Webhook URL (run `cpb webhook-serve` first):");
+    console.log("  http://127.0.0.1:3457/github/webhook");
     console.log("");
     console.log(hasError ? "GitHub integration not ready — fix errors above." : "GitHub integration OK.");
   }

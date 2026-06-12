@@ -1,8 +1,6 @@
 import path from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, createWriteStream } from "node:fs";
 import { resolveHubRoot } from "../../server/services/hub/hub-registry.js";
-
-const DEFAULT_PORT = 3100;
 
 function stateFilePath(cpbRoot) {
   return path.join(resolveHubRoot(cpbRoot), "codegraph-state.json");
@@ -30,7 +28,6 @@ function resolveMcpStdioCommand(codebaseRoot = process.env.CPB_CODEBASE_ROOT || 
 
 export async function run(args, { cpbRoot, executorRoot }) {
   const sub = args[0] || "status";
-  const port = parseInt(process.env.CPB_CODEGRAPH_PORT || String(DEFAULT_PORT), 10);
   const codebaseRoot = process.env.CPB_CODEBASE_ROOT || process.cwd();
 
   if (sub === "status") {
@@ -40,8 +37,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       if (state) { try { unlinkSync(stateFilePath(cpbRoot)); } catch {} }
       return;
     }
-    console.log(`codegraph: running (pid=${state.pid}, port=${state.port})`);
-    console.log(`  SSE: ${state.sseUrl}`);
+    console.log(`codegraph: running (pid=${state.pid})`);
     console.log(`  MCP stdio: ${state.mcpStdio || resolveMcpStdioCommand(codebaseRoot)}`);
     console.log(`  Codebase: ${state.codebaseRoot}`);
   } else if (sub === "start") {
@@ -59,22 +55,26 @@ export async function run(args, { cpbRoot, executorRoot }) {
     mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, "codegraph.log");
 
-    const cmd = `nohup npx -y supergateway --stdio "${mcpStdio}" --port ${port} --ssePath /sse --messagePath /message >> ${logFile} 2>&1 & echo $!`;
-
-    const { execSync } = await import("node:child_process");
-    const pid = parseInt(execSync(cmd, { cwd: codebaseRoot, env: { ...process.env, CODEBASE_ROOT: codebaseRoot }, shell: "/bin/bash" }).toString().trim(), 10);
+    const parts = mcpStdio.split(/\s+/);
+    const { spawn } = await import("node:child_process");
+    const child = spawn(parts[0], parts.slice(1), {
+      cwd: codebaseRoot,
+      env: { ...process.env, CODEBASE_ROOT: codebaseRoot },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+    child.stdout?.pipe(createWriteStream(logFile, { flags: "a" }));
+    child.stderr?.pipe(createWriteStream(logFile, { flags: "a" }));
+    child.unref();
 
     writeFileSync(stateFilePath(cpbRoot), JSON.stringify({
-      pid,
-      port,
+      pid: child.pid,
       codebaseRoot,
-      sseUrl: `http://localhost:${port}/sse`,
       mcpStdio,
       startedAt: new Date().toISOString(),
     }));
 
-    console.log(`codegraph: started (pid=${pid}, port=${port})`);
-    console.log(`  SSE: http://localhost:${port}/sse`);
+    console.log(`codegraph: started (pid=${child.pid})`);
     console.log(`  MCP stdio: ${mcpStdio}`);
   } else if (sub === "stop") {
     const state = readState(cpbRoot);

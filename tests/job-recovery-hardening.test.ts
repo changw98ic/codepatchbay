@@ -7,7 +7,9 @@ import {
   buildWorktreeRetentionPlan,
   cleanupWorktrees,
   formatWorktreeRetentionHuman,
+  resolveRetentionPolicy,
 } from "../server/services/cleanup/cleanup.js";
+import { pinSessionToJob } from "../core/engine/session-pin.js";
 
 const INDEX_VERSION = 1;
 
@@ -40,6 +42,7 @@ async function setupJobsIndex(root, jobs) {
       jobId: job.jobId,
       project: job.project,
       task: job.task || "test task",
+      workflow: job.workflow || "standard",
       status: job.status,
       phase: job.phase || null,
       worktree: job.worktree || null,
@@ -54,7 +57,7 @@ async function setupJobsIndex(root, jobs) {
         jobId: job.jobId,
         project: job.project,
         task: job.task || "test task",
-        workflow: "standard",
+        workflow: job.workflow || "standard",
         ts,
       },
     ];
@@ -87,10 +90,10 @@ async function setupJobsIndex(root, jobs) {
 }
 
 describe("worktree-retention: normalizePolicy defaults", () => {
-  test("defaults to preserve for completed jobs", async () => {
+  test("defaults to null (workflow-aware) when no policy specified", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const plan = await buildWorktreeRetentionPlan(root, { dryRun: true });
-    assert.equal(plan.policy.completed, "preserve");
+    assert.equal(plan.policy.completed, null);
   });
 
   test("respects completed: delete policy", async () => {
@@ -111,13 +114,13 @@ describe("worktree-retention: normalizePolicy defaults", () => {
     assert.equal(plan.policy.completed, "archive");
   });
 
-  test("falls back to preserve for invalid completed policy", async () => {
+  test("falls back to null (workflow-aware) for invalid completed policy", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const plan = await buildWorktreeRetentionPlan(root, {
       policy: { completed: "nuke" },
       dryRun: true,
     });
-    assert.equal(plan.policy.completed, "preserve");
+    assert.equal(plan.policy.completed, null);
   });
 });
 
@@ -405,5 +408,268 @@ describe("worktree-retention: jobs without worktrees are skipped", () => {
     });
     assert.equal(plan.entries.length, 0);
     assert.equal(plan.summary.total, 0);
+  });
+});
+
+// ── Session Pin ──
+
+describe("session-pin: pinSessionToJob writes sessionPin to process registry", () => {
+  test("writes sessionPin into existing process file", async () => {
+    const root = await tempRoot("cpb-session-pin");
+    const dataRoot = path.join(root, "data");
+    const processesDir = path.join(dataRoot, "processes");
+    await mkdir(processesDir, { recursive: true });
+
+    const jobId = "job-pin-001";
+    const processFilePath = path.join(processesDir, `${jobId}.json`);
+    // Simulate a pre-existing process registry entry (created by registerProcess)
+    await writeJson(processFilePath, {
+      jobId,
+      project: "test",
+      phase: "execute",
+      runnerPid: 1234,
+      childPids: [],
+      status: "running",
+      lastHeartbeat: new Date().toISOString(),
+    });
+
+    await pinSessionToJob(root, "test", jobId, {
+      phase: "execute",
+      sessionId: "sess-abc-123",
+      agentPid: 5678,
+      dataRoot,
+    });
+
+    const updated = JSON.parse(await readFile(processFilePath, "utf8"));
+    assert.ok(updated.sessionPin, "process file must contain sessionPin");
+    assert.equal(updated.sessionPin.sessionId, "sess-abc-123");
+    assert.equal(updated.sessionPin.agentPid, 5678);
+    assert.equal(updated.sessionPin.phase, "execute");
+    assert.ok(updated.sessionPin.pinnedAt, "sessionPin must have pinnedAt timestamp");
+    // Original fields preserved
+    assert.equal(updated.jobId, jobId);
+    assert.equal(updated.status, "running");
+  });
+
+  test("is best-effort when process file does not exist", async () => {
+    const root = await tempRoot("cpb-session-pin");
+    const dataRoot = path.join(root, "data");
+
+    // Should not throw
+    await pinSessionToJob(root, "test", "job-noexist-999", {
+      phase: "execute",
+      sessionId: "sess-xyz",
+      agentPid: 9999,
+      dataRoot,
+    });
+  });
+
+  test("overwrites sessionPin on repeated calls", async () => {
+    const root = await tempRoot("cpb-session-pin");
+    const dataRoot = path.join(root, "data");
+    const processesDir = path.join(dataRoot, "processes");
+    await mkdir(processesDir, { recursive: true });
+
+    const jobId = "job-pin-retry";
+    const processFilePath = path.join(processesDir, `${jobId}.json`);
+    await writeJson(processFilePath, {
+      jobId,
+      project: "test",
+      phase: "execute",
+      runnerPid: 1234,
+      childPids: [],
+      status: "running",
+      lastHeartbeat: new Date().toISOString(),
+    });
+
+    await pinSessionToJob(root, "test", jobId, {
+      phase: "execute",
+      sessionId: "sess-first",
+      agentPid: 100,
+      dataRoot,
+    });
+    await pinSessionToJob(root, "test", jobId, {
+      phase: "verify",
+      sessionId: "sess-second",
+      agentPid: 200,
+      dataRoot,
+    });
+
+    const updated = JSON.parse(await readFile(processFilePath, "utf8"));
+    assert.equal(updated.sessionPin.sessionId, "sess-second");
+    assert.equal(updated.sessionPin.phase, "verify");
+    assert.equal(updated.sessionPin.agentPid, 200);
+  });
+});
+
+// ── Workflow-aware Retention ──
+
+describe("workflow-retention: resolveRetentionPolicy returns correct action per workflow", () => {
+  test("pipeline completed resolves to delete", () => {
+    assert.equal(resolveRetentionPolicy("pipeline", "completed"), "delete");
+  });
+
+  test("research completed resolves to archive", () => {
+    assert.equal(resolveRetentionPolicy("research", "completed"), "archive");
+  });
+
+  test("standard completed resolves to preserve", () => {
+    assert.equal(resolveRetentionPolicy("standard", "completed"), "preserve");
+  });
+
+  test("unknown workflow falls back to default (preserve)", () => {
+    assert.equal(resolveRetentionPolicy("nonexistent-workflow", "completed"), "preserve");
+  });
+
+  test("null workflow falls back to default", () => {
+    assert.equal(resolveRetentionPolicy(null, "completed"), "preserve");
+  });
+
+  test("failed status always resolves to preserve", () => {
+    assert.equal(resolveRetentionPolicy("pipeline", "failed"), "preserve");
+    assert.equal(resolveRetentionPolicy("standard", "failed"), "preserve");
+  });
+});
+
+describe("workflow-retention: workflow-aware plan entries use workflow policy", () => {
+  test("pipeline completed job gets delete action without explicit policy override", async () => {
+    const root = await tempRoot("cpb-wf-ret");
+    const wtPath = path.join(root, "worktrees", "wt-pipe");
+    await mkdir(wtPath, { recursive: true });
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-pipe-001", status: "completed", worktree: wtPath, workflow: "pipeline" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries[0].action, "delete");
+    assert.ok(plan.entries[0].reason.includes("pipeline"));
+  });
+
+  test("research completed job gets archive action without explicit policy override", async () => {
+    const root = await tempRoot("cpb-wf-ret");
+    const wtPath = path.join(root, "worktrees", "wt-res");
+    await mkdir(wtPath, { recursive: true });
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-res-001", status: "completed", worktree: wtPath, workflow: "research" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries[0].action, "archive");
+    assert.ok(plan.entries[0].reason.includes("research"));
+  });
+
+  test("standard completed job gets preserve action (default)", async () => {
+    const root = await tempRoot("cpb-wf-ret");
+    const wtPath = path.join(root, "worktrees", "wt-std");
+    await mkdir(wtPath, { recursive: true });
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-std-001", status: "completed", worktree: wtPath, workflow: "standard" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries[0].action, "preserve");
+  });
+
+  test("explicit policy:delete overrides workflow default", async () => {
+    const root = await tempRoot("cpb-wf-ret");
+    const wtPath = path.join(root, "worktrees", "wt-exp");
+    await mkdir(wtPath, { recursive: true });
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-exp-001", status: "completed", worktree: wtPath, workflow: "standard" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, {
+      policy: { completed: "delete" },
+      dryRun: true,
+      hubRoot,
+    });
+    assert.equal(plan.entries[0].action, "delete");
+  });
+
+  test("pipeline failed job is preserved regardless of workflow policy", async () => {
+    const root = await tempRoot("cpb-wf-ret");
+    const wtPath = path.join(root, "worktrees", "wt-pipe-fail");
+    await mkdir(wtPath, { recursive: true });
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-pipe-fail-001", status: "failed", worktree: wtPath, workflow: "pipeline" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.equal(plan.entries.length, 1);
+    assert.equal(plan.entries[0].action, "preserve");
+  });
+});
+
+// ── Orphan Worktree Detection ──
+
+describe("worktree-retention: orphan worktrees detected and cleaned", () => {
+  test("orphan worktree directory with no associated job is detected", async () => {
+    const root = await tempRoot("cpb-wt-orphan");
+    const wtJob = path.join(root, "worktrees", "wt-has-job");
+    const wtOrphan = path.join(root, "worktrees", "wt-orphan");
+    await mkdir(wtJob, { recursive: true });
+    await mkdir(wtOrphan, { recursive: true });
+
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-has-001", status: "completed", worktree: wtJob, workflow: "standard" },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.ok(plan.orphans, "plan must have orphans array");
+    assert.equal(plan.orphans.length, 1);
+    assert.equal(plan.orphans[0].worktree, wtOrphan);
+    assert.equal(plan.orphans[0].action, "delete");
+    assert.ok(plan.orphans[0].reason.includes("orphan"));
+    assert.equal(plan.summary.orphanCount, 1);
+  });
+
+  test("orphan worktree is deleted on actual cleanup", async () => {
+    const root = await tempRoot("cpb-wt-orphan");
+    const wtJob = path.join(root, "worktrees", "wt-has-job2");
+    const wtOrphan = path.join(root, "worktrees", "wt-orphan2");
+    await mkdir(wtJob, { recursive: true });
+    await mkdir(wtOrphan, { recursive: true });
+    await writeFile(path.join(wtOrphan, "stale.txt"), "orphan data", "utf8");
+
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-has-002", status: "completed", worktree: wtJob, workflow: "pipeline" },
+    ]);
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "preserve" },
+      dryRun: false,
+      hubRoot,
+    });
+
+    // The orphan should be deleted
+    await assert.rejects(
+      () => readFile(path.join(wtOrphan, "stale.txt")),
+      "orphan worktree must be deleted",
+    );
+    // The job-associated worktree should still exist
+    const marker = await readFile(path.join(wtJob, "file.txt"), "utf8").catch(() => null);
+    // worktree for completed pipeline is preserved by explicit policy
+    const jobEntry = result.entries.find((e) => e.jobId === "job-has-002");
+    assert.equal(jobEntry.result, "preserved");
+  });
+
+  test("no orphans when all worktree dirs have jobs", async () => {
+    const root = await tempRoot("cpb-wt-orphan");
+    const wt1 = path.join(root, "worktrees", "wt-a");
+    const wt2 = path.join(root, "worktrees", "wt-b");
+    await mkdir(wt1, { recursive: true });
+    await mkdir(wt2, { recursive: true });
+
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-no-orphan-1", status: "completed", worktree: wt1 },
+      { project: "test", jobId: "job-no-orphan-2", status: "failed", worktree: wt2 },
+    ]);
+
+    const plan = await buildWorktreeRetentionPlan(root, { dryRun: true, hubRoot });
+    assert.equal(plan.orphans.length, 0);
+    assert.equal(plan.summary.orphanCount, 0);
   });
 });

@@ -13,6 +13,7 @@ import {
   requestCancelJob,
   FAILURE_CODES,
   getJob,
+  retryJob,
 } from "../server/services/job/job-store.js";
 import {
   isTerminal,
@@ -358,5 +359,58 @@ assert.deepEqual(nodeAwareRetry.sourceContext.dagResume.resumeTarget, {
   phase: "execute",
 });
 assert.deepEqual(nodeAwareRetry.sourceContext.dagResume.completedNodeIds, ["plan"]);
+
+// --- forceFreshSession: retryJob with forceFreshSession=true includes it in sourceContext ---
+const freshSessionJob = await createJob(root, {
+  project,
+  task: "Test forceFreshSession retry",
+  workflow: "standard",
+  ts: "2026-05-20T13:00:00.000Z",
+  dataRoot,
+});
+await startPhase(root, project, freshSessionJob.jobId, { phase: "execute", leaseId: "lease-fs1", dataRoot });
+await failJob(root, project, freshSessionJob.jobId, {
+  reason: "forceFreshSession test",
+  code: FAILURE_CODES.RECOVERABLE,
+  phase: "execute",
+  ts: "2026-05-20T13:01:00.000Z",
+  dataRoot,
+});
+
+const freshRetried = await retryJob(root, project, freshSessionJob.jobId, { forceFreshSession: true, dataRoot });
+assert.ok(freshRetried.jobId, "retryJob with forceFreshSession creates a new job");
+assert.ok(freshRetried.sourceContext, "recovery job should have sourceContext");
+assert.equal(freshRetried.sourceContext.retry.forceFreshSession, true,
+  "sourceContext.retry.forceFreshSession should be true when explicitly requested");
+
+// Verify the recovery_created event also carries the flag
+const freshEvents = await readEvents(root, project, freshRetried.jobId, { dataRoot });
+const freshRecoveryEvent = freshEvents.find((e) => e.type === "recovery_created");
+assert.ok(freshRecoveryEvent, "should have recovery_created event");
+assert.equal(freshRecoveryEvent.sourceContext.retry.forceFreshSession, true,
+  "recovery_created event sourceContext should carry forceFreshSession");
+
+// --- forceFreshSession: default (false) does NOT include forceFreshSession in sourceContext ---
+const defaultSessionJob = await createJob(root, {
+  project,
+  task: "Test default retry without forceFreshSession",
+  workflow: "standard",
+  ts: "2026-05-20T14:00:00.000Z",
+  dataRoot,
+});
+await startPhase(root, project, defaultSessionJob.jobId, { phase: "execute", leaseId: "lease-fs2", dataRoot });
+await failJob(root, project, defaultSessionJob.jobId, {
+  reason: "default session test",
+  code: FAILURE_CODES.RECOVERABLE,
+  phase: "execute",
+  ts: "2026-05-20T14:01:00.000Z",
+  dataRoot,
+});
+
+const defaultRetried = await retryJob(root, project, defaultSessionJob.jobId, { dataRoot });
+assert.ok(defaultRetried.jobId, "retryJob without forceFreshSession creates a new job");
+assert.ok(defaultRetried.sourceContext, "recovery job should have sourceContext");
+assert.equal(defaultRetried.sourceContext.retry.forceFreshSession, undefined,
+  "sourceContext.retry.forceFreshSession should be absent by default");
 
 console.log("job-recovery: all tests passed");

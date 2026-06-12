@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { glob } from "glob";
+import { readdir } from "node:fs/promises";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -17,6 +17,20 @@ function normalizeRequestedFile(arg) {
   }
 
   return relative.replace(/\.ts$/, ".js");
+}
+
+async function collectTestFiles(dir: string): Promise<string[]> {
+  const results: string[] = [];
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...await collectTestFiles(full));
+    } else if (entry.name.endsWith(".test.js")) {
+      results.push(path.relative(repoRoot, full).split(path.sep).join("/"));
+    }
+  }
+  return results;
 }
 
 async function runTests(files, opts: Record<string, any> = {}) {
@@ -57,16 +71,15 @@ const requestedFiles = process.argv.slice(2)
 
 const allFiles = requestedFiles.length > 0
   ? requestedFiles
-  : await glob("tests/**/*.test.js", { cwd: repoRoot });
+  : await collectTestFiles(path.join(repoRoot, "tests"));
 
 if (allFiles.length === 0) {
   console.error("No Node test files found");
   process.exit(1);
 }
 
-const browserFiles = allFiles.filter((f) => f.startsWith("tests/browser/"));
 const integrationFiles = allFiles.filter((f) => f.startsWith("tests/integration/"));
-const unitFiles = allFiles.filter((f) => !f.startsWith("tests/browser/") && !f.startsWith("tests/integration/"));
+const unitFiles = allFiles.filter((f) => !f.startsWith("tests/integration/"));
 
 const isolatedIntegrationFiles = new Set([
   "tests/integration/acp-test-agent.test.js",
@@ -88,14 +101,6 @@ try {
       await runTests(unitFiles, { label: "unit tests" });
     }
   } else if (integrationOnly) {
-    // Browser E2E tests: run serially to avoid concurrent Chromium contention
-    if (browserFiles.length > 0) {
-      await runTests(browserFiles, {
-        concurrency: 1,
-        env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
-        label: "browser E2E tests",
-      });
-    }
     // Parallel-safe integration tests
     if (parallelIntegrationFiles.length > 0) {
       await runTests(parallelIntegrationFiles, { label: "integration tests" });
@@ -106,14 +111,6 @@ try {
     }
   } else {
     // Default: run everything
-    // Browser E2E tests: run serially
-    if (browserFiles.length > 0) {
-      await runTests(browserFiles, {
-        concurrency: 1,
-        env: { CPB_ACP_BROWSER_AGENT_HEADLESS: "1" },
-        label: "browser E2E tests",
-      });
-    }
     // Unit tests: run in parallel (fast)
     if (unitFiles.length > 0) {
       await runTests(unitFiles, { label: "unit tests" });

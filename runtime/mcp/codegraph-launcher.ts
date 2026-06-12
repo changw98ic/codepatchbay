@@ -2,7 +2,6 @@ import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { resolve, dirname } from "path";
 
-const PORT = parseInt(process.env.CPB_CODEGRAPH_PORT || "3100", 10);
 const CODEBASE_ROOT = process.env.CPB_CODEBASE_ROOT || process.cwd();
 
 const STATE_FILE = resolve(
@@ -35,18 +34,12 @@ export async function start() {
   }
 
   const mcpStdio = resolveMcpStdioCommand();
+  const parts = mcpStdio.split(/\s+/);
 
-  // supergateway wraps codegraph MCP stdio -> SSE in one process
-  proc = spawn("npx", [
-    "-y", "supergateway",
-    "--stdio", mcpStdio,
-    "--port", String(PORT),
-    "--ssePath", "/sse",
-    "--messagePath", "/message",
-  ], {
+  proc = spawn(parts[0], parts.slice(1), {
     cwd: CODEBASE_ROOT,
     env: { ...process.env, CODEBASE_ROOT },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   proc.stdout?.on("data", () => {}); // drain
@@ -65,14 +58,12 @@ export async function start() {
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(STATE_FILE, JSON.stringify({
     pid: proc.pid,
-    port: PORT,
     codebaseRoot: CODEBASE_ROOT,
-    sseUrl: `http://localhost:${PORT}/sse`,
     mcpStdio,
     startedAt: new Date().toISOString(),
   }));
 
-  console.error(`[codegraph-launcher] SSE on http://localhost:${PORT}/sse (pid=${proc.pid})`);
+  console.error(`[codegraph-launcher] MCP stdio process started (pid=${proc.pid})`);
 }
 
 export async function stop() {
@@ -110,9 +101,7 @@ export function status() {
   }
   return {
     running: !!(proc || statePid),
-    port: PORT,
     codebaseRoot: CODEBASE_ROOT,
-    sseUrl: `http://localhost:${PORT}/sse`,
     pid: proc?.pid || statePid,
     mcpStdio: resolveMcpStdioCommand(),
     stateFile: STATE_FILE,

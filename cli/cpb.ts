@@ -68,7 +68,7 @@ async function usage() {
   console.log(`  ${CYAN}auth${NC} [status]                            Provider-native auth checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration: bind, connect, health`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
-  console.log(`  ${CYAN}health-check${NC}                            HTTP + test + build check`);
+  console.log(`  ${CYAN}health-check${NC}                            Test suite + fake ACP smoke`);
   console.log(`  ${CYAN}wiki${NC} [lint|list|experience ...]         Wiki operations`);
   console.log(`  ${CYAN}release${NC} <list|use|install|doctor|gc>    Release management`);
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
@@ -77,6 +77,7 @@ async function usage() {
   console.log(`  ${CYAN}migrate-runtime-root${NC} [--execute] [--dry-run]  One-time legacy runtime migration`);
   console.log(`  ${CYAN}install-bin${NC}                              Install cpb to PATH`);
   console.log(`  ${CYAN}install${NC}                                  Alias for install-bin`);
+  console.log(`  ${CYAN}webhook-serve${NC} [port]                      GitHub webhook server`);
   console.log(`  ${CYAN}backlog-hygiene${NC} [--dry-run] [--repo <owner/repo>]  Mark stale CPB comments, close superseded issues`);
   console.log(`  ${CYAN}audit${NC} <project> <job-id> [--json] [--out <dir>]  Export audit package`);
   console.log(`  ${CYAN}review-bundle${NC} <project> <job-id> [--json] [--out <dir>]  Local review bundle`);
@@ -92,9 +93,9 @@ async function usage() {
 async function checkDeps() {
   const missing = [];
   try {
-    await access(path.join(CPB_EXECUTOR_ROOT, "server", "services", "acp-client-core.js"), constants.R_OK);
+    await access(path.join(CPB_EXECUTOR_ROOT, "server", "services", "acp", "acp-client.js"), constants.R_OK);
   } catch {
-    missing.push("server/services/acp-client-core.js");
+    missing.push("server/services/acp/acp-client.js");
   }
   if (missing.length > 0) {
     console.log(`${YELLOW}Missing:${NC}`);
@@ -130,6 +131,7 @@ const COMMANDS = {
   agents: "agents.js",
   auth: "auth.js",
   github: "github.js",
+  "webhook-serve": "webhook-serve.js",
   doctor: "doctor.js",
   "health-check": "health-check.js",
   gc: "reconcile.js",

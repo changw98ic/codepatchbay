@@ -126,7 +126,7 @@ function profileFromResult(result) {
     const install = result.installations[agent.id] || null;
     const health = result.health[agent.id] || null;
     const auth = result.auth[agent.id] || null;
-    const authStatus = health?.status === "ok" ? "connected" : health?.status === "skipped" ? "skipped" : auth?.error ? "error" : auth?.providerNativeCommand || auth?.localSetupUrl ? "pending" : "unknown";
+    const authStatus = health?.status === "ok" ? "connected" : health?.status === "skipped" ? "skipped" : auth?.error ? "error" : auth?.providerNativeCommand ? "pending" : "unknown";
     agents[agent.id] = {
       displayName: agent.displayName,
       installed: install?.status === "succeeded" || result.detected.agents?.[agent.id]?.installed === true,
@@ -135,7 +135,6 @@ function profileFromResult(result) {
       authStatus,
       authCheckedAt: new Date().toISOString(),
       auth: auth ? {
-        localSetupUrl: auth.localSetupUrl || null,
         providerNativeCommand: auth.providerNativeCommand || null,
       } : null,
     };
@@ -252,7 +251,7 @@ export async function runSetupWizard({
       }
       for (const agent of degraded) {
         const auth = result.auth[agent.id];
-        const command = auth?.providerNativeCommand || auth?.localSetupUrl;
+        const command = auth?.providerNativeCommand;
         if (command && stdio === "inherit") {
           console.log(`  ${agent.displayName}: ${command}`);
         }

@@ -41,7 +41,6 @@ function formatConnectHuman(instructions) {
     `Connect ${instructions.provider.displayName}`,
     "",
     `Provider command: ${instructions.providerNativeCommand || "not available"}`,
-    `Local setup URL: ${instructions.localSetupUrl}`,
     "",
     instructions.guidance,
     "",

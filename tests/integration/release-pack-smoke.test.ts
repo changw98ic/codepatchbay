@@ -211,22 +211,17 @@ test("release install tolerates npm package executor roots without package-lock"
 
 test("critical runtime imports resolve", async () => {
   const criticalImports = [
-    "server/services/acp-client-core.js",
-    "server/services/release-store.js",
-    "server/services/hub-queue.js",
-    "server/services/event-store.js",
-    "server/services/hub-registry.js",
+    "server/services/acp/acp-client.js",
+    "server/services/release/release-store.js",
+    "server/services/hub/hub-queue.js",
+    "server/services/event/event-store.js",
+    "server/services/hub/hub-registry.js",
     "shared/orchestrator/assignment-store.js",
     "shared/orchestrator/worker-store.js",
     "shared/fs-utils.js",
     "shared/logger.js",
     "bridges/runtime-services.js",
     "server/services/engine-runner.js",
-    "server/services/dual-research.js",
-    "server/services/local-smoke.js",
-    "server/services/browser-agent-acp.js",
-    "server/services/evolve-multi-cli.js",
-    "server/services/review-dispatch-runner.js",
     "runtime/evolve/multi-evolve.js",
     "runtime/worker/managed-worker.js",
   ];

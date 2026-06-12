@@ -18,6 +18,7 @@ import {
 } from "../server/services/dispatch/dispatch.js";
 import { executorEnv, resolveExecutorRoot } from "../server/services/setup.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
+import { recoverOrphanedJobs } from "../server/services/cleanup/cleanup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -252,13 +253,24 @@ export class ProjectWorker {
   async heartbeat() {
     if (!this.project) return;
     try {
-      await heartbeatWorker(this.hubRoot, this.project.id, {
+      const response = await heartbeatWorker(this.hubRoot, this.project.id, {
         workerId: this.workerId,
         pid: process.pid,
         status: "online",
         capabilities: ["scan", "execute", "pipeline"],
         claimTimeoutMs: this.claimTimeoutMs,
       });
+      if (response && Array.isArray(response.actions) && response.actions.length > 0) {
+        for (const directive of response.actions) {
+          if (directive.action === "stop") {
+            process.stderr.write(`[project-worker] stop directive received: ${directive.reason || "unknown"}\n`);
+            this.requestStop();
+          } else if (directive.action === "reload_project") {
+            const refreshed = await getProject(this.hubRoot, this.project.id);
+            if (refreshed) this.project = refreshed;
+          }
+        }
+      }
     } catch {
       // Transient heartbeat failure — worker continues, next heartbeat
       // will refresh the registry.
@@ -303,6 +315,25 @@ export class ProjectWorker {
       }
     }
     return recovered;
+  }
+
+  async recoverOrphanedJobsStartup() {
+    try {
+      const result = await recoverOrphanedJobs(this.cpbRoot, {
+        hubRoot: this.hubRoot,
+        dataRoot: this.project?.projectRuntimeRoot,
+        project: this.pool ? null : this.project?.id,
+      });
+      if (result.recovered?.length > 0 || result.failed?.length > 0) {
+        process.stderr.write(
+          `[project-worker] orphan job recovery: ${result.recovered.length} recovered, ${result.failed.length} failed\n`
+        );
+      }
+      return result;
+    } catch (err) {
+      process.stderr.write(`[project-worker] orphan job recovery error: ${err.message}\n`);
+      return { recovered: [], failed: [] };
+    }
   }
 
   async releaseOwnEntries() {
@@ -514,6 +545,7 @@ export class ProjectWorker {
     this.startHeartbeat();
 
     try {
+      await this.recoverOrphanedJobsStartup();
       await this.recoverStaleEntries();
 
       if (this.once) {

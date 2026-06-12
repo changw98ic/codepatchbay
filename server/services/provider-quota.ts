@@ -261,7 +261,6 @@ const WINDOW_EXHAUST = /window.{0,40}(?:quota|limit|exhaust|reset)|(?:quota|limi
 const WEEKLY_EXHAUST = /weekly|week.?limit/i;
 const AUTH_FAIL = /(?:unauthorized|invalid api key|invalid token|expired token|authentication failed|auth failed|forbidden.*api key)/i;
 const TOKEN_CONTEXT = /context.?length|max.?token|output.?token|token.?limit/i;
-const LOCAL_BROWSER_PROFILE_FAILURE = /ProcessSingleton|profile directory|launchPersistentContext|user.?data.?dir|SingletonLock|DevToolsActivePort/i;
 
 /**
  * Parse a reset time from an error message, respecting timezone.
@@ -365,10 +364,6 @@ export async function classifyQuotaFailure({ providerKey, agent, variant, error,
   const combined = `${msg}\n${stderr || ""}\n${stdout || ""}`;
 
   if (error instanceof ProviderQuotaError) {
-    return { isQuota: false };
-  }
-
-  if (agent === "browser-agent" && LOCAL_BROWSER_PROFILE_FAILURE.test(combined)) {
     return { isQuota: false };
   }
 

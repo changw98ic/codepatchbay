@@ -14,7 +14,6 @@ const distPackage = {
   type: "module",
   bin: {
     cpb: "cpb",
-    "cpb-browser-agent-acp": "server/services/browser-agent-acp.js",
     "cpb-test-acp-agent": "server/services/test-acp-agent.js",
   },
   files: [
@@ -31,7 +30,6 @@ const distPackage = {
     "templates/",
     "wiki/schema.md",
     "wiki/projects/_template/",
-    "web/dist/",
     "!tests/",
     "!server/.omc/",
   ],
@@ -67,7 +65,6 @@ await chmod(launcherPath, 0o755);
 
 for (const relative of [
   "cli/cpb.js",
-  "server/services/browser-agent-acp.js",
   "server/services/test-acp-agent.js",
   "bridges/job-runner.js",
   "bridges/project-worker.js",

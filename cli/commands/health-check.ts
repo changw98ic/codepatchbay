@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Health check: HTTP GET + test suite + frontend build
+// Health check: test suite + fake ACP smoke
 // Exit 0 = healthy, exit 1 = unhealthy
 
 import { spawn } from "node:child_process";
@@ -22,32 +22,15 @@ function usage() {
     "Usage: cpb health-check [options]",
     "",
     "Options:",
-    "  --url <url>                 HTTP endpoint to probe (default: http://127.0.0.1:<port>/api/health)",
-    "  --port <port>               Port used by the default HTTP endpoint",
-    "  --http-attempts <n>         Number of HTTP attempts (default: 10)",
-    "  --http-interval-ms <ms>     Delay between HTTP attempts (default: 3000)",
-    "  --skip-http                Skip HTTP endpoint probe",
     "  --skip-tests               Skip backend test command",
-    "  --skip-build               Skip frontend build command",
     "  --fake-acp-smoke           Run repeatable init/attach/pipeline/review/verify smoke with fake ACP",
     "  --help                     Show this help",
   ].join("\n");
 }
 
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = parseInt(value || "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 export function parseArgs(args: string[] = [], env = process.env) {
   const options = {
-    port: positiveInt(env.CPB_PORT || "3456", 3456),
-    url: null,
-    httpAttempts: 10,
-    httpIntervalMs: 3000,
-    skipHttp: false,
     skipTests: false,
-    skipBuild: false,
     fakeAcpSmoke: false,
     help: false,
   };
@@ -59,26 +42,8 @@ export function parseArgs(args: string[] = [], env = process.env) {
       case "-h":
         options.help = true;
         break;
-      case "--url":
-        options.url = args[++index];
-        break;
-      case "--port":
-        options.port = positiveInt(args[++index], options.port);
-        break;
-      case "--http-attempts":
-        options.httpAttempts = positiveInt(args[++index], options.httpAttempts);
-        break;
-      case "--http-interval-ms":
-        options.httpIntervalMs = positiveInt(args[++index], options.httpIntervalMs);
-        break;
-      case "--skip-http":
-        options.skipHttp = true;
-        break;
       case "--skip-tests":
         options.skipTests = true;
-        break;
-      case "--skip-build":
-        options.skipBuild = true;
         break;
       case "--fake-acp-smoke":
         options.fakeAcpSmoke = true;
@@ -88,19 +53,7 @@ export function parseArgs(args: string[] = [], env = process.env) {
     }
   }
 
-  options.url ||= `http://127.0.0.1:${options.port}/api/health`;
   return options;
-}
-
-async function httpCheck(url: string, maxAttempts = 10, intervalMs = 3000): Promise<boolean> {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return false;
 }
 
 function runCmd(cmd: string, args: string[], cwd = process.cwd()): Promise<CommandResult> {
@@ -118,46 +71,25 @@ export async function check({
   cpbRoot,
   executorRoot,
   options,
-  httpCheckFn = httpCheck,
   runCmdFn = runCmd,
   fakeAcpSmokeFn = null,
 }: {
   cpbRoot: string;
   executorRoot: string;
   options: HealthOptions;
-  httpCheckFn?: (url: string, maxAttempts?: number, intervalMs?: number) => Promise<boolean>;
   runCmdFn?: (cmd: string, args: string[], cwd?: string) => Promise<CommandResult>;
   fakeAcpSmokeFn?: ((args: Record<string, any>) => Promise<any>) | null;
 }) {
   const checks: HealthCheckResult[] = [];
 
-  // Check 1: HTTP
-  if (options.skipHttp) {
-    checks.push({ name: "http", ok: true, skipped: true });
-  } else {
-    const httpOk = await httpCheckFn(options.url, options.httpAttempts, options.httpIntervalMs);
-    checks.push({ name: "http", ok: httpOk });
-    if (!httpOk) {
-      console.log("FAIL: HTTP health check failed");
-      return checks;
-    }
-  }
-
-  // Check 2: Backend tests
+  // Check 1: Backend tests
   if (!options.skipTests) {
     const tests = await runCmdFn("npm", ["run", "test:node"], cpbRoot);
     checks.push({ name: "tests", ok: tests.ok });
     if (!tests.ok) console.log("FAIL: tests\n" + tests.output.slice(-500));
   }
 
-  // Check 3: Frontend build
-  if (!options.skipBuild) {
-    const build = await runCmdFn("npm", ["run", "build:web"], cpbRoot);
-    checks.push({ name: "build", ok: build.ok });
-    if (!build.ok) console.log("FAIL: build\n" + build.output.slice(-500));
-  }
-
-  // Check 4: repeatable fake ACP smoke
+  // Check 2: repeatable fake ACP smoke
   if (options.fakeAcpSmoke) {
     try {
       let runFakeAcpSmoke = fakeAcpSmokeFn;
@@ -177,7 +109,7 @@ export async function check({
   return checks;
 }
 
-export async function run(args: string[] = [], { cpbRoot, executorRoot, httpCheckFn, runCmdFn, fakeAcpSmokeFn }: HealthContext = {}) {
+export async function run(args: string[] = [], { cpbRoot, executorRoot, runCmdFn, fakeAcpSmokeFn }: HealthContext = {}) {
   let options;
   try {
     options = parseArgs(args);
@@ -197,7 +129,6 @@ export async function run(args: string[] = [], { cpbRoot, executorRoot, httpChec
     cpbRoot: root,
     executorRoot: execRoot,
     options,
-    httpCheckFn,
     runCmdFn,
     fakeAcpSmokeFn,
   });

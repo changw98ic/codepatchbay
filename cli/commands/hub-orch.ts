@@ -99,11 +99,12 @@ async function listAssignments(hubRoot) {
 
 async function retryJob([project, jobId, ...flags]) {
   if (!project || !jobId) {
-    console.error("Usage: cpb hub-orch retry <project> <jobId> [--force]");
+    console.error("Usage: cpb hub-orch retry <project> <jobId> [--force] [--fresh]");
     return 1;
   }
   const hubRoot = resolveHubRoot(process.env.CPB_ROOT || process.cwd());
   const force = flags.includes("--force");
+  const fresh = flags.includes("--fresh");
 
   try {
     const { retryJob: doRetry } = await import("../../server/services/job/job-store.js");
@@ -111,7 +112,7 @@ async function retryJob([project, jobId, ...flags]) {
     const proj = await getProject(hubRoot, project);
     const dataRoot = proj?.projectRuntimeRoot || undefined;
     const cpbRoot = process.env.CPB_ROOT || process.cwd();
-    const result = await doRetry(cpbRoot, project, jobId, { force, dataRoot });
+    const result = await doRetry(cpbRoot, project, jobId, { force, dataRoot, forceFreshSession: fresh });
     console.log(JSON.stringify(result, null, 2));
     return 0;
   } catch (err) {

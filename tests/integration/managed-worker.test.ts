@@ -13,7 +13,7 @@ import { readJson, tempRoot, writeJson } from "../helpers.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
-const testAgentScript = path.join(repoRoot, "server", "services", "test-acp-agent.js");
+const testAgentScript = path.join(repoRoot, "tests", "fixtures", "test-acp-agent.js");
 
 function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;

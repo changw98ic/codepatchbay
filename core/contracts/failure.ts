@@ -16,6 +16,8 @@ export const FailureKind = Object.freeze({
   VERIFICATION_FAILED: "verification_failed",
   VERDICT_INVALID: "verdict_invalid",
   HUMAN_APPROVAL_REQUIRED: "human_approval_required",
+  RUNJOB_PANIC: "runjob_panic",
+  POISONED_SESSION: "poisoned_session",
   UNKNOWN: "unknown",
 });
 

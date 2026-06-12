@@ -9,6 +9,7 @@
  */
 
 import { runPhase } from "./run-phase.js";
+import { readFile as _readFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveSemanticPhases } from "./phase-policy.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
@@ -364,7 +365,21 @@ function buildAdversarialRetryContext(gateResult, phaseResults, riskMap) {
  * @param {object} [ctx.providerServices]
  * @returns {Promise<{status: string, jobId: string, exitCode: number, failure?: object}>}
  */
+/**
+ * Crash barrier wrapper — catches unhandled exceptions from runJobInner()
+ * and ensures the job is failed rather than stuck in "running" forever.
+ */
 export async function runJob(ctx) {
+  ctx._jobId = "unknown";
+  ctx._currentPhase = null;
+  try {
+    return await runJobInner(ctx);
+  } catch (panic) {
+    return await handleRunJobPanic(ctx, panic);
+  }
+}
+
+async function runJobInner(ctx) {
   const {
     cpbRoot,
     hubRoot,
@@ -405,6 +420,7 @@ export async function runJob(ctx) {
     sourceContext: sourceContext || {},
   });
   const jobId = job.jobId;
+  ctx._jobId = jobId;  // Crash barrier needs jobId before runJobInner completes
 
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_started",
@@ -620,6 +636,19 @@ export async function runJob(ctx) {
     });
     return { status: "blocked", jobId, exitCode: 2, failure: blockFail };
   }
+  // 2.5. Clear session cache if forceFreshSession is requested (rerun vs retry)
+  if (sourceContext?.retry?.forceFreshSession && cpbRoot) {
+    try {
+      const { clearSessionId } = await import("../agents/session-cache.js");
+      await Promise.allSettled([
+        clearSessionId(cpbRoot, "codex"),
+        clearSessionId(cpbRoot, "claude"),
+      ]);
+    } catch {
+      // Session cache clearing is best-effort.
+    }
+  }
+
   // 3. Get ACP pool
   const pool = getPool();
 
@@ -633,6 +662,7 @@ export async function runJob(ctx) {
 
   for (const dagNode of executionNodes) {
     const phase = dagNode.phase;
+    ctx._currentPhase = phase;  // Crash barrier tracking
     const fallbackRole = phaseRoleMap[phase] || phase;
     const nodeId = dagNode.id || phase;
     const role = dagNode.role || fallbackRole;
@@ -1303,6 +1333,45 @@ export async function runJob(ctx) {
       ? (rawAgent.agent || rawAgent.name || legacyAgentForPhase(phase))
       : (rawAgent || legacyAgentForPhase(phase));
 
+    // Poisoned session check — detect fallback/error output that slipped through phase validation
+    if (isPhasePassed(result) && result.artifact?.path) {
+      try {
+        const { classifyPoisonedSession } = await import("./poisoned-session.js");
+        const raw = await _readFile(result.artifact.path, "utf8").catch(() => "");
+        const head = raw.slice(0, 2000);
+        const poisonCheck = classifyPoisonedSession(head, {
+          stderr: result.stderr || result.stderrSnippet || "",
+        });
+        if (poisonCheck.poisoned) {
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "phase_poisoned_session",
+            jobId,
+            project,
+            phase,
+            nodeId,
+            reasons: poisonCheck.reasons,
+            classifier: poisonCheck.classifier,
+            ts: ts(),
+          });
+          result = phaseFailed({
+            phase,
+            failure: failure({
+              kind: FailureKind.POISONED_SESSION,
+              phase,
+              reason: `poisoned session: ${poisonCheck.reasons.join(", ")}`,
+              retryable: false,
+              cause: { reasons: poisonCheck.reasons, classifier: poisonCheck.classifier },
+            }),
+          });
+        }
+      } catch (err) {
+        // best-effort — transient FS errors (EACCES, EMFILE) are logged but don't break execution
+        if (err?.code && err.code !== "ENOENT" && err.code !== "ENOTDIR") {
+          process.stderr.write(`[run-job] poisoned session check error: ${err.message}\n`);
+        }
+      }
+    }
+
     // Track artifacts for subsequent phases
     if (isPhasePassed(result) && result.artifact) {
       const artifactId = extractArtifactId(result.artifact);
@@ -1551,6 +1620,76 @@ export async function runJob(ctx) {
     exitCode: 0,
     failure: null,
     phaseResults,
+  };
+}
+
+// ─── Panic Recovery ──────────────────────────────────────────────────
+
+/**
+ * Crash barrier handler — invoked when runJobInner() throws an unhandled
+ * exception.  Best-effort fails the job so it doesn't remain stuck in
+ * "running" state forever.
+ */
+async function handleRunJobPanic(ctx, panic) {
+  const { cpbRoot, project, failJob, appendEvent } = ctx;
+  const jobId = ctx._jobId || "unknown";
+  const phase = ctx._currentPhase || "unknown";
+
+  const panicMessage = panic?.message || (panic == null ? "unknown panic" : String(panic));
+  const panicType = panic?.constructor?.name || "Error";
+
+  // Best-effort: fail the job and write a terminal event.
+  // Both operations are fire-and-forget — if they fail we still return
+  // a structured result so the caller can handle it.
+  const failPromise = (async () => {
+    if (typeof failJob === "function" && jobId !== "unknown") {
+      try {
+        await failJob(cpbRoot, project, jobId, {
+          reason: `runJob panic: ${panicMessage}`,
+          code: "FATAL",
+          phase,
+          cause: {
+            kind: "runjob_panic",
+            stack: panic?.stack?.slice(0, 4000) || null,
+            panicType,
+          },
+        });
+      } catch { /* best-effort */ }
+    }
+    if (typeof appendEvent === "function" && jobId !== "unknown") {
+      try {
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "job_panic",
+          jobId,
+          phase,
+          panicType,
+          reason: panicMessage,
+          ts: ts(),
+        });
+      } catch { /* best-effort */ }
+    }
+  })();
+
+  // Await with timeout — ensures failJob/appendEvent execute before returning.
+  // If failPromise itself hangs (3s budget), we still return the structured failure.
+  try {
+    await Promise.race([
+      failPromise,
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch { /* best-effort — timeout or rejection */ }
+
+  return {
+    status: "failed",
+    jobId,
+    exitCode: 1,
+    failure: {
+      kind: FailureKind.RUNJOB_PANIC,
+      phase,
+      reason: panicMessage,
+      retryable: false,
+      cause: { panicType, stack: panic?.stack?.slice(0, 2000) || null },
+    },
   };
 }
 

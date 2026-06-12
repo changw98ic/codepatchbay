@@ -1,4 +1,4 @@
-// ── infra.ts — merged: ws-broadcast, watcher, local-smoke, lease-manager, concurrency-limits, process-registry, index-freshness ──
+// ── infra.ts — merged: local-smoke, lease-manager, concurrency-limits, process-registry, index-freshness ──
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -10,154 +10,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
-// ── ws-broadcast (from ws-broadcast.ts) ────────────────────────────────────
-
-type BroadcastClient = {
-  send(data: string): void;
-  close(): void;
-};
-
-const clients = new Set<BroadcastClient>();
-
-export function addClient(socket: BroadcastClient) {
-  clients.add(socket);
-}
-
-export function removeClient(socket: BroadcastClient) {
-  clients.delete(socket);
-}
-
-export function broadcast(event: unknown) {
-  const data = JSON.stringify(event);
-  for (const socket of clients) {
-    try { socket.send(data); } catch {}
-  }
-}
-
-export function closeAll() {
-  for (const socket of clients) {
-    try { socket.close(); } catch {}
-  }
-  clients.clear();
-}
-
-// ── watcher (from watcher.ts) ──────────────────────────────────────────────
-
-export async function registerWatcher(cpbRoot, broadcastFn) {
-  const chokidar = (await import("chokidar")).default;
-  const fs = await import("fs/promises");
-  const { projectPipelineState } = await import("./job/job-projection.js");
-  const { readEventsReadOnly, materializeJob } = await import("./event/event-store.js");
-  const { listProjects, resolveHubRoot } = await import("./hub/hub-registry.js");
-
-  const TERMINAL_STATES = new Set(['completed', 'failed', 'blocked', 'cancelled']);
-  const projectsDir = path.join(cpbRoot, 'wiki/projects');
-
-  function extractEventPath(filePath, legacyEventsDir, hubProjectsDirs) {
-    const legacyRel = path.relative(legacyEventsDir, filePath);
-    if (!legacyRel.startsWith('..')) {
-      const [projectName, fileName] = legacyRel.split(path.sep);
-      return { projectName, jobId: fileName.replace(/\.jsonl$/, '') };
-    }
-    for (const dir of hubProjectsDirs) {
-      const rel = path.relative(dir, filePath);
-      if (!rel.startsWith('..')) {
-        const parts = rel.split(path.sep);
-        if (parts.length >= 2) {
-          return { projectName: parts[0], jobId: parts[1].replace(/\.jsonl$/, '') };
-        }
-      }
-    }
-    return null;
-  }
-
-  const wikiWatcher = chokidar.watch(
-    [path.join(projectsDir, '*/inbox/*.md'), path.join(projectsDir, '*/outputs/*.md'), path.join(projectsDir, '*/log.md')],
-    {
-      persistent: true,
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 200 },
-    }
-  );
-
-  wikiWatcher.on('all', async (event, filePath) => {
-    try {
-      const rel = path.relative(projectsDir, filePath);
-      const projectName = rel.split(path.sep)[0];
-      const fileRel = rel.split(path.sep).slice(1).join('/');
-
-      if (event === 'add') {
-        broadcastFn({ type: 'file:created', project: projectName, path: fileRel });
-      } else if (event === 'change') {
-        if (fileRel === 'log.md') {
-          const content = await fs.readFile(filePath, 'utf8');
-          const lines = content.split('\n').filter(l => l.startsWith('- **'));
-          const lastLine = lines[lines.length - 1];
-          if (lastLine) {
-            broadcastFn({ type: 'log:append', project: projectName, entry: lastLine });
-          }
-        } else {
-          broadcastFn({ type: 'file:modified', project: projectName, path: fileRel });
-        }
-      } else if (event === 'unlink') {
-        broadcastFn({ type: 'file:deleted', project: projectName, path: fileRel });
-      }
-    } catch (err) {
-      console.error(`[watcher] wiki file error (${filePath}): ${err.message}`);
-    }
-  });
-
-  const legacyEventsDir = path.join(cpbRoot, 'cpb-task', 'events');
-  const watchPatterns = [path.join(legacyEventsDir, '*', '*.jsonl')];
-  const hubProjectsDirs = [];
-
-  try {
-    const hubRoot = resolveHubRoot(cpbRoot);
-    if (hubRoot) {
-      const projects = await listProjects(hubRoot);
-      for (const p of projects) {
-        if (p.projectRuntimeRoot) {
-          const eventsDir = path.join(p.projectRuntimeRoot, 'events', p.id);
-          watchPatterns.push(path.join(eventsDir, '*.jsonl'));
-          hubProjectsDirs.push(path.join(p.projectRuntimeRoot, 'events'));
-        }
-      }
-    }
-  } catch {}
-
-  const eventsWatcher = chokidar.watch(watchPatterns, {
-    persistent: true,
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 200 },
-  });
-
-  eventsWatcher.on('all', async (_event, filePath) => {
-    try {
-      const parsed = extractEventPath(filePath, legacyEventsDir, hubProjectsDirs);
-      if (!parsed) return;
-      const { projectName, jobId } = parsed;
-
-      broadcastFn({ type: 'job:update', project: projectName, jobId });
-      const state = await projectPipelineState(cpbRoot, projectName);
-      broadcastFn({ type: 'pipeline:update', project: projectName, state });
-
-      try {
-        const events = await readEventsReadOnly(cpbRoot, projectName, jobId);
-        const jobState = materializeJob(events);
-        if (TERMINAL_STATES.has(jobState.status)) {
-          const { collectAgentMetrics } = await import('./agent/agent-config.js');
-          const metrics = await collectAgentMetrics(cpbRoot);
-          broadcastFn({ type: 'agent:metrics', agent: jobState.executor || 'unknown', jobId, status: jobState.status, metrics, ts: new Date().toISOString() });
-        }
-      } catch {}
-    } catch (err) {
-      console.error(`[watcher] job event error (${filePath}): ${err.message}`);
-    }
-  });
-
-  return { wikiWatcher, eventsWatcher };
-}
 
 // ── local-smoke (from local-smoke.ts) ──────────────────────────────────────
 
@@ -322,7 +174,7 @@ export async function runFakeAcpSmoke({
   const sourcePath = path.join(tmpRoot, "source-project");
   const scenarioFile = await writeTestAgentScenario(tmpRoot);
   const transcriptFile = path.join(tmpRoot, "test-acp-transcript.jsonl");
-  const testAgentPath = path.join(root, "server", "services", "test-acp-agent.js");
+  const testAgentPath = path.join(root, "tests", "fixtures", "test-acp-agent.js");
   const testAgentArgs = JSON.stringify([testAgentPath, "--scenario-file", scenarioFile, "--transcript-file", transcriptFile]);
 
   try {

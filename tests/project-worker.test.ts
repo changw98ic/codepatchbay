@@ -957,3 +957,124 @@ describe("ProjectWorker crash and reconnect resilience", () => {
     assert.equal(final[0].status, "completed");
   });
 });
+
+describe("ProjectWorker heartbeat action directives", () => {
+  let hubRoot;
+  let sourceDir;
+  let projectId;
+  const activeWorkers = [];
+
+  beforeEach(async () => {
+    hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-pw-hub-"));
+    sourceDir = await mkdtemp(path.join(tmpdir(), "cpb-pw-src-"));
+    const project = await registerProject(hubRoot, { name: "test-proj", sourcePath: sourceDir, skipCodeGraphGate: true });
+    projectId = project.id;
+  });
+
+  afterEach(() => {
+    for (const w of activeWorkers) {
+      try { w.requestStop(); } catch {}
+      try { w.stopHeartbeat?.(); } catch {}
+    }
+    activeWorkers.length = 0;
+  });
+
+  function makeWorker(opts: Record<string, any> = {}) {
+    const w = new ProjectWorker({
+      projectId,
+      hubRoot,
+      once: true,
+      runPipelineFn: opts.runPipelineFn || (() => Promise.resolve({ ok: true, code: 0, stdout: "", stderr: "" })),
+      ...opts,
+    });
+    activeWorkers.push(w);
+    return w;
+  }
+
+  test("stop directive calls requestStop", async () => {
+    // Set shutdownRequested flag on the project
+    const registry = await loadRegistry(hubRoot);
+    registry.projects[projectId].shutdownRequested = true;
+    await saveRegistry(hubRoot, registry);
+
+    const worker = makeWorker();
+    await worker.init();
+    assert.equal(worker._stopRequested, false);
+
+    await worker.heartbeat();
+
+    assert.equal(worker._stopRequested, true);
+  });
+
+  test("no actions when shutdownRequested is not set", async () => {
+    const worker = makeWorker();
+    await worker.init();
+    assert.equal(worker._stopRequested, false);
+
+    await worker.heartbeat();
+
+    // Should remain false — no stop directive
+    assert.equal(worker._stopRequested, false);
+  });
+
+  test("heartbeat failure does not block worker", async () => {
+    const worker = makeWorker();
+    await worker.init();
+
+    // Sabotage hubRoot so heartbeat will fail, then restore
+    const goodHubRoot = worker.hubRoot;
+    worker.hubRoot = "/nonexistent/path";
+    // Should not throw
+    await worker.heartbeat();
+    assert.equal(worker._stopRequested, false);
+    worker.hubRoot = goodHubRoot;
+  });
+
+  test("heartbeat returns { project, actions } from server side", async () => {
+    const result = await heartbeatWorker(hubRoot, projectId, {
+      workerId: "directive-test",
+      pid: 42,
+      status: "online",
+      capabilities: ["scan"],
+      claimTimeoutMs: 30_000,
+    });
+
+    assert.ok(result.project);
+    assert.equal(result.project.worker.workerId, "directive-test");
+    assert.ok(Array.isArray(result.actions));
+    assert.equal(result.actions.length, 0);
+  });
+
+  test("heartbeat returns stop action when shutdownRequested is set", async () => {
+    const registry = await loadRegistry(hubRoot);
+    registry.projects[projectId].shutdownRequested = true;
+    await saveRegistry(hubRoot, registry);
+
+    const result = await heartbeatWorker(hubRoot, projectId, {
+      workerId: "directive-test-2",
+      pid: 42,
+      status: "online",
+    });
+
+    assert.ok(result.project);
+    assert.equal(result.actions.length, 1);
+    assert.equal(result.actions[0].action, "stop");
+    assert.equal(result.actions[0].reason, "shutdown_requested");
+  });
+
+  test("idempotent: multiple stop directives do not crash", async () => {
+    const registry = await loadRegistry(hubRoot);
+    registry.projects[projectId].shutdownRequested = true;
+    await saveRegistry(hubRoot, registry);
+
+    const worker = makeWorker();
+    await worker.init();
+
+    await worker.heartbeat();
+    assert.equal(worker._stopRequested, true);
+
+    // Second heartbeat should not throw even though already stopped
+    await worker.heartbeat();
+    assert.equal(worker._stopRequested, true);
+  });
+});

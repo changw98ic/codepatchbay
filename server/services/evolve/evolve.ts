@@ -616,7 +616,7 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 }
 
 function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot: string, input: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  const acp = path.join(executorRoot, "server", "services", "acp-client-core.js");
+  const acp = path.join(executorRoot, "server", "services", "acp", "acp-client.js");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
       env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }, { agent }),

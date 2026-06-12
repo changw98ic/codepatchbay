@@ -310,7 +310,12 @@ export async function heartbeatWorker(hubRoot, id, worker: AnyRecord = {}) {
     claimTimeoutMs: worker.claimTimeoutMs ?? undefined,
     lastSeenAt: nowIso(),
   };
-  return updateProject(hubRoot, id, { worker: heartbeat });
+  const project = await updateProject(hubRoot, id, { worker: heartbeat });
+  const actions: AnyRecord[] = [];
+  if (project && project.shutdownRequested) {
+    actions.push({ action: "stop", reason: "shutdown_requested" });
+  }
+  return { project, actions };
 }
 
 export function deriveWorkerStatus(worker) {
@@ -468,15 +473,6 @@ export async function readHubLiveness(hubRoot) {
     }
   }
 
-  // hub.json says dead or PID gone — try HTTP probe as fallback
-  const port = parseInt(process.env.CPB_PORT || "3456", 10);
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/projects`, { signal: AbortSignal.timeout(2000) });
-    if (res.ok) {
-      return { alive: true, pid: meta.pid || null, startedAt: meta.startedAt, version: meta.version, runtime: meta.runtime, source: "http-probe" };
-    }
-  } catch {}
-
   // Truly dead
   if (meta.health === "dead") {
     return { alive: false, reason: "shutdown", pid: meta.pid, stoppedAt: meta.stoppedAt, startedAt: meta.startedAt };
@@ -561,31 +557,6 @@ export async function cmdStart() {
       env: buildHubInstallEnv(process.env),
       stdio: "pipe",
     });
-  }
-
-  // Ensure Playwright Chromium is installed when browser-agent is configured
-  try {
-    const { getManagedAcpPool } = await import("../acp/acp-pool.js");
-    const pool = getManagedAcpPool({ cpbRoot, hubRoot });
-    const status = pool.status();
-    const hasBrowserAgent = (Object.values(status.pools || {}) as AnyRecord[]).some((p) => p.agent === "browser-agent" || p.mode === "persistent");
-    if (hasBrowserAgent) {
-      const { default: playwright } = await import("playwright");
-      const execPath = playwright.chromium.executablePath();
-      await stat(execPath);
-    }
-  } catch {
-    console.log("Installing Playwright Chromium (browser-agent dependency)...");
-    const { execSync: _execSync } = await import("node:child_process");
-    try {
-      _execSync("npx playwright install chromium", {
-        cwd: executorRoot,
-        stdio: "pipe",
-        timeout: 120_000,
-      });
-    } catch {
-      console.error("Warning: Playwright Chromium install failed. Browser-agent tasks will not work.");
-    }
   }
 
   const port = process.env.CPB_PORT || "3456";

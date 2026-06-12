@@ -190,6 +190,163 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
   return { valid: true, events, recovered: false, repaired: false, wouldRepair: false, error: null };
 }
 
+/**
+ * Recover orphaned (stuck-running) jobs — Phase 1 of reconcile extracted
+ * for standalone use (e.g. worker startup).  Three-tier cascade:
+ *   1. Process registry orphan (PID dead)
+ *   2. Lease missing / expired with dead owner
+ *   3. Activity timestamp fallback (no lease, no activity for 5 min)
+ *
+ * Returns { recovered: [{jobId, reason}], failed: [{jobId, error}] }
+ */
+export async function recoverOrphanedJobs(cpbRoot, options: Record<string, any> = {}) {
+  const dryRun = options.dryRun || false;
+  const recovered = [];
+  const failed = [];
+
+  const jobs = await listJobsForCleanup(cpbRoot, options);
+  const processEntries = await listProcessesForCleanup(cpbRoot, options);
+  const processByJobId = new Map();
+  for (const pe of processEntries) {
+    if (pe.jobId) processByJobId.set(pe.jobId, pe);
+  }
+
+  const hubRoot = resolvedHubRoot(cpbRoot, options);
+  let queueEntries = [];
+  try { queueEntries = await listHubQueue(hubRoot); } catch {}
+
+  const now = new Date();
+  const runningJobs = jobs.filter(
+    (j) => !TERMINAL_STATUSES.has(j.status) && j.jobId
+  );
+
+  for (const job of runningJobs) {
+    let isStale = false;
+    let staleReason = "";
+    let cause = null;
+    const processEntry = processByJobId.get(job.jobId) || null;
+
+    // Tier 1: Process registry orphan
+    if (processEntry && processEntry.status === "running") {
+      const liveness = classifyLiveness(processEntry);
+      if (liveness === "orphan") {
+        const phase = processEntry.phase || job.phase || "unknown";
+        isStale = true;
+        staleReason = `${phase} process disappeared before terminal phase event`;
+        cause = {
+          kind: "stale_runtime_reconciled",
+          failureReason: "stale_pid_disappeared",
+          phase,
+          jobId: job.jobId,
+          leaseId: processEntry.leaseId || job.leaseId || null,
+          runnerPid: processEntry.runnerPid,
+          processStatus: processEntry.status,
+          lastHeartbeat: processEntry.lastHeartbeat,
+          observedAt: nowIso(),
+        };
+      }
+    }
+
+    // Tier 2: Lease-based detection
+    if (!isStale && job.leaseId) {
+      let lease;
+      try {
+        lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job.__dataRoot });
+      } catch {
+        // Corrupt or unreadable lease — treat as stale (lease is meaningless if unreadable)
+        isStale = true;
+        staleReason = "lease file unreadable (corrupt or I/O error)";
+        cause = { kind: "stale_runtime_reconciled", failureReason: "lease_unreadable", phase: job.phase, jobId: job.jobId, leaseId: job.leaseId, observedAt: nowIso() };
+      }
+      if (!isStale && lease === null) {
+        isStale = true;
+        staleReason = "lease file missing";
+        cause = { kind: "stale_runtime_reconciled", failureReason: "lease_missing", phase: job.phase, jobId: job.jobId, leaseId: job.leaseId, observedAt: nowIso() };
+      } else if (isLeaseStale(lease, now)) {
+        if (lease.ownerPid && !isProcessAlive(lease.ownerPid)) {
+          isStale = true;
+          staleReason = `owner process dead (pid ${lease.ownerPid})`;
+          cause = { kind: "stale_runtime_reconciled", failureReason: "lease_stale_owner_dead", phase: job.phase, jobId: job.jobId, leaseId: job.leaseId, runnerPid: lease.ownerPid, leaseExpiresAt: lease.expiresAt, observedAt: nowIso() };
+        } else if (!lease.ownerPid) {
+          isStale = true;
+          staleReason = "lease expired with no owner pid";
+          cause = { kind: "stale_runtime_reconciled", failureReason: "lease_expired_owner_pid_missing", phase: job.phase, jobId: job.jobId, leaseId: job.leaseId, leaseExpiresAt: lease.expiresAt, observedAt: nowIso() };
+        }
+      }
+    }
+
+    // Tier 3: Activity fallback
+    if (!isStale && job.status === "running") {
+      if (job.lastActivityAt) {
+        const age = now.getTime() - new Date(job.lastActivityAt).getTime();
+        if (age > 300_000) {
+          isStale = true;
+          staleReason = "no lease, no activity for 5m";
+        }
+      } else {
+        isStale = true;
+        staleReason = "no lease, no activity recorded";
+      }
+    }
+
+    if (!isStale) continue;
+
+    // Attach session pin from process registry
+    if (processEntry?.sessionPin) {
+      cause = cause || {};
+      cause.sessionPin = processEntry.sessionPin;
+    }
+
+    if (dryRun) {
+      recovered.push({ jobId: job.jobId, project: job.project, reason: staleReason, dryRun: true });
+      continue;
+    }
+
+    try {
+      await failJob(cpbRoot, job.project, job.jobId, {
+        reason: `stale_runtime_reconciled: ${staleReason}`,
+        code: "FATAL",
+        phase: cause?.phase || job.phase,
+        cause,
+        dataRoot: job.__dataRoot,
+      });
+      recovered.push({ jobId: job.jobId, project: job.project, reason: staleReason });
+
+      // Clean up queue entry
+      const matched = findMatchingQueueEntry(queueEntries, job);
+      if (matched) {
+        try {
+          await updateQueueEntry(hubRoot, matched.id, {
+            status: "failed",
+            claimedBy: null,
+            claimedAt: null,
+            workerId: null,
+            metadata: { failureCode: "FATAL", failureReason: cause?.failureReason, reconciledJobId: job.jobId },
+          });
+        } catch { /* best-effort */ }
+      }
+
+      // Clean up process entry
+      if (processEntry) {
+        try { await removeProcess(cpbRoot, job.jobId, { dataRoot: processEntry.__dataRoot || job.__dataRoot }); } catch { /* best-effort */ }
+      }
+
+      // Clean up lease file
+      if (job.leaseId) {
+        try {
+          const leasesDir = path.join(job.__dataRoot, "leases");
+          await rm(path.join(leasesDir, `${job.leaseId}.json`), { force: true });
+          try { await rm(path.join(leasesDir, `${job.leaseId}.json.lock`), { recursive: true, force: true }); } catch {}
+        } catch { /* best-effort */ }
+      }
+    } catch (err) {
+      failed.push({ jobId: job.jobId, project: job.project, error: err.message });
+    }
+  }
+
+  return { recovered, failed };
+}
+
 export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Record<string, any> = {}) {
   const streamRecoveries = [];
   const report: Record<string, any> = {
@@ -327,6 +484,12 @@ export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Rec
       if (cause) {
         jobReport.failureReason = cause.failureReason;
         jobReport.failureArtifact = failureArtifact;
+      }
+      // Attach session pin from process registry for retry consumption
+      if (processEntry && processEntry.sessionPin) {
+        cause = cause || {};
+        cause.sessionPin = processEntry.sessionPin;
+        jobReport.sessionPin = processEntry.sessionPin;
       }
       report.staleJobs.push(jobReport);
 
@@ -815,8 +978,36 @@ import { mkdir, rename } from "node:fs/promises";
 
 const COMPLETED_ACTIONS = new Set(["preserve", "delete", "archive"]);
 
+// ── Workflow-aware retention policies ──
+// Maps workflow names to per-status retention actions.
+// Unrecognized workflows fall through to DEFAULT_WORKFLOW_RETENTION.
+const DEFAULT_WORKFLOW_RETENTION: Record<string, string> = {
+  completed: "preserve",
+  failed: "preserve",
+  blocked: "preserve",
+  cancelled: "preserve",
+};
+
+const WORKFLOW_RETENTION_POLICIES: Record<string, Record<string, string>> = {
+  standard: { completed: "preserve", failed: "preserve" },
+  pipeline: { completed: "delete", failed: "preserve" },
+  research: { completed: "archive", failed: "preserve" },
+  "multi-evolve": { completed: "delete", failed: "preserve" },
+  "dual-research": { completed: "archive", failed: "preserve" },
+};
+
+export function resolveRetentionPolicy(workflow: string | null | undefined, status: string): string {
+  const policies = (workflow && WORKFLOW_RETENTION_POLICIES[workflow]) || null;
+  const action = policies?.[status];
+  if (action && COMPLETED_ACTIONS.has(action)) return action;
+  return DEFAULT_WORKFLOW_RETENTION[status] || "preserve";
+}
+
 function normalizePolicy(cpbRoot, policy: Record<string, any> = {}) {
-  const completed = COMPLETED_ACTIONS.has(policy.completed) ? policy.completed : "preserve";
+  // completed: null means "not specified, use workflow-aware default"
+  const completed = policy.completed != null && COMPLETED_ACTIONS.has(policy.completed)
+    ? policy.completed
+    : null;
   return {
     completed,
     archiveRoot: path.resolve(policy.archiveRoot || runtimeDataPath(cpbRoot, "worktree-archive")),
@@ -828,10 +1019,12 @@ function archivePathFor(policy, worktree) {
 }
 
 function entryForJob(job, policy): Record<string, any> {
+  const workflow = job.workflow || null;
   const base: Record<string, any> = {
     jobId: job.jobId,
     project: job.project || null,
     status: job.status || "unknown",
+    workflow,
     worktree: job.worktree,
     branch: job.worktreeBranch || null,
     baseBranch: job.worktreeBaseBranch || null,
@@ -839,58 +1032,95 @@ function entryForJob(job, policy): Record<string, any> {
     reason: "worktree retained by default",
   };
 
-  if (job.status === "completed") {
-    if (policy.completed === "delete") {
-      return {
-        ...base,
-        action: "delete",
-        reason: "completed job worktree selected by policy: delete",
-      };
+  // Determine action: explicit policy.completed overrides workflow-aware defaults
+  const status = job.status || "unknown";
+  if (status === "completed") {
+    // policy.completed is null when not explicitly set -> use workflow-aware lookup
+    const action = policy.completed || resolveRetentionPolicy(workflow, status);
+
+    if (action === "delete") {
+      return { ...base, action: "delete", reason: `completed job worktree (workflow: ${workflow || "unknown"}) selected by policy: delete` };
     }
-    if (policy.completed === "archive") {
-      return {
-        ...base,
-        action: "archive",
-        archivePath: archivePathFor(policy, job.worktree),
-        reason: "completed job worktree selected by policy: archive",
-      };
+    if (action === "archive") {
+      return { ...base, action: "archive", archivePath: archivePathFor(policy, job.worktree), reason: `completed job worktree (workflow: ${workflow || "unknown"}) selected by policy: archive` };
     }
-    return {
-      ...base,
-      reason: "completed job worktree preserved by policy",
-    };
+    return { ...base, reason: `completed job worktree (workflow: ${workflow || "unknown"}) preserved by policy` };
   }
 
-  if (job.status === "failed" || job.status === "blocked") {
-    return {
-      ...base,
-      reason: `${job.status} job worktree retained for inspection by default`,
-    };
+  if (status === "failed" || status === "blocked") {
+    return { ...base, reason: `${status} job worktree retained for inspection by default` };
   }
 
-  return {
-    ...base,
-    reason: `${job.status || "unknown"} job worktree retained because it is not completed`,
-  };
+  return { ...base, reason: `${status} job worktree retained because it is not completed` };
 }
 
 export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
   const jobs = await listJobsForCleanup(cpbRoot, options);
+
+  // Build a set of worktree paths that have associated jobs
+  const worktreeByPath = new Map<string, any>();
+  for (const job of jobs) {
+    if (job.jobId && job.worktree) {
+      worktreeByPath.set(path.resolve(job.worktree), job);
+    }
+  }
+
+  // Orphan detection: scan worktrees directory for dirs not associated with any job
+  const orphans: Record<string, any>[] = [];
+  for (const job of jobs) {
+    // Derive the worktrees parent directory from any known worktree path
+    if (!job.worktree) continue;
+    const parentDir = path.dirname(job.worktree);
+    let subdirs: string[];
+    try {
+      subdirs = await readdir(parentDir);
+    } catch {
+      continue;
+    }
+    for (const subdir of subdirs) {
+      const candidatePath = path.join(parentDir, subdir);
+      let isDir: boolean;
+      try {
+        isDir = (await stat(candidatePath)).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDir) continue;
+      const resolved = path.resolve(candidatePath);
+      if (!worktreeByPath.has(resolved)) {
+        orphans.push({
+          worktree: candidatePath,
+          action: "delete",
+          reason: "orphan worktree: no associated job found",
+        });
+      }
+    }
+    // Only scan the first valid parent directory to avoid redundant scans
+    break;
+  }
+
+  // Build entries from jobs with worktrees
   const entries = jobs
     .filter((job) => job.jobId && job.worktree)
     .map((job) => entryForJob(job, normalizedPolicy))
     .sort((a, b) => a.worktree.localeCompare(b.worktree)) as Array<Record<string, any>>;
 
+  // Append orphan entries
+  const orphanEntries = orphans.sort((a, b) => a.worktree.localeCompare(b.worktree));
+  const allEntries = [...entries, ...orphanEntries];
+
   return {
     dryRun: Boolean(dryRun),
     policy: normalizedPolicy,
-    entries,
+    entries: allEntries,
+    orphans: orphanEntries,
     summary: {
-      total: entries.length,
-      delete: entries.filter((entry) => entry.action === "delete").length,
-      archive: entries.filter((entry) => entry.action === "archive").length,
-      preserve: entries.filter((entry) => entry.action === "preserve").length,
+      total: allEntries.length,
+      delete: allEntries.filter((entry) => entry.action === "delete").length,
+      archive: allEntries.filter((entry) => entry.action === "archive").length,
+      preserve: allEntries.filter((entry) => entry.action === "preserve").length,
+      orphanCount: orphanEntries.length,
     },
   };
 }

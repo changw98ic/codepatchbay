@@ -603,7 +603,7 @@ function recoveryDagResume(job) {
   };
 }
 
-function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, recoveryReason, retryCount, maxRetries }: Record<string, any> = {}) {
+function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, recoveryReason, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}) {
   const base = originalJob?.sourceContext && typeof originalJob.sourceContext === "object"
     ? { ...originalJob.sourceContext }
     : {};
@@ -626,6 +626,7 @@ function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, reco
     artifacts: originalJob?.artifacts || {},
     verdict: originalJob?.verdict || null,
     adversarialVerdict: originalJob?.adversarialVerdict || null,
+    ...(forceFreshSession ? { forceFreshSession: true } : {}),
   };
   return {
     ...base,
@@ -651,7 +652,7 @@ export async function createRecoveryJob(
   cpbRoot: string,
   project: string,
   originalJob: any,
-  { fromPhase, trigger, recoveryReason, ts, dataRoot, executor, executorSelection, retryCount, maxRetries }: Record<string, any> = {}
+  { fromPhase, trigger, recoveryReason, ts, dataRoot, executor, executorSelection, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}
 ) {
   const lineage = terminalJobLineage(originalJob);
   const now = ts || nowIso();
@@ -662,6 +663,7 @@ export async function createRecoveryJob(
     recoveryReason,
     retryCount,
     maxRetries,
+    forceFreshSession,
   });
 
   const newJob = await createJob(cpbRoot, {
@@ -707,6 +709,7 @@ export async function retryJob(
     dataRoot,
     useCurrentExecutor = false,
     currentExecutor = null,
+    forceFreshSession = false,
   }: Record<string, any> = {}
 ) {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
@@ -761,6 +764,7 @@ export async function retryJob(
     executorSelection,
     retryCount,
     maxRetries: effectiveMaxRetries,
+    forceFreshSession,
   });
 }
 

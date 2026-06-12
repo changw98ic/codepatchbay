@@ -346,22 +346,13 @@ export const REQUIRED_EXECUTOR_FILES = [
   "shared/logger.js",
   "shared/orchestrator/assignment-store.js",
   "shared/orchestrator/worker-store.js",
-  "server/services/acp-client-core.js",
-  "server/services/browser-agent-acp.js",
-  "server/services/dual-research.js",
+  "server/services/acp/acp-client.js",
   "server/services/engine-runner.js",
-  "server/services/event-store.js",
-  "server/services/evolve-multi-cli.js",
-  "server/services/hub-queue.js",
-  "server/services/hub-registry.js",
-  "server/services/init-project.js",
-  "server/services/job-store.js",
-  "server/services/local-smoke.js",
-  "server/services/merge-research.js",
-  "server/services/release-store.js",
-  "server/services/review-dispatch-runner.js",
-  "server/services/test-acp-agent.js",
-  "web/dist/index.html",
+  "server/services/event/event-store.js",
+  "server/services/hub/hub-queue.js",
+  "server/services/hub/hub-registry.js",
+  "server/services/job/job-store.js",
+  "server/services/release/release-store.js",
   "scripts/validate-scan-readiness.js",
   "runtime/evolve/multi-evolve.js",
   "runtime/worker/managed-worker.js",
@@ -461,8 +452,7 @@ export async function executorMetadata(executorRoot, { codeVersion, env = proces
 
 export async function runTestAcpAgent(argv: string[]) {
   const { fileURLToPath, pathToFileURL } = await import("node:url");
-  const agentPath = path.resolve(new URL(".", import.meta.url).pathname, "test-acp-agent.js");
-  // test-acp-agent is a standalone CLI script; invoke it as a subprocess
+  const agentPath = path.resolve(new URL(".", import.meta.url).pathname, "..", "..", "tests", "fixtures", "test-acp-agent.js");
   const args = [agentPath, ...argv];
   return execFileAsync(process.execPath, args, { timeout: 120_000 });
 }
