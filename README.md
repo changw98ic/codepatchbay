@@ -50,7 +50,7 @@ npm 包名：[`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # 检测工具、安装 agents、运行健康检查
-cpb demo                       # 本地演示，无需 API 密钥
+cpb quickstart --demo          # 本地演示，无需 API 密钥
 cd your-project
 cpb init .                     # 注册项目
 cpb run "fix failing tests"    # 提交任务，CodePatchBay 会完成剩下的
@@ -59,7 +59,7 @@ cpb run "fix failing tests"    # 提交任务，CodePatchBay 会完成剩下的
 免安装试用：
 
 ```bash
-npx codepatchbay demo
+npx codepatchbay quickstart --demo
 ```
 
 ### 从源码安装
@@ -92,11 +92,8 @@ CodePatchBay 会：
 # 查看进展
 cpb status myproj
 
-# 查看产物
-cpb inbox myproj outputs
-
-# 查看验证结果
-cpb status myproj
+# 查看交付产物和验证结论（位于项目 outputs 目录）
+cpb outputs myproj
 ```
 
 ## GitHub Issue 到 PR
@@ -121,13 +118,14 @@ cpb hub start                    # 启动 Hub 调度器
 | OpenCode | 开源替代 agent |
 | 自定义 Agent | 通过 model profile 接入任何 ACP 兼容 agent |
 
-CodePatchBay 把这些 agents 组织成可审查的工程流程。你可以配置哪个 agent 负责哪个阶段：
+CodePatchBay 把这些 agents 组织成可审查的工程流程。你可以在提交任务时指定哪个 agent 负责哪个阶段：
 
 ```bash
-# 用 mimo 模型做规划和验证，Claude 做执行
-cpb config myproj --plan-agent claude --plan-model mimo
-cpb config myproj --execute-agent claude
-cpb config myproj --verify-agent claude --verify-model mimo
+# 用 mimo 模型做规划，Claude 做执行和验证
+cpb run "add unit tests for auth" \
+  --plan-agent claude --plan-model mimo \
+  --execute-agent claude \
+  --verify-agent claude
 ```
 
 ## 功能
@@ -137,11 +135,7 @@ cpb config myproj --verify-agent claude --verify-model mimo
 - **产物追踪** — 每一步产生可审查的本地产物
 - **结果验证** — 变更必须通过验证才能进入 PR
 - **GitHub 集成** — Issue 标签触发、草稿 PR、webhook 连接
-- **Web UI** — 本地界面查看项目和任务
 - **多 Agent 支持** — Codex、Claude Code、OpenCode 及自定义 agent
-- **双 Agent 研究** — 两个 agent 并行调研，合并结论
-- **规格驱动开发** — SDD 骨架，从 spec 到代码
-- **代码索引** — 项目依赖图和影响分析
 - **持久化任务** — 断点恢复、租约心跳、无人值守运行
 
 ## 命令
@@ -155,6 +149,8 @@ cpb status <project>               # 项目状态
 # 提交任务
 cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
 cpb pipeline <project> "<task>" [retries]  # 完整流程（显式项目）
+                                  #   可加 --plan-agent/--execute-agent/--verify-agent
+                                  #   及 --plan-model/--execute-model/--verify-model
 cpb review <project> [id]          # 审查交付物
 cpb retry <project> <job-id>       # 重试失败任务
 
@@ -166,6 +162,8 @@ cpb redirect <project> <jobId> "<msg>" [reason]
 
 # 变更查看
 cpb diff <project>
+cpb inbox <project>                # 查看 inbox 文件
+cpb outputs <project>              # 查看 outputs 文件
 
 # GitHub
 cpb github bind <proj> <owner/repo>
@@ -176,18 +174,11 @@ cpb github doctor [--json]
 cpb hub [status|start|stop|projects|...]
 
 # 设置与诊断
-cpb demo [--json]
 cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|test]
-cpb config <project> --plan-agent <name> --plan-model <profile>
-cpb auth [status]
+cpb stream [args]                  # 流式数据服务
 cpb doctor [--json]
-cpb health-check
-cpb profile [list|show|use]
-cpb model-profile add --name <n> --agent <a> --env KEY=VALUE
-cpb wiki [lint|list]
-cpb release <list|use|install|doctor|gc>
-cpb ui [--port] [--host]
+cpb health-check                   # quickstart 别名入口的健康检查
 cpb version
 ```
 

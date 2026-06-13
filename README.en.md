@@ -50,7 +50,7 @@ npm package: [`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # detect tools, install agents, run health checks
-cpb demo                       # local demo, no API keys needed
+cpb quickstart --demo          # local demo, no API keys needed
 cd your-project
 cpb init .                     # register project
 cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
@@ -59,7 +59,7 @@ cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
 Try without installing:
 
 ```bash
-npx codepatchbay demo
+npx codepatchbay quickstart --demo
 ```
 
 ### Install from source
@@ -92,11 +92,8 @@ CodePatchBay will:
 # Check progress
 cpb status myproj
 
-# Inspect artifacts
-cpb artifacts <job-id>
-
-# Check verification result
-cpb verdict <job-id>
+# Inspect deliverables and verification verdict (in the project outputs dir)
+cpb outputs myproj
 ```
 
 ## GitHub issue to PR
@@ -121,13 +118,14 @@ Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
 | OpenCode | Open-source alternative agent |
 | Custom agent | Any ACP-compatible agent via model profiles |
 
-CodePatchBay organizes these agents into an inspectable engineering workflow. You configure which agent handles which phase:
+CodePatchBay organizes these agents into an inspectable engineering workflow. You specify which agent handles which phase when you submit a task:
 
 ```bash
-# Use mimo model for plan and verify, Claude for execute
-cpb config myproj --plan-agent claude --plan-model mimo
-cpb config myproj --execute-agent claude
-cpb config myproj --verify-agent claude --verify-model mimo
+# Use mimo model for plan, Claude for execute and verify
+cpb run "add unit tests for auth" \
+  --plan-agent claude --plan-model mimo \
+  --execute-agent claude \
+  --verify-agent claude
 ```
 
 ## Features
@@ -137,11 +135,7 @@ cpb config myproj --verify-agent claude --verify-model mimo
 - **Artifact tracking** — each step produces inspectable local artifacts
 - **Result verification** — changes must pass verification before reaching PR
 - **GitHub integration** — issue labels trigger workflow, draft PRs, webhook connectivity
-- **Web UI** — local interface for project and task management
 - **Multi-agent support** — Codex, Claude Code, OpenCode, and custom agents
-- **Dual-agent research** — two agents research in parallel, merge conclusions
-- **Spec-driven development** — SDD skeleton, from spec to code
-- **Code indexing** — project dependency graph and impact analysis
 - **Durable jobs** — checkpoint recovery, lease heartbeats, unattended execution
 
 ## Commands
@@ -155,6 +149,8 @@ cpb status <project>               # Project status
 # Submit tasks
 cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
+                                  #   add --plan-agent/--execute-agent/--verify-agent
+                                  #   and --plan-model/--execute-model/--verify-model
 cpb review <project> [id]          # Review deliverable
 cpb retry <project> <job-id>       # Retry a failed job
 
@@ -166,6 +162,8 @@ cpb redirect <project> <jobId> "<msg>" [reason]
 
 # Changes
 cpb diff <project>
+cpb inbox <project>                # List inbox files
+cpb outputs <project>              # List outputs files
 
 # GitHub
 cpb github bind <proj> <owner/repo>
@@ -176,18 +174,11 @@ cpb github doctor [--json]
 cpb hub [status|start|stop|projects|...]
 
 # Setup & diagnostics
-cpb demo [--json]
 cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|test]
-cpb config <project> --plan-agent <name> --plan-model <profile>
-cpb auth [status]
+cpb stream [args]                  # Streaming data server
 cpb doctor [--json]
-cpb health-check
-cpb profile [list|show|use]
-cpb model-profile add --name <n> --agent <a> --env KEY=VALUE
-cpb wiki [lint|list]
-cpb release <list|use|install|doctor|gc>
-cpb ui [--port] [--host]
+cpb health-check                   # health check via the quickstart alias entry
 cpb version
 ```
 
