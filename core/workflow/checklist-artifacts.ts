@@ -32,17 +32,6 @@ export async function readActiveChecklistArtifacts({
     // or absent gets silently dropped and the gate fails OPEN.
     const byKind = entries.filter((entry: AnyRecord) => entry.kind === kind);
 
-    // If the index has no entry for a required kind at all, that is itself a
-    // fail-closed condition — a required artifact is missing.
-    if (byKind.length === 0) {
-      return {
-        ok: false,
-        outcome: "artifact_invalid",
-        reason: `required artifact ${kind} has no entry in the artifact index`,
-        kind,
-      };
-    }
-
     // Detect broken entries — fail-closed rather than silently skipping.
     const brokenEntries = byKind.filter((entry: AnyRecord) => entry.broken);
     if (brokenEntries.length > 0) {

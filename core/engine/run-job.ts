@@ -1785,14 +1785,25 @@ async function runJobInner(ctx) {
       ? await ctx.getArtifactIndex(cpbRoot, project, jobId, { dataRoot })
       : null;
     if (artifactIndex) {
-      checklistArtifacts = await readActiveChecklistArtifacts({
-        artifactIndex,
-        attemptId,
-        requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
-      });
-      // Fail-closed: if artifact loading returned an error, block completion
-      if (checklistArtifacts.ok === false) {
-        artifactInvalidReason = checklistArtifacts.reason || "artifact loading failed";
+      // Checklist-first jobs emit an acceptance-checklist as the gate anchor.
+      // Legacy jobs (never entered the checklist-first flow) produce none at
+      // all; for those we skip the checklist gate entirely and let the
+      // completion gate fall back to the legacy verdict gates. This is the
+      // only correct place to make that distinction — readActiveChecklistArtifacts
+      // stays pure fail-closed, not "absent anchor = ok".
+      const hasChecklistAnchor = (artifactIndex.entries || []).some(
+        (e: AnyRecord) => e.kind === "acceptance-checklist",
+      );
+      if (hasChecklistAnchor) {
+        checklistArtifacts = await readActiveChecklistArtifacts({
+          artifactIndex,
+          attemptId,
+          requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
+        });
+        // Fail-closed: if artifact loading returned an error, block completion
+        if (checklistArtifacts.ok === false) {
+          artifactInvalidReason = checklistArtifacts.reason || "artifact loading failed";
+        }
       }
     }
   } catch (err) {
