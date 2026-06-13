@@ -111,14 +111,17 @@ cpb hub start                    # 启动 Hub 调度器
 
 ## 支持的 Coding Agents
 
-| Agent | 角色 |
-|-------|------|
-| Claude Code | 执行代码变更、修复 bug |
-| Codex | 规划、验证、审查 |
-| OpenCode | 开源替代 agent |
-| 自定义 Agent | 通过 model profile 接入任何 ACP 兼容 agent |
+CodePatchBay 通过 ACP 协议中立地连接 coding agents，任何 ACP 兼容 agent（Claude Code、Codex、OpenCode 或自定义）都可以接入。它把工程工作流拆成 5 个语义角色，由 agent 路由映射：
 
-CodePatchBay 把这些 agents 组织成可审查的工程流程。你可以在提交任务时指定哪个 agent 负责哪个阶段：
+| 语义角色 | 职责 | 产物 |
+|---------|------|------|
+| `planner` | 分析任务、生成实施计划 | `inbox/plan-*` |
+| `executor` | 执行代码变更、修复 bug | `outputs/deliverable-*` |
+| `verifier` | 验证结果、给出判定 | `outputs/verdict-*` |
+| `reviewer` | 审查交付物 | review 产物 |
+| `remediator` | 补救失败（debug/lint/tdd/test） | remediation 产物 |
+
+任意 agent 通过 `core/agents/routing.ts` 映射到这些角色。你可以在提交任务时指定哪个 agent + 模型负责哪个阶段：
 
 ```bash
 # 用 mimo 模型做规划，Claude 做执行和验证
@@ -136,7 +139,7 @@ cpb run "add unit tests for auth" \
 - **结果验证** — 变更必须通过验证才能进入 PR
 - **GitHub 集成** — Issue 标签触发、草稿 PR、webhook 连接
 - **多 Agent 支持** — Codex、Claude Code、OpenCode 及自定义 agent
-- **持久化任务** — 断点恢复、租约心跳、无人值守运行
+- **持久化任务** — 基于 event log + checkpoint 的断点恢复、多 worker 调度、无人值守运行
 
 ## 命令
 
@@ -155,7 +158,8 @@ cpb review <project> [id]          # 审查交付物
 cpb retry <project> <job-id>       # 重试失败任务
 
 # 任务管理
-cpb jobs [reconcile|cleanup|report]
+cpb jobs report [--json]           # job 运行报告 (reconcile/cleanup/gc 已移除)
+cpb jobs worktrees                # 列出 task-level git worktrees
 cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]

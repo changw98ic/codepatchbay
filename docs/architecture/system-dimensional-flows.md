@@ -1,5 +1,19 @@
 # CodePatchBay 系统维度化流程
 
+> ⚠️ **本文档入口层部分已过时（2026-06-13 标注）**
+>
+> CodePatchBay 现为**纯 Node.js CLI**（入口 `cli/cpb.ts`），已移除 HTTP server /
+> Fastify / React 前端 / 多 IM 渠道路由（`server/index.js`、`server/routes/*`、
+> `web/`）。文档中凡涉及「Web UI 入口」「HTTP 路由」「Slack/Discord 渠道路由」
+> 「WebSocket 推送」「`runtime/migrate-runtime-root.js`」「`runtime/evolve/multi-evolve.js`」
+> 的图与表格**仅作历史参考**，当前不适用。
+>
+> **仍然准确的维度**：Hub 队列与调度、Worker 与 worktree 隔离、核心引擎
+> （`runJob` 状态机、phase adapter、engine-runner 注入边界）、ACP 池与 provider
+> 配额、事件日志与 job 索引、状态对账与失败路由。
+>
+> 现状权威文档：[CLAUDE.md](../../CLAUDE.md)、[runtime-boundaries.md](runtime-boundaries.md)。
+
 本文从不同维度拆解 CodePatchBay 的运行流程。这里的“维度”不是目录层级，而是观察系统的切面：同一个任务会同时穿过入口、队列、编排、worker、核心引擎、ACP、状态、审查、发布等多条流程。
 
 配套阅读：

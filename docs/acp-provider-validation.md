@@ -20,8 +20,11 @@ export CPB_ACP_PERSISTENT_PROCESS=1
 export CPB_ACP_CLAUDE_COMMAND=claude-agent-acp
 
 ./cpb hub acp --json
-./cpb soak --live --max-duration-ms 28800000 --status-interval-ms 300000 --max-process-count 5
 ```
+
+> Note: the legacy `cpb soak --live ...` command has been removed. For long-running
+> provider validation, run `cpb hub acp --json` repeatedly across prompts and
+> inspect the pool metrics below.
 
 During the run, inspect `./cpb hub acp --json` and confirm:
 
@@ -56,19 +59,19 @@ agent:
 }
 ```
 
-The provider is exposed as `cpb-test-acp-agent` and accepts deterministic
-responses:
+The fake agent (`tests/fixtures/test-acp-agent.ts`, compiled to
+`dist/tests/fixtures/test-acp-agent.js`) accepts deterministic responses:
 
 ```bash
 CPB_ACP_FAKE_ACP_COMMAND=node \
-CPB_ACP_FAKE_ACP_ARGS='["/path/to/server/services/test-acp-agent.mjs","--response","hello"]' \
-node server/services/acp-client-core.mjs --agent fake-acp --cwd "$PWD"
+CPB_ACP_FAKE_ACP_ARGS='["dist/tests/fixtures/test-acp-agent.js","--response","hello"]' \
+node dist/server/services/acp/acp-client.js --agent fake-acp --cwd "$PWD"
 ```
 
 For full-chain tests, pass a scenario file:
 
 ```bash
-CPB_ACP_FAKE_ACP_ARGS='["/path/to/server/services/test-acp-agent.mjs","--scenario-file","/tmp/scenario.json"]'
+CPB_ACP_FAKE_ACP_ARGS='["dist/tests/fixtures/test-acp-agent.js","--scenario-file","/tmp/scenario.json"]'
 ```
 
 Scenario entries match prompts with `match` or `matchRegex` and can return

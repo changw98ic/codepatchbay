@@ -111,14 +111,17 @@ Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
 
 ## Supported coding agents
 
-| Agent | Role |
-|-------|------|
-| Claude Code | Execute code changes, fix bugs |
-| Codex | Plan, verify, review |
-| OpenCode | Open-source alternative agent |
-| Custom agent | Any ACP-compatible agent via model profiles |
+CodePatchBay connects coding agents neutrally via the ACP protocol. Any ACP-compatible agent (Claude Code, Codex, OpenCode, or custom) can be plugged in. It decomposes the engineering workflow into 5 semantic roles, mapped by agent routing:
 
-CodePatchBay organizes these agents into an inspectable engineering workflow. You specify which agent handles which phase when you submit a task:
+| Semantic role | Responsibility | Artifact |
+|---------------|----------------|----------|
+| `planner` | Analyze task, produce implementation plan | `inbox/plan-*` |
+| `executor` | Execute code changes, fix bugs | `outputs/deliverable-*` |
+| `verifier` | Verify result, produce verdict | `outputs/verdict-*` |
+| `reviewer` | Review deliverable | review artifact |
+| `remediator` | Remediate failures (debug/lint/tdd/test) | remediation artifact |
+
+Any agent is mapped to these roles via `core/agents/routing.ts`. You specify which agent + model handles which phase when you submit a task:
 
 ```bash
 # Use mimo model for plan, Claude for execute and verify
@@ -136,7 +139,7 @@ cpb run "add unit tests for auth" \
 - **Result verification** — changes must pass verification before reaching PR
 - **GitHub integration** — issue labels trigger workflow, draft PRs, webhook connectivity
 - **Multi-agent support** — Codex, Claude Code, OpenCode, and custom agents
-- **Durable jobs** — checkpoint recovery, lease heartbeats, unattended execution
+- **Durable jobs** — event log + checkpoint recovery, multi-worker scheduling, unattended execution
 
 ## Commands
 
@@ -155,7 +158,8 @@ cpb review <project> [id]          # Review deliverable
 cpb retry <project> <job-id>       # Retry a failed job
 
 # Job management
-cpb jobs [reconcile|cleanup|report]
+cpb jobs report [--json]           # Job run report (reconcile/cleanup/gc removed)
+cpb jobs worktrees                # List task-level git worktrees
 cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]

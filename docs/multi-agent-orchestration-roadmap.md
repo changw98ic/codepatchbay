@@ -1,9 +1,19 @@
 # CPB 多 Agent 编排增强 Roadmap
 
-> **旧执行内核注释（2026-06-02）：** 本文早期将已删除的旧 supervisor 执行链
-> 列为可用资产；该描述已经过期。本文仅作历史路线参考；
-> 当前执行入口是 `cpb hub-orch start`，执行内核是 Hub queue worker 调用
-> `runJob` / `runJobWithServices`。
+> ⚠️ **本文档为历史路线图，多处引用已过时（2026-06-13 更新）**
+>
+> 「现状评估」表格中下列资产描述已失效，**不要据此处表格判断当前架构**：
+> - `web/` (React 19 + Vite) 前端 —— **已移除**
+> - `server/services/*.js` —— 源码现为 `.ts`（如 `event-store.ts`、`job-store.ts`、`acp-pool.ts`）
+> - `server/services/lease-manager.js` + `core/lease/` —— **lease 模型已移除**，改用 checkpoint 恢复（`cpb-task/checkpoints/`）
+> - `server/services/acp-client-core.mjs` —— 已迁入 `server/services/acp/`
+> - `cpb report` 命令 —— 实际为 `cpb jobs report`
+>
+> 本文仅作历史路线参考。当前执行入口是 `cpb hub start`，执行内核是 Hub queue
+> worker 调用 `runJob` / `runJobWithServices`。现状权威架构参见
+> [CLAUDE.md](../CLAUDE.md) 与 [runtime-boundaries.md](architecture/runtime-boundaries.md)。
+
+
 
 > 基于 PilotDeck / AutoGen / LangGraph / CrewAI 等生态研究报告，结合 CPB v0.3.2 现状制定。
 > 原则：**默认不改现有路径，每步可单独合并回滚，feature flag 控制所有新能力。**

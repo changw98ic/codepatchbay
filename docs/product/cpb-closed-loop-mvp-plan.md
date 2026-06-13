@@ -2,6 +2,10 @@
 
 日期：2026-06-02
 
+> ⚠️ **历史规划文档**：本文中 `server/routes/review.js`、`server/routes/channels.js`
+> 等 HTTP 路由引用对应的全栈入口已移除（CPB 现为纯 Node.js CLI）。本文保留作
+> 决策历史，不代表当前架构。现状见 [CLAUDE.md](../../CLAUDE.md)。
+
 本文定义 CodePatchbay 的闭环 MVP。MVP 的目标不是展示 demo，而是在真实项目、真实 agent、真实并发下证明一条最小但可运营的工程交付链路。
 
 ## 一句话目标
