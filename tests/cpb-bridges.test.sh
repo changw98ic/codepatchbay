@@ -20,7 +20,6 @@ cleanup_project() {
 trap 'cleanup_project; rm -rf "$TMP_DIR"' EXIT
 
 CPB_ROOT="$CPB_RUNTIME" CPB_HUB_ROOT="$CPB_HUB" "$ROOT/cpb" init "$PROJECT_DIR" "$pipeline_project" >/dev/null
-CPB_ROOT="$CPB_RUNTIME" CPB_HUB_ROOT="$CPB_HUB" "$ROOT/cpb" attach "$PROJECT_DIR" "$pipeline_project" >/dev/null
 
 CPB_ACP_CLIENT="$ROOT/tests/fixtures/acp-client-stub.sh" \
 CPB_TEST_AGENT_LOG="$AGENT_LOG" \

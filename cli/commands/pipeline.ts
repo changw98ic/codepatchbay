@@ -240,8 +240,8 @@ Options:
     actor: "cli",
   } as Record<string, any>);
 
-  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
-  const { getProject } = await import(path.join(executorRoot, "server", "services", "hub-registry.js"));
+  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub", "hub-queue.js"));
+  const { getProject } = await import(path.join(executorRoot, "server", "services", "hub", "hub-registry.js"));
 
   let registered;
   try { registered = await getProject(hubRoot, project); } catch { registered = null; }

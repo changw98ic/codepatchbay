@@ -108,10 +108,31 @@ function verificationRetryContext(failure: any) {
   const verdict = compactVerifierVerdict(cause.verdict || failure?.verdict);
   const artifact = compactVerifierArtifact(cause.artifact || failure?.artifact);
   if (!verdict && !artifact) return null;
+  // Extract checklist retry state from checklistVerdict in failure cause
+  const checklistVerdict = cause.verdict?.checklistVerdict || cause.checklistVerdict || null;
+  const checklistItems = Array.isArray(checklistVerdict?.items) ? checklistVerdict.items : [];
+  const failedChecklistIds = checklistItems.filter((item: any) => item.result === "fail").map((item: any) => item.checklistId).filter(Boolean);
+  const uncheckedChecklistIds = checklistItems.filter((item: any) => item.result === "unchecked").map((item: any) => item.checklistId).filter(Boolean);
+  const passedChecklistIds = checklistItems.filter((item: any) => item.result === "pass").map((item: any) => item.checklistId).filter(Boolean);
+  const previousEvidenceRefs = checklistItems.filter((item: any) => item.result === "pass").flatMap((item: any) => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : []);
+  const checklistFixScope = [...new Set([
+    ...(Array.isArray(checklistVerdict?.fixScope) ? checklistVerdict.fixScope : []),
+    ...checklistItems.flatMap((item: any) => Array.isArray(item.fixScope) ? item.fixScope : []),
+  ].filter(Boolean))];
+  const targetChecklistIds = [...new Set([...failedChecklistIds, ...uncheckedChecklistIds])];
+  const lockedPassedChecklistIds = passedChecklistIds;
   return {
     verdict,
     artifact,
-    retryScope: verdict?.retryScope || [],
+    retryScope: [...new Set([...(verdict?.retryScope || []), ...checklistFixScope])],
+    checklistVerdict: checklistVerdict ? {
+      failedChecklistIds,
+      uncheckedChecklistIds,
+      lockedPassedChecklistIds,
+      previousEvidenceRefs,
+      targetChecklistIds,
+      fixScope: checklistFixScope,
+    } : null,
   };
 }
 
@@ -188,6 +209,7 @@ export function buildRetrySourceContext(assignment: any, attempt: any, result: a
     : {};
   const previousOutput = extractPreviousOutput(failure);
   const retryCount = previousFailureCount(assignment, base) + 1;
+  const verification = verificationRetryContext(failure);
   const retry = {
     failureKind: failure.kind || "unknown",
     failureReason: failure.reason || decision?.reason || "retry requested",
@@ -201,7 +223,13 @@ export function buildRetrySourceContext(assignment: any, attempt: any, result: a
     retryCount,
     failureCount: retryCount,
     retryQueuedAt: new Date().toISOString(),
-    verification: verificationRetryContext(failure),
+    verification,
+    // Checklist retry state — logical targets and file-only scope
+    targetChecklistIds: verification?.checklistVerdict?.targetChecklistIds || failure.cause?.targetChecklistIds || [],
+    lockedPassedChecklistIds: verification?.checklistVerdict?.lockedPassedChecklistIds || [],
+    previousEvidenceRefs: verification?.checklistVerdict?.previousEvidenceRefs || [],
+    fixScope: verification?.checklistVerdict?.fixScope || failure.cause?.fixScope || [],
+    retryPhase: decision?.retryPhase || failure.cause?.retryPhase || null,
   };
   return {
     ...base,

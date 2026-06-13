@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -8,6 +9,8 @@ import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
+import { validateChecklistVerdict } from "../workflow/acceptance-checklist.js";
+import { buildEvidenceProbePlan, validateEvidenceObservation } from "../workflow/evidence-probes.js";
 
 const execFile: any = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
@@ -173,11 +176,113 @@ function formatCommandFailure(command, err) {
   };
 }
 
+/**
+ * Build the evidence ledger before the verifier prompt.
+ * The ledger is deterministic: the verifier may only cite ids already present here.
+ */
+function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, verificationEvidence, evidenceProbePlan, ledgerId }: Record<string, any>) {
+  const finalWorktree = {
+    head: verificationEvidence.git?.head || null,
+    diffHash: verificationEvidence.git?.diffHash || null,
+  };
+
+  if (!acceptanceChecklist) {
+    return { schemaVersion: 1, jobId, project, attemptId, ledgerId, finalWorktree, evidence: [] };
+  }
+
+  const evidence: Record<string, any>[] = [];
+  let index = 1;
+  for (const probe of evidenceProbePlan.probes || []) {
+    const checklistItem = acceptanceChecklist.items.find((item: Record<string, any>) => item.id === probe.checklistId);
+    if (!checklistItem) continue;
+    const validation = validateEvidenceObservation(probe.observation, checklistItem, { attemptId, finalWorktree });
+    if (!validation && !probe.emitFailedClaim) continue;
+    evidence.push({
+      id: `EV-${String(index++).padStart(3, "0")}`,
+      type: "evidence_claim",
+      observationType: checklistItem.verificationMethod,
+      checklistId: probe.checklistId,
+      attemptId,
+      verificationMethod: checklistItem.verificationMethod,
+      predicateId: checklistItem.predicateId,
+      probeId: probe.probeId,
+      result: validation ? "pass" : "fail",
+      ...probe.observation,
+      worktreeHead: finalWorktree.head,
+      diffHash: finalWorktree.diffHash,
+      ...(probe.poisonedSession === true ? { poisonedSession: true, poisonedReasons: probe.poisonedReasons || [] } : {}),
+    });
+  }
+  return { schemaVersion: 1, jobId, project, attemptId, ledgerId, finalWorktree, evidence };
+}
+
+/**
+ * Synthesize a failing checklist verdict with every required item marked unchecked.
+ */
+function synthesizeUncheckedChecklistVerdict({ jobId, acceptanceChecklist, reason }: Record<string, any>) {
+  return {
+    schemaVersion: 1,
+    jobId,
+    status: "fail",
+    items: acceptanceChecklist.items
+      .filter((item: Record<string, any>) => item.required)
+      .map((item: Record<string, any>) => ({
+        checklistId: item.id,
+        result: "unchecked",
+        evidenceRefs: [],
+        actualResult: "",
+        reason,
+        fixScope: [],
+      })),
+    blocking: [],
+    fixScope: [],
+    reason,
+  };
+}
+
+/**
+ * Re-map evidenceRefs in the checklistVerdict from the placeholder ledgerId
+ * the verifier used to the actual ledgerId assigned by the evidence ledger.
+ */
+function remapEvidenceRefs(checklistVerdict: Record<string, any>, actualLedgerId: string) {
+  if (!Array.isArray(checklistVerdict?.items)) return checklistVerdict;
+  return {
+    ...checklistVerdict,
+    items: checklistVerdict.items.map((item: Record<string, any>) => ({
+      ...item,
+      evidenceRefs: (Array.isArray(item.evidenceRefs) ? item.evidenceRefs : []).map(
+        (ref: Record<string, any>) => ({
+          ...ref,
+          ledgerId: ref.ledgerId === "pending" || !ref.ledgerId ? actualLedgerId : ref.ledgerId,
+        }),
+      ),
+    })),
+  };
+}
+
 export async function runVerify(ctx) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "verifier";
   const cwd = sourcePath || cpbRoot;
+  const attemptId = ctx.attemptId || jobId;
+
+  // Resolve active acceptance checklist.
+  // The authoritative source is the event-indexed artifact store, but for
+  // performance we use the sourceContext fast path when run-job has already
+  // validated and event-indexed the checklist.
+  // sourceContext.acceptanceChecklist WITHOUT an event-indexed artifact
+  // handle is ignored for checklist authority -- it cannot make the verifier
+  // mint checklist artifacts.
+  let acceptanceChecklist: Record<string, any> | null = null;
+  if (ctx.sourceContext?.acceptanceChecklistArtifact?.name && ctx.sourceContext?.acceptanceChecklist) {
+    // Fast path: run-job already validated and event-indexed the checklist
+    acceptanceChecklist = ctx.sourceContext.acceptanceChecklist;
+  }
+  // Do NOT fall through to readActiveChecklistArtifacts in the hot path.
+  // The artifact store lookup is available for completion-gate and audit
+  // which run after the phase returns.
+
   const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
   const planRequired = shouldRequirePlanArtifact(ctx);
   const planEvidence = await collectPlanEvidence(planArtifact, { required: planRequired, workflow: ctx.workflow });
@@ -219,7 +324,29 @@ export async function runVerify(ctx) {
   }
 
   const verificationEvidence = await collectVerificationEvidence(cwd, planArtifact, gate, planEvidence);
-  const prompt = await buildVerifyPrompt(ctx, planArtifact, verificationEvidence) + JSON_INSTRUCTION;
+
+  // Build evidence ledger BEFORE verifier prompt.
+  // The ledger is deterministic: the verifier sees the exact claim ids it may cite.
+  const ledgerId = `evidence-ledger-${jobId}`;
+  const evidenceProbePlan = acceptanceChecklist
+    ? buildEvidenceProbePlan({
+        acceptanceChecklist,
+        hardGateChecks: verificationEvidence.hardGate?.checks || [],
+        attemptId,
+        finalWorktree: verificationEvidence.git,
+      })
+    : { probes: [] };
+  const evidenceLedger = buildEvidenceLedger({
+    jobId,
+    project,
+    attemptId,
+    acceptanceChecklist,
+    verificationEvidence,
+    evidenceProbePlan,
+    ledgerId,
+  });
+
+  const prompt = await buildVerifyPrompt(ctx, planArtifact, verificationEvidence, { acceptanceChecklist, evidenceLedger }) + JSON_INSTRUCTION;
   const resolvedAgent = resolveAgent(ctx, "codex");
   const promptArtifact = await writePromptArtifact(cpbRoot, {
     project,
@@ -275,6 +402,97 @@ export async function runVerify(ctx) {
     });
   }
 
+  // Persist evidence ledger only for checklist-aware jobs.
+  // Legacy jobs don't need the evidence-ledger artifact.
+  let evidenceLedgerArtifact: Record<string, any> | null = null;
+  if (acceptanceChecklist) {
+    evidenceLedgerArtifact = await writeArtifact(cpbRoot, {
+      project,
+      jobId,
+      kind: "evidence-ledger",
+      content: JSON.stringify(evidenceLedger, null, 2),
+      dataRoot,
+      metadata: evidenceLedger,
+    });
+  }
+
+  // ── Checklist-aware verdict validation ──────────────────────────────
+  // When a readable event-indexed acceptance-checklist artifact exists,
+  // require a valid checklistVerdict. sourceContext.acceptanceChecklist
+  // does not authorize checklist artifacts.
+  if (acceptanceChecklist) {
+    const rawChecklistVerdict = verdict.checklistVerdict || null;
+    const checklistVerdict = rawChecklistVerdict
+      ? remapEvidenceRefs(rawChecklistVerdict, evidenceLedger.ledgerId)
+      : null;
+
+    // Try to validate the verifier-provided checklist verdict
+    let verdictValidation: Record<string, any> | null = null;
+    if (checklistVerdict) {
+      verdictValidation = validateChecklistVerdict(checklistVerdict, acceptanceChecklist);
+    }
+
+    const usedSynthesized = !checklistVerdict || !verdictValidation?.ok;
+    const finalChecklistVerdict = usedSynthesized
+      ? synthesizeUncheckedChecklistVerdict({
+          jobId,
+          acceptanceChecklist,
+          reason: checklistVerdict
+            ? `checklist verdict validation failed`
+            : "checklist-aware job requires checklistVerdict",
+        })
+      : checklistVerdict;
+
+    const checklistVerdictArtifact = await writeArtifact(cpbRoot, {
+      project,
+      jobId,
+      kind: "checklist-verdict",
+      content: JSON.stringify(finalChecklistVerdict, null, 2),
+      dataRoot,
+      metadata: finalChecklistVerdict,
+    });
+
+    // If we had to synthesize the verdict, the verify phase FAILS.
+    if (usedSynthesized) {
+      return phaseFailed({
+        phase: "verify",
+        failure: failure({
+          kind: FailureKind.VERDICT_INVALID,
+          phase: "verify",
+          reason: finalChecklistVerdict.reason,
+          retryable: false,
+          cause: { checklistVerdict: finalChecklistVerdict },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(
+          { ...agentResult.diagnostics, evidenceLedgerArtifact, checklistVerdictArtifact },
+          promptArtifact,
+        ),
+      });
+    }
+
+    // Checklist verdict is valid; still write legacy verdict for compatibility
+    const verdictMarkdown = renderVerdictMarkdown(verdict);
+    const artifact = await writeArtifact(cpbRoot, {
+      project,
+      jobId,
+      kind: "verdict",
+      content: verdictMarkdown,
+      dataRoot,
+      metadata: verdict,
+    });
+
+    return phasePassed({
+      phase: "verify",
+      verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
+      artifact,
+      diagnostics: withPromptArtifactDiagnostics(
+        { ...agentResult.diagnostics, verdict, verificationEvidence, evidenceLedgerArtifact, checklistVerdictArtifact },
+        promptArtifact,
+      ),
+    } as any);
+  }
+
+  // ── Legacy (non-checklist-aware) path ───────────────────────────────
   const verdictMarkdown = renderVerdictMarkdown(verdict);
   const artifact = await writeArtifact(cpbRoot, {
     project,
@@ -379,6 +597,8 @@ async function collectGitEvidence(cwd) {
     diffStat: "",
     diffExcerpt: "",
     diffTruncated: false,
+    head: null,
+    diffHash: null,
     reason: null,
   };
 
@@ -399,6 +619,11 @@ async function collectGitEvidence(cwd) {
     evidence.diffStat = limitText(diffStat.stdout, PROMPT_DIFF_STAT_CHARS).trim();
     evidence.diffExcerpt = diffExcerpt;
     evidence.diffTruncated = diff.stdout.length > PROMPT_DIFF_CHARS;
+
+    // Collect HEAD commit and diff hash for evidence freshness
+    const head = await git(cwd, ["rev-parse", "HEAD"]).catch(() => ({ stdout: "" }));
+    evidence.head = head.stdout.trim() || null;
+    evidence.diffHash = diff.stdout ? `sha256:${createHash("sha256").update(diff.stdout).digest("hex")}` : "sha256:empty";
   } catch (err) {
     evidence.reason = err?.message || String(err);
   }
@@ -456,10 +681,40 @@ export function verifyPhaseOutputContract() {
   };
 }
 
-async function buildVerifyPrompt(ctx, planArtifact, verificationEvidence) {
+async function buildVerifyPrompt(ctx, planArtifact, verificationEvidence, checklistContext: Record<string, any> = {}) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("verify", ctx, { planArtifact, verificationEvidence });
   }
+
+  let checklistSection = "";
+  if (checklistContext.acceptanceChecklist) {
+    const ledger = checklistContext.evidenceLedger;
+    const evidenceSummary = (ledger?.evidence || []).map((entry: Record<string, any>) => ({
+      evidenceId: entry.id,
+      checklistId: entry.checklistId,
+      verificationMethod: entry.verificationMethod,
+      predicateId: entry.predicateId,
+      probeId: entry.probeId,
+      result: entry.result,
+      summary: entry.summary || entry.command || entry.queryId || "",
+    }));
+
+    checklistSection = `
+
+## CHECKLIST-AWARE VERIFICATION (MANDATORY)
+This is a checklist-aware job. You MUST return checklistVerdict in your JSON envelope. Cover every required checklist id. A pass item must cite evidenceRefs from the provided evidence ledger. You may only cite existing evidence ids whose checklistId, verificationMethod, and predicateId match the item. Do not invent evidence ids. Do not use executor summary or generic hard-gate output as pass evidence.
+
+### Frozen Acceptance Checklist
+${JSON.stringify(checklistContext.acceptanceChecklist, null, 2)}
+
+### Predeclared Evidence Ledger (ledgerId: ${ledger?.ledgerId || "none"})
+You may only cite evidence ids from this table:
+${JSON.stringify(evidenceSummary, null, 2)}
+
+If an item needs a probe that is not present, return unchecked with reason "probe_definition_missing" or fail. Do not invent EV-* ids.
+`;
+  }
+
   return `You are a software verification agent. Verify the following implementation:
 
 ${phaseExecutionContract("verify")}
@@ -467,7 +722,7 @@ ${phaseExecutionContract("verify")}
 Task: ${ctx.task}
 Project: ${ctx.project}
 ${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : "\nPlan reference: unavailable\n"}
-
+${checklistSection}
 ## Verification Source Of Truth
 Use only the original task, the plan artifact when present, the current worktree diff/changed files, hard-gate results, and tests you actually run as proof.
 Executor deliverables/summaries are self-reports for later audit only. Do not use an executor deliverable, executor summary, or executor test list as proof for PASS.

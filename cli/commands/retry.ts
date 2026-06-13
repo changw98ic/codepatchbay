@@ -21,7 +21,7 @@ export async function run(args: string[], { executorRoot }: { cpbRoot?: string; 
   }
 
   const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
-  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub-queue.js"));
+  const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub", "hub-queue.js"));
 
   const entry = await enqueue(hubRoot, {
     projectId: project,

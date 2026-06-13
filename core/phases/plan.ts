@@ -125,6 +125,16 @@ async function buildPlanPrompt(ctx) {
   }
 
   const { task, project } = ctx;
+
+  const checklist = ctx.sourceContext?.acceptanceChecklist;
+  const checklistArtifact = ctx.sourceContext?.acceptanceChecklistArtifact;
+  if (checklist && !checklistArtifact?.name) {
+    throw new Error("plan received checklist context without an event-indexed artifact handle");
+  }
+  const checklistSection = checklist
+    ? `\n\n## Frozen Acceptance Checklist\nThis checklist is the task contract. Do not silently mutate it. If it is wrong, report the issue in the plan risks.\n\n${JSON.stringify(checklist, null, 2)}`
+    : "";
+
   let repoSection = "";
   if (ctx.sourcePath) {
     try {
@@ -157,7 +167,7 @@ ${contextPack.files.map((f) => `- ${f}`).join("\n")}`;
   return `You are a software planning agent. Create a detailed implementation plan for the following task:
 ${repoSection}${filesSection}
 
-${phaseExecutionContract("plan")}
+${phaseExecutionContract("plan")}${checklistSection}
 
 ## Task
 ${task}

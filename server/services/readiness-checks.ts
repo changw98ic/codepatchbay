@@ -1676,11 +1676,30 @@ The local demo fixed the toy repo sum implementation and exercised the CodePatch
 
 // ── Audit export (from audit-export.ts) ────────────────────────────────────
 
+function collectRuntimeFailureRefs(events: any[], materialized?: any) {
+  // Prefer materialized state (event-replay source of truth)
+  if (materialized?.runtimeFailures && Array.isArray(materialized.runtimeFailures) && materialized.runtimeFailures.length > 0) {
+    return materialized.runtimeFailures;
+  }
+  // Fallback: scan event log for legacy event types (pre-runtime_failure_recorded jobs)
+  return events
+    .filter((event) => event.type === "runtime_failure_recorded" || event.type === "phase_poisoned_session" || event.type === "job_panic")
+    .map((event) => ({
+      type: event.failureType || event.type,
+      attemptId: event.attemptId || null,
+      phase: event.phase || null,
+      nodeId: event.nodeId || null,
+      reason: event.reason || (Array.isArray(event.reasons) ? event.reasons.join(", ") : null),
+      ts: event.ts || null,
+    }));
+}
+
 export async function buildJobAuditExport(cpbRoot: string, project: string, jobId: string, { dataRoot, wikiDir }: { dataRoot?: string; wikiDir?: string } = {}) {
-  const { readEventsReadOnly } = await import("./event/event-store.js");
+  const { readEventsReadOnly, materializeJob } = await import("./event/event-store.js");
   const { buildArtifactIndex: buildArtifactIndexForAudit } = await import("./job/job-projection.js");
   const { redactSecrets: redactSecretsForAudit } = await import("./secret-policy.js");
   const { parseVerdictEnvelope } = await import("../../core/workflow/verdict.js");
+  const { readActiveChecklistArtifacts, readChecklistArtifactHistory } = await import("../../core/workflow/checklist-artifacts.js");
 
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
 
@@ -1715,7 +1734,35 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
     };
   }
 
-  return redactSecretsForAudit({ schemaVersion: 1, project, jobId, eventLog: events, artifactIndex, verdict, pr });
+  const materialized = (materializeJob as any)(events);
+
+  const checklistArtifacts = await readActiveChecklistArtifacts({
+    artifactIndex,
+    attemptId: materialized.completionGate?.attemptId || jobId,
+    requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
+  });
+
+  const checklistArtifactHistory = await readChecklistArtifactHistory({
+    artifactIndex,
+  });
+
+  return redactSecretsForAudit({
+    schemaVersion: 1,
+    project,
+    jobId,
+    eventLog: events,
+    artifactIndex,
+    verdict,
+    pr,
+    checklistArtifactHistory,
+    checklist: checklistArtifacts["acceptance-checklist"] || null,
+    executionMap: checklistArtifacts["execution-map"] || null,
+    evidenceLedger: checklistArtifacts["evidence-ledger"] || null,
+    checklistVerdict: checklistArtifacts["checklist-verdict"] || null,
+    runtimeFailures: collectRuntimeFailureRefs(events, materialized),
+    runtimeContext: materialized.runtimeContext || null,
+    completionGate: materialized.completionGate || null,
+  });
 }
 
 export async function writeJobAuditExport(outputDir: string, auditPackage: Record<string, any>) {

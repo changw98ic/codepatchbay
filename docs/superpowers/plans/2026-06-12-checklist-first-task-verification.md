@@ -27,6 +27,8 @@
 ## File Map
 
 - Create `core/workflow/acceptance-checklist.ts`: checklist validation, checklist verdict validation, evidence freshness, completion evaluation.
+- Create `core/workflow/checklist-artifacts.ts`: active-attempt artifact selection, artifact JSON reads, hash checks, broken-entry handling, and runtime failure replay helpers shared by completion and audit export.
+- Create `core/workflow/evidence-probes.ts`: method-specific probe contracts and observation validators used to build evidence claims.
 - Modify `core/contracts/failure.ts`: add or map checklist routing failure kinds.
 - Modify `server/services/job/job-projection.ts`: recognize checklist artifact kinds and index explicit artifact events.
 - Modify `server/services/event/event-store.ts`: materialize checklist artifacts and completion gate checklist fields.
@@ -58,9 +60,71 @@
 - Hatchet: queues, retries, rate limits, monitoring, alerting, and logging are operational signals that should appear in audit context.
 - Multica and MonkeyCode: agent tasks need visible lifecycle, blockers, runtime/model selection, reusable skills, workspace isolation, and team-facing status; these should enrich CPB audit records without replacing evidence.
 
+## Bootstrap Task Acceptance Protocol
+
+Until the production checklist gate exists, every task in this plan is accepted with a shadow checklist that follows the same semantics the feature is building.
+
+Rules for each Task N:
+
+- Treat the task's `Files`, numbered steps, expected verification commands, and negative assertions as the frozen task checklist.
+- Do not add or remove checklist criteria during verification. If implementation discovers missing criteria, update this plan first, then continue.
+- For every checklist item, record `pass`, `fail`, or `unchecked`.
+- `pass` requires evidence: changed file references, focused test names, command output and exit status, emitted event/artifact shape, or a reviewer-approved manual artifact.
+- `unchecked` is required when evidence is missing, even if the implementation appears correct.
+- Verifier review must cite the checklist item and evidence. It must not rely on executor summaries, confidence statements, or generic "tests passed" prose.
+- A failed or unchecked item must produce `targetChecklistIds` and, when code changes are needed, file-only `fixScope`.
+- A task commit is allowed only after all required items are `pass`.
+- A blocked acceptance record may pause work, but it is not task acceptance and must not be counted complete. It must include `blockingReason` or `humanBlockingReason`, and the final integration gate fails until the block is resolved.
+
+Per-task acceptance record template:
+
+```md
+### Task N Acceptance Record
+
+| Checklist id | Criterion | Evidence | Result |
+| --- | --- | --- | --- |
+| TASK-N-001 | <plan step or negative assertion> | <file/test/command/event evidence> | pass/fail/unchecked |
+
+Changed files:
+- `<path>`
+
+Verification commands:
+- `<command>` -> `<actual result>`
+
+Retry/blocking:
+- `targetChecklistIds`: `[]`
+- `fixScope`: `[]`
+- `unchecked`: `[]`
+- `blockingReason`: `null`
+- `humanBlockingReason`: `null`
+```
+
+Task 15 is the final integration gate; it does not replace per-task acceptance records.
+
+## Development Start Gate
+
+This plan is implementation-ready, but development must start narrowly and proceed task-by-task.
+
+Start conditions:
+
+- Begin with Task 1. Do not start by editing `verify`, `completion-gate`, retry routing, or audit export before the artifact event/index foundation is accepted.
+- Execute tasks in order unless an earlier task is explicitly updated to unblock a dependency. Later tasks depend on earlier event visibility, artifact history, attempt identity, and checklist contract helpers.
+- For each task, write or extend the focused tests named in that task before production code changes.
+- Each task must close with a shadow acceptance record using the Bootstrap Task Acceptance Protocol above. A task is not complete when required items are `unchecked`, when verification output is missing, or when a blocked record lacks `blockingReason` or `humanBlockingReason`.
+- Do not use legacy verifier summaries, phase diagnostics, `sourceContext`, or artifact metadata as task acceptance proof during implementation. They may appear only as non-authoritative context where the task explicitly allows it.
+- Do not batch-commit multiple unfinished tasks. Commit only after the current task's required checklist items are evidence-backed `pass`.
+- If implementation reveals a missing criterion, update this plan first, then continue. Do not silently widen runtime behavior beyond the current task.
+
+Recommended first development slice:
+
+1. Implement Task 1 artifact event/index foundation.
+2. Verify Task 1 with its focused tests and shadow acceptance record.
+3. Continue to Task 2 checklist contract helpers only after Task 1 has event-visible artifact history and active-attempt selection prerequisites in place.
+
 ## Task 1: Add Artifact Event And Index Foundation
 
 **Files:**
+- Create: `core/workflow/checklist-artifacts.ts`
 - Modify: `server/services/job/job-projection.ts`
 - Modify: `server/services/event/event-store.ts`
 - Create: `tests/checklist-artifact-index.test.ts`
@@ -104,21 +168,22 @@ test("artifact index recognizes checklist artifact kinds from artifact_created e
       artifactKind: kind,
       artifact: name,
       artifactId: "001",
+      attemptId: "job-1",
       ts: "2026-06-12T00:00:00Z",
     }, { dataRoot });
   }
 
-    const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
-    assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
+  const index = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
+  assert.deepEqual(index.entries.map((entry) => entry.kind).sort(), [
     "acceptance-checklist",
     "checklist-verdict",
     "evidence-ledger",
     "execution-map",
   ]);
-    assert.equal(index.entries.every((entry) => entry.broken === false), true);
-    assert.equal(index.schemaVersion >= 2, true);
-    assert.equal(index.entries.every((entry) => entry.attemptId === "job-1" || entry.attemptId === null), true);
-  });
+  assert.equal(index.entries.every((entry) => entry.broken === false), true);
+  assert.equal(index.schemaVersion >= 2, true);
+  assert.equal(index.entries.every((entry) => entry.attemptId === "job-1"), true);
+});
 ```
 
 Add migration/downstream cases:
@@ -127,13 +192,15 @@ Add migration/downstream cases:
 - `artifact_created.attemptId` is preserved in index entries.
 - In a synthetic multi-attempt event set, a checklist artifact without `attemptId` is marked ambiguous for checklist completion instead of being selected as latest.
 - Checklist artifact kinds are not inferred as `deliverable` or legacy `verdict` by filename or phase fallback.
+- Artifact index exposes history entries by kind and attempt; active-attempt selection is done by `core/workflow/checklist-artifacts.ts`, not by overwriting a single latest artifact in materialized state.
+- A post-terminal `artifact_created` for `acceptance-checklist`, `execution-map`, `evidence-ledger`, or `checklist-verdict` is ignored for completion authority and remains audit-only.
 
 - [ ] **Step 2: Add event-store materialization test**
 
 Append to `tests/event-store.test.ts`:
 
 ```ts
-test("artifact_created materializes artifacts by kind", () => {
+it("artifact_created materializes artifact history by kind", () => {
   const state = materializeJob([{
     type: "artifact_created",
     jobId: "job-1",
@@ -143,13 +210,15 @@ test("artifact_created materializes artifacts by kind", () => {
     artifactKind: "checklist-verdict",
     artifact: "checklist-verdict-001",
     artifactId: "001",
+    attemptId: "job-1",
     sha256: "abc",
     ts: ts(100),
   }]);
-    assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
-    assert.equal(state.artifactsByKind["checklist-verdict"].attemptId, null);
-    assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
-  });
+  assert.equal(state.artifactsByKind["checklist-verdict"].name, "checklist-verdict-001");
+  assert.equal(state.artifactsByKind["checklist-verdict"].attemptId, "job-1");
+  assert.equal(state.artifactsByKind["checklist-verdict"].sha256, "abc");
+  assert.equal(state.artifactHistoryByKind["checklist-verdict"][0].attemptId, "job-1");
+});
 ```
 
 - [ ] **Step 3: Run tests and confirm failure**
@@ -189,9 +258,9 @@ Add `schemaVersion: 2` or another explicit version marker to artifact-index outp
 
 - [ ] **Step 5: Update event store**
 
-In `server/services/event/event-store.ts`, include `"artifact_created"` in `POST_TERMINAL_ALLOWED`.
+In `server/services/event/event-store.ts`, do not include checklist authority `artifact_created` in `POST_TERMINAL_ALLOWED`. Checklist artifacts must be emitted before phase/job terminal events. Add a focused negative test proving post-terminal checklist `artifact_created` cannot make a terminal job checklist-aware or change completion authority.
 
-Add `artifactsByKind: {}` to the initial materialized state.
+Add `artifactsByKind: {}` and `artifactHistoryByKind: {}` to the initial materialized state.
 
 Add reducer:
 
@@ -199,20 +268,42 @@ Add reducer:
 artifact_created(state, event) {
   const kind = event.kind || event.artifactKind;
   if (!kind || !event.artifact) return;
+  const entry = {
+    kind,
+    name: event.artifact,
+    id: event.artifactId || null,
+    attemptId: event.attemptId || event.jobId || null,
+    phase: event.phase || null,
+    sha256: event.sha256 || null,
+    ts: event.ts || null,
+    eventId: event.eventId || null,
+  };
   state.artifactsByKind = {
     ...(state.artifactsByKind || {}),
-    [kind]: {
-      kind,
-      name: event.artifact,
-      id: event.artifactId || null,
-      attemptId: event.attemptId || null,
-      phase: event.phase || null,
-      sha256: event.sha256 || null,
-      ts: event.ts || null,
-    },
+    [kind]: entry,
+  };
+  state.artifactHistoryByKind = {
+    ...(state.artifactHistoryByKind || {}),
+    [kind]: [...(state.artifactHistoryByKind?.[kind] || []), entry],
   };
 }
 ```
+
+Create `core/workflow/checklist-artifacts.ts` with the shared helper boundary used by later tasks:
+
+```ts
+type AnyRecord = Record<string, any>;
+
+export async function readActiveChecklistArtifacts(_opts: AnyRecord) {
+  throw new Error("readActiveChecklistArtifacts is implemented by the completion-gate task");
+}
+
+export async function readChecklistArtifactHistory(_opts: AnyRecord) {
+  throw new Error("readChecklistArtifactHistory is implemented by the audit/attempt-boundary tasks");
+}
+```
+
+Task 1 only establishes the module ownership and exported names so later tasks do not invent local artifact readers. The full JSON read, hash verification, broken-entry, and active-attempt selection behavior is implemented when completion and audit need it.
 
 - [ ] **Step 6: Verify**
 
@@ -228,7 +319,7 @@ Expected: tests pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/services/job/job-projection.ts server/services/event/event-store.ts tests/checklist-artifact-index.test.ts tests/event-store.test.ts
+git add core/workflow/checklist-artifacts.ts server/services/job/job-projection.ts server/services/event/event-store.ts tests/checklist-artifact-index.test.ts tests/event-store.test.ts
 git commit -m "Make checklist artifacts visible to event replay
 
 Checklist-first verification requires acceptance, execution, evidence, and
@@ -244,6 +335,7 @@ Not-tested: full pipeline with real agents"
 
 **Files:**
 - Create: `core/workflow/acceptance-checklist.ts`
+- Create: `core/workflow/evidence-probes.ts`
 - Create: `tests/acceptance-checklist-contract.test.ts`
 
 - [ ] **Step 1: Write contract tests**
@@ -295,6 +387,7 @@ const ledger = {
   jobId: "job-1",
   project: "flow",
   ledgerId: "evidence-ledger-001",
+  attemptId: "attempt-001",
   finalWorktree: { head: "abc", diffHash: "sha256:one" },
   evidence: [
     {
@@ -302,12 +395,14 @@ const ledger = {
       type: "evidence_claim",
       observationType: "command",
       checklistId: "AC-001",
+      attemptId: "attempt-001",
       verificationMethod: "command",
       predicateId: "PRED-001",
       probeId: "probe-status-json",
       result: "pass",
       command: "npm test",
       exitCode: 0,
+      stdoutSha256: "sha256:stdout",
       summary: "passed",
       worktreeHead: "abc",
       diffHash: "sha256:one",
@@ -349,10 +444,16 @@ test("validateAcceptanceChecklist allows required manual items as explicit appro
 });
 
 test("validateChecklistSourceCoverage rejects missing required source coverage", () => {
-  const candidate = checklist({
-    source: { task: "add json output and keep text output", issue: null, documents: [], requiredSourceLocators: ["task:0", "task:1"] },
+  const result = validateChecklistSourceCoverage({
+    checklist: checklist(),
+    task: "add json output and keep text output",
+    requirementClassification: {
+      classifiedRequirements: [
+        { id: "REQ-001", locator: "task:0", acceptanceRelevant: true },
+        { id: "REQ-002", locator: "task:1", acceptanceRelevant: true },
+      ],
+    },
   });
-  const result = validateChecklistSourceCoverage({ checklist: candidate, task: "add json output and keep text output" });
   assert.equal(result.ok, false);
   assert.match(result.reason, /not covered/i);
 });
@@ -510,7 +611,7 @@ test("evaluateChecklistCompletion rejects manual pass without approval artifact 
     fixScope: [],
     reason: "passed",
   };
-  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] } });
+  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] }, attemptId: "attempt-001" });
   assert.equal(result.outcome, "evidence_mismatch");
 });
 
@@ -527,6 +628,7 @@ test("evaluateChecklistCompletion accepts manual pass with durable approval evid
       approvedAt: "2026-06-12T00:00:00Z",
       scope: ["AC-001"],
       approvalArtifactId: "manual-approval-001",
+      approvalArtifactResolved: true,
     }],
   };
   const verdict = {
@@ -538,8 +640,8 @@ test("evaluateChecklistCompletion accepts manual pass with durable approval evid
     fixScope: [],
     reason: "passed",
   };
-  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] } });
-  assert.equal(result.outcome, "pass");
+  const result = evaluateChecklistCompletion({ checklist: manualChecklist, verdict, evidenceLedger: manualLedger, executionMap: { unmappedChangedFiles: [] }, attemptId: "attempt-001" });
+  assert.equal(result.outcome, "complete");
 });
 
 test("evaluateChecklistCompletion blocks poisoned runtime evidence", () => {
@@ -618,9 +720,64 @@ Expected: test fails because the contract module does not exist.
 
 - [ ] **Step 3: Add contract implementation**
 
+Create `core/workflow/evidence-probes.ts` with:
+
+```ts
+type AnyRecord = Record<string, any>;
+
+function text(value: any) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function validateEvidenceObservation(entry: AnyRecord, checklistItem: AnyRecord, { attemptId }: AnyRecord = {}) {
+  if (text(attemptId) && text(entry.attemptId) !== text(attemptId)) return false;
+  switch (checklistItem.verificationMethod) {
+    case "command":
+    case "test":
+      return text(entry.command) && Number.isInteger(entry.exitCode) && entry.exitCode === 0 && text(entry.stdoutSha256);
+    case "static":
+      return text(entry.queryId) && Number.isInteger(entry.matchCount);
+    case "artifact_event":
+    case "audit_export":
+    case "dag_event":
+    case "runtime_event":
+    case "worker_lifecycle":
+      return text(entry.eventType || entry.artifactKind || entry.probeId) && text(entry.observedAt || entry.ts);
+    case "absence_check":
+      return entry.absence === true && text(entry.queryWindow?.from) && text(entry.queryWindow?.to) && Array.isArray(entry.eventTypes) && text(entry.attemptId);
+    case "manual":
+      return text(entry.approver)
+        && (text(entry.approvedAt) || text(entry.ts))
+        && Array.isArray(entry.scope)
+        && entry.scope.includes(checklistItem.id)
+        && Boolean(text(entry.approvalArtifactId || entry.approvalEventId) && entry.approvalArtifactResolved === true);
+    default:
+      return false;
+  }
+}
+
+export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [], attemptId }: AnyRecord) {
+  return {
+    schemaVersion: 1,
+    attemptId,
+    probes: hardGateChecks
+      .filter((check: AnyRecord) => check.checklistId && check.predicateId && check.probeId)
+      .map((check: AnyRecord) => ({
+        checklistId: check.checklistId,
+        predicateId: check.predicateId,
+        probeId: check.probeId,
+        observation: check.observation || check,
+        emitFailedClaim: check.emitFailedClaim === true,
+      })),
+  };
+}
+```
+
 Create `core/workflow/acceptance-checklist.ts` with:
 
 ```ts
+import { validateEvidenceObservation } from "./evidence-probes.js";
+
 type AnyRecord = Record<string, any>;
 
 const ITEM_RESULTS = new Set(["pass", "fail", "unchecked"]);
@@ -700,7 +857,7 @@ export function validateAcceptanceChecklist(checklist: AnyRecord) {
   return { ok: true, ids: [...ids] };
 }
 
-export function validateChecklistSourceCoverage({ checklist, task, documents = [] }: AnyRecord) {
+export function validateChecklistSourceCoverage({ checklist, task, documents = [], requirementClassification }: AnyRecord) {
   const validation = validateAcceptanceChecklist(checklist);
   if (!validation.ok) return validation;
   const corpus = [
@@ -713,14 +870,62 @@ export function validateChecklistSourceCoverage({ checklist, task, documents = [
       if (!sourceKeys.has(`${text(ref.kind)}:${text(ref.locator)}`)) return fail(`missing checklist source ref: ${text(ref.kind)}:${text(ref.locator)}`);
     }
   }
-  // V1 uses explicit source refs plus planner classification. If prepare metadata
-  // provides requiredSourceLocators, all must be represented.
-  for (const required of checklist.source?.requiredSourceLocators || []) {
-    if (!checklist.items.some((item: AnyRecord) => (item.sourceRefs || []).some((ref: AnyRecord) => text(ref.locator) === text(required)))) {
+  const requiredSources = (Array.isArray(requirementClassification?.classifiedRequirements)
+    ? requirementClassification.classifiedRequirements
+    : [])
+    .filter((entry: AnyRecord) => entry.acceptanceRelevant === true)
+    .map((entry: AnyRecord) => text(entry.locator))
+    .filter(Boolean);
+  for (const required of requiredSources) {
+    if (!checklist.items.some((item: AnyRecord) => (item.sourceRefs || []).some((ref: AnyRecord) => text(ref.locator) === required))) {
       return fail(`acceptance-relevant source not covered: ${required}`);
     }
   }
   return { ok: true };
+}
+
+export async function classifyAcceptanceRequirements({ task, documents = [] }: AnyRecord) {
+  // V1 starts with deterministic source slices. Later prompt-assisted
+  // classification may add richer spans, but checklist coverage must be
+  // validated against this independent input, not against the checklist itself.
+  return {
+    schemaVersion: 1,
+    classifiedRequirements: [
+      { id: "REQ-001", kind: "task_text", locator: "task:0", acceptanceRelevant: Boolean(text(task)) },
+      ...documents.map((doc: AnyRecord, index: number) => ({
+        id: `REQ-DOC-${index + 1}`,
+        kind: doc.kind || "document",
+        locator: doc.locator || `document:${index}`,
+        acceptanceRelevant: Boolean(text(doc.text || doc.content)),
+      })),
+    ].filter((entry) => entry.acceptanceRelevant),
+  };
+}
+
+export async function buildAcceptanceChecklist({ jobId, project, task, documents = [], riskMap, requirementClassification }: AnyRecord) {
+  const classification = requirementClassification || await classifyAcceptanceRequirements({ task, documents, riskMap });
+  return {
+    schemaVersion: 1,
+    jobId,
+    project,
+    source: { task, issue: null, documents: documents.map((doc: AnyRecord) => doc.locator || doc.path).filter(Boolean), requirementClassificationArtifact: classification.artifact || null },
+    status: "frozen",
+    items: classification.classifiedRequirements.map((entry: AnyRecord, index: number) => ({
+      id: `AC-${String(index + 1).padStart(3, "0")}`,
+      requirement: text(entry.summary || entry.text || task),
+      source: entry.kind || "task_text",
+      sourceRefs: [{ kind: entry.kind || "task_text", locator: entry.locator, sha256: entry.sha256 || null }],
+      predicateId: `PRED-${String(index + 1).padStart(3, "0")}`,
+      required: true,
+      area: "core",
+      risk: riskMap?.riskLevel === "high" ? "high" : "medium",
+      verificationMethod: "static",
+      expectedEvidence: "method-specific evidence claim generated by a declared probe",
+      dependsOn: [],
+      allowedFiles: [],
+    })),
+    assumptions: [],
+  };
 }
 
 export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecord) {
@@ -767,16 +972,14 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
   return { ok: true };
 }
 
-function evidenceMatchesChecklistItem(entry: AnyRecord, checklistItem: AnyRecord) {
+function evidenceMatchesChecklistItem(entry: AnyRecord, checklistItem: AnyRecord, context: AnyRecord = {}) {
   const baseMatch = entry?.type === "evidence_claim"
     && text(entry.checklistId) === text(checklistItem.id)
     && text(entry.verificationMethod) === text(checklistItem.verificationMethod)
     && text(entry.predicateId) === text(checklistItem.predicateId)
     && text(entry.result) === "pass";
   if (!baseMatch) return false;
-  if (checklistItem.verificationMethod !== "manual") return true;
-  const approvalRef = text(entry.approvalArtifactId) || text(entry.approvalEventId) || text(entry.artifactId) || text(entry.eventId);
-  return Boolean(text(entry.approver) && (text(entry.approvedAt) || text(entry.ts)) && approvalRef && Array.isArray(entry.scope) && entry.scope.includes(checklistItem.id));
+  return validateEvidenceObservation(entry, checklistItem, context);
 }
 
 function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {}) {
@@ -820,6 +1023,7 @@ function normalizeRuntimeFailureRefs(runtimeFailures: unknown, { attemptId, mult
 }
 
 export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger, executionMap, runtimeFailures, attemptId, multiAttempt }: AnyRecord) {
+  const activeAttemptId = text(attemptId || evidenceLedger?.attemptId || checklist?.attemptId);
   const { refs: runtimeFailureRefs, ambiguous } = normalizeRuntimeFailureRefs(runtimeFailures, { attemptId, multiAttempt });
   if (ambiguous.length > 0) {
     return checklistOutcome("runtime_failure_ambiguous", "runtime failure event is missing attempt ownership", { runtimeFailureRefs: ambiguous, attemptId: text(attemptId) || null });
@@ -861,7 +1065,7 @@ export function evaluateChecklistCompletion({ checklist, verdict, evidenceLedger
           missingEvidenceRefs.push(ref);
           continue;
         }
-        if (!evidenceMatchesChecklistItem(entry, checklistItem)) {
+        if (!evidenceMatchesChecklistItem(entry, checklistItem, { attemptId: activeAttemptId })) {
           mismatchedEvidenceRefs.push(ref);
         }
         if (text(entry.worktreeHead) !== finalHead || text(entry.diffHash) !== finalDiffHash) {
@@ -898,7 +1102,7 @@ Expected: tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/workflow/acceptance-checklist.ts tests/acceptance-checklist-contract.test.ts
+git add core/workflow/acceptance-checklist.ts core/workflow/evidence-probes.ts tests/acceptance-checklist-contract.test.ts
 git commit -m "Define checklist completion contracts before phase integration
 
 Checklist-aware jobs need a deterministic contract for item results, evidence
@@ -1004,9 +1208,18 @@ test("prepare-time checklist is artifacted before workflow DAG materialization",
   assert.ok(dagIndex > artifactIndex, "workflow DAG must be materialized after checklist artifact");
   const dag = events[dagIndex].workflowDag;
   assert.deepEqual(dag.nodes.find((node: Record<string, any>) => node.phase === "execute").checklistIds, ["AC-001"]);
+  assert.equal(dag.nodes.find((node: Record<string, any>) => node.phase === "execute").checklistBindingSource, "canonical-default");
   assert.deepEqual(dag.nodes.find((node: Record<string, any>) => node.phase === "verify").checklistIds, ["AC-001"]);
 });
 ```
+
+Also add named tests in this file:
+
+- `prepare-time checklist generation runs for normal jobs without caller-supplied checklist`
+- `prepare-time source classification blocks missing acceptance-relevant requirement`
+- `prepare-time source refs must exist in supplied corpus`
+- `prebuilt dynamic agent plan must reference frozen checklist artifact`
+- `custom mutating DAG node requires explicit checklist binding or neutrality`
 
 - [ ] **Step 2: Run test and confirm failure**
 
@@ -1025,7 +1238,12 @@ In `core/engine/run-job.ts`, import:
 
 ```ts
 import { writeArtifact } from "../artifacts/artifact-store.js";
-import { validateAcceptanceChecklist, validateChecklistSourceCoverage } from "../workflow/acceptance-checklist.js";
+import {
+  buildAcceptanceChecklist,
+  classifyAcceptanceRequirements,
+  validateAcceptanceChecklist,
+  validateChecklistSourceCoverage,
+} from "../workflow/acceptance-checklist.js";
 ```
 
 Add helper:
@@ -1047,10 +1265,20 @@ async function writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, ph
 }
 ```
 
-After `prepareTask` returns and before `workflowDag` is built:
+After `prepareTask` returns and before `workflowDag` is built, generate the production checklist even when the caller did not supply one:
 
 ```ts
-let acceptanceChecklist = prepareResult?.acceptanceChecklist || null;
+const requirementClassification = prepareResult?.requirementClassification
+  || await classifyAcceptanceRequirements({ task, documents: phaseSourceContext?.documents || [], riskMap });
+let acceptanceChecklist = prepareResult?.acceptanceChecklist
+  || await buildAcceptanceChecklist({
+    jobId,
+    project,
+    task,
+    documents: phaseSourceContext?.documents || [],
+    riskMap,
+    requirementClassification,
+  });
 let acceptanceChecklistArtifact = null;
 if (acceptanceChecklist) {
   const validation = validateAcceptanceChecklist(acceptanceChecklist);
@@ -1069,6 +1297,7 @@ if (acceptanceChecklist) {
     checklist: acceptanceChecklist,
     task,
     documents: phaseSourceContext?.documents || [],
+    requirementClassification,
   });
   if (!coverage.ok) {
     const fail = failure({
@@ -1108,7 +1337,7 @@ function attachChecklistIdsToWorkflowDag(workflowDag: AnyRecord, acceptanceCheck
     ...workflowDag,
     nodes: workflowDag.nodes.map((node: AnyRecord) => {
       if ((node.phase === "execute" || node.phase === "verify" || node.phase === "adversarial_verify") && !node.custom && !node.sideEffecting) {
-        return { ...node, checklistIds: requiredIds };
+        return { ...node, checklistIds: requiredIds, checklistBindingSource: "canonical-default" };
       }
       if (node.sideEffecting || node.custom || node.phase === "remediate" || node.phase === "review") {
         return node.checklistNeutral ? { ...node, checklistIds: [] } : node;
@@ -1142,14 +1371,14 @@ node dist/scripts/run-node-tests.js --unit tests/checklist-prepare-dag.test.ts t
 
 Expected: prepare/DAG test passes and existing engine tests continue to pass.
 
-Add negative assertions before this task is considered complete:
+Add these negative assertions as named executable tests before this task is considered complete:
 
 - `workflow_dag_materialized` must occur after `acceptance-checklist artifact_created`.
 - A prebuilt `dynamicAgentPlan` that does not reference the frozen checklist artifact is rejected or rebuilt.
-- A user task with acceptance-relevant requirements A and B but checklist coverage for only A fails before freeze as `needs_clarification` or `artifact_invalid`.
+- A user task with acceptance-relevant requirements A and B but checklist coverage for only A fails before freeze as `needs_clarification` or `artifact_invalid`; this must be driven by independent `requirementClassification`, not by checklist-authored `requiredSourceLocators`.
 - A checklist item with a source ref that does not exist in the supplied task/doc corpus fails before freeze.
 - A checklist-aware custom mutating node without `checklistIds` and without `checklistNeutral: true` fails DAG validation.
-- A checklist-aware custom mutating node that was auto-stamped with all required ids by a helper still fails unless that binding came from explicit node config or dynamic plan metadata.
+- A checklist-aware custom mutating node that was auto-stamped with all required ids by a helper still fails unless that binding came from explicit node config or dynamic plan metadata. Default grouped ids are valid only for canonical built-in execute/verify/adversarial nodes with `checklistBindingSource: "canonical-default"`.
 
 - [ ] **Step 6: Commit**
 
@@ -1311,10 +1540,14 @@ assert.match(plannerPrompt, /frozen acceptance checklist/i);
 
 - [ ] **Step 2: Update plan prompt**
 
-In `core/phases/plan.ts`, add checklist context to `buildPlanPrompt`:
+In `core/phases/plan.ts`, add checklist context to `buildPlanPrompt`. The value may arrive through `ctx.sourceContext` only after `run-job` has created and event-indexed the frozen checklist artifact; the source context is prompt transport, not checklist authority.
 
 ```ts
 const checklist = ctx.sourceContext?.acceptanceChecklist;
+const checklistArtifact = ctx.sourceContext?.acceptanceChecklistArtifact;
+if (checklist && !checklistArtifact?.name) {
+  throw new Error("plan received checklist context without an event-indexed artifact handle");
+}
 const checklistSection = checklist
   ? `\n\n## Frozen Acceptance Checklist\nThis checklist is the task contract. Do not silently mutate it. If it is wrong, report the issue in the plan risks.\n\n${JSON.stringify(checklist, null, 2)}`
   : "";
@@ -1449,6 +1682,7 @@ Not-tested: full provider-generated checklist mapping quality"
 
 **Files:**
 - Modify: `core/phases/verify.ts`
+- Modify: `core/workflow/evidence-probes.ts`
 - Create: `tests/checklist-verifier-gate.test.ts`
 
 - [ ] **Step 1: Write verifier gate tests**
@@ -1459,6 +1693,10 @@ Create `tests/checklist-verifier-gate.test.ts` with two cases:
 - checklist-aware job with `checklistVerdict` and fresh evidence passes verify and emits `evidence-ledger` plus `checklist-verdict` artifact events
 - verifier prompt includes predeclared ledger ids before verifier output, and a verifier response that cites an invented `EV-*` id fails as `evidence_missing`
 - a fresh hard-gate observation without matching `{ checklistId, verificationMethod, predicateId }` cannot prove a checklist item
+- `ctx.sourceContext.acceptanceChecklist` without a readable event-indexed `acceptance-checklist` artifact is ignored for checklist authority and cannot make the verifier mint a passing checklist verdict
+- a readable event-indexed `acceptance-checklist` artifact selects the checklist-aware verify path even when phase diagnostics/source context are absent
+- a generic command/test summary that lacks method-specific observation fields fails as `evidence_missing` or `evidence_invalid`
+- method-specific probes for `command`, `static`, `artifact_event`, and `absence_check` produce valid claims only when their observation validator passes
 
 Assert event visibility and replayability, not diagnostics only:
 
@@ -1479,6 +1717,8 @@ In `core/phases/verify.ts`, import:
 ```ts
 import { createHash } from "node:crypto";
 import { validateChecklistVerdict } from "../workflow/acceptance-checklist.js";
+import { buildEvidenceProbePlan, validateEvidenceObservation } from "../workflow/evidence-probes.js";
+import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 ```
 
 Extend `collectGitEvidence` initial object with:
@@ -1499,37 +1739,54 @@ evidence.diffHash = diff.stdout ? `sha256:${createHash("sha256").update(diff.std
 Create a deterministic ledger before `buildVerifyPrompt` so the verifier sees the exact `ledgerId` and claim ids it may cite. Generic hard-gate checks are audit context only unless they declare a checklist-bound probe.
 
 ```ts
-function buildEvidenceLedger({ jobId, project, acceptanceChecklist, verificationEvidence, ledgerId }: any) {
+function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, verificationEvidence, evidenceProbePlan, ledgerId }: any) {
   const finalWorktree = {
     head: verificationEvidence.git?.head || null,
     diffHash: verificationEvidence.git?.diffHash || null,
   };
+  if (!acceptanceChecklist) {
+    return { schemaVersion: 1, jobId, project, attemptId, ledgerId, finalWorktree, evidence: [] };
+  }
   const evidence = [];
   let index = 1;
-  for (const check of verificationEvidence.hardGate?.checks || []) {
-    if (!check.checklistId || !check.predicateId || !check.probeId) continue;
-    const checklistItem = acceptanceChecklist.items.find((item) => item.id === check.checklistId);
+  for (const probe of evidenceProbePlan.probes || []) {
+    const checklistItem = acceptanceChecklist.items.find((item) => item.id === probe.checklistId);
     if (!checklistItem) continue;
+    const validation = validateEvidenceObservation(probe.observation, checklistItem, { attemptId, finalWorktree });
+    if (!validation.ok && !probe.emitFailedClaim) continue;
     evidence.push({
       id: `EV-${String(index++).padStart(3, "0")}`,
       type: "evidence_claim",
-      observationType: "command",
-      checklistId: check.checklistId,
+      observationType: checklistItem.verificationMethod,
+      checklistId: probe.checklistId,
+      attemptId,
       verificationMethod: checklistItem.verificationMethod,
-      predicateId: check.predicateId,
-      probeId: check.probeId,
-      result: check.ok ? "pass" : "fail",
-      command: check.command || check.gate,
-      exitCode: check.ok ? 0 : check.exitCode ?? 1,
-      summary: check.ok ? `${check.gate || check.command} passed` : check.reason || `${check.gate || check.command} failed`,
+      predicateId: checklistItem.predicateId,
+      probeId: probe.probeId,
+      result: validation.ok ? "pass" : "fail",
+      ...probe.observation,
       worktreeHead: finalWorktree.head,
       diffHash: finalWorktree.diffHash,
-      ...(check.poisonedSession === true ? { poisonedSession: true, poisonedReasons: check.poisonedReasons || [] } : {}),
+      ...(probe.poisonedSession === true ? { poisonedSession: true, poisonedReasons: probe.poisonedReasons || [] } : {}),
     });
   }
-  return { schemaVersion: 1, jobId, project, ledgerId, finalWorktree, evidence };
+  return { schemaVersion: 1, jobId, project, attemptId, ledgerId, finalWorktree, evidence };
 }
 ```
+
+Implement `core/workflow/evidence-probes.ts` with explicit probe builders and observation validators:
+
+- `command` / `test`: require command id/text, cwd or repo root, integer `exitCode`, `stdoutSha256` or structured parsed output digest, and active `attemptId`.
+- `static`: require `queryId`, source locator set, `matchCount`, and the expected match predicate.
+- `runtime_event`: require event type, event id or timestamp, active `attemptId`, and a positive event payload matcher.
+- `artifact_event`: require artifact kind/id/event id, hash or path resolution status, active `attemptId`, and JSON-read status when the artifact content matters.
+- `audit_export`: require export builder invocation id, section path, observed value digest, and active `attemptId`.
+- `dag_event`: require DAG node id, event type, dependency/coverage fields observed, and active `attemptId`.
+- `worker_lifecycle`: require assignment id, worker id, lifecycle event type, timestamp, and active `attemptId`.
+- `manual`: require approval artifact id or event id, approver, approved timestamp, scope containing the checklist id, and successful artifact/event resolution.
+- `absence_check`: require bounded query source, `queryWindow.from`, `queryWindow.to`, event types, active `attemptId`, and a negative query result.
+
+The validators reject predicate echo such as `{ checklistId, method, predicateId, result: "pass" }` when the method-specific observation fields are missing.
 
 Ledger-level `poisonedSession` is only a mirror for verifier-collected command evidence. Runtime-classified `phase_poisoned_session` and `job_panic` events are authoritative and are collected by the completion gate from event replay in Task 8.
 
@@ -1537,14 +1794,26 @@ Before the verifier prompt:
 
 ```ts
 const ledgerId = `evidence-ledger-${jobId}-${Date.now()}`;
-const evidenceLedger = buildEvidenceLedger({ jobId, project, acceptanceChecklist, verificationEvidence, ledgerId });
+const activeChecklistArtifacts = await readActiveChecklistArtifacts({
+  cpbRoot,
+  dataRoot,
+  project,
+  jobId,
+  attemptId,
+  requiredKinds: ["acceptance-checklist"],
+});
+const acceptanceChecklist = activeChecklistArtifacts["acceptance-checklist"];
+const evidenceProbePlan = acceptanceChecklist
+  ? buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks: verificationEvidence.hardGate?.checks || [], attemptId, finalWorktree: verificationEvidence.git })
+  : { probes: [] };
+const evidenceLedger = buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, verificationEvidence, evidenceProbePlan, ledgerId });
 ```
 
-Pass `evidenceLedger` into `buildVerifyPrompt`. A verifier may cite only ids already present in this ledger. If an item needs a probe that is not present, the verifier must return `unchecked` or `fail`; it must not invent `EV-*` ids.
+Pass `evidenceLedger` and `evidenceProbePlan` into `buildVerifyPrompt`. A verifier may cite only ids already present in this ledger. If an item needs a probe that is not present, the verifier must return `unchecked` with `evidenceMissingCause: "probe_definition_missing"` or `fail`; it must not invent `EV-*` ids.
 
 - [ ] **Step 3: Persist evidence ledger and checklist verdict**
 
-When `acceptanceChecklist` exists in `ctx.sourceContext`, require an event-visible `checklist-verdict`. If the verifier omits or returns an invalid `checklistVerdict`, synthesize a failing verdict with every required item marked `unchecked`, persist it, emit its `artifact_created` event, and then return `phaseFailed`.
+When a readable event-indexed `acceptance-checklist` artifact exists for the active attempt, require an event-visible `checklist-verdict`. `ctx.sourceContext.acceptanceChecklist` is a transport hint only; it must not make a job checklist-aware, authorize checklist criteria, or cause the verifier to mint checklist artifacts when the artifact/event index does not contain a readable active-attempt checklist. If the verifier omits or returns an invalid `checklistVerdict`, synthesize a failing verdict with every required item marked `unchecked`, persist it, emit its `artifact_created` event, and then return `phaseFailed`.
 
 Write the predeclared ledger after verifier response, without changing ids or claim bindings:
 
@@ -1732,10 +2001,13 @@ Add integration-style negative cases:
 - A checklist-aware `workflow: "readonly"` or `planMode: "none"` job with an event-indexed `acceptance-checklist` and legacy `VERDICT: PASS`, but no `checklist-verdict`, must fail the checklist gate instead of using legacy fallback.
 - Clearing phase diagnostics after artifacts are emitted must not change completion output; the gate must replay from artifact events, artifact index, and artifact JSON.
 - `artifactsByKind` without a readable artifact JSON file must fail closed as `artifact_invalid`.
+- artifact event metadata or phase diagnostics claiming pass, while the artifact JSON is missing, invalid, or conflicts with metadata, must fail closed as `artifact_invalid`; JSON content and replayable read status win over metadata.
 - `execution-map.unmappedChangedFiles` non-empty must block completion even when every checklist item is `pass` and evidence is fresh.
 - An unresolved `phase_poisoned_session` or `job_panic` event for the completed attempt must block completion even when every checklist artifact is valid and fresh.
 - A runtime failure from a previous attempt must remain in audit but not block the active attempt when `attemptId` differs.
 - A multi-attempt job with runtime failures or artifacts missing `attemptId` must fail closed as `runtime_failure_ambiguous`.
+
+Add a happy-path case where active-attempt `acceptance-checklist`, `execution-map`, `evidence-ledger`, and `checklist-verdict` artifact JSON all agree, every required item has validated evidence, DAG coverage is complete, and no runtime failure exists; `evaluateChecklistCompletion` returns `outcome: "complete"` and `evaluateCompletionGate` proceeds to the normal complete outcome.
 
 - [ ] **Step 2: Extend completion gate**
 
@@ -1799,14 +2071,15 @@ return {
 
 - [ ] **Step 3: Feed artifacts from run-job**
 
-In `core/engine/run-job.ts`, load checklist gate inputs from event-visible artifact JSON only. Use a helper that selects the latest `artifact_created` event for each checklist kind, resolves it through the artifact index/path, verifies the content hash when available, and parses JSON:
+In `core/engine/run-job.ts`, load checklist gate inputs from event-visible artifact JSON only. Use the shared active-attempt helper from `core/workflow/checklist-artifacts.ts`; do not implement a local `latestByKind` reader in the gate:
 
 ```ts
-const checklistArtifacts = await readChecklistArtifactsFromEventIndex({
+const checklistArtifacts = await readActiveChecklistArtifacts({
   cpbRoot,
   dataRoot,
   project,
   jobId,
+  attemptId,
   requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
 });
 const acceptanceChecklist = checklistArtifacts["acceptance-checklist"];
@@ -1825,6 +2098,8 @@ const runtimeFailures = await readRuntimeFailureRefsFromEventReplay({
 ```
 
 Pass artifact inputs and `runtimeFailures` to `evaluateCompletionGate`.
+
+The helper must preserve artifact history grouped by kind and attempt, select an active-attempt view only when ownership is unambiguous, verify content hash when available, parse JSON, and surface broken entries. Artifact event metadata may locate and describe a file, but if metadata/diagnostics conflict with artifact JSON or JSON cannot be read, the gate fails closed as `artifact_invalid`.
 
 Do not use `phaseSourceContext`, phase diagnostics, prompt text, legacy parsed verdict, or artifact metadata as authoritative checklist inputs. They may remain in process only as handles or compatibility context.
 Do not allow fresh artifact JSON to clear runtime failures. Only retry attempt boundaries or explicit recovery events may make older runtime failures irrelevant, and V1 should fail closed if attempt ownership is ambiguous.
@@ -1955,6 +2230,7 @@ test("failure router can retry verifier for missing evidence without file scope"
         reason: "AC-003 evidence missing",
         cause: {
           routingLabel: "evidence_missing",
+          evidenceMissingCause: "probe_available_not_run",
           retryPhase: "verify",
           targetChecklistIds: ["AC-003"],
           fixScope: [],
@@ -1965,6 +2241,48 @@ test("failure router can retry verifier for missing evidence without file scope"
   assert.equal(decision.action, "retry_same_worker");
   assert.equal(decision.retryPhase, "verify");
   assert.equal(decision.retryable, true);
+});
+
+test("failure router does not verifier-retry when evidence probe is undefined", async () => {
+  const router = new FailureRouter();
+  const decision = await router.route({
+    assignment: { attempts: 0 },
+    attempt: 1,
+    result: {
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        reason: "AC-003 has no probe definition",
+        cause: {
+          routingLabel: "evidence_missing",
+          evidenceMissingCause: "probe_definition_missing",
+          targetChecklistIds: ["AC-003"],
+          fixScope: [],
+        },
+      },
+    },
+  });
+  assert.equal(decision.action, "mark_failed");
+});
+
+test("failure router blocks missing manual approval instead of verifier-looping", async () => {
+  const router = new FailureRouter();
+  const decision = await router.route({
+    assignment: { attempts: 0 },
+    attempt: 1,
+    result: {
+      failure: {
+        kind: FailureKind.HUMAN_APPROVAL_REQUIRED,
+        reason: "AC-004 requires manual approval artifact",
+        cause: {
+          routingLabel: "evidence_missing",
+          evidenceMissingCause: "manual_approval_missing",
+          targetChecklistIds: ["AC-004"],
+          fixScope: [],
+        },
+      },
+    },
+  });
+  assert.equal(decision.action, "mark_blocked");
 });
 
 test("failure router fails closed for ambiguous runtime artifacts without retry", async () => {
@@ -2047,7 +2365,11 @@ Then update the `VERIFICATION_FAILED` no-scope guard before it marks failed:
 const routing = failure.cause?.routingLabel
   ? mapChecklistRoutingLabel(failure.cause.routingLabel, failure.cause)
   : null;
-if (routing?.action === "retry_same_worker" && routing.retryPhase === "verify") {
+if (
+  routing?.action === "retry_same_worker"
+  && routing.retryPhase === "verify"
+  && failure.cause?.evidenceMissingCause === "probe_available_not_run"
+) {
   return {
     action: "retry_same_worker",
     reason: routing.reason || failure.reason,
@@ -2060,7 +2382,7 @@ if (failure.kind === FailureKind.VERIFICATION_FAILED && retryScope.length === 0)
 }
 ```
 
-This preserves fail-closed behavior for execute repair failures without file scope while allowing verifier-only evidence repair for `evidence_missing` and `checklist_incomplete`.
+This preserves fail-closed behavior for execute repair failures without file scope while allowing verifier-only evidence repair only for `evidence_missing` / `checklist_incomplete` caused by `probe_available_not_run`.
 
 - [ ] **Step 4: Feed retry context without checklist ids as paths**
 
@@ -2167,12 +2489,26 @@ test("checklist routing labels map to closed failure contracts", () => {
     requiresFixScope: true,
     retryable: true,
   });
-  assert.deepEqual(mapChecklistRoutingLabel("evidence_missing", { fixScope: [] }), {
+  assert.deepEqual(mapChecklistRoutingLabel("evidence_missing", { evidenceMissingCause: "probe_available_not_run", fixScope: [] }), {
     kind: FailureKind.VERIFICATION_FAILED,
     action: "retry_same_worker",
     retryPhase: "verify",
     requiresFixScope: false,
     retryable: true,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("evidence_missing", { evidenceMissingCause: "probe_definition_missing", fixScope: [] }), {
+    kind: FailureKind.VERIFICATION_FAILED,
+    action: "mark_failed",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
+  });
+  assert.deepEqual(mapChecklistRoutingLabel("evidence_missing", { evidenceMissingCause: "manual_approval_missing", fixScope: [] }), {
+    kind: FailureKind.HUMAN_APPROVAL_REQUIRED,
+    action: "mark_blocked",
+    retryPhase: null,
+    requiresFixScope: false,
+    retryable: false,
   });
   assert.deepEqual(mapChecklistRoutingLabel("poisoned_session", {}), {
     kind: FailureKind.POISONED_SESSION,
@@ -2228,7 +2564,7 @@ SCOPE_VIOLATION: "scope_violation",
 
 Use existing `HUMAN_APPROVAL_REQUIRED` for `needs_clarification` routing. Preserve current runtime hardening kinds `RUNJOB_PANIC` and `POISONED_SESSION`; checklist routing must fail closed on both.
 
-Add `mapChecklistRoutingLabel(label, context)` in `core/workflow/acceptance-checklist.ts` or an adjacent workflow contract module. It must return `{ kind, action, retryPhase, requiresFixScope, retryable }` using only router actions the current reconciler supports. V1 uses `action: "retry_same_worker"` plus `retryPhase: "verify"` for verifier-only retry; it does not introduce a new router action.
+Add `mapChecklistRoutingLabel(label, context)` in `core/workflow/acceptance-checklist.ts` or an adjacent workflow contract module. It must return `{ kind, action, retryPhase, requiresFixScope, retryable }` using only router actions the current reconciler supports. V1 uses `action: "retry_same_worker"` plus `retryPhase: "verify"` for verifier-only retry; it does not introduce a new router action. For `evidence_missing` and `checklist_incomplete`, the mapping must inspect `evidenceMissingCause` / `uncheckedCause`: `probe_available_not_run` may retry verify without file scope; `probe_definition_missing`, `manual_approval_missing`, `behavior_failed_before_probe`, and `implementation_gap` fail, block, or route to execute according to their explicit cause.
 
 Document the closed routing matrix in the failure module or adjacent tests. `SCOPE_VIOLATION` is non-retryable by default; adding it to the enum is not enough unless `FailureRouter.route()` has a deterministic action for it. Unknown labels must fail closed instead of falling back to `UNKNOWN`.
 
@@ -2350,7 +2686,8 @@ Not-tested: parallel DAG execution"
 
 **Files:**
 - Modify: `server/services/readiness-checks.ts`
-- Modify: `tests/audit-export.test.ts`
+- Modify: `core/workflow/checklist-artifacts.ts`
+- Create: `tests/audit-export.test.ts`
 
 - [ ] **Step 1: Add audit export test**
 
@@ -2363,10 +2700,10 @@ test("audit export includes checklist artifacts from artifact index", async () =
   const outputs = path.join(dataRoot, "wiki", "outputs");
   await mkdir(outputs, { recursive: true });
   const artifacts = {
-    "acceptance-checklist": { schemaVersion: 1, jobId: "job-audit-checklist", project: "proj", status: "frozen", items: [{ id: "AC-001", required: true }] },
-    "execution-map": { schemaVersion: 1, mappings: [{ checklistId: "AC-001", changedFiles: ["README.md"] }], changedFiles: ["README.md"], unmappedChangedFiles: [] },
-    "evidence-ledger": { schemaVersion: 1, ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", type: "evidence_claim", checklistId: "AC-001", verificationMethod: "command", predicateId: "PRED-001", result: "pass", worktreeHead: "abc", diffHash: "sha256:one" }] },
-    "checklist-verdict": { schemaVersion: 1, status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], fixScope: [] }] },
+    "acceptance-checklist": { schemaVersion: 1, jobId: "job-audit-checklist", project: "proj", attemptId: "job-audit-checklist", status: "frozen", items: [{ id: "AC-001", required: true }] },
+    "execution-map": { schemaVersion: 1, attemptId: "job-audit-checklist", mappings: [{ checklistId: "AC-001", changedFiles: ["README.md"] }], changedFiles: ["README.md"], unmappedChangedFiles: [] },
+    "evidence-ledger": { schemaVersion: 1, attemptId: "job-audit-checklist", ledgerId: "evidence-ledger-001", finalWorktree: { head: "abc", diffHash: "sha256:one" }, evidence: [{ id: "EV-001", type: "evidence_claim", attemptId: "job-audit-checklist", checklistId: "AC-001", verificationMethod: "command", predicateId: "PRED-001", result: "pass", command: "npm test", exitCode: 0, stdoutSha256: "sha256:stdout", worktreeHead: "abc", diffHash: "sha256:one" }] },
+    "checklist-verdict": { schemaVersion: 1, attemptId: "job-audit-checklist", status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }], fixScope: [] }] },
   };
   for (const [kind, content] of Object.entries(artifacts)) {
     const name = `${kind}-001`;
@@ -2380,6 +2717,7 @@ test("audit export includes checklist artifacts from artifact index", async () =
       artifactKind: kind,
       artifact: name,
       artifactId: "001",
+      attemptId: "job-audit-checklist",
       ts: "2026-06-12T00:00:00Z",
     }, { dataRoot });
   }
@@ -2406,28 +2744,25 @@ test("audit export includes checklist artifacts from artifact index", async () =
 
 - [ ] **Step 2: Read checklist artifacts safely**
 
-In `server/services/readiness-checks.ts`, inside `buildJobAuditExport`, import both `readEventsReadOnly` and `materializeJob` from the event store, then find entries:
+In `server/services/readiness-checks.ts`, inside `buildJobAuditExport`, import `readEventsReadOnly` and `materializeJob` from the event store, and reuse the shared helpers from `core/workflow/checklist-artifacts.ts`:
 
 ```ts
-const latestByKind = (kind) => [...artifactIndex.entries].reverse().find((entry) => entry.kind === kind && !entry.broken);
-const checklistEntry = latestByKind("acceptance-checklist");
-const executionMapEntry = latestByKind("execution-map");
-const evidenceLedgerEntry = latestByKind("evidence-ledger");
-const checklistVerdictEntry = latestByKind("checklist-verdict");
 const materialized = materializeJob(events);
-```
-
-Add helper:
-
-```ts
-async function readJsonArtifact(entry) {
-  if (!entry?.path) return null;
-  try {
-    return JSON.parse(await readFile(entry.path, "utf8"));
-  } catch {
-    return null;
-  }
-}
+const checklistArtifacts = await readActiveChecklistArtifacts({
+  cpbRoot,
+  dataRoot,
+  project,
+  jobId,
+  attemptId: materialized.completionGate?.attemptId || jobId,
+  requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
+  mode: "audit",
+});
+const checklistArtifactHistory = await readChecklistArtifactHistory({
+  cpbRoot,
+  dataRoot,
+  project,
+  jobId,
+});
 ```
 
 Add helper:
@@ -2450,10 +2785,11 @@ function collectRuntimeFailureRefs(events) {
 Return:
 
 ```ts
-checklist: await readJsonArtifact(checklistEntry),
-executionMap: await readJsonArtifact(executionMapEntry),
-evidenceLedger: await readJsonArtifact(evidenceLedgerEntry),
-checklistVerdict: await readJsonArtifact(checklistVerdictEntry),
+checklistArtifactHistory,
+checklist: checklistArtifacts["acceptance-checklist"] || null,
+executionMap: checklistArtifacts["execution-map"] || null,
+evidenceLedger: checklistArtifacts["evidence-ledger"] || null,
+checklistVerdict: checklistArtifacts["checklist-verdict"] || null,
 runtimeFailures: collectRuntimeFailureRefs(events),
 runtimeContext: materialized.runtimeContext || null,
 auditFinalized: materialized.auditFinalized || null,
@@ -2461,6 +2797,7 @@ completionGate: materialized.completionGate || null,
 ```
 
 This code path must not read checklist content from phase diagnostics or source context. Runtime failures come from event replay, not artifact metadata. If an artifact index entry points to a missing or invalid JSON file, include `null` for that section and preserve the broken entry in `artifactIndex` rather than fabricating success.
+The audit export preserves all checklist artifact history grouped by kind and attempt; the top-level checklist fields are the active-attempt convenience view only when ownership is unambiguous.
 
 - [ ] **Step 3: Keep audit safety tests passing**
 
@@ -2544,7 +2881,7 @@ Direct runs without managed assignments use `jobId` as the compatibility attempt
 
 - [ ] **Step 3: Scope event replay by active attempt**
 
-Update `readChecklistArtifactsFromEventIndex` and `readRuntimeFailureRefsFromEventReplay` so checklist-aware completion selects records for the active `attemptId`.
+Update `readActiveChecklistArtifacts`, `readChecklistArtifactHistory`, and `readRuntimeFailureRefsFromEventReplay` so checklist-aware completion selects records for the active `attemptId` while audit export preserves old attempts as history.
 
 Rules:
 
@@ -2773,5 +3110,6 @@ Not-tested: live provider task run"
 - Spec coverage: tasks cover prepare-time checklist generation, artifact event/index visibility, execution mapping, verifier evidence, completion gate, retry, DAG metadata, failure taxonomy, attempt boundary, runtime context, and audit export.
 - Compatibility: legacy verdict-only jobs remain supported until a job has an `acceptance-checklist` artifact.
 - Test shape: every runtime behavior change starts with a focused failing test.
+- Bootstrap acceptance: every implementation task must close with a shadow acceptance record; unchecked items cannot be counted as complete.
 - Risk control: V1 avoids per-item DAG splitting, checklist mutation, and full bundle generation.
 - Stop condition: implementation is done only when `npm run typecheck`, `npm test`, and checklist-focused tests pass.

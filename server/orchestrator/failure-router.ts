@@ -1,4 +1,5 @@
 import { FailureKind } from "../../core/contracts/failure.js";
+import { mapChecklistRoutingLabel } from "../../core/workflow/acceptance-checklist.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -44,6 +45,12 @@ function collectVerificationRetryScope(failure: AnyRecord = {}) {
     add(blocking?.path);
     addMany(blocking?.files);
     addMany(blocking?.paths);
+  }
+  // Extract file-only scope from checklistVerdict — do NOT add checklist ids
+  const checklistVerdict = verdict.checklistVerdict || failure.cause?.checklistVerdict || {};
+  addMany(checklistVerdict.fixScope);
+  for (const item of Array.isArray(checklistVerdict.items) ? checklistVerdict.items : []) {
+    addMany(item?.fixScope);
   }
   return [...scope];
 }
@@ -104,15 +111,58 @@ export class FailureRouter {
       };
     }
 
-    if (
-      failure.kind === FailureKind.VERIFICATION_FAILED &&
-      collectVerificationRetryScope(failure).length === 0
-    ) {
+    // ARTIFACT_INVALID with checklist routing labels that demand fail-closed
+    // must not enter the general ARTIFACT_INVALID → restart_worker_and_retry path.
+    if (failure.kind === FailureKind.ARTIFACT_INVALID) {
       return {
         action: "mark_failed",
-        reason: `verification failed without actionable retry scope: ${failure.reason}`,
+        reason: `${failure.kind}: ${failure.reason}`,
         retryable: false,
       };
+    }
+
+    if (failure.kind === FailureKind.VERIFICATION_FAILED) {
+      const retryScope = collectVerificationRetryScope(failure);
+      // Checklist-aware routing: map routing labels from completion gate
+      // to correct retry action, phase, and fixScope.
+      const routing = failure.cause?.routingLabel
+        ? mapChecklistRoutingLabel(failure.cause.routingLabel, {
+            ...failure.cause,
+            fixScope: retryScope.length > 0 ? retryScope : (failure.cause?.fixScope || []),
+          })
+        : null;
+      if (routing?.action === "retry_same_worker" && routing.retryPhase) {
+        return {
+          action: "retry_same_worker",
+          reason: failure.reason,
+          retryable: true,
+          retryPhase: routing.retryPhase,
+          ...(routing.requiresFixScope && retryScope.length > 0 ? { fixScope: retryScope } : {}),
+        };
+      }
+      // Non-retryable routing (e.g. scope_violation, missing evidence without probe)
+      if (routing && !routing.retryable) {
+        return {
+          action: "mark_failed",
+          reason: `${routing.kind}: ${failure.reason}`,
+          retryable: false,
+        };
+      }
+      // Human approval required
+      if (routing?.action === "mark_blocked") {
+        return {
+          action: "mark_blocked",
+          reason: failure.reason,
+          retryable: false,
+        };
+      }
+      if (retryScope.length === 0) {
+        return {
+          action: "mark_failed",
+          reason: `verification failed without actionable retry scope: ${failure.reason}`,
+          retryable: false,
+        };
+      }
     }
 
     // Over retry budget → mark failed
@@ -176,6 +226,13 @@ export class FailureRouter {
         return {
           action: "mark_blocked",
           reason: `${failure.kind}: ${failure.reason}`,
+          retryable: false,
+        };
+
+      case FailureKind.SCOPE_VIOLATION:
+        return {
+          action: "mark_failed",
+          reason: `scope violation: ${failure.reason}`,
           retryable: false,
         };
 

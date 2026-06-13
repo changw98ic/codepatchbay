@@ -383,6 +383,9 @@ const POST_TERMINAL_ALLOWED = new Set([
   "job_superseded",
   "review_bundle_accepted", "review_bundle_rejected",
   "completion_gate_evaluated",
+  "audit_finalized",
+  "runtime_context_snapshot",
+  "runtime_failure_recorded",
 ]);
 
 const NODE_STATE_DEFAULTS = {
@@ -518,6 +521,11 @@ export function materializeJob(events) {
       latest: null,
     },
     completionGate: null,
+    auditFinalized: null,
+    runtimeContext: null,
+    artifactsByKind: {},
+    artifactHistoryByKind: {},
+    runtimeFailures: [],
   };
 
   const ctx = { terminal: false };
@@ -847,7 +855,64 @@ const EVENT_HANDLERS = {
   external_remediation_failed(state, event) { state.externalRemediationStatus = "FAILED"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = event.error ?? event.reason ?? null; },
   finalizer_result(state, event) { state.finalizer = { ok: Boolean(event.result?.ok), status: event.result?.status ?? null, code: event.result?.code ?? null, commit: event.result?.commit ?? null, closed: event.result?.closed ?? null, mode: event.result?.mode ?? null, ts: event.ts ?? null }; },
   merge_index_status(state, event) { state.mergeIndexStatus = event.indexState ?? event.mergeIndexStatus ?? state.mergeIndexStatus; state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch; state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead; state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom; },
-  completion_gate_evaluated(state, event) { state.completionGate = { outcome: event.outcome ?? null, reason: event.reason ?? null, missingGates: Array.isArray(event.missingGates) ? event.missingGates : [], evaluatedAt: event.ts ?? null }; },
+  completion_gate_evaluated(state, event) { state.completionGate = { outcome: event.outcome ?? null, attemptId: event.attemptId ?? null, reason: event.reason ?? null, missingGates: Array.isArray(event.missingGates) ? event.missingGates : [], checklistOutcome: event.checklistOutcome ?? null, failedChecklistIds: Array.isArray(event.failedChecklistIds) ? event.failedChecklistIds : [], uncheckedChecklistIds: Array.isArray(event.uncheckedChecklistIds) ? event.uncheckedChecklistIds : [], missingEvidenceRefs: Array.isArray(event.missingEvidenceRefs) ? event.missingEvidenceRefs : [], mismatchedEvidenceRefs: Array.isArray(event.mismatchedEvidenceRefs) ? event.mismatchedEvidenceRefs : [], staleEvidenceRefs: Array.isArray(event.staleEvidenceRefs) ? event.staleEvidenceRefs : [], poisonedEvidenceRefs: Array.isArray(event.poisonedEvidenceRefs) ? event.poisonedEvidenceRefs : [], runtimeFailureRefs: Array.isArray(event.runtimeFailureRefs) ? event.runtimeFailureRefs : [], runtimeFailureCount: Number.isFinite(event.runtimeFailureCount) ? event.runtimeFailureCount : 0, unmappedChangedFiles: Array.isArray(event.unmappedChangedFiles) ? event.unmappedChangedFiles : [], unmappedChangedFileCount: Number.isFinite(event.unmappedChangedFileCount) ? event.unmappedChangedFileCount : 0, evaluatedAt: event.ts ?? null }; },
+  artifact_created(state, event) {
+    const kind = event.kind || event.artifactKind;
+    if (!kind || !event.artifact) return;
+    const entry = {
+      kind,
+      name: event.artifact,
+      id: event.artifactId || null,
+      attemptId: event.attemptId || event.jobId || null,
+      phase: event.phase || null,
+      sha256: event.sha256 || null,
+      ts: event.ts || null,
+      eventId: event.eventId || null,
+    };
+    state.artifactsByKind = {
+      ...(state.artifactsByKind || {}),
+      [kind]: entry,
+    };
+    state.artifactHistoryByKind = {
+      ...(state.artifactHistoryByKind || {}),
+      [kind]: [...(state.artifactHistoryByKind?.[kind] || []), entry],
+    };
+  },
+  audit_finalized(state, event) {
+    state.auditFinalized = {
+      attemptId: event.attemptId || null,
+      status: event.status || null,
+      reason: event.reason || null,
+      ts: event.ts || null,
+    };
+  },
+  runtime_context_snapshot(state, event) {
+    state.runtimeContext = {
+      attemptId: event.attemptId || null,
+      assignmentId: event.assignmentId || null,
+      workerId: event.workerId || null,
+      model: event.model || null,
+      runtime: event.runtime || null,
+      queueId: event.queueId || null,
+      queuePriority: event.queuePriority ?? null,
+      concurrencyKey: event.concurrencyKey || null,
+      rateLimitedUntil: event.rateLimitedUntil || null,
+      heartbeatAt: event.heartbeatAt || null,
+      progressKind: event.progressKind || null,
+      blocker: event.blocker || null,
+      ts: event.ts || null,
+    };
+  },
+  runtime_failure_recorded(state, event) {
+    state.runtimeFailures = [...state.runtimeFailures, {
+      type: event.failureType || null,
+      attemptId: event.attemptId || null,
+      phase: event.phase || null,
+      nodeId: event.nodeId || null,
+      reason: event.reason || null,
+      ts: event.ts || null,
+    }];
+  },
 };
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);

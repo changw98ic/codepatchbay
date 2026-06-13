@@ -13,7 +13,11 @@ import { parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
 // ──────────────────────────────────────────────────────────────────────────────
 
 const SCHEMA_VERSION = 1;
-const KNOWN_KINDS = new Set(["plan", "deliverable", "review", "verdict", "prompt", "diff", "tests", "risk", "pr"]);
+const SCHEMA_VERSION_WITH_CHECKLIST = 2;
+const KNOWN_KINDS = new Set([
+  "plan", "deliverable", "review", "verdict", "prompt", "diff", "tests", "risk", "pr",
+  "acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict",
+]);
 
 function wikiProjectDir(cpbRoot, project, wikiDir) {
   if (wikiDir) return path.resolve(wikiDir);
@@ -46,6 +50,10 @@ function inferKind(event, artifact) {
   if (event.type === "pr_opened" || event.prUrl || event.pullRequestUrl) return "pr";
 
   const name = basename(artifact);
+  if (/^acceptance-checklist-/i.test(name)) return "acceptance-checklist";
+  if (/^execution-map-/i.test(name)) return "execution-map";
+  if (/^evidence-ledger-/i.test(name)) return "evidence-ledger";
+  if (/^checklist-verdict-/i.test(name)) return "checklist-verdict";
   if (/^plan-/i.test(name)) return "plan";
   if (/^deliverable-/i.test(name)) return "deliverable";
   if (/^review-/i.test(name)) return "review";
@@ -156,6 +164,9 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
   const entries = [];
   const seen = new Set();
 
+  const CHECKLIST_KINDS = new Set(["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"]);
+  let hasChecklistEntries = false;
+
   for (const ref of artifactReferences(sourceEvents)) {
     const { event, artifact, kind } = ref;
     const blocked = blockedWikiReference(cpbRoot, project, kind, artifact, effectiveWikiDir, restrictToWiki);
@@ -175,6 +186,8 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
         broken: true,
         reason: blocked.reason,
         eventType: event.type || null,
+        attemptId: event.attemptId || null,
+        artifactKind: event.artifactKind || kind,
       });
       continue;
     }
@@ -185,6 +198,8 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
     seen.add(key);
 
     const inspected = await inspectArtifact(artifactPath);
+    const isChecklist = CHECKLIST_KINDS.has(kind);
+    if (isChecklist) hasChecklistEntries = true;
     entries.push({
       id: artifactIdFor(artifact),
       kind,
@@ -197,11 +212,13 @@ export async function buildArtifactIndex(cpbRoot, project, jobId, { events, data
       broken: inspected.broken,
       reason: inspected.reason,
       eventType: event.type || null,
+      attemptId: event.attemptId || null,
+      artifactKind: event.artifactKind || kind,
     });
   }
 
   return {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: hasChecklistEntries ? SCHEMA_VERSION_WITH_CHECKLIST : SCHEMA_VERSION,
     project,
     jobId,
     generatedAt: new Date().toISOString(),

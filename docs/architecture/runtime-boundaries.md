@@ -54,3 +54,15 @@
 - 新的 CLI 参数解析和展示逻辑放入 `cli/commands/`，服务调用直接进入 canonical server 模块。
 - 新的长期 worker 或运行时脚本放入 `runtime/`，不通过 re-export 做旧路径兼容。
 - 新增 runtime 代码不得直接导入 server 服务；确需复用 server 协作者时，必须通过明确的跨层装配点注入，并同步补边界测试。
+
+## Task Acceptance Boundary
+
+Checklist-aware jobs treat the prepare-time `acceptance-checklist` artifact as
+the frozen execution contract. Planner and executor summaries are audit context
+only. Verifier pass requires itemized `checklist-verdict` entries backed by
+fresh `evidence-ledger` refs. Completion gate must reject required failed or
+unchecked items, missing evidence, stale evidence, unresolved scope violations,
+and checklist verdict status that conflicts with item results.
+
+Checklist artifacts must be event-visible and indexable. Diagnostics-only
+artifact references are not sufficient for audit or completion.

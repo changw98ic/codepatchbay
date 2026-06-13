@@ -18,6 +18,23 @@ CodePatchBay already has the main runtime pieces needed for this:
 
 The remaining trust gap is that the verifier still has too much authority to define what "done" means at verification time. The new design makes acceptance criteria a first-class contract produced before implementation and audited after implementation.
 
+## Bootstrap Development Acceptance
+
+This design must govern its own implementation before CPB can enforce it automatically.
+
+Until checklist-first completion is implemented in production, development tasks for this design use a shadow acceptance protocol:
+
+- Each implementation task is treated as a frozen checklist derived from the plan's task steps, files, expected tests, and negative assertions.
+- The implementer may propose evidence, but cannot mark an item complete without a concrete evidence record.
+- A reviewer/verifier must check every checklist item one by one against the evidence record. A summary, confidence statement, or agent report is not proof.
+- Items without evidence are marked `unchecked`; they are not allowed to count as pass.
+- Failed or unchecked items must produce either file-only `fixScope`, logical `targetChecklistIds`, or an explicit human/blocking reason.
+- The completion claim for each implementation task must include the task checklist, changed files, verification commands, actual command results, and remaining unchecked items.
+- Production checklist artifacts are not required for the bootstrap protocol, but the semantics must match V1: frozen criteria first, evidence refs second, verdict last.
+- A blocked shadow acceptance record may pause work, but it is not task acceptance. It must include `blockingReason` or `humanBlockingReason`, and the task remains incomplete until every required item has evidence-backed `pass`.
+
+This prevents the feature from being implemented through the weaker verifier-summary workflow that it is intended to replace.
+
 ## V1 Scope
 
 V1 deliberately keeps the runtime change small enough to land safely:
@@ -96,7 +113,8 @@ The reference projects suggest several reliability patterns that become CPB desi
   "source": {
     "task": "Add JSON output to cpb status",
     "issue": null,
-    "documents": ["README.md", "docs/architecture/runtime-boundaries.md"]
+    "documents": ["README.md", "docs/architecture/runtime-boundaries.md"],
+    "requirementClassificationArtifact": "requirement-classification-123"
   },
   "status": "frozen",
   "items": [
@@ -136,7 +154,8 @@ Rules:
 
 - Every required user-visible requirement must map to at least one checklist item.
 - Every checklist item must have source refs, area, risk, verification method, predicate id, and expected evidence.
-- V1 must run a source coverage validator before freeze. Every user/doc/system requirement source span or digest classified as acceptance-relevant must map to at least one checklist item; missing coverage blocks as `needs_clarification`.
+- V1 must run a source coverage validator before freeze. Every user/doc/system requirement source span or digest classified as acceptance-relevant by an independent prepare-time requirement classification input or artifact must map to at least one checklist item; missing coverage blocks as `needs_clarification`.
+- The checklist cannot self-declare the complete source universe. Fields inside `acceptance-checklist` such as source refs are coverage claims to validate against the independent requirement classification, not authority for what the task required.
 - Checklist generation is not requirement authority. Unsupported checklist items, missing source refs, or source refs that do not exist in the task/doc corpus fail closed before execution.
 - Assumptions are defeasible factual premises only. They must not express user-visible behavior, non-regression, "must/should/remain unchanged" acceptance outcomes, or hidden acceptance criteria; those must become checklist items or explicit non-goals with approval.
 - High-risk assumptions cannot be silently accepted; they must map to `human_approval_required` or a higher-strength planning path.
@@ -171,6 +190,7 @@ Each artifact must be written with `writeArtifact()` and referenced by a first-c
 
 Projection, artifact index, audit export, and event materialization must use event-visible artifacts, not phase diagnostics, as their durable source of truth.
 If an artifact has been written, an `artifact_created` event must be emitted before a phase returns success, failure, or blocked status. Artifact `metadata` and diagnostics may mirror JSON content, but cannot supersede it.
+Checklist authority artifacts are pre-terminal completion inputs. A post-terminal `artifact_created` event may appear only as audit history and must not make an already terminal job checklist-aware or change completion authority.
 
 Attempt rules:
 
@@ -218,6 +238,7 @@ Rules:
   "jobId": "job-123",
   "project": "flow",
   "ledgerId": "evidence-ledger-123456",
+  "attemptId": "attempt-001",
   "finalWorktree": {
     "head": "abc123",
     "diffHash": "sha256:..."
@@ -228,6 +249,7 @@ Rules:
       "type": "evidence_claim",
       "observationType": "command",
       "checklistId": "AC-001",
+      "attemptId": "attempt-001",
       "verificationMethod": "command",
       "predicateId": "PRED-001",
       "probeId": "probe-status-json",
@@ -248,10 +270,19 @@ Rules:
 Rules:
 
 - Evidence ids are ledger-scoped. Cross-artifact references use `{ "ledgerId": "...", "evidenceId": "EV-001" }`.
-- A pass evidence ref must resolve to an evidence claim for the same `checklistId`, `verificationMethod`, and `predicateId`; fresh but unrelated observations are not proof.
+- A pass evidence ref must resolve to an evidence claim for the same `checklistId`, `verificationMethod`, `predicateId`, and active `attemptId`; fresh but unrelated observations are not proof.
+- Evidence claim `result` is not self-proving. The completion gate must validate method-specific observation fields for the declared `verificationMethod`; repeating the predicate id and `result: "pass"` is not proof.
 - Generic hard-gate output is audit context unless it is converted into a checklist-bound evidence claim by a declared probe.
 - Runtime absence is not positive item evidence by itself. If an item requires absence checking, it must cite a bounded `absence_check` evidence claim with query window, event types, attempt id, and result; the separate "no unresolved runtime failure" condition remains a hard completion gate.
-- `manual` evidence requires a durable approval artifact/event with approver, timestamp, scope, and checklist id. Without that artifact/event, manual items remain `unchecked` or route to `human_approval_required`.
+- `manual` evidence requires a durable approval artifact/event resolvable through the artifact or event index with approver, timestamp, scope, checklist id, and attempt id. Self-attested approval fields in a ledger entry are not enough.
+- Evidence collection must define probes for each supported method (`command`, `test`, `static`, `runtime_event`, `artifact_event`, `audit_export`, `dag_event`, `worker_lifecycle`, `manual`, `absence_check`) before the verifier cites evidence refs.
+- Method-specific probe output is required:
+  - `command` / `test`: command identity, cwd/repo root, integer exit code, stdout/stderr or parsed-output digest, worktree identity, and attempt id.
+  - `static`: query id, source locators, match count, expected predicate, and attempt id.
+  - `runtime_event`, `artifact_event`, `dag_event`, and `worker_lifecycle`: event or artifact identity, event type/kind, timestamp, active attempt id, and a positive payload matcher.
+  - `audit_export`: export invocation id, section path, observed value digest, and active attempt id.
+  - `manual`: resolvable approval artifact/event id, approver, timestamp, and scope covering the checklist id.
+  - `absence_check`: bounded query source, query window, event types, active attempt id, and a negative query result.
 - A pass result cannot rely on executor summary or unverifiable prose.
 - Evidence is stale when its `worktreeHead` or `diffHash` differs from `evidenceLedger.finalWorktree`.
 - Completion fails when pass evidence is missing or stale.
@@ -347,6 +378,7 @@ Rules:
 - Verify nodes must depend on execute nodes that claim their checklist ids.
 - High-risk checklist ids can require grouped `adversarial_verify` nodes.
 - In checklist-aware jobs, side-effecting execute, remediate, verify, review, adversarial, or custom dynamic nodes must either carry `checklistIds` or be explicitly marked `checklistNeutral: true`. Unmarked mutating/custom nodes fail the completion gate.
+- Default grouped checklist ids may be assigned only to canonical built-in execute, verify, and adversarial-verify nodes, and those nodes must carry `checklistBindingSource: "canonical-default"`. Custom, dynamic, or multiple mutating nodes must declare explicit `checklistIds` or `checklistNeutral: true`; CPB must not silently spray all checklist ids across unknown nodes.
 - V1 must implement a production DAG coverage validator such as `validateChecklistDagCoverage(workflowDag, acceptanceChecklist)`. The validator fails closed when a required verify node is missing, a verify node does not depend on execute coverage for the same required ids, or an unknown/custom dynamic node is neither covered by `checklistIds` nor explicitly `checklistNeutral: true`.
 - Per-item split DAG nodes are V2.
 
@@ -372,7 +404,9 @@ Routing labels must map to valid `FailureKind` values before they enter failure 
 | `artifact_invalid` | `artifact_invalid` | block or mark failed | none | no |
 | `verdict_invalid` / `checklist_invalid` | `verdict_invalid` or `artifact_invalid` | `retry_same_worker` when verifier can repair shape | verify | no |
 | `checklist_failed` | `verification_failed` | `retry_same_worker` only with actionable `fixScope`; otherwise mark failed | execute | yes |
-| `checklist_incomplete` / `evidence_missing` / `evidence_stale` | `verification_failed` | `retry_same_worker` when no file change is needed; otherwise execute repair with `fixScope` | verify or execute | conditional |
+| `checklist_incomplete` | `verification_failed` | depends on unchecked cause; fail closed when cause is unknown | verify, execute, or block | conditional |
+| `evidence_missing` | `verification_failed` | verifier-only retry only for `probe_available_not_run`; otherwise execute repair or block | verify, execute, or block | conditional |
+| `evidence_stale` | `verification_failed` | rerun probe when available; otherwise execute repair or block | verify or execute | conditional |
 | `dag_uncovered` | `artifact_invalid` | block or mark failed | none | no |
 | `runtime_failure_ambiguous` | `artifact_invalid` | block or mark failed | none | no |
 | `scope_violation` | `scope_violation` | mark failed, no blind retry | none | no |
@@ -383,6 +417,7 @@ Routing labels must map to valid `FailureKind` values before they enter failure 
 
 The matrix is part of the contract. A fallback `UNKNOWN` or generic verification failure is not enough for checklist-aware routing.
 The router action must use actions the current reconciler supports. V1 represents verifier-only retry as `action: "retry_same_worker"` plus `retryPhase: "verify"`; it does not introduce a standalone verify-retry router action.
+`evidence_missing` and `checklist_incomplete` must carry a cause such as `probe_available_not_run`, `probe_definition_missing`, `manual_approval_missing`, `behavior_failed_before_probe`, or `implementation_gap`. Only `probe_available_not_run` can enter verifier-only retry without file scope.
 `scope_guard_violation` is a runtime event/code describing where the guard fired. `scope_violation` is the shared `FailureKind` value. Do not use these names interchangeably.
 `phase_poisoned_session` and `job_panic` are runtime events. Their shared failure kinds are `poisoned_session` and `runjob_panic`.
 
@@ -427,7 +462,8 @@ Required checks:
 - Every required pass item has at least one evidence ref.
 - Every evidence ref resolves to an evidence entry in the referenced ledger.
 - Every pass evidence entry is fresh against `evidenceLedger.finalWorktree`.
-- Every pass evidence entry is an evidence claim matching the item `checklistId`, `verificationMethod`, `predicateId`, attempt id, and required result.
+- Every pass evidence entry is an evidence claim matching the item `checklistId`, `verificationMethod`, `predicateId`, active attempt id, and required result.
+- Every pass evidence entry satisfies its method-specific observation validator. Predicate echo is not proof.
 - No required item is `fail` or `unchecked`.
 - `execution-map.unmappedChangedFiles` is empty.
 - Every required verify DAG node completed.
@@ -479,6 +515,7 @@ The audit JSON must include:
 ```
 
 The export reads checklist sections from the artifact index and artifact JSON files produced by `artifact_created` events. It reads runtime failures and worker/queue context from event replay, materialized job state, or managed-assignment attempt files. It must still work when phase diagnostics and source context are unavailable.
+Audit export must preserve checklist artifact history grouped by kind and attempt, and expose an active-attempt view only when artifact ownership is unambiguous.
 
 The export should let a reviewer answer:
 
@@ -504,7 +541,9 @@ The export should let a reviewer answer:
 
 ## Acceptance Criteria
 
+- Development of this feature is accepted through the bootstrap shadow checklist protocol until the production checklist gate can enforce the same rules.
 - CPB can create and persist an event-visible acceptance checklist before DAG materialization.
+- CPB generates the frozen checklist for real prepare-time jobs, not only for tests or caller-supplied fixtures.
 - Workflow DAG nodes carry grouped `checklistIds` for checklist-aware jobs.
 - Checklist DAG ids are coverage metadata only; item results come from `checklist-verdict` and fresh `evidence-ledger` refs.
 - Artifact index recognizes `acceptance-checklist`, `execution-map`, `evidence-ledger`, and `checklist-verdict`.
