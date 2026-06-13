@@ -1,22 +1,58 @@
 #!/usr/bin/env node
 // test-acp-agent.ts — Scriptable ACP agent for integration testing
-// Supports --scenario-file (JSON response scripts) and --transcript-file (interaction log)
+// Supports:
+//   --response <text>           stream a fixed response, ignoring scenarios
+//   --scenario-file <path>      JSON response scripts keyed by `match` (substring)
+//   --transcript-file <path>    append interaction log
+//
+// ScenarioResponse contract (matches tests/integration/acp-test-agent.test.ts):
+//   match?:      substring matched against prompt text (falls back to always-match)
+//   matchRegex?: regex matched against prompt text (legacy)
+//   output:      text streamed as agent_message_chunk
+//   writes?:     [{ pathRegex, content }] — regex with capture group 1 = file path;
+//                content supports {{prompt}} interpolation; written via fs/write_text_file
+//   toolCalls?:  [{ toolCallId, title, status }] — emitted as tool_call updates
+//   usage?:      { inputTokens, outputTokens, totalTokens, cachedInputTokens? }
 import readline from "node:readline";
 import { readFile, appendFile } from "node:fs/promises";
 
 const args = process.argv.slice(2);
 let scenarioPath = "";
 let transcriptPath = "";
+let directResponse: string | null = null;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--scenario-file" && args[i + 1]) scenarioPath = args[++i];
-  if (args[i] === "--transcript-file" && args[i + 1]) transcriptPath = args[++i];
+  else if (args[i] === "--transcript-file" && args[i + 1]) transcriptPath = args[++i];
+  else if (args[i] === "--response" && args[i + 1]) directResponse = args[++i];
+}
+
+interface ScenarioWrite {
+  pathRegex: string;
+  content: string;
+}
+
+interface ScenarioToolCall {
+  toolCallId: string;
+  title: string;
+  status?: string;
+}
+
+interface ScenarioUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
 }
 
 interface ScenarioResponse {
-  name: string;
-  matchRegex: string;
+  name?: string;
+  match?: string;
+  matchRegex?: string;
   output: string;
+  writes?: ScenarioWrite[];
+  toolCalls?: ScenarioToolCall[];
+  usage?: ScenarioUsage;
 }
 
 interface Scenario {
@@ -39,11 +75,24 @@ async function appendTranscript(entry: any) {
   await appendFile(transcriptPath, JSON.stringify(entry) + "\n").catch(() => {});
 }
 
-function matchResponse(text: string): string {
-  for (const resp of scenario.responses) {
-    if (new RegExp(resp.matchRegex, "is").test(text)) return resp.output;
+function responseMatches(resp: ScenarioResponse, text: string): boolean {
+  if (typeof resp.match === "string") return text.includes(resp.match);
+  if (typeof resp.matchRegex === "string") {
+    try {
+      return new RegExp(resp.matchRegex, "is").test(text);
+    } catch {
+      return false;
+    }
   }
-  return scenario.default?.output || "";
+  // No match key → always matches (matches test "ACP client audits codegraph..." which omits match).
+  return true;
+}
+
+function selectResponse(text: string): ScenarioResponse | undefined {
+  for (const resp of scenario.responses) {
+    if (responseMatches(resp, text)) return resp;
+  }
+  return undefined;
 }
 
 const PROTOCOL_VERSION = 1;
@@ -71,6 +120,68 @@ function call(method: string, params: any): Promise<any> {
   return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); });
 }
 
+function sendChunk(text: string) {
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+      },
+    },
+  });
+}
+
+function sendToolCall(tc: ScenarioToolCall) {
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: tc.toolCallId,
+        title: tc.title,
+        status: tc.status || "completed",
+      },
+    },
+  });
+}
+
+function sendUsage(usage: ScenarioUsage) {
+  // Match the shape normalizeAcpUsage reads in server/services/acp/acp-client.ts:
+  // it pulls inputTokens/outputTokens/totalTokens/cachedInputTokens from update.usage.
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "usage",
+        usage,
+      },
+    },
+  });
+}
+
+function interpolate(content: string, promptText: string): string {
+  return content.split("{{prompt}}").join(promptText);
+}
+
+async function performWrites(writes: ScenarioWrite[] | undefined, promptText: string) {
+  if (!writes || writes.length === 0) return;
+  for (const w of writes) {
+    const re = new RegExp(w.pathRegex, "is");
+    const m = re.exec(promptText);
+    if (!m) continue;
+    const target = m[1] || m[0];
+    const content = interpolate(w.content, promptText);
+    await call("fs/write_text_file", { path: target, content }).catch(() => null);
+  }
+}
+
 function textFromPrompt(params: any): string {
   const prompt = Array.isArray(params?.prompt) ? params.prompt : [];
   return prompt.map((p: any) => p?.text || "").join("\n");
@@ -79,25 +190,38 @@ function textFromPrompt(params: any): string {
 async function handlePrompt(params: any) {
   sessionId = params?.sessionId || sessionId;
   const text = textFromPrompt(params);
-  const output = matchResponse(text);
 
-  write({
-    jsonrpc: "2.0",
-    method: "session/update",
-    params: {
-      sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: output },
-      },
-    },
-  });
+  // --response overrides everything: stream fixed text and return.
+  if (directResponse !== null) {
+    sendChunk(directResponse);
+    await appendTranscript({ event: "session/prompt", text: text.substring(0, 200), matched: directResponse.substring(0, 200) });
+    return;
+  }
 
-  await appendTranscript({ type: "prompt", text: text.substring(0, 200), matched: output.substring(0, 200) });
+  const resp = selectResponse(text);
+  const output = resp?.output ?? scenario.default?.output ?? "";
+
+  sendChunk(output);
+
+  if (resp?.toolCalls) {
+    for (const tc of resp.toolCalls) sendToolCall(tc);
+  }
+
+  if (resp?.usage) {
+    sendUsage(resp.usage);
+  }
+
+  await performWrites(resp?.writes, text);
+
+  await appendTranscript({ event: "session/prompt", text: text.substring(0, 200), matched: output.substring(0, 200) });
 }
 
 async function handleRequest(message: any) {
-  await appendTranscript({ type: "request", method: message.method });
+  // session/prompt is logged inside handlePrompt; only log lifecycle methods here
+  // to avoid double-counting in the transcript.
+  if (message.method !== "session/prompt") {
+    await appendTranscript({ event: message.method });
+  }
 
   switch (message.method) {
     case "initialize":
@@ -108,7 +232,6 @@ async function handleRequest(message: any) {
       });
       break;
     case "session/new":
-      sessionId = `test-session-${Date.now()}`;
       result(message.id, { sessionId });
       break;
     case "session/prompt":
@@ -116,9 +239,12 @@ async function handleRequest(message: any) {
       result(message.id, null);
       break;
     case "session/close":
+      // Persistent ACP pools reuse one process across many sessions: closing a
+      // session must NOT terminate the process. Only stdin EOF (client killed
+      // the child) ends the agent. Re-initialize sessionId for the next session.
+      // (Transcript is logged once at handleRequest entry — do not double-log.)
       result(message.id, null);
-      await appendTranscript({ type: "close" });
-      process.exit(0);
+      sessionId = "test-session";
       break;
     default:
       if (Object.hasOwn(message, "id")) {
@@ -147,3 +273,7 @@ rl.on("line", (line) => {
     });
   }
 });
+
+// stdin closed → client terminated the child. Exit cleanly so the pool can
+// detect process death and (if needed) spawn a fresh provider.
+rl.on("close", () => process.exit(0));
