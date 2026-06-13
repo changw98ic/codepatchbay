@@ -495,38 +495,27 @@ export async function runJob(ctx) {
   }
 }
 
-async function runJobInner(ctx) {
+/**
+ * Phase 1: Create the job record, derive attemptId, emit job_started, and
+ * short-circuit when the workflow is operator-blocked.
+ *
+ * Returns a discriminated union: `{ kind: "blocked", result }` terminates the
+ * job with a blocked status; `{ kind: "ok", job, jobId, attemptId }` proceeds
+ * to prepareTask.
+ */
+async function createJobAndHandleBlocked(ctx) {
   const {
     cpbRoot,
-    hubRoot,
     project,
     task,
     workflow = "standard",
     planMode = "full",
-    sourcePath,
     sourceContext,
-    dataRoot,
-    maxRetries,
-    timeoutMin,
-    // Injected services
     createJob,
-    startPhase,
-    completePhase,
-    completeJob,
-    failJob,
     blockJob,
     appendEvent,
-    getPool,
-    prepareTask,
   } = ctx;
-  const providerServices = normalizeProviderServices(ctx.providerServices);
 
-  process.env.CPB_ROOT = cpbRoot;
-  if (hubRoot) process.env.CPB_HUB_ROOT = hubRoot;
-  if (dataRoot) process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
-  if (sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
-
-  // 1. Create job
   const job = await createJob(cpbRoot, {
     project,
     task,
@@ -558,42 +547,67 @@ async function runJobInner(ctx) {
   });
   await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
-  if (workflow === "blocked") {
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "workflow_selected",
-      jobId,
-      project,
-      workflow,
-      default: false,
-      reason: "blocked by operator",
-      ts: ts(),
-    });
-    const fail = failure({
-      kind: FailureKind.UNKNOWN,
-      phase: "workflow",
-      reason: "blocked by operator",
-      retryable: false,
-      cause: { code: "workflow_blocked" },
-    });
-    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
-    await reportProgress(ctx, {
-      type: "job_blocked",
-      jobId,
-      project,
-      phase: "workflow",
-      reason: "blocked by operator",
-      failure: { kind: fail.kind, reason: fail.reason },
-    });
-    return { status: "blocked", jobId, exitCode: 2, failure: fail };
+  if (workflow !== "blocked") {
+    return { kind: "ok", job, jobId, attemptId };
   }
+
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "workflow_selected",
+    jobId,
+    project,
+    workflow,
+    default: false,
+    reason: "blocked by operator",
+    ts: ts(),
+  });
+  const fail = failure({
+    kind: FailureKind.UNKNOWN,
+    phase: "workflow",
+    reason: "blocked by operator",
+    retryable: false,
+    cause: { code: "workflow_blocked" },
+  });
+  await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+  await reportProgress(ctx, {
+    type: "job_blocked",
+    jobId,
+    project,
+    phase: "workflow",
+    reason: "blocked by operator",
+    failure: { kind: fail.kind, reason: fail.reason },
+  });
+  return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
+}
+
+/**
+ * Phase 2: Run prepareTask to produce the risk map, dynamic agent plan, and
+ * the enriched phase source context. Short-circuits to "blocked" when
+ * prepareTask is unavailable or fails.
+ *
+ * Returns `{ kind: "blocked", result }` or
+ * `{ kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan }`.
+ */
+async function prepareTaskAndRiskMap(ctx, { job, jobId }) {
+  const {
+    cpbRoot,
+    hubRoot,
+    project,
+    task,
+    workflow = "standard",
+    planMode = "full",
+    sourcePath,
+    sourceContext,
+    blockJob,
+    appendEvent,
+    prepareTask,
+  } = ctx;
 
   let riskMap = null;
   let phaseSourceContext = sourceContext || {};
   let dynamicAgentPlan = dynamicAgentPlanFrom(ctx, phaseSourceContext);
   try {
     if (typeof prepareTask !== "function") {
-      const err: any = new Error("prepareTask service is unavailable");
-      err.code = "prepare_task_unavailable";
+      const err = Object.assign(new Error("prepareTask service is unavailable"), { code: "prepare_task_unavailable" });
       throw err;
     }
 
@@ -650,7 +664,8 @@ async function runJobInner(ctx) {
       verificationDepth: riskMap?.verificationDepth ?? null,
       adversarialRequired: Boolean(riskMap?.adversarialRequired),
     });
-  } catch (err: any) {
+    return { kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan };
+  } catch (err) {
     const fail = normalizePrepareFailure(err);
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     await reportProgress(ctx, {
@@ -661,8 +676,33 @@ async function runJobInner(ctx) {
       reason: (fail.cause as AnyRecord | undefined)?.code || fail.reason,
       failure: { kind: fail.kind, reason: fail.reason },
     });
-    return { status: "blocked", jobId, exitCode: 2, failure: fail };
+    return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
   }
+}
+
+/**
+ * Phase 3: Freeze the acceptance checklist (validate + coverage-check + persist),
+ * materialize the workflow DAG, and generate + fail-closed validate the dynamic
+ * agent plan. This is the checklist-first invariant boundary: the checklist must
+ * be event-indexed before the DAG and plan are consumed.
+ *
+ * Inputs mutate `phaseSourceContext` / `dynamicAgentPlan`. Returns
+ * `{ kind: "blocked", result }` or `{ kind: "ok", ...dagInputs }`.
+ */
+async function freezeChecklistAndMaterializeDag(ctx, {
+  jobId, riskMap, phaseSourceContext, dynamicAgentPlan,
+}) {
+  const {
+    cpbRoot,
+    project,
+    task,
+    workflow = "standard",
+    planMode = "full",
+    sourceContext,
+    dataRoot,
+    blockJob,
+    appendEvent,
+  } = ctx;
 
   // ── Checklist generation, validation, and persistence ────────────
   // The acceptance checklist must be frozen and event-indexed before
@@ -685,7 +725,7 @@ async function runJobInner(ctx) {
         cause: { acceptanceChecklist },
       });
       await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
-      return { status: "blocked", jobId, exitCode: 2, failure: fail };
+      return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
     }
     const coverage = validateChecklistSourceCoverage({
       checklist: acceptanceChecklist,
@@ -702,7 +742,7 @@ async function runJobInner(ctx) {
         cause: { routingLabel: "needs_clarification", coverage },
       });
       await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
-      return { status: "blocked", jobId, exitCode: 2, failure: fail };
+      return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
     }
     acceptanceChecklistArtifact = await writeArtifact(cpbRoot, {
       project,
@@ -712,7 +752,7 @@ async function runJobInner(ctx) {
       dataRoot,
       metadata: acceptanceChecklist,
     });
-    await writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, phase: "prepare_task", artifact: acceptanceChecklistArtifact, appendEvent, attemptId });
+    await writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, phase: "prepare_task", artifact: acceptanceChecklistArtifact, appendEvent, attemptId: ctx._attemptId });
     phaseSourceContext = { ...phaseSourceContext, acceptanceChecklist, acceptanceChecklistArtifact };
 
     // If a prebuilt dynamicAgentPlan does not reference the frozen checklist,
@@ -785,7 +825,6 @@ async function runJobInner(ctx) {
     independentVerifierRequired: Boolean(dynamicAgentPlan?.independentVerifierRequired),
   });
 
-
   // Fail closed: validate dynamic agent plan before execution
   const planValidation = validateDynamicAgentPlan(dynamicAgentPlan, workflowDag);
   if (!planValidation.valid) {
@@ -817,8 +856,440 @@ async function runJobInner(ctx) {
       reason: planValidation.reason,
       failure: { kind: blockFail.kind, reason: blockFail.reason },
     });
-    return { status: "blocked", jobId, exitCode: 2, failure: blockFail };
+    return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: blockFail } };
   }
+
+  return {
+    kind: "ok",
+    phaseSourceContext,
+    dynamicAgentPlan,
+    workflowDag,
+    executionNodes,
+    dagResumeContext,
+    resumeCompletedNodes,
+    phaseRoleMap,
+    acceptanceChecklist,
+  };
+}
+
+/**
+ * Mid-run quota fallback loop: when a phase fails with a retryable
+ * AGENT_RATE_LIMITED (no hard gate), mark the provider unavailable and retry
+ * with a fallback provider, up to HANDOFF_MAX_PER_PHASE times.
+ *
+ * Mutates the passed-in `handoffState`, `providerAttempts`, and `phaseAgents`
+ * in place so the outer loop observes handoff/usage telemetry. Returns the
+ * latest phase `result`.
+ */
+async function runQuotaFallbackRetry(ctx, n) {
+  const {
+    hubRoot, pool, phase, role, nodeId, dagNode, project, task, jobId, job,
+    workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
+    state, phaseResults, attemptId, phaseTimeout,
+    handoffState, providerAttempts, phaseAgents,
+  } = n;
+  const { appendEvent } = ctx;
+  const providerServices = normalizeProviderServices(ctx.providerServices);
+  let { result } = n;
+
+  while (
+    hubRoot &&
+    !isPhasePassed(result) &&
+    result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
+    result.failure?.retryable &&
+    result.failure?.cause?.hardGate !== true &&
+    handoffState.count < HANDOFF_MAX_PER_PHASE
+  ) {
+    handoffState.count += 1;
+    const quotaCause = result.failure.cause || {};
+    handoffState.from = handoffState.from || quotaCause.providerKey;
+    handoffState.to = null; // reset; set below when fallback applied
+
+    // Mark the failed provider as unavailable (via delegate client, fail closed)
+    const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
+    const failedAgent = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role];
+    const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
+    // Mark failed provider unavailable via delegate (fail closed)
+    let delegateFailure = null;
+    try {
+      if (typeof providerServices.delegateMarkProviderUnavailable !== "function") {
+        const err = Object.assign(new Error("quota delegate client unavailable; provider state not recorded"), { code: "QUOTA_DELEGATE_CLIENT_UNAVAILABLE" });
+        throw err;
+      }
+      await providerServices.delegateMarkProviderUnavailable(hubRoot, {
+        providerKey: failedProviderKey,
+        agent: failedAgent,
+        variant: failedVariant,
+        status: quotaCause.status || "rate_limited",
+        nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
+        source: quotaCause.source || "run-job-handoff",
+        confidence: quotaCause.confidence ?? 0.8,
+        reason: result.failure.reason,
+      });
+    } catch (err) {
+      delegateFailure = err;
+    }
+
+    // Delegate failure → structured phase failure (don't let runJob() bare-throw)
+    if (delegateFailure) {
+      result = phaseFailed({
+        phase,
+        failure: failure({
+          kind: FailureKind.RUNTIME_INTERRUPTED,
+          phase,
+          reason: `quota delegate failure: ${delegateFailure.message}`,
+          retryable: true,
+          cause: {
+            code: delegateFailure.code || "QUOTA_DELEGATE_WRITE_FAILED",
+            providerKey: failedProviderKey,
+            fallbackCount: handoffState.count,
+            providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
+          },
+        }),
+      });
+      break;
+    }
+
+    // Track provider attempt for history chain
+    providerAttempts.push({
+      providerKey: failedProviderKey,
+      agent: failedAgent,
+      variant: failedVariant,
+      status: quotaCause.status || "rate_limited",
+      at: new Date().toISOString(),
+    });
+
+    // Select fallback provider
+    const fallback = await preflightProvider({
+      providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
+      excludeProvider: quotaCause.providerKey,
+    }).catch(() => null);
+
+    if (!fallback || !fallback.available) {
+      // Ensure fallbackCount is in failure cause before breaking
+      if (result.failure?.cause) {
+        result.failure.cause.fallbackCount = handoffState.count;
+        if (providerAttempts.length > 0) {
+          result.failure.cause.providerAttempts = providerAttempts;
+        }
+      }
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "provider_quota_blocked",
+        jobId,
+        project,
+        phase,
+        role,
+        reason: "all fallback providers unavailable",
+        ts: ts(),
+      });
+      await reportProgress(ctx, {
+        type: "provider_quota_blocked",
+        jobId,
+        project,
+        phase,
+        role,
+        reason: "all fallback providers unavailable",
+      });
+      break;
+    }
+
+    // Apply fallback agent and update handoff tracking
+    phaseAgents[role] = fallback.selectedAgent;
+    handoffState.to = fallback.selectedProviderKey;
+    handoffState.reason = result.failure.reason;
+
+    // Write fallbackCount into failure cause for orchestrator consumption
+    result.failure.cause = { ...result.failure.cause, fallbackCount: handoffState.count };
+
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "provider_handoff",
+      jobId,
+      project,
+      phase,
+      role,
+      from: quotaCause.providerKey,
+      to: fallback.selectedProviderKey,
+      reason: result.failure.reason,
+      midRun: true,
+      attempt: handoffState.count,
+      ts: ts(),
+    });
+    await reportProgress(ctx, {
+      type: "provider_handoff",
+      jobId,
+      project,
+      phase,
+      role,
+      from: quotaCause.providerKey,
+      to: fallback.selectedProviderKey,
+      reason: result.failure.reason,
+    });
+
+    // Generate handoff context for continuation prompt (execute phase only)
+    let continuationContext = null;
+    if (phase === "execute") {
+      try {
+        continuationContext = await generateHandoffBundle({
+          project, jobId, phase, task,
+          originProvider: quotaCause.providerKey,
+          failureReason: result.failure.reason,
+          partialStdout: quotaCause.stdout || "",
+          partialStderr: quotaCause.stderr || "",
+          previousResults: phaseResults,
+          cpbRoot,
+          sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+        });
+      } catch { /* handoff bundle generation is best-effort */ }
+    }
+
+    // Retry the phase with fallback provider
+    result = await runPhase({
+      phase,
+      role,
+      nodeId,
+      dagNode,
+      project,
+      task,
+      jobId,
+      job,
+      workflow,
+      planMode,
+      cpbRoot,
+      dataRoot,
+      sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+      sourceContext: continuationContext
+        ? { ...phaseSourceContext, handoff: continuationContext }
+        : phaseSourceContext,
+      pool,
+      state,
+      previousResults: phaseResults,
+      agent: ctx.agent,
+      agents: phaseAgents,
+      attemptId,
+      timeouts: {
+        plan: phaseTimeout,
+        execute: phaseTimeout,
+        verify: phaseTimeout,
+        adversarial_verify: phaseTimeout,
+        review: phaseTimeout,
+        remediate: phaseTimeout,
+      },
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Phase retry loops: first gives transient/validation failures a second chance
+ * (up to PHASE_RETRY_MAX), then retries validation failures with error
+ * feedback appended (up to PHASE_FEEDBACK_RETRY_MAX). Quota-delegate write
+ * failures are never retried here. Returns the latest phase `result`.
+ */
+async function runPhaseRetryLoops(ctx, n) {
+  const {
+    phase, role, nodeId, dagNode, project, task, jobId, job,
+    workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
+    state, phaseResults, attemptId, phaseTimeout, phaseAgents,
+  } = n;
+  const { appendEvent } = ctx;
+  let { result } = n;
+
+  // Phase retry: transient/validation failures get a second chance
+  const quotaDelegateFailure = String(result.failure?.cause?.code || "").startsWith("QUOTA_DELEGATE_");
+  if (!quotaDelegateFailure && !isPhasePassed(result) && PHASE_RETRY_MAX > 0) {
+    const isRetryable = result.failure?.retryable || PHASE_RETRYABLE_KINDS.has(result.failure?.kind);
+    if (isRetryable) {
+      for (let phaseRetry = 1; phaseRetry <= PHASE_RETRY_MAX; phaseRetry++) {
+        await appendEvent(cpbRoot, project, jobId, {
+          type: "phase_retry",
+          jobId,
+          project,
+          phase,
+          attempt: phaseRetry,
+          maxAttempts: PHASE_RETRY_MAX,
+          failureKind: result.failure?.kind,
+          reason: result.failure?.reason,
+          ts: ts(),
+        });
+        await reportProgress(ctx, {
+          type: "phase_retry",
+          jobId,
+          project,
+          phase,
+          attempt: phaseRetry,
+          maxAttempts: PHASE_RETRY_MAX,
+          failureKind: result.failure?.kind,
+          reason: result.failure?.reason,
+        });
+        await new Promise((r) => setTimeout(r, phaseRetryBaseDelayMs() * phaseRetry));
+        result = await runPhase({
+          phase,
+          role,
+          nodeId,
+          dagNode,
+          project,
+          task,
+          jobId,
+          job,
+          cpbRoot,
+          dataRoot,
+          sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+          sourceContext: phaseSourceContext,
+          pool: n.pool,
+          state,
+          previousResults: phaseResults,
+          agent: ctx.agent,
+          agents: phaseAgents,
+          attemptId,
+          timeouts: {
+            plan: phaseTimeout,
+            execute: phaseTimeout,
+            verify: phaseTimeout,
+            adversarial_verify: phaseTimeout,
+            review: phaseTimeout,
+            remediate: phaseTimeout,
+          },
+        });
+        if (isPhasePassed(result)) break;
+      }
+    }
+  }
+
+  // Phase feedback retry: validation failures retry with error feedback appended
+  if (!isPhasePassed(result) && PHASE_FEEDBACK_RETRY_MAX > 0 && PHASE_FEEDBACK_RETRY_KINDS.has(result.failure?.kind)) {
+    for (let retryAttempt = 1; retryAttempt <= PHASE_FEEDBACK_RETRY_MAX; retryAttempt++) {
+      const retry = {
+        failureKind: result.failure.kind,
+        failureReason: result.failure.reason,
+        previousOutput: result.failure.stderrSnippet || result.failure.cause?.rawOutput || "",
+        attempt: retryAttempt,
+      };
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "phase_feedback_retry",
+        jobId,
+        project,
+        phase,
+        attempt: retryAttempt,
+        maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
+        failureKind: retry.failureKind,
+        reason: retry.failureReason,
+        ts: ts(),
+      });
+      await reportProgress(ctx, {
+        type: "phase_feedback_retry",
+        jobId,
+        project,
+        phase,
+        attempt: retryAttempt,
+        maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
+        failureKind: retry.failureKind,
+        reason: retry.failureReason,
+      });
+      result = await runPhase({
+        phase,
+        role,
+        nodeId,
+        dagNode,
+        project,
+        task,
+        jobId,
+        job,
+        workflow,
+        planMode,
+        cpbRoot,
+        dataRoot,
+        sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+        sourceContext: { ...phaseSourceContext, retry },
+        pool: n.pool,
+        state,
+        previousResults: phaseResults,
+        agent: ctx.agent,
+        agents: phaseAgents,
+        attemptId,
+        timeouts: {
+          plan: phaseTimeout,
+          execute: phaseTimeout,
+          verify: phaseTimeout,
+          adversarial_verify: phaseTimeout,
+          review: phaseTimeout,
+          remediate: phaseTimeout,
+        },
+      });
+      if (isPhasePassed(result)) break;
+    }
+  }
+
+  return result;
+}
+
+async function runJobInner(ctx) {
+  const {
+    cpbRoot,
+    hubRoot,
+    project,
+    task,
+    workflow = "standard",
+    planMode = "full",
+    sourcePath,
+    sourceContext,
+    dataRoot,
+    maxRetries,
+    timeoutMin,
+    // Injected services
+    createJob,
+    startPhase,
+    completePhase,
+    completeJob,
+    failJob,
+    blockJob,
+    appendEvent,
+    getPool,
+    prepareTask,
+  } = ctx;
+  const providerServices = normalizeProviderServices(ctx.providerServices);
+
+  process.env.CPB_ROOT = cpbRoot;
+  if (hubRoot) process.env.CPB_HUB_ROOT = hubRoot;
+  if (dataRoot) process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
+  if (sourcePath) process.env.CPB_PROJECT_PATH_OVERRIDE = sourcePath;
+
+  // 1. Create job (+ operator-blocked short-circuit)
+  const created = await createJobAndHandleBlocked(ctx);
+  if (created.kind === "blocked") return created.result;
+  const { job, jobId, attemptId } = created;
+
+  // 2. prepareTask → risk map + dynamic agent plan + enriched source context
+  const prepared = await prepareTaskAndRiskMap(ctx, { job, jobId });
+  if (prepared.kind === "blocked") return prepared.result;
+  let { riskMap, phaseSourceContext, dynamicAgentPlan } = prepared;
+
+  // Declared here (not const) because the checklist/DAG phase rebinds them.
+  let workflowDag: AnyRecord;
+  let executionNodes: AnyRecord[];
+  let dagResumeContext: AnyRecord;
+  let resumeCompletedNodes: Set<string>;
+  let phaseRoleMap: AnyRecord;
+  let acceptanceChecklist: AnyRecord | null;
+
+  // 3. Freeze acceptance checklist, materialize workflow DAG, generate +
+  //    validate dynamic agent plan. Short-circuits to "blocked" on any
+  //    checklist/coverage/plan-validation failure (fail-closed invariant).
+  const materialized = await freezeChecklistAndMaterializeDag(ctx, {
+    jobId, riskMap, phaseSourceContext, dynamicAgentPlan,
+  });
+  if (materialized.kind === "blocked") return materialized.result;
+  ({
+    phaseSourceContext,
+    dynamicAgentPlan,
+    workflowDag,
+    executionNodes,
+    dagResumeContext,
+    resumeCompletedNodes,
+    phaseRoleMap,
+    acceptanceChecklist,
+  } = materialized);
+
   // 2.5. Clear session cache if forceFreshSession is requested (rerun vs retry)
   if (sourceContext?.retry?.forceFreshSession && cpbRoot) {
     try {
@@ -1115,192 +1586,15 @@ async function runJobInner(ctx) {
       },
     });
 
-    // Mid-run quota fallback: retry with different provider on AGENT_RATE_LIMITED
-    while (
-      hubRoot &&
-      !isPhasePassed(result) &&
-      result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
-      result.failure?.retryable &&
-      result.failure?.cause?.hardGate !== true &&
-      handoffState.count < HANDOFF_MAX_PER_PHASE
-    ) {
-      handoffState.count += 1;
-      const quotaCause = result.failure.cause || {};
-      handoffState.from = handoffState.from || quotaCause.providerKey;
-      handoffState.to = null; // reset; set below when fallback applied
-
-      // Mark the failed provider as unavailable (via delegate client, fail closed)
-      const failedProviderKey = quotaCause.providerKey || resolveProviderKey(pool, phaseAgents[role], ctx.agent);
-      const failedAgent = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.agent : phaseAgents[role];
-      const failedVariant = typeof phaseAgents[role] === "object" ? phaseAgents[role]?.variant : null;
-      // Mark failed provider unavailable via delegate (fail closed)
-      let delegateFailure = null;
-      try {
-        if (typeof providerServices.delegateMarkProviderUnavailable !== "function") {
-          const err: any = new Error("quota delegate client unavailable; provider state not recorded");
-          err.code = "QUOTA_DELEGATE_CLIENT_UNAVAILABLE";
-          throw err;
-        }
-        await providerServices.delegateMarkProviderUnavailable(hubRoot, {
-          providerKey: failedProviderKey,
-          agent: failedAgent,
-          variant: failedVariant,
-          status: quotaCause.status || "rate_limited",
-          nextEligibleAt: quotaCause.nextEligibleAt || Date.now() + 60_000,
-          source: quotaCause.source || "run-job-handoff",
-          confidence: quotaCause.confidence ?? 0.8,
-          reason: result.failure.reason,
-        });
-      } catch (err) {
-        delegateFailure = err;
-      }
-
-      // Delegate failure → structured phase failure (don't let runJob() bare-throw)
-      if (delegateFailure) {
-        result = phaseFailed({
-          phase,
-          failure: failure({
-            kind: FailureKind.RUNTIME_INTERRUPTED,
-            phase,
-            reason: `quota delegate failure: ${delegateFailure.message}`,
-            retryable: true,
-            cause: {
-              code: delegateFailure.code || "QUOTA_DELEGATE_WRITE_FAILED",
-              providerKey: failedProviderKey,
-              fallbackCount: handoffState.count,
-              providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
-            },
-          }),
-        });
-        break;
-      }
-
-      // Track provider attempt for history chain
-      providerAttempts.push({
-        providerKey: failedProviderKey,
-        agent: failedAgent,
-        variant: failedVariant,
-        status: quotaCause.status || "rate_limited",
-        at: new Date().toISOString(),
-      });
-
-      // Select fallback provider
-      const fallback = await preflightProvider({
-        providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
-        excludeProvider: quotaCause.providerKey,
-      }).catch(() => null);
-
-      if (!fallback || !fallback.available) {
-        // Ensure fallbackCount is in failure cause before breaking
-        if (result.failure?.cause) {
-          result.failure.cause.fallbackCount = handoffState.count;
-          if (providerAttempts.length > 0) {
-            result.failure.cause.providerAttempts = providerAttempts;
-          }
-        }
-        await appendEvent(cpbRoot, project, jobId, {
-          type: "provider_quota_blocked",
-          jobId,
-          project,
-          phase,
-          role,
-          reason: "all fallback providers unavailable",
-          ts: ts(),
-        });
-        await reportProgress(ctx, {
-          type: "provider_quota_blocked",
-          jobId,
-          project,
-          phase,
-          role,
-          reason: "all fallback providers unavailable",
-        });
-        break;
-      }
-
-      // Apply fallback agent and update handoff tracking
-      phaseAgents[role] = fallback.selectedAgent;
-      handoffState.to = fallback.selectedProviderKey;
-      handoffState.reason = result.failure.reason;
-
-      // Write fallbackCount into failure cause for orchestrator consumption
-      result.failure.cause = { ...result.failure.cause, fallbackCount: handoffState.count };
-
-      await appendEvent(cpbRoot, project, jobId, {
-        type: "provider_handoff",
-        jobId,
-        project,
-        phase,
-        role,
-        from: quotaCause.providerKey,
-        to: fallback.selectedProviderKey,
-        reason: result.failure.reason,
-        midRun: true,
-        attempt: handoffState.count,
-        ts: ts(),
-      });
-      await reportProgress(ctx, {
-        type: "provider_handoff",
-        jobId,
-        project,
-        phase,
-        role,
-        from: quotaCause.providerKey,
-        to: fallback.selectedProviderKey,
-        reason: result.failure.reason,
-      });
-
-      // Generate handoff context for continuation prompt (execute phase only)
-      let continuationContext = null;
-      if (phase === "execute") {
-        try {
-          continuationContext = await generateHandoffBundle({
-            project, jobId, phase, task,
-            originProvider: quotaCause.providerKey,
-            failureReason: result.failure.reason,
-            partialStdout: quotaCause.stdout || "",
-            partialStderr: quotaCause.stderr || "",
-            previousResults: phaseResults,
-            cpbRoot,
-            sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-          });
-        } catch { /* handoff bundle generation is best-effort */ }
-      }
-
-      // Retry the phase with fallback provider
-      result = await runPhase({
-        phase,
-        role,
-        nodeId,
-        dagNode,
-        project,
-        task,
-        jobId,
-        job,
-        workflow,
-        planMode,
-        cpbRoot,
-        dataRoot,
-        sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-        sourceContext: continuationContext
-          ? { ...phaseSourceContext, handoff: continuationContext }
-          : phaseSourceContext,
-        pool,
-        state,
-        previousResults: phaseResults,
-        agent: ctx.agent,
-        agents: phaseAgents,
-        attemptId,
-        timeouts: {
-          plan: phaseTimeout,
-          execute: phaseTimeout,
-          verify: phaseTimeout,
-          adversarial_verify: phaseTimeout,
-          review: phaseTimeout,
-          remediate: phaseTimeout,
-        },
-      });
-    }
+    // Mid-run quota fallback: retry with different provider on AGENT_RATE_LIMITED.
+    // runQuotaFallbackRetry mutates nodeCtx (handoffState/providerAttempts/phaseAgents)
+    // and returns the latest phase result.
+    result = await runQuotaFallbackRetry(ctx, {
+      hubRoot, pool, phase, role, nodeId, dagNode, project, task, jobId, job,
+      workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
+      state, phaseResults, attemptId, phaseTimeout,
+      handoffState, providerAttempts, phaseAgents, result,
+    });
 
     // Ensure fallbackCount and providerAttempts are in the failure cause
     if (handoffState.count > 0 && result.failure?.cause) {
@@ -1310,130 +1604,14 @@ async function runJobInner(ctx) {
       }
     }
 
-    // Phase retry: transient/validation failures get a second chance
-    const quotaDelegateFailure = String(result.failure?.cause?.code || "").startsWith("QUOTA_DELEGATE_");
-    if (!quotaDelegateFailure && !isPhasePassed(result) && PHASE_RETRY_MAX > 0) {
-      const isRetryable = result.failure?.retryable || PHASE_RETRYABLE_KINDS.has(result.failure?.kind);
-      if (isRetryable) {
-        for (let phaseRetry = 1; phaseRetry <= PHASE_RETRY_MAX; phaseRetry++) {
-          await appendEvent(cpbRoot, project, jobId, {
-            type: "phase_retry",
-            jobId,
-            project,
-            phase,
-            attempt: phaseRetry,
-            maxAttempts: PHASE_RETRY_MAX,
-            failureKind: result.failure?.kind,
-            reason: result.failure?.reason,
-            ts: ts(),
-          });
-          await reportProgress(ctx, {
-            type: "phase_retry",
-            jobId,
-            project,
-            phase,
-            attempt: phaseRetry,
-            maxAttempts: PHASE_RETRY_MAX,
-            failureKind: result.failure?.kind,
-            reason: result.failure?.reason,
-          });
-          await new Promise((r) => setTimeout(r, phaseRetryBaseDelayMs() * phaseRetry));
-          result = await runPhase({
-            phase,
-            role,
-            nodeId,
-            dagNode,
-            project,
-            task,
-            jobId,
-            job,
-            cpbRoot,
-            dataRoot,
-            sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-            sourceContext: phaseSourceContext,
-            pool,
-            state,
-            previousResults: phaseResults,
-            agent: ctx.agent,
-            agents: phaseAgents,
-            attemptId,
-            timeouts: {
-              plan: phaseTimeout,
-              execute: phaseTimeout,
-              verify: phaseTimeout,
-              adversarial_verify: phaseTimeout,
-              review: phaseTimeout,
-              remediate: phaseTimeout,
-            },
-          });
-          if (isPhasePassed(result)) break;
-        }
-      }
-    }
-
-    // Phase feedback retry: validation failures retry with error feedback appended
-    if (!isPhasePassed(result) && PHASE_FEEDBACK_RETRY_MAX > 0 && PHASE_FEEDBACK_RETRY_KINDS.has(result.failure?.kind)) {
-      for (let retryAttempt = 1; retryAttempt <= PHASE_FEEDBACK_RETRY_MAX; retryAttempt++) {
-        const retry = {
-          failureKind: result.failure.kind,
-          failureReason: result.failure.reason,
-          previousOutput: result.failure.stderrSnippet || result.failure.cause?.rawOutput || "",
-          attempt: retryAttempt,
-        };
-        await appendEvent(cpbRoot, project, jobId, {
-          type: "phase_feedback_retry",
-          jobId,
-          project,
-          phase,
-          attempt: retryAttempt,
-          maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
-          failureKind: retry.failureKind,
-          reason: retry.failureReason,
-          ts: ts(),
-        });
-        await reportProgress(ctx, {
-          type: "phase_feedback_retry",
-          jobId,
-          project,
-          phase,
-          attempt: retryAttempt,
-          maxAttempts: PHASE_FEEDBACK_RETRY_MAX,
-          failureKind: retry.failureKind,
-          reason: retry.failureReason,
-        });
-        result = await runPhase({
-          phase,
-          role,
-          nodeId,
-          dagNode,
-          project,
-          task,
-          jobId,
-          job,
-          workflow,
-          planMode,
-          cpbRoot,
-          dataRoot,
-          sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
-          sourceContext: { ...phaseSourceContext, retry },
-          pool,
-          state,
-          previousResults: phaseResults,
-          agent: ctx.agent,
-          agents: phaseAgents,
-          attemptId,
-          timeouts: {
-            plan: phaseTimeout,
-            execute: phaseTimeout,
-            verify: phaseTimeout,
-            adversarial_verify: phaseTimeout,
-            review: phaseTimeout,
-            remediate: phaseTimeout,
-          },
-        });
-        if (isPhasePassed(result)) break;
-      }
-    }
+    // Phase retry + feedback retry: transient failures get a second chance, then
+    // validation failures retry with error feedback appended. Skipped entirely
+    // when the failure was a quota-delegate write problem.
+    result = await runPhaseRetryLoops(ctx, {
+      phase, role, nodeId, dagNode, project, task, jobId, job,
+      workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
+      state, phaseResults, attemptId, phaseTimeout, phaseAgents, result, pool,
+    });
 
     // Scope guard: evaluate changed files against fix_scope in retry scenarios
     if (phase === "execute" && isPhasePassed(result)) {
