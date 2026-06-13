@@ -28,7 +28,11 @@ for (let i = 0; i < args.length; i++) {
 }
 
 interface ScenarioWrite {
-  pathRegex: string;
+  // Template form (managed-worker scenarios): literal path with {{cwd}}/{{prompt}}.
+  path?: string;
+  // Capture form (acp-test-agent scenarios): regex matched against prompt text,
+  // capture group 1 (or full match) is the target path.
+  pathRegex?: string;
   content: string;
 }
 
@@ -166,17 +170,23 @@ function sendUsage(usage: ScenarioUsage) {
   });
 }
 
-function interpolate(content: string, promptText: string): string {
-  return content.split("{{prompt}}").join(promptText);
+function interpolate(text: string, promptText: string): string {
+  return text.split("{{prompt}}").join(promptText).split("{{cwd}}").join(process.cwd());
 }
 
 async function performWrites(writes: ScenarioWrite[] | undefined, promptText: string) {
   if (!writes || writes.length === 0) return;
   for (const w of writes) {
-    const re = new RegExp(w.pathRegex, "is");
-    const m = re.exec(promptText);
-    if (!m) continue;
-    const target = m[1] || m[0];
+    let target: string | null = null;
+    if (typeof w.path === "string" && w.path.length > 0) {
+      // Template form: resolve {{cwd}}/{{prompt}} against the agent process state.
+      target = interpolate(w.path, promptText);
+    } else if (typeof w.pathRegex === "string" && w.pathRegex.length > 0) {
+      // Capture form: first capture group (or full match) from the prompt text.
+      const m = new RegExp(w.pathRegex, "is").exec(promptText);
+      if (m) target = m[1] || m[0];
+    }
+    if (!target) continue;
     const content = interpolate(w.content, promptText);
     await call("fs/write_text_file", { path: target, content }).catch(() => null);
   }

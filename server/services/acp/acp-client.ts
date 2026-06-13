@@ -7,10 +7,13 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
+  checkPermission,
   classifyDeleteRisk,
+  evaluatePermissionDecision,
   formatDeleteBlockedMessage,
   logDeleteBlock,
-} from "../infra.js";
+  recordPermissionDenial,
+} from "../permission-matrix.js";
 import { createAgentHome } from "../../../core/agents/isolation.js";
 import {
   headlessCodexConfigArgs,
@@ -23,9 +26,9 @@ import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 type AnyRecord = Record<string, any>;
 
 // Permission matrix integration (Stage 3 / #13)
-let _permCheck: any = null;
-let _permEvaluate: any = null;
-let _permRecord: any = null;
+let _permCheck: any = checkPermission;
+let _permEvaluate: any = evaluatePermissionDecision;
+let _permRecord: any = recordPermissionDenial;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory: AnyRecord[] = [];
 
@@ -42,20 +45,9 @@ function buildPermissionEnv(env: any = process.env) {
   return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
 }
 
-async function loadPermissionModules(env: any = process.env) {
-  if (_permCheck !== null) return buildPermissionEnv(env);
-  const executorRoot = env.CPB_EXECUTOR_ROOT;
-  if (!executorRoot) return null;
-  try {
-    const pm = await import(path.join(executorRoot, "server/services/permission-matrix.js"));
-    _permCheck = pm.checkPermission;
-    _permEvaluate = pm.evaluatePermissionDecision;
-    _permRecord = pm.recordPermissionDenial;
-    return buildPermissionEnv(env);
-  } catch {
-    _permCheck = false;
-  }
-  return null;
+function loadPermissionModules(env: any = process.env) {
+  if (!env.CPB_EXECUTOR_ROOT) return null;
+  return buildPermissionEnv(env);
 }
 
 function isRepeatedDenial(targetPath: string, action: string) {
@@ -1018,9 +1010,14 @@ export class AcpClient {
   request(method: string, params: any): Promise<any> {
     const id = this.nextId++;
     this.markActivity();
-    this.write({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
+      try {
+        this.write({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
