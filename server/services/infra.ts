@@ -519,8 +519,7 @@ export async function acquireLease(
   try {
     const existing = await readLeaseFile(file);
     if (existing !== null && !isLeaseStale(existing, now)) {
-      const err: any = new Error(`lease already exists: ${leaseId}`);
-      err.code = "EEXIST";
+      const err = Object.assign(new Error(`lease already exists: ${leaseId}`), { code: "EEXIST" });
       throw err;
     }
 

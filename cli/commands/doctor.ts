@@ -44,7 +44,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       const smokeResult = await runFakeAcpSmoke({ executorRoot: execRoot });
       results.smokeTest = { ok: smokeResult.ok, inbox: smokeResult.artifacts.inbox.length, outputs: smokeResult.artifacts.outputs.length };
       if (!smokeResult.ok) result.summary.success = false;
-    } catch (err: any) {
+    } catch (err) {
       results.errors.push(`Smoke test failed: ${err.message}`);
       result.summary.success = false;
     }

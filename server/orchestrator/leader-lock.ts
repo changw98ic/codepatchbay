@@ -56,7 +56,7 @@ export class LeaderLock {
     await mkdir(path.dirname(this.lockDir), { recursive: true });
     try {
       await mkdir(this.lockDir);
-    } catch (err: any) {
+    } catch (err) {
       if (err.code === "EEXIST") {
         throw new Error(`leader lock contention: another Hub acquired the lock`);
       }

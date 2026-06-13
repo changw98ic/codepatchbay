@@ -796,7 +796,7 @@ export async function finalizeSuccessfulQueueEntry({
     } catch {
       prEvidence = {};
     }
-    const pr: any = await openDraftPullRequest({
+    const pr = await openDraftPullRequest({
       job: prJob,
       verdict: "PASS",
       branchPushed: false,

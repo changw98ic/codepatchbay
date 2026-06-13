@@ -373,7 +373,7 @@ async function retryOrchJob([project, jobId, ...flags]: string[]) {
     const result = await doRetry(cpbRoot, project, jobId, { force, forceFreshSession: fresh });
     console.log(JSON.stringify(result, null, 2));
     return 0;
-  } catch (err: any) {
+  } catch (err) {
     console.error(`Retry failed: ${err.message}`);
     return 1;
   }

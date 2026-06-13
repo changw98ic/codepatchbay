@@ -287,7 +287,7 @@ export class Scheduler {
           cpbRoot: this.cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
           sourcePath: project.sourcePath,
         });
-      } catch (err: any) {
+      } catch (err) {
         const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
         await this._markCodegraphUnavailable(entry, {
           codegraphReadiness: {

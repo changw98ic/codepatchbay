@@ -110,7 +110,7 @@ export class AcpSupervisor {
     try {
       if (typeof pool.start === "function") await pool.start();
       return await this.refreshAdvisoryState({ reason: "start", startedAt });
-    } catch (err: any) {
+    } catch (err) {
       return this._writeState({
         ...this._baseState("degraded"),
         healthy: false,
@@ -142,17 +142,17 @@ export class AcpSupervisor {
     let connectionLeases = null;
     try {
       poolStatus = typeof pool.status === "function" ? pool.status() : null;
-    } catch (err: any) {
+    } catch (err) {
       poolStatus = { error: err.message };
     }
     try {
       providerQuotas = typeof pool.readProviderQuotas === "function" ? await pool.readProviderQuotas() : {};
-    } catch (err: any) {
+    } catch (err) {
       providerQuotas = { error: err.message };
     }
     try {
       connectionLeases = typeof pool.connectionLeaseStatus === "function" ? await pool.connectionLeaseStatus() : null;
-    } catch (err: any) {
+    } catch (err) {
       connectionLeases = { error: err.message };
     }
 
@@ -252,7 +252,7 @@ export class AcpSupervisor {
         },
       }).catch(() => {});
       return rawDecision;
-    } catch (err: any) {
+    } catch (err) {
       await this.saveDecision(
         assignment,
         { action: null, reason: `supervisor failed: ${err.message}`, params: {} },

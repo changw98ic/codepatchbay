@@ -117,7 +117,7 @@ export async function readParentPlanRecord(cpbRoot: string, project: string, pla
   const file = parentPlanRecordPath(cpbRoot, project, planCacheKey, opts);
   try {
     return JSON.parse(await readFile(file, "utf8"));
-  } catch (error: any) {
+  } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }

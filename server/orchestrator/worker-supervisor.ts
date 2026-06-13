@@ -88,7 +88,7 @@ export class WorkerSupervisor {
         });
         try {
           await this.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
-        } catch (err: any) {
+        } catch (err) {
           await this.workers.updateWorker(workerId, {
             status: "exhausted",
             restartError: err.message,

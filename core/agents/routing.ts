@@ -129,7 +129,7 @@ function availabilityFor(agentAvailability, agent) {
   if (!agent || !agentAvailability || typeof agentAvailability !== "object") {
     return { available: true, reason: null };
   }
-  const entry: any = agentAvailability[agent];
+  const entry = agentAvailability[agent];
   if (entry === undefined) return { available: true, reason: null };
   if (entry === false) return { available: false, reason: "unavailable" };
   if (entry === true) return { available: true, reason: null };
