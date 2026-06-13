@@ -231,3 +231,8 @@ rl.on("line", (line) => {
     });
   }
 });
+
+// Exit cleanly when the client closes stdin (EOF). Without this the readline
+// handle keeps the event loop alive and the fake-agent process lingers as a
+// zombie — which under node --test can stall subsequent runClient spawns.
+rl.on("close", () => process.exit(0));

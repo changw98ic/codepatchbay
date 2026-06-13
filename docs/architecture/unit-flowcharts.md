@@ -1,7 +1,24 @@
 # CodePatchBay 各单元流程图
 
+> ⚠️ **本文档部分章节已过时（2026-06-13 标注）**
+>
+> CodePatchBay 已移除 HTTP server / Fastify / React 前端（`server/index.js`、
+> `server/routes/*`、`web/`）以及 `cli/cpb.mjs` 入口。当前是**纯 Node.js CLI**
+> （入口 `cli/cpb.ts`，运行时依赖仅 `chokidar`），唯一的可选 HTTP 是
+> `cpb stream`（Node 原生 SSE）。
+>
+> **下列章节描述的全栈架构已不存在，仅作历史参考：**
+> - 「Server / API 单元」（服务启动、任务 API、事件/渠道流）
+> - 「网页界面单元」（App 启动、仪表盘、审查页等）
+> - 「服务类命令」中涉及 `cpb ui` / `server/index.js` / Fastify 的部分
+>
+> **仍然准确的章节**（核心编排流程未变）：端到端任务生命周期、`runJob` 状态机、
+> 阶段适配器流程、Hub 编排器循环、Worker 生命周期、ACP/工作树/沙箱边界。
+>
+> 现状权威文档：[CLAUDE.md](../../CLAUDE.md)、[runtime-boundaries.md](runtime-boundaries.md)。
+
 本文档用 Mermaid 流程图梳理 CodePatchBay 的主要单元，是
-`runner-boundary.md` 和 `runtime-boundaries.md` 的中文架构补充材料。
+`runtime-boundaries.md` 的中文架构补充材料。
 
 ## 单元总览
 

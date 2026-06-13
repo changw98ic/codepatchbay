@@ -170,7 +170,7 @@ async function main() {
         projectArg = cmdArgs[projectFlagIdx + 1];
       }
       if (projectArg) {
-        const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub-registry.js"));
+        const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub", "hub-registry.js"));
         const hubRoot = resolveHubRoot(CPB_ROOT);
         const project = await getProject(hubRoot, projectArg);
         if (!project?.projectRuntimeRoot) {

@@ -50,7 +50,7 @@ npm package: [`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # detect tools, install agents, run health checks
-cpb demo                       # local demo, no API keys needed
+cpb quickstart --demo          # local demo, no API keys needed
 cd your-project
 cpb init .                     # register project
 cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
@@ -59,7 +59,7 @@ cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
 Try without installing:
 
 ```bash
-npx codepatchbay demo
+npx codepatchbay quickstart --demo
 ```
 
 ### Install from source
@@ -92,11 +92,8 @@ CodePatchBay will:
 # Check progress
 cpb status myproj
 
-# Inspect artifacts
-cpb artifacts <job-id>
-
-# Check verification result
-cpb verdict <job-id>
+# Inspect deliverables and verification verdict (in the project outputs dir)
+cpb outputs myproj
 ```
 
 ## GitHub issue to PR
@@ -114,20 +111,24 @@ Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
 
 ## Supported coding agents
 
-| Agent | Role |
-|-------|------|
-| Claude Code | Execute code changes, fix bugs |
-| Codex | Plan, verify, review |
-| OpenCode | Open-source alternative agent |
-| Custom agent | Any ACP-compatible agent via model profiles |
+CodePatchBay connects coding agents neutrally via the ACP protocol. Any ACP-compatible agent (Claude Code, Codex, OpenCode, or custom) can be plugged in. It decomposes the engineering workflow into 5 semantic roles, mapped by agent routing:
 
-CodePatchBay organizes these agents into an inspectable engineering workflow. You configure which agent handles which phase:
+| Semantic role | Responsibility | Artifact |
+|---------------|----------------|----------|
+| `planner` | Analyze task, produce implementation plan | `inbox/plan-*` |
+| `executor` | Execute code changes, fix bugs | `outputs/deliverable-*` |
+| `verifier` | Verify result, produce verdict | `outputs/verdict-*` |
+| `reviewer` | Review deliverable | review artifact |
+| `remediator` | Remediate failures (debug/lint/tdd/test) | remediation artifact |
+
+Any agent is mapped to these roles via `core/agents/routing.ts`. You specify which agent + model handles which phase when you submit a task:
 
 ```bash
-# Use mimo model for plan and verify, Claude for execute
-cpb config myproj --plan-agent claude --plan-model mimo
-cpb config myproj --execute-agent claude
-cpb config myproj --verify-agent claude --verify-model mimo
+# Use mimo model for plan, Claude for execute and verify
+cpb run "add unit tests for auth" \
+  --plan-agent claude --plan-model mimo \
+  --execute-agent claude \
+  --verify-agent claude
 ```
 
 ## Features
@@ -137,49 +138,36 @@ cpb config myproj --verify-agent claude --verify-model mimo
 - **Artifact tracking** — each step produces inspectable local artifacts
 - **Result verification** — changes must pass verification before reaching PR
 - **GitHub integration** — issue labels trigger workflow, draft PRs, webhook connectivity
-- **Web UI** — local interface for project and task management
 - **Multi-agent support** — Codex, Claude Code, OpenCode, and custom agents
-- **Dual-agent research** — two agents research in parallel, merge conclusions
-- **Spec-driven development** — SDD skeleton, from spec to code
-- **Code indexing** — project dependency graph and impact analysis
-- **Durable jobs** — checkpoint recovery, lease heartbeats, unattended execution
+- **Durable jobs** — event log + checkpoint recovery, multi-worker scheduling, unattended execution
 
 ## Commands
 
 ```bash
 # Project management
-cpb init <path> [name]             # Initialize project
-cpb attach [path] [name]           # Attach project to Hub
+cpb init <path> [name]             # Initialize project (auto-registers with Hub)
 cpb list                           # List projects
 cpb status <project>               # Project status
 
 # Submit tasks
 cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
-cpb research <project> "<task>"    # Dual-agent research
+                                  #   add --plan-agent/--execute-agent/--verify-agent
+                                  #   and --plan-model/--execute-model/--verify-model
 cpb review <project> [id]          # Review deliverable
 cpb retry <project> <job-id>       # Retry a failed job
 
-# Multi-phase & SDD
-cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution
-cpb sdd <init|bootstrap|verify|drift> <project> # Spec-driven development
-
 # Job management
-cpb jobs [reconcile|cleanup|report]
-cpb artifacts <job-id> [--json]
-cpb verdict <job-id> [--json]
+cpb jobs report [--json]           # Job run report (reconcile/cleanup/gc removed)
+cpb jobs worktrees                # List task-level git worktrees
 cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
-# Cleanup
-cpb gc [--dry-run]
-cpb recover [--dry-run]
-
-# Audit & merge
+# Changes
 cpb diff <project>
-cpb audit <project> <job-id>
-cpb merge-preview <project> <ref> [--base <branch>]
+cpb inbox <project>                # List inbox files
+cpb outputs <project>              # List outputs files
 
 # GitHub
 cpb github bind <proj> <owner/repo>
@@ -188,21 +176,13 @@ cpb github doctor [--json]
 
 # Hub & scheduling
 cpb hub [status|start|stop|projects|...]
-cpb codegraph [status|start|stop]
 
 # Setup & diagnostics
-cpb demo [--json]
 cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|test]
-cpb config <project> --plan-agent <name> --plan-model <profile>
-cpb auth [status]
+cpb stream [args]                  # Streaming data server
 cpb doctor [--json]
-cpb health-check
-cpb profile [list|show|use]
-cpb model-profile add --name <n> --agent <a> --env KEY=VALUE
-cpb wiki [lint|list]
-cpb release <list|use|install|doctor|gc>
-cpb ui [--port] [--host]
+cpb health-check                   # health check via the quickstart alias entry
 cpb version
 ```
 

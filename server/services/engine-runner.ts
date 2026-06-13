@@ -7,6 +7,7 @@ import { resolveHubRoot, getProject } from "./hub/hub-registry.js";
 import { assertProviderAvailable } from "./provider-quota.js";
 import { getProviderAdapter } from "./provider-adapters.js";
 import { prepareTask } from "./project/project-loader.js";
+import { buildArtifactIndex } from "./job/job-projection.js";
 import {
   delegateMarkProviderUnavailable,
   delegateEnqueueProviderUsage,
@@ -55,6 +56,8 @@ export function buildServices(cpbRoot, { hubRoot = null, env = process.env, data
       : appendEvent,
     prepareTask: prepareTaskForEnv(env),
     getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
+    getArtifactIndex: (root, project, jobId, opts = {}) =>
+      buildArtifactIndex(root, project, jobId, { ...opts, dataRoot }),
     providerServices: {
       assertProviderAvailable,
       getProviderAdapter,

@@ -58,6 +58,7 @@ export function parseExecutorJson(output) {
     summary: result.data.summary || "",
     tests: result.data.tests || [],
     risks: result.data.risks || [],
+    checklistMapping: Array.isArray(result.data.checklistMapping) ? result.data.checklistMapping : [],
   };
 }
 
@@ -75,5 +76,6 @@ export function parseVerifierJson(output) {
     reason: result.data.reason || "",
     details: result.data.details || "",
     confidence: result.data.confidence,
+    checklistVerdict: result.data.checklistVerdict || null,
   };
 }

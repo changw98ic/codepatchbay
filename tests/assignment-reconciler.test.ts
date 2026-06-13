@@ -97,6 +97,101 @@ test("buildRetrySourceContext carries verifier verdict into retry metadata", () 
   assert.equal(sourceContext.previousFailure.verification.verdict.status, "fail");
 });
 
+test("buildRetrySourceContext carries checklist retry state from checklistVerdict", () => {
+  const result = {
+    jobResult: {
+      jobId: "job-checklist-retry",
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: "AC-002 failed",
+        retryable: true,
+        cause: {
+          verdict: {
+            status: "fail",
+            reason: "checklist item failed",
+            blocking: [],
+            fix_scope: ["cli/commands/status.ts"],
+            checklistVerdict: {
+              items: [
+                { checklistId: "AC-001", result: "pass", fixScope: [], evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }] },
+                { checklistId: "AC-002", result: "fail", fixScope: ["cli/commands/status.ts"], evidenceRefs: [] },
+              ],
+              fixScope: ["cli/commands/status.ts"],
+            },
+          },
+          artifact: {
+            kind: "verdict",
+            id: "123456",
+            name: "verdict-123456",
+            path: "/tmp/verdict-123456.md",
+          },
+        },
+      },
+    },
+  };
+
+  const sourceContext = buildRetrySourceContext(
+    { attempts: 1, metadata: { failureCount: 1 }, sourceContext: {} },
+    { attempt: 1 },
+    result,
+    { action: "retry_same_worker", reason: "verification failed: AC-002 failed", retryable: true, retryPhase: "execute" },
+  );
+
+  assert.deepEqual(sourceContext.retry.targetChecklistIds, ["AC-002"]);
+  assert.deepEqual(sourceContext.retry.lockedPassedChecklistIds, ["AC-001"]);
+  assert.deepEqual(sourceContext.retry.previousEvidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
+  assert.deepEqual(sourceContext.retry.fixScope, ["cli/commands/status.ts"]);
+  assert.equal(sourceContext.retry.retryPhase, "execute");
+  assert.equal(JSON.stringify(sourceContext.retry.fixScope).includes("AC-002"), false);
+});
+
+test("buildRetrySourceContext carries verify-only retry phase with empty fixScope", () => {
+  const result = {
+    jobResult: {
+      jobId: "job-checklist-verify-retry",
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "verify",
+        reason: "AC-003 evidence missing",
+        retryable: true,
+        cause: {
+          routingLabel: "evidence_missing",
+          evidenceMissingCause: "probe_available_not_run",
+          retryPhase: "verify",
+          targetChecklistIds: ["AC-003"],
+          fixScope: [],
+          verdict: {
+            status: "fail",
+            reason: "evidence missing",
+            blocking: [],
+            fix_scope: [],
+            checklistVerdict: {
+              items: [
+                { checklistId: "AC-001", result: "pass", fixScope: [], evidenceRefs: [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }] },
+                { checklistId: "AC-003", result: "unchecked", fixScope: [], evidenceRefs: [] },
+              ],
+              fixScope: [],
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const sourceContext = buildRetrySourceContext(
+    { attempts: 1, metadata: { failureCount: 1 }, sourceContext: {} },
+    { attempt: 1 },
+    result,
+    { action: "retry_same_worker", reason: "evidence missing", retryable: true, retryPhase: "verify" },
+  );
+
+  assert.deepEqual(sourceContext.retry.targetChecklistIds, ["AC-003"]);
+  assert.equal(sourceContext.retry.retryPhase, "verify");
+  assert.deepEqual(sourceContext.retry.fixScope, []);
+  assert.equal(sourceContext.retry.verification.checklistVerdict.targetChecklistIds.length, 1);
+});
+
 test("Reconciler requeues verification failures with verifier retry context", async () => {
   const hubRoot = await tempRoot("cpb-reconciler-verifier-retry");
   const assignments = new AssignmentStore(hubRoot);

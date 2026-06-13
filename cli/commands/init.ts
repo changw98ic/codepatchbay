@@ -222,10 +222,10 @@ cpb:
   try {
     const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
     const hubRoot = resolveHubRoot(cpbRoot);
-    await registerProject(hubRoot, { name: projectName, sourcePath: resolvedPath });
+    await registerProject(hubRoot, { name: projectName, sourcePath: resolvedPath, skipCodeGraphGate: true });
     console.log(`Registered with Hub.`);
   } catch (err) {
-    console.log(`Hub registration skipped (${err.message}). Run: cpb attach ${resolvedPath} ${projectName}`);
+    console.log(`Hub registration skipped (${err.message}). Re-run: cpb init ${resolvedPath} ${projectName}`);
   }
 
   console.log("");

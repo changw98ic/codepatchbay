@@ -287,7 +287,7 @@ function stepDoctor() {
 // ─── Step 5: Ensure project registered ─────────────────────────────
 function stepProject() {
   log("PROJECT", `Ensuring project '${PROJECT}' is registered...`);
-  run(`cpb attach ${ROOT} ${PROJECT}`, { allowFail: true, silent: true });
+  run(`cpb init ${ROOT} ${PROJECT}`, { allowFail: true, silent: true });
   pass("Project registered");
 }
 

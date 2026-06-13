@@ -8,6 +8,7 @@ import { writeArtifact } from "../artifacts/artifact-store.js";
 import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
 import { validateDeliverable } from "../artifacts/validators.js";
 import { phaseExecutionContract } from "./prompt-contract.js";
+import { normalizeRepoRelativePaths } from "../workflow/acceptance-checklist.js";
 
 const execFile = promisify(execFileCb);
 
@@ -104,6 +105,30 @@ export async function runExecute(ctx) {
   // P1-8 fix: capture git snapshot after agent run, compute changed files
   const changedFiles = await computeChangedFiles(cwd, changedFilesBefore);
 
+  // Build execution map connecting changed files to checklist items
+  const normalizedChangedFiles = normalizeRepoRelativePaths(changedFiles);
+  const mappedFiles = normalizeRepoRelativePaths(
+    (parsed.checklistMapping || []).flatMap((entry: Record<string, any>) => entry.changedFiles || []),
+  );
+  const executionMap = {
+    schemaVersion: 1,
+    jobId,
+    project,
+    mappings: parsed.checklistMapping || [],
+    changedFiles: normalizedChangedFiles,
+    unmappedChangedFiles: normalizedChangedFiles.filter(
+      (file: string) => !mappedFiles.includes(file),
+    ),
+  };
+  const executionMapArtifact = await writeArtifact(cpbRoot, {
+    project,
+    jobId,
+    kind: "execution-map",
+    content: JSON.stringify(executionMap, null, 2),
+    dataRoot,
+    metadata: executionMap,
+  });
+
   const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
   const validation: Record<string, any> = validateDeliverable(deliverable, { ...ctx, changedFiles }) as any;
@@ -117,7 +142,7 @@ export async function runExecute(ctx) {
         retryable: validation.retryable ?? false,
         cause: { rawOutput: deliverable.slice(0, 2000) },
       }),
-      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
+      diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, executionMapArtifact }, promptArtifact),
     });
   }
 
@@ -133,7 +158,7 @@ export async function runExecute(ctx) {
   return phasePassed({
     phase: "execute",
     artifact,
-    diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
+    diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, executionMapArtifact }, promptArtifact),
   });
 }
 

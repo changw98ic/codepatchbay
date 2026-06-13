@@ -21,10 +21,14 @@ async function runClient({ env, prompt, cwd }) {
   if (!env.CPB_PROJECT_PATH_OVERRIDE) delete cleanEnv.CPB_PROJECT_PATH_OVERRIDE;
   if (!env.CPB_WORKER_ID) delete cleanEnv.CPB_WORKER_ID;
   if (!env.CPB_SESSION_ID) delete cleanEnv.CPB_SESSION_ID;
+  // Spawn in its own process group so a hung client can be killed together
+  // with its fake-agent + terminal children. Without detached + group kill,
+  // a stuck request() (ACP stdio handshake race) hangs the whole test runner.
   const child = spawn(process.execPath, [client, "--agent", "codex", "--cwd", cwd], {
     cwd: root,
     env: cleanEnv,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
 
   let stdout = "";
@@ -36,8 +40,29 @@ async function runClient({ env, prompt, cwd }) {
     stderr += chunk;
   });
 
+  // Hard ceiling so a deadlocked handshake fails fast instead of hanging the
+  // runner forever. Default 60s gives the active-agent case (idle timeout
+  // test) plenty of headroom while still bounding wall-clock.
+  const timeoutMs = Number.parseInt(process.env.CPB_TEST_RUN_CLIENT_TIMEOUT_MS || "60000", 10);
+  let timedOut = false;
+  const killGroup = () => {
+    timedOut = true;
+    try {
+      if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch {
+      try { child.kill("SIGKILL"); } catch {}
+    }
+  };
+  const timer = setTimeout(killGroup, timeoutMs);
+  timer.unref?.();
+
   child.stdin.end(prompt);
   const exitCode = await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timer);
+  if (timedOut) {
+    throw new Error(`runClient timed out after ${timeoutMs}ms (ACP stdio handshake deadlock). stdout=${stdout.slice(-400)} stderr=${stderr.slice(-400)}`);
+  }
   return { exitCode, stdout, stderr };
 }
 

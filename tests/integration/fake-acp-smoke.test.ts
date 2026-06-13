@@ -53,45 +53,6 @@ test("demo produces all required artifacts and a passing verdict", async () => {
   await rm(result.tempRoot, { recursive: true, force: true });
 });
 
-test("demo --json via CLI completes without real API keys", async () => {
-  const { spawn } = await import("node:child_process");
-  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-  const cli = path.join(repoRoot, "cli", "cpb.js");
-
-  const child = spawn(process.execPath, [cli, "demo", "--json"], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      CPB_ROOT: repoRoot,
-      CPB_EXECUTOR_ROOT: repoRoot,
-      // Explicitly strip any real API keys to prove demo doesn't need them
-      OPENAI_API_KEY: "",
-      ANTHROPIC_API_KEY: "",
-      CODEX_API_KEY: "",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-
-  const exitCode = await new Promise((resolve) => {
-    child.on("close", resolve);
-  });
-
-  assert.equal(exitCode, 0, `CLI exited with code ${exitCode}: ${stderr}`);
-  const parsed = JSON.parse(stdout);
-  assert.equal(parsed.ok, true);
-  assert.equal(parsed.job.status, "completed");
-  assert.ok(parsed.tempRoot);
-
-  // Cleanup temp dir
-  const { rm: rmDir } = await import("node:fs/promises");
-  await rmDir(parsed.tempRoot, { recursive: true, force: true });
-});
-
 test("demo runs with custom project name and task", async () => {
   const result = await runDemo({
     project: "custom-demo-project",

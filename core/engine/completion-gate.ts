@@ -6,6 +6,8 @@
  * no I/O, no side effects, no external dependencies.
  */
 
+import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
+
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
 type AnyRecord = Record<string, any>;
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
@@ -101,6 +103,13 @@ export function evaluateCompletionGate({
   artifactIndex,
   parsedVerdict,
   parsedAdversarialVerdict,
+  checklist,
+  checklistVerdict,
+  evidenceLedger,
+  executionMap,
+  runtimeFailures,
+  attemptId,
+  multiAttempt,
 }: {
   job?: AnyRecord;
   workflowDag?: AnyRecord;
@@ -109,15 +118,42 @@ export function evaluateCompletionGate({
   artifactIndex?: AnyRecord;
   parsedVerdict?: ParsedVerdict;
   parsedAdversarialVerdict?: ParsedVerdict;
+  checklist?: AnyRecord;
+  checklistVerdict?: AnyRecord;
+  evidenceLedger?: AnyRecord;
+  executionMap?: AnyRecord;
+  runtimeFailures?: AnyRecord[];
+  attemptId?: string;
+  multiAttempt?: boolean;
 } = {}) {
   const completedPhases = new Set(job?.completedPhases || [])
   const dagNodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : []
   const dagPhases = new Set(dagNodes.map((n) => n.phase || n.id))
-  const details = {
+  const details: AnyRecord = {
     isMutating: isMutatingJob(job),
     dagPhases: [...dagPhases],
     completedPhases: [...completedPhases],
     adversarialRequired: Boolean(riskMap?.adversarialRequired),
+  }
+
+  // Checklist gate — evaluate before legacy verdict gates when checklist artifacts exist.
+  // Legacy verdict fallback is only for jobs without an acceptance-checklist artifact.
+  if (checklist) {
+    const checklistResult = evaluateChecklistCompletion({
+      checklist,
+      verdict: checklistVerdict,
+      evidenceLedger,
+      executionMap,
+      runtimeFailures,
+      attemptId,
+      multiAttempt,
+    });
+    if (checklistResult.outcome !== "complete") {
+      return gateResult(checklistResult.outcome, checklistResult.reason, ["checklist"], {
+        ...details,
+        checklist: checklistResult,
+      });
+    }
   }
 
   // Gate 1 — policy: mutating job MUST have verify in DAG
@@ -208,15 +244,28 @@ export function evaluateCompletionGate({
  * @returns {object}
  */
 export function completionGateEvent(jobId: string, project: string, gateResult: AnyRecord) {
+  const checklist = gateResult.details?.checklist || {};
   return {
     type: "completion_gate_evaluated",
     jobId,
     project,
+    attemptId: gateResult.attemptId || checklist.attemptId || null,
     outcome: gateResult.outcome,
     reason: gateResult.reason,
     missingGates: gateResult.missingGates,
+    checklistOutcome: checklist.outcome || null,
+    failedChecklistIds: checklist.failedChecklistIds || [],
+    uncheckedChecklistIds: checklist.uncheckedChecklistIds || [],
+    missingEvidenceRefs: checklist.missingEvidenceRefs || [],
+    mismatchedEvidenceRefs: checklist.mismatchedEvidenceRefs || [],
+    staleEvidenceRefs: checklist.staleEvidenceRefs || [],
+    poisonedEvidenceRefs: checklist.poisonedEvidenceRefs || [],
+    runtimeFailureRefs: checklist.runtimeFailureRefs || [],
+    runtimeFailureCount: Array.isArray(checklist.runtimeFailureRefs) ? checklist.runtimeFailureRefs.length : 0,
+    unmappedChangedFiles: checklist.unmappedChangedFiles || [],
+    unmappedChangedFileCount: Array.isArray(checklist.unmappedChangedFiles) ? checklist.unmappedChangedFiles.length : 0,
     ts: new Date().toISOString(),
-  }
+  };
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────

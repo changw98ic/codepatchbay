@@ -18,6 +18,7 @@ export const FailureKind = Object.freeze({
   HUMAN_APPROVAL_REQUIRED: "human_approval_required",
   RUNJOB_PANIC: "runjob_panic",
   POISONED_SESSION: "poisoned_session",
+  SCOPE_VIOLATION: "scope_violation",
   UNKNOWN: "unknown",
 });
 

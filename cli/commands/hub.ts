@@ -71,7 +71,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
     if (json) {
       console.log(JSON.stringify(projects, null, 2));
     } else {
-      if (projects.length === 0) console.log("No Hub projects. Run: cpb attach [path] [name]");
+      if (projects.length === 0) console.log("No Hub projects. Run: cpb init <path> [name]");
       for (const project of projects) {
         console.log(`${project.enabled === false ? "-" : "+"} ${project.id}\t${project.sourcePath}`);
       }
