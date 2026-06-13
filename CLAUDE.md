@@ -104,28 +104,17 @@ Pipeline 通过 grep 此行决定下一步。
 ./cpb init /path/to/project my-project
 ./cpb run "Add dark mode" --project my-project
 ./cpb pipeline my-project "Add unit tests" 3
-./cpb research my-project "Investigate auth patterns"
-./cpb evolve-multi --once --project my-project
 ./cpb retry my-project <job-id> [--agent codex]
 ./cpb status my-project
 ./cpb list
 ./cpb jobs
 ./cpb jobs reconcile              # Mark stale jobs as failed
-./cpb gc                          # Clean stale jobs + orphan leases + pollution
-./cpb gc --dry-run                # Preview cleanup
 ./cpb doctor [--json]             # Health check (exit 0=ok, 1=errors)
 ./cpb health-check                # HTTP + test suite + frontend build
 ./cpb recover                     # Alias for gc
-./cpb hub status|start|stop
-./cpb release list|use|install|doctor|gc
+./cpb hub status|start|stop|projects
 ./cpb cancel my-project <jobId> "reason"
 ./cpb redirect my-project <jobId> "new instruction"
-./cpb merge-preview my-project <ref> --base main
-./cpb install-bin                 # Install cpb to PATH
-./cpb wiki lint
-
-# Web UI (启动后端 + 前端)
-./cpb ui [--port PORT] [--host HOST]
 
 # 后端单独开发
 cd server && npm run dev    # node --watch index.js

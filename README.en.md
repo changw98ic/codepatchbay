@@ -148,38 +148,24 @@ cpb config myproj --verify-agent claude --verify-model mimo
 
 ```bash
 # Project management
-cpb init <path> [name]             # Initialize project
-cpb attach [path] [name]           # Attach project to Hub
+cpb init <path> [name]             # Initialize project (auto-registers with Hub)
 cpb list                           # List projects
 cpb status <project>               # Project status
 
 # Submit tasks
 cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
-cpb research <project> "<task>"    # Dual-agent research
 cpb review <project> [id]          # Review deliverable
 cpb retry <project> <job-id>       # Retry a failed job
 
-# Multi-phase & SDD
-cpb evolve-multi [--once|--scan|--continuous]  # Multi-phase evolution
-cpb sdd <init|bootstrap|verify|drift> <project> # Spec-driven development
-
 # Job management
 cpb jobs [reconcile|cleanup|report]
-cpb artifacts <job-id> [--json]
-cpb verdict <job-id> [--json]
 cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
-# Cleanup
-cpb gc [--dry-run]
-cpb recover [--dry-run]
-
-# Audit & merge
+# Changes
 cpb diff <project>
-cpb audit <project> <job-id>
-cpb merge-preview <project> <ref> [--base <branch>]
 
 # GitHub
 cpb github bind <proj> <owner/repo>
@@ -188,7 +174,6 @@ cpb github doctor [--json]
 
 # Hub & scheduling
 cpb hub [status|start|stop|projects|...]
-cpb codegraph [status|start|stop]
 
 # Setup & diagnostics
 cpb demo [--json]

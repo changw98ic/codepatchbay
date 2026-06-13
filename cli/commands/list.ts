@@ -11,7 +11,7 @@ export async function run(_args: string[], { cpbRoot }: { cpbRoot: string }) {
 
   console.log(`${BOLD}CodePatchbay Projects:${NC}`);
   if (projects.length === 0) {
-    console.log("  None. Run: cpb attach <path> [name]");
+    console.log("  None. Run: cpb init <path> [name]");
     return;
   }
 

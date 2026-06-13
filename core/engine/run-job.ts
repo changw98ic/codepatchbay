@@ -23,6 +23,16 @@ import { evaluateCompletionGate, parseVerdict, completionGateEvent } from "./com
 import { validateScopeConstraint, stripGitStatusPrefix } from "./scope-guard.js";
 import { readyNodes, getNode } from "../workflow/dag-executor.js";
 import { resolveArtifactPath, resolveArtifactPathForRoot } from "../artifacts/artifact-paths.js";
+import { writeArtifact } from "../artifacts/artifact-store.js";
+import {
+  buildAcceptanceChecklist,
+  classifyAcceptanceRequirements,
+  validateAcceptanceChecklist,
+  validateChecklistSourceCoverage,
+  normalizeFixScope,
+  mapChecklistRoutingLabel,
+} from "../workflow/acceptance-checklist.js";
+import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -365,6 +375,84 @@ function buildAdversarialRetryContext(gateResult, phaseResults, riskMap) {
  * @param {object} [ctx.providerServices]
  * @returns {Promise<{status: string, jobId: string, exitCode: number, failure?: object}>}
  */
+async function writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, phase, artifact, appendEvent, attemptId }: AnyRecord) {
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "artifact_created",
+    jobId,
+    project,
+    phase,
+    kind: artifact.kind,
+    artifactKind: artifact.kind,
+    artifact: artifact.name,
+    artifactId: artifact.id,
+    attemptId: attemptId || null,
+    sha256: artifact.sha256 || null,
+    ts: ts(),
+  });
+}
+
+/**
+ * Exit-handler-style finalization for audit closure.
+ * Must run for success, failure, blocked, and panic paths.
+ * Emits runtime_context_snapshot and audit_finalized events.
+ * Does not let finalization mark a failed job as successful.
+ */
+async function finalizeAuditTrail({ cpbRoot, project, jobId, attemptId, appendEvent, result, sourceContext }: AnyRecord) {
+  // Emit runtime context snapshot — audit context, not pass evidence.
+  const assignment = sourceContext?.assignment || {};
+  try {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "runtime_context_snapshot",
+      jobId,
+      project,
+      attemptId,
+      assignmentId: assignment.assignmentId || null,
+      workerId: assignment.workerId || null,
+      model: assignment.metadata?.model || null,
+      runtime: assignment.metadata?.runtime || assignment.workflow || null,
+      queueId: assignment.entryId || null,
+      queuePriority: assignment.priority ?? null,
+      concurrencyKey: assignment.metadata?.concurrencyKey || null,
+      rateLimitedUntil: assignment.rateLimitedUntil || null,
+      heartbeatAt: null,
+      progressKind: null,
+      blocker: result.failure?.kind === FailureKind.HUMAN_APPROVAL_REQUIRED ? result.failure.reason : null,
+      ts: ts(),
+    });
+  } catch { /* best-effort */ }
+
+  // Emit audit_finalized — terminal audit closure event.
+  // This event is audit-only and does not change job status.
+  try {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "audit_finalized",
+      jobId,
+      project,
+      attemptId,
+      status: result.status || "failed",
+      reason: result.failure?.reason || result.reason || null,
+      ts: ts(),
+    });
+  } catch { /* best-effort */ }
+}
+
+function attachChecklistIdsToWorkflowDag(workflowDag: AnyRecord, acceptanceChecklist: AnyRecord | null) {
+  if (!acceptanceChecklist?.items?.length) return workflowDag;
+  const requiredIds = acceptanceChecklist.items.filter((item: AnyRecord) => item.required).map((item: AnyRecord) => item.id);
+  return {
+    ...workflowDag,
+    nodes: workflowDag.nodes.map((node: AnyRecord) => {
+      if ((node.phase === "execute" || node.phase === "verify" || node.phase === "adversarial_verify") && !node.custom && !node.sideEffecting) {
+        return { ...node, checklistIds: requiredIds, checklistBindingSource: "canonical-default" };
+      }
+      if (node.sideEffecting || node.custom || node.phase === "remediate" || node.phase === "review") {
+        return node.checklistNeutral ? { ...node, checklistIds: [] } : node;
+      }
+      return node;
+    }),
+  };
+}
+
 /**
  * Crash barrier wrapper — catches unhandled exceptions from runJobInner()
  * and ensures the job is failed rather than stuck in "running" forever.
@@ -373,9 +461,37 @@ export async function runJob(ctx) {
   ctx._jobId = "unknown";
   ctx._currentPhase = null;
   try {
-    return await runJobInner(ctx);
+    const result = await runJobInner(ctx);
+    // Exit-handler-style finalization: emit runtime context and audit closure.
+    // Must run for success, failure, and blocked paths. Best-effort — must not
+    // turn a successful result into a panic.
+    try {
+      await finalizeAuditTrail({
+        cpbRoot: ctx.cpbRoot,
+        project: ctx.project || "unknown",
+        jobId: result.jobId || ctx._jobId,
+        attemptId: ctx._attemptId || result.jobId || ctx._jobId,
+        appendEvent: ctx.appendEvent,
+        result,
+        sourceContext: ctx.sourceContext,
+      });
+    } catch { /* best-effort finalization must not corrupt the result */ }
+    return result;
   } catch (panic) {
-    return await handleRunJobPanic(ctx, panic);
+    const result = await handleRunJobPanic(ctx, panic);
+    // Finalize even after panic recovery — best-effort
+    try {
+      await finalizeAuditTrail({
+        cpbRoot: ctx.cpbRoot,
+        project: ctx.project || "unknown",
+        jobId: result.jobId || ctx._jobId,
+        attemptId: ctx._attemptId || result.jobId || ctx._jobId,
+        appendEvent: ctx.appendEvent,
+        result,
+        sourceContext: ctx.sourceContext,
+      });
+    } catch { /* best-effort finalization must not corrupt the result */ }
+    return result;
   }
 }
 
@@ -421,6 +537,15 @@ async function runJobInner(ctx) {
   });
   const jobId = job.jobId;
   ctx._jobId = jobId;  // Crash barrier needs jobId before runJobInner completes
+
+  // Derive attemptId from assignment context for checklist-aware attempt scoping.
+  // Direct runs without managed assignments use jobId as the compatibility attempt id.
+  const activeAttempt = sourceContext?.assignment?.attemptToken
+    || sourceContext?.assignment?.attempt
+    || sourceContext?.attemptToken
+    || sourceContext?.attempt;
+  const attemptId = activeAttempt ? String(activeAttempt) : jobId;
+  ctx._attemptId = attemptId;
 
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_started",
@@ -484,7 +609,7 @@ async function runJobInner(ctx) {
     });
     riskMap = normalizeRiskMapResult(prepareResult);
     dynamicAgentPlan = prepareResult?.dynamicAgentPlan || dynamicAgentPlanFrom(ctx, { ...(sourceContext || {}), riskMap });
-    phaseSourceContext = { ...(sourceContext || {}), riskMap, ...(dynamicAgentPlan ? { dynamicAgentPlan } : {}) };
+    phaseSourceContext = { ...(sourceContext || {}), riskMap, ...(dynamicAgentPlan ? { dynamicAgentPlan } : {}), ...(prepareResult?.acceptanceChecklist ? { acceptanceChecklist: prepareResult.acceptanceChecklist } : {}), ...(prepareResult?.requirementClassification ? { requirementClassification: prepareResult.requirementClassification } : {}) };
 
     await appendEvent(cpbRoot, project, jobId, {
       type: "phase_started",
@@ -539,6 +664,64 @@ async function runJobInner(ctx) {
     return { status: "blocked", jobId, exitCode: 2, failure: fail };
   }
 
+  // ── Checklist generation, validation, and persistence ────────────
+  // The acceptance checklist must be frozen and event-indexed before
+  // the workflow DAG and dynamic agent plan are materialized.
+  // V1: only generate when the caller explicitly provides one via
+  // prepareResult or sourceContext. Jobs without an acceptanceChecklist
+  // continue to use the legacy verifier and completion-gate path.
+  let acceptanceChecklist: AnyRecord | null = phaseSourceContext?.acceptanceChecklist || null;
+  let acceptanceChecklistArtifact: AnyRecord | null = null;
+  if (acceptanceChecklist) {
+    const requirementClassification = phaseSourceContext?.requirementClassification
+      || await classifyAcceptanceRequirements({ task, documents: phaseSourceContext?.documents || [], riskMap });
+    const validation = validateAcceptanceChecklist(acceptanceChecklist);
+    if (!validation.ok) {
+      const fail = failure({
+        kind: FailureKind.ARTIFACT_INVALID,
+        phase: "prepare_task",
+        reason: `acceptance checklist invalid: ${validation.reason}`,
+        retryable: false,
+        cause: { acceptanceChecklist },
+      });
+      await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+      return { status: "blocked", jobId, exitCode: 2, failure: fail };
+    }
+    const coverage = validateChecklistSourceCoverage({
+      checklist: acceptanceChecklist,
+      task,
+      documents: phaseSourceContext?.documents || [],
+      requirementClassification,
+    });
+    if (!coverage.ok) {
+      const fail = failure({
+        kind: FailureKind.HUMAN_APPROVAL_REQUIRED,
+        phase: "prepare_task",
+        reason: `acceptance checklist source coverage incomplete: ${coverage.reason}`,
+        retryable: false,
+        cause: { routingLabel: "needs_clarification", coverage },
+      });
+      await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+      return { status: "blocked", jobId, exitCode: 2, failure: fail };
+    }
+    acceptanceChecklistArtifact = await writeArtifact(cpbRoot, {
+      project,
+      jobId,
+      kind: "acceptance-checklist",
+      content: JSON.stringify(acceptanceChecklist, null, 2),
+      dataRoot,
+      metadata: acceptanceChecklist,
+    });
+    await writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, phase: "prepare_task", artifact: acceptanceChecklistArtifact, appendEvent, attemptId });
+    phaseSourceContext = { ...phaseSourceContext, acceptanceChecklist, acceptanceChecklistArtifact };
+
+    // If a prebuilt dynamicAgentPlan does not reference the frozen checklist,
+    // rebuild it so phases consume the artifact-indexed checklist.
+    if (dynamicAgentPlan && !dynamicAgentPlan.acceptanceChecklistArtifactId && !dynamicAgentPlan.acceptanceChecklistArtifact) {
+      dynamicAgentPlan = null;
+    }
+  }
+
   const phaseRoleMap = {
     plan: "planner",
     execute: "executor",
@@ -551,7 +734,7 @@ async function runJobInner(ctx) {
   // 2. Resolve phases and materialize a DAG for this run.
   const { phases: resolvedPhases } = resolveSemanticPhases({ workflow, planMode });
   const phases = insertAdversarialVerify(resolvedPhases, riskMap);
-  const workflowDag = buildWorkflowDag({ workflow, phases, phaseRoleMap });
+  const workflowDag = attachChecklistIdsToWorkflowDag(buildWorkflowDag({ workflow, phases, phaseRoleMap }), acceptanceChecklist);
   const executionNodes = dagSequentialExecutionPlan(workflowDag);
   const dagResumeContext = normalizeDagResumeContext(sourceContext || {});
   const resumeCompletedNodes = new Set(dagResumeContext.completedNodeIds);
@@ -697,6 +880,7 @@ async function runJobInner(ctx) {
         role,
         reason: "resume_completed_node",
         resumeTarget: dagResumeContext.resumeTarget,
+        checklistIds: Array.isArray(dagNode.checklistIds) ? dagNode.checklistIds : [],
         ts: ts(),
       });
       await reportProgress(ctx, {
@@ -755,6 +939,8 @@ async function runJobInner(ctx) {
       phase,
       role,
       attempt: 1,
+      attemptId,
+      checklistIds: Array.isArray(dagNode.checklistIds) ? dagNode.checklistIds : [],
       ts: ts(),
     });
     await reportProgress(ctx, {
@@ -918,6 +1104,7 @@ async function runJobInner(ctx) {
       previousResults: phaseResults,
       agent: ctx.agent,
       agents: phaseAgents,
+      attemptId,
       timeouts: {
         plan: phaseTimeout,
         execute: phaseTimeout,
@@ -1103,6 +1290,7 @@ async function runJobInner(ctx) {
         previousResults: phaseResults,
         agent: ctx.agent,
         agents: phaseAgents,
+        attemptId,
         timeouts: {
           plan: phaseTimeout,
           execute: phaseTimeout,
@@ -1168,6 +1356,7 @@ async function runJobInner(ctx) {
             previousResults: phaseResults,
             agent: ctx.agent,
             agents: phaseAgents,
+            attemptId,
             timeouts: {
               plan: phaseTimeout,
               execute: phaseTimeout,
@@ -1232,6 +1421,7 @@ async function runJobInner(ctx) {
           previousResults: phaseResults,
           agent: ctx.agent,
           agents: phaseAgents,
+          attemptId,
           timeouts: {
             plan: phaseTimeout,
             execute: phaseTimeout,
@@ -1247,9 +1437,17 @@ async function runJobInner(ctx) {
 
     // Scope guard: evaluate changed files against fix_scope in retry scenarios
     if (phase === "execute" && isPhasePassed(result)) {
-      const retryFixScope = phaseSourceContext?.retryContext?.fix_scope
-        || phaseSourceContext?.retry?.fix_scope
-        || null;
+      // Normalize legacy retry fields into canonical fixScope
+      const retryFixScope =
+        normalizeFixScope(
+          phaseSourceContext?.retryContext?.fixScope
+          || phaseSourceContext?.retry?.fixScope
+          || phaseSourceContext?.retryContext?.fix_scope
+          || phaseSourceContext?.retry?.fix_scope
+          || phaseSourceContext?.retry?.verification?.retryScope
+          || []
+        )
+        || [];
       if (Array.isArray(retryFixScope) && retryFixScope.length > 0) {
         const rawChangedFiles = result.artifact?.metadata?.changedFiles
           || result.artifact?.files
@@ -1288,9 +1486,11 @@ async function runJobInner(ctx) {
             nodeId,
             phase,
             role,
+            attemptId,
             code: "scope_guard_violation",
             reason: `Scope guard violation: changed files outside fix_scope: ${scopeResult.violations.join(", ")}`,
             error: `Scope guard violation: ${scopeResult.violations.join(", ")}`,
+            checklistIds: Array.isArray(dagNode.checklistIds) ? dagNode.checklistIds : [],
             ts: ts(),
           });
           await failJob(cpbRoot, project, jobId, {
@@ -1304,7 +1504,7 @@ async function runJobInner(ctx) {
             jobId,
             project,
             phase,
-            failureKind: "scope_guard_violation",
+            failureKind: FailureKind.SCOPE_VIOLATION,
             reason: `Scope guard violation: ${scopeResult.violations.join(", ")}`,
           });
           return {
@@ -1312,12 +1512,12 @@ async function runJobInner(ctx) {
             jobId,
             exitCode: 1,
             failure: {
-              kind: "scope_guard_violation",
+              kind: FailureKind.SCOPE_VIOLATION,
               phase,
               nodeId,
               reason: `Changed files outside fix_scope: ${scopeResult.violations.join(", ")}`,
-              violations: scopeResult.violations,
-              fixScope: retryFixScope,
+              retryable: false,
+              cause: { routingLabel: "scope_violation", violations: scopeResult.violations, fixScope: retryFixScope },
             },
             phaseResults,
           };
@@ -1326,6 +1526,14 @@ async function runJobInner(ctx) {
     }
 
     phaseResults.push(result);
+
+    // Emit side artifact events from phase diagnostics (execution-map, etc.)
+    // These must be event-indexed before the phase result event so completion
+    // and audit can discover them through artifact events, not diagnostics.
+    for (const artifact of (Object.values(result.diagnostics || {}) as AnyRecord[]).filter((value) => value?.kind && value?.name)) {
+      if (artifact.name === result.artifact?.name) continue;
+      await writeRuntimeArtifactEvent({ cpbRoot, project, jobId, dataRoot, phase, artifact, appendEvent, attemptId });
+    }
 
     // Resolve agent name for this phase (use potentially handoff-modified phaseAgents)
     const rawAgent = phaseAgents[role] || ctx.agent || legacyAgentForPhase(phase);
@@ -1349,6 +1557,7 @@ async function runJobInner(ctx) {
             project,
             phase,
             nodeId,
+            attemptId,
             reasons: poisonCheck.reasons,
             classifier: poisonCheck.classifier,
             ts: ts(),
@@ -1392,7 +1601,9 @@ async function runJobInner(ctx) {
         nodeId,
         phase,
         role,
+        attemptId,
         artifact: result.artifact?.name || null,
+        checklistIds: Array.isArray(dagNode.checklistIds) ? dagNode.checklistIds : [],
         ts: ts(),
       });
     }
@@ -1515,9 +1726,11 @@ async function runJobInner(ctx) {
         nodeId,
         phase,
         role,
+        attemptId,
         code: fail.kind || "fatal",
         reason: fail.reason || `${phase} phase failed`,
         error: fail.reason || `${phase} phase failed`,
+        checklistIds: Array.isArray(dagNode.checklistIds) ? dagNode.checklistIds : [],
         ts: ts(),
       });
       await failJob(cpbRoot, project, jobId, {
@@ -1563,6 +1776,122 @@ async function runJobInner(ctx) {
   const completedPhases = phaseResults.filter(r => r && isPhasePassed(r)).map(r => r.phase);
   const jobForGate = { ...job, completedPhases };
 
+  // Load checklist gate inputs from event-visible artifact JSON only.
+  // Use the shared active-attempt helper; do not read from sourceContext/diagnostics.
+  let checklistArtifacts: AnyRecord = {};
+  let artifactInvalidReason: string | null = null;
+  try {
+    const artifactIndex = typeof ctx.getArtifactIndex === "function"
+      ? await ctx.getArtifactIndex(cpbRoot, project, jobId, { dataRoot })
+      : null;
+    if (artifactIndex) {
+      checklistArtifacts = await readActiveChecklistArtifacts({
+        artifactIndex,
+        attemptId,
+        requiredKinds: ["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"],
+      });
+      // Fail-closed: if artifact loading returned an error, block completion
+      if (checklistArtifacts.ok === false) {
+        artifactInvalidReason = checklistArtifacts.reason || "artifact loading failed";
+      }
+    }
+  } catch (err) {
+    // Artifact index may not exist for legacy jobs; proceed without checklist
+    // But if it exists and threw, that's a hard error
+    if (typeof ctx.getArtifactIndex === "function") {
+      artifactInvalidReason = `artifact index read failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  // Read runtime failures from phase results (poisoned session detection, panics)
+  // and persist each as a runtime_failure_recorded event so the event-replay /
+  // recovery path can reconstruct them from materialized state.
+  //
+  // DATA SOURCE STRATEGY:
+  //   Active run:  phaseResults → runtimeFailures array → emit events → pass to gate
+  //   Recovery:    event log → materializeJob → completionGate event in materialized state
+  //   Audit:       event log → collectRuntimeFailureRefs → materialized.runtimeFailures
+  //
+  // The in-memory array is the authoritative input during an active run because
+  // it is collected BEFORE events are emitted. After events are persisted, the
+  // audit/recovery path reads from the event log — which is the long-term
+  // source of truth. If ctx exposes readEventsReadOnly in the future, the gate
+  // should prefer event-replayed failures over the in-memory array.
+  const runtimeFailures: AnyRecord[] = [];
+  for (const pr of phaseResults) {
+    if (pr?.failure?.kind === "poisoned_session" || pr?.failure?.kind === "runjob_panic") {
+      runtimeFailures.push({
+        type: pr.failure.kind === "poisoned_session" ? "poisoned_session" : "runjob_panic",
+        attemptId,
+        phase: pr.phase || null,
+        nodeId: null,
+        reason: pr.failure.reason || null,
+      });
+    }
+    // Also check diagnostics for poisoned session info
+    if (pr?.diagnostics?.poisonedSession) {
+      const ps = pr.diagnostics.poisonedSession;
+      if (!runtimeFailures.some(rf => rf.phase === pr.phase && rf.type === "phase_poisoned_session")) {
+        runtimeFailures.push({
+          type: "phase_poisoned_session",
+          attemptId,
+          phase: pr.phase || null,
+          nodeId: pr.diagnostics.nodeId || null,
+          reason: Array.isArray(ps.reasons) ? ps.reasons.join(", ") : (ps.reason || null),
+        });
+      }
+    }
+  }
+
+  // Emit runtime_failure_recorded events so the event log is the source of truth.
+  // The audit export (readiness-checks) reads these from materialized state.
+  for (const rf of runtimeFailures) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "runtime_failure_recorded",
+      jobId,
+      project,
+      failureType: rf.type,
+      attemptId: rf.attemptId || attemptId,
+      phase: rf.phase,
+      nodeId: rf.nodeId,
+      reason: rf.reason,
+      ts: new Date().toISOString(),
+    });
+  }
+
+  // Fail-closed early: if artifact loading reported invalid data, block immediately
+  // before evaluating any gates. This catches broken/unreadable/mismatched artifacts
+  // that readActiveChecklistArtifacts detected.
+  if (artifactInvalidReason) {
+    const failCause: AnyRecord = { artifactInvalidReason };
+    await appendEvent(cpbRoot, project, jobId, completionGateEvent(jobId, project, {
+      outcome: "artifact_invalid",
+      reason: artifactInvalidReason,
+      missingGates: ["artifact_index"],
+      details: failCause,
+    }));
+    await reportProgress(ctx, {
+      type: "completion_gate_blocked",
+      jobId,
+      project,
+      outcome: "artifact_invalid",
+      reason: artifactInvalidReason,
+    });
+    await failJob(cpbRoot, project, jobId, {
+      reason: artifactInvalidReason,
+      code: "artifact_invalid",
+      phase: "completion_gate",
+      cause: failCause,
+    });
+    return {
+      status: "failed",
+      jobId,
+      exitCode: 1,
+      failure: { kind: "artifact_invalid", phase: "completion_gate", reason: artifactInvalidReason, cause: failCause },
+      phaseResults,
+    };
+  }
+
   const gateResult = evaluateCompletionGate({
     job: jobForGate,
     workflowDag,
@@ -1571,16 +1900,48 @@ async function runJobInner(ctx) {
     artifactIndex: null,
     parsedVerdict,
     parsedAdversarialVerdict,
+    checklist: checklistArtifacts["acceptance-checklist"] || null,
+    checklistVerdict: checklistArtifacts["checklist-verdict"] || null,
+    evidenceLedger: checklistArtifacts["evidence-ledger"] || null,
+    executionMap: checklistArtifacts["execution-map"] || null,
+    runtimeFailures,
+    attemptId,
   });
 
   await appendEvent(cpbRoot, project, jobId, completionGateEvent(jobId, project, gateResult));
 
   if (gateResult.outcome !== "complete") {
     const adversarialRetryContext = buildAdversarialRetryContext(gateResult, phaseResults, riskMap);
+    // Map checklist routing labels to valid FailureKind + routing metadata.
+    // gateResult.outcome may be a checklist-specific label (evidence_missing,
+    // checklist_failed, etc.) that is NOT a valid FailureKind. The routing
+    // label determines the correct FailureKind, action, retryPhase, and fixScope.
+    const checklistResult = gateResult.details?.checklist;
+    const routing = mapChecklistRoutingLabel(gateResult.outcome, {
+      fixScope: checklistResult?.failedFixScope || [],
+      targetChecklistIds: checklistResult?.failedChecklistIds || checklistResult?.uncheckedChecklistIds || [],
+      evidenceMissingCause: checklistResult?.evidenceMissingCause || null,
+    });
+    const failureKind = routing.kind;
+    // Carry the checklist retry scope on the failure cause so downstream
+    // consumers can rebuild the retry plan from the persisted failure:
+    //   - reconciler.verificationRetryContext reads cause.checklistVerdict
+    //     (the raw verdict artifact with .items) to derive failed/unchecked/
+    //     locked ids + fixScope.
+    //   - failure-router reads cause.fixScope directly to route retry vs fail.
+    // Without these, a gate failure loses its checklist retry scope and the
+    // reconciler cannot reconstruct what to retry.
+    const checklistFixScope = checklistResult?.failedFixScope || [];
     const failCause: AnyRecord = {
       gateOutcome: gateResult.outcome,
       missingGates: gateResult.missingGates,
       details: gateResult.details,
+      routingLabel: gateResult.outcome,
+      routingAction: routing.action,
+      routingRetryPhase: routing.retryPhase,
+      fixScope: checklistFixScope,
+      checklistVerdict: checklistArtifacts["checklist-verdict"] || null,
+      targetChecklistIds: checklistResult?.failedChecklistIds || checklistResult?.uncheckedChecklistIds || [],
     };
     if (adversarialRetryContext) {
       failCause.retryContext = adversarialRetryContext;
@@ -1595,7 +1956,7 @@ async function runJobInner(ctx) {
     });
     await failJob(cpbRoot, project, jobId, {
       reason: gateResult.reason,
-      code: gateResult.outcome,
+      code: failureKind,
       phase: "completion_gate",
       cause: failCause,
     });
@@ -1603,7 +1964,7 @@ async function runJobInner(ctx) {
       status: "failed",
       jobId,
       exitCode: 1,
-      failure: { kind: gateResult.outcome, phase: "completion_gate", reason: gateResult.reason, details: gateResult.details },
+      failure: { kind: failureKind, phase: "completion_gate", reason: gateResult.reason, retryable: routing.retryable, cause: failCause },
       phaseResults,
     };
   }
@@ -1662,6 +2023,7 @@ async function handleRunJobPanic(ctx, panic) {
           type: "job_panic",
           jobId,
           phase,
+          attemptId: ctx._attemptId || jobId,
           panicType,
           reason: panicMessage,
           ts: ts(),

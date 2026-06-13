@@ -93,10 +93,10 @@ CodePatchBay 会：
 cpb status myproj
 
 # 查看产物
-cpb artifacts <job-id>
+cpb inbox myproj outputs
 
 # 查看验证结果
-cpb verdict <job-id>
+cpb status myproj
 ```
 
 ## GitHub Issue 到 PR
@@ -148,38 +148,24 @@ cpb config myproj --verify-agent claude --verify-model mimo
 
 ```bash
 # 项目管理
-cpb init <path> [name]             # 初始化项目
-cpb attach [path] [name]           # 附加项目到 Hub
+cpb init <path> [name]             # 初始化项目（自动注册到 Hub）
 cpb list                           # 列出项目
 cpb status <project>               # 项目状态
 
 # 提交任务
 cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
 cpb pipeline <project> "<task>" [retries]  # 完整流程（显式项目）
-cpb research <project> "<task>"    # 双 agent 研究
 cpb review <project> [id]          # 审查交付物
 cpb retry <project> <job-id>       # 重试失败任务
 
-# 多阶段与 SDD
-cpb evolve-multi [--once|--scan|--continuous]  # 多阶段进化
-cpb sdd <init|bootstrap|verify|drift> <project> # 规格驱动开发
-
 # 任务管理
 cpb jobs [reconcile|cleanup|report]
-cpb artifacts <job-id> [--json]
-cpb verdict <job-id> [--json]
 cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
-# 清理
-cpb gc [--dry-run]
-cpb recover [--dry-run]
-
-# 审计与合并
+# 变更查看
 cpb diff <project>
-cpb audit <project> <job-id>
-cpb merge-preview <project> <ref> [--base <branch>]
 
 # GitHub
 cpb github bind <proj> <owner/repo>
@@ -188,7 +174,6 @@ cpb github doctor [--json]
 
 # Hub 与调度
 cpb hub [status|start|stop|projects|...]
-cpb codegraph [status|start|stop]
 
 # 设置与诊断
 cpb demo [--json]
@@ -205,6 +190,23 @@ cpb release <list|use|install|doctor|gc>
 cpb ui [--port] [--host]
 cpb version
 ```
+
+### Checklist Artifacts
+
+Checklist-aware tasks also produce a frozen acceptance checklist, execution map,
+evidence ledger, checklist verdict, and completion gate details. These artifacts
+show what was required, what changed, what was verified, and why CPB accepted or
+rejected the task.
+
+| Artifact | Description |
+|----------|-------------|
+| `acceptance-checklist` | Frozen task contract produced before execution |
+| `execution-map` | Maps changed files back to checklist items |
+| `evidence-ledger` | Replayable evidence claims with worktree identity |
+| `checklist-verdict` | Itemized verifier judgment with evidence refs |
+
+Use `cpb inbox <project> outputs` to list deliverables and verdicts for a project,
+and `cpb status <project>` to see the latest verdict.
 
 ## 设计原则
 
