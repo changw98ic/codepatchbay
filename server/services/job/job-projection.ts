@@ -255,7 +255,7 @@ async function parseVerdictEntry(entry: Record<string, any> | null | undefined) 
       artifactId: entry.id,
       source: envelope.source || null,
     };
-  } catch (err: any) {
+  } catch (err) {
     return {
       status: "inconclusive",
       confidence: null,

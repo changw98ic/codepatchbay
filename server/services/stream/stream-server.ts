@@ -169,7 +169,7 @@ export async function startStreamServer(options: StreamServerOptions) {
       try {
         const content = await fs.readFile(resolved, "utf8");
         return textResponse(res, 200, content);
-      } catch (err: any) {
+      } catch (err) {
         if (err.code === "ENOENT") return jsonResponse(res, 404, { error: "file not found" });
         return jsonResponse(res, 500, { error: err.message });
       }
