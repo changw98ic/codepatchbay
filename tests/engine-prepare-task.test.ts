@@ -56,6 +56,29 @@ function phaseOutput(role: string) {
     reason: "prepare_task fixture verified.",
     details: "The fake provider completed the phase.",
     confidence: 1,
+    // Default checklist construction makes every job checklist-aware, so verify
+    // requires a checklistVerdict covering the frozen item. The deterministic
+    // probe runner supplies a valid static observation for AC-001 (the single
+    // item produced for a task with no documents), yielding EV-001 in the
+    // evidence ledger.
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-prepare-task",
+      status: "pass",
+      items: [
+        {
+          checklistId: "AC-001",
+          result: "pass",
+          evidenceRefs: [{ ledgerId: "pending", evidenceId: "EV-001" }],
+          actualResult: "fixture exercised",
+          reason: "fake verifier confirms the prepare_task fixture",
+          fixScope: [],
+        },
+      ],
+      blocking: [],
+      fixScope: [],
+      reason: "all items passed with evidence",
+    },
   });
 }
 
@@ -552,6 +575,10 @@ test("runJob emits and materializes dynamic agent plan from prepare_task", async
       verifier: { agent: "fake-secondary", required: true, independent: true },
       adversarial_verifier: { agent: "fake-secondary", required: true, independent: true },
     },
+    // Reference the auto-constructed checklist so this externally injected plan
+    // survives the freeze-stage rebuild guard (plans not bound to the frozen
+    // checklist are regenerated from the risk map).
+    acceptanceChecklistArtifact: { id: "stub", name: "acceptance-checklist-stub" },
   };
 
   const { result, events } = await runPrepareEngine({

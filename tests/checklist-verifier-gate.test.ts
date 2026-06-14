@@ -333,30 +333,32 @@ test("fresh hard-gate observation without matching fields cannot prove checklist
 });
 
 /**
- * Case 5: When prepareTask does not provide a checklist or requirementClassification,
- * run-job does NOT auto-generate a checklist. The job runs the legacy verify path
- * and completes normally. This ensures backward compatibility with existing jobs.
+ * Case 5: When prepareTask does not provide a checklist, run-job now
+ * auto-constructs one (default checklist-first). The job is therefore
+ * checklist-aware: a verifier that returns a legacy verdict without a
+ * checklistVerdict fails as VERDICT_INVALID, and the evidence-ledger plus
+ * synthesized failing checklist-verdict artifacts are emitted. There is no
+ * silent legacy-verifier fallback.
  */
-test("job without explicit checklist runs legacy path and completes", async () => {
-  const pool = makeVerifierPool();
-  // Don't pass checklist or requirementClassification -- run-job won't create one.
+test("job without explicit checklist auto-constructs one and runs the checklist-aware path", async () => {
+  const pool = makeVerifierPool(); // legacy verdict, no checklistVerdict
   const { result, events } = await runVerifierFixture(pool, {
     withChecklist: false,
     sourceContext: {},
   });
 
-  // Without a checklist, the job runs the legacy path and completes normally.
-  assert.equal(result.status, "completed", "job without checklist should complete as legacy");
+  // Auto-constructed checklist makes the job checklist-aware; a legacy
+  // verdict without checklistVerdict is rejected.
+  assert.equal(result.status, "failed");
 
-  // No checklist-related artifacts should be emitted in legacy mode
-  const hasEvidenceLedger = events.some(
-    (e) => e.type === "artifact_created" && e.kind === "evidence-ledger",
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "evidence-ledger"),
+    "evidence-ledger must be emitted for the auto-constructed checklist path",
   );
-  const hasChecklistVerdict = events.some(
-    (e) => e.type === "artifact_created" && e.kind === "checklist-verdict",
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "checklist-verdict"),
+    "checklist-verdict must be emitted (synthesized failing) for the checklist-aware path",
   );
-  assert.equal(hasEvidenceLedger, false, "evidence-ledger should not be emitted for legacy job");
-  assert.equal(hasChecklistVerdict, false, "checklist-verdict should not be emitted for legacy job");
 });
 
 /**

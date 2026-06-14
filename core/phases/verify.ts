@@ -11,6 +11,7 @@ import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts
 import { phaseExecutionContract } from "./prompt-contract.js";
 import { validateChecklistVerdict } from "../workflow/acceptance-checklist.js";
 import { buildEvidenceProbePlan, validateEvidenceObservation } from "../workflow/evidence-probes.js";
+import { runChecklistProbes } from "../workflow/probe-runner.js";
 
 const execFile: any = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
@@ -328,10 +329,16 @@ export async function runVerify(ctx) {
   // Build evidence ledger BEFORE verifier prompt.
   // The ledger is deterministic: the verifier sees the exact claim ids it may cite.
   const ledgerId = `evidence-ledger-${jobId}`;
+  // Deterministic probes provide objective scope evidence (the change landed
+  // in the item's declared files), independent of the verifier agent's claim.
+  const probeChecks = acceptanceChecklist
+    ? await runChecklistProbes(acceptanceChecklist, cwd, { finalWorktree: verificationEvidence.git })
+    : [];
+  const hardGateChecks = [...(verificationEvidence.hardGate?.checks || []), ...probeChecks];
   const evidenceProbePlan = acceptanceChecklist
     ? buildEvidenceProbePlan({
         acceptanceChecklist,
-        hardGateChecks: verificationEvidence.hardGate?.checks || [],
+        hardGateChecks,
         attemptId,
         finalWorktree: verificationEvidence.git,
       })
@@ -369,6 +376,7 @@ export async function runVerify(ctx) {
     timeoutMs: ctx.timeouts?.verify ?? 0,
     scope: ctx.scope,
     env: ctx.env,
+    dataRoot,
   });
 
   if (!agentResult.ok) {
@@ -480,6 +488,27 @@ export async function runVerify(ctx) {
       dataRoot,
       metadata: verdict,
     });
+
+    // A valid checklist verdict with status "fail" must fail the verify phase,
+    // mirroring the legacy path (verdict.status !== "pass" -> VERIFICATION_FAILED).
+    // Otherwise a verifier that returns a failing checklist would be recorded as
+    // passing just because its verdict shape validated.
+    if (finalChecklistVerdict.status === "fail") {
+      return phaseFailed({
+        phase: "verify",
+        failure: failure({
+          kind: FailureKind.VERIFICATION_FAILED,
+          phase: "verify",
+          reason: finalChecklistVerdict.reason || verdict.reason || "verification failed",
+          retryable: true,
+          cause: { verdict, artifact, checklistVerdict: finalChecklistVerdict, checklistVerdictArtifact },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(
+          { ...agentResult.diagnostics, artifact, verdict, evidenceLedgerArtifact, checklistVerdictArtifact },
+          promptArtifact,
+        ),
+      });
+    }
 
     return phasePassed({
       phase: "verify",

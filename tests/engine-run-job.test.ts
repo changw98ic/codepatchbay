@@ -57,12 +57,31 @@ function phaseOutput(role: string, overrides: AnyRecord = {}) {
       ...overrides,
     });
   }
+  const verdictStatus = String(overrides.verdict || "pass").toLowerCase() === "pass" ? "pass" : "fail";
   return jsonEnvelope({
     status: "ok",
-    verdict: "pass",
+    verdict: verdictStatus,
     reason: "Fixture verified.",
     details: "Fake provider completed the phase.",
     confidence: 1,
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-runjob-test",
+      status: verdictStatus,
+      items: [
+        {
+          checklistId: "AC-001",
+          result: verdictStatus,
+          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "pending", evidenceId: "EV-001" }] : [],
+          actualResult: verdictStatus === "pass" ? "fixture verified" : "fixture failed",
+          reason: verdictStatus === "pass" ? "fake verifier confirms the fixture" : "fake verifier reports fixture failure",
+          fixScope: verdictStatus === "pass" ? [] : ["README.md"],
+        },
+      ],
+      blocking: verdictStatus === "pass" ? [] : [{ checklistId: "AC-001" }],
+      fixScope: verdictStatus === "pass" ? [] : ["README.md"],
+      reason: verdictStatus === "pass" ? "all items passed with evidence" : "required item failed",
+    },
     ...overrides,
   });
 }
