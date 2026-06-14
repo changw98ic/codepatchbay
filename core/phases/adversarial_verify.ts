@@ -54,6 +54,7 @@ export async function runAdversarialVerify(ctx) {
     timeoutMs: ctx.timeouts?.adversarial_verify ?? 0,
     scope: ctx.scope,
     env: ctx.env,
+    dataRoot,
   });
 
   if (!agentResult.ok) {

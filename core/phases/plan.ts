@@ -54,6 +54,7 @@ export async function runPlan(ctx) {
     timeoutMs: ctx.timeouts?.plan ?? 0,
     scope: ctx.scope,
     env: ctx.env,
+    dataRoot,
   });
 
   if (!agentResult.ok) {

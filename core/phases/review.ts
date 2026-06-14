@@ -46,6 +46,7 @@ export async function runReview(ctx) {
     scope: ctx.scope || null,
     env: ctx.env || {},
     timeoutMs: ctx.timeouts?.review ?? 0,
+    dataRoot,
   });
 
   if (!agentResult.ok) {

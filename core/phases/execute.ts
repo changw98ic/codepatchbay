@@ -68,6 +68,7 @@ export async function runExecute(ctx) {
     timeoutMs: ctx.timeouts?.execute ?? 0,
     scope: ctx.scope,
     env: ctx.env,
+    dataRoot,
   });
 
   if (!agentResult.ok) {

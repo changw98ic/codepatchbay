@@ -42,6 +42,7 @@ export async function runRemediate(ctx) {
     scope: ctx.scope || null,
     env: ctx.env || {},
     timeoutMs: ctx.timeouts?.remediate ?? 0,
+    dataRoot,
   });
 
   if (!agentResult.ok) {
