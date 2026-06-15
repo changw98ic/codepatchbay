@@ -38,12 +38,15 @@ jobs:
 
       - name: Run web tests
         run: cd web && npm test -- --run
+        if: hashFiles('web/package.json') != ''
 
       - name: Run web typecheck
         run: npm run typecheck:web
+        if: hashFiles('web/package.json') != ''
 
       - name: Build web UI
         run: npm run build:web
+        if: hashFiles('web/package.json') != ''
 
       - name: CI smoke test (cpb setup + demo)
         run: npm run build:node && node dist/scripts/ci-smoke.js
