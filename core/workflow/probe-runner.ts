@@ -74,7 +74,7 @@ function scopeMatches(changed: string[], allowedFiles: string[]): number {
 export async function runChecklistProbes(
   acceptanceChecklist: AnyRecord | null,
   cwd: string,
-  { base = null, finalWorktree = null }: { base?: string | null; finalWorktree?: AnyRecord | null } = {},
+  { base = null, finalWorktree = null, attemptId = null }: { base?: string | null; finalWorktree?: AnyRecord | null; attemptId?: string | null } = {},
 ): Promise<AnyRecord[]> {
   if (!acceptanceChecklist || !Array.isArray(acceptanceChecklist.items)) return [];
 
@@ -107,6 +107,7 @@ export async function runChecklistProbes(
         changedFilesInScope: changed.filter((f) => allowedFiles.map(posixify).includes(posixify(f))),
         ...(finalWorktree?.head ? { worktreeHead: finalWorktree.head } : {}),
         ...(finalWorktree?.diffHash ? { diffHash: finalWorktree.diffHash } : {}),
+        ...(text(attemptId) ? { attemptId } : {}),
       },
       // Emit a claim even on fail so the ledger records the honest result
       // rather than silently dropping the item.

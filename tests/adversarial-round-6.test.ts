@@ -210,7 +210,10 @@ function exitCodeOnlyEvidence() {
   };
 }
 
-/** Proper command evidence that WOULD pass validateCommandObservation. */
+/** Proper command evidence that WOULD pass validateCommandObservation.
+ * Spec-compliant: command identity + cwd/repo root + integer exitCode === 0 +
+ * output digest + worktree identity. cwd + worktreeHead are required so the
+ * positive control passes for the RIGHT reason (not the old loose rule). */
 function validCommandEvidence(checklistId = "AC-001", predId = "PRED-001", evId = "EV-VALID") {
   return {
     id: evId,
@@ -225,7 +228,8 @@ function validCommandEvidence(checklistId = "AC-001", predId = "PRED-001", evId 
     command: "npm test",
     exitCode: 0,
     stdoutSha256: "sha256:valid-stdout",
-    worktreeHead: "ddd444",
+    cwd: "/repo/flow",            // spec: command must declare WHERE it ran
+    worktreeHead: "ddd444",       // spec: result must tie to the declared worktree
     diffHash: "sha256:r6",
   };
 }
@@ -487,14 +491,16 @@ test("adversarial round 6: validateEvidenceObservation rejects runtime context f
   const checklistItem = checklistWithCommandItem().items[0];
   const entry = workerHeartbeatEvidence();
 
-  // Direct call: should return false
-  const valid = validateEvidenceObservation(entry, checklistItem, {
+  // Direct call: should not be valid (record-gate) nor satisfied (result-gate)
+  const result = validateEvidenceObservation(entry, checklistItem, {
     attemptId: "attempt-r6",
     finalWorktree: { head: "ddd444", diffHash: "sha256:r6" },
   });
 
-  assert.strictEqual(valid, false,
+  assert.strictEqual(result.valid, false,
     "validateEvidenceObservation must reject runtime context for command method");
+  assert.strictEqual(result.satisfied, false,
+    "validateEvidenceObservation must not be satisfied for runtime context for command method");
 });
 
 // ─── Test 8: validateEvidenceObservation — exitCode-only also fails ──
@@ -503,13 +509,15 @@ test("adversarial round 6: validateEvidenceObservation rejects exitCode-only (no
   const checklistItem = checklistWithCommandItem().items[0];
   const entry = exitCodeOnlyEvidence();
 
-  const valid = validateEvidenceObservation(entry, checklistItem, {
+  const result = validateEvidenceObservation(entry, checklistItem, {
     attemptId: "attempt-r6",
     finalWorktree: { head: "ddd444", diffHash: "sha256:r6" },
   });
 
-  assert.strictEqual(valid, false,
+  assert.strictEqual(result.valid, false,
     "validateEvidenceObservation must reject exitCode-only for command method (missing command text)");
+  assert.strictEqual(result.satisfied, false,
+    "validateEvidenceObservation must not be satisfied for exitCode-only for command method");
 });
 
 // ─── Test 9: Full completion gate — runtime context evidence causes evidence_mismatch gate result ──

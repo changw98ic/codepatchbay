@@ -82,6 +82,7 @@ function freshEvidenceLedger(attemptId: string = "attempt-001") {
       command: "npm test",
       exitCode: 0,
       stdoutSha256: "sha256:stdout",
+      cwd: "/repo",
     }],
   };
 }
@@ -125,6 +126,7 @@ test("completion gate blocks stale checklist evidence", () => {
         command: "npm test",
         exitCode: 0,
         stdoutSha256: "sha256:stdout",
+        cwd: "/repo",
       }],
     },
     executionMap: cleanExecutionMap(),

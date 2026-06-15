@@ -218,6 +218,10 @@ export async function main() {
       const cancelPromise = new Promise<AnyRecord>((resolve) => {
         resolveCancel = resolve;
       });
+      // AbortSignal for in-flight job work (verify hard gates, agent commands).
+      // Fires on cancel; runCommandTree tears down the detached process group so
+      // a hung npm test cannot outlive the cancellation.
+      const jobAbort = new AbortController();
 
       function buildCancelledResult(cancel: AnyRecord | null) {
         const reason = cancel?.reason || "assignment cancelled";
@@ -250,6 +254,7 @@ export async function main() {
           lastProgressType: "cancel_requested",
         }, { progress: true }).catch(() => {});
         resolveCancel?.(buildCancelledResult(cancelRequested));
+        try { jobAbort.abort(); } catch { /* already aborted */ }
         void stopWorkerAcpPool(jobLog);
       }
 
@@ -316,6 +321,7 @@ export async function main() {
           cpbRoot,
           hubRoot,
           project: assignment.projectId,
+          signal: jobAbort.signal,
           task: assignment.task,
           jobId,
           workflow: assignment.workflow || "standard",

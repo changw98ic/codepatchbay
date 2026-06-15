@@ -79,6 +79,7 @@ function legitimateLedger() {
         command: "npm test",
         exitCode: 0,
         stdoutSha256: "sha256:stdout-1",
+        cwd: "/repo/flow",
         summary: "passed",
         worktreeHead: "abc123",
         diffHash: "sha256:legit",

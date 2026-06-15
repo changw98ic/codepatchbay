@@ -292,7 +292,7 @@ function evidenceMatchesChecklistItem(entry: AnyRecord, checklistItem: AnyRecord
     && text(entry.predicateId) === text(checklistItem.predicateId)
     && text(entry.result) === "pass";
   if (!baseMatch) return false;
-  return validateEvidenceObservation(entry, checklistItem, context);
+  return validateEvidenceObservation(entry, checklistItem, context).satisfied;
 }
 
 function checklistOutcome(outcome: string, reason: string, fields: AnyRecord = {}) {

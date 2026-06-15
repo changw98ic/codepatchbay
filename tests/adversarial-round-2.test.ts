@@ -90,6 +90,7 @@ function attempt1Ledger() {
         result: "pass",
         command: "npm test",
         exitCode: 0,
+        cwd: "/repo/work",
         stdoutSha256: "sha256:stdout-attempt1",
         summary: "passed in attempt 1",
         worktreeHead: "aaa111",
@@ -138,6 +139,7 @@ function attempt2LedgerWithStaleEvidence() {
         result: "pass",
         command: "npm test",
         exitCode: 0,
+        cwd: "/repo/work",
         stdoutSha256: "sha256:stdout-attempt1",
         summary: "passed — but worktree is stale",
         worktreeHead: "aaa111",  // stale: different from finalWorktree.head
@@ -365,6 +367,7 @@ test("adversarial round 2: multi-item checklist with stale and missing evidence"
         result: "pass",
         command: "npm test",
         exitCode: 0,
+        cwd: "/repo/work",
         stdoutSha256: "sha256:stdout",
         summary: "passed",
         worktreeHead: "aaa111", // stale
@@ -442,6 +445,7 @@ test("adversarial round 2: evidence with matching worktree head is NOT stale", (
       result: "pass",
       command: "npm test",
       exitCode: 0,
+      cwd: "/repo/work",
       stdoutSha256: "sha256:stdout",
       summary: "passed",
       worktreeHead: "bbb222",       // matches finalWorktree.head

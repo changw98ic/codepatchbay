@@ -71,6 +71,7 @@ function freshLedger(overrides: AnyRecord = {}) {
       command: "npm test",
       exitCode: 0,
       stdoutSha256: "sha256:stdout",
+      cwd: "/repo",
       summary: "passed",
       worktreeHead: "abc",
       diffHash: "sha256:one",
