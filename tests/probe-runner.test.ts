@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { runChecklistProbes } from "../core/workflow/probe-runner.js";
+import { buildAcceptanceChecklist } from "../core/workflow/acceptance-checklist.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -104,6 +105,26 @@ test("null checklist returns no checks", async () => {
   try {
     const checks = await runChecklistProbes(null, dir, {});
     assert.equal(checks.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("DECOMP-006: checklist built from LLM decomposedItems (non-empty allowedFiles) yields probe matchCount>0", async () => {
+  const dir = await makeGitRepo();
+  try {
+    await writeFile(path.join(dir, "README.md"), "# changed\n", "utf8");
+    const cl = await buildAcceptanceChecklist({
+      jobId: "job-1", project: "p", task: "update README", documents: [], riskMap: { riskLevel: "low" },
+      requirementClassification: { artifact: null, classifiedRequirements: [{ id: "REQ-1", kind: "task_text", locator: "task:0", summary: "x" }] },
+      decomposedItems: [{
+        requirement: "update README", predicateId: "readme-update", verificationMethod: "static",
+        allowedFiles: ["README.md"], sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+      }],
+    });
+    const checks = await runChecklistProbes(cl, dir, {});
+    assert.equal(checks.length, 1);
+    assert.ok(checks[0].observation.matchCount > 0, `decomposed-scope item must matchCount>0 when its declared file is in the diff, got ${checks[0].observation.matchCount}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

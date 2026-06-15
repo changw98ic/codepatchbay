@@ -32,6 +32,7 @@ import {
   normalizeFixScope,
   mapChecklistRoutingLabel,
 } from "../workflow/acceptance-checklist.js";
+import { decomposeTaskToChecklistItems } from "../workflow/checklist-decomposer.js";
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
 type AnyRecord = Record<string, any>;
@@ -715,8 +716,29 @@ async function freezeChecklistAndMaterializeDag(ctx, {
   const requirementClassification = phaseSourceContext?.requirementClassification
     || await classifyAcceptanceRequirements({ task, documents, riskMap });
   if (!acceptanceChecklist) {
+    // LLM decomposition: break the task into items carrying allowedFiles scope so
+    // the probe runner matches >0 and the default checklist closes in production.
+    // Default-on; CPB_CHECKLIST_DECOMPOSE=0 disables it for debugging. Fail-closed
+    // ARTIFACT_INVALID on any failure — never silently drop through to the
+    // deterministic []-scope builder, or production stays broken.
+    let decomposedItems;
+    if (process.env.CPB_CHECKLIST_DECOMPOSE !== "0") {
+      const decomposition = await decomposeTaskToChecklistItems({ task, documents, ctx });
+      if (!decomposition.ok) {
+        const decompFail = failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "prepare_task",
+          reason: `checklist decomposition failed: ${decomposition.reason}`,
+          retryable: false,
+          cause: { decomposition },
+        });
+        await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: decompFail });
+        return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: decompFail } };
+      }
+      decomposedItems = decomposition.items;
+    }
     acceptanceChecklist = await buildAcceptanceChecklist({
-      jobId, project, task, documents, riskMap, requirementClassification,
+      jobId, project, task, documents, riskMap, requirementClassification, decomposedItems,
     });
   }
   let acceptanceChecklistArtifact: AnyRecord | null = null;
