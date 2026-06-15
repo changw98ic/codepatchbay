@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { runCommandTree } from "../core/runtime/process-tree.js";
 import path from "node:path";
 import { appendEvent } from "../server/services/event/event-store.js";
 import {
@@ -136,29 +136,6 @@ function createActivityTracker(cpbRoot, project, jobId, runtimeOpts) {
   return { track };
 }
 
-function killChildProcess(child) {
-  try {
-    if (child.detached && process.platform !== "win32") {
-      process.kill(-child.pid, "SIGTERM");
-    } else {
-      child.kill("SIGTERM");
-    }
-  } catch {
-    try { child.kill("SIGTERM"); } catch {}
-  }
-  setTimeout(() => {
-    try {
-      if (child.detached && process.platform !== "win32") {
-        process.kill(-child.pid, "SIGKILL");
-      } else {
-        child.kill("SIGKILL");
-      }
-    } catch {
-      try { child.kill("SIGKILL"); } catch {}
-    }
-  }, 2_000).unref?.();
-}
-
 function runChild(
   command,
   args,
@@ -167,7 +144,7 @@ function runChild(
   options: {
     signal?: AbortSignal;
     env?: NodeJS.ProcessEnv;
-    onSpawn?: (child: any) => Promise<any> | any;
+    onSpawn?: (child: { pid: number }) => Promise<any> | any;
   } = {},
 ): Promise<ChildResult> {
   const guardResult = classifyDeleteRisk(command, args, { cwd, repoRoot: cwd });
@@ -179,76 +156,22 @@ function runChild(
     return Promise.resolve({ exitCode: 1, error });
   }
 
-  return new Promise((resolve) => {
-    let settled = false;
-    let child: any;
-    const detached = Boolean(options.signal) && process.platform !== "win32";
-    let onSpawnDone = Promise.resolve();
-
-    function finish(result: ChildResult) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (options.signal && child) {
-        options.signal.removeEventListener("abort", onAbort);
-      }
-      onSpawnDone.then(
-        () => resolve(result),
-        () => resolve(result),
-      );
-    }
-
-    const onAbort = () => {
-      if (!settled && child) {
-        killChildProcess(child);
-      }
-    };
-
-    try {
-      child = spawn(command, args, {
-        cwd,
-        env: options.env || process.env,
-        detached,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      finish({ exitCode: 1, error: err });
-      return;
-    }
-    child.detached = detached;
-    if (options.onSpawn) {
-      try {
-        const maybe = options.onSpawn(child);
-        if (maybe && typeof maybe.catch === "function") {
-          onSpawnDone = maybe.catch((err) => {
-            console.error(`onSpawn callback failed: ${err.message}`);
-          });
-        }
-      } catch (err) {
-        console.error(`onSpawn callback failed: ${err.message}`);
-      }
-    }
-    if (options.signal) {
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    child.stdout.on("data", (chunk) => {
-      process.stdout.write(chunk);
-      if (onOutput) onOutput(chunk.toString("utf8"));
-    });
-    child.stderr.on("data", (chunk) => {
-      process.stderr.write(chunk);
-      if (onOutput) onOutput(chunk.toString("utf8"));
-    });
-    child.on("error", (err) => {
-      finish({ exitCode: 1, error: err });
-    });
-    child.on("close", (code, signal) => {
-      finish({ exitCode: code ?? 1, signal });
-    });
+  // Delegate process-tree control (detached group + SIGTERM→SIGKILL + AbortSignal
+  // + timeout) to the shared core primitive. classifyDeleteRisk / event / lease
+  // concerns stay here in the bridges layer. onSpawn now receives { pid } rather
+  // than the full ChildProcess (callers only use .pid).
+  return runCommandTree(command, args, {
+    cwd,
+    env: options.env,
+    signal: options.signal,
+    onStdout: (chunk) => { process.stdout.write(chunk); if (onOutput) onOutput(chunk); },
+    onStderr: (chunk) => { process.stderr.write(chunk); if (onOutput) onOutput(chunk); },
+    onSpawn: options.onSpawn ? (pid) => options.onSpawn({ pid }) : undefined,
+  }).then((r): ChildResult => {
+    const out: ChildResult = { exitCode: r.exitCode };
+    if (r.signal) out.signal = r.signal;
+    if (r.error) out.error = r.error as GuardedError;
+    return out;
   });
 }
 

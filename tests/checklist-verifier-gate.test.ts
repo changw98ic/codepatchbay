@@ -333,30 +333,32 @@ test("fresh hard-gate observation without matching fields cannot prove checklist
 });
 
 /**
- * Case 5: When prepareTask does not provide a checklist or requirementClassification,
- * run-job does NOT auto-generate a checklist. The job runs the legacy verify path
- * and completes normally. This ensures backward compatibility with existing jobs.
+ * Case 5: When prepareTask does not provide a checklist, run-job now
+ * auto-constructs one (default checklist-first). The job is therefore
+ * checklist-aware: a verifier that returns a legacy verdict without a
+ * checklistVerdict fails as VERDICT_INVALID, and the evidence-ledger plus
+ * synthesized failing checklist-verdict artifacts are emitted. There is no
+ * silent legacy-verifier fallback.
  */
-test("job without explicit checklist runs legacy path and completes", async () => {
-  const pool = makeVerifierPool();
-  // Don't pass checklist or requirementClassification -- run-job won't create one.
+test("job without explicit checklist auto-constructs one and runs the checklist-aware path", async () => {
+  const pool = makeVerifierPool(); // legacy verdict, no checklistVerdict
   const { result, events } = await runVerifierFixture(pool, {
     withChecklist: false,
     sourceContext: {},
   });
 
-  // Without a checklist, the job runs the legacy path and completes normally.
-  assert.equal(result.status, "completed", "job without checklist should complete as legacy");
+  // Auto-constructed checklist makes the job checklist-aware; a legacy
+  // verdict without checklistVerdict is rejected.
+  assert.equal(result.status, "failed");
 
-  // No checklist-related artifacts should be emitted in legacy mode
-  const hasEvidenceLedger = events.some(
-    (e) => e.type === "artifact_created" && e.kind === "evidence-ledger",
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "evidence-ledger"),
+    "evidence-ledger must be emitted for the auto-constructed checklist path",
   );
-  const hasChecklistVerdict = events.some(
-    (e) => e.type === "artifact_created" && e.kind === "checklist-verdict",
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "checklist-verdict"),
+    "checklist-verdict must be emitted (synthesized failing) for the checklist-aware path",
   );
-  assert.equal(hasEvidenceLedger, false, "evidence-ledger should not be emitted for legacy job");
-  assert.equal(hasChecklistVerdict, false, "checklist-verdict should not be emitted for legacy job");
 });
 
 /**
@@ -436,100 +438,124 @@ test("generic command/test summary fails as evidence_missing without method-spec
 test("method-specific probes produce valid claims only when observation validator passes", async () => {
   const { validateEvidenceObservation } = await import("../core/workflow/evidence-probes.js");
 
-  // command probe: valid
+  // command probe: spec-compliant (command + cwd + exitCode 0 + digest +
+  // worktreeHead) → { valid: true, satisfied: true }
   const commandItem = { verificationMethod: "command", id: "AC-001", predicateId: "PRED-001" };
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
-      { command: "npm test", exitCode: 0, stdoutSha256: "sha256:abc", attemptId: "att-1" },
+      { command: "npm test", exitCode: 0, stdoutSha256: "sha256:abc", cwd: "/repo", worktreeHead: "head-1", attemptId: "att-1" },
       commandItem,
       { attemptId: "att-1" },
     ),
-    true,
-    "command probe with all fields should pass",
+    { valid: true, satisfied: true },
+    "command probe with all spec fields should pass",
   );
 
-  // command probe: missing stdoutSha256
-  assert.equal(
+  // command probe: missing stdoutSha256 → { valid: false, satisfied: false }
+  assert.deepEqual(
     validateEvidenceObservation(
       { command: "npm test", exitCode: 0, attemptId: "att-1" },
       commandItem,
       { attemptId: "att-1" },
     ),
-    false,
+    { valid: false, satisfied: false },
     "command probe without stdoutSha256 should fail",
   );
 
   // command probe: exitCode !== 0
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       { command: "npm test", exitCode: 1, stdoutSha256: "sha256:abc", attemptId: "att-1" },
       commandItem,
       { attemptId: "att-1" },
     ),
-    false,
+    { valid: false, satisfied: false },
     "command probe with non-zero exitCode should fail",
   );
 
-  // static probe: valid
+  // static probe: positive matchCount → satisfied
   const staticItem = { verificationMethod: "static", id: "AC-002", predicateId: "PRED-002" };
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       { queryId: "q1", matchCount: 3 },
       staticItem,
     ),
-    true,
-    "static probe with queryId and matchCount should pass",
+    { valid: true, satisfied: true },
+    "static probe with queryId and matchCount>0 should be valid and satisfied",
   );
 
-  // static probe: missing matchCount
-  assert.equal(
+  // static probe: matchCount === 0 → valid but NOT satisfied (honest zero,
+  // recorded as a fail rather than silently dropped)
+  assert.deepEqual(
+    validateEvidenceObservation(
+      { queryId: "q1", matchCount: 0 },
+      staticItem,
+    ),
+    { valid: true, satisfied: false },
+    "static probe with matchCount:0 must be valid (recordable) but not satisfied",
+  );
+
+  // static probe: missing queryId → not valid
+  assert.deepEqual(
+    validateEvidenceObservation(
+      { matchCount: 3 },
+      staticItem,
+    ),
+    { valid: false, satisfied: false },
+    "static probe without queryId must not be valid",
+  );
+
+  // static probe: missing matchCount → not valid
+  assert.deepEqual(
     validateEvidenceObservation(
       { queryId: "q1" },
       staticItem,
     ),
-    false,
+    { valid: false, satisfied: false },
     "static probe without matchCount should fail",
   );
 
   // artifact_event probe: valid (requires attemptId)
   const artifactItem = { verificationMethod: "artifact_event", id: "AC-003", predicateId: "PRED-003" };
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
-      { eventType: "artifact_created", observedAt: "2026-06-12T00:00:00Z", attemptId: "att-1" },
+      { eventType: "artifact_created", artifactHash: "sha256:art-1", observedAt: "2026-06-12T00:00:00Z", payloadMatcher: "artifact kind created", matchedValue: "artifact_created", attemptId: "att-1" },
       artifactItem,
     ),
-    true,
+    { valid: true, satisfied: true },
     "artifact_event probe with eventType, observedAt, and attemptId should pass",
   );
 
   // artifact_event probe: missing attemptId
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       { eventType: "artifact_created", observedAt: "2026-06-12T00:00:00Z" },
       artifactItem,
     ),
-    false,
+    { valid: false, satisfied: false },
     "artifact_event probe without attemptId should fail",
   );
 
   // absence_check probe: valid
   const absenceItem = { verificationMethod: "absence_check", id: "AC-004", predicateId: "PRED-004" };
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       {
         absence: true,
         queryWindow: { from: "2026-06-12T00:00:00Z", to: "2026-06-12T01:00:00Z" },
         eventTypes: ["phase_poisoned_session"],
+        querySource: "event-log:phase_poisoned_session",
+        queryResultSignature: "sha256:empty-result",
         attemptId: "att-1",
       },
       absenceItem,
     ),
-    true,
+    { valid: true, satisfied: true },
     "absence_check probe with all fields should pass",
   );
 
   // absence_check probe: missing queryWindow.from
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       {
         absence: true,
@@ -539,12 +565,12 @@ test("method-specific probes produce valid claims only when observation validato
       },
       absenceItem,
     ),
-    false,
+    { valid: false, satisfied: false },
     "absence_check probe without queryWindow.from should fail",
   );
 
   // absence_check probe: absence is false (event was found)
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(
       {
         absence: false,
@@ -554,7 +580,7 @@ test("method-specific probes produce valid claims only when observation validato
       },
       absenceItem,
     ),
-    false,
+    { valid: false, satisfied: false },
     "absence_check probe with absence=false should fail (event found, not absent)",
   );
 
@@ -567,9 +593,9 @@ test("method-specific probes produce valid claims only when observation validato
     result: "pass",
     attemptId: "att-1",
   };
-  assert.equal(
+  assert.deepEqual(
     validateEvidenceObservation(echoEntry, commandItem, { attemptId: "att-1" }),
-    false,
+    { valid: false, satisfied: false },
     "predicate echo without observation fields must fail",
   );
 });

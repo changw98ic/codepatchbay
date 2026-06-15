@@ -32,6 +32,7 @@ export async function runAgent({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   scope,
   env,
+  dataRoot = null,
 }) {
   const startedAt = Date.now();
 
@@ -46,6 +47,7 @@ export async function runAgent({
       workspaceId: scope?.workspaceId,
       cwd,
       policyHash: scope?.policyHash,
+      dataRoot,
     });
     const output = typeof execResult === "string" ? execResult : execResult.output;
     const providerKey = execResult?.providerKey || null;

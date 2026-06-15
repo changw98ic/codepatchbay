@@ -93,12 +93,31 @@ function phaseOutput(role: string, overrides: AnyRecord = {}) {
       ...overrides,
     });
   }
+  const verdictStatus = String(overrides.verdict || "pass").toLowerCase() === "pass" ? "pass" : "fail";
   return jsonEnvelope({
     status: "ok",
-    verdict: "pass",
+    verdict: verdictStatus,
     reason: "Engine fixture verified.",
     details: "The fake provider completed the phase.",
     confidence: 1,
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-engine",
+      status: verdictStatus,
+      items: [
+        {
+          checklistId: "AC-001",
+          result: verdictStatus,
+          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "pending", evidenceId: "EV-001" }] : [],
+          actualResult: verdictStatus === "pass" ? "fixture verified" : "fixture failed",
+          reason: verdictStatus === "pass" ? "fake verifier confirms the fixture" : "fake verifier reports fixture failure",
+          fixScope: verdictStatus === "pass" ? [] : ["README.md"],
+        },
+      ],
+      blocking: verdictStatus === "pass" ? [] : [{ checklistId: "AC-001" }],
+      fixScope: verdictStatus === "pass" ? [] : ["README.md"],
+      reason: verdictStatus === "pass" ? "all items passed with evidence" : "required item failed",
+    },
     ...overrides,
   });
 }
@@ -354,6 +373,9 @@ test("runJob applies dynamic agent plan config before provider execution", async
         agentConfig: {
           executor: { agent: "fake-secondary" },
         },
+        // Reference the auto-constructed checklist so this externally injected
+        // plan survives the freeze-stage rebuild guard.
+        acceptanceChecklistArtifact: { id: "stub", name: "acceptance-checklist-stub" },
       },
     },
   });
@@ -385,6 +407,9 @@ test("runJob blocks required dynamic roles as agent_unavailable when provider pr
         agentConfig: {
           planner: { agent: "fake-primary", required: true },
         },
+        // Reference the auto-constructed checklist so this plan is retained
+        // (otherwise it is rebuilt and the required-role binding is lost).
+        acceptanceChecklistArtifact: { id: "stub", name: "acceptance-checklist-stub" },
       },
     },
   });

@@ -756,11 +756,16 @@ export class AcpClient {
     const env: AnyRecord = buildChildEnv(this.env, {}, { agent: this.agent });
     if (shouldIsolateAgentHome(this.agent, env)) {
       const cpbRoot = env.CPB_ACP_CPB_ROOT || env.CPB_ROOT || this.cwd;
+      // env is the filtered child env; CPB_PROJECT_RUNTIME_ROOT may be stripped
+      // by buildChildEnv's allowlist even though it is present on this.env.
+      // Resolve the agent-home dataRoot from the unfiltered source so isolation
+      // does not fail when the project/job context markers survive filtering.
+      const homeDataRoot = env.CPB_PROJECT_RUNTIME_ROOT || this.env.CPB_PROJECT_RUNTIME_ROOT || null;
       const homeEnv = await createAgentHome(
         cpbRoot,
         this.agent,
         env.CPB_ACP_JOB_ID || env.CPB_JOB_ID || null,
-        { parentEnv: env, dataRoot: env.CPB_PROJECT_RUNTIME_ROOT || null },
+        { parentEnv: env, dataRoot: homeDataRoot },
       );
       Object.assign(env, homeEnv);
     }

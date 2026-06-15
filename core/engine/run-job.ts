@@ -32,6 +32,7 @@ import {
   normalizeFixScope,
   mapChecklistRoutingLabel,
 } from "../workflow/acceptance-checklist.js";
+import { decomposeTaskToChecklistItems } from "../workflow/checklist-decomposer.js";
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
 type AnyRecord = Record<string, any>;
@@ -705,16 +706,43 @@ async function freezeChecklistAndMaterializeDag(ctx, {
   } = ctx;
 
   // ── Checklist generation, validation, and persistence ────────────
-  // The acceptance checklist must be frozen and event-indexed before
-  // the workflow DAG and dynamic agent plan are materialized.
-  // V1: only generate when the caller explicitly provides one via
-  // prepareResult or sourceContext. Jobs without an acceptanceChecklist
-  // continue to use the legacy verifier and completion-gate path.
+  // The acceptance checklist is auto-constructed for every job (task +
+  // documents + riskMap) unless the caller provides one. Both paths feed
+  // the same validate → persist → event-index pipeline; the verify phase's
+  // deterministic probe runner supplies objective scope evidence for these
+  // items, so there is no silent legacy-verifier fallback.
   let acceptanceChecklist: AnyRecord | null = phaseSourceContext?.acceptanceChecklist || null;
+  const documents = phaseSourceContext?.documents || [];
+  const requirementClassification = phaseSourceContext?.requirementClassification
+    || await classifyAcceptanceRequirements({ task, documents, riskMap });
+  if (!acceptanceChecklist) {
+    // LLM decomposition: break the task into items carrying allowedFiles scope so
+    // the probe runner matches >0 and the default checklist closes in production.
+    // Default-on; CPB_CHECKLIST_DECOMPOSE=0 disables it for debugging. Fail-closed
+    // ARTIFACT_INVALID on any failure — never silently drop through to the
+    // deterministic []-scope builder, or production stays broken.
+    let decomposedItems;
+    if (process.env.CPB_CHECKLIST_DECOMPOSE !== "0") {
+      const decomposition = await decomposeTaskToChecklistItems({ task, documents, ctx });
+      if (!decomposition.ok) {
+        const decompFail = failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "prepare_task",
+          reason: `checklist decomposition failed: ${decomposition.reason}`,
+          retryable: false,
+          cause: { decomposition },
+        });
+        await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: decompFail });
+        return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: decompFail } };
+      }
+      decomposedItems = decomposition.items;
+    }
+    acceptanceChecklist = await buildAcceptanceChecklist({
+      jobId, project, task, documents, riskMap, requirementClassification, decomposedItems,
+    });
+  }
   let acceptanceChecklistArtifact: AnyRecord | null = null;
   if (acceptanceChecklist) {
-    const requirementClassification = phaseSourceContext?.requirementClassification
-      || await classifyAcceptanceRequirements({ task, documents: phaseSourceContext?.documents || [], riskMap });
     const validation = validateAcceptanceChecklist(acceptanceChecklist);
     if (!validation.ok) {
       const fail = failure({
@@ -730,7 +758,7 @@ async function freezeChecklistAndMaterializeDag(ctx, {
     const coverage = validateChecklistSourceCoverage({
       checklist: acceptanceChecklist,
       task,
-      documents: phaseSourceContext?.documents || [],
+      documents,
       requirementClassification,
     });
     if (!coverage.ok) {

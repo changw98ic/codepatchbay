@@ -57,6 +57,7 @@ const ledger = {
       result: "pass",
       command: "npm test",
       exitCode: 0,
+      cwd: "/repo",
       stdoutSha256: "sha256:stdout",
       summary: "passed",
       worktreeHead: "abc",
@@ -284,6 +285,7 @@ test("evaluateChecklistCompletion accepts manual pass with durable approval evid
       scope: ["AC-001"],
       approvalArtifactId: "manual-approval-001",
       approvalArtifactResolved: true,
+      resolvedArtifactHash: "sha256:approval-artifact",
     }],
   };
   const verdict = {

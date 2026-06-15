@@ -124,7 +124,11 @@ async function writeWorkerScenario(root) {
         matchRegex: "software execution agent",
         writes: [
           {
-            path: "{{cwd}}/README.md",
+            // {{worktree}} resolves to the real task worktree (not {{cwd}},
+            // which under the one-shot provider path is CPB_ROOT and gets the
+            // write silently dropped). Writing README.md into the worktree makes
+            // the deterministic verify probe observe matchCount=1 for AC-001.
+            path: "{{worktree}}/README.md",
             content: "# Managed Worker Fixture\n\nFake ACP touched this file.\n",
           },
         ],
@@ -133,6 +137,14 @@ async function writeWorkerScenario(root) {
           summary: "Fake ACP completed the managed worker fixture and referenced README.md.",
           tests: ["tests/managed-worker.test.js"],
           risks: ["No source edits are expected."],
+          // Map the one file we changed (README.md, written into the worktree
+          // above) to the single required checklist item AC-001. Without this,
+          // execute's execution-map reports README.md as an UNMAPPED changed
+          // file and the completion gate returns scope_violation, failing the
+          // job even when the verify probe correctly observes the change.
+          checklistMapping: [
+            { checklistId: "AC-001", changedFiles: ["README.md"] },
+          ],
         }),
       },
       {
@@ -144,11 +156,68 @@ async function writeWorkerScenario(root) {
           reason: "Managed worker fake ACP fixture passed.",
           details: "Plan, execute, and verify completed through the registered fake-acp provider.",
           confidence: 1,
+          // Checklist-aware jobs REQUIRE a checklistVerdict; a bare legacy
+          // {verdict:"pass"} is synthesized to a failing verdict and fails the
+          // verify phase (core/phases/verify.ts fail-closed). The injected
+          // checklist has one required static item AC-001 whose probe observes
+          // matchCount=1 (README.md was written into the worktree by execute),
+          // emitting exactly one ledger entry EV-001 result:"pass". We cite it
+          // via the placeholder ledgerId "pending" — verify.ts remapEvidenceRefs
+          // rewrites it to evidence-ledger-job-managed-success.
+          checklistVerdict: {
+            schemaVersion: 1,
+            status: "pass",
+            items: [
+              {
+                checklistId: "AC-001",
+                result: "pass",
+                evidenceRefs: [{ ledgerId: "pending", evidenceId: "EV-001" }],
+                actualResult: "README.md was written into the worktree, matching the item's allowedFiles scope.",
+                reason: "Deterministic static probe observed matchCount=1 for README.md.",
+                fixScope: [],
+              },
+            ],
+            blocking: [],
+            fixScope: [],
+            reason: "All required acceptance checklist items passed with objective scope evidence.",
+          },
         }),
       },
     ],
   });
   return scenarioPath;
+}
+
+// A checklist injected via sourceContext.acceptanceChecklist must pass
+// validateAcceptanceChecklist + validateChecklistSourceCoverage. Its static
+// item's allowedFiles MUST match the files the execute fixture actually writes
+// (README.md); otherwise the deterministic probe reports matchCount=0, EV-001
+// is emitted with result:"fail", and no valid checklistVerdict can pass.
+function buildInjectedAcceptanceChecklist({ jobId = "job-managed-success", project = "proj", task = "managed worker fake ACP success" } = {}) {
+  return {
+    schemaVersion: 1,
+    jobId,
+    project,
+    source: { task, issue: null, documents: [], requirementClassificationArtifact: null },
+    status: "frozen",
+    items: [
+      {
+        id: "AC-001",
+        requirement: task,
+        source: "task_text",
+        sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: null }],
+        predicateId: "PRED-001",
+        required: true,
+        area: "core",
+        risk: "medium",
+        verificationMethod: "static",
+        expectedEvidence: "static scope probe confirming README.md was modified",
+        dependsOn: [],
+        allowedFiles: ["README.md"],
+      },
+    ],
+    assumptions: [],
+  };
 }
 
 async function writeValidAssignment({
@@ -162,6 +231,7 @@ async function writeValidAssignment({
   workflow = "standard",
   planMode = "full",
   attemptToken = "attempt-token-1",
+  acceptanceChecklist = null,
 }: {
   hubRoot: string;
   workerId: string;
@@ -173,6 +243,7 @@ async function writeValidAssignment({
   workflow?: string;
   planMode?: string;
   attemptToken?: string;
+  acceptanceChecklist?: Record<string, any> | null;
 }) {
   const project = await registerProject(hubRoot, { id: "proj", name: "proj", sourcePath, skipCodeGraphGate: true });
   const attemptDir = path.join(hubRoot, "assignments", assignmentId, "attempts", "001");
@@ -195,7 +266,10 @@ async function writeValidAssignment({
     sourcePath,
     workflow,
     planMode,
-    sourceContext: { issueNumber: 9 },
+    sourceContext: {
+      issueNumber: 9,
+      ...(acceptanceChecklist ? { acceptanceChecklist } : {}),
+    },
     metadata: {
       agents: {
         planner: "fake-acp",
@@ -328,7 +402,19 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-fixture", private: true }, null, 2)}\n`, "utf8");
   const scenarioPath = await writeWorkerScenario(root);
   const transcriptPath = path.join(root, "transcript.jsonl");
-  const { assignmentId, attemptDir, project } = await writeValidAssignment({ hubRoot, workerId, sourcePath });
+  // Inject a checklist with a required static item (AC-001, allowedFiles:[README.md])
+  // so the verify fixture's checklistVerdict walks the GENUINE checklist path. Without
+  // injection the auto-constructed checklist produces AC-001 with allowedFiles:[] -> the
+  // probe can never observe a match -> no valid checklistVerdict can pass -> gate fails.
+  // (Combined with the {{worktree}} execute write + checklistMapping, EV-001 is emitted
+  // result:"pass" matchCount:1, which the checklistVerdict below cites.)
+  const injectedChecklist = buildInjectedAcceptanceChecklist();
+  const { assignmentId, attemptDir, project } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    acceptanceChecklist: injectedChecklist,
+  });
 
   const worker = spawnWorker({
     workerId,
@@ -384,6 +470,41 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(existsSync(path.join(project.projectRuntimeRoot, "wiki", "inbox")), true);
   assert.equal(existsSync(path.join(project.projectRuntimeRoot, "wiki", "outputs")), true);
   assert.equal(existsSync(path.join(cpbRoot, "cpb-task")), false);
+
+  // ── GENUINE checklist-path assertions ──────────────────────────────────
+  // result.status==="completed" must hold because the checklist machinery ran
+  // end-to-end on this fixture, NOT because a bare legacy verdict slipped past
+  // a permissive gate. Concretely we assert the three artifacts that only the
+  // checklist path produces, in the shape only a PASSING run produces:
+  //   1. acceptance-checklist: frozen, AC-001 required, allowedFiles=[README.md]
+  //   2. evidence-ledger: EV-001 result:"pass" matchCount:1 (the deterministic
+  //      probe observed README.md actually changed in the worktree)
+  //   3. checklist-verdict: status:"pass", AC-001 result:"pass", citing EV-001
+  //      via the real ledger id (remapEvidenceRefs rewrote the "pending" placeholder)
+  const outputsDir = path.join(project.projectRuntimeRoot, "wiki", "outputs");
+  const readArtifact = async (prefix: string) => {
+    const files = (await readdir(outputsDir)).filter((f) => f.startsWith(`${prefix}-`) && f.endsWith(".md"));
+    assert.equal(files.length, 1, `expected exactly one ${prefix} artifact, found ${files.length}`);
+    return JSON.parse(await readFile(path.join(outputsDir, files[0]), "utf8"));
+  };
+  const frozenChecklist = await readArtifact("acceptance-checklist");
+  assert.equal(frozenChecklist.status, "frozen");
+  assert.equal(frozenChecklist.items.length, 1);
+  assert.equal(frozenChecklist.items[0].id, "AC-001");
+  assert.equal(frozenChecklist.items[0].required, true);
+  assert.deepEqual(frozenChecklist.items[0].allowedFiles, ["README.md"]);
+  const evidenceLedger = await readArtifact("evidence-ledger");
+  assert.equal(evidenceLedger.evidence.length, 1);
+  assert.equal(evidenceLedger.evidence[0].id, "EV-001");
+  assert.equal(evidenceLedger.evidence[0].checklistId, "AC-001");
+  assert.equal(evidenceLedger.evidence[0].result, "pass", "probe must observe matchCount>0 -> pass (README.md landed in worktree)");
+  assert.ok(evidenceLedger.evidence[0].matchCount >= 1, `matchCount must be >=1, got ${evidenceLedger.evidence[0].matchCount}`);
+  const checklistVerdict = await readArtifact("checklist-verdict");
+  assert.equal(checklistVerdict.status, "pass");
+  assert.equal(checklistVerdict.items[0].checklistId, "AC-001");
+  assert.equal(checklistVerdict.items[0].result, "pass");
+  assert.equal(checklistVerdict.items[0].evidenceRefs[0].ledgerId, "evidence-ledger-job-managed-success", "remapEvidenceRefs must rewrite the placeholder ledgerId");
+  assert.equal(checklistVerdict.items[0].evidenceRefs[0].evidenceId, "EV-001");
 
   const registry = await readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`));
   assert.equal(registry.status, "ready");
@@ -560,6 +681,7 @@ test("managed worker releases persistent ACP provider resources between assignme
     planMode: "light",
     attemptToken: "attempt-token-one",
     metadata: { agents: { executor: "fake-acp", verifier: "fake-acp" } },
+    acceptanceChecklist: buildInjectedAcceptanceChecklist({ jobId: "job-managed-persistent-one" }),
   });
   const second = await writeValidAssignment({
     hubRoot,
@@ -571,6 +693,7 @@ test("managed worker releases persistent ACP provider resources between assignme
     planMode: "light",
     attemptToken: "attempt-token-two",
     metadata: { agents: { executor: "fake-acp", verifier: "fake-acp" } },
+    acceptanceChecklist: buildInjectedAcceptanceChecklist({ jobId: "job-managed-persistent-two" }),
   });
 
   const worker = spawnWorker({

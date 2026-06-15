@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
+import { runCommandTree } from "../runtime/process-tree.js";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
@@ -11,6 +12,7 @@ import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts
 import { phaseExecutionContract } from "./prompt-contract.js";
 import { validateChecklistVerdict } from "../workflow/acceptance-checklist.js";
 import { buildEvidenceProbePlan, validateEvidenceObservation } from "../workflow/evidence-probes.js";
+import { runChecklistProbes } from "../workflow/probe-runner.js";
 
 const execFile: any = promisify(execFileCb);
 const OUTPUT_TAIL_CHARS = 4000;
@@ -99,18 +101,45 @@ async function focusedNodeTestFiles(cwd, jsFiles) {
   return [...tests];
 }
 
-async function runHardGates(cwd) {
+async function runHardGates(cwd, opts: { signal?: AbortSignal; registerChild?: (pid: number) => void | Promise<void> } = {}) {
   const errors = [];
   const checks = [];
+
+  const gateTimeout = (key, def) => {
+    const n = Number.parseInt(process.env[key] || "", 10);
+    return Number.isFinite(n) && n > 0 ? n : def;
+  };
+  const checkMs = gateTimeout("CPB_GATE_TIMEOUT_CHECK", 30_000);
+  const testMs = gateTimeout("CPB_GATE_TIMEOUT_TEST", 120_000);
+  const fullMs = gateTimeout("CPB_GATE_TIMEOUT_FULL", 600_000);
+
+  // Adapt a runCommandTree result into the err-shape formatCommandFailure expects
+  // (execFile used to throw an Error with code/signal/stdout/stderr).
+  const toErr = (r, timeoutMs) => ({
+    code: r.exitCode,
+    signal: r.signal,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    timedOut: r.timedOut,
+    message: r.timedOut ? `timed out after ${timeoutMs}ms` : (r.error?.message || `exit code ${r.exitCode}`),
+  });
+  const run = (command, args, timeoutMs, env?) =>
+    runCommandTree(command, args, {
+      cwd,
+      env,
+      signal: opts.signal,
+      timeoutMs,
+      onSpawn: opts.registerChild ? (pid) => opts.registerChild(pid) : undefined,
+    });
 
   // Gate 1: node --check on relevant compiled .js files
   const jsFiles = await getChangedJsFiles(cwd);
   for (const file of jsFiles) {
-    try {
-      await execFile("node", ["--check", file], { cwd });
+    const r = await run("node", ["--check", file], checkMs);
+    if (r.exitCode === 0) {
       checks.push({ gate: "node --check", file, ok: true });
-    } catch (e) {
-      const formatted = formatCommandFailure(`node --check ${file}`, e);
+    } else {
+      const formatted = formatCommandFailure(`node --check ${file}`, toErr(r, checkMs));
       checks.push({ gate: "node --check", file, ok: false, ...formatted });
       errors.push(formatted.reason);
     }
@@ -118,11 +147,11 @@ async function runHardGates(cwd) {
 
   const focusedTests = await focusedNodeTestFiles(cwd, jsFiles);
   if (focusedTests.length > 0) {
-    try {
-      await execFile("node", ["--test", ...focusedTests], { cwd, env: { ...process.env, CI: "1" } });
+    const r = await run("node", ["--test", ...focusedTests], testMs, { ...process.env, CI: "1" });
+    if (r.exitCode === 0) {
       checks.push({ gate: "focused node --test", files: focusedTests, ok: true });
-    } catch (e) {
-      const formatted = formatCommandFailure(`node --test ${focusedTests.join(" ")}`, e);
+    } else {
+      const formatted = formatCommandFailure(`node --test ${focusedTests.join(" ")}`, toErr(r, testMs));
       checks.push({ gate: "focused node --test", files: focusedTests, ok: false, ...formatted });
       errors.push(formatted.reason);
     }
@@ -133,11 +162,11 @@ async function runHardGates(cwd) {
   // Gate 2: full npm test only when explicitly requested. The verifier agent still
   // checks acceptance criteria after these hard gates.
   if (process.env.CPB_VERIFY_FULL === "1" && await hasTestScript(cwd)) {
-    try {
-      await execFile("npm", ["test"], { cwd, env: { ...process.env, CI: "1" } });
+    const r = await run("npm", ["test"], fullMs, { ...process.env, CI: "1" });
+    if (r.exitCode === 0) {
       checks.push({ gate: "npm test", ok: true });
-    } catch (e) {
-      const formatted = formatCommandFailure("npm test", e);
+    } else {
+      const formatted = formatCommandFailure("npm test", toErr(r, fullMs));
       checks.push({ gate: "npm test", ok: false, ...formatted });
       errors.push(formatted.reason);
     }
@@ -180,7 +209,7 @@ function formatCommandFailure(command, err) {
  * Build the evidence ledger before the verifier prompt.
  * The ledger is deterministic: the verifier may only cite ids already present here.
  */
-function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, verificationEvidence, evidenceProbePlan, ledgerId }: Record<string, any>) {
+export function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, verificationEvidence, evidenceProbePlan, ledgerId }: Record<string, any>) {
   const finalWorktree = {
     head: verificationEvidence.git?.head || null,
     diffHash: verificationEvidence.git?.diffHash || null,
@@ -196,7 +225,11 @@ function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, v
     const checklistItem = acceptanceChecklist.items.find((item: Record<string, any>) => item.id === probe.checklistId);
     if (!checklistItem) continue;
     const validation = validateEvidenceObservation(probe.observation, checklistItem, { attemptId, finalWorktree });
-    if (!validation && !probe.emitFailedClaim) continue;
+    // `valid` = the record-gate: whether to emit a ledger entry at all.
+    // `satisfied` = the result: pass vs fail. A valid-but-not-satisfied entry
+    // (e.g. static matchCount:0) must be emitted with result:"fail" so the
+    // honest fail flows to retry/remediate — never silently completed.
+    if (!validation.valid && !probe.emitFailedClaim) continue;
     evidence.push({
       id: `EV-${String(index++).padStart(3, "0")}`,
       type: "evidence_claim",
@@ -206,7 +239,7 @@ function buildEvidenceLedger({ jobId, project, attemptId, acceptanceChecklist, v
       verificationMethod: checklistItem.verificationMethod,
       predicateId: checklistItem.predicateId,
       probeId: probe.probeId,
-      result: validation ? "pass" : "fail",
+      result: validation.satisfied ? "pass" : "fail",
       ...probe.observation,
       worktreeHead: finalWorktree.head,
       diffHash: finalWorktree.diffHash,
@@ -305,7 +338,7 @@ export async function runVerify(ctx) {
   }
 
   // Hard gates run BEFORE agent — non-bypassable syntax + test checks
-  const gate = await runHardGates(cwd);
+  const gate = await runHardGates(cwd, { signal: ctx?.signal, registerChild: ctx?.processHooks?.registerChild });
   if (!gate.ok) {
     return phaseFailed({
       phase: "verify",
@@ -328,10 +361,16 @@ export async function runVerify(ctx) {
   // Build evidence ledger BEFORE verifier prompt.
   // The ledger is deterministic: the verifier sees the exact claim ids it may cite.
   const ledgerId = `evidence-ledger-${jobId}`;
+  // Deterministic probes provide objective scope evidence (the change landed
+  // in the item's declared files), independent of the verifier agent's claim.
+  const probeChecks = acceptanceChecklist
+    ? await runChecklistProbes(acceptanceChecklist, cwd, { finalWorktree: verificationEvidence.git, attemptId })
+    : [];
+  const hardGateChecks = [...(verificationEvidence.hardGate?.checks || []), ...probeChecks];
   const evidenceProbePlan = acceptanceChecklist
     ? buildEvidenceProbePlan({
         acceptanceChecklist,
-        hardGateChecks: verificationEvidence.hardGate?.checks || [],
+        hardGateChecks,
         attemptId,
         finalWorktree: verificationEvidence.git,
       })
@@ -369,6 +408,7 @@ export async function runVerify(ctx) {
     timeoutMs: ctx.timeouts?.verify ?? 0,
     scope: ctx.scope,
     env: ctx.env,
+    dataRoot,
   });
 
   if (!agentResult.ok) {
@@ -480,6 +520,27 @@ export async function runVerify(ctx) {
       dataRoot,
       metadata: verdict,
     });
+
+    // A valid checklist verdict with status "fail" must fail the verify phase,
+    // mirroring the legacy path (verdict.status !== "pass" -> VERIFICATION_FAILED).
+    // Otherwise a verifier that returns a failing checklist would be recorded as
+    // passing just because its verdict shape validated.
+    if (finalChecklistVerdict.status === "fail") {
+      return phaseFailed({
+        phase: "verify",
+        failure: failure({
+          kind: FailureKind.VERIFICATION_FAILED,
+          phase: "verify",
+          reason: finalChecklistVerdict.reason || verdict.reason || "verification failed",
+          retryable: true,
+          cause: { verdict, artifact, checklistVerdict: finalChecklistVerdict, checklistVerdictArtifact },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(
+          { ...agentResult.diagnostics, artifact, verdict, evidenceLedgerArtifact, checklistVerdictArtifact },
+          promptArtifact,
+        ),
+      });
+    }
 
     return phasePassed({
       phase: "verify",

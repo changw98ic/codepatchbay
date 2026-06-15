@@ -123,6 +123,7 @@ function validCommandEvidence(
     result: "pass",
     command: "npm test",
     exitCode: 0,
+    cwd: "/repo",
     stdoutSha256: `sha256:stdout-${evidenceId}`,
     worktreeHead: "eee111",
     diffHash: "sha256:r7-diff",

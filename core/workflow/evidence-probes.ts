@@ -1,5 +1,28 @@
 type AnyRecord = Record<string, any>;
 
+/**
+ * Evidence observation validation result.
+ *
+ * - `valid`: the observation is structurally well-formed enough to RECORD
+ *   honestly in the evidence ledger (it has the method-identifying fields and
+ *   an interpretable objective output). This is what allows an honest zero
+ *   (e.g. static matchCount:0) to be recorded as an explicit fail rather than
+ *   silently dropped.
+ * - `satisfied`: the observation's method-specific objective output is
+ *   POSITIVE — i.e. it actually proves the checklist item. A recordable entry
+ *   that does not satisfy (e.g. static matchCount:0) flows to the ledger as
+ *   result:"fail" and onward to retry/remediate.
+ *
+ * Callers must use `valid` as the record-gate (whether to emit an entry at
+ * all) and `satisfied` as the result (pass vs fail).
+ */
+export interface EvidenceValidation {
+  valid: boolean;
+  satisfied: boolean;
+}
+
+const INVALID: EvidenceValidation = { valid: false, satisfied: false };
+
 function text(value: any) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -11,9 +34,9 @@ function text(value: any) {
  * { checklistId, verificationMethod, predicateId, result: "pass" } — is rejected
  * because the method-specific fields are missing.
  */
-export function validateEvidenceObservation(entry: AnyRecord, checklistItem: AnyRecord, { attemptId, finalWorktree }: AnyRecord = {}) {
-  if (!entry || typeof entry !== "object") return false;
-  if (text(attemptId) && text(entry.attemptId) !== text(attemptId)) return false;
+export function validateEvidenceObservation(entry: AnyRecord, checklistItem: AnyRecord, { attemptId, finalWorktree }: AnyRecord = {}): EvidenceValidation {
+  if (!entry || typeof entry !== "object") return INVALID;
+  if (text(attemptId) && text(entry.attemptId) !== text(attemptId)) return INVALID;
 
   switch (checklistItem.verificationMethod) {
     case "command":
@@ -45,116 +68,220 @@ export function validateEvidenceObservation(entry: AnyRecord, checklistItem: Any
       return validateAbsenceCheckObservation(entry);
 
     default:
-      return false;
+      return INVALID;
   }
 }
 
 /**
- * command / test: require command text, integer exitCode === 0, and stdoutSha256.
+ * Wrap a legacy boolean validator result as { valid, satisfied }.
+ * Preserves existing strictness for methods whose honest-zero distinction is
+ * not yet modeled (satisfied === valid). Tracking this per-method is separate
+ * debt and intentionally out of scope for this fix.
  */
-function validateCommandObservation(entry: AnyRecord) {
-  return Boolean(
-    text(entry.command)
-    && Number.isInteger(entry.exitCode)
-    && entry.exitCode === 0
-    && text(entry.stdoutSha256),
-  );
+function wrap(ok: boolean): EvidenceValidation {
+  return { valid: ok, satisfied: ok };
 }
 
 /**
- * static: require queryId and integer matchCount.
+ * command / test (single validator serves both methods — dispatched together in
+ * validateEvidenceObservation): spec requires command identity, cwd/repo root,
+ * integer exit code, stdout/stderr or parsed-output digest, worktree identity,
+ * and attempt id.
+ *
+ * - `valid` = a structurally complete command record: command identity, integer
+ *   exitCode, an output digest (stdoutSha256, stderrSha256, or a parsed
+ *   parsedOutput digest), and WHERE it ran (cwd or repoRoot). The record-gate:
+ *   a well-formed observation is recorded honestly rather than silently dropped.
+ * - `satisfied` = valid AND exitCode === 0 AND worktreeHead present. The
+ *   objective positive signal is a clean exit; worktreeHead ties the result to
+ *   the declared worktree so a stale/forged run about a different worktree
+ *   cannot satisfy. (buildEvidenceLedger stamps worktreeHead onto every ledger
+ *   entry, so real production command evidence carries it.) cwd/repoRoot is
+ *   required for valid — the record must say where it ran — but is not a
+ *   pass/fail signal on its own.
  */
-function validateStaticObservation(entry: AnyRecord) {
-  return Boolean(
-    text(entry.queryId)
-    && Number.isInteger(entry.matchCount),
-  );
+function validateCommandObservation(entry: AnyRecord): EvidenceValidation {
+  const hasCommand = text(entry.command);
+  const hasIntegerExitCode = Number.isInteger(entry.exitCode);
+  const hasDigest = text(entry.stdoutSha256) || text(entry.stderrSha256) || text(entry.parsedOutputDigest);
+  const hasLocation = text(entry.cwd) || text(entry.repoRoot);
+  const valid = Boolean(hasCommand && hasIntegerExitCode && hasDigest && hasLocation);
+  const satisfied = Boolean(valid && entry.exitCode === 0 && text(entry.worktreeHead));
+  return { valid, satisfied };
 }
 
 /**
- * runtime_event: require event type, event id or timestamp, and attemptId.
+ * static: valid requires queryId + integer matchCount (the record-gate —
+ * a well-formed observation with matchCount:0 is recorded honestly). satisfied
+ * additionally requires matchCount > 0 (the observation actually proves the
+ * item). matchCount:0 → { valid: true, satisfied: false }.
  */
-function validateRuntimeEventObservation(entry: AnyRecord) {
-  return Boolean(
+function validateStaticObservation(entry: AnyRecord): EvidenceValidation {
+  const hasQueryId = text(entry.queryId);
+  const hasIntegerMatchCount = Number.isInteger(entry.matchCount);
+  const valid = Boolean(hasQueryId && hasIntegerMatchCount);
+  const satisfied = Boolean(valid && entry.matchCount > 0);
+  return { valid, satisfied };
+}
+
+/**
+ * runtime_event: valid = event identity (eventType + event id or timestamp +
+ * attemptId); satisfied = valid plus a POSITIVE payload matcher
+ * (payloadMatcher + matchedValue) so a self-attested "I observed an event of
+ * type X" is recorded honestly as not-satisfied rather than silently passing.
+ */
+function validateRuntimeEventObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     text(entry.eventType)
     && (text(entry.eventId) || text(entry.observedAt) || text(entry.ts))
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(
+    valid
+    && text(entry.payloadMatcher)
+    && text(entry.matchedValue),
+  );
+  return { valid, satisfied };
 }
 
 /**
- * artifact_event: require artifact kind/id, hash or path resolution status, and attemptId.
+ * artifact_event: valid = artifact identity (kind/type + artifact hash or path
+ * or artifactId, the artifact-identity signal the spec requires) + timestamp +
+ * attemptId; satisfied = valid plus a POSITIVE payload matcher
+ * (payloadMatcher + matchedValue).
  */
-function validateArtifactEventObservation(entry: AnyRecord) {
-  return Boolean(
+function validateArtifactEventObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     (text(entry.artifactKind) || text(entry.eventType))
+    && (text(entry.artifactHash) || text(entry.path) || text(entry.artifactId))
     && (text(entry.observedAt) || text(entry.ts))
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(
+    valid
+    && text(entry.payloadMatcher)
+    && text(entry.matchedValue),
+  );
+  return { valid, satisfied };
 }
 
 /**
- * audit_export: require export builder invocation id, section path, and attemptId.
+ * audit_export: valid requires an export invocation identity (exportId,
+ * invocationId, or probeId), a sectionPath, and an attemptId — the structural
+ * record-gate so a well-formed observation is recorded honestly rather than
+ * silently dropped. satisfied additionally requires valueDigest (an objective
+ * hash of the observed export value) — the positive proof that the export
+ * actually contained the section's content. Without the digest an agent can
+ * only self-attest "I exported section X" with no proof of content, which is
+ * recordable (valid) but not satisfying.
  */
-function validateAuditExportObservation(entry: AnyRecord) {
-  return Boolean(
+function validateAuditExportObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     (text(entry.exportId) || text(entry.invocationId) || text(entry.probeId))
-    && (text(entry.sectionPath) || text(entry.observedAt) || text(entry.ts))
+    && text(entry.sectionPath)
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(valid && text(entry.valueDigest));
+  return { valid, satisfied };
 }
 
 /**
- * dag_event: require event type or probe id, observedAt or ts timestamp,
- * and DAG node id with attemptId.
+ * dag_event: valid = DAG node identity + event type/kind/probeId + timestamp +
+ * attemptId; satisfied = valid plus a POSITIVE payload matcher
+ * (payloadMatcher + matchedValue) so a self-attested "DAG node N fired" is
+ * recorded honestly as not-satisfied rather than silently passing.
  */
-function validateDagEventObservation(entry: AnyRecord) {
-  return Boolean(
+function validateDagEventObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     (text(entry.nodeId) || text(entry.dagNodeId))
     && (text(entry.eventType) || text(entry.artifactKind) || text(entry.probeId))
     && (text(entry.observedAt) || text(entry.ts))
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(
+    valid
+    && text(entry.payloadMatcher)
+    && text(entry.matchedValue),
+  );
+  return { valid, satisfied };
 }
 
 /**
- * worker_lifecycle: require assignment id, worker id, lifecycle event type, and attemptId.
+ * worker_lifecycle: valid = assignment/worker identity + lifecycle event type +
+ * timestamp + attemptId; satisfied = valid plus a POSITIVE payload matcher
+ * (payloadMatcher + matchedValue) so a self-attested "worker W transitioned" is
+ * recorded honestly as not-satisfied rather than silently passing.
  */
-function validateWorkerLifecycleObservation(entry: AnyRecord) {
-  return Boolean(
+function validateWorkerLifecycleObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     (text(entry.assignmentId) || text(entry.workerId))
     && (text(entry.eventType) || text(entry.lifecycleEvent) || text(entry.probeId))
     && (text(entry.observedAt) || text(entry.ts))
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(
+    valid
+    && text(entry.payloadMatcher)
+    && text(entry.matchedValue),
+  );
+  return { valid, satisfied };
 }
 
 /**
- * manual: require approval artifact id or event id, approver, approved timestamp,
- * scope containing the checklist id, and successful artifact/event resolution.
+ * manual: spec line 284 — approval artifact/event "resolvable through the
+ * artifact or event index with approver, timestamp, scope covering the
+ * checklist id, and attempt id. Self-attested approval fields in a ledger
+ * entry are not enough."
+ *
+ * - valid: the structural record-gate — approver, timestamp, scope covering
+ *   the checklist id, a resolvable approval artifact/event id, and the
+ *   agent's resolution flag set true. Enough to RECORD the claim honestly.
+ * - satisfied: valid AND the resolution produced an objective content hash
+ *   (`resolvedArtifactHash`) of the approval artifact/event as resolved from
+ *   the index. A bare `approvalArtifactResolved: true` flag an agent can set
+ *   is NOT proof — spec requires the artifact be objectively resolvable, so a
+ *   real hash must accompany the flag. valid-without-hash →
+ *   { valid: true, satisfied: false } (recordable but not proven), matching
+ *   spec's "self-attested approval fields are not enough".
  */
-function validateManualObservation(entry: AnyRecord, checklistItem: AnyRecord) {
-  return Boolean(
+function validateManualObservation(entry: AnyRecord, checklistItem: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     text(entry.approver)
     && (text(entry.approvedAt) || text(entry.ts))
     && Array.isArray(entry.scope)
     && entry.scope.includes(checklistItem.id)
     && Boolean(text(entry.approvalArtifactId || entry.approvalEventId) && entry.approvalArtifactResolved === true),
   );
+  const satisfied = Boolean(valid && text(entry.resolvedArtifactHash));
+  return { valid, satisfied };
 }
 
 /**
- * absence_check: require absence === true, bounded queryWindow with from and to,
- * event types, and attemptId.
+ * absence_check: spec line 285 — "bounded query source, query window, event
+ * types, active attempt id, and a negative query result."
+ *
+ * - valid: the structural record-gate — absence===true, bounded queryWindow
+ *   {from,to}, event types, and attemptId. Enough to RECORD an honest
+ *   absence claim.
+ * - satisfied: valid AND a bounded query source (`querySource` — the
+ *   path/index actually queried) AND an objective negative-result signature
+ *   (`queryResultSignature` — e.g. an empty-result count+hash, or the query
+ *   command plus its empty-result digest). A bare `absence: true`
+ *   self-attested boolean is NOT proof — spec frames the result as a real
+ *   "negative query result", so the observation must carry evidence the query
+ *   RAN and returned empty, not just a flag. valid-without-signature →
+ *   { valid: true, satisfied: false }.
  */
-function validateAbsenceCheckObservation(entry: AnyRecord) {
-  return Boolean(
+function validateAbsenceCheckObservation(entry: AnyRecord): EvidenceValidation {
+  const valid = Boolean(
     entry.absence === true
     && text(entry.queryWindow?.from)
     && text(entry.queryWindow?.to)
     && Array.isArray(entry.eventTypes)
     && text(entry.attemptId),
   );
+  const satisfied = Boolean(valid && text(entry.querySource) && text(entry.queryResultSignature));
+  return { valid, satisfied };
 }
 
 /**
@@ -211,6 +338,11 @@ export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [
     const existing = probeByChecklistId.get(checklistId);
     if (existing) {
       existing.observation = check.observation || check;
+      // Defensive re-stamp: the secondary observation may have been rebuilt
+      // from a bare `check` object lacking attemptId. Re-assert it so no
+      // probe observation can lose attemptId (the validateEvidenceObservation
+      // gate requires it when attemptId is non-empty).
+      if (text(attemptId)) existing.observation.attemptId = existing.observation.attemptId ?? attemptId;
       if (check.emitFailedClaim === true) existing.emitFailedClaim = true;
       continue;
     }
@@ -222,6 +354,7 @@ export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [
       observation: check.observation || check,
       emitFailedClaim: check.emitFailedClaim === true,
     };
+    if (text(attemptId)) probe.observation.attemptId = probe.observation.attemptId ?? attemptId;
     probeByChecklistId.set(checklistId, probe);
     probes.push(probe);
   }

@@ -14,6 +14,7 @@
 //   toolCalls?:  [{ toolCallId, title, status }] — emitted as tool_call updates
 //   usage?:      { inputTokens, outputTokens, totalTokens, cachedInputTokens? }
 import readline from "node:readline";
+import path from "node:path";
 import { readFile, appendFile } from "node:fs/promises";
 
 const args = process.argv.slice(2);
@@ -171,7 +172,18 @@ function sendUsage(usage: ScenarioUsage) {
 }
 
 function interpolate(text: string, promptText: string): string {
-  return text.split("{{prompt}}").join(promptText).split("{{cwd}}").join(process.cwd());
+  // {{cwd}} resolves to the fake agent's process.cwd(), which under the one-shot
+  // provider path is CPB_ROOT (NOT the worktree) — so writes via {{cwd}} land in
+  // the wrong place and are silently dropped. {{worktree}} resolves to the actual
+  // task worktree ({CPB_HUB_ROOT}/worktrees/{CPB_ACP_JOB_ID}-pipeline) so fixture
+  // writes reach the worktree the verifier's deterministic probes actually diff.
+  const hubRoot = process.env.CPB_HUB_ROOT || "";
+  const jobId = process.env.CPB_ACP_JOB_ID || "";
+  const worktreePath = hubRoot && jobId ? path.join(hubRoot, "worktrees", `${jobId}-pipeline`) : process.cwd();
+  return text
+    .split("{{prompt}}").join(promptText)
+    .split("{{cwd}}").join(process.cwd())
+    .split("{{worktree}}").join(worktreePath);
 }
 
 async function performWrites(writes: ScenarioWrite[] | undefined, promptText: string) {

@@ -86,6 +86,7 @@ function validCommandEvidence(
     probeId: `probe-${evidenceId}`,
     result: "pass",
     command: "npm test",
+    cwd: "/repo/flow",
     exitCode: 0,
     stdoutSha256: `sha256:stdout-${evidenceId}`,
     worktreeHead: "eee222",

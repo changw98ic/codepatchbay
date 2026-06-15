@@ -139,6 +139,7 @@ function passingEvidenceLedger() {
         result: "pass",
         command: "npm test",
         exitCode: 0,
+        cwd: "/repo/flow",
         stdoutSha256: "sha256:stdout-r5",
         summary: "all tests pass",
         worktreeHead: "ccc333",

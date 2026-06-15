@@ -8,6 +8,7 @@ import { assertProviderAvailable } from "./provider-quota.js";
 import { getProviderAdapter } from "./provider-adapters.js";
 import { prepareTask } from "./project/project-loader.js";
 import { buildArtifactIndex } from "./job/job-projection.js";
+import { addChildPid } from "./infra.js";
 import {
   delegateMarkProviderUnavailable,
   delegateEnqueueProviderUsage,
@@ -91,6 +92,13 @@ export async function runJobWithServices(opts) {
     agentAvailability: opts.agentAvailability || null,
     agentHealth: opts.agentHealth || null,
     teamPolicy: opts.teamPolicy || null,
+    // Inject the existing process registry so verify hard-gate child PIDs are
+    // persisted to {dataRoot}/processes/ (same store worker-supervisor uses).
+    // opts.signal (AbortSignal) flows through ...opts above into ctx, reaching
+    // runVerify → runHardGates → runCommandTree without extra plumbing.
+    processHooks: opts.jobId ? {
+      registerChild: (pid: number) => addChildPid(cpbRoot, opts.jobId, pid, { dataRoot: projectRuntimeRoot }),
+    } : undefined,
     ...services,
     providerServices: callerProvidedProviderServices ? opts.providerServices : services.providerServices,
   });

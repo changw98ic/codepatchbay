@@ -45,6 +45,10 @@ async function runTests(files, opts: Record<string, any> = {}) {
     if (key.startsWith("CPB_")) delete env[key];
   }
   env.CPB_WORKER_DISPATCH_ENABLED = "0";
+  // Tests use fake agent pools; the default-on LLM checklist decomposition (a
+  // real planner call in phase 3) is opt-in per test via process.env. Production
+  // does not run through this script, so the default-on behavior is unchanged.
+  env.CPB_CHECKLIST_DECOMPOSE = "0";
   Object.assign(env, envOverrides);
 
   console.log(`Running ${label}: ${files.length} file(s)`);
