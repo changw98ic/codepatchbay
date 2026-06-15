@@ -1,6 +1,6 @@
 <svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">CodePatchbay social preview</title>
-  <desc id="desc">A local handoff runner connecting Codex planning, Claude Code execution, and Codex verification.</desc>
+  <desc id="desc">A local delivery runtime connecting coding agents, evidence tracking, and reviewable artifacts.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#101820"/>
@@ -32,7 +32,7 @@
 
   <text x="74" y="128" class="small">ALPHA / SOURCE-AVAILABLE / NON-COMMERCIAL</text>
   <text x="72" y="226" class="title">CodePatchbay</text>
-  <text x="78" y="280" class="tag">Local handoff runner for Codex + Claude Code</text>
+  <text x="78" y="280" class="tag">Local delivery runtime for coding agents</text>
 
   <g filter="url(#shadow)">
     <rect x="92" y="382" width="250" height="116" rx="24" fill="#f8f0df"/>

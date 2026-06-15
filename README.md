@@ -2,44 +2,44 @@
 
 [![npm version](https://img.shields.io/npm/v/codepatchbay.svg)](https://www.npmjs.com/package/codepatchbay) [English](README.en.md)
 
-**统筹 coding agents 的 AI 项目经理。**
+**本地/私有化的 coding-agent 交付运行时。**
 
-给它一个任务或 GitHub Issue，它负责拆解、分派、验收，并把结果整理成可审查的 PR。
+把任务或 GitHub Issue 交给 CodePatchBay。它通过 ACP 调用 Codex、Claude Code 或其他 agent，拆解计划、执行阶段、记录证据、验证结果，并生成可审查的本地产物或草稿 PR。
 
 ```text
-Issue / 任务 → CodePatchBay → 分派 coding agents → 验证通过的 PR
+Issue / 任务 → CodePatchBay Runtime → coding agents → 有证据的可审交付
 ```
 
-CodePatchBay 不替代 Claude Code、Codex 或其他 coding agents。它管理它们。
+CodePatchBay 不替代 Claude Code、Codex 或其他 coding agents。它管理 agent 之间的交接、状态、证据和产物。
 
-## 为什么 coding agents 需要项目经理
+## 为什么需要交付运行时
 
-Coding agents 擅长写代码，但真正的工程工作不只是代码生成。一个完整的编码工作流还需要：
+Coding agents 擅长写代码，但真实工程交付不只是代码生成。一个可审查的编码工作流还需要：
 
 - **任务接收** — 理解需求、拆解工作
 - **规划** — 确定改动范围和风险
 - **分派** — 把工作交给合适的 agent
 - **跟踪** — 收集产物、记录进度
-- **验证** — 审查变更是否正确
-- **交付** — 准备 PR 供人类最终审查
+- **验证** — 用证据判断变更是否正确
+- **交付** — 生成本地产物或草稿 PR，供人类最终审查
 
-CodePatchBay 提供的就是这层协调。
+CodePatchBay 提供的就是这层本地运行时和审计层。
 
 ## 它怎么工作
 
 ```text
 任务或 GitHub Issue
         ↓
-CodePatchBay 项目经理
+CodePatchBay Runtime
         ↓
-  拆解计划 → 分派 coding agent → 收集变更 → 验证结果 → 准备 PR
+  拆解计划 → 分派 agent → 记录事件和产物 → 验证证据 → 交付可审结果
         ↓
   Codex · Claude Code · 其他 coding agents
         ↓
   人类审查并合并
 ```
 
-每一步都产生本地产物（Markdown 文件），你可以在信任最终变更之前审查每一个环节。
+每一步都产生本地产物（Markdown、JSONL、checklist、evidence ledger），你可以在信任最终变更之前审查每一个环节。
 
 ## 快速开始
 
@@ -86,7 +86,7 @@ CodePatchBay 会：
 2. 把执行工作分派给 coding agent
 3. 收集变更和产物
 4. 验证结果是否正确
-5. 准备 PR 步骤
+5. 生成本地交付产物或草稿 PR 步骤
 
 ```bash
 # 查看进展
@@ -96,7 +96,7 @@ cpb status myproj
 cpb outputs myproj
 ```
 
-## GitHub Issue 到 PR
+## GitHub Issue 到草稿 PR
 
 连接 GitHub 后，给 Issue 打上 `cpb` 标签，CodePatchBay 自动接管：
 
@@ -133,11 +133,11 @@ cpb run "add unit tests for auth" \
 
 ## 功能
 
-- **任务管理** — 从 CLI 或 GitHub Issue 接收任务，拆解工作
-- **智能分派** — 把规划、执行、验证分给最合适的 agent
-- **产物追踪** — 每一步产生可审查的本地产物
-- **结果验证** — 变更必须通过验证才能进入 PR
-- **GitHub 集成** — Issue 标签触发、草稿 PR、webhook 连接
+- **任务接收** — 从 CLI 或 GitHub Issue 接收任务，拆解工作
+- **角色路由** — 把规划、执行、验证、审查和补救分给合适的 agent
+- **证据追踪** — 每一步产生可审查的本地产物和 evidence ledger
+- **完成门** — checklist、verdict 和 runtime evidence 通过后才交付
+- **GitHub transport** — Issue 标签触发、草稿 PR、webhook 连接
 - **多 Agent 支持** — Codex、Claude Code、OpenCode 及自定义 agent
 - **持久化任务** — 基于 event log + checkpoint 的断点恢复、多 worker 调度、无人值守运行
 
@@ -205,10 +205,10 @@ and `cpb status <project>` to see the latest verdict.
 
 ## 设计原则
 
-1. **项目经理角色** — 不替代 coding agents，而是协调它们完成完整的工程工作流
+1. **交付运行时** — 不替代 coding agents，而是管理它们的交接、状态和验收
 2. **人类最终审查** — 所有变更经过验证后仍需人类审查才能合并
 3. **本地优先** — 一切运行在你的机器上，不需要托管服务
-4. **产物可审查** — 每一步产生本地文件，你可以在任何环节介入
+4. **证据可审查** — 每一步产生本地文件，你可以在任何环节介入
 5. **Agent 可组合** — 任何 ACP 兼容的 coding agent 都可以接入
 
 ## 安全
