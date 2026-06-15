@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -75,6 +76,13 @@ function spawnJobRunner(args: string[], envOverrides: Record<string, string> = {
   delete env.CPB_HUB_ROOT;
   delete env.CPB_PROJECT_RUNTIME_ROOT;
   Object.assign(env, envOverrides);
+
+  // Ensure the spawn cwd (cpbRoot = args[1]) exists. On Linux, spawning into a
+  // non-existent cwd fails with a misleading `spawn <node> ENOENT` (the CI flake
+  // on main, e.g. "rejects missing data root" passes a cpbRoot that no test
+  // created). job-runner.js reads --cpb-root as an absolute arg, not from cwd,
+  // so creating the dir only ensures spawn succeeds without changing behavior.
+  try { mkdirSync(args[1], { recursive: true }); } catch { /* exists or unwritable */ }
 
   return spawn(process.execPath, [BRIDGE_PATH, ...args], {
     cwd: args[1], // cpbRoot

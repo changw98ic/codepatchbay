@@ -156,7 +156,7 @@ async function smoke(label, args, validator) {
 
 const results = await Promise.all([
   smoke("cpb setup --json", ["setup", "--json"], validateSetup),
-  smoke("cpb demo --json", ["demo", "--json"], validateDemo),
+  // `cpb demo` was removed in 6a3cf96f (cut demo/cron/soak); demo smoke dropped.
 ]);
 
 if (!results.every(Boolean)) {
