@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -85,13 +86,30 @@ test("runCommandTree: timeout tears down the whole process group (grandchild rea
   // must reap the grandchild too. (A detached grandchild would setsid into its own
   // group and escape — that is NOT the hard-gate scenario we are guarding.)
   const cwd = await makeCwd();
-  const script = `const cp=require('child_process');const g=cp.spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{stdio:'ignore'});g.unref();process.stdout.write(String(g.pid));setInterval(()=>{},10000);`;
-  const r = await runCommandTree("node", ["-e", script], { cwd, timeoutMs: 1000, graceMs: 500 });
+  const pidFile = join(cwd, "grandchild.pid");
+  // The grandchild writes its OWN pid to a file as its first statement on start,
+  // so the pid we assert on never depends on the parent surviving long enough to
+  // flush a pipe or forward the value. killTree fires SIGTERM at timeoutMs; the
+  // grandchild is in the parent's process group (default — not detached), so it
+  // must be reaped too. timeoutMs is sized for spawn + Node startup under
+  // concurrent-test CPU contention, not to exercise the timeout value itself.
+  const gcScript = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},10000);`;
+  const script = `const cp=require('child_process');const g=cp.spawn(process.execPath,['-e',${JSON.stringify(gcScript)}],{stdio:'ignore'});g.unref();setInterval(()=>{},10000);`;
+  const r = await runCommandTree("node", ["-e", script], { cwd, timeoutMs: 3000, graceMs: 500 });
   assert.equal(r.timedOut, true);
-  const grandchildPid = Number.parseInt(r.stdout, 10);
-  assert.ok(Number.isFinite(grandchildPid) && grandchildPid > 0, `grandchild pid captured: ${r.stdout}`);
+  // The grandchild writes its pid before entering its hang interval; poll briefly
+  // in case Node startup lagged under load.
+  let grandchildPid = NaN;
+  for (let i = 0; i < 20; i++) {
+    try {
+      grandchildPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+      if (Number.isFinite(grandchildPid) && grandchildPid > 0) break;
+    } catch { /* not written yet */ }
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  assert.ok(Number.isFinite(grandchildPid) && grandchildPid > 0, `grandchild pid file never appeared: ${pidFile}`);
   // Allow grace + signal propagation, then the grandchild must be dead.
-  await new Promise((res) => setTimeout(res, 1000));
+  await new Promise((res) => setTimeout(res, 1500));
   let alive = true;
   try { process.kill(grandchildPid, 0); } catch { alive = false; }
   assert.equal(alive, false, "grandchild in the process group must be reaped by killTree");
