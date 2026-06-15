@@ -605,6 +605,14 @@ test("managed worker stops an active assignment when its cancel control file app
     workflow: "direct",
     planMode: "light",
     attemptToken: "attempt-token-cancel",
+    // Inject a prebuilt acceptance checklist so prepare_task skips the LLM
+    // decomposition step (which routes to a planner agent that is not wired in
+    // this fake-acp harness). Without this the job hangs in prepare_task and
+    // never reaches the execute phase the cancel race targets.
+    acceptanceChecklist: buildInjectedAcceptanceChecklist({
+      jobId: "job-managed-cancel",
+      task: "managed worker cancel",
+    }),
     metadata: { agents: { executor: "fake-acp" } },
   });
 

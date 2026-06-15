@@ -90,11 +90,15 @@ test("static item with empty allowedFiles yields matchCount === 0 (no scope to p
   }
 });
 
-test("non-static items are skipped by the runner", async () => {
+test("non-static command items without a declared command produce an honest failed claim (never silently dropped)", async () => {
   const dir = await makeGitRepo();
   try {
-    const checks = await runChecklistProbes(checklist([staticItem({ id: "AC-002", verificationMethod: "command" })]), dir, {});
-    assert.equal(checks.length, 0);
+    const checks = await runChecklistProbes(checklist([staticItem({ id: "AC-002", verificationMethod: "command", expectedEvidence: "" })]), dir, {});
+    assert.equal(checks.length, 1);
+    const obs = checks[0].observation;
+    assert.equal(obs.verificationMethod, "command");
+    assert.equal(checks[0].emitFailedClaim, true);
+    assert.match(String(obs.note), /declares no runnable command/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
