@@ -1,10 +1,10 @@
-# CodePatchbay — Coding Agent 的 AI 项目经理
+# CodePatchbay — 本地 coding-agent 交付运行时
 
-> 用 ACP (Agent Client Protocol) 统一连接 coding agents，做任务拆解 → 分派 → 验证 → 交付，结果整理成可审查的 PR。
+> 用 ACP (Agent Client Protocol) 连接 coding agents，执行任务拆解 → 分派 → 证据记录 → 验证 → 交付，结果落成本地可审查产物或草稿 PR。
 
 ## 项目概览
 
-CodePatchbay 是一个 **纯 Node.js CLI 工具**（运行时依赖仅 `chokidar`），定位为「coding agents 的 AI 项目经理」。它不替代 Claude Code / Codex / 其他 agent，而是用 ACP stdio 协议中立地连接它们，编排 plan → execute → verify 流水线，并通过 durable event log + checkpoint 支持中断恢复与多 worker 调度。
+CodePatchbay 是一个 **纯 Node.js CLI 工具**（运行时依赖仅 `chokidar`），定位为本地/私有化的 coding-agent 交付运行时。它不替代 Claude Code / Codex / 其他 agent，而是用 ACP stdio 协议中立地连接它们，编排 plan → execute → verify 流水线，记录 evidence/checklist/verdict，并通过 durable event log + checkpoint 支持中断恢复与多 worker 调度。
 
 核心使用路径：`cpb pipeline <project> "<task>" [retries]` 一条全自动流水线；也可单命令手动触发各阶段。
 

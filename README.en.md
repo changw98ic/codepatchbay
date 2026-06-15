@@ -2,44 +2,44 @@
 
 [![npm version](https://img.shields.io/npm/v/codepatchbay.svg)](https://www.npmjs.com/package/codepatchbay) [中文](README.md)
 
-**Project-manager agent for coding agents.**
+**Local delivery runtime for coding agents.**
 
-Give it a task or GitHub issue. It plans the work, coordinates coding agents, verifies the result, and prepares a reviewable pull request.
+Give it a task or GitHub issue. CodePatchBay uses ACP to run Codex, Claude Code, or another agent through planning, execution, evidence capture, verification, and an inspectable local delivery or draft PR.
 
 ```text
-Issue / Task → CodePatchBay PM Agent → Coding Agents → Verified PR
+Issue / Task → CodePatchBay Runtime → Coding Agents → Evidence-backed Delivery
 ```
 
-CodePatchBay does not replace Claude Code, Codex, or other coding agents. It manages them.
+CodePatchBay does not replace Claude Code, Codex, or other coding agents. It manages their handoffs, state, evidence, and artifacts.
 
-## Why coding agents need a PM
+## Why coding agents need a runtime
 
-Coding agents are good at writing code, but real engineering work needs more than code generation. A complete coding workflow also needs:
+Coding agents are good at writing code, but real engineering delivery needs more than code generation. An inspectable coding workflow also needs:
 
 - **Task intake** — understand requirements, break down work
 - **Planning** — determine scope, affected files, and risks
 - **Delegation** — assign work to the right agent
 - **Tracking** — collect artifacts, record progress
-- **Verification** — review whether changes are correct
-- **Delivery** — prepare a PR for human review
+- **Verification** — judge changes against evidence
+- **Delivery** — produce local artifacts or a draft PR for human review
 
-CodePatchBay provides that coordination layer.
+CodePatchBay provides that local runtime and audit layer.
 
 ## How it works
 
 ```text
 Task or GitHub Issue
         ↓
-CodePatchBay PM Agent
+CodePatchBay Runtime
         ↓
-  Plan → Delegate to coding agent → Collect changes → Verify → Prepare PR
+  Plan → Delegate to agent → Record events and artifacts → Verify evidence → Deliver reviewable result
         ↓
   Codex · Claude Code · Other coding agents
         ↓
   Human review and merge
 ```
 
-Each step produces local artifacts (Markdown files) you can inspect before trusting the final change.
+Each step produces local artifacts (Markdown, JSONL, checklist, evidence ledger) you can inspect before trusting the final change.
 
 ## Quick Start
 
@@ -86,7 +86,7 @@ CodePatchBay will:
 2. Delegate execution to a coding agent
 3. Collect changes and artifacts
 4. Verify the result is correct
-5. Prepare a PR for review
+5. Produce local delivery artifacts or a draft PR for review
 
 ```bash
 # Check progress
@@ -96,7 +96,7 @@ cpb status myproj
 cpb outputs myproj
 ```
 
-## GitHub issue to PR
+## GitHub issue to draft PR
 
 Connect GitHub, label an issue with `cpb`, and CodePatchBay takes over:
 
@@ -133,11 +133,11 @@ cpb run "add unit tests for auth" \
 
 ## Features
 
-- **Task management** — accept tasks from CLI or GitHub issues, break down work
-- **Smart delegation** — assign planning, execution, and verification to the best agent
-- **Artifact tracking** — each step produces inspectable local artifacts
-- **Result verification** — changes must pass verification before reaching PR
-- **GitHub integration** — issue labels trigger workflow, draft PRs, webhook connectivity
+- **Task intake** — accept tasks from CLI or GitHub issues, break down work
+- **Role routing** — assign planning, execution, verification, review, and remediation to the right agent
+- **Evidence tracking** — each step produces inspectable local artifacts and an evidence ledger
+- **Completion gate** — checklist, verdict, and runtime evidence must pass before delivery
+- **GitHub transport** — issue labels trigger workflow, draft PRs, webhook connectivity
 - **Multi-agent support** — Codex, Claude Code, OpenCode, and custom agents
 - **Durable jobs** — event log + checkpoint recovery, multi-worker scheduling, unattended execution
 
@@ -188,10 +188,10 @@ cpb version
 
 ## Design principles
 
-1. **PM role** — CodePatchBay doesn't replace coding agents; it coordinates them through a complete engineering workflow
+1. **Delivery runtime** — CodePatchBay doesn't replace coding agents; it manages their handoffs, state, and acceptance checks
 2. **Human in the loop** — all changes require human review before merging, even after verification
 3. **Local-first** — everything runs on your machine; no hosted service required
-4. **Inspectable artifacts** — each step produces local files you can inspect at any point
+4. **Inspectable evidence** — each step produces local files you can inspect at any point
 5. **Composable agents** — any ACP-compatible coding agent can be plugged in
 
 ## Security

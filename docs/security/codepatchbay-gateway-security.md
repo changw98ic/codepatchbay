@@ -6,7 +6,7 @@ operates a hosted service.
 
 ## Install and Supply Chain Safety
 
-CPB is not currently published as a public npm registry package. Install it
+CPB is published as the `codepatchbay` npm package and can also be installed
 from a trusted checkout or release tarball with `npm install -g .` or
 `sh scripts/install.sh`. There is no separate CodePatchBay-hosted artifact
 registry for the local CLI package.

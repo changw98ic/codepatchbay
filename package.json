@@ -1,6 +1,7 @@
 {
   "name": "codepatchbay",
   "version": "0.4.0",
+  "description": "Local delivery runtime for coding agents with ACP orchestration, evidence tracking, and reviewable artifacts.",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
