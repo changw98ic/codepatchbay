@@ -27,7 +27,7 @@ Rules:
 - verdict MUST be exactly "approved", "changes_requested", or "needs_discussion"
 - Do NOT write any artifact files yourself. The system will persist the review.`;
 
-export async function runReview(ctx) {
+export async function runReview(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "reviewer";
@@ -96,14 +96,14 @@ export async function runReview(ctx) {
   });
 }
 
-function getRequiredArtifact(previousResults, kind) {
+function getRequiredArtifact(previousResults: Record<string, any>[], kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) return previousResults[i].artifact;
   }
   return null;
 }
 
-function renderReviewMarkdown(data) {
+function renderReviewMarkdown(data: Record<string, any>) {
   return `# Review
 
 ## Verdict
@@ -113,11 +113,11 @@ ${data.verdict || "N/A"}
 ${data.summary || "N/A"}
 
 ## Comments
-${(data.comments || []).map((c) => `- **${c.file}${c.line ? `:${c.line}` : ""}**: ${c.comment}`).join("\n") || "- None"}
+${(data.comments || []).map((c: Record<string, any>) => `- **${c.file}${c.line ? `:${c.line}` : ""}**: ${c.comment}`).join("\n") || "- None"}
 `;
 }
 
-async function buildReviewPrompt(ctx, deliverableArtifact) {
+async function buildReviewPrompt(ctx: Record<string, any>, deliverableArtifact: Record<string, any> | null) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("review", ctx, { deliverableArtifact });
   }
@@ -128,7 +128,7 @@ Project: ${ctx.project}
 ${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "reviewer";
   const raw = ctx.agents?.[role] || ctx.agents?.reviewer || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

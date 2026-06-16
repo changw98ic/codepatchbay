@@ -11,22 +11,22 @@ const BUILTIN_ORDER = new Map([
   ["reasonix", 50],
 ]);
 
-function clone(value) {
+function clone(value: any) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function orderFor(agent) {
+function orderFor(agent: Record<string, any>) {
   return BUILTIN_ORDER.get(agent.id) ?? 1000;
 }
 
-function sortCatalog(agents) {
-  return [...agents].sort((a, b) => {
+function sortCatalog(agents: any[]) {
+  return [...agents].sort((a: Record<string, any>, b: Record<string, any>) => {
     const byOrder = orderFor(a) - orderFor(b);
     return byOrder || a.id.localeCompare(b.id);
   });
 }
 
-function failOrSkip(error, strict) {
+function failOrSkip(error: Error, strict: boolean) {
   if (strict) throw error;
   return null;
 }
@@ -69,12 +69,12 @@ export function loadSetupAgentCatalog({ manifestDir = BUILTIN_MANIFEST_DIR, stri
 export function listSetupAgents({ includeOptional = true } = {}) {
   const agents = loadSetupAgentCatalog({ strict: true });
   assertValidSetupAgentCatalog(agents);
-  return includeOptional ? agents : agents.filter((agent) => agent.recommended);
+  return includeOptional ? agents : agents.filter((agent: Record<string, any>) => agent.recommended);
 }
 
-export function getSetupAgent(id) {
+export function getSetupAgent(id: string) {
   const agents = loadSetupAgentCatalog({ strict: true });
   assertValidSetupAgentCatalog(agents);
-  const agent = agents.find((entry) => entry.id === id);
+  const agent = agents.find((entry: Record<string, any>) => entry.id === id);
   return agent ? clone(agent) : null;
 }

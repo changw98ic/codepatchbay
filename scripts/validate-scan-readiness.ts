@@ -132,7 +132,7 @@ function makeFakeProjects(n: number) {
 
 // ── Checks (each gets an isolated hubRoot) ───────────────────────────────────
 
-export async function checkQueueIntegrity(hubRoot) {
+export async function checkQueueIntegrity(hubRoot: any) {
   const projects = makeFakeProjects(5);
   await seedQueue(hubRoot, projects);
   const queue = await loadQueue(hubRoot);
@@ -145,7 +145,7 @@ export async function checkQueueIntegrity(hubRoot) {
   return { pass: true, detail: `${queue.entries.length} entries, all pending with valid state` };
 }
 
-export async function checkQueueStatusSurfaces(hubRoot) {
+export async function checkQueueStatusSurfaces(hubRoot: any) {
   await seedQueue(hubRoot, [
     { projectId: "a", description: "a-1" },
     { projectId: "a", description: "a-2" },
@@ -164,7 +164,7 @@ export async function checkQueueStatusSurfaces(hubRoot) {
   return { pass: true, detail: `pending→in_progress correct: ${JSON.stringify(after)}` };
 }
 
-export async function checkRateLimitBackoff(hubRoot) {
+export async function checkRateLimitBackoff(hubRoot: any) {
   return withQuotaDelegate(hubRoot, async () => {
     const pool = new AcpPool({
       hubRoot,
@@ -204,7 +204,7 @@ export async function checkRateLimitBackoff(hubRoot) {
   });
 }
 
-export async function checkConcurrencyBounds(hubRoot) {
+export async function checkConcurrencyBounds(hubRoot: any) {
   let maxActive = 0;
   let currentActive = 0;
   const pool = new AcpPool({
@@ -235,7 +235,7 @@ export async function checkConcurrencyBounds(hubRoot) {
   return { pass: true, detail: `6 tasks, limit 2, maxActive=${maxActive}, active now=${st.active}` };
 }
 
-export async function checkMultiProjectScanUnder429(hubRoot) {
+export async function checkMultiProjectScanUnder429(hubRoot: any) {
   return withQuotaDelegate(hubRoot, async () => {
     let callCount = 0;
     const rateLimitedProjects = new Set();
@@ -292,7 +292,7 @@ export async function checkMultiProjectScanUnder429(hubRoot) {
   });
 }
 
-export async function checkProcessGrowthBound(hubRoot) {
+export async function checkProcessGrowthBound(hubRoot: any) {
   const pool = new AcpPool({
     hubRoot,
     limits: { codex: 1, claude: 1 },

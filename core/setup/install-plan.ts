@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { getSetupAgent } from "./agent-catalog.js";
 
-function parseSimpleCommand(command) {
+function parseSimpleCommand(command: string) {
   const parts = command.trim().split(/\s+/);
   return {
     command: parts[0],
@@ -9,7 +9,7 @@ function parseSimpleCommand(command) {
   };
 }
 
-function renderPinnedCommand(template, version) {
+function renderPinnedCommand(template: string, version: string) {
   if (typeof version !== "string" || !version.trim()) {
     throw new Error("version must be a non-empty string");
   }
@@ -22,17 +22,17 @@ function renderPinnedCommand(template, version) {
   return template.replaceAll("{version}", version);
 }
 
-function packageNameFromNpm(command) {
+function packageNameFromNpm(command: string) {
   const parts = command.trim().split(/\s+/);
   return parts[parts.length - 1] || null;
 }
 
-function brewPackageFromCommand(command) {
+function brewPackageFromCommand(command: string) {
   const parts = command.trim().split(/\s+/);
   return parts[parts.length - 1] || null;
 }
 
-function rollbackFor(method, install) {
+function rollbackFor(method: string, install: Record<string, any>) {
   if (method === "npm") {
     const pkg = packageNameFromNpm(install.command);
     return {
@@ -54,7 +54,7 @@ function rollbackFor(method, install) {
   };
 }
 
-function supplyChainNotesFor({ shell, install }) {
+function supplyChainNotesFor({ shell, install }: { shell: boolean; install: Record<string, any> }) {
   const notes = ["Review the source URL before executing this plan."];
   if (shell) {
     notes.push("Fetched installer commands require extra supply-chain review before execution.");
@@ -65,7 +65,7 @@ function supplyChainNotesFor({ shell, install }) {
   return notes;
 }
 
-function planCommand(command) {
+function planCommand(command: string) {
   const shell = /[|&;<>()]/.test(command);
   const parsed = shell
     ? { command: "sh", args: ["-lc", command] }
@@ -73,7 +73,7 @@ function planCommand(command) {
   return { ...parsed, shell };
 }
 
-export function upgradeFor(method, agent) {
+export function upgradeFor(method: string, agent: Record<string, any>) {
   const upgrade = agent.upgrade?.[method] || null;
   if (!upgrade?.command) return null;
   const parsed = planCommand(upgrade.command);
@@ -90,7 +90,7 @@ export function upgradeFor(method, agent) {
   };
 }
 
-function pickMethod(agent, detected) {
+function pickMethod(agent: Record<string, any>, detected: Record<string, any>) {
   if (agent.install.brew && detected?.tools?.brew?.installed) return "brew";
   if (agent.install.npm && detected?.tools?.npm?.installed) return "npm";
   return Object.keys(agent.install)[0];
@@ -137,7 +137,7 @@ export function createInstallPlan({ agentId, method, version, detected }: Record
   };
 }
 
-export async function executeInstallPlan(plan, { stdio = "inherit" }: Record<string, any> = {}) {
+export async function executeInstallPlan(plan: Record<string, any>, { stdio = "inherit" }: Record<string, any> = {}) {
   if (!plan?.requiresExplicitConfirmation) {
     throw new Error("Refusing to execute an install plan without explicit-confirmation metadata");
   }

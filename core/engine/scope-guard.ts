@@ -13,7 +13,7 @@
  * @param {string[]} params.fixScope   - Allowed scope entries (exact paths, directory prefixes, glob patterns).
  * @returns {{ withinScope: boolean, violations: string[] }}
  */
-export function validateScopeConstraint({ diffPaths, fixScope }) {
+export function validateScopeConstraint({ diffPaths, fixScope }: { diffPaths: string[]; fixScope: string[] }) {
   if (!Array.isArray(fixScope) || fixScope.length === 0) {
     return { withinScope: true, violations: [] };
   }
@@ -38,7 +38,7 @@ export function validateScopeConstraint({ diffPaths, fixScope }) {
  * @param {string} line
  * @returns {string}
  */
-export function stripGitStatusPrefix(line) {
+export function stripGitStatusPrefix(line: string) {
   if (!line || typeof line !== "string") return "";
   // porcelain v1 format: XY<space>path  where XY is exactly 2 known status chars
   // Only strip when the first 2 chars are a recognized git status letter combo
@@ -54,7 +54,7 @@ export function stripGitStatusPrefix(line) {
  * @param {string} scopePattern
  * @returns {boolean}
  */
-function isPathInScope(filePath, scopePattern) {
+function isPathInScope(filePath: string, scopePattern: string) {
   if (!filePath || !scopePattern) return false;
 
   // Exact match
@@ -83,7 +83,7 @@ function isPathInScope(filePath, scopePattern) {
  * @param {string} pattern
  * @returns {boolean}
  */
-function globMatch(filePath, pattern) {
+function globMatch(filePath: string, pattern: string) {
   // ** → match anything including /
   // *  → match anything except /
   const regexSrc = pattern

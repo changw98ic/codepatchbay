@@ -7,7 +7,7 @@ export class ProjectCapabilityMapUnavailableError extends Error {
   code: string;
   details: Record<string, any>;
 
-  constructor(reason, details = {}) {
+  constructor(reason: string, details: Record<string, any> = {}) {
     super(reason);
     this.name = "ProjectCapabilityMapUnavailableError";
     this.code = "codegraph_unavailable";
@@ -68,7 +68,7 @@ const DOMAIN_RULES = [
 
 const DOCS_ONLY_RE = /\b(doc|docs|readme|comment|copy|typo|spelling|markdown)\b/i;
 
-function objectAt(source, keys) {
+function objectAt(source: Record<string, any>, keys: string[]) {
   for (const key of keys) {
     const value = source?.[key];
     if (value && typeof value === "object") return value;
@@ -76,7 +76,7 @@ function objectAt(source, keys) {
   return null;
 }
 
-function projectMaps(project, sourceContext = {}) {
+function projectMaps(project: Record<string, any>, sourceContext: Record<string, any> = {}) {
   const metadata = project?.metadata || {};
   const merged = { ...sourceContext, ...metadata, ...project };
   const capabilityMap = objectAt(merged, [
@@ -104,7 +104,7 @@ function projectMaps(project, sourceContext = {}) {
   return { capabilityMap, safetyBoundaryMap, highRiskAreaMap, confidence };
 }
 
-function requireCapabilityMap(project, sourceContext) {
+function requireCapabilityMap(project: Record<string, any>, sourceContext: Record<string, any>) {
   const maps = projectMaps(project, sourceContext);
   if (!maps.capabilityMap) {
     throw new ProjectCapabilityMapUnavailableError("Project Capability Map is unavailable", {
@@ -122,7 +122,7 @@ function requireCapabilityMap(project, sourceContext) {
   return maps;
 }
 
-function valuesToStrings(value) {
+function valuesToStrings(value: any): string[] {
   if (Array.isArray(value)) return value.flatMap(valuesToStrings);
   if (typeof value === "string") return [value];
   if (value && typeof value === "object") {
@@ -131,7 +131,7 @@ function valuesToStrings(value) {
   return [];
 }
 
-function filesForDomains(highRiskAreaMap, domains) {
+function filesForDomains(highRiskAreaMap: Record<string, any>, domains: string[]) {
   const files = new Set();
   for (const domain of domains) {
     const direct = highRiskAreaMap?.[domain] || highRiskAreaMap?.[domain.replace(/_/g, "-")];
@@ -204,7 +204,7 @@ async function resolveProjectForTask({ hubRoot, project, sourcePath }) {
   return registered || { id: project, sourcePath };
 }
 
-async function persistQueueRiskMap(hubRoot, sourceContext, riskMap, dynamicAgentPlan = null) {
+async function persistQueueRiskMap(hubRoot: string, sourceContext: Record<string, any>, riskMap: Record<string, any>, dynamicAgentPlan: Record<string, any> | null = null) {
   const queueEntryId = sourceContext?.queueEntryId || sourceContext?.entryId || sourceContext?.queue?.entryId;
   if (!hubRoot || !queueEntryId) return;
   await updateEntry(hubRoot, queueEntryId, {
@@ -218,7 +218,7 @@ async function persistQueueRiskMap(hubRoot, sourceContext, riskMap, dynamicAgent
   }).catch(() => {});
 }
 
-export async function prepareTask(cpbRootOrOptions, options = {}) {
+export async function prepareTask(cpbRootOrOptions: Record<string, any> | string, options: Record<string, any> = {}) {
   const cpbRoot = cpbRootOrOptions && typeof cpbRootOrOptions === "object"
     ? cpbRootOrOptions.cpbRoot
     : cpbRootOrOptions;

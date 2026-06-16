@@ -245,7 +245,7 @@ export class FailureRouter {
     }
   }
 
-  resetBudget(_entryId) {
+  resetBudget(_entryId: string) {
     // Budget derived from assignment.attempts — auto-resets on new assignment
   }
 }

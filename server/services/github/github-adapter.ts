@@ -61,48 +61,48 @@ export function createGithubAdapter() {
     boundaryVersion: BOUNDARY_VERSION,
     platform: "github",
 
-    async resolveTransport(hubRoot, options: Record<string, any> = {}) {
+    async resolveTransport(hubRoot: string, options: Record<string, any> = {}) {
       const transport = await resolveGithubTransport(hubRoot, { env: options.env });
       return validateTransportResult(transport);
     },
 
-    normalizeWebhookEvent(raw) {
+    normalizeWebhookEvent(raw: AnyRecord) {
       return normalizeGithubWebhookEvent(raw);
     },
 
-    matchTrigger(event, rules) {
+    matchTrigger(event: AnyRecord, rules: AnyRecord[]) {
       return matchGithubTrigger(event, rules);
     },
 
-    normalizeIssue(raw, options = {}) {
+    normalizeIssue(raw: AnyRecord, options: Record<string, any> = {}) {
       return normalizeGithubIssue(raw, options);
     },
 
-    async readIssues(hubRoot) {
+    async readIssues(hubRoot: string) {
       return readGithubIssues(hubRoot);
     },
 
-    async syncIssues(hubRoot, options = {}) {
+    async syncIssues(hubRoot: string, options: Record<string, any> = {}) {
       return syncGithubIssuesFromGh(hubRoot, options);
     },
 
-    buildIssueBranchParts(options = {}) {
+    buildIssueBranchParts(options: Record<string, any> = {}) {
       return buildGithubIssueBranchParts(options);
     },
 
-    async loadConfig(hubRoot) {
+    async loadConfig(hubRoot: string) {
       return loadGithubAppConfig(hubRoot);
     },
 
-    validateConfig(raw = {}) {
+    validateConfig(raw: AnyRecord = {}) {
       return validateGithubAppConfig(raw);
     },
 
-    resolveWebhookSecret(config, options = {}) {
+    resolveWebhookSecret(config: AnyRecord, options: Record<string, any> = {}) {
       return resolveGithubWebhookSecret(config, options);
     },
 
-    verifyWebhookSignature(options) {
+    verifyWebhookSignature(options: AnyRecord) {
       return verifyGithubWebhookSignature(options);
     },
   };
@@ -114,28 +114,28 @@ export function createGithubAdapter() {
 // github-triggers.ts exports
 // ============================================================
 
-function eventKey(event) {
+function eventKey(event: AnyRecord) {
   if (!event?.event || !event?.action) return null;
   return `${event.event}.${event.action}`;
 }
 
-function sameText(a, b) {
+function sameText(a: unknown, b: unknown) {
   return String(a || "").toLowerCase() === String(b || "").toLowerCase();
 }
 
-function commandMatches(commandText, expected) {
+function commandMatches(commandText: unknown, expected: unknown) {
   const command = String(commandText || "").trim();
   const prefix = String(expected || "").trim();
   return prefix !== "" && (command === prefix || command.startsWith(`${prefix} `));
 }
 
-function labelMatches(event, label) {
+function labelMatches(event: AnyRecord, label: unknown) {
   const expected = String(label || "").toLowerCase();
   if (!expected) return false;
-  return sameText(event.label, expected) || (event.labels || []).some((name) => sameText(name, expected));
+  return sameText(event.label, expected) || (event.labels || []).some((name: unknown) => sameText(name, expected));
 }
 
-function matchRule(event, rule) {
+function matchRule(event: AnyRecord, rule: AnyRecord) {
   if (!event || event.status !== "ok") return null;
   if (rule.event && rule.event !== eventKey(event)) return null;
 
@@ -154,7 +154,7 @@ function matchRule(event, rule) {
   return null;
 }
 
-export function matchGithubTrigger(event, rules = DEFAULT_GITHUB_TRIGGERS) {
+export function matchGithubTrigger(event: AnyRecord, rules: AnyRecord[] = DEFAULT_GITHUB_TRIGGERS) {
   for (const rule of rules || []) {
     const reason = matchRule(event, rule);
     if (!reason) continue;
@@ -179,7 +179,7 @@ export function matchGithubTrigger(event, rules = DEFAULT_GITHUB_TRIGGERS) {
 // ============================================================
 
 
-function ignored(event, reason) {
+function ignored(event: string | null, reason: string) {
   return {
     status: "ignored",
     event,
@@ -279,7 +279,7 @@ function normalizeInstallationEvent({ event, delivery, payload }) {
     installationId: payload.installation?.id ?? null,
     repositories: normalizeGithubLabels(
       (payload.repositories || payload.repositories_added || payload.repositories_removed || [])
-        .map((repo) => repo.full_name || repo.nameWithOwner || repo.fullName || repo.name),
+        .map((repo: AnyRecord) => repo.full_name || repo.nameWithOwner || repo.fullName || repo.name),
     ),
   };
 }

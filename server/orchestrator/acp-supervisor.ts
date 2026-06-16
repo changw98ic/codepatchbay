@@ -15,7 +15,7 @@ function resolveSupervisorAgent(env = process.env) {
   );
 }
 
-function resolveSupervisorProviderKey(agent, env = process.env) {
+function resolveSupervisorProviderKey(agent: string, env: Record<string, any> = process.env) {
   return (
     env.CPB_ACP_SUPERVISOR_PROVIDER_KEY ||
     env.CPB_SUPERVISOR_PROVIDER_KEY ||
@@ -375,7 +375,7 @@ For switch_agent, params must include: { "role": "planner"|"executor"|"verifier"
 For wait_for_rate_limit, params must include: { "untilTs": "<ISO datetime>" }`;
 }
 
-function parseDecisionOutput(output) {
+function parseDecisionOutput(output: string): { decision: Record<string, any> | null; error: string | null } {
   if (!output || typeof output !== "string") {
     return { decision: null, error: "empty supervisor output" };
   }

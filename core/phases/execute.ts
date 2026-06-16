@@ -31,7 +31,7 @@ Rules:
 - Do NOT include any text outside the code block
 - Do NOT write any artifact files yourself. The system will persist the deliverable.`;
 
-export async function runExecute(ctx) {
+export async function runExecute(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "executor";
@@ -163,7 +163,7 @@ export async function runExecute(ctx) {
   });
 }
 
-async function computeChangedFiles(cwd, before) {
+async function computeChangedFiles(cwd: string, before: string[]) {
   try {
     const { stdout } = await execFile("git", ["status", "--porcelain"], { cwd });
     const after = stdout.trim().split("\n").filter(Boolean);
@@ -175,7 +175,7 @@ async function computeChangedFiles(cwd, before) {
   }
 }
 
-function getRequiredArtifact(previousResults, kind) {
+function getRequiredArtifact(previousResults: any[], kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) {
       return previousResults[i].artifact;
@@ -184,9 +184,9 @@ function getRequiredArtifact(previousResults, kind) {
   return null;
 }
 
-function renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles) {
+function renderDeliverableMarkdown(ctx: Record<string, any>, planArtifact: Record<string, any> | null, parsed: Record<string, any>, changedFiles: string[]) {
   const changedSection = changedFiles.length > 0
-    ? changedFiles.map((f) => `- ${f}`).join("\n")
+    ? changedFiles.map((f: string) => `- ${f}`).join("\n")
     : "- No file changes detected";
   return `# Deliverable
 
@@ -203,14 +203,14 @@ ${parsed.summary}
 ${changedSection}
 
 ## Tests
-${parsed.tests.map((t) => `- ${t}`).join("\n") || "- No test descriptions provided"}
+${parsed.tests.map((t: string) => `- ${t}`).join("\n") || "- No test descriptions provided"}
 
 ## Risks
-${parsed.risks.map((r) => `- ${r}`).join("\n") || "- None identified"}
+${parsed.risks.map((r: string) => `- ${r}`).join("\n") || "- None identified"}
 `;
 }
 
-async function buildExecutePrompt(ctx, planArtifact) {
+async function buildExecutePrompt(ctx: Record<string, any>, planArtifact: Record<string, any> | null) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("execute", ctx, { planArtifact });
   }
@@ -235,7 +235,7 @@ ${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : ""}
 Execute the implementation. Make code changes as needed.${retrySection}`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "executor";
   const raw = ctx.agents?.[role] || ctx.agents?.executor || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

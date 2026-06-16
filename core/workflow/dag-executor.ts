@@ -8,7 +8,7 @@
  * Topologically sort DAG nodes. Returns array of node IDs.
  * Throws if cycle detected.
  */
-export function topologicalSort(nodes) {
+export function topologicalSort(nodes: Record<string, any>[]) {
   const adjacency = new Map();
   const inDegree = new Map();
   for (const n of nodes) {
@@ -52,12 +52,12 @@ export function topologicalSort(nodes) {
  * @param {Set} runningNodeIds - IDs of currently running nodes
  * @returns {Array} Node IDs that are ready to execute
  */
-export function readyNodes(nodes, completedNodeIds, runningNodeIds = new Set()) {
-  const result = [];
+export function readyNodes(nodes: Record<string, any>[], completedNodeIds: Set<string>, runningNodeIds: Set<string> = new Set()) {
+  const result: string[] = [];
   for (const n of nodes) {
     if (completedNodeIds.has(n.id) || runningNodeIds.has(n.id)) continue;
     const deps = n.dependsOn || [];
-    if (deps.length === 0 || deps.every((d) => completedNodeIds.has(d))) {
+    if (deps.length === 0 || deps.every((d: string) => completedNodeIds.has(d))) {
       result.push(n.id);
     }
   }
@@ -67,18 +67,18 @@ export function readyNodes(nodes, completedNodeIds, runningNodeIds = new Set()) 
 /**
  * Check if all DAG nodes are completed.
  */
-export function isDagComplete(nodes, completedNodeIds) {
+export function isDagComplete(nodes: Record<string, any>[], completedNodeIds: Set<string>) {
   return nodes.every((n) => completedNodeIds.has(n.id));
 }
 
 /**
  * Get a node by ID.
  */
-export function getNode(nodes, nodeId) {
+export function getNode(nodes: Record<string, any>[], nodeId: string) {
   return nodes.find((n) => n.id === nodeId) || null;
 }
 
-function orderedPhaseEntries(phaseStates) {
+function orderedPhaseEntries(phaseStates: Record<string, any>) {
   if (!phaseStates || typeof phaseStates !== "object") return [];
   return Object.entries(phaseStates)
     .map(([phase, value]) => {
@@ -93,7 +93,7 @@ function orderedPhaseEntries(phaseStates) {
  * Falls back to phase names only when no workflow DAG nodes are available.
  */
 export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates = {} }: Record<string, any> = {}) {
-  const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes.filter((node) => node?.id) : [];
+  const nodes: Record<string, any>[] = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes.filter((node: Record<string, any>) => node?.id) : [];
 
   if (nodes.length === 0) {
     const nodeEntries = Object.entries(nodeStates || {}).filter(([nodeId]) => Boolean(nodeId));
@@ -130,14 +130,14 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
       completedNodeIds,
       failedNodeId,
       readyNodeIds: failedNodeId ? [failedNodeId] : [],
-      blockedNodeIds: [],
+      blockedNodeIds: [] as string[],
       resumeTarget,
     };
   }
 
-  const completed = new Set();
-  const running = new Set();
-  const unavailable = new Set();
+  const completed = new Set<string>();
+  const running = new Set<string>();
+  const unavailable = new Set<string>();
   let failedNodeId = null;
 
   for (const node of nodes) {
@@ -157,14 +157,14 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
     }
   }
 
-  const completedNodeIds = nodes.map((node) => node.id).filter((id) => completed.has(id));
-  const readyNodeIds = [];
-  const blockedNodeIds = [];
+  const completedNodeIds = nodes.map((node) => node.id).filter((id: string) => completed.has(id));
+  const readyNodeIds: string[] = [];
+  const blockedNodeIds: string[] = [];
 
   for (const node of nodes) {
     if (completed.has(node.id) || running.has(node.id)) continue;
     const deps = node.dependsOn || [];
-    const depsComplete = deps.every((dep) => completed.has(dep));
+    const depsComplete = deps.every((dep: string) => completed.has(dep));
     if (depsComplete) {
       readyNodeIds.push(node.id);
     } else if (!unavailable.has(node.id)) {
@@ -188,7 +188,7 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
  * Validate a DAG: check for cycles, missing deps, duplicate IDs.
  * Returns { valid: true } or { valid: false, errors: string[] }.
  */
-export function validateDag(nodes) {
+export function validateDag(nodes: Record<string, any>[]) {
   const errors = [];
   const ids = new Set();
 
@@ -231,7 +231,7 @@ export function validateDag(nodes) {
 /**
  * Convert a legacy linear workflow (phases array) to a single-chain DAG.
  */
-export function phasesToDag(phases, roleForPhase = {}, agent = null) {
+export function phasesToDag(phases: string[], roleForPhase: Record<string, string> = {}, agent: string | null = null) {
   return phases.map((phase, idx) => ({
     id: phase,
     phase,
@@ -245,7 +245,7 @@ export function phasesToDag(phases, roleForPhase = {}, agent = null) {
  * Get the maximum concurrency for ready nodes.
  * Respects maxConcurrentNodes limit.
  */
-export function scheduleReadyNodes(nodes, completedNodeIds, runningNodeIds, maxConcurrent = 2) {
+export function scheduleReadyNodes(nodes: Record<string, any>[], completedNodeIds: Set<string>, runningNodeIds: Set<string>, maxConcurrent = 2) {
   const ready = readyNodes(nodes, completedNodeIds, runningNodeIds);
   const available = maxConcurrent - runningNodeIds.size;
   return ready.slice(0, Math.max(0, available));
@@ -268,12 +268,12 @@ export function scheduleReadyNodes(nodes, completedNodeIds, runningNodeIds, maxC
  * @param {string[]} [callbacks.seedCompleted] - Node IDs to pre-mark as completed
  * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string}>}
  */
-export async function executeDag(dag, callbacks) {
+export async function executeDag(dag: Record<string, any>, callbacks: Record<string, any>) {
   const { executor, shouldStop = () => false, onBeforeNode, onNodeResult, seedCompleted } = callbacks;
   const nodes = dag.nodes;
-  const completed = new Set(seedCompleted || []);
-  const results = new Map();
-  const attempts = new Map();
+  const completed = new Set<string>(seedCompleted || []);
+  const results = new Map<string, any>();
+  const attempts = new Map<string, number>();
 
   while (!isDagComplete(nodes, completed)) {
     if (shouldStop()) return { ok: false, results, reason: "stopped" };

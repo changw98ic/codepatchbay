@@ -21,11 +21,11 @@ const EXECUTE_PROMPT_RE = "software execution agent";
 const REVIEW_PROMPT_RE = "code review agent";
 const VERIFY_PROMPT_RE = "software verification agent";
 
-function jsonEnvelope(data) {
+function jsonEnvelope(data: AnyRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-async function runCommand(command, args, opts: Record<string, any> = {}) {
+async function runCommand(command: string, args: string[], opts: Record<string, any> = {}) {
   try {
     const result = await execFileAsync(command, args, {
       cwd: opts.cwd,
@@ -48,7 +48,7 @@ async function runCommand(command, args, opts: Record<string, any> = {}) {
   }
 }
 
-async function withProcessEnv(env, fn) {
+async function withProcessEnv(env: Record<string, string>, fn: () => Promise<any>) {
   const previous = new Map();
   for (const key of Object.keys(env)) {
     previous.set(key, Object.hasOwn(process.env, key) ? process.env[key] : undefined);
@@ -64,7 +64,7 @@ async function withProcessEnv(env, fn) {
   }
 }
 
-async function writeTestAgentScenario(tmpRoot) {
+async function writeTestAgentScenario(tmpRoot: string) {
   const scenarioPath = path.join(tmpRoot, "test-acp-scenario.json");
   await writeFile(
     scenarioPath,
@@ -119,7 +119,7 @@ async function writeTestAgentScenario(tmpRoot) {
   return scenarioPath;
 }
 
-async function listMarkdownFiles(dir) {
+async function listMarkdownFiles(dir: string) {
   try {
     return (await readdir(dir)).filter((entry) => entry.endsWith(".md")).sort();
   } catch {
@@ -127,7 +127,7 @@ async function listMarkdownFiles(dir) {
   }
 }
 
-async function collectArtifacts(cpbRoot, project) {
+async function collectArtifacts(cpbRoot: string, project: string) {
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const inboxDir = path.join(wikiDir, "inbox");
   const outputsDir = path.join(wikiDir, "outputs");
@@ -137,7 +137,7 @@ async function collectArtifacts(cpbRoot, project) {
   };
 }
 
-async function collectTranscriptEvents(transcriptFile) {
+async function collectTranscriptEvents(transcriptFile: string) {
   try {
     const raw = await readFile(transcriptFile, "utf8");
     return raw
@@ -149,12 +149,12 @@ async function collectTranscriptEvents(transcriptFile) {
   }
 }
 
-function assertArtifacts(artifacts) {
+function assertArtifacts(artifacts: Record<string, string[]>) {
   const required = {
-    plan: artifacts.inbox.some((entry) => /^plan-\d+\.md$/.test(entry)),
-    deliverable: artifacts.outputs.some((entry) => /^deliverable-\d+\.md$/.test(entry)),
-    review: artifacts.outputs.some((entry) => /^review-\d+\.md$/.test(entry)),
-    verdict: artifacts.outputs.some((entry) => /^verdict-\d+\.md$/.test(entry)),
+    plan: artifacts.inbox.some((entry: string) => /^plan-\d+\.md$/.test(entry)),
+    deliverable: artifacts.outputs.some((entry: string) => /^deliverable-\d+\.md$/.test(entry)),
+    review: artifacts.outputs.some((entry: string) => /^review-\d+\.md$/.test(entry)),
+    verdict: artifacts.outputs.some((entry: string) => /^verdict-\d+\.md$/.test(entry)),
   };
   const missing = Object.entries(required).filter(([, present]) => !present).map(([name]) => name);
   if (missing.length > 0) {
@@ -243,10 +243,10 @@ export async function runFakeAcpSmoke({
 
     const transcriptEvents = await collectTranscriptEvents(transcriptFile);
     if (codegraph) {
-      const codegraphSession = transcriptEvents.find((event) =>
+      const codegraphSession = transcriptEvents.find((event: AnyRecord) =>
         event.event === "session/new" &&
         Array.isArray(event.mcpServers) &&
-        event.mcpServers.some((server) => server?.name === "codegraph" && server?.type === "sse" && server?.url)
+        event.mcpServers.some((server: AnyRecord) => server?.name === "codegraph" && server?.type === "sse" && server?.url)
       );
       if (!codegraphSession) {
         throw new Error("fake ACP smoke did not receive codegraph MCP server in session/new");
@@ -263,7 +263,7 @@ export async function runFakeAcpSmoke({
       artifacts,
       codegraph: {
         enabled: Boolean(codegraph),
-        sessionsWithMcp: transcriptEvents.filter((event) => event.event === "session/new" && event.mcpServers?.length > 0).length,
+        sessionsWithMcp: transcriptEvents.filter((event: AnyRecord) => event.event === "session/new" && event.mcpServers?.length > 0).length,
       },
       keptTemp: keepTemp,
     };
@@ -614,12 +614,12 @@ export async function releaseLease(
 export const DEFAULT_MAX_ACTIVE_PER_PROJECT = Number(process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT || 2);
 export const DEFAULT_ACP_PROVIDER_MAX = Number(process.env.CPB_ACP_POOL_PROVIDER_MAX || 3);
 
-export function positiveInt(value, fallback) {
+export function positiveInt(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-export function maxActiveForProject(project, fallback = DEFAULT_MAX_ACTIVE_PER_PROJECT) {
+export function maxActiveForProject(project: AnyRecord, fallback = DEFAULT_MAX_ACTIVE_PER_PROJECT): number {
   return positiveInt(
     project?.concurrency?.maxActivePerProject
       ?? project?.concurrency?.maxActive
@@ -629,11 +629,11 @@ export function maxActiveForProject(project, fallback = DEFAULT_MAX_ACTIVE_PER_P
   );
 }
 
-function hasConfig(value) {
+function hasConfig(value: AnyRecord) {
   return value && typeof value === "object" && Object.keys(value).length > 0;
 }
 
-function mergeProjectConfig(registryProject, projectJson) {
+function mergeProjectConfig(registryProject: AnyRecord, projectJson: AnyRecord) {
   if (!hasConfig(registryProject) && !hasConfig(projectJson)) return null;
   return {
     ...(registryProject || {}),
@@ -649,12 +649,12 @@ function mergeProjectConfig(registryProject, projectJson) {
   };
 }
 
-async function defaultGetProject(hubRoot, projectId) {
+async function defaultGetProject(hubRoot: string, projectId: string) {
   const { getProject } = await import("./hub/hub-registry.js");
   return getProject(hubRoot, projectId);
 }
 
-export async function readProjectConcurrencyConfig(hubRoot, projectId, getProjectFn = null) {
+export async function readProjectConcurrencyConfig(hubRoot: string, projectId: string, getProjectFn: ((hubRoot: string, projectId: string) => Promise<AnyRecord | null>) | null = null) {
   const { readProjectJsonFromRoots } = await import("./agent/agent-config.js");
   if (!projectId) return null;
   const registryProject = await (getProjectFn || defaultGetProject)(hubRoot, projectId).catch(() => null);
@@ -662,7 +662,7 @@ export async function readProjectConcurrencyConfig(hubRoot, projectId, getProjec
   return mergeProjectConfig(registryProject, projectJson);
 }
 
-export async function resolveProjectConcurrencyLimits(hubRoot, projectIds, {
+export async function resolveProjectConcurrencyLimits(hubRoot: string, projectIds: string[], {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
   getProjectFn = null,
 }: AnyRecord = {}) {
@@ -675,7 +675,7 @@ export async function resolveProjectConcurrencyLimits(hubRoot, projectIds, {
   return limits;
 }
 
-export async function resolveHubConcurrencyLimits(hubRoot, fallback = {}) {
+export async function resolveHubConcurrencyLimits(hubRoot: string, fallback: AnyRecord = {}) {
   const { readHubConfig } = await import("./agent/agent-config.js");
   const config: AnyRecord = await readHubConfig(hubRoot).catch(() => ({}));
   const concurrency: AnyRecord = config.concurrency || {};
@@ -745,18 +745,18 @@ async function writeJsonFile(file: string, data: any) {
 export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
   validateId(jobId, "jobId");
   const file = processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
-  const entry = {
+  const entry: AnyRecord = {
     jobId,
     project: project || null,
     phase: phase || null,
     runnerPid: runnerPid || process.pid,
     treeId: treeId || null,
-    childPids: [],
+    childPids: [] as any[],
     leaseId: leaseId || null,
     startedAt: startedAt || nowIso(),
     lastHeartbeat: nowIso(),
     status: "running",
-    exitCode: null,
+    exitCode: null as any,
     command: command || null,
     cwd: cwd || null,
     executorRoot: executorRoot || null,
@@ -933,7 +933,7 @@ export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRec
   return { dryRun: false, removed, eligible };
 }
 
-export async function removeProcess(cpbRoot, jobId, { dryRun = false, dataRoot }: AnyRecord = {}) {
+export async function removeProcess(cpbRoot: string, jobId: string, { dryRun = false, dataRoot }: AnyRecord = {}) {
   validateId(jobId, "jobId");
   const file = processFile(cpbRoot, jobId, { dataRoot });
   if (dryRun) {
@@ -944,7 +944,7 @@ export async function removeProcess(cpbRoot, jobId, { dryRun = false, dataRoot }
   return { removed: true, jobId };
 }
 
-export async function inspectProcess(cpbRoot, jobId) {
+export async function inspectProcess(cpbRoot: string, jobId: string) {
   const entry = await getProcess(cpbRoot, jobId);
   const liveness = entry ? classifyLiveness(entry) : null;
 
@@ -974,7 +974,7 @@ export async function inspectProcess(cpbRoot, jobId) {
     }
     if (!job) {
       const allJobs = await listJobs(cpbRoot);
-      job = allJobs.find((j) => j.jobId === jobId) || null;
+      job = allJobs.find((j: AnyRecord) => j.jobId === jobId) || null;
       if (job && !project) project = job.project;
     }
   } catch {}
@@ -988,17 +988,17 @@ export async function inspectProcess(cpbRoot, jobId) {
     } catch {}
   }
 
-  let lineage = job?.lineage || null;
+  let lineage = (job as AnyRecord)?.lineage || null;
 
   let ancestors = [];
   let children = [];
   try {
     const { listJobs: listAllJobs, getJob: getJobForLineage } = await import("./job/job-store.js");
     const allJobs = await listAllJobs(cpbRoot);
-    children = allJobs.filter((j) => j.lineage?.parentJobId === jobId);
+    children = allJobs.filter((j: AnyRecord) => j.lineage?.parentJobId === jobId);
 
     if (lineage?.parentJobId) {
-      const ancestorMap = new Map(allJobs.map((j) => [j.jobId, j]));
+      const ancestorMap = new Map(allJobs.map((j: AnyRecord) => [j.jobId, j]));
       let curId = lineage.parentJobId;
       let depth = 0;
       while (curId && depth < 5) {
@@ -1051,36 +1051,36 @@ export const DEFAULT_INDEX_TTL_MS = 24 * 60 * 60 * 1000;
 
 const CPB_RUNTIME_PREFIXES = ["cpb-task/", ".cpb/"];
 
-function indexDir(rtRoot) {
+function indexDir(rtRoot: string) {
   return path.join(rtRoot, "index");
 }
-function manifestFile(rtRoot) {
+function manifestFile(rtRoot: string) {
   return path.join(indexDir(rtRoot), "manifest.json");
 }
-function snapshotsDir(rtRoot) {
+function snapshotsDir(rtRoot: string) {
   return path.join(indexDir(rtRoot), "snapshots");
 }
-function snapshotFile(rtRoot, id) {
+function snapshotFile(rtRoot: string, id: string) {
   return path.join(snapshotsDir(rtRoot), `${id}.json`);
 }
 
-function hashString(input) {
+function hashString(input: string) {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
-function extractPath(line) {
+function extractPath(line: string) {
   if (line.length >= 4 && line[2] === " ") return line.slice(3);
   return line;
 }
 
-function filterCpbPaths(lines) {
-  return lines.filter((l) => {
+function filterCpbPaths(lines: string[]) {
+  return lines.filter((l: string) => {
     const p = extractPath(l.trim());
     return p && !CPB_RUNTIME_PREFIXES.some((pre) => p.startsWith(pre));
   });
 }
 
-async function git(args, cwd, { timeoutMs = 10_000 } = {}) {
+async function git(args: string[], cwd: string, { timeoutMs = 10_000 }: AnyRecord = {}) {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     timeout: timeoutMs,
@@ -1089,25 +1089,25 @@ async function git(args, cwd, { timeoutMs = 10_000 } = {}) {
   return stdout;
 }
 
-async function worktreeStatusHash(sourcePath) {
+async function worktreeStatusHash(sourcePath: string) {
   const raw = await git(["status", "--porcelain=v1", "--untracked-files=all"], sourcePath);
   return hashString(filterCpbPaths(raw.split("\n")).join("\n"));
 }
 
-async function fileInventoryHash(sourcePath) {
+async function fileInventoryHash(sourcePath: string) {
   const raw = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], sourcePath);
   return hashString(filterCpbPaths(raw.split("\0")).join("\n"));
 }
 
-async function gitHead(sourcePath) {
+async function gitHead(sourcePath: string) {
   return (await git(["rev-parse", "HEAD"], sourcePath)).trim();
 }
 
-async function gitBranch(sourcePath) {
+async function gitBranch(sourcePath: string) {
   return (await git(["rev-parse", "--abbrev-ref", "HEAD"], sourcePath)).trim();
 }
 
-async function importantConfigHash(project) {
+async function importantConfigHash(project: AnyRecord) {
   const { realpath: realpathFn } = await import("node:fs/promises");
   const resolvedSourcePath = await realpathFn(project.sourcePath).catch(() => project.sourcePath);
   const stable = {
@@ -1121,7 +1121,7 @@ async function importantConfigHash(project) {
   return hashString(JSON.stringify(stable));
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
@@ -1132,17 +1132,17 @@ function generateSnapshotId() {
   return `idx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function checkIndexFreshness(project, opts: Record<string, any> = {}) {
+export async function checkIndexFreshness(project: AnyRecord, opts: Record<string, any> = {}) {
   const { ttlMs = DEFAULT_INDEX_TTL_MS, now = Date.now() } = opts;
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
 
-  const result = {
+  const result: AnyRecord = {
     worktreeDirty: false,
     indexDirty: false,
     indexStale: false,
-    dirtyReasons: [],
-    manifest: null,
+    dirtyReasons: [] as any[],
+    manifest: null as any,
   };
 
   if (!sourcePath || !rtRoot) {
@@ -1212,7 +1212,7 @@ export async function checkIndexFreshness(project, opts: Record<string, any> = {
   return result;
 }
 
-export async function refreshIndexManifest(project, opts: Record<string, any> = {}) {
+export async function refreshIndexManifest(project: AnyRecord, opts: Record<string, any> = {}) {
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
   const { realpath: realpathFn } = await import("node:fs/promises");
@@ -1257,7 +1257,7 @@ export async function refreshIndexManifest(project, opts: Record<string, any> = 
   };
 }
 
-export async function ensureIndexFresh(project, opts = {}) {
+export async function ensureIndexFresh(project: AnyRecord, opts: AnyRecord = {}) {
   if (project.sourcePath) {
     const isGit = await git(["rev-parse", "--git-dir"], project.sourcePath).then(() => true).catch(() => false);
     if (!isGit) {
@@ -1305,7 +1305,7 @@ export async function ensureIndexFresh(project, opts = {}) {
   }
 }
 
-export function parseEnvSnapshot(raw) {
+export function parseEnvSnapshot(raw: string) {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -1330,7 +1330,7 @@ export function parseEnvSnapshot(raw) {
   }
 }
 
-export function snapshotForJob(result) {
+export function snapshotForJob(result: AnyRecord) {
   if (!result || !result.available) {
     return {
       indexSnapshotId: null,
@@ -1345,8 +1345,8 @@ export function snapshotForJob(result) {
     };
   }
   return {
-    indexSnapshotId: result.indexSnapshotId,
-    sourceFingerprint: result.sourceFingerprint,
+    indexSnapshotId: result.indexSnapshotId as any,
+    sourceFingerprint: result.sourceFingerprint as any,
     indexFreshness: {
       available: true,
       indexDirty: false,

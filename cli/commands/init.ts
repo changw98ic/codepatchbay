@@ -10,15 +10,15 @@ const GREEN = "\x1b[0;32m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-function sanitizeName(name) {
+function sanitizeName(name: string) {
   return name.replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 }
 
-function isValidName(name) {
+function isValidName(name: string) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(name);
 }
 
-function containsPath(candidate, roots) {
+function containsPath(candidate: string, roots: string[]) {
   const c = path.resolve(candidate);
   for (const r of roots) {
     if (!r) continue;
@@ -28,7 +28,7 @@ function containsPath(candidate, roots) {
   return false;
 }
 
-async function createMinimalProjectWiki(wikiDir, projectName) {
+async function createMinimalProjectWiki(wikiDir: string, projectName: string) {
   await mkdir(wikiDir, { recursive: true });
   const files = {
     "context.md": `# ${projectName}\n\n## Context\n\n- Initialized without a project template.\n`,
@@ -41,7 +41,7 @@ async function createMinimalProjectWiki(wikiDir, projectName) {
   }));
 }
 
-async function copyProjectTemplate(templateDir, wikiDir, projectName) {
+async function copyProjectTemplate(templateDir: string, wikiDir: string, projectName: string) {
   try {
     await cp(templateDir, wikiDir, { recursive: true, force: true });
   } catch (err) {
@@ -50,7 +50,7 @@ async function copyProjectTemplate(templateDir, wikiDir, projectName) {
   }
 }
 
-export async function initProject(args, { cpbRoot, executorRoot }) {
+export async function initProject(args: string[], { cpbRoot, executorRoot }: Record<string, any>) {
   const projectPathRaw = args[0];
   let projectName = args[1];
 
@@ -154,7 +154,7 @@ export async function initProject(args, { cpbRoot, executorRoot }) {
 
   // 3. Auto-detect tech stack
   const ctxPath = path.join(wikiDir, "context.md");
-  let ctxLines = [];
+  let ctxLines: string[] = [];
   try {
     ctxLines = (await readFile(ctxPath, "utf8")).split("\n");
   } catch {}
@@ -239,7 +239,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   initProject(args, { cpbRoot, executorRoot });
 }
 
-export async function run(args, context) {
+export async function run(args: string[], context: Record<string, any>) {
   await initProject(args, context);
   return 0;
 }

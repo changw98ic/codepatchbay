@@ -15,7 +15,7 @@ const STATE_NORMALIZE = {
   merge_failed: "failed",
 };
 
-export function normalizeProjectIndex(raw) {
+export function normalizeProjectIndex(raw: any) {
   if (!raw || typeof raw !== "object") return null;
 
   const rawState = raw.state || raw.status || "";
@@ -45,7 +45,7 @@ export function normalizeProjectIndex(raw) {
   };
 }
 
-export async function readProjectIndex(hubRoot, cpbRoot, projectId) {
+export async function readProjectIndex(hubRoot: any, cpbRoot: any, projectId: any) {
   // Primary: Hub registry metadata
   if (hubRoot) {
     try {
@@ -77,7 +77,7 @@ export async function readProjectIndex(hubRoot, cpbRoot, projectId) {
   return null;
 }
 
-export async function writeProjectIndex(hubRoot, cpbRoot, projectId, data) {
+export async function writeProjectIndex(hubRoot: any, cpbRoot: any, projectId: any, data: any) {
   const normalized = normalizeProjectIndex(data);
   if (!normalized) {
     throw new Error("Invalid project index data: cannot normalize");
@@ -131,7 +131,7 @@ export async function writeProjectIndex(hubRoot, cpbRoot, projectId, data) {
   throw new Error("No writable storage: hubRoot or cpbRoot required");
 }
 
-export function formatProjectIndexLine(idx) {
+export function formatProjectIndexLine(idx: any) {
   if (!idx) return null;
   const parts = [
     `Project index: ${idx.state}`,

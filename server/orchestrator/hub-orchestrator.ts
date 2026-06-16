@@ -119,7 +119,7 @@ export class HubOrchestrator {
       workerStore: this.workerStore,
       cpbRoot,
       getProjectFn: getProject,
-      providerCapacityFn: (agentKey, entry) => this._providerCapacity(agentKey, entry),
+      providerCapacityFn: (agentKey: string, entry: Record<string, any>) => this._providerCapacity(agentKey, entry),
     });
     this.workerSupervisor = new WorkerSupervisor(hubRoot, cpbRoot, {
       workerStore: this.workerStore,
@@ -366,7 +366,7 @@ export class HubOrchestrator {
    * Returns provider-scoped slots so Scheduler can project same-tick
    * dispatches before queue status writes make capacity visible.
    */
-  async _providerCapacity(agentKey, entry = null) {
+  async _providerCapacity(agentKey: string, entry: Record<string, any> = null) {
     const providerKey = agentKey || providerAgentForEntry(entry);
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot);
     const total = hubLimits.acpProviderMax;
@@ -384,7 +384,7 @@ export class HubOrchestrator {
     };
   }
 
-  _recordError(err) {
+  _recordError(err: Record<string, any>) {
     this.log.error(`tick error: ${err.message}`);
   }
 
@@ -456,10 +456,10 @@ export class HubOrchestrator {
         failed: queue.failed,
       },
       workers: {
-        ready: workers.filter(w => w.status === "ready").length,
-        running: workers.filter(w => w.status === "running").length,
-        unhealthy: workers.filter(w => w.status === "unhealthy").length,
-        exited: workers.filter(w => w.status === "exited").length,
+        ready: workers.filter((w: Record<string, any>) => w.status === "ready").length,
+        running: workers.filter((w: Record<string, any>) => w.status === "running").length,
+        unhealthy: workers.filter((w: Record<string, any>) => w.status === "unhealthy").length,
+        exited: workers.filter((w: Record<string, any>) => w.status === "exited").length,
       },
       supervisor: this.acpSupervisor && typeof this.acpSupervisor.status === "function"
         ? this.acpSupervisor.status()

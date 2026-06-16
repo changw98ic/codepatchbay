@@ -218,7 +218,7 @@ export class CrossProjectPriorityQueue {
     for (const project of this.projects) {
       if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
       const backlog = await loadBacklog(project.sourcePath, project.id, evolveStateOpts(project));
-      for (const issue of backlog.filter((item) => item.status === "pending")) {
+      for (const issue of backlog.filter((item: Record<string, any>) => item.status === "pending")) {
         const key = `${project.id}::${issue.description}`;
         seen.add(key);
         candidates.push({
@@ -365,8 +365,8 @@ export class MultiEvolveController {
         state,
         backlog: {
           total: backlog.length,
-          pending: backlog.filter((issue) => issue.status === "pending").length,
-          inProgress: backlog.filter((issue) => issue.status === "in_progress").length,
+          pending: backlog.filter((issue: Record<string, any>) => issue.status === "pending").length,
+          inProgress: backlog.filter((issue: Record<string, any>) => issue.status === "in_progress").length,
         },
       });
     }
@@ -487,7 +487,7 @@ export class MultiEvolveController {
     return normalized;
   }
 
-  async executeIssue(issue, { workflow = "standard", timeoutMs = 300_000 } = {}) {
+  async executeIssue(issue: Record<string, any>, { workflow = "standard", timeoutMs = 300_000 }: Record<string, any> = {}) {
     let queueEntry;
     try {
       queueEntry = await hubEnqueue(this.hubRoot, {
@@ -516,7 +516,7 @@ export class MultiEvolveController {
     }
   }
 
-  async completeIssueAndSync(issue, result) {
+  async completeIssueAndSync(issue: Record<string, any>, result: Record<string, any>) {
     await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result, issueStateOpts(issue));
     if (!this.hubRoot) return;
     await hubSyncBacklogResult(this.hubRoot, {
@@ -757,7 +757,7 @@ export async function main() {
   }
   const controller = new MultiEvolveController(CPB_ROOT, { localAcpPool: opts.localAcpPool });
 
-  const onSignal = (sig) => {
+  const onSignal = (sig: string) => {
     process.stderr.write(`[multi-evolve] ${sig} received, stopping after current round\n`);
     controller.requestStop();
   };

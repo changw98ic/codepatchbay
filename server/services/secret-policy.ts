@@ -28,11 +28,11 @@ const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
 const GITHUB_URL_TOKEN_PATTERN = /https:\/\/x-access-token:[^@\s"']+@github\.com\/[^\s"']*/gi;
 const SECRET_INPUT_GUIDANCE = "Do not paste API keys or tokens into CodePatchBay. Use provider-native login or the local setup URL.";
 
-function isSecretReferenceKey(key = "") {
+function isSecretReferenceKey(key: unknown = ""): boolean {
   return SECRET_REFERENCE_KEY_PATTERN.test(String(key));
 }
 
-function redactString(value, key = "") {
+function redactString(value: unknown, key: unknown = ""): string {
   if (typeof key === "string" && SECRET_KEY_PATTERN.test(key)) return "[REDACTED]";
   return String(value)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
@@ -47,7 +47,7 @@ function redactString(value, key = "") {
     .replace(WEBHOOK_URL_PATTERN, "[REDACTED_URL]");
 }
 
-export function redactSecrets(value, key = "") {
+export function redactSecrets(value: unknown, key: unknown = ""): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") return redactString(value, key);
   if (typeof value === "number" || typeof value === "boolean") return value;
@@ -55,7 +55,7 @@ export function redactSecrets(value, key = "") {
   if (typeof value !== "object") return value;
 
   const seen = new WeakSet();
-  function walk(val) {
+  function walk(val: unknown): unknown {
     if (val === null || val === undefined) return val;
     if (typeof val === "string") return redactString(val);
     if (typeof val === "number" || typeof val === "boolean") return val;
@@ -68,7 +68,7 @@ export function redactSecrets(value, key = "") {
     if (seen.has(val)) return "[Circular]";
     seen.add(val);
 
-    const out = {};
+    const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(val)) {
       if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
         out[k] = "[REDACTED]";
@@ -97,7 +97,7 @@ const RAW_SECRET_INPUT_PATTERNS = [
   { name: "google_api_key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
 ];
 
-export function detectSecretInput(input) {
+export function detectSecretInput(input: unknown): Record<string, any> {
   const text = Array.isArray(input) ? input.join(" ") : String(input ?? "");
   const match = RAW_SECRET_INPUT_PATTERNS.find(({ pattern }) => pattern.test(text));
   return {
@@ -109,7 +109,7 @@ export function detectSecretInput(input) {
   };
 }
 
-export function assertNoSecretInput(input) {
+export function assertNoSecretInput(input: unknown): Record<string, any> {
   const detected = detectSecretInput(input);
   if (detected.matched) {
     const error = new Error(SECRET_INPUT_GUIDANCE);
@@ -176,7 +176,7 @@ const SECRET_PATH_PATTERNS = [
   /(^|[/\\])service-account[^/\\]*\.json$/i,
 ];
 
-export function isSecretPath(filePath) {
+export function isSecretPath(filePath: unknown): boolean {
   if (!filePath || typeof filePath !== "string") return false;
   const normalized = filePath.replace(/\\/g, "/");
   const basename = normalized.split("/").pop() || "";
@@ -192,18 +192,18 @@ const SECRET_ARTIFACT_PATTERNS = [
   /AIza[0-9A-Za-z_-]{35}/,
 ];
 
-export function isSecretContent(content) {
+export function isSecretContent(content: unknown): boolean {
   if (typeof content !== "string") return false;
   return SECRET_ARTIFACT_PATTERNS.some((p) => p.test(content));
 }
 
-export function isSecretArtifact(name, content) {
+export function isSecretArtifact(name: unknown, content: unknown): boolean {
   if (isSecretPath(name)) return true;
   if (typeof content === "string" && isSecretContent(content)) return true;
   return false;
 }
 
-export function makeSecretBlockedEvent(artifactName, reason) {
+export function makeSecretBlockedEvent(artifactName: unknown, reason?: string): Record<string, any> {
   return {
     type: "secret_blocked",
     messageKey: "secret_blocked",
@@ -213,7 +213,7 @@ export function makeSecretBlockedEvent(artifactName, reason) {
   };
 }
 
-export function notifySecretBlocked(onSecretBlocked, artifactName, reason) {
+export function notifySecretBlocked(onSecretBlocked: ((event: any) => void) | null, artifactName: unknown, reason?: string): Record<string, any> {
   const event = makeSecretBlockedEvent(artifactName, reason);
   if (typeof onSecretBlocked === "function") {
     onSecretBlocked(event);

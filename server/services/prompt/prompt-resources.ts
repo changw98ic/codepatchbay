@@ -1,6 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolveKnowledgePath } from "../knowledge/knowledge.js";
+import { AnyRecord } from "../../../shared/types.js";
 
 // ── profile-loader ────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ export async function selectProfileSkills(cpbRoot: string, role: string, context
   return selected;
 }
 
-function defaultProfile(role) {
+function defaultProfile(role: string): AnyRecord {
   return {
     role,
     soulMd: null,
@@ -168,7 +169,7 @@ function defaultProfile(role) {
   };
 }
 
-export async function loadProfile(cpbRoot, role, { projectWikiDir = null } = {}) {
+export async function loadProfile(cpbRoot: string, role: string, { projectWikiDir = null }: Record<string, any> = {}): Promise<AnyRecord> {
   const profileDir = path.join(cpbRoot, PROFILES_DIR, role);
   const profile = defaultProfile(role);
 
@@ -224,7 +225,7 @@ export async function loadProfile(cpbRoot, role, { projectWikiDir = null } = {})
   return profile;
 }
 
-export async function listProfiles(cpbRoot) {
+export async function listProfiles(cpbRoot: string): Promise<string[]> {
   const { readdir } = await import("node:fs/promises");
   const profilesPath = path.join(cpbRoot, PROFILES_DIR);
   let entries;
@@ -233,7 +234,7 @@ export async function listProfiles(cpbRoot) {
   } catch {
     return [];
   }
-  const profiles = [];
+  const profiles: string[] = [];
   for (const entry of entries) {
     if (entry.isDirectory() && !entry.name.startsWith(".") && !entry.name.startsWith("_")) {
       profiles.push(entry.name);
@@ -252,7 +253,7 @@ function skillsDirExtract(cpbRoot: string, role: string) {
   return path.join(cpbRoot, PROFILES_DIR, role, "skills");
 }
 
-function slugify(text: string) {
+function slugify(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -350,7 +351,7 @@ export async function listExtractedSkills(cpbRoot: string, role: string) {
     return [];
   }
 
-  const skills = [];
+  const skills: AnyRecord[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.startsWith("extracted-") || !entry.name.endsWith(".md")) continue;
 
@@ -387,7 +388,7 @@ export async function loadActiveExtractedSkills(cpbRoot: string, role: string) {
   return all.filter((s) => s.status === "active");
 }
 
-function inferRole(job: AnyRecord) {
+function inferRole(job: AnyRecord): string | null {
   if (job.role) return job.role;
   const phases = job.completedPhases || [];
   if (phases.includes("execute")) return "executor";
@@ -396,7 +397,7 @@ function inferRole(job: AnyRecord) {
   return null;
 }
 
-function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean) {
+function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean): string {
   const lines = [
     "---",
     `name: ${fm.name}`,
@@ -448,7 +449,7 @@ function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean) {
   return lines.join("\n");
 }
 
-function updateFrontmatterStatus(content: string, newStatus: string, reviewer: any) {
+function updateFrontmatterStatus(content: string, newStatus: string, reviewer: any): string {
   const parts = content.split("---");
   if (parts.length < 3) return content;
 
@@ -470,13 +471,12 @@ function updateFrontmatterStatus(content: string, newStatus: string, reviewer: a
 // ── knowledge-compose ─────────────────────────────────────────────────
 
 import fs from "node:fs/promises";
-import { AnyRecord } from "../../../shared/types.js";
 import {
   PROMPT_COMPOSITION_ORDER,
 } from "../knowledge/knowledge.js";
 import { isSecretPath, notifySecretBlocked } from "../secret-policy.js";
 
-async function readFileOrNull(filePath, onSecretBlocked) {
+async function readFileOrNull(filePath: string, onSecretBlocked: any): Promise<string | null> {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, "secret path read blocked");
     return null;
@@ -488,7 +488,7 @@ async function readFileOrNull(filePath, onSecretBlocked) {
   }
 }
 
-function writePolicyForLayer(layerName) {
+function writePolicyForLayer(layerName: string): string {
   const explicit = new Set(["global-soul-profile", "global-provider-runtime-policy"]);
   if (explicit.has(layerName)) return "explicit-confirmation";
   const semi = new Set(["project-memory", "project-wiki-excerpts", "project-context"]);
@@ -498,7 +498,7 @@ function writePolicyForLayer(layerName) {
   return "unknown";
 }
 
-async function resolveLayerContent(layerName, { hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, profile, task, onSecretBlocked }) {
+async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, profile, task, onSecretBlocked }: Record<string, any>): Promise<{ content: string | null; source: string }> {
   const hub = path.resolve(hubRoot);
   const src = path.resolve(sourcePath);
 
@@ -548,7 +548,7 @@ async function resolveLayerContent(layerName, { hubRoot, sourcePath, dataRoot, p
 }
 
 export async function composePromptContext({ hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, task, profile, onSecretBlocked }: Record<string, any> = {}) {
-  const layers = [];
+  const layers: AnyRecord[] = [];
 
   for (const layerName of PROMPT_COMPOSITION_ORDER) {
     const { content, source } = await resolveLayerContent(layerName, {

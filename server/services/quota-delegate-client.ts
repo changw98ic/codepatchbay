@@ -16,33 +16,33 @@ const ACK_TIMEOUT_MS = Number(process.env.CPB_DELEGATE_ACK_TIMEOUT_MS || 5000);
 
 // ─── Paths ───────────────────────────────────────────────────────────
 
-function delegateDir(hubRoot) {
+function delegateDir(hubRoot: any) {
   return path.join(hubRoot, "providers", "delegate");
 }
 
-function inboxDir(hubRoot) {
+function inboxDir(hubRoot: any) {
   return path.join(delegateDir(hubRoot), "inbox");
 }
 
-function acksDir(hubRoot) {
+function acksDir(hubRoot: any) {
   return path.join(delegateDir(hubRoot), "acks");
 }
 
-function commandFilePath(hubRoot, commandId) {
+function commandFilePath(hubRoot: any, commandId: any) {
   return path.join(inboxDir(hubRoot), `${commandId}.json`);
 }
 
-function ackFilePath(hubRoot, commandId) {
+function ackFilePath(hubRoot: any, commandId: any) {
   return path.join(acksDir(hubRoot), `${commandId}.json`);
 }
 
-function lockFilePath(hubRoot) {
+function lockFilePath(hubRoot: any) {
   return path.join(delegateDir(hubRoot), "delegate.lock");
 }
 
 // ─── Command Write (per-file, atomic rename) ─────────────────────────
 
-export async function appendCommand(hubRoot, command) {
+export async function appendCommand(hubRoot: any, command: any) {
   const dir = inboxDir(hubRoot);
   await mkdir(dir, { recursive: true });
   const filePath = commandFilePath(hubRoot, command.commandId);
@@ -53,7 +53,7 @@ export async function appendCommand(hubRoot, command) {
 
 // ─── Ack Polling ─────────────────────────────────────────────────────
 
-export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS) {
+export async function waitForAck(hubRoot: any, commandId: any, timeoutMs = ACK_TIMEOUT_MS) {
   const ackPath = ackFilePath(hubRoot, commandId);
   const deadline = Date.now() + timeoutMs;
 
@@ -70,7 +70,7 @@ export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS)
 
 // ─── Delegate Liveness ───────────────────────────────────────────────
 
-export async function isDelegateAlive(hubRoot) {
+export async function isDelegateAlive(hubRoot: any) {
   try {
     const lock = JSON.parse(await readFile(lockFilePath(hubRoot), "utf8"));
     if (!lock.pid) return false;
@@ -88,7 +88,7 @@ export async function isDelegateAlive(hubRoot) {
  * Strong ack: blocks until delegate confirms the quota write.
  * Fails closed: returns null if delegate is unavailable (no fallback).
  */
-export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutMs) {
+export async function delegateMarkProviderUnavailable(hubRoot: any, opts: any, ackTimeoutMs: any) {
   const commandId = randomUUID();
   const command = {
     commandId,
@@ -120,7 +120,7 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutM
  * Enqueue a usage record via the delegate.
  * Fire-and-forget: no ack, no waiting.
  */
-export async function delegateEnqueueProviderUsage(hubRoot, record) {
+export async function delegateEnqueueProviderUsage(hubRoot: any, record: any) {
   const commandId = randomUUID();
   const command = {
     commandId,

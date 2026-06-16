@@ -33,7 +33,7 @@ export function resolveHubRoot(cpbRoot = process.cwd()) {
   return home ? path.join(home, ".cpb") : path.join(path.resolve(cpbRoot), ".cpb", "hub");
 }
 
-export function registryPath(hubRoot) {
+export function registryPath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "projects.json");
 }
 
@@ -49,7 +49,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function slugify(value, fallback = "project") {
+function slugify(value: unknown, fallback = "project") {
   const slug = String(value || fallback)
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
@@ -58,18 +58,18 @@ function slugify(value, fallback = "project") {
   return SAFE_ID.test(slug) ? slug : fallback;
 }
 
-function pathHash(sourcePath) {
+function pathHash(sourcePath: string) {
   return createHash("sha256").update(sourcePath).digest("hex").slice(0, 8);
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
 }
 
-async function registryLockIsStale(lockDir) {
+async function registryLockIsStale(lockDir: string) {
   const now = Date.now();
   try {
     const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
@@ -86,7 +86,7 @@ async function registryLockIsStale(lockDir) {
   }
 }
 
-async function withRegistryLock(hubRoot, callback) {
+async function withRegistryLock(hubRoot: string, callback: () => Promise<any>) {
   const file = registryPath(hubRoot);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(file), { recursive: true });
@@ -123,7 +123,7 @@ async function withRegistryLock(hubRoot, callback) {
   }
 }
 
-async function canonicalSourcePath(sourcePath) {
+async function canonicalSourcePath(sourcePath: string) {
   if (!sourcePath || typeof sourcePath !== "string") {
     throw new Error("sourcePath is required");
   }
@@ -147,7 +147,7 @@ function normalizeRegistry(raw: AnyRecord) {
   };
 }
 
-export async function loadRegistry(hubRoot) {
+export async function loadRegistry(hubRoot: string) {
   try {
     const raw = await readFile(registryPath(hubRoot), "utf8");
     return normalizeRegistry(JSON.parse(raw));
@@ -157,7 +157,7 @@ export async function loadRegistry(hubRoot) {
   }
 }
 
-export async function saveRegistry(hubRoot, registry) {
+export async function saveRegistry(hubRoot: string, registry: AnyRecord) {
   const normalized = normalizeRegistry(registry);
   normalized.version = REGISTRY_VERSION;
   normalized.updatedAt = nowIso();
@@ -165,7 +165,7 @@ export async function saveRegistry(hubRoot, registry) {
   return normalized;
 }
 
-function resolveProjectId(registry: AnyRecord, preferredId, sourcePath) {
+function resolveProjectId(registry: AnyRecord, preferredId: string, sourcePath: string) {
   const existing = (Object.values(registry.projects) as AnyRecord[]).find((project) => project.sourcePath === sourcePath);
   if (existing?.id) return existing.id;
 
@@ -175,12 +175,12 @@ function resolveProjectId(registry: AnyRecord, preferredId, sourcePath) {
   return `${base}-${pathHash(sourcePath)}`;
 }
 
-function isPathInsideOrEqual(parentPath, childPath) {
+function isPathInsideOrEqual(parentPath: string, childPath: string) {
   const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function validateProjectRuntimeRoot(hubRoot, id, projectRuntimeRoot) {
+function validateProjectRuntimeRoot(hubRoot: string, id: string, projectRuntimeRoot: string) {
   const expectedRoot = resolveProjectRuntimeRoot(hubRoot, id);
   const resolvedRoot = path.resolve(projectRuntimeRoot);
   if (!isPathInsideOrEqual(expectedRoot, resolvedRoot)) {
@@ -189,7 +189,7 @@ function validateProjectRuntimeRoot(hubRoot, id, projectRuntimeRoot) {
   return resolvedRoot;
 }
 
-export async function registerProject(hubRoot, input: AnyRecord = {}) {
+export async function registerProject(hubRoot: string, input: AnyRecord = {}) {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
   const generatedMetadata = input.skipCodeGraphGate
     ? {}
@@ -232,19 +232,19 @@ export async function registerProject(hubRoot, input: AnyRecord = {}) {
   });
 }
 
-export async function listProjects(hubRoot, { enabledOnly = false } = {}) {
+export async function listProjects(hubRoot: string, { enabledOnly = false }: AnyRecord = {}) {
   const registry = await loadRegistry(hubRoot);
   return (Object.values(registry.projects) as AnyRecord[])
     .filter((project) => !enabledOnly || project.enabled !== false)
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export async function getProject(hubRoot, id) {
+export async function getProject(hubRoot: string, id: string) {
   const registry = await loadRegistry(hubRoot);
   return registry.projects[id] || null;
 }
 
-export function parseGithubRepo(value) {
+export function parseGithubRepo(value: string) {
   const input = String(value || "").trim();
   const parts = input.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -261,7 +261,7 @@ export function parseGithubRepo(value) {
   return { owner, repo, fullName: `${owner}/${repo}` };
 }
 
-export async function bindProjectGithub(hubRoot, id, repoFullName, { triggers = DEFAULT_GITHUB_TRIGGERS } = {}) {
+export async function bindProjectGithub(hubRoot: string, id: string, repoFullName: string, { triggers = DEFAULT_GITHUB_TRIGGERS }: AnyRecord = {}) {
   if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
   const repo = parseGithubRepo(repoFullName);
   const existing = await getProject(hubRoot, id);
@@ -278,7 +278,7 @@ export async function bindProjectGithub(hubRoot, id, repoFullName, { triggers = 
   });
 }
 
-export async function updateProject(hubRoot, id, patch: AnyRecord = {}) {
+export async function updateProject(hubRoot: string, id: string, patch: AnyRecord = {}) {
   if (!SAFE_ID.test(id)) throw new Error(`invalid project id: ${id}`);
   return await withRegistryLock(hubRoot, async () => {
     const registry = await loadRegistry(hubRoot);
@@ -299,7 +299,7 @@ export async function updateProject(hubRoot, id, patch: AnyRecord = {}) {
   });
 }
 
-export async function heartbeatWorker(hubRoot, id, worker: AnyRecord = {}) {
+export async function heartbeatWorker(hubRoot: string, id: string, worker: AnyRecord = {}) {
   const heartbeat = {
     workerId: worker.workerId || `worker-${process.pid}`,
     pid: worker.pid || process.pid,
@@ -316,7 +316,7 @@ export async function heartbeatWorker(hubRoot, id, worker: AnyRecord = {}) {
   return { project, actions };
 }
 
-export function deriveWorkerStatus(worker) {
+export function deriveWorkerStatus(worker: AnyRecord) {
   const status = worker?.status || null;
   if (!status) return "offline";
   if (["online", "idle", "busy", "ready", "running", "starting"].includes(status)) return "online";
@@ -343,7 +343,7 @@ function summarizeProjectWorkers(projects: AnyRecord[]) {
   return summary;
 }
 
-export async function hubStatus(hubRoot) {
+export async function hubStatus(hubRoot: string) {
   const registry = await loadRegistry(hubRoot);
   const projects = Object.values(registry.projects) as AnyRecord[];
   return {
@@ -365,11 +365,11 @@ const RUNTIME_VERSION = "0.2.0";
 
 const instances = new Map();
 
-function instanceKey(cpbRoot, hubRoot) {
+function instanceKey(cpbRoot: string, hubRoot: string) {
   return `${path.resolve(cpbRoot)}\0${path.resolve(hubRoot)}`;
 }
 
-function buildRuntimeMeta(cpbRoot, hubRoot) {
+function buildRuntimeMeta(cpbRoot: string, hubRoot: string) {
   return {
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -381,7 +381,7 @@ function buildRuntimeMeta(cpbRoot, hubRoot) {
   };
 }
 
-function sameRuntime(a, b) {
+function sameRuntime(a: AnyRecord, b: AnyRecord) {
   return Boolean(
     a &&
     b &&
@@ -392,7 +392,7 @@ function sameRuntime(a, b) {
   );
 }
 
-export function getHubRuntime(cpbRoot, hubRoot) {
+export function getHubRuntime(cpbRoot: string, hubRoot: string) {
   const key = instanceKey(cpbRoot, hubRoot);
   const existing = instances.get(key);
   if (existing) return existing;
@@ -432,7 +432,7 @@ export function getHubRuntime(cpbRoot, hubRoot) {
   return runtime;
 }
 
-async function readRuntimeState(statePath) {
+async function readRuntimeState(statePath: string) {
   try {
     return JSON.parse(await readFile(statePath, "utf8"));
   } catch {
@@ -440,7 +440,7 @@ async function readRuntimeState(statePath) {
   }
 }
 
-function isPidAlive(pid) {
+function isPidAlive(pid: number) {
   if (!pid || typeof pid !== "number") return false;
   try {
     process.kill(pid, 0);
@@ -452,7 +452,7 @@ function isPidAlive(pid) {
   }
 }
 
-export async function readHubLiveness(hubRoot) {
+export async function readHubLiveness(hubRoot: string) {
   const statePath = path.join(path.resolve(hubRoot), "state", "hub.json");
   let meta = null;
   try {
@@ -515,7 +515,7 @@ export function buildHubInstallEnv(parentEnv = process.env) {
  * Rotate a log file if it exceeds maxSize by keeping only the last keepSize bytes.
  * Truncates at the first newline boundary to avoid partial lines.
  */
-function rotateLogIfNeeded(filePath, maxSize = 10 * 1024 * 1024, keepSize = 1024 * 1024) {
+function rotateLogIfNeeded(filePath: string, maxSize = 10 * 1024 * 1024, keepSize = 1024 * 1024) {
   let fd;
   try {
     fd = openSync(filePath, "r");
@@ -816,32 +816,32 @@ const PRIORITY_RANK = { P0: 0, P1: 1, P2: 2 };
 const CODEGRAPH_CODES = new Set(["codegraph_unavailable", "missing_codegraph_state", "missing_codegraph_index"]);
 const RATE_LIMIT_CODES = new Set(["agent_rate_limited", "rate_limited"]);
 
-function priorityRank(priority) {
-  return PRIORITY_RANK[priority] ?? 9;
+function priorityRank(priority: string) {
+  return (PRIORITY_RANK as Record<string, number>)[priority] ?? 9;
 }
 
-function normalizeStatus(value) {
+function normalizeStatus(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/[.\s-]+/g, "_");
 }
 
-function normalizeText(value) {
+function normalizeText(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function uniqueKeys(keys) {
+function uniqueKeys(keys: any[]) {
   return [...new Set(keys.filter(Boolean))];
 }
 
-function scopedKey(project, kind, scope, id) {
+function scopedKey(project: string, kind: string, scope: string, id: string) {
   const value = normalizeText(id);
   return value ? `${project || "system"}:${kind}:${scope}:${value}` : null;
 }
 
-function workKey(project, kind, title) {
+function workKey(project: string, kind: string, title: string) {
   return scopedKey(project, kind, "work", title);
 }
 
-function queueContextIds(sourceContext) {
+function queueContextIds(sourceContext: AnyRecord) {
   if (!sourceContext || typeof sourceContext !== "object") return [];
   return [
     sourceContext.queueEntryId,
@@ -855,7 +855,7 @@ function queueContextIds(sourceContext) {
   ];
 }
 
-function queueDedupeKeys(entry, kind, project, title) {
+function queueDedupeKeys(entry: AnyRecord, kind: string, project: string, title: string) {
   const metadata = entry.metadata || {};
   return uniqueKeys([
     scopedKey(project, kind, "queue", entry.id),
@@ -866,7 +866,7 @@ function queueDedupeKeys(entry, kind, project, title) {
   ]);
 }
 
-function jobDedupeKeys(job, kind, project, title) {
+function jobDedupeKeys(job: AnyRecord, kind: string, project: string, title: string) {
   return uniqueKeys([
     scopedKey(project, kind, "job", job.jobId),
     scopedKey(project, kind, "queue", job.queueEntryId),
@@ -875,15 +875,15 @@ function jobDedupeKeys(job, kind, project, title) {
   ]);
 }
 
-function toIso(value) {
+function toIso(value: unknown) {
   if (!value) return null;
-  const date = new Date(value);
+  const date = new Date(value as any);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function ageMs(updatedAt) {
+function ageMs(updatedAt: unknown) {
   if (!updatedAt) return null;
-  const time = new Date(updatedAt).getTime();
+  const time = new Date(updatedAt as any).getTime();
   if (Number.isNaN(time)) return null;
   return Math.max(0, Date.now() - time);
 }
@@ -896,19 +896,19 @@ function evidence(type: string, id: string, path: string | null = null) {
   };
 }
 
-function text(value, fallback) {
+function text(value: unknown, fallback: string): string {
   const str = String(value || "").trim();
   return str || fallback;
 }
 
-function jobReason(job) {
+function jobReason(job: AnyRecord) {
   return text(
     job.blockedReason || job.failureCause?.reason || job.failureCause?.message || job.lastActivityMessage || job.failureCode,
     "Workflow needs operator attention",
   );
 }
 
-function codeForJob(job) {
+function codeForJob(job: AnyRecord) {
   return normalizeStatus(job.failureCode || job.failureCause?.kind || job.failureCause?.code || job.failureCause?.status);
 }
 
@@ -925,7 +925,7 @@ function attentionItem({
   primaryEvidenceId,
   dedupeKeys = null,
   evidence: evidenceList,
-}) {
+}: AnyRecord) {
   const normalizedUpdatedAt = toIso(updatedAt);
   return {
     id: `${project || "system"}:${kind}:${primaryEvidenceId}`,
@@ -945,7 +945,7 @@ function attentionItem({
   };
 }
 
-function queueItem(entry, kind, severity) {
+function queueItem(entry: AnyRecord, kind: string, severity: string) {
   const project = entry.projectId || entry.project || null;
   const title = text(entry.description || entry.metadata?.task, "Queued work needs attention");
   const reason = kind === "codegraph_unavailable"
@@ -970,7 +970,7 @@ function queueItem(entry, kind, severity) {
   });
 }
 
-function jobBlockerItem(job, kind, severity) {
+function jobBlockerItem(job: AnyRecord, kind: string, severity: string) {
   const project = job.project || null;
   const title = text(job.task, "Workflow needs attention");
   const action = kind === "codegraph_unavailable"
@@ -994,7 +994,7 @@ function jobBlockerItem(job, kind, severity) {
   });
 }
 
-function workflowFailedItem(job) {
+function workflowFailedItem(job: AnyRecord) {
   return attentionItem({
     kind: "workflow_failed",
     severity: "warning",
@@ -1010,7 +1010,7 @@ function workflowFailedItem(job) {
   });
 }
 
-function dagNodeFailedItems(job) {
+function dagNodeFailedItems(job: AnyRecord) {
   const nodeStates = (job.nodeStates || {}) as Record<string, AnyRecord>;
   return Object.entries(nodeStates)
     .filter(([, node]) => node?.status === "failed")
@@ -1029,7 +1029,7 @@ function dagNodeFailedItems(job) {
     }));
 }
 
-function reviewReadyItem(session) {
+function reviewReadyItem(session: AnyRecord) {
   return attentionItem({
     kind: "review_ready",
     severity: "info",
@@ -1045,7 +1045,7 @@ function reviewReadyItem(session) {
   });
 }
 
-function runtimeItems(runtimeHealth) {
+function runtimeItems(runtimeHealth: AnyRecord) {
   if (!runtimeHealth) return [];
   const items = [];
   const divergence = runtimeHealth.jobsIndexDivergence || {};
@@ -1064,9 +1064,9 @@ function runtimeItems(runtimeHealth) {
   }
 
   const staleRuntimeIssue = (runtimeHealth.staleJobs || 0) > 0
-    || (runtimeHealth.blockers || []).some((blocker) => ["release_version_mismatch", "stale_jobs"].includes(blocker?.code));
+    || (runtimeHealth.blockers || []).some((blocker: AnyRecord) => ["release_version_mismatch", "stale_jobs"].includes(blocker?.code));
   if (staleRuntimeIssue) {
-    const detail = (runtimeHealth.blockers || []).find((blocker) => ["release_version_mismatch", "stale_jobs"].includes(blocker?.code));
+    const detail = (runtimeHealth.blockers || []).find((blocker: AnyRecord) => ["release_version_mismatch", "stale_jobs"].includes(blocker?.code));
     items.push(attentionItem({
       kind: "stale_runtime",
       severity: "critical",
@@ -1110,9 +1110,9 @@ function runtimeItems(runtimeHealth) {
   return items;
 }
 
-function addDeduped(map, candidate) {
+function addDeduped(map: Map<string, AnyRecord>, candidate: AnyRecord) {
   const keys = candidate._dedupeKeys?.length ? candidate._dedupeKeys : [candidate.id];
-  const key = keys.find((candidateKey) => map.has(candidateKey)) || keys[0];
+  const key = keys.find((candidateKey: string) => map.has(candidateKey)) || keys[0];
   const existing = map.get(key);
   if (!existing) {
     for (const candidateKey of keys) map.set(candidateKey, candidate);
@@ -1121,7 +1121,7 @@ function addDeduped(map, candidate) {
 
   for (const candidateKey of keys) map.set(candidateKey, existing);
 
-  const evidenceKeys = new Set(existing.evidence.map((entry) => `${entry.type}:${entry.id}:${entry.path || ""}`));
+  const evidenceKeys = new Set(existing.evidence.map((entry: AnyRecord) => `${entry.type}:${entry.id}:${entry.path || ""}`));
   for (const entry of candidate.evidence) {
     const evidenceKey = `${entry.type}:${entry.id}:${entry.path || ""}`;
     if (!evidenceKeys.has(evidenceKey)) {
@@ -1146,7 +1146,7 @@ function addDeduped(map, candidate) {
     : existing._priority;
 }
 
-function sortAttention(a, b) {
+function sortAttention(a: AnyRecord, b: AnyRecord) {
   const severity = (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
   if (severity !== 0) return severity;
   const kind = (KIND_RANK[a.kind] ?? 99) - (KIND_RANK[b.kind] ?? 99);
@@ -1159,7 +1159,7 @@ function sortAttention(a, b) {
   return a.id.localeCompare(b.id);
 }
 
-function publicItem(attentionItem) {
+function publicItem(attentionItem: AnyRecord) {
   const { _priority, _primaryEvidenceId, _dedupeKeys, ...publicFields } = attentionItem;
   return publicFields;
 }

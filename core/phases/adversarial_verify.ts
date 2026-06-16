@@ -27,7 +27,7 @@ Rules:
 - Focus only on attack hypotheses, missing proof, and residual risk
 - Do not implement fixes or edit files`;
 
-export async function runAdversarialVerify(ctx) {
+export async function runAdversarialVerify(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "adversarial_verifier";
@@ -137,7 +137,7 @@ export async function runAdversarialVerify(ctx) {
   } as any);
 }
 
-function renderAdversarialVerdictMarkdown(verdict, riskMap = null) {
+function renderAdversarialVerdictMarkdown(verdict: Record<string, any>, riskMap: Record<string, any> | null = null) {
   const statusUpper = String(verdict.status || "unknown").toUpperCase();
   return `# Adversarial Verdict
 
@@ -157,12 +157,12 @@ ${verdict.details || "N/A"}
 `;
 }
 
-async function buildAdversarialPrompt(ctx) {
+async function buildAdversarialPrompt(ctx: Record<string, any>) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("adversarial_verify", ctx);
   }
   const riskMap = ctx.sourceContext?.riskMap || {};
-  const verifyArtifact = ctx.previousResults?.findLast?.((result) => result.artifact?.kind === "verdict")?.artifact || null;
+  const verifyArtifact = ctx.previousResults?.findLast?.((result: Record<string, any>) => result.artifact?.kind === "verdict")?.artifact || null;
   return `You are an adversarial verifier. Try to disprove the ordinary verifier verdict without editing files.
 
 Task: ${ctx.task}
@@ -177,7 +177,7 @@ Ordinary verify artifact: ${verifyArtifact?.name || "unavailable"}
 Attack the assumptions, missing tests, unsafe provider/worktree state, and retry/remediation gaps.`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "adversarial_verifier";
   const raw = ctx.agents?.[role] || ctx.agents?.adversarial_verifier || ctx.agents?.verifier || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

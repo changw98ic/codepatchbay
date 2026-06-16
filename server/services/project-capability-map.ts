@@ -21,27 +21,27 @@ const HIGH_RISK_AREAS = [
   { domain: "concurrency", patterns: [/concurr/i, /race/i, /lock/i, /lease/i, /parallel/i, /capacity/i] },
 ];
 
-function toPosixPath(value) {
+function toPosixPath(value: unknown) {
   return String(value || "").replace(/\\/g, "/");
 }
 
-function isSourceFile(file) {
+function isSourceFile(file: Record<string, any>) {
   return SOURCE_FILE_RE.test(file.path) && !TEST_FILE_RE.test(file.path);
 }
 
-function isTestFile(file) {
+function isTestFile(file: Record<string, any>) {
   return TEST_FILE_RE.test(file.path);
 }
 
-function topFiles(files, predicate, limit) {
+function topFiles(files: any[], predicate: (file: Record<string, any>) => boolean, limit: number) {
   return files
     .filter(predicate)
-    .sort((a, b) => Number(b.nodeCount || 0) - Number(a.nodeCount || 0) || a.path.localeCompare(b.path))
+    .sort((a: Record<string, any>, b: Record<string, any>) => Number(b.nodeCount || 0) - Number(a.nodeCount || 0) || a.path.localeCompare(b.path))
     .slice(0, limit)
-    .map((file) => file.path);
+    .map((file: Record<string, any>) => file.path);
 }
 
-async function queryCodeGraphFiles(indexFile) {
+async function queryCodeGraphFiles(indexFile: string) {
   try {
     const { stdout } = await execFileAsync("sqlite3", [
       "-json",
@@ -74,7 +74,7 @@ async function queryCodeGraphFiles(indexFile) {
   }
 }
 
-async function packageScripts(sourcePath) {
+async function packageScripts(sourcePath: string) {
   try {
     const pkg = JSON.parse(await readFile(path.join(sourcePath, "package.json"), "utf8"));
     const scripts = pkg?.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
@@ -88,7 +88,7 @@ async function packageScripts(sourcePath) {
   }
 }
 
-function languageSummary(files) {
+function languageSummary(files: any[]) {
   const counts = {};
   for (const file of files) {
     counts[file.language] = (counts[file.language] || 0) + 1;
@@ -96,19 +96,19 @@ function languageSummary(files) {
   return counts;
 }
 
-function highRiskAreas(files) {
-  return HIGH_RISK_AREAS.map((area) => ({
+function highRiskAreas(files: any[]) {
+  return HIGH_RISK_AREAS.map((area: Record<string, any>) => ({
     domain: area.domain,
     files: topFiles(
       files,
-      (file) => isSourceFile(file) && area.patterns.some((pattern) => pattern.test(file.path)),
+      (file: Record<string, any>) => isSourceFile(file) && area.patterns.some((pattern: RegExp) => pattern.test(file.path)),
       20,
     ),
-  })).filter((area) => area.files.length > 0);
+  })).filter((area: Record<string, any>) => area.files.length > 0);
 }
 
-function safetyBoundaries(areas) {
-  const domains = new Set(areas.map((area) => area.domain));
+function safetyBoundaries(areas: any[]) {
+  const domains = new Set(areas.map((area: Record<string, any>) => area.domain));
   const boundaries = [];
   if (domains.has("security")) boundaries.push("secrets", "github_write");
   if (domains.has("provider_pool")) boundaries.push("provider_pool");
@@ -120,7 +120,7 @@ function safetyBoundaries(areas) {
   return [...new Set(boundaries)];
 }
 
-export function projectCapabilityMapGate(project) {
+export function projectCapabilityMapGate(project: Record<string, any>) {
   const metadata = project?.metadata || {};
   const capabilityMap = metadata.project_capability_map || project?.project_capability_map || metadata.projectCapabilityMap;
   const confidence = capabilityMap?.confidence || metadata.capabilityMapConfidence || metadata.confidence || null;

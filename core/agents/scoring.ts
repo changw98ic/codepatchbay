@@ -1,16 +1,16 @@
-function clamp01(value) {
+function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
 }
 
-function ratio(numerator, denominator, fallback = 0) {
+function ratio(numerator: number, denominator: number, fallback: number = 0): number {
   const n = Number(numerator) || 0;
   const d = Number(denominator) || 0;
   if (d <= 0) return fallback;
   return clamp01(n / d);
 }
 
-function durationScore(totalDurationMs, sampleSize) {
+function durationScore(totalDurationMs: number, sampleSize: number): number {
   const total = Number(totalDurationMs) || 0;
   const samples = Number(sampleSize) || 0;
   if (total <= 0 || samples <= 0) return 0.5;

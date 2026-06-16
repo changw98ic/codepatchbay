@@ -10,22 +10,23 @@ import { createInstallPlan, executeInstallPlan } from "./install-plan.js";
 import { checkSetupAgentHealth } from "./health-check.js";
 import { getAuthConnectInstructions } from "../auth/connect.js";
 import { cpbHome } from "../paths.js";
+import { AnyRecord } from "../../shared/types.js";
 
 const SCHEMA_VERSION = 1;
 
-export function setupProfilePath(cpbRoot) {
+export function setupProfilePath(cpbRoot: string): string {
   const hubRoot = process.env.CPB_HUB_ROOT || cpbHome();
   return path.join(path.resolve(hubRoot), "setup", "profile.json");
 }
 
-async function writeAtomicJson(file, data) {
+async function writeAtomicJson(file: string, data: unknown) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
   await rename(tmp, file);
 }
 
-export async function readSetupProfile(cpbRoot) {
+export async function readSetupProfile(cpbRoot: string) {
   try {
     return JSON.parse(await readFile(setupProfilePath(cpbRoot), "utf8"));
   } catch (error) {
@@ -34,19 +35,19 @@ export async function readSetupProfile(cpbRoot) {
   }
 }
 
-function byAgentId(catalog) {
+function byAgentId(catalog: AnyRecord[]) {
   return new Map(catalog.map((agent) => [agent.id, agent]));
 }
 
-function missing(snapshot, agent) {
+function missing(snapshot: AnyRecord, agent: AnyRecord): boolean {
   return snapshot.agents?.[agent.id]?.installed !== true;
 }
 
-function selectRecommended(catalog, snapshot) {
+function selectRecommended(catalog: AnyRecord[], snapshot: AnyRecord): AnyRecord[] {
   return catalog.filter((agent) => agent.recommended && missing(snapshot, agent));
 }
 
-function selectNamed(catalog, names = []) {
+function selectNamed(catalog: AnyRecord[], names: string[] = []): AnyRecord[] {
   const index = byAgentId(catalog);
   return names.map((name) => {
     const agent = index.get(name);
@@ -55,18 +56,18 @@ function selectNamed(catalog, names = []) {
   });
 }
 
-function setupPromptLabel(agent) {
+function setupPromptLabel(agent: AnyRecord): string {
   if (agent.id === "codex") return "Codex";
   if (agent.id === "claude") return "Claude Code";
   if (agent.id === "opencode") return "OpenCode";
   return agent.displayName || agent.id;
 }
 
-function yes(answer) {
+function yes(answer: unknown): boolean {
   return /^y(es)?$/i.test(String(answer || "").trim());
 }
 
-async function askQuestion(question, questionFn) {
+async function askQuestion(question: string, questionFn: ((q: string) => Promise<string>) | null) {
   if (typeof questionFn === "function") return questionFn(question);
   if (!input.isTTY) return "";
   const rl = createInterface({ input, output });
@@ -77,7 +78,7 @@ async function askQuestion(question, questionFn) {
   }
 }
 
-async function askForAgents(catalog, snapshot, { questionFn }: Record<string, any> = {}) {
+async function askForAgents(catalog: AnyRecord[], snapshot: AnyRecord, { questionFn }: Record<string, any> = {}): Promise<AnyRecord[]> {
   const recommended = selectRecommended(catalog, snapshot);
   if (!input.isTTY && typeof questionFn !== "function") return recommended;
 
@@ -93,7 +94,7 @@ async function askForAgents(catalog, snapshot, { questionFn }: Record<string, an
   return selected;
 }
 
-async function confirmPlan(plan) {
+async function confirmPlan(plan: AnyRecord): Promise<boolean> {
   if (!input.isTTY) return false;
   const rl = createInterface({ input, output });
   try {
@@ -110,7 +111,7 @@ async function askRunAuthCheck({ mode, questionFn }: Record<string, any> = {}) {
   return yes(await askQuestion("Run auth check? y/N ", questionFn));
 }
 
-function installationRecord(plan, result, error = null) {
+function installationRecord(plan: AnyRecord, result: AnyRecord | null, error: any = null): AnyRecord {
   return {
     agentId: plan.agent.id,
     method: plan.method,
@@ -120,8 +121,8 @@ function installationRecord(plan, result, error = null) {
   };
 }
 
-function profileFromResult(result) {
-  const agents = {};
+function profileFromResult(result: AnyRecord): AnyRecord {
+  const agents: AnyRecord = {};
   for (const agent of result.selectedAgents) {
     const install = result.installations[agent.id] || null;
     const health = result.health[agent.id] || null;
@@ -142,7 +143,7 @@ function profileFromResult(result) {
   return {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    selectedAgents: result.selectedAgents.map((agent) => agent.id),
+    selectedAgents: result.selectedAgents.map((agent: AnyRecord) => agent.id),
     mode: result.mode,
     agents,
   };
@@ -161,15 +162,15 @@ export async function runSetupWizard({
   questionFn = null,
   execute = true,
   stdio = "inherit",
-} = {}) {
+}: AnyRecord = {}) {
   const detected = await detectFn();
-  let selectedAgents;
+  let selectedAgents: AnyRecord[];
   if (agents.length > 0) selectedAgents = selectNamed(catalog, agents);
   else if (mode === "recommended" || mode === "non-interactive") selectedAgents = selectRecommended(catalog, detected);
   else selectedAgents = await askForAgents(catalog, detected, { questionFn });
   const runAuthCheck = await askRunAuthCheck({ mode, questionFn });
 
-  const result = {
+  const result: AnyRecord = {
     schemaVersion: SCHEMA_VERSION,
     mode,
     detected,

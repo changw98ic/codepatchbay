@@ -16,14 +16,14 @@ const SYSTEM_READ_ROOTS = Object.freeze([
   "/dev",
 ]);
 
-function splitList(value) {
+function splitList(value: string) {
   return String(value || "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
-function parseEnvArgs(value) {
+function parseEnvArgs(value: string) {
   if (!value) return [];
   const text = String(value).trim();
   if (!text) return [];
@@ -35,11 +35,11 @@ function parseEnvArgs(value) {
   return text.split(/\s+/).filter(Boolean);
 }
 
-function commandExists(command, probe = defaultProbe) {
+function commandExists(command: string, probe = defaultProbe) {
   return Boolean(probe(command));
 }
 
-function defaultProbe(command) {
+function defaultProbe(command: string) {
   const result = spawnSync(command, [], {
     stdio: "ignore",
     timeout: 1000,
@@ -57,11 +57,11 @@ function normalizedMode(env: StringRecord = {}) {
   return VALID_MODES.has(requested) ? requested : "off";
 }
 
-function sandboxLiteral(value) {
+function sandboxLiteral(value: string) {
   return JSON.stringify(path.resolve(String(value)));
 }
 
-function uniqueExistingRoots(values, cwd) {
+function uniqueExistingRoots(values: string[], cwd: string) {
   const out = [];
   const seen = new Set();
   for (const value of values) {
@@ -75,7 +75,7 @@ function uniqueExistingRoots(values, cwd) {
   return out;
 }
 
-function uniqueRoots(values) {
+function uniqueRoots(values: string[]) {
   const out = [];
   const seen = new Set();
   for (const value of values) {
@@ -89,7 +89,7 @@ function uniqueRoots(values) {
   return out;
 }
 
-function executableReadRoots(command, env: StringRecord = {}, cwd = process.cwd()) {
+function executableReadRoots(command: string, env: StringRecord = {}, cwd = process.cwd()) {
   const commandText = String(command || "");
   if (!commandText) return [];
 
@@ -116,7 +116,7 @@ function executableReadRoots(command, env: StringRecord = {}, cwd = process.cwd(
   return uniqueRoots(roots);
 }
 
-function withExecutableReadRoots(policy, command, env, cwd) {
+function withExecutableReadRoots(policy: Record<string, any>, command: string, env: StringRecord, cwd: string) {
   if (!policy.enabled || policy.provider === "custom") return policy;
   const readRoots = uniqueRoots([
     ...policy.readRoots,
@@ -207,9 +207,9 @@ export function resolveAgentSandboxPolicy(env: StringRecord = {}, { cwd = proces
   };
 }
 
-function sandboxExecProfile(policy) {
-  const readRoots = [...SYSTEM_READ_ROOTS, ...policy.readRoots].map((root) => `(subpath ${sandboxLiteral(root)})`);
-  const writeRoots = policy.writeRoots.map((root) => `(subpath ${sandboxLiteral(root)})`);
+function sandboxExecProfile(policy: Record<string, any>) {
+  const readRoots = [...SYSTEM_READ_ROOTS, ...policy.readRoots].map((root: string) => `(subpath ${sandboxLiteral(root)})`);
+  const writeRoots = policy.writeRoots.map((root: string) => `(subpath ${sandboxLiteral(root)})`);
   return [
     "(version 1)",
     "(deny default)",
@@ -222,7 +222,7 @@ function sandboxExecProfile(policy) {
   ].filter(Boolean).join("\n");
 }
 
-function bwrapArgs(policy, command, args, cwd) {
+function bwrapArgs(policy: Record<string, any>, command: string, args: string[], cwd: string) {
   const bargs = ["--die-with-parent"];
   const writeRootSet = new Set(policy.writeRoots);
   if (policy.network === "deny") bargs.push("--unshare-net");
@@ -241,7 +241,7 @@ function bwrapArgs(policy, command, args, cwd) {
   return bargs;
 }
 
-export function buildAgentSandboxLaunch(command, args = [], options: StringRecord = {}) {
+export function buildAgentSandboxLaunch(command: string, args: string[] = [], options: StringRecord = {}) {
   const env = options.env || {};
   const cwd = options.cwd || process.cwd();
   const policy = withExecutableReadRoots(

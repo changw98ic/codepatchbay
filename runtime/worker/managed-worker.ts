@@ -103,8 +103,8 @@ export async function main() {
 
   // Process inbox
   async function processInbox() {
-    const files = await readdir(inboxDir).catch(() => []);
-    const jsonFiles = files.filter(f => f.endsWith(".json"));
+    const files = await readdir(inboxDir).catch((): string[] => []);
+    const jsonFiles = files.filter((f: string) => f.endsWith(".json"));
 
     for (const file of jsonFiles) {
       const filePath = path.join(inboxDir, file);
@@ -480,7 +480,7 @@ export async function main() {
   pollTimer.unref();
 
   // Graceful shutdown
-  async function shutdown(signal) {
+  async function shutdown(signal: string) {
     clearInterval(heartbeatTimer);
     clearInterval(pollTimer);
     await watcher.close();

@@ -19,7 +19,7 @@ const MAX_BUNDLE_SIZE = 50_000;
  * Mirrors server/services/provider-quota.js:redactSecrets — kept here
  * to avoid core/ → server/ import boundary violation.
  */
-function redactSecrets(text) {
+function redactSecrets(text: unknown) {
   if (!text) return "";
   return String(text)
     .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
@@ -146,7 +146,7 @@ export async function generateHandoffBundle({
   return bundle;
 }
 
-async function captureGitState(cwd) {
+async function captureGitState(cwd: string) {
   try {
     const [{ stdout: status }, { stdout: diff }] = await Promise.all([
       execFile("git", ["status", "--porcelain"], { cwd, timeout: 5000 }),

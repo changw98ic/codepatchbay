@@ -3,7 +3,7 @@ import { mergeRoutePolicy, normalizeRoute } from "../../core/triage/schema.js";
 import { classifyIssueRules } from "../../core/triage/rules.js";
 
 
-function stripJsonFence(raw) {
+function stripJsonFence(raw: unknown): string {
   return String(raw || "")
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
@@ -21,14 +21,14 @@ function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null
   });
 }
 
-function withMode(decision: AnyRecord, triageMode) {
+function withMode(decision: AnyRecord, triageMode: string): AnyRecord {
   return {
     ...decision,
     triageMode,
   };
 }
 
-function githubTriageInput(event: AnyRecord = {}, requestedRoute = null) {
+function githubTriageInput(event: AnyRecord = {}, requestedRoute: AnyRecord | null = null): AnyRecord {
   return {
     labels: event.labels,
     title: event.title,
@@ -55,7 +55,7 @@ function channelRequestedRoute(command: AnyRecord = {}) {
     : null;
 }
 
-function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, requested = null) {
+function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, requested: AnyRecord | null = null): AnyRecord {
   return {
     title: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
     task: command.task,
@@ -67,7 +67,7 @@ function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, re
   };
 }
 
-export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision = null) {
+export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision: AnyRecord | null = null): string {
   const rules = ruleDecision || classifyIssueRules(input);
   return [
     "You are the CodePatchBay issue routing triager.",
@@ -101,7 +101,7 @@ export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision = null
   ].join("\n");
 }
 
-export function parseAcpTriagerResponse(raw) {
+export function parseAcpTriagerResponse(raw: unknown): AnyRecord {
   const text = stripJsonFence(raw);
   if (!text) return { requestedRoute: null, raw: "" };
   let parsed: AnyRecord;
@@ -139,7 +139,7 @@ export function triageIssue(input: AnyRecord = {}, { requestedRoute = null, acpR
   } as AnyRecord);
 }
 
-export async function triageIssueWithAcp(input = {}, {
+export async function triageIssueWithAcp(input: AnyRecord = {}, {
   cpbRoot = process.cwd(),
   hubRoot = null,
   cwd = process.cwd(),

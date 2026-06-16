@@ -688,7 +688,7 @@ export async function runAgentSandboxSelfTestCheck({
 
 // --- Orchestrator ---
 
-async function checkServerDeps(cpbRoot) {
+async function checkServerDeps(cpbRoot: any) {
   const nmPath = path.join(path.resolve(cpbRoot), "server", "node_modules");
   try {
     await access(nmPath, fsConstants.R_OK);
@@ -700,7 +700,7 @@ async function checkServerDeps(cpbRoot) {
   }
 }
 
-async function checkGithubReadiness(hubRoot) {
+async function checkGithubReadiness(hubRoot: any) {
   const checks = [];
   try {
     const { resolveGithubTransport } = await import("./github/github-api.js");
@@ -794,7 +794,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
       const command = override?.command || d.command;
       const args = override?.args || (d.args?.length ? d.args : ["--help"]);
       const npxPkg = d.fallbackCommand === "npx" && d.fallbackArgs?.length
-        ? d.fallbackArgs.find((a) => !a.startsWith("-"))
+        ? d.fallbackArgs.find((a: any) => !a.startsWith("-"))
         : undefined;
       adapterChecks.push(
         checkAcpAdapter(d.name, command, args, {
@@ -1080,7 +1080,7 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Rec
   };
 }
 
-export function formatReleaseDoctorHuman(result) {
+export function formatReleaseDoctorHuman(result: any) {
   const { summary, checks } = result;
   const lines = [];
   lines.push(`${BOLD}Release Doctor${NC}`);
@@ -1105,7 +1105,7 @@ export function formatReleaseDoctorHuman(result) {
   return lines.join("\n");
 }
 
-export function formatReleaseDoctorJson(result) {
+export function formatReleaseDoctorJson(result: any) {
   return JSON.stringify(result, null, 2);
 }
 
@@ -1136,9 +1136,10 @@ const STATUS_COLOR = {
 const NC = "\x1b[0m";
 const BOLD = "\x1b[1m";
 
-export function formatReadinessHuman(result) {
-  const redacted = redactSecrets(result);
-  const { summary, checks } = redacted;
+export function formatReadinessHuman(result: Record<string, unknown>) {
+  const redacted = redactSecrets(result) as Record<string, unknown>;
+  const summary = redacted.summary as Record<string, number> | undefined;
+  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Record<string, unknown>[];
   const lines = [];
 
   lines.push(`${BOLD}CodePatchbay Doctor${NC}`);
@@ -1177,12 +1178,13 @@ export function formatReadinessHuman(result) {
   return lines.join("\n");
 }
 
-export function formatReadinessJson(result) {
-  const redacted = redactSecrets(result);
+export function formatReadinessJson(result: Record<string, unknown>) {
+  const redacted = redactSecrets(result) as Record<string, unknown>;
+  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Record<string, unknown>[];
   const normalized = {
     ...redacted,
-    readiness: redacted.readiness ?? deriveReadinessLevels(redacted.checks || []),
-    checks: (redacted.checks || []).map((check) => ({
+    readiness: redacted.readiness ?? deriveReadinessLevels(checks),
+    checks: checks.map((check: Record<string, unknown>) => ({
       ...check,
       evidence: check.evidence ?? check.details ?? { message: check.message },
       recommendedAction: check.recommendedAction ?? check.remediation ?? null,
@@ -1194,7 +1196,7 @@ export function formatReadinessJson(result) {
 // ── CodeGraph readiness (from codegraph-readiness.ts) ──────────────────────
 
 export class CodeGraphUnavailableError extends Error {
-  constructor(reason, details = {}) {
+  constructor(reason: any, details = {}) {
     super(reason);
     this.name = "CodeGraphUnavailableError";
     (this as Error & { code?: string; details?: Record<string, any> }).code = "codegraph_unavailable";
@@ -1202,7 +1204,7 @@ export class CodeGraphUnavailableError extends Error {
   }
 }
 
-function isAlive(pid) {
+function isAlive(pid: any) {
   const parsed = Number(pid);
   if (!Number.isInteger(parsed) || parsed <= 0) return false;
   try {
@@ -1213,7 +1215,7 @@ function isAlive(pid) {
   }
 }
 
-async function readJson(file) {
+async function readJson(file: any) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -1221,7 +1223,7 @@ async function readJson(file) {
   }
 }
 
-async function canonicalDir(value) {
+async function canonicalDir(value: any) {
   if (!value || typeof value !== "string") return null;
   try {
     return await realpath(path.resolve(value));
@@ -1230,7 +1232,7 @@ async function canonicalDir(value) {
   }
 }
 
-async function firstUsableIndexFile(codebaseRoot) {
+async function firstUsableIndexFile(codebaseRoot: any) {
   const candidates = [
     path.join(codebaseRoot, ".codegraph", "codegraph.db"),
     path.join(codebaseRoot, ".codegraph", "index.sqlite"),
@@ -1248,7 +1250,7 @@ async function firstUsableIndexFile(codebaseRoot) {
 
 const MIN_CODEGRAPH_DB_BYTES = 1024;
 
-async function readDaemonState(sourceRoot) {
+async function readDaemonState(sourceRoot: any) {
   const daemonPidFile = path.join(sourceRoot, ".codegraph", "daemon.pid");
   const state = await readJson(daemonPidFile);
   if (!state?.pid) return null;
@@ -1336,7 +1338,7 @@ function nowSafe() {
   return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 }
 
-async function bestEffortGitInit(sourcePath) {
+async function bestEffortGitInit(sourcePath: any) {
   try {
     await execFileAsync("git", ["init", "-b", "main"], { cwd: sourcePath, timeout: 10_000 });
     await execFileAsync("git", ["config", "user.email", "demo@example.invalid"], { cwd: sourcePath, timeout: 10_000 });
@@ -1348,7 +1350,7 @@ async function bestEffortGitInit(sourcePath) {
   }
 }
 
-async function writeToyRepo(sourcePath) {
+async function writeToyRepo(sourcePath: any) {
   await mkdir(path.join(sourcePath, "src"), { recursive: true });
   await writeFile(
     path.join(sourcePath, "package.json"),
@@ -1379,7 +1381,7 @@ index 6fbc235..e741ad8 100644
 `;
 }
 
-async function captureToyDiff(sourcePath) {
+async function captureToyDiff(sourcePath: any) {
   try {
     const result = await execFileAsync("git", ["diff", "--", "src/sum.js"], {
       cwd: sourcePath,
@@ -1394,7 +1396,7 @@ async function captureToyDiff(sourcePath) {
   return demoDiffPatch();
 }
 
-async function runToyTests(sourcePath) {
+async function runToyTests(sourcePath: any) {
   const started = Date.now();
   const command = "node src/sum.test.js";
   try {
@@ -1422,7 +1424,7 @@ async function runToyTests(sourcePath) {
   }
 }
 
-function formatTestReport(result) {
+function formatTestReport(result: any) {
   const stdout = result.stdout.trim() || "(no stdout)";
   const stderr = result.stderr.trim() || "(no stderr)";
   return `# TESTS
@@ -1442,7 +1444,7 @@ ${stderr}
 `;
 }
 
-function makeRiskSummary(sourcePath) {
+function makeRiskSummary(sourcePath: any) {
   return {
     level: "low",
     summary: "Demo-only temporary toy repo; no user project, network provider, or credentialed agent is touched.",
@@ -1455,14 +1457,14 @@ function makeRiskSummary(sourcePath) {
   };
 }
 
-function formatRiskReport(risk) {
+function formatRiskReport(risk: any) {
   return `# RISK
 
 Level: ${risk.level}
 Summary: ${risk.summary}
 
 ## Factors
-${risk.factors.map((factor) => `- ${factor}`).join("\n")}
+${risk.factors.map((factor: any) => `- ${factor}`).join("\n")}
 `;
 }
 
@@ -1489,7 +1491,7 @@ function storyEntries({ planPath, diffPath, testsPath, verdictPath, riskPath, te
   }));
 }
 
-async function writeProjectForDemo(cpbRoot, project, sourcePath) {
+async function writeProjectForDemo(cpbRoot: any, project: any, sourcePath: any) {
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
@@ -1710,7 +1712,7 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
     restrictToWiki: true,
   });
   delete artifactIndex.generatedAt;
-  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e) => ({ ...e }));
+  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e: any) => ({ ...e }));
 
   let verdict = null;
   const verdictEntry = [...artifactIndex.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);

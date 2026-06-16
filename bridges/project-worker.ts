@@ -125,14 +125,14 @@ async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: Rec
   };
 }
 
-function priorityScore(p) {
+function priorityScore(p: any): number {
   if (p === "P0") return 0;
   if (p === "P1") return 1;
   if (p === "P2") return 2;
   return 3;
 }
 
-export function parseArgs(argv) {
+export function parseArgs(argv: string[]): AnyRecord {
   const opts: AnyRecord = {
     project: null,
     pool: false,
@@ -151,7 +151,7 @@ export function parseArgs(argv) {
     hubRoot: null,
   };
   const args = argv.slice(2);
-  const valueAfter = (i, flag) => {
+  const valueAfter = (i: number, flag: string): string => {
     const v = args[i + 1];
     if (!v || v.startsWith("--")) throw new Error(`missing value for ${flag}`);
     return v;
@@ -295,7 +295,7 @@ export class ProjectWorker {
     if (!this.pool && this.project) filter.projectId = this.project.id;
     const inProgress = await listQueue(this.hubRoot, filter);
     const now = Date.now();
-    const recovered = [];
+    const recovered: AnyRecord[] = [];
     for (const entry of inProgress) {
       const claimedAt = entry.claimedAt ? new Date(entry.claimedAt).getTime() : 0;
       if (!Number.isFinite(claimedAt) || now - claimedAt < this.claimTimeoutMs) continue;
@@ -340,7 +340,7 @@ export class ProjectWorker {
     const filter: AnyRecord = { status: "in_progress" };
     if (!this.pool && this.project) filter.projectId = this.project.id;
     const inProgress = await listQueue(this.hubRoot, filter);
-    const released = [];
+    const released: string[] = [];
     for (const entry of inProgress) {
       if (entry.claimedBy !== this.workerId || entry.id === this._activeEntryId) continue;
       await updateEntry(this.hubRoot, entry.id, {
@@ -407,7 +407,7 @@ export class ProjectWorker {
     return { available: false, attempt: attempts, attempts, health: lastHealth };
   }
 
-  async executeEntry(entry) {
+  async executeEntry(entry: AnyRecord): Promise<AnyRecord> {
     const projectId = this.pool ? entry.projectId : this.project.id;
     const sourcePath = entry.sourcePath || this.project?.sourcePath;
 
@@ -453,7 +453,7 @@ export class ProjectWorker {
     return result;
   }
 
-  async runPipeline(entry, sourcePath, dispatchId, overrideProjectId) {
+  async runPipeline(entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string): Promise<AnyRecord> {
     if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId);
 
     const projectId = overrideProjectId || entry?.projectId || this.project?.id;
@@ -619,7 +619,7 @@ async function main() {
     hubRoot: opts.hubRoot,
   });
 
-  const onSignal = (sig) => {
+  const onSignal = (sig: string) => {
     process.stderr.write(`[project-worker] ${sig} received, stopping\n`);
     worker.requestStop();
   };

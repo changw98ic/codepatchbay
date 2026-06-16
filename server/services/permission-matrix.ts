@@ -8,82 +8,86 @@ const READ_ALLOWED_PATHS = Object.freeze(["*"]);
 
 export const INFRA_FAILURE = "INFRA_FAILURE";
 
-const WRITE_SCOPES = {
+type ScopeResolver = (cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null;
+type RoleScopeMap = Record<string, { allowed: ScopeResolver[]; denied: ScopeResolver[] }>;
+type RoleResolverMap = Record<string, ScopeResolver[]>;
+
+const WRITE_SCOPES: RoleScopeMap = {
   planner: {
     allowed: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
     ],
     denied: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
   },
   executor: {
     allowed: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
-      (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
     ],
     denied: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
-      (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
-      (cpbRoot) => path.resolve(cpbRoot, "profiles"),
-      (cpbRoot) => path.resolve(cpbRoot, "bridges"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
+      (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
+      (cpbRoot: string) => path.resolve(cpbRoot, "bridges"),
     ],
   },
   verifier: {
     allowed: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
     denied: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
-      (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
     ],
   },
   remediator: {
     allowed: [
-      (cpbRoot) => path.resolve(cpbRoot),
+      (cpbRoot: string) => path.resolve(cpbRoot),
     ],
     denied: [],
   },
   reviewer: {
     allowed: [
-      (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
     ],
     denied: [],
   },
 };
 
-const OBSERVATION_PATHS = {
+const OBSERVATION_PATHS: RoleResolverMap = {
   planner: [
-    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
-    (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
-    (cpbRoot) => path.resolve(cpbRoot, "templates"),
-    (cpbRoot) => path.resolve(cpbRoot, "profiles"),
-    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
+    (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
+    (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
+    (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   verifier: [
-    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
-    (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
-    (cpbRoot) => path.resolve(cpbRoot, "templates"),
-    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
-    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "events", project),
-    (cpbRoot, _project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "state"),
-    (cpbRoot, _project, _sourcePath, dataRoot, legacyOnly) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "checkpoints"),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
+    (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
+    (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "events", project),
+    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "state"),
+    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "checkpoints"),
   ],
   executor: [
-    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
-    (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
-    (cpbRoot) => path.resolve(cpbRoot, "templates"),
-    (cpbRoot) => path.resolve(cpbRoot, "profiles"),
-    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
+    (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
+    (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
+    (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   remediator: [
-    (cpbRoot) => path.resolve(cpbRoot),
-    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+    (cpbRoot: string) => path.resolve(cpbRoot),
+    (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   reviewer: [
-    (cpbRoot, project, _sourcePath, dataRoot, legacyOnly) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
-    (cpbRoot) => path.resolve(cpbRoot, "wiki", "system"),
-    (_cpbRoot, _project, sourcePath) => sourcePath ? path.resolve(sourcePath) : null,
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
+    (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
 };
 
@@ -105,14 +109,14 @@ function dataBoundary(cpbRoot: string, dataRoot: string | null | undefined, lega
   return legacyOnly ? legacyDataPath(cpbRoot, ...parts) : null;
 }
 
-export function validateRole(role) {
+export function validateRole(role: string) {
   if (!ROLES.has(role)) {
     throw new Error(`unknown role: ${role}`);
   }
   return role;
 }
 
-function matchesPath(targetPath, boundaryPath) {
+function matchesPath(targetPath: string, boundaryPath: string) {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedBoundary = path.resolve(boundaryPath);
   const boundaryPrefix = resolvedBoundary.endsWith(path.sep)
@@ -128,7 +132,7 @@ function matchesPath(targetPath, boundaryPath) {
   return null;
 }
 
-function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, effect) {
+function resolveScopeMatches(resolvers: Array<(cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null>, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean, effect: string) {
   return resolvers
     .map((resolver) => resolver(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
     .filter(Boolean)
@@ -139,7 +143,7 @@ function resolveScopeMatches(resolvers, targetPath, cpbRoot, project, sourcePath
     .filter(Boolean);
 }
 
-export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null, { dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function canWrite(role: string, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null = null, { dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   if (!scope) return { allowed: false, reason: `unknown role: ${role}` };
@@ -181,12 +185,12 @@ export function canWrite(role, targetPath, cpbRoot, project, sourcePath = null, 
   };
 }
 
-export function canRead(role, _targetPath, _cpbRoot, _project, _sourcePath, _jobId) {
+export function canRead(role: string, _targetPath: string, _cpbRoot: string, _project: string, _sourcePath: string | null, _jobId: string | null) {
   validateRole(role);
   return { allowed: true };
 }
 
-export function getReadAllowedPaths(role) {
+export function getReadAllowedPaths(role: string) {
   validateRole(role);
   return [...READ_ALLOWED_PATHS];
 }
@@ -207,7 +211,7 @@ const VERIFIER_READ_ONLY_COMMANDS = new Set([
 // Commands that read file contents — their path arguments must be checked against secret patterns
 const FILE_READING_COMMANDS = new Set(["cat", "head", "tail", "less", "more", "bat", "sed", "awk", "grep", "rg", "sort", "uniq", "wc", "tee", "diff", "comm", "cut", "tr", "nl", "od", "xxd"]);
 
-function hasSensitiveTargetInCommand(commandLine) {
+function hasSensitiveTargetInCommand(commandLine: string) {
   const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
   const words = splitCommandWords(unwrapped);
   const command = path.basename(words[0] || "");
@@ -251,13 +255,13 @@ const VERIFIER_DIRECT_TEST_COMMANDS = new Set([
   "pytest",
 ]);
 
-function splitCommandWords(commandLine) {
+function splitCommandWords(commandLine: string) {
   return String(commandLine || "")
     .match(/"[^"]*"|'[^']*'|\S+/g)
     ?.map((word) => word.replace(/^['"]|['"]$/g, "")) || [];
 }
 
-function shellWrappedCommand(commandLine) {
+function shellWrappedCommand(commandLine: string) {
   const words = splitCommandWords(commandLine);
   const command = path.basename(words[0] || "");
   if (!["sh", "bash", "zsh"].includes(command)) return null;
@@ -267,11 +271,11 @@ function shellWrappedCommand(commandLine) {
   return words.slice(shellFlagIndex + 1).join(" ");
 }
 
-function hasShellMutationSyntax(commandLine) {
+function hasShellMutationSyntax(commandLine: string) {
   return /[;&|<>`$\\\n\r]/.test(String(commandLine || ""));
 }
 
-function isVerifierReadOnlyCommand(commandLine) {
+function isVerifierReadOnlyCommand(commandLine: string) {
   const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
   if (!unwrapped.trim() || hasShellMutationSyntax(unwrapped)) return false;
 
@@ -291,13 +295,13 @@ function isVerifierReadOnlyCommand(commandLine) {
   return VERIFIER_READ_ONLY_COMMANDS.has(command);
 }
 
-function isValidationScriptName(scriptName) {
+function isValidationScriptName(scriptName: string | undefined) {
   if (!scriptName) return false;
   if (VERIFIER_VALIDATION_SCRIPTS.has(scriptName)) return true;
   return /^(test|lint|typecheck|type-check|check|build):[A-Za-z0-9:_-]+$/.test(scriptName);
 }
 
-function isVerifierValidationCommand(commandLine) {
+function isVerifierValidationCommand(commandLine: string) {
   const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
   if (!unwrapped.trim() || hasShellMutationSyntax(unwrapped)) return false;
 
@@ -349,7 +353,7 @@ function isVerifierValidationCommand(commandLine) {
   return VERIFIER_DIRECT_TEST_COMMANDS.has(command);
 }
 
-function isKnownUnsafeCommand(commandLine) {
+function isKnownUnsafeCommand(commandLine: string) {
   const unwrapped = shellWrappedCommand(commandLine) || String(commandLine || "");
   if (!unwrapped.trim()) return true;
   if (/\b(curl|wget)\b[\s\S]*\|\s*(sh|bash|zsh)\b/.test(unwrapped)) return true;
@@ -381,7 +385,7 @@ function isKnownUnsafeCommand(commandLine) {
   return false;
 }
 
-export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = null) {
+export function canExecute(role: string, commandLine: string, _cpbRoot: string, _project: string, _sourcePath: string | null = null) {
   const canonicalRole = validateRole(role);
 
   // All roles: block commands that read sensitive file paths
@@ -444,7 +448,7 @@ export function canExecute(role, commandLine, _cpbRoot, _project, _sourcePath = 
   };
 }
 
-export function checkPermission(role, action, targetPath, cpbRoot, project, { sourcePath, jobId, dataRoot, legacyOnly = false }: Record<string, any> = {}) {
+export function checkPermission(role: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath, jobId, dataRoot, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
 
   if (action === "read") {
@@ -463,9 +467,9 @@ export function checkPermission(role, action, targetPath, cpbRoot, project, { so
 }
 
 export async function recordPermissionDenial(
-  cpbRoot,
-  project,
-  jobId,
+  cpbRoot: string,
+  project: string,
+  jobId: string,
   {
     role,
     action,
@@ -502,7 +506,7 @@ export async function recordPermissionDenial(
   await appendEvent(cpbRoot, project, jobId, event, dataRoot ? { dataRoot, includeLegacyFallback: false } : { includeLegacyFallback: true });
 }
 
-export function getObservablePaths(role, cpbRoot, project, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function getObservablePaths(role: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const resolvers = OBSERVATION_PATHS[canonicalRole];
   if (!resolvers) return [];
@@ -511,11 +515,11 @@ export function getObservablePaths(role, cpbRoot, project, { sourcePath = null, 
     .filter(Boolean);
 }
 
-export function isInfraDenial(event) {
+export function isInfraDenial(event: Record<string, any>) {
   return event?.type === "permission_denied" && event?.category === "infra";
 }
 
-export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function getPhasePolicy(role: string, cpbRoot: string, project: string, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath, dataRoot, legacyOnly });
@@ -536,7 +540,7 @@ export function getPhasePolicy(role, cpbRoot, project, { sourcePath = null, prof
   return basePolicy;
 }
 
-export function mergeProfilePolicy(basePolicy, profileConfig) {
+export function mergeProfilePolicy(basePolicy: Record<string, any>, profileConfig: Record<string, any>) {
   if (!profileConfig || typeof profileConfig !== "object") return basePolicy;
 
   const merged = { ...basePolicy };
@@ -576,12 +580,12 @@ const SECRET_PATH_PATTERNS = [
   /(?:^|[\\/])service-account[^\\/]*\.json$/i, // service-account*.json
 ];
 
-function isSecretPath(targetPath) {
+function isSecretPath(targetPath: string) {
   const resolved = path.resolve(targetPath);
   return SECRET_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
 }
 
-export function evaluatePermissionDecision(role, phase, action, targetPath, cpbRoot, project, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function evaluatePermissionDecision(role: string, phase: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
   // Action validation
   if (!["read", "write", "execute"].includes(action)) {
     return {
@@ -689,7 +693,7 @@ export function evaluatePermissionDecision(role, phase, action, targetPath, cpbR
   };
 }
 
-export function classifyVerdictOutcome(verdictStatus) {
+export function classifyVerdictOutcome(verdictStatus: string) {
   if (verdictStatus === "infra_error") return INFRA_FAILURE;
   return verdictStatus;
 }
@@ -712,21 +716,21 @@ const HOME_DELETE_GUARD = os.homedir();
 const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const DEFAULT_BULK_THRESHOLD = 100;
 
-function normalizePath(p) {
+function normalizePath(p: string) {
   return p.replace(/\/+$/, "") || "/";
 }
 
-function isOrContainsGit(p) {
+function isOrContainsGit(p: string) {
   const n = normalizePath(p);
   return n.endsWith("/.git") || n === ".git" || n.includes("/.git/") || n.startsWith(".git/");
 }
 
-function isSystemPath(resolved) {
+function isSystemPath(resolved: string) {
   const n = normalizePath(resolved);
   return PROTECTED_SYSTEM_PATHS.some((sp) => n === sp);
 }
 
-function isHomePath(p) {
+function isHomePath(p: string) {
   if (p === "~" || p === "$HOME") return true;
   const expanded = p.startsWith("~/")
     ? path.join(HOME_DELETE_GUARD, p.slice(2))
@@ -734,13 +738,13 @@ function isHomePath(p) {
   return expanded === HOME_DELETE_GUARD;
 }
 
-function escapesRoot(target, cwd, root) {
+function escapesRoot(target: string, cwd: string, root: string) {
   const resolved = path.resolve(cwd, target);
   const normRoot = normalizePath(root);
   return !resolved.startsWith(normRoot + "/") && resolved !== normRoot;
 }
 
-function parseRmFlags(args) {
+function parseRmFlags(args: string[]) {
   let recursive = false;
   let force = false;
   const paths = [];
@@ -760,11 +764,11 @@ function parseRmFlags(args) {
   return { recursive, force, paths };
 }
 
-function deleteBlock(reason, details = {}) {
+function deleteBlock(reason: string, details: Record<string, any> = {}) {
   return { allowed: false, reason, messageKey: "delete_blocked", details };
 }
 
-function checkRmPaths(paths, recursive, force, cwd, repoRoot) {
+function checkRmPaths(paths: string[], recursive: boolean, force: boolean, cwd: string, repoRoot: string | null) {
   const root = repoRoot || cwd;
   for (const p of paths) {
     const resolved = path.resolve(cwd, p);
@@ -788,7 +792,7 @@ function checkRmPaths(paths, recursive, force, cwd, repoRoot) {
   return null;
 }
 
-function checkRm(args, cwd, threshold, repoRoot) {
+function checkRm(args: string[], cwd: string, threshold: number, repoRoot: string | null) {
   const { recursive, force, paths } = parseRmFlags(args);
   const pathBlock = checkRmPaths(paths, recursive, force, cwd, repoRoot);
   if (pathBlock) return pathBlock;
@@ -809,7 +813,7 @@ const GIT_GLOBAL_OPTIONS_WITHOUT_VALUE = new Set([
   "--noglob-pathspecs", "--icase-pathspecs",
 ]);
 
-function checkGitDelete(args) {
+function checkGitDelete(args: string[]) {
   if (args.length === 0) return { allowed: true };
 
   let i = 0;
@@ -838,7 +842,7 @@ function checkGitDelete(args) {
 
 const SYSTEM_DIR_NAMES = "tmp|usr|bin|etc|var|System|Library|Applications|Users|private";
 
-function checkShellString(cmdStr) {
+function checkShellString(cmdStr: string) {
   const rmPresent = /\brm\s/.test(cmdStr);
   const hasRecursive = rmPresent && (/-[a-zA-Z]*[rR]/.test(cmdStr) || /--recursive/.test(cmdStr));
   const hasForce = rmPresent && (/-[a-zA-Z]*[fF]/.test(cmdStr) || /--force/.test(cmdStr));
@@ -874,7 +878,7 @@ function checkShellString(cmdStr) {
   return { allowed: true };
 }
 
-export function classifyDeleteRisk(command, args, { cwd, repoRoot, bulkThreshold }: Record<string, any> = {}) {
+export function classifyDeleteRisk(command: string, args: string[], { cwd, repoRoot, bulkThreshold }: Record<string, any> = {}) {
   const threshold = bulkThreshold ?? DEFAULT_BULK_THRESHOLD;
   const base = path.basename(command);
 
@@ -893,8 +897,8 @@ export function classifyDeleteRisk(command, args, { cwd, repoRoot, bulkThreshold
   return { allowed: true };
 }
 
-export function formatDeleteBlockedMessage(result) {
-  const messages = {
+export function formatDeleteBlockedMessage(result: Record<string, any>) {
+  const messages: Record<string, string> = {
     git_dir_delete: "CPB blocked deletion of .git directory.",
     external_recursive_delete: "CPB blocked recursive deletion outside the worktree.",
     home_recursive_delete: "CPB blocked recursive deletion targeting home directory.",
@@ -907,7 +911,7 @@ export function formatDeleteBlockedMessage(result) {
   return `${messages[result.reason] || "CPB blocked a destructive delete operation."} (reason: ${result.reason})`;
 }
 
-export function logDeleteBlock(command, args, cwd, result, sink) {
+export function logDeleteBlock(command: string, args: string[], cwd: string, result: Record<string, any>, sink: ((msg: string) => void) | null) {
   const write = sink || ((msg) => process.stderr.write(msg));
   write(`[delete-blocked] ${JSON.stringify({
     type: "delete_blocked",

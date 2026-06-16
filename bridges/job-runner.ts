@@ -40,7 +40,7 @@ function usage() {
   ].join("\n");
 }
 
-function parseArgs(args) {
+function parseArgs(args: string[]) {
   const separator = args.indexOf("--");
   const optionArgs = separator === -1 ? args : args.slice(0, separator);
   const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
@@ -78,7 +78,7 @@ function parseArgs(args) {
   };
 }
 
-function resolveDataRoot(parsed) {
+function resolveDataRoot(parsed: Record<string, any>) {
   const fromEnv = process.env.CPB_PROJECT_RUNTIME_ROOT
     ? path.resolve(process.env.CPB_PROJECT_RUNTIME_ROOT)
     : null;
@@ -89,7 +89,7 @@ function resolveDataRoot(parsed) {
   return dataRoot;
 }
 
-function positiveIntegerFromEnv(name, fallback) {
+function positiveIntegerFromEnv(name: string, fallback: number) {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
@@ -98,7 +98,7 @@ function eventTimestamp() {
   return new Date().toISOString();
 }
 
-async function appendPhaseFailed(cpbRoot, project, jobId, phase, details, runtimeOpts) {
+async function appendPhaseFailed(cpbRoot: string, project: string, jobId: string, phase: string, details: Record<string, any>, runtimeOpts: Record<string, any>) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_failed",
     jobId,
@@ -111,10 +111,10 @@ async function appendPhaseFailed(cpbRoot, project, jobId, phase, details, runtim
 const ACTIVITY_THROTTLE_MS = 30_000;
 const ACTIVITY_MAX_MESSAGE = 200;
 
-function createActivityTracker(cpbRoot, project, jobId, runtimeOpts) {
+function createActivityTracker(cpbRoot: string, project: string, jobId: string, runtimeOpts: Record<string, any>) {
   let lastActivityAt = 0;
 
-  async function track(message) {
+  async function track(message: string) {
     const now = Date.now();
     if (now - lastActivityAt < ACTIVITY_THROTTLE_MS) return;
     lastActivityAt = now;
@@ -137,10 +137,10 @@ function createActivityTracker(cpbRoot, project, jobId, runtimeOpts) {
 }
 
 function runChild(
-  command,
-  args,
-  cwd,
-  onOutput,
+  command: string,
+  args: string[],
+  cwd: string,
+  onOutput: ((chunk: string | Buffer) => void) | null,
   options: {
     signal?: AbortSignal;
     env?: NodeJS.ProcessEnv;
@@ -184,7 +184,7 @@ async function main() {
     return 2;
   }
 
-  let dataRoot;
+  let dataRoot: string | null;
   try {
     dataRoot = resolveDataRoot(parsed);
   } catch (err) {
@@ -204,17 +204,17 @@ async function main() {
     Math.max(5_000, Math.floor(ttlMs / 3))
   );
 
-  let lease = null;
-  let heartbeat = null;
-  let leaseLostError = null;
+  let lease: Record<string, any> | null = null;
+  let heartbeat: NodeJS.Timeout | null = null;
+  let leaseLostError: Error | null = null;
   const abortController = new AbortController();
   let childResult: ChildResult = { exitCode: 1 };
-  let signalReceived = null;
+  let signalReceived: string | null = null;
   let processRegistered = false;
 
   // Trap SIGINT/SIGTERM immediately - before any awaited I/O - so
   // signals arriving during startup are caught rather than killing Node.
-  async function handleShutdownSignal(sig) {
+  async function handleShutdownSignal(sig: string) {
     if (signalReceived) return;
     signalReceived = sig;
     console.error(`\n${sig} received, shutting down job ${jobId} phase ${phase}...`);
@@ -231,7 +231,7 @@ async function main() {
     return 1;
   }
 
-  async function ensureMarkedExited(exitCode) {
+  async function ensureMarkedExited(exitCode: number) {
     if (!processRegistered) return;
     processRegistered = false;
     await markProcessExited(cpbRoot, jobId, { exitCode, dataRoot }).catch(() => {});
@@ -294,8 +294,8 @@ async function main() {
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
     };
     const activity = createActivityTracker(cpbRoot, project, jobId, runtimeOpts);
-    childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output) => {
-      const line = output.trim();
+    childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output: string | Buffer) => {
+      const line = String(output).trim();
       if (line) activity.track(line);
     }, {
       signal: abortController.signal,

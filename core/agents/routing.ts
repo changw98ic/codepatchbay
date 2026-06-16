@@ -15,7 +15,7 @@ export const ROUTING_TASK_CATEGORIES = Object.freeze([
   "review",
 ]);
 
-export const ROUTING_PHASE_ROLES = Object.freeze({
+export const ROUTING_PHASE_ROLES: Record<string, string> = Object.freeze({
   plan: "planner",
   execute: "executor",
   verify: "verifier",
@@ -32,7 +32,7 @@ const ROUTING_AGENT_ROLES = Object.freeze([
 const BUILTIN_AGENT_NAMES = new Set(["codex", "claude"]);
 const CATEGORY_SET = new Set(ROUTING_TASK_CATEGORIES);
 
-function routingRules(routing) {
+function routingRules(routing: Record<string, any>): Record<string, any> {
   if (!routing || typeof routing !== "object" || Array.isArray(routing)) return {};
   if (routing.rules && typeof routing.rules === "object" && !Array.isArray(routing.rules)) {
     return routing.rules;
@@ -40,7 +40,7 @@ function routingRules(routing) {
   return routing;
 }
 
-function defaultAgent(role) {
+function defaultAgent(role: string): string {
   try {
     return defaultAgentForRole(role);
   } catch {
@@ -49,7 +49,7 @@ function defaultAgent(role) {
   }
 }
 
-function isKnownAgent(name) {
+function isKnownAgent(name: string): boolean {
   if (!name) return true;
   try {
     return Boolean(getDescriptor(name));
@@ -58,12 +58,12 @@ function isKnownAgent(name) {
   }
 }
 
-function normalizeCategory(category) {
+function normalizeCategory(category: string): string | null {
   const value = String(category || "").trim().toLowerCase();
   return CATEGORY_SET.has(value) ? value : null;
 }
 
-export function resolveRoutingForCategory(category, routing) {
+export function resolveRoutingForCategory(category: string, routing: Record<string, any>): Record<string, any> | null {
   const normalized = normalizeCategory(category);
   if (!normalized) return null;
   const rules = routingRules(routing);
@@ -81,7 +81,7 @@ export function resolveRoutingForCategory(category, routing) {
   };
 }
 
-export function defaultRoutingForCategory(category, { workflow = "standard" } = {}) {
+export function defaultRoutingForCategory(category: string, { workflow = "standard" }: Record<string, any> = {}): Record<string, any> {
   const normalized = normalizeCategory(category);
   return {
     category: normalized,
@@ -95,7 +95,7 @@ export function defaultRoutingForCategory(category, { workflow = "standard" } = 
   };
 }
 
-export function resolveEffectiveRouting(category, routing, { workflow = "standard" } = {}) {
+export function resolveEffectiveRouting(category: string, routing: Record<string, any>, { workflow = "standard" }: Record<string, any> = {}): Record<string, any> {
   const resolved = resolveRoutingForCategory(category, routing);
   const defaults = defaultRoutingForCategory(category, { workflow });
   if (!resolved) return defaults;
@@ -110,12 +110,12 @@ export function resolveEffectiveRouting(category, routing, { workflow = "standar
   };
 }
 
-export function agentForRoutingPhase(routing, phase, role = null) {
+export function agentForRoutingPhase(routing: Record<string, any>, phase: string, role: string | null = null): string | null {
   const resolvedRole = role || ROUTING_PHASE_ROLES[phase];
   return resolvedRole ? routing?.[resolvedRole] || null : null;
 }
 
-export function fallbackAgentForRole(routing, role) {
+export function fallbackAgentForRole(routing: Record<string, any>, role: string): string | null {
   const fallback = routing?.fallback;
   if (!fallback) return null;
   if (typeof fallback === "string") return fallback;
@@ -125,7 +125,7 @@ export function fallbackAgentForRole(routing, role) {
   return null;
 }
 
-function availabilityFor(agentAvailability, agent) {
+function availabilityFor(agentAvailability: Record<string, any> | null, agent: string | null): Record<string, any> {
   if (!agent || !agentAvailability || typeof agentAvailability !== "object") {
     return { available: true, reason: null };
   }
@@ -203,7 +203,7 @@ export function selectAgentWithFallback({
   };
 }
 
-export function healthToAvailability(agentHealth) {
+export function healthToAvailability(agentHealth: Record<string, any> | null): Record<string, any> | null {
   if (!agentHealth || typeof agentHealth !== "object") return null;
   const result: Record<string, any> = {};
   for (const [agent, health] of Object.entries(agentHealth)) {
@@ -232,7 +232,7 @@ export function resolvePhaseAgentWithFallback({
   agentAvailability = null,
   agentHealth = null,
   teamPolicy = null,
-}) {
+}: Record<string, any> = {}) {
   const effectiveRole = role || ROUTING_PHASE_ROLES[phase];
   if (!effectiveRole) {
     return {
@@ -263,8 +263,8 @@ export function resolvePhaseAgentWithFallback({
   return { ...selection, phase };
 }
 
-export function validateRoutingRules(routing, { isWorkflowName }: Record<string, any> = {}) {
-  const errors = [];
+export function validateRoutingRules(routing: Record<string, any>, { isWorkflowName }: Record<string, any> = {}) {
+  const errors: string[] = [];
   const rules = routingRules(routing);
 
   for (const [category, rawRule] of Object.entries(rules)) {
@@ -297,7 +297,7 @@ export function validateRoutingRules(routing, { isWorkflowName }: Record<string,
   return { valid: errors.length === 0, errors };
 }
 
-export function assertValidRoutingRules(routing, options = {}) {
+export function assertValidRoutingRules(routing: Record<string, any>, options: Record<string, any> = {}) {
   const result = validateRoutingRules(routing, options);
   if (!result.valid) {
     throw new Error(`invalid routing rules: ${result.errors.join("; ")}`);

@@ -13,22 +13,22 @@
  * Scheduler, claimEligible API, and any future caller all go through here.
  */
 
-export function priorityScore(priority) {
+export function priorityScore(priority: any) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
   return 3;
 }
 
-export function isMutatingEntry(entry) {
+export function isMutatingEntry(entry: any) {
   return entry.metadata?.mutating !== false;
 }
 
-export function isActiveEntry(entry) {
+export function isActiveEntry(entry: any) {
   return entry.status === "in_progress" || entry.status === "scheduled";
 }
 
-export function clearClaim(entry) {
+export function clearClaim(entry: any) {
   entry.claimedBy = null;
   entry.claimedAt = null;
   entry.workerId = null;
@@ -38,7 +38,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export function isCodegraphUnavailableStatus(status) {
+export function isCodegraphUnavailableStatus(status: any) {
   return status === "codegraph_unavailable" || status === "index_unavailable";
 }
 
@@ -55,7 +55,7 @@ export function isCodegraphUnavailableStatus(status) {
  * @param {import("../../shared/orchestrator/assignment-store.js").AssignmentStore} opts.assignmentStore
  * @returns {{ recovered: string[], refreshed: string[] }}
  */
-export function recoverStaleInProgress(entries, opts) {
+export function recoverStaleInProgress(entries: any, opts: any) {
   const { claimTimeoutMs, assignmentStore } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgress requires assignmentStore");
@@ -93,7 +93,7 @@ export function recoverStaleInProgress(entries, opts) {
  * Async variant for callers that have an AssignmentStore with async getAssignment().
  * Used by Scheduler and claimEligible.  assignmentStore is required.
  */
-export async function recoverStaleInProgressAsync(entries, opts) {
+export async function recoverStaleInProgressAsync(entries: any, opts: any) {
   const { claimTimeoutMs, assignmentStore } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgressAsync requires assignmentStore");
@@ -128,7 +128,7 @@ export async function recoverStaleInProgressAsync(entries, opts) {
 /**
  * Recover codegraph_unavailable entries whose retry window has elapsed.
  */
-export function recoverCodegraphUnavailable(entries, retryMs) {
+export function recoverCodegraphUnavailable(entries: any, retryMs: any) {
   if (!retryMs || retryMs <= 0) return { recovered: [] };
   const now = Date.now();
   const recovered = [];
@@ -257,7 +257,7 @@ async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
   }
 }
 
-export async function loadQueue(hubRoot) {
+export async function loadQueue(hubRoot: any) {
   try {
     const raw = await readFile(queuePath(hubRoot), "utf8");
     return normalizeQueue(JSON.parse(raw));
@@ -267,7 +267,7 @@ export async function loadQueue(hubRoot) {
   }
 }
 
-async function saveQueue(hubRoot, queue) {
+async function saveQueue(hubRoot: any, queue: any) {
   const normalized = { version: QUEUE_VERSION, entries: queue.entries };
   await writeAtomic(queuePath(hubRoot), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
@@ -284,12 +284,12 @@ function generateId() {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function hasIssueLink(metadata) {
+function hasIssueLink(metadata: any) {
   if (!metadata || typeof metadata !== "object") return false;
   return Boolean(metadata.issueNumber || metadata.issueUrl);
 }
 
-export function validateIssueLink(entry) {
+export function validateIssueLink(entry: any) {
   if (!entry) return { linked: false, reason: "no entry" };
   if (entry.status === "needs_issue_link") return { linked: false, reason: "awaiting issue link" };
   if (entry.status === "archived") return { linked: false, reason: "archived" };
@@ -498,7 +498,7 @@ export async function queueStatus(hubRoot: string) {
 
 const ACTIVE_RETRY_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
 
-function failedTargetKey(entry) {
+function failedTargetKey(entry: any) {
   const targetJobId = entry.type === "cli_retry"
     ? entry.metadata?.retryJobId
     : `job-${entry.id}`;
@@ -506,21 +506,21 @@ function failedTargetKey(entry) {
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function activeRetryTargetKey(entry) {
+function activeRetryTargetKey(entry: any) {
   if (entry.type !== "cli_retry" || !ACTIVE_RETRY_STATUSES.has(entry.status)) return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function completedRetryTargetKey(entry) {
+function completedRetryTargetKey(entry: any) {
   if (entry.type !== "cli_retry" || entry.status !== "completed") return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-export function summarizeFailedTargets(entries = []) {
+export function summarizeFailedTargets(entries: any = []) {
   const failedTargets = new Set();
   const activeRetryTargets = new Set();
   const completedRetryTargets = new Set();
@@ -545,7 +545,7 @@ export function summarizeFailedTargets(entries = []) {
     }
   }
   return {
-    failedEntries: entries.filter((entry) => entry.status === "failed").length,
+    failedEntries: entries.filter((entry: Record<string, any>) => entry.status === "failed").length,
     failedTargets: failedTargets.size,
     retryingFailedTargets,
     retriedFailedTargets,
@@ -859,13 +859,13 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
 
 import { readGithubIssues } from "../github/github-issues.js";
 
-export function matchAutomationRule(issue, rules) {
+export function matchAutomationRule(issue: any, rules: any) {
   if (!Array.isArray(rules) || rules.length === 0) return null;
   for (const rule of rules) {
     const m = rule.match || {};
     if (m.labels && Array.isArray(m.labels)) {
       const issueLabels = new Set(issue.labels || []);
-      const hasAll = m.labels.every((l) => issueLabels.has(l));
+      const hasAll = m.labels.every((l: any) => issueLabels.has(l));
       if (!hasAll) continue;
     }
     if (m.titlePattern) {
@@ -880,16 +880,16 @@ export function matchAutomationRule(issue, rules) {
   return null;
 }
 
-export function isExcluded(issue, exclude) {
+export function isExcluded(issue: any, exclude: any) {
   if (!exclude) return false;
   if (exclude.labels && Array.isArray(exclude.labels)) {
     const issueLabels = new Set(issue.labels || []);
-    if (exclude.labels.some((l) => issueLabels.has(l))) return true;
+    if (exclude.labels.some((l: any) => issueLabels.has(l))) return true;
   }
   return false;
 }
 
-export function issueToNormalizedEvent(issue, project) {
+export function issueToNormalizedEvent(issue: any, project: any) {
   return {
     status: "ok",
     type: "github_issue",
@@ -907,18 +907,18 @@ export function issueToNormalizedEvent(issue, project) {
   };
 }
 
-function issueMatchesProject(issue, project) {
+function issueMatchesProject(issue: any, project: any) {
   if (issue.projectId === project.id) return true;
   if (issue.projectId && issue.projectId !== "flow") return false;
   const repo = project.github?.fullName;
   return Boolean(repo && (issue.repository || issue.repo || issue.repositoryFullName) === repo);
 }
 
-function issueQueueKey(repo, number) {
+function issueQueueKey(repo: any, number: any) {
   return `${repo || ""}#${Number(number)}`;
 }
 
-export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { createJobFn = null, dryRun = false } = {}) {
+export async function autoEnqueueSyncedIssues(hubRoot: any, cpbRoot: any, projectId: any, { createJobFn = null, dryRun = false } = {}) {
   const project = await getProject(hubRoot, projectId);
   if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
 
@@ -983,18 +983,18 @@ const VALID_TRANSITIONS = {
   acknowledged: "completed",
 };
 
-function inboxDir(cpbRoot, project) {
+function inboxDir(cpbRoot: any, project: any) {
   return path.join(cpbRoot, "wiki", "projects", project, "inbox");
 }
 
-function safeId(id) {
+function safeId(id: any) {
   if (!id || typeof id !== "string") return false;
   if (id.includes("..") || id.includes("/") || id.includes(path.sep) || id.includes("\\")) return false;
   if (!/^msg-\d{8}-\d{6}-[0-9a-f]{4,}$/.test(id)) return false;
   return true;
 }
 
-function safeMessagePath(cpbRoot, project, id) {
+function safeMessagePath(cpbRoot: any, project: any, id: any) {
   const dir = inboxDir(cpbRoot, project);
   const resolved = path.resolve(dir, `${id}.md`);
   if (resolved !== dir && !resolved.startsWith(dir + path.sep)) {
@@ -1014,7 +1014,7 @@ function generateMessageId() {
   return `msg-${y}${m}${d}-${seq}-${_pidHex}`;
 }
 
-function serializeFrontmatter(meta) {
+function serializeFrontmatter(meta: any) {
   const lines = ["---"];
   for (const [key, value] of Object.entries(meta)) {
     if (value === undefined || value === null) {
@@ -1029,7 +1029,7 @@ function serializeFrontmatter(meta) {
   return lines.join("\n");
 }
 
-function parseFrontmatter(raw) {
+function parseFrontmatter(raw: any) {
   if (!raw.startsWith("---")) return null;
   const end = raw.indexOf("---", 3);
   if (end === -1) return null;
@@ -1056,7 +1056,7 @@ function parseFrontmatter(raw) {
   return { meta, content };
 }
 
-async function withInboxLock(cpbRoot, project, callback) {
+async function withInboxLock(cpbRoot: any, project: any, callback: any) {
   const dir = inboxDir(cpbRoot, project);
   const lockDir = `${dir}.lock`;
   await mkdir(dir, { recursive: true });
@@ -1098,11 +1098,11 @@ async function withInboxLock(cpbRoot, project, callback) {
   }
 }
 
-function messageToOutput(meta) {
+function messageToOutput(meta: any) {
   return { ...meta };
 }
 
-export async function writeInboxMessage(cpbRoot, project, input) {
+export async function writeInboxMessage(cpbRoot: any, project: any, input: any) {
   const id = generateMessageId();
   const ts = nowIso();
 
@@ -1133,7 +1133,7 @@ export async function writeInboxMessage(cpbRoot, project, input) {
   return messageToOutput(meta);
 }
 
-export async function listInboxMessages(cpbRoot, project, filters: AnyRecord = {}) {
+export async function listInboxMessages(cpbRoot: any, project: any, filters: AnyRecord = {}) {
   const dir = inboxDir(cpbRoot, project);
   let files;
   try {
@@ -1170,7 +1170,7 @@ export async function listInboxMessages(cpbRoot, project, filters: AnyRecord = {
   return messages;
 }
 
-export async function readInboxMessage(cpbRoot, project, id) {
+export async function readInboxMessage(cpbRoot: any, project: any, id: any) {
   if (!safeId(id)) return null;
   const filePath = safeMessagePath(cpbRoot, project, id);
   try {
@@ -1183,7 +1183,7 @@ export async function readInboxMessage(cpbRoot, project, id) {
   }
 }
 
-export async function ackInboxMessage(cpbRoot, project, id, { owner }: AnyRecord = {}) {
+export async function ackInboxMessage(cpbRoot: any, project: any, id: any, { owner }: AnyRecord = {}) {
   if (!safeId(id)) return null;
   return withInboxLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);
@@ -1214,7 +1214,7 @@ export async function ackInboxMessage(cpbRoot, project, id, { owner }: AnyRecord
   });
 }
 
-export async function completeInboxMessage(cpbRoot, project, id) {
+export async function completeInboxMessage(cpbRoot: any, project: any, id: any) {
   if (!safeId(id)) return null;
   return withInboxLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);

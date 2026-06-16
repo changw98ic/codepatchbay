@@ -39,11 +39,11 @@ const isolatedFocusedTests = [
   "tests/integration/managed-worker.test.js",
 ];
 
-function commandText(command, commandArgs) {
+function commandText(command: string, commandArgs: string[]) {
   return [command, ...commandArgs].join(" ");
 }
 
-function run(label, command, commandArgs, options: { env?: Record<string, string> } = {}) {
+function run(label: string, command: string, commandArgs: string[], options: { env?: Record<string, string> } = {}) {
   console.log(`\n${label}`);
   console.log(`$ ${commandText(command, commandArgs)}`);
   return new Promise((resolve) => {

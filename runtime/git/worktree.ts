@@ -340,7 +340,7 @@ async function ensureLocalGitExclude(worktreePath: string, pattern: string) {
   return true;
 }
 
-async function ensureWorktreeLocalExcludes(worktreePath) {
+async function ensureWorktreeLocalExcludes(worktreePath: string) {
   for (const pattern of WORKTREE_LOCAL_EXCLUDES) {
     await ensureLocalGitExclude(worktreePath, pattern);
   }

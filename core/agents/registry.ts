@@ -11,7 +11,7 @@ const _squads = new Map<string, any>();
 const _rrCounters = new Map<string, number>(); // round-robin counters per squad
 let _loaded = false;
 
-function validateDescriptor(d) {
+function validateDescriptor(d: Record<string, any>) {
   if (!d || typeof d !== "object") return false;
   if (typeof d.name !== "string" || !d.name) return false;
   if (typeof d.command !== "string" || !d.command) return false;
@@ -39,7 +39,7 @@ async function loadBuiltinDescriptors() {
   }
 }
 
-async function loadUserDescriptors(configDir) {
+async function loadUserDescriptors(configDir: string) {
   const dir = configDir || process.env.CPB_AGENTS_CONFIG_DIR;
   if (!dir) return;
   let files;
@@ -62,7 +62,7 @@ async function loadUserDescriptors(configDir) {
   }
 }
 
-export async function loadRegistry(configDir) {
+export async function loadRegistry(configDir: string) {
   if (_loaded && !configDir) return;
   _registry.clear();
   _discovered.clear();
@@ -117,12 +117,12 @@ export function listAgentNames() {
   return [..._registry.keys(), ..._discovered.keys()];
 }
 
-export function hasAgent(name) {
+export function hasAgent(name: string) {
   ensureLoaded();
   return _registry.has(name) || _discovered.has(name);
 }
 
-export function getDescriptor(name) {
+export function getDescriptor(name: string) {
   ensureLoaded();
   return _registry.get(name) || _discovered.get(name) || null;
 }
@@ -133,7 +133,7 @@ export function getDescriptor(name) {
  * Checks env overrides first (CPB_ACP_{PREFIX}_COMMAND / _ARGS),
  * then tries the descriptor's primary command, then falls back.
  */
-export function resolveAgentCommand(name) {
+export function resolveAgentCommand(name: string) {
   const d = getDescriptor(name);
   if (!d) return null;
 
@@ -163,7 +163,7 @@ export function resolveAgentCommand(name) {
  * List only agents with a specific protocol.
  * Useful for pipeline routing: only ACP agents can participate in ACP spawn.
  */
-export function listAgentsByProtocol(protocol) {
+export function listAgentsByProtocol(protocol: string) {
   ensureLoaded();
   return [..._registry.values(), ..._discovered.values()]
     .filter((d) => (d.protocol || "unknown") === protocol);
@@ -174,7 +174,7 @@ export function listAgentsByProtocol(protocol) {
  * Prefers ACP-protocol agents for pipeline routing.
  * Falls back to default mapping: planner/verifier/reviewer -> codex, executor/remediator -> claude.
  */
-export function defaultAgentForRole(role) {
+export function defaultAgentForRole(role: string) {
   ensureLoaded();
   // Prefer registered ACP agents with matching role
   for (const d of _registry.values()) {
@@ -198,7 +198,7 @@ export function defaultAgentForRole(role) {
  * Legacy default mapping: phase -> agent.
  * Used when no explicit --agent is specified.
  */
-export function legacyAgentForPhase(phase) {
+export function legacyAgentForPhase(phase: string) {
   switch (phase) {
     case "plan":
     case "verify":
@@ -225,7 +225,7 @@ export function listSquads() {
 /**
  * Get a squad definition by name.
  */
-export function getSquad(name) {
+export function getSquad(name: string) {
   ensureLoaded();
   return _squads.get(name) || null;
 }
@@ -241,13 +241,13 @@ export function getSquad(name) {
  * poolStatus: optional object from AcpPool.status().pools — keyed by agent name,
  * each with { active } field.
  */
-export function resolveSquadAgent(squadName, { strategy, poolStatus }: Record<string, any> = {}) {
+export function resolveSquadAgent(squadName: string, { strategy, poolStatus }: Record<string, any> = {}) {
   ensureLoaded();
   const squad = _squads.get(squadName);
   if (!squad) return null;
 
   const strat = strategy || squad.strategy || "leader-first";
-  const available = squad.members.filter((m) => hasAgent(m));
+  const available = squad.members.filter((m: string) => hasAgent(m));
   if (available.length === 0) return null;
 
   switch (strat) {

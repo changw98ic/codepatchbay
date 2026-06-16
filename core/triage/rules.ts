@@ -78,7 +78,7 @@ const PROTECTED_RULES = [
   },
 ];
 
-function normalizeLabels(labels = []) {
+function normalizeLabels(labels: any[] = []) {
   return Array.isArray(labels)
     ? labels
       .map((label) => (typeof label === "string" ? label : label?.name))
@@ -97,15 +97,15 @@ function textInput(input: Record<string, any> = {}) {
   ].filter(Boolean).join(" ");
 }
 
-function includesLabel(labels, expected) {
+function includesLabel(labels: any[], expected: string) {
   return normalizeLabels(labels).includes(expected);
 }
 
-function matchesAny(text, patterns) {
+function matchesAny(text: string, patterns: RegExp[]) {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function isComplexImplementationTask(text) {
+function isComplexImplementationTask(text: string) {
   return matchesAny(text, IMPLEMENTATION_VERBS) && matchesAny(text, COMPLEX_IMPLEMENTATION_OBJECTS);
 }
 

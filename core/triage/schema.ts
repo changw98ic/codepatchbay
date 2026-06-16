@@ -32,17 +32,17 @@ const SAFE_DEFAULT_ROUTE = Object.freeze({
   source: "policy",
 });
 
-function cleanString(value) {
+function cleanString(value: unknown) {
   const text = String(value ?? "").trim();
   return text || null;
 }
 
-export function defaultPlanModeForWorkflow(workflow) {
+export function defaultPlanModeForWorkflow(workflow: string) {
   return WORKFLOW_DEFAULT_PLAN_MODE[workflow] || "light";
 }
 
-export function scopesContainCritical(protectedScopes = []) {
-  return (protectedScopes || []).some((scope) => scope.severity === "critical");
+export function scopesContainCritical(protectedScopes: any[] = []) {
+  return (protectedScopes || []).some((scope: Record<string, any>) => scope.severity === "critical");
 }
 
 export function normalizeActorTrust({
@@ -69,7 +69,16 @@ export function normalizeActorTrust({
   return { actor: name, level: "unknown", trusted: false, reason: "no trust signal" };
 }
 
-export function normalizeRoute(route: Record<string, any> = {}, defaults: Record<string, any> = {}) {
+type NormalizedRoute = {
+  category: any;
+  workflow: any;
+  planMode: any;
+  reviewer: boolean;
+  reason: any;
+  source: any;
+};
+
+export function normalizeRoute(route: Record<string, any> = {}, defaults: Record<string, any> = {}): NormalizedRoute {
   const fallbackWorkflow = defaults.workflow && WORKFLOWS.has(defaults.workflow)
     ? defaults.workflow
     : "standard";
@@ -98,11 +107,11 @@ export function routeStrength(route = {}) {
   );
 }
 
-export function isRouteDowngrade(candidate, current) {
+export function isRouteDowngrade(candidate: NormalizedRoute, current: NormalizedRoute) {
   return routeStrength(candidate) < routeStrength(current);
 }
 
-export function normalizeProtectedScopes(scopes = []) {
+export function normalizeProtectedScopes(scopes: any[] = []) {
   const byScope = new Map();
   for (const scope of scopes || []) {
     const name = cleanString(scope?.scope || scope);
@@ -126,11 +135,11 @@ export function normalizeProtectedScopes(scopes = []) {
   return [...byScope.values()];
 }
 
-function actualDiffProtected(actualDiffRisk) {
+function actualDiffProtected(actualDiffRisk: Record<string, any>) {
   return Boolean(actualDiffRisk?.protected || actualDiffRisk?.risk === "protected");
 }
 
-function strongerRoute(a, b) {
+function strongerRoute(a: NormalizedRoute, b: NormalizedRoute): NormalizedRoute {
   return routeStrength(b) >= routeStrength(a) ? b : a;
 }
 

@@ -54,8 +54,8 @@ Rules:
 - confidence MUST be a number between 0.0 and 1.0
 - Do NOT write any artifact files yourself. The system will persist the verdict.`;
 
-async function getChangedJsFiles(cwd) {
-  const files = new Set();
+async function getChangedJsFiles(cwd: string) {
+  const files = new Set<string>();
   try {
     // Tracked: staged or modified vs HEAD
     const { stdout: diffOut } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd });
@@ -73,7 +73,7 @@ async function getChangedJsFiles(cwd) {
   return [...files];
 }
 
-async function hasTestScript(cwd) {
+async function hasTestScript(cwd: string) {
   try {
     const raw = await readFile(`${cwd}/package.json`, "utf8");
     const pkg = JSON.parse(raw);
@@ -83,8 +83,8 @@ async function hasTestScript(cwd) {
   }
 }
 
-async function focusedNodeTestFiles(cwd, jsFiles) {
-  const tests = new Set();
+async function focusedNodeTestFiles(cwd: string, jsFiles: string[]) {
+  const tests = new Set<string>();
   for (const file of jsFiles) {
     if (file.endsWith(".test.js")) tests.add(file);
     const base = file.replace(/\.(js|mjs)$/, "");
@@ -101,11 +101,11 @@ async function focusedNodeTestFiles(cwd, jsFiles) {
   return [...tests];
 }
 
-async function runHardGates(cwd, opts: { signal?: AbortSignal; registerChild?: (pid: number) => void | Promise<void> } = {}) {
+async function runHardGates(cwd: string, opts: { signal?: AbortSignal; registerChild?: (pid: number) => void | Promise<void> } = {}) {
   const errors = [];
   const checks = [];
 
-  const gateTimeout = (key, def) => {
+  const gateTimeout = (key: string, def: number) => {
     const n = Number.parseInt(process.env[key] || "", 10);
     return Number.isFinite(n) && n > 0 ? n : def;
   };
@@ -115,7 +115,7 @@ async function runHardGates(cwd, opts: { signal?: AbortSignal; registerChild?: (
 
   // Adapt a runCommandTree result into the err-shape formatCommandFailure expects
   // (execFile used to throw an Error with code/signal/stdout/stderr).
-  const toErr = (r, timeoutMs) => ({
+  const toErr = (r: Record<string, any>, timeoutMs: number) => ({
     code: r.exitCode,
     signal: r.signal,
     stdout: r.stdout,
@@ -123,7 +123,7 @@ async function runHardGates(cwd, opts: { signal?: AbortSignal; registerChild?: (
     timedOut: r.timedOut,
     message: r.timedOut ? `timed out after ${timeoutMs}ms` : (r.error?.message || `exit code ${r.exitCode}`),
   });
-  const run = (command, args, timeoutMs, env?) =>
+  const run = (command: string, args: string[], timeoutMs: number, env?: Record<string, string>) =>
     runCommandTree(command, args, {
       cwd,
       env,
@@ -178,12 +178,12 @@ async function runHardGates(cwd, opts: { signal?: AbortSignal; registerChild?: (
   return { ok: true, checks };
 }
 
-function tail(text, maxChars = OUTPUT_TAIL_CHARS) {
+function tail(text: unknown, maxChars = OUTPUT_TAIL_CHARS): string {
   const value = String(text || "");
   return value.length > maxChars ? value.slice(-maxChars) : value;
 }
 
-function formatCommandFailure(command, err) {
+function formatCommandFailure(command: string, err: Record<string, any>) {
   const exitCode = err?.code ?? null;
   const signal = err?.signal ?? null;
   const stdoutTail = tail(err?.stdout || "");
@@ -262,13 +262,13 @@ function synthesizeUncheckedChecklistVerdict({ jobId, acceptanceChecklist, reaso
       .map((item: Record<string, any>) => ({
         checklistId: item.id,
         result: "unchecked",
-        evidenceRefs: [],
+        evidenceRefs: [] as any[],
         actualResult: "",
         reason,
-        fixScope: [],
+        fixScope: [] as any[],
       })),
-    blocking: [],
-    fixScope: [],
+    blocking: [] as any[],
+    fixScope: [] as any[],
     reason,
   };
 }
@@ -293,7 +293,7 @@ function remapEvidenceRefs(checklistVerdict: Record<string, any>, actualLedgerId
   };
 }
 
-export async function runVerify(ctx) {
+export async function runVerify(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "verifier";
@@ -374,7 +374,7 @@ export async function runVerify(ctx) {
         attemptId,
         finalWorktree: verificationEvidence.git,
       })
-    : { probes: [] };
+    : { probes: [] as any[] };
   const evidenceLedger = buildEvidenceLedger({
     jobId,
     project,
@@ -586,7 +586,7 @@ export async function runVerify(ctx) {
   } as any);
 }
 
-async function collectVerificationEvidence(cwd, planArtifact, hardGate, planEvidence = null) {
+async function collectVerificationEvidence(cwd: string, planArtifact: Record<string, any>, hardGate: Record<string, any>, planEvidence: Record<string, any> | null = null) {
   const [plan, gitEvidence] = await Promise.all([
     planEvidence ? Promise.resolve(planEvidence) : collectPlanEvidence(planArtifact),
     collectGitEvidence(cwd),
@@ -602,11 +602,11 @@ async function collectVerificationEvidence(cwd, planArtifact, hardGate, planEvid
   };
 }
 
-function shouldRequirePlanArtifact(ctx) {
+function shouldRequirePlanArtifact(ctx: Record<string, any>) {
   return ctx?.workflow !== "direct";
 }
 
-async function collectPlanEvidence(planArtifact, { required = true, workflow = null } = {}) {
+async function collectPlanEvidence(planArtifact: Record<string, any>, { required = true, workflow = null }: Record<string, any> = {}) {
   if (!planArtifact) {
     if (!required) {
       return {
@@ -645,12 +645,12 @@ async function collectPlanEvidence(planArtifact, { required = true, workflow = n
   return plan;
 }
 
-function isUsablePlanEvidence(plan) {
+function isUsablePlanEvidence(plan: Record<string, any>) {
   return Boolean(plan?.available && plan.path && String(plan.excerpt || "").trim());
 }
 
-async function collectGitEvidence(cwd) {
-  const evidence = {
+async function collectGitEvidence(cwd: string) {
+  const evidence: Record<string, any> = {
     available: false,
     cwd,
     statusShort: "",
@@ -692,22 +692,22 @@ async function collectGitEvidence(cwd) {
   return evidence;
 }
 
-async function git(cwd, args) {
+async function git(cwd: string, args: string[]) {
   return execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 })
-    .then(({ stdout = "", stderr = "" }) => ({ stdout, stderr }));
+    .then(({ stdout = "", stderr = "" }: any) => ({ stdout, stderr }));
 }
 
-function uniqueLines(text) {
+function uniqueLines(text: unknown): string[] {
   return [...new Set(String(text || "").split("\n").map((line) => line.trim()).filter(Boolean))];
 }
 
-function limitText(text, maxChars) {
+function limitText(text: unknown, maxChars: number): string {
   const value = String(text || "");
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n\n[truncated ${value.length - maxChars} chars]`;
 }
 
-function getRequiredArtifact(previousResults, kind) {
+function getRequiredArtifact(previousResults: Record<string, any>[], kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) {
       return previousResults[i].artifact;
@@ -716,7 +716,7 @@ function getRequiredArtifact(previousResults, kind) {
   return null;
 }
 
-function renderVerdictMarkdown(verdict) {
+function renderVerdictMarkdown(verdict: Record<string, any>) {
   const statusUpper = verdict.status.toUpperCase();
   return `# Verdict
 
@@ -742,7 +742,7 @@ export function verifyPhaseOutputContract() {
   };
 }
 
-async function buildVerifyPrompt(ctx, planArtifact, verificationEvidence, checklistContext: Record<string, any> = {}) {
+async function buildVerifyPrompt(ctx: Record<string, any>, planArtifact: Record<string, any>, verificationEvidence: Record<string, any>, checklistContext: Record<string, any> = {}) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("verify", ctx, { planArtifact, verificationEvidence });
   }
@@ -799,7 +799,7 @@ ${JSON.stringify(verificationEvidence, null, 2)}
 4. Cross-check every claimed implementation path against the current diff. If the diff implements a different product path than the plan requires, verdict = FAIL or PARTIAL even when tests pass.`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "verifier";
   const raw = ctx.agents?.[role] || ctx.agents?.verifier || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

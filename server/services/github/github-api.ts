@@ -243,7 +243,7 @@ const TOKEN_CACHE_S = 3300; // Cache installation token ~55 min
 
 // --- Private key resolution ---
 
-export function resolvePrivateKey(config, { env = process.env } = {}) {
+export function resolvePrivateKey(config: AnyRecord | null | undefined, { env = process.env }: AnyRecord = {}) {
   if (!config?.privateKeyRef) return null;
   const ref = config.privateKeyRef;
 
@@ -269,11 +269,11 @@ export function resolvePrivateKey(config, { env = process.env } = {}) {
 
 // --- JWT generation ---
 
-function base64url(buf) {
+function base64url(buf: Buffer) {
   return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
-function createAppJwt(appId, privateKeyPem) {
+function createAppJwt(appId: string, privateKeyPem: string) {
   const now = Math.floor(Date.now() / 1000);
   const header = base64url(Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" }), "utf8"));
   const payload = base64url(Buffer.from(JSON.stringify({
@@ -291,9 +291,9 @@ function createAppJwt(appId, privateKeyPem) {
 
 // --- Installation token ---
 
-let tokenCache = { token: null, expiresAt: 0 };
+let tokenCache: { token: string | null; expiresAt: number } = { token: null, expiresAt: 0 };
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(url: string, options: AnyRecord = {}) {
   const requestOptions = options as RequestInit & { headers?: Record<string, string> };
   const headers = {
     "Accept": "application/vnd.github+json",
@@ -311,7 +311,7 @@ async function fetchJson(url, options = {}) {
   return body;
 }
 
-export async function getInstallationToken(config, { env = process.env, forceRefresh = false } = {}) {
+export async function getInstallationToken(config: AnyRecord, { env = process.env, forceRefresh = false }: AnyRecord = {}) {
   if (!forceRefresh && tokenCache.token && Date.now() < tokenCache.expiresAt) {
     return tokenCache.token;
   }
@@ -339,7 +339,7 @@ export function clearTokenCache() {
 
 // --- Transport: post issue comment ---
 
-export async function postGithubCommentWithApi({ repo, issueNumber, body }, config, { env = process.env } = {}) {
+export async function postGithubCommentWithApi({ repo, issueNumber, body }: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const result = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}/comments`, {
     method: "POST",
@@ -355,7 +355,7 @@ export async function postGithubCommentWithApi({ repo, issueNumber, body }, conf
 
 // --- Transport: create pull request ---
 
-export async function createPullRequestWithApi(request, config, { env = process.env } = {}) {
+export async function createPullRequestWithApi(request: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const result = await fetchJson(`${GITHUB_API}/repos/${request.repo}/pulls`, {
     method: "POST",
@@ -377,7 +377,7 @@ export async function createPullRequestWithApi(request, config, { env = process.
 
 // --- Transport: close issue ---
 
-export async function closeGithubIssueWithApi({ repo, number, body }, config, { env = process.env } = {}) {
+export async function closeGithubIssueWithApi({ repo, number, body }: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const patch = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${number}`, {
     method: "PATCH",
@@ -394,13 +394,13 @@ export async function closeGithubIssueWithApi({ repo, number, body }, config, { 
 
 // --- Composite transport selector (never throws) ---
 
-function makeDiagnostic(level, message) {
+function makeDiagnostic(level: string, message: string) {
   return { level, message };
 }
 
-export async function resolveGithubTransport(hubRoot, { env = process.env } = {}) {
-  const diagnostics = [];
-  let config = null;
+export async function resolveGithubTransport(hubRoot: string, { env = process.env }: AnyRecord = {}): Promise<AnyRecord> {
+  const diagnostics: AnyRecord[] = [];
+  let config: AnyRecord | null = null;
 
   // Load config
   try {
@@ -441,11 +441,11 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
       mode: "api",
       healthy: true,
       config,
-      diagnostics: [],
+      diagnostics: [] as AnyRecord[],
       getToken: () => getInstallationToken(config, { env }),
-      postComment: (req) => postGithubCommentWithApi(req, config, { env }),
-      createPullRequest: (req) => createPullRequestWithApi(req, config, { env }),
-      closeIssue: (req) => closeGithubIssueWithApi(req, config, { env }),
+      postComment: (req: AnyRecord) => postGithubCommentWithApi(req, config, { env }),
+      createPullRequest: (req: AnyRecord) => createPullRequestWithApi(req, config, { env }),
+      closeIssue: (req: AnyRecord) => closeGithubIssueWithApi(req, config, { env }),
     };
   }
 
@@ -479,9 +479,9 @@ export async function resolveGithubTransport(hubRoot, { env = process.env } = {}
         ...apiDiagnostics,
       ],
       getToken: null,
-      postComment: (req) => postGithubCommentWithGh(req),
-      createPullRequest: (req) => createPullRequestWithGh(req),
-      closeIssue: (req) => closeGithubIssueWithGh(req),
+      postComment: (req: AnyRecord) => postGithubCommentWithGh(req),
+      createPullRequest: (req: AnyRecord) => createPullRequestWithGh(req),
+      closeIssue: (req: AnyRecord) => closeGithubIssueWithGh(req),
     };
   }
 

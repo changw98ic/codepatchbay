@@ -70,7 +70,7 @@ export class ProviderQuotaError extends Error {
 }
 
 // ─── Secret Redaction ───────────────────────────────────────────────
-export function redactSecrets(text) {
+export function redactSecrets(text: unknown) {
   if (!text) return "";
   return String(text)
     .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
@@ -85,15 +85,15 @@ export function redactSecrets(text) {
 }
 
 // ─── Persistence ────────────────────────────────────────────────────
-function quotasFilePath(hubRoot) {
+function quotasFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", "quotas.json");
 }
 
-function legacyRateLimitsFilePath(hubRoot) {
+function legacyRateLimitsFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", "rate-limits.json");
 }
 
-export async function readProviderQuotas(hubRoot) {
+export async function readProviderQuotas(hubRoot: string) {
   try {
     return JSON.parse(await readFile(quotasFilePath(hubRoot), "utf8"));
   } catch (err) {
@@ -107,9 +107,9 @@ export async function readProviderQuotas(hubRoot) {
 }
 
 // In-process write queue to prevent concurrent write corruption
-const _writeQueues = new Map();
+const _writeQueues = new Map<string, Promise<any>>();
 
-export async function _internalWriteProviderQuota(hubRoot, providerKey, entry) {
+export async function _internalWriteProviderQuota(hubRoot: string, providerKey: string, entry: Record<string, any>) {
   const filePath = quotasFilePath(hubRoot);
   const queueKey = filePath;
   const prev = _writeQueues.get(queueKey) || Promise.resolve();
@@ -134,7 +134,7 @@ export async function _internalWriteProviderQuota(hubRoot, providerKey, entry) {
 }
 
 // ─── State Transitions ──────────────────────────────────────────────
-export async function _internalMarkProviderUnavailable(hubRoot, {
+export async function _internalMarkProviderUnavailable(hubRoot: string, {
   providerKey,
   agent,
   variant,
@@ -143,7 +143,7 @@ export async function _internalMarkProviderUnavailable(hubRoot, {
   source,
   confidence,
   reason,
-}) {
+}: Record<string, any>) {
   const validStatuses = [
     QuotaStatus.RATE_LIMITED,
     QuotaStatus.WINDOW_EXHAUSTED,
@@ -165,7 +165,7 @@ export async function _internalMarkProviderUnavailable(hubRoot, {
   });
 }
 
-export async function _internalMarkProviderAvailable(hubRoot, providerKey) {
+export async function _internalMarkProviderAvailable(hubRoot: string, providerKey: string) {
   const current = await readProviderQuotas(hubRoot);
   const existing = current[providerKey];
   return _internalWriteProviderQuota(hubRoot, providerKey, {
@@ -180,13 +180,13 @@ export async function _internalMarkProviderAvailable(hubRoot, providerKey) {
 }
 
 // ─── Gate ───────────────────────────────────────────────────────────
-export async function assertProviderAvailable(hubRoot, {
+export async function assertProviderAvailable(hubRoot: string, {
   providerKey,
   agent,
   variant,
   phase,
   role,
-}) {
+}: Record<string, any>) {
   const quotas = await readProviderQuotas(hubRoot);
   const entry = quotas[providerKey];
   if (!entry) return; // no entry = never seen = available
@@ -270,7 +270,7 @@ const TOKEN_CONTEXT = /context.?length|max.?token|output.?token|token.?limit/i;
  * @param {number} [fallbackMs] - fallback wait in ms
  * @returns {number} unix ms
  */
-export function parseResetTime(message, timezone, fallbackMs = 60_000) {
+export function parseResetTime(message: string, timezone: string | null, fallbackMs = 60_000): number {
   const text = String(message || "");
   const isoMatch = text.match(ISO_DATE);
   if (isoMatch) {
@@ -301,7 +301,7 @@ export function parseResetTime(message, timezone, fallbackMs = 60_000) {
  *
  * e.g. "2026-05-31T12:00:00" in "Asia/Shanghai" → 2026-05-31T04:00:00Z
  */
-function parseNaiveTimestamp(isoLocal, timezone) {
+function parseNaiveTimestamp(isoLocal: string, timezone: string): number {
   // Use Intl to get the UTC offset for the given timezone at that point in time.
   // We try: parse as UTC, then adjust by the offset difference.
   const utcGuess = Date.parse(isoLocal.endsWith("Z") ? isoLocal : `${isoLocal}Z`);
@@ -317,7 +317,7 @@ function parseNaiveTimestamp(isoLocal, timezone) {
   return utcGuess - offsetMinutes * 60_000;
 }
 
-function getTimezoneOffsetMinutes(utcMs, timezone) {
+function getTimezoneOffsetMinutes(utcMs: number, timezone: string) {
   try {
     const dtf = new Intl.DateTimeFormat("en-US", {
       timeZone: timezone,
@@ -359,7 +359,7 @@ function getTimezoneOffsetMinutes(utcMs, timezone) {
  * @param {object} [opts.adapter] - provider adapter (optional)
  * @returns {Promise<{isQuota: boolean, status?: string, nextEligibleAt?: number, confidence?: number, reason?: string}>}
  */
-export async function classifyQuotaFailure({ providerKey, agent, variant, error, stdout, stderr, adapter }) {
+export async function classifyQuotaFailure({ providerKey, agent, variant, error, stdout, stderr, adapter }: Record<string, any>) {
   const msg = error?.message || String(error || "");
   const combined = `${msg}\n${stderr || ""}\n${stdout || ""}`;
 
@@ -458,7 +458,7 @@ const AMBIGUOUS_BACKOFFS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
  * @param {number} [opts.ambiguous429Attempt] - 0-indexed attempt for ambiguous 429
  * @returns {{nextEligibleAt: number, reason: string}}
  */
-export function computeFixedBackoff({ retryAfter, windowReset, weeklyReset, ambiguous429Attempt = 0 }) {
+export function computeFixedBackoff({ retryAfter, windowReset, weeklyReset, ambiguous429Attempt = 0 }: Record<string, any>) {
   if (retryAfter != null && retryAfter > 0) {
     return { nextEligibleAt: Date.now() + retryAfter, reason: `retry-after ${retryAfter}ms` };
   }
@@ -474,13 +474,13 @@ export function computeFixedBackoff({ retryAfter, windowReset, weeklyReset, ambi
 }
 
 // ─── List ───────────────────────────────────────────────────────────
-export async function listProviderQuotas(hubRoot) {
+export async function listProviderQuotas(hubRoot: string) {
   const quotas = await readProviderQuotas(hubRoot);
   return Object.values(quotas);
 }
 
 // ─── Sanitize ───────────────────────────────────────────────────────
-export function sanitizeProviderReason(reason) {
+export function sanitizeProviderReason(reason: unknown) {
   if (!reason) return "";
   // Strip ANSI escapes, control chars, and limit length
   return String(reason)

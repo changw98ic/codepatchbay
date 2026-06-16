@@ -227,11 +227,11 @@ export class PoolExhaustedError extends Error {
   }
 }
 
-function agentEnvName(agent) {
+function agentEnvName(agent: any) {
   return String(agent || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-export function providerKeyForAgent(agent, env = {}, variant = null) {
+export function providerKeyForAgent(agent: any, env = {}, variant: any = null) {
   if (variant) return `${agent}:${variant}`;
 
   if (agent === "claude") {
@@ -324,7 +324,7 @@ function positiveIntOption(value: unknown, fallback: number) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-function providerEnvKey(providerKey) {
+function providerEnvKey(providerKey: any) {
   return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
@@ -692,11 +692,11 @@ export class AcpPool {
    * Count active sessions across all agents that share the same provider key.
    * This is the in-process gate; the file-based lease in #run() handles cross-process.
    */
-  #providerActiveCount(providerKey) {
+  #providerActiveCount(providerKey: any) {
     return this.activeProviders.get(providerKey) || 0;
   }
 
-  release(agent, requestId) {
+  release(agent: any, requestId: any) {
     const request = requestId ? this.liveRequests.get(requestId) : null;
     const providerKey = request?.providerKey || this.providerKey(agent);
     const active = Math.max(0, (this.active.get(agent) || 1) - 1);
@@ -719,7 +719,7 @@ export class AcpPool {
     next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
   }
 
-  providerKey(agent, variant = null) {
+  providerKey(agent: any, variant: any = null) {
     return providerKeyForAgent(agent, this.env, variant);
   }
 
@@ -731,13 +731,13 @@ export class AcpPool {
     return path.join(this.#connectionLeasesDir(), ".lock");
   }
 
-  #providerConnectionLimit(providerKey) {
+  #providerConnectionLimit(providerKey: any) {
     const specific = this.providerConnectionLimits[providerKey]
       ?? this.env[`CPB_ACP_POOL_PROVIDER_${providerEnvKey(providerKey)}_MAX`];
     return positiveIntOption(specific, this.providerConnectionLimit);
   }
 
-  async #connectionLockIsStale(lockDir) {
+  async #connectionLockIsStale(lockDir: any) {
     try {
       const info = await stat(lockDir);
       return Date.now() - info.mtimeMs >= CONNECTION_LOCK_TTL_MS;
@@ -746,7 +746,7 @@ export class AcpPool {
     }
   }
 
-  async #withConnectionLock(callback) {
+  async #withConnectionLock(callback: any) {
     const dir = this.#connectionLeasesDir();
     const lockDir = this.#connectionLockDir();
     await mkdir(dir, { recursive: true });
@@ -775,7 +775,7 @@ export class AcpPool {
     }
   }
 
-  #leaseAlive(lease) {
+  #leaseAlive(lease: any) {
     if (!lease?.pid) return false;
     try {
       process.kill(Number(lease.pid), 0);
@@ -865,7 +865,7 @@ export class AcpPool {
   async #countProviderLeases(providerKey: string) {
     try {
       const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
-      return leases.filter((l) => l.providerKey === providerKey).length;
+      return leases.filter((l: any) => l.providerKey === providerKey).length;
     } catch {
       return -1;
     }
@@ -1231,8 +1231,8 @@ export class AcpPool {
         })
       : new Promise<never>(() => {}); // never resolves — no timeout
 
-    client.outputSink = (chunk) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
-    client.errorSink = (chunk) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };
+    client.outputSink = (chunk: any) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
+    client.errorSink = (chunk: any) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };
 
     try {
       const sessionId = await Promise.race([client.promptOnce(prompt, cwd), timeout]);

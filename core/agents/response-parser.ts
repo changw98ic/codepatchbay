@@ -1,4 +1,4 @@
-export function parseAgentJson(output) {
+export function parseAgentJson(output: string) {
   if (!output || typeof output !== "string") {
     return { ok: false, reason: "agent output is empty" };
   }
@@ -26,7 +26,7 @@ export function parseAgentJson(output) {
   return { ok: false, reason: `agent output is not valid JSON: unexpected format` };
 }
 
-function tryParseJsonObject(str) {
+function tryParseJsonObject(str: string) {
   try {
     const parsed = JSON.parse(str);
     if (!parsed || typeof parsed !== "object") {
@@ -41,7 +41,7 @@ function tryParseJsonObject(str) {
   }
 }
 
-export function parsePlannerJson(output) {
+export function parsePlannerJson(output: string) {
   const result = parseAgentJson(output);
   if (!result.ok) return result;
   if (!result.data.planMarkdown) {
@@ -50,7 +50,7 @@ export function parsePlannerJson(output) {
   return { ok: true, planMarkdown: result.data.planMarkdown };
 }
 
-export function parseExecutorJson(output) {
+export function parseExecutorJson(output: string) {
   const result = parseAgentJson(output);
   if (!result.ok) return result;
   return {
@@ -62,7 +62,7 @@ export function parseExecutorJson(output) {
   };
 }
 
-export function parseVerifierJson(output) {
+export function parseVerifierJson(output: string) {
   const result = parseAgentJson(output);
   if (!result.ok) return result;
   // Verifier envelope: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details }

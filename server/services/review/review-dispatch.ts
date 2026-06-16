@@ -22,7 +22,7 @@ import { getSession, updateSession, parseIssues } from "./review-session.js";
 import { buildChildEnv } from "../secret-policy.js";
 import { resolveHubRoot, getProject } from "../hub/hub-registry.js";
 
-function gitExec(cwd, ...args) {
+function gitExec(cwd: string, ...args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args.join(" ")} failed: ${stderr || err.message}`));
@@ -31,7 +31,7 @@ function gitExec(cwd, ...args) {
   });
 }
 
-function worktreePathFor(cpbRoot, jobId) {
+function worktreePathFor(cpbRoot: string, jobId: string): string {
   return runtimeDataPath(cpbRoot, "worktrees", `${jobId}-pipeline`);
 }
 
@@ -39,7 +39,7 @@ function worktreePathFor(cpbRoot, jobId) {
  * Dispatch a review session to the hub queue.
  * Shared by approve and auto-approve routes.
  */
-export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+export async function dispatchSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
   const storageOptions = { hubRoot: hubRootOverride };
   const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
@@ -125,7 +125,7 @@ export async function dispatchSession(cpbRoot, sessionId, { hubRoot: hubRootOver
 /**
  * Auto-approve path: handles already-dispatched sessions idempotently.
  */
-export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+export async function autoApproveSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId, { hubRoot: hubRootOverride });
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -163,7 +163,7 @@ export async function autoApproveSession(cpbRoot, sessionId, { hubRoot: hubRootO
 /**
  * Cancel a review session.
  */
-export async function cancelReviewDispatch(cpbRoot, sessionId, reason, options: Record<string, any> = {}) {
+export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, reason: string, options: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -178,11 +178,11 @@ export async function cancelReviewDispatch(cpbRoot, sessionId, reason, options: 
 /**
  * Run ACP analysis on a review session.
  */
-export async function analyzeSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+export async function analyzeSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}): Promise<Record<string, any>> {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
-  const sections = [];
+  const sections: string[] = [];
   if (session.intent) sections.push(`## Intent\n${session.intent}`);
   if (session.research?.codex) sections.push(`## Codex Research\n${session.research.codex.slice(0, 3000)}`);
   if (session.research?.claude) sections.push(`## Claude Research\n${session.research.claude.slice(0, 3000)}`);
@@ -193,8 +193,8 @@ export async function analyzeSession(cpbRoot, sessionId, options: Record<string,
     if (latest.codex) sections.push(`## Codex Review (Round ${latest.round})\n${latest.codex.slice(0, 3000)}`);
     if (latest.claude) sections.push(`## Claude Review (Round ${latest.round})\n${latest.claude.slice(0, 3000)}`);
     const issues = [
-      ...(latest.codexIssues || []).map(i => `[Codex P${i.severity}] ${i.message || "issue"}`),
-      ...(latest.claudeIssues || []).map(i => `[Claude P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.codexIssues || []).map((i: any) => `[Codex P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.claudeIssues || []).map((i: any) => `[Claude P${i.severity}] ${i.message || "issue"}`),
     ];
     if (issues.length > 0) sections.push(`## Issues Found\n${issues.join("\n")}`);
   }
@@ -301,7 +301,7 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 /**
  * Accept a review session — merge worktree branch into main.
  */
-export async function acceptSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+export async function acceptSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review" && session.status !== "dispatched") {
@@ -360,7 +360,7 @@ export async function acceptSession(cpbRoot, sessionId, options: Record<string, 
 /**
  * Reject a review session — discard worktree.
  */
-export async function rejectSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+export async function rejectSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review") {
@@ -401,17 +401,17 @@ const PROTOCOL_VERSION = 1;
 const ACP_STUCK_MS = parseInt(process.env.ACP_STUCK_MS || "300000", 10);
 
 // ACP adapter lookup table — mirrors acp-client.js
-const ACP_ADAPTERS = {
+const ACP_ADAPTERS: Record<string, { command: string; args: string[]; npxPkg: string | null }> = {
   codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
   claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
   reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
 };
 
-function commandExists(cmd) {
+function commandExists(cmd: string): boolean {
   return spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", cmd]).status === 0;
 }
 
-function resolveAgentCommand(agent, env = process.env) {
+function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env) {
   const upper = agent.toUpperCase();
   const envCmd = env[`CPB_ACP_${upper}_COMMAND`];
   if (envCmd) {
@@ -440,7 +440,7 @@ class PersistentAcp {
   watchdog: ReturnType<typeof setInterval> | null;
   sessionId: string | null;
 
-  constructor(agent) {
+  constructor(agent: string) {
     this.agent = agent;
     this.nextId = 1;
     this.pending = new Map();
@@ -474,7 +474,7 @@ class PersistentAcp {
       this.handleLine(line);
     });
 
-    this.child.stderr.on("data", (chunk) => {
+    this.child.stderr.on("data", (chunk: any) => {
       this.lastActivity = Date.now();
       process.stderr.write(`[${this.agent}] ${chunk}`);
     });
@@ -488,7 +488,7 @@ class PersistentAcp {
       this.pending.clear();
     });
 
-    this.child.on("error", (err) => {
+    this.child.on("error", (err: Error) => {
       this.closed = true;
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
@@ -509,7 +509,7 @@ class PersistentAcp {
     return this;
   }
 
-  async sendPrompt(prompt) {
+  async sendPrompt(prompt: string): Promise<string> {
     if (this.closed) throw new Error(`${this.agent} connection closed`);
     this.lastActivity = Date.now();
 
@@ -521,7 +521,7 @@ class PersistentAcp {
     const STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
     const MAX_MS = parseInt(process.env.ACP_PROMPT_MAX_MS || "600000", 10);
 
-    const collectUpdate = (params) => {
+    const collectUpdate = (params: any) => {
       const update = params?.update;
       if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
         response += update.content.text;
@@ -529,7 +529,7 @@ class PersistentAcp {
       }
     };
 
-    let stuckTimer = null;
+    let stuckTimer: ReturnType<typeof setInterval> | null = null;
     const stuckGuard = new Promise((_, reject) => {
       stuckTimer = setInterval(() => {
         const noText = Date.now() - lastTextAt > STUCK_MS;
@@ -543,7 +543,7 @@ class PersistentAcp {
     });
 
     const origHandle = this.handleClientRequest;
-    this.handleClientRequest = async (msg) => {
+    this.handleClientRequest = async (msg: any) => {
       if (msg.method === "session/update") {
         collectUpdate(msg.params);
         if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
@@ -591,7 +591,7 @@ class PersistentAcp {
     await this.#closeSession();
   }
 
-  request(method, params) {
+  request(method: string, params: any): Promise<any> {
     if (this.closed) return Promise.reject(new Error(`${this.agent} connection closed`));
     const id = this.nextId++;
     this.lastActivity = Date.now();
@@ -601,16 +601,16 @@ class PersistentAcp {
     });
   }
 
-  respond(id, result) {
+  respond(id: number, result: any): void {
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  write(msg) {
+  write(msg: any): void {
     if (this.child?.stdin.destroyed) throw new Error("stdin closed");
     this.child.stdin.write(JSON.stringify(msg) + "\n");
   }
 
-  handleLine(line) {
+  handleLine(line: string): void {
     if (!line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
@@ -627,7 +627,7 @@ class PersistentAcp {
     if (msg.method) this.handleClientRequest(msg);
   }
 
-  handleClientRequest(msg) {
+  handleClientRequest(msg: any): void {
     if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
   }
 
@@ -675,7 +675,7 @@ class PersistentAcp {
 
 // --- Prompt builders ---
 
-function researchPrompt(intent, project) {
+function researchPrompt(intent: string, project: string): string {
   return `You are CodePatchbay Research Agent. Analyze this task intent for project "${project}":
 
 **Task**: ${intent}
@@ -689,7 +689,7 @@ Provide:
 Be concise and structured.`;
 }
 
-function planPrompt(intent, codexResearch, claudeResearch) {
+function planPrompt(intent: string, codexResearch: string, claudeResearch: string): string {
   return `You are CodePatchbay Planner. Based on the research below, create an implementation plan.
 
 **Task**: ${intent}
@@ -709,7 +709,7 @@ Create a structured plan with:
 Output the plan as markdown.`;
 }
 
-function reviewPrompt(plan, reviewer) {
+function reviewPrompt(plan: string, reviewer: string): string {
   return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer.
 Review this plan critically. For each issue found, use severity tags [P0] [P1] [P2] [P3]:
 
@@ -724,10 +724,10 @@ If the plan has no P2+ issues, respond with: "REVIEW: PASS"
 ${plan}`;
 }
 
-function followUpReviewPrompt(reviewer, previousIssues, revisedPlan) {
+function followUpReviewPrompt(reviewer: string, previousIssues: any[], revisedPlan: string): string {
   const issueSummary = previousIssues
-    .filter(i => i.severity >= 2)
-    .map(i => `[P${i.severity}] ${i.description}`)
+    .filter((i: any) => i.severity >= 2)
+    .map((i: any) => `[P${i.severity}] ${i.description}`)
     .join("\n") || "None";
 
   return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer (follow-up).
@@ -742,10 +742,10 @@ ${revisedPlan}
 Review ONLY whether the previous issues were adequately addressed. For new issues use [P0]-[P3] tags. If all previous P2+ issues are resolved and no new P2+ issues exist, respond with: "REVIEW: PASS"`;
 }
 
-function revisePrompt(plan, codexIssues, claudeIssues) {
+function revisePrompt(plan: string, codexIssues: any[], claudeIssues: any[]): string {
   const allIssues = [...codexIssues, ...claudeIssues]
-    .filter(i => i.severity >= 2)
-    .map(i => `[P${i.severity}] ${i.description}`)
+    .filter((i: any) => i.severity >= 2)
+    .map((i: any) => `[P${i.severity}] ${i.description}`)
     .join("\n");
 
   return `You are CodePatchbay Plan Reviser. Revise this plan to address the issues below.
@@ -764,7 +764,7 @@ Provide the revised plan as markdown, addressing each issue.`;
 const MAX_RETRIES = parseInt(process.env.ACP_MAX_RETRIES || "2", 10);
 const MAX_REVIEW_ROUNDS = parseInt(process.env.CPB_REVIEW_MAX_ROUNDS || "5", 10);
 
-async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
+async function sendWithRetry(acp: PersistentAcp, prompt: string, agent: string, retries: number = MAX_RETRIES): Promise<string> {
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
       return await acp.sendPrompt(prompt);
@@ -780,7 +780,7 @@ async function sendWithRetry(acp, prompt, agent, retries = MAX_RETRIES) {
   }
 }
 
-export async function runReview(cpbRoot, sessionId) {
+export async function runReview(cpbRoot: string, sessionId: string): Promise<void> {
   const session = await getSession(cpbRoot, sessionId);
   if (!session) throw new Error(`session not found: ${sessionId}`);
 
@@ -831,8 +831,8 @@ export async function runReview(cpbRoot, sessionId) {
 
     // Phase 3: Review Loop
     let currentPlan = plan;
-    let prevCodexIssues = [];
-    let prevClaudeIssues = [];
+    let prevCodexIssues: any[] = [];
+    let prevClaudeIssues: any[] = [];
     for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
@@ -848,8 +848,8 @@ export async function runReview(cpbRoot, sessionId) {
       }
 
       // Reset sessions between rounds for independent reviews
-      await codex.resetSession().catch(() => null);
-      await claude.resetSession().catch(() => null);
+      await codex.resetSession().catch((): null => null);
+      await claude.resetSession().catch((): null => null);
 
       const codexPrompt = round === 1
         ? reviewPrompt(currentPlan, "codex")
@@ -932,16 +932,16 @@ import { CPB_RUNTIME_ENV, RUNTIME_BASICS } from "../secret-policy.js";
 
 const execFileVerifierAsync = promisifyVerifier(execFileVerifier);
 
-function buildVerifierCommandEnv(parentEnv = process.env) {
+function buildVerifierCommandEnv(parentEnv: NodeJS.ProcessEnv = process.env) {
   const allowed = new Set([...RUNTIME_BASICS, ...CPB_RUNTIME_ENV]);
-  const env = {};
+  const env: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(parentEnv || {})) {
     if (allowed.has(key)) env[key] = value;
   }
   return env;
 }
 
-export async function collectCurrentDiff(sourcePath, { maxLines = 200 } = {}) {
+export async function collectCurrentDiff(sourcePath: string, { maxLines = 200 }: Record<string, any> = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -956,7 +956,7 @@ export async function collectCurrentDiff(sourcePath, { maxLines = 200 } = {}) {
   }
 }
 
-export async function collectUncommittedDiff(sourcePath, { maxLines = 200 } = {}) {
+export async function collectUncommittedDiff(sourcePath: string, { maxLines = 200 }: Record<string, any> = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -972,7 +972,7 @@ export async function collectUncommittedDiff(sourcePath, { maxLines = 200 } = {}
   }
 }
 
-export async function collectTestResults(sourcePath, { timeout = 30_000 } = {}) {
+export async function collectTestResults(sourcePath: string, { timeout = 30_000 }: Record<string, any> = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -996,7 +996,7 @@ export async function collectTestResults(sourcePath, { timeout = 30_000 } = {}) 
   }
 }
 
-export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50, dataRoot = null } = {}) {
+export async function collectEventLog(cpbRoot: string, project: string, jobId: string, { maxEvents = 50, dataRoot = null }: Record<string, any> = {}) {
   try {
     const events = await readEvents(cpbRoot, project, jobId, dataRoot
       ? { dataRoot, includeLegacyFallback: false }
@@ -1011,9 +1011,9 @@ export async function collectEventLog(cpbRoot, project, jobId, { maxEvents = 50,
   }
 }
 
-export async function collectProjectContext(cpbRoot, project, options: Record<string, any> = {}) {
-  const ctx = await readFile(contextPath(cpbRoot, project, options), "utf8").catch(() => null);
-  const decisions = await readFile(decisionsPath(cpbRoot, project, options), "utf8").catch(() => null);
+export async function collectProjectContext(cpbRoot: string, project: string, options: Record<string, any> = {}) {
+  const ctx = await readFile(contextPath(cpbRoot, project, options), "utf8").catch((): null => null);
+  const decisions = await readFile(decisionsPath(cpbRoot, project, options), "utf8").catch((): null => null);
 
   return {
     available: Boolean(ctx || decisions),
@@ -1022,7 +1022,7 @@ export async function collectProjectContext(cpbRoot, project, options: Record<st
   };
 }
 
-export async function collectDeliverable(cpbRoot, project, deliverableId, options: Record<string, any> = {}) {
+export async function collectDeliverable(cpbRoot: string, project: string, deliverableId: string, options: Record<string, any> = {}) {
   if (!deliverableId) return { available: false, reason: "no deliverable ID" };
 
   const file = path.join(outputsDir(cpbRoot, project, options), `deliverable-${deliverableId}.md`);
@@ -1034,10 +1034,10 @@ export async function collectDeliverable(cpbRoot, project, deliverableId, option
   }
 }
 
-export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourcePath, deliverableId, dataRoot: explicitDataRoot = null }: Record<string, any> = {}) {
+export async function collectVerifierEvidence(cpbRoot: string, project: string, jobId: string, { sourcePath, deliverableId, dataRoot: explicitDataRoot = null }: Record<string, any> = {}) {
   const jobState = await reconstructJobState(cpbRoot, project, jobId);
 
-  const evidence = {
+  const evidence: Record<string, any> = {
     jobState,
     deliverable: null,
     diff: null,
@@ -1045,7 +1045,7 @@ export async function collectVerifierEvidence(cpbRoot, project, jobId, { sourceP
     eventLog: null,
     projectContext: null,
     testResults: null,
-    diagnostics: [],
+    diagnostics: [] as any[],
   };
 
   const dataRoot = explicitDataRoot || jobState?.stateRoot || null;
@@ -1117,11 +1117,11 @@ import { enqueue as enqueueRem, listQueue } from "../hub/hub-queue.js";
 import { allocateArtifactId } from "../artifact-locator.js";
 import { runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
 
-function remediationDataRoot(cpbRoot, options: Record<string, any> = {}) {
+function remediationDataRoot(cpbRoot: string, options: Record<string, any> = {}): string {
   return options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
-async function resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}) {
+async function resolveRemediationDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}): Promise<string> {
   if (dataRoot) return dataRoot;
   if (lockDir) {
     const marker = `${path.sep}remediation-locks${path.sep}`;
@@ -1134,13 +1134,13 @@ async function resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot,
   });
 }
 
-function validateIdRem(name, value) {
+function validateIdRem(name: string, value: any): void {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${name}: ${value}`);
   }
 }
 
-async function acquireRemediationLock(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+async function acquireRemediationLock(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<string> {
   const lockDir = path.join(remediationDataRoot(cpbRoot, options), "remediation-locks", project, `${jobId}.lock`);
   await mkdirRem(path.dirname(lockDir), { recursive: true });
   try {
@@ -1154,20 +1154,20 @@ async function acquireRemediationLock(cpbRoot, project, jobId, options: Record<s
   return lockDir;
 }
 
-async function releaseRemediationLock(lockDir) {
+async function releaseRemediationLock(lockDir: string): Promise<void> {
   try {
     await rmdirRem(lockDir);
   } catch {}
 }
 
-async function recordRemediationEvent(cpbRoot, project, jobId, event, options: Record<string, any> = {}) {
+async function recordRemediationEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, options: Record<string, any> = {}): Promise<void> {
   await appendEventRem(cpbRoot, project, jobId, event, options);
   await checkpointJobRem(cpbRoot, project, jobId, options).catch(() => {});
   const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, options));
   await updateJobsIndexEntryRem(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRemediation(cpbRoot, { project, jobId, executorRoot = null, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
+export async function runRemediation(cpbRoot: string, { project, jobId, executorRoot = null, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
   validateIdRem("project", project);
   validateIdRem("jobId", jobId);
 
@@ -1210,7 +1210,7 @@ export async function runRemediation(cpbRoot, { project, jobId, executorRoot = n
   }
 }
 
-export async function completeRemediation(cpbRoot, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+export async function completeRemediation(cpbRoot: string, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
   const dataRoot = await resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
   const eventOpts = { dataRoot, includeLegacyFallback: false };
   try {
@@ -1278,7 +1278,7 @@ export async function completeRemediation(cpbRoot, { project, jobId, remediation
   }
 }
 
-function parseRemediationStatus(content) {
+function parseRemediationStatus(content: string): string | null {
   const firstLine = content.split(/\r?\n/)[0] || "";
   const match = firstLine.match(/^REMEDIATION:\s*([A-Z_]+)/);
   const status = match ? match[1] : null;
@@ -1286,7 +1286,7 @@ function parseRemediationStatus(content) {
   return null;
 }
 
-async function markJobSuperseded(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+async function markJobSuperseded(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<void> {
   await recordRemediationEvent(cpbRoot, project, jobId, {
     type: "job_superseded",
     jobId,
@@ -1301,7 +1301,7 @@ async function markJobSuperseded(cpbRoot, project, jobId, options: Record<string
   }
 }
 
-async function createRemediationLineageTask(cpbRoot, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }) {
+async function createRemediationLineageTask(cpbRoot: string, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }: Record<string, any>): Promise<void> {
   const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
   const job = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
@@ -1393,13 +1393,13 @@ import { resolveHubRoot as resolveHubRootRepair } from "../hub/hub-registry.js";
 import { enqueue as enqueueRepair, listQueue as listQueueRepair } from "../hub/hub-queue.js";
 import { allocateArtifactId as allocateArtifactIdRepair } from "../artifact-locator.js";
 
-function validateIdRepair(name, value) {
+function validateIdRepair(name: string, value: any): void {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${name}: ${value}`);
   }
 }
 
-async function acquireRepairLock(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+async function acquireRepairLock(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<string> {
   const root = options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
   const lockDir = path.join(root, "repair-locks", project, `${jobId}.lock`);
   await mkdirRepair(path.dirname(lockDir), { recursive: true });
@@ -1414,7 +1414,7 @@ async function acquireRepairLock(cpbRoot, project, jobId, options: Record<string
   return lockDir;
 }
 
-async function resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}) {
+async function resolveRepairDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}): Promise<string> {
   if (dataRoot) return dataRoot;
   if (lockDir) {
     const marker = `${path.sep}repair-locks${path.sep}`;
@@ -1427,20 +1427,20 @@ async function resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot, lock
   });
 }
 
-async function releaseRepairLock(lockDir) {
+async function releaseRepairLock(lockDir: string): Promise<void> {
   try {
     await rmdirRepair(lockDir);
   } catch {}
 }
 
-async function recordRepairEvent(cpbRoot, project, jobId, event, options: Record<string, any> = {}) {
+async function recordRepairEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, options: Record<string, any> = {}): Promise<void> {
   await appendEventRepair(cpbRoot, project, jobId, event, options);
   await checkpointJobRepair(cpbRoot, project, jobId, options).catch(() => {});
   const state = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, options));
   await updateJobsIndexEntryRepair(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRepair(cpbRoot, { project, jobId, executorRoot, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
+export async function runRepair(cpbRoot: string, { project, jobId, executorRoot, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
   validateIdRepair("project", project);
   validateIdRepair("jobId", jobId);
 
@@ -1475,7 +1475,7 @@ export async function runRepair(cpbRoot, { project, jobId, executorRoot, hubRoot
   }
 }
 
-export async function completeRepair(cpbRoot, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+export async function completeRepair(cpbRoot: string, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
   const dataRoot = await resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
   const eventOpts = { dataRoot, includeLegacyFallback: false };
   if (status === "failed") {
@@ -1542,7 +1542,7 @@ export async function completeRepair(cpbRoot, { project, jobId, repairId, repair
   return repairStatus;
 }
 
-function parseRepairStatus(content) {
+function parseRepairStatus(content: string): string | null {
   const firstLine = content.split(/\r?\n/)[0] || "";
   const match = firstLine.match(/^REPAIR:\s*([A-Z_]+)/);
   const status = match ? match[1] : null;
@@ -1550,7 +1550,7 @@ function parseRepairStatus(content) {
   return null;
 }
 
-async function createRepairLineageTask(cpbRoot, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }) {
+async function createRepairLineageTask(cpbRoot: string, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }: Record<string, any>): Promise<void> {
   const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
   const job = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {

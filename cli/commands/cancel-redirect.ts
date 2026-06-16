@@ -6,7 +6,7 @@
  */
 import { requestCancelJob, requestRedirectJob } from "../../server/services/job/job-store.js";
 
-function printUsage(command) {
+function printUsage(command: string) {
   if (command === "redirect") {
     console.log("Usage: cpb redirect <project> <jobId> \"<instructions>\" [reason]");
   } else {
@@ -14,7 +14,7 @@ function printUsage(command) {
   }
 }
 
-export async function run(args, context) {
+export async function run(args: string[], context: Record<string, any>) {
   const command = context?.command;
   const cpbRoot = context?.cpbRoot || process.env.CPB_ROOT;
 

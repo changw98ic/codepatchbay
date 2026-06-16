@@ -98,7 +98,7 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
 
   // Handle GitHub issue comment commands (e.g., /cpb approve)
   if (normalized.type === "github_issue_comment" && normalized.action === "created" && normalized.commandText) {
-    const parsed = parseChannelCommand(normalized.commandText);
+    const parsed = parseChannelCommand(normalized.commandText) as Record<string, any>;
     if (parsed.ok && parsed.command === "approve" && parsed.job) {
       const queue: AnyRecord = await loadQueue(hubRoot);
       const entry = queue.entries.find((e: any) => e.id === parsed.job);

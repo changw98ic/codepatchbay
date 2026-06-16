@@ -1,18 +1,18 @@
-function isNonEmptyString(value) {
+function isNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isStringArray(value) {
+function isStringArray(value: unknown) {
   return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
 }
 
-function pushStringError(errors, manifest, key) {
+function pushStringError(errors: string[], manifest: Record<string, any>, key: string) {
   if (!isNonEmptyString(manifest?.[key])) {
     errors.push(`${key} must be a non-empty string`);
   }
 }
 
-function validateMethodEntry(errors, prefix, config) {
+function validateMethodEntry(errors: string[], prefix: string, config: Record<string, any>) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     errors.push(`${prefix} must be an object`);
     return;
@@ -31,7 +31,7 @@ function validateMethodEntry(errors, prefix, config) {
   }
 }
 
-function validateInstall(errors, install) {
+function validateInstall(errors: string[], install: Record<string, any>) {
   if (!install || typeof install !== "object" || Array.isArray(install)) {
     errors.push("install must be an object with at least one method");
     return;
@@ -52,7 +52,7 @@ function validateInstall(errors, install) {
   }
 }
 
-function validateUpgrade(errors, upgrade) {
+function validateUpgrade(errors: string[], upgrade: Record<string, any>) {
   if (upgrade === undefined) return;
   if (!upgrade || typeof upgrade !== "object" || Array.isArray(upgrade)) {
     errors.push("upgrade must be an object when present");
@@ -63,8 +63,8 @@ function validateUpgrade(errors, upgrade) {
   }
 }
 
-export function validateSetupAgentManifest(manifest) {
-  const errors = [];
+export function validateSetupAgentManifest(manifest: Record<string, any>) {
+  const errors: string[] = [];
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     return { valid: false, errors: ["manifest must be an object"] };
   }
@@ -105,7 +105,7 @@ export function validateSetupAgentManifest(manifest) {
   return { valid: errors.length === 0, errors };
 }
 
-export function assertValidSetupAgentManifest(manifest) {
+export function assertValidSetupAgentManifest(manifest: Record<string, any>) {
   const result = validateSetupAgentManifest(manifest);
   if (!result.valid) {
     const id = manifest?.id || "<unknown>";
@@ -114,7 +114,7 @@ export function assertValidSetupAgentManifest(manifest) {
   return manifest;
 }
 
-export function assertValidSetupAgentCatalog(agents) {
+export function assertValidSetupAgentCatalog(agents: Record<string, any>[]) {
   if (!Array.isArray(agents)) {
     throw new Error("Setup agent catalog must be an array");
   }

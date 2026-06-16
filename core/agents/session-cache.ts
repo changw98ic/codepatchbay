@@ -6,19 +6,19 @@ const CACHE_DIR_NAME = "session-cache";
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const LOCK_TTL_MS = 10_000;
 
-function cacheDir(cpbRoot) {
+function cacheDir(cpbRoot: string) {
   return runtimeDataPath(cpbRoot, CACHE_DIR_NAME);
 }
 
-function sessionFile(cpbRoot, agent) {
+function sessionFile(cpbRoot: string, agent: string) {
   return path.join(cacheDir(cpbRoot), `${agent}.json`);
 }
 
-function lockDir(cpbRoot, agent) {
+function lockDir(cpbRoot: string, agent: string) {
   return path.join(cacheDir(cpbRoot), `${agent}.lock`);
 }
 
-async function acquireLock(cpbRoot, agent) {
+async function acquireLock(cpbRoot: string, agent: string) {
   const dir = lockDir(cpbRoot, agent);
   await mkdir(path.dirname(dir), { recursive: true });
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -42,7 +42,7 @@ async function acquireLock(cpbRoot, agent) {
   return false;
 }
 
-async function releaseLock(cpbRoot, agent) {
+async function releaseLock(cpbRoot: string, agent: string) {
   try {
     await rm(lockDir(cpbRoot, agent), { recursive: true, force: true });
   } catch {
@@ -54,7 +54,7 @@ async function releaseLock(cpbRoot, agent) {
  * Save a session ID for an agent (cached lifecycle mode).
  * Overwrites any previous cached session for this agent.
  */
-export async function saveSessionId(cpbRoot, agent, sessionId, meta = {}) {
+export async function saveSessionId(cpbRoot: string, agent: string, sessionId: string, meta: Record<string, any> = {}) {
   const dir = cacheDir(cpbRoot);
   await mkdir(dir, { recursive: true });
   const data = {
@@ -79,7 +79,7 @@ export async function saveSessionId(cpbRoot, agent, sessionId, meta = {}) {
  * Load a cached session ID for an agent.
  * Returns null if no cache exists or if the cache is expired.
  */
-export async function loadSessionId(cpbRoot, agent, { maxAgeMs = DEFAULT_MAX_AGE_MS, now = Date.now() } = {}) {
+export async function loadSessionId(cpbRoot: string, agent: string, { maxAgeMs = DEFAULT_MAX_AGE_MS, now = Date.now() }: Record<string, any> = {}) {
   const filePath = sessionFile(cpbRoot, agent);
   const locked = await acquireLock(cpbRoot, agent);
   try {
@@ -101,7 +101,7 @@ export async function loadSessionId(cpbRoot, agent, { maxAgeMs = DEFAULT_MAX_AGE
 /**
  * Remove a cached session for an agent.
  */
-export async function clearSessionId(cpbRoot, agent) {
+export async function clearSessionId(cpbRoot: string, agent: string) {
   const locked = await acquireLock(cpbRoot, agent);
   try {
     await rm(sessionFile(cpbRoot, agent), { force: true });
@@ -116,7 +116,7 @@ export async function clearSessionId(cpbRoot, agent) {
  * Remove all expired cached sessions.
  * Returns the number of entries cleaned.
  */
-export async function cleanupSessionCache(cpbRoot, { maxAgeMs = DEFAULT_MAX_AGE_MS, now = Date.now() } = {}) {
+export async function cleanupSessionCache(cpbRoot: string, { maxAgeMs = DEFAULT_MAX_AGE_MS, now = Date.now() }: Record<string, any> = {}) {
   const dir = cacheDir(cpbRoot);
   let files;
   try {

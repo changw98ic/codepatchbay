@@ -64,7 +64,7 @@ function compactStructuredValue(value: any, { maxItems = 8, maxChars = 500 }: Re
   );
 }
 
-function compactVerifierArtifact(artifact: any) {
+function compactVerifierArtifact(artifact: any): AnyRecord | null {
   if (!artifact || typeof artifact !== "object") return null;
   return {
     kind: artifact.kind || null,
@@ -136,12 +136,12 @@ function verificationRetryContext(failure: any) {
   };
 }
 
-function summarizeBlockingForRetry(blocking: any) {
+function summarizeBlockingForRetry(blocking: any): string[] {
   if (!Array.isArray(blocking) || blocking.length === 0) return [];
   return blocking.map((entry) => {
     if (typeof entry === "string") return `- ${entry}`;
     if (!entry || typeof entry !== "object") return `- ${String(entry)}`;
-    const parts = [];
+    const parts: string[] = [];
     if (entry.criterion) parts.push(entry.criterion);
     if (entry.file) parts.push(`file: ${entry.file}`);
     if (entry.evidence) parts.push(`evidence: ${entry.evidence}`);
@@ -167,9 +167,9 @@ function verifierRetryOutputChunk(failure: any) {
   return lines.filter(Boolean).join("\n");
 }
 
-function extractPreviousOutput(failure: any) {
+function extractPreviousOutput(failure: any): string {
   const cause = failure?.cause || {};
-  const chunks = [];
+  const chunks: string[] = [];
   const verifierChunk = verifierRetryOutputChunk(failure);
   if (verifierChunk) chunks.push(verifierChunk);
   if (failure?.stderrSnippet) chunks.push(`stderr snippet:\n${failure.stderrSnippet}`);
@@ -485,7 +485,7 @@ export class Reconciler {
     }
   }
 
-  _classifyProgressDelay(assignment, attempt, heartbeat) {
+  _classifyProgressDelay(assignment: AnyRecord, attempt: AnyRecord, heartbeat: AnyRecord): AnyRecord | null {
     if (!this.progressForceRetryMs) return null;
     if (!heartbeat || heartbeat.status !== "running") return null;
 
@@ -549,7 +549,7 @@ export class Reconciler {
     };
   }
 
-  _logProgressDelay(aLog, assignment, attempt, progressDelay) {
+  _logProgressDelay(aLog: any, assignment: AnyRecord, attempt: AnyRecord, progressDelay: AnyRecord): void {
     const key = `${assignment.assignmentId}:${attempt?.attempt ?? "unknown"}`;
     const rank = PROGRESS_ALERT_RANK[progressDelay.level] || 0;
     const previousRank = this.progressAlertLevels.get(key) || 0;
@@ -560,7 +560,7 @@ export class Reconciler {
     aLog[logLevel](`assignment ${assignment.assignmentId} progress ${progressDelay.level}: ${progressDelay.reason}`);
   }
 
-  async _maybeProbeProgressDelay(assignment, attempt, heartbeat, progressDelay) {
+  async _maybeProbeProgressDelay(assignment: AnyRecord, attempt: AnyRecord, heartbeat: AnyRecord, progressDelay: AnyRecord): Promise<AnyRecord | null> {
     const key = `${assignment.assignmentId}:${attempt?.attempt ?? "unknown"}:${progressDelay.level}`;
     const intervalMs = PROGRESS_PROBE_INTERVAL_MS[progressDelay.level] ?? 60_000;
     const now = Date.now();
@@ -573,10 +573,10 @@ export class Reconciler {
     return probe;
   }
 
-  async _probeProgressDelay(assignment, attempt, heartbeat, progressDelay) {
+  async _probeProgressDelay(assignment: AnyRecord, attempt: AnyRecord, heartbeat: AnyRecord, progressDelay: AnyRecord): Promise<AnyRecord> {
     const depth = PROGRESS_PROBE_DEPTH[progressDelay.level] || "heartbeat";
     const workerId = attempt?.workerId || assignment.workerId || heartbeat.workerId || null;
-    const probe = {
+    const probe: AnyRecord = {
       checkedAt: new Date().toISOString(),
       level: progressDelay.level,
       depth,
@@ -660,17 +660,17 @@ export class Reconciler {
     return probe;
   }
 
-  _addProbeFailure(probe, signal) {
+  _addProbeFailure(probe: AnyRecord, signal: string): void {
     if (!probe.failureSignals.includes(signal)) probe.failureSignals.push(signal);
   }
 
-  _finishProbe(probe) {
+  _finishProbe(probe: AnyRecord): void {
     if (probe.failureSignals.length === 0) return;
     probe.waitUseful = false;
     probe.reason = probe.failureSignals.join(", ");
   }
 
-  _pidAlive(pid) {
+  _pidAlive(pid: any): boolean | null {
     if (!Number.isInteger(pid) || pid <= 0) return null;
     try {
       process.kill(pid, 0);
@@ -680,7 +680,7 @@ export class Reconciler {
     }
   }
 
-  async _probeWorkerLog(workerId, resultExists) {
+  async _probeWorkerLog(workerId: string | null, resultExists: boolean): Promise<AnyRecord | null> {
     if (!workerId) return null;
     const logPath = path.join(this.hubRoot, "logs", `worker-${workerId}.log`);
     try {
@@ -692,7 +692,7 @@ export class Reconciler {
     }
   }
 
-  async _probeWorktree(worktreePath) {
+  async _probeWorktree(worktreePath: string | null): Promise<AnyRecord | null> {
     if (!worktreePath) return null;
     const info: AnyRecord = { path: worktreePath, exists: false, gitStatus: null };
     try {
@@ -715,7 +715,7 @@ export class Reconciler {
     return info;
   }
 
-  async _writeProgressProbe(assignmentId, attemptNum, level, probe) {
+  async _writeProgressProbe(assignmentId: string, attemptNum: number, level: string, probe: AnyRecord): Promise<void> {
     try {
       await writeJsonAtomic(path.join(this._attemptDir(assignmentId, attemptNum), `progress-probe-${level}.json`), probe);
     } catch {
@@ -727,7 +727,7 @@ export class Reconciler {
    * P0-3 fix: compensate incomplete finalization steps.
    * terminal assignment may still need queue/worker finalization.
    */
-  async _compensateFinalization(assignment) {
+  async _compensateFinalization(assignment: AnyRecord): Promise<void> {
     const attempt = await this.assignments.getActiveAttempt(assignment.assignmentId);
 
     if (!assignment.queueFinalizedAt) {
@@ -747,12 +747,12 @@ export class Reconciler {
     }
   }
 
-  async _finalizeAssignment(assignment, attempt, result) {
+  async _finalizeAssignment(assignment: AnyRecord, attempt: AnyRecord, result: AnyRecord): Promise<void> {
     await this._finalizeQueue(assignment, attempt, result);
     await this._finalizeWorker(assignment, attempt);
   }
 
-  async _finalizeQueue(assignment, attempt, result) {
+  async _finalizeQueue(assignment: AnyRecord, attempt: AnyRecord, result: AnyRecord): Promise<void> {
     await this._guardLeader();
     const { updateEntry } = await import("../services/hub/hub-queue.js");
 
@@ -787,7 +787,7 @@ export class Reconciler {
           const workerId = attempt?.workerId || assignment.workerId;
           if (workerId) {
             const workers = await this.workers.listWorkers();
-            const worker = workers.find((w) => w.workerId === workerId);
+            const worker = workers.find((w: AnyRecord) => w.workerId === workerId);
             if (
               decision.action !== "restart_worker_and_retry" &&
               worker &&
@@ -910,7 +910,7 @@ export class Reconciler {
     await this.assignments.markFinalized(assignment.assignmentId, "queue");
   }
 
-  async _stopWorkerForRestart(assignment, attempt, reason) {
+  async _stopWorkerForRestart(assignment: AnyRecord, attempt: AnyRecord, reason: string): Promise<void> {
     const workerId = attempt?.workerId || assignment.workerId;
     if (!workerId || !this.workerSupervisor?.stopWorker) return;
     try {
@@ -920,7 +920,7 @@ export class Reconciler {
     }
   }
 
-  async _finalizeWorker(assignment, attempt) {
+  async _finalizeWorker(assignment: AnyRecord, attempt: AnyRecord): Promise<void> {
     await this._guardLeader();
     const workerId = attempt?.workerId || assignment.workerId;
     if (workerId) {
@@ -939,7 +939,7 @@ export class Reconciler {
     const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
     const assignments = await this.assignments.listAssignments();
 
-    const byEntry = new Map();
+    const byEntry = new Map<string, AnyRecord>();
     for (const a of assignments) {
       byEntry.set(a.entryId, a);
     }
@@ -958,7 +958,7 @@ export class Reconciler {
     }
   }
 
-  async _readAccepted(assignmentId, attemptNum) {
+  async _readAccepted(assignmentId: string, attemptNum: number): Promise<AnyRecord | null> {
     try {
       return JSON.parse(await readFile(
         path.join(this._attemptDir(assignmentId, attemptNum), "accepted.json"),
@@ -967,7 +967,7 @@ export class Reconciler {
     } catch { return null; }
   }
 
-  async _readAttemptResult(assignmentId, attemptNum) {
+  async _readAttemptResult(assignmentId: string, attemptNum: number): Promise<AnyRecord | null> {
     try {
       return JSON.parse(await readFile(
         path.join(this._attemptDir(assignmentId, attemptNum), "result.json"),
@@ -976,7 +976,7 @@ export class Reconciler {
     } catch { return null; }
   }
 
-  async _readHeartbeat(assignmentId, attemptNum) {
+  async _readHeartbeat(assignmentId: string, attemptNum: number): Promise<AnyRecord | null> {
     try {
       return JSON.parse(await readFile(
         path.join(this._attemptDir(assignmentId, attemptNum), "heartbeat.json"),
@@ -985,11 +985,11 @@ export class Reconciler {
     } catch { return null; }
   }
 
-  _attemptDir(assignmentId, attemptNum) {
+  _attemptDir(assignmentId: string, attemptNum: number): string {
     return path.join(this.hubRoot, "assignments", assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
   }
 
-  async _pathExists(filePath) {
+  async _pathExists(filePath: string): Promise<boolean> {
     try {
       await stat(filePath);
       return true;
