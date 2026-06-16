@@ -26,13 +26,13 @@ import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 
 
 // Permission matrix integration (Stage 3 / #13)
-let _permCheck: any = checkPermission;
-let _permEvaluate: any = evaluatePermissionDecision;
-let _permRecord: any = recordPermissionDenial;
+let _permCheck: ((...args: any[]) => any) | null = checkPermission;
+let _permEvaluate: ((...args: any[]) => any) | null = evaluatePermissionDecision;
+let _permRecord: ((...args: any[]) => any) | null = recordPermissionDenial;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory: AnyRecord[] = [];
 
-function buildPermissionEnv(env: any = process.env) {
+function buildPermissionEnv(env: NodeJS.ProcessEnv = process.env) {
   const permEnv = {
     role: env.CPB_ACP_ROLE || null,
     project: env.CPB_ACP_PROJECT || null,
@@ -45,7 +45,7 @@ function buildPermissionEnv(env: any = process.env) {
   return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
 }
 
-function loadPermissionModules(env: any = process.env) {
+function loadPermissionModules(env: NodeJS.ProcessEnv = process.env) {
   if (!env.CPB_EXECUTOR_ROOT) return null;
   return buildPermissionEnv(env);
 }
@@ -59,7 +59,7 @@ function isRepeatedDenial(targetPath: string, action: string) {
   return identicalCount >= 3;
 }
 
-async function enforcePermission(action: string, targetPath: string, env: any = process.env) {
+async function enforcePermission(action: string, targetPath: string, env: NodeJS.ProcessEnv = process.env) {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = await loadPermissionModules(env);
   if (!_permCheck || !permEnv) return { allowed: true };

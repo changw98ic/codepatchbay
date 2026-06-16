@@ -16,7 +16,7 @@ import {
 } from "../provider-quota.js";
 import { getProviderAdapter } from "../provider-adapters.js";
 
-let _registryCache: any = null;
+let _registryCache: Record<string, any> | null = null;
 
 /**
  * Compound key for persistent client isolation.
@@ -33,10 +33,10 @@ export function poolClientKey(agent: string, options: Record<string, any> = {}) 
   return [agent, projectId, workspaceId, processCwd, policyHash, variant].join("::");
 }
 
-async function getRegistry(): Promise<any> {
+async function getRegistry(): Promise<Record<string, any> | null> {
   if (_registryCache) return _registryCache;
   try {
-    const mod: any = await import("../../../core/agents/registry.js");
+    const mod: Record<string, any> = await import("../../../core/agents/registry.js");
     await mod.loadRegistry();
     _registryCache = mod;
   } catch {
@@ -161,10 +161,10 @@ export async function readAcpUsageFromAudit(auditFile: string | null, filter: Re
 }
 
 export class RateLimitError extends Error {
-  agent: any;
-  untilTs: any;
+  agent: string;
+  untilTs: number;
 
-  constructor(agent: any, untilTs: any, message = "ACP provider is rate limited") {
+  constructor(agent: string, untilTs: number, message = "ACP provider is rate limited") {
     super(`${message}: ${agent} until ${new Date(untilTs).toISOString()}`);
     this.name = "RateLimitError";
     this.agent = agent;
@@ -176,15 +176,15 @@ export class RateLimitError extends Error {
  * Structured ACP execution error with partial stdout/stderr for handoff bundles.
  */
 export class AcpExecutionError extends Error {
-  agent: any;
-  providerKey: any;
+  agent: string;
+  providerKey: string;
   partialStdout: string;
   partialStderr: string;
-  exitCode: any;
-  signal: any;
-  phase: any;
-  role: any;
-  quota: any;
+  exitCode: number | null;
+  signal: string | null;
+  phase: string | null;
+  role: string | null;
+  quota: Record<string, any> | null;
 
   constructor(message: string, {
     agent,
@@ -196,11 +196,11 @@ export class AcpExecutionError extends Error {
     phase = null,
     role = null,
     quota = null,
-  }: Record<string, any> = {}) {
+  }: { agent?: string; providerKey?: string; stdout?: string; stderr?: string; exitCode?: number | null; signal?: string | null; phase?: string | null; role?: string | null; quota?: Record<string, any> | null } = {}) {
     super(message);
     this.name = "AcpExecutionError";
-    this.agent = agent;
-    this.providerKey = providerKey || agent;
+    this.agent = agent ?? "";
+    this.providerKey = providerKey || agent || "";
     this.partialStdout = String(stdout || "").slice(-4000);
     this.partialStderr = String(stderr || "").slice(-4000);
     this.exitCode = exitCode;
@@ -227,11 +227,11 @@ export class PoolExhaustedError extends Error {
   }
 }
 
-function agentEnvName(agent: any) {
+function agentEnvName(agent: string) {
   return String(agent || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-export function providerKeyForAgent(agent: any, env = {}, variant: any = null) {
+export function providerKeyForAgent(agent: string, env: Record<string, any> = {}, variant: string | null = null) {
   if (variant) return `${agent}:${variant}`;
 
   if (agent === "claude") {
@@ -324,7 +324,7 @@ function positiveIntOption(value: unknown, fallback: number) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-function providerEnvKey(providerKey: any) {
+function providerEnvKey(providerKey: string) {
   return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
@@ -332,7 +332,7 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function signalChild(child: any, signal: NodeJS.Signals) {
+function signalChild(child: Record<string, any>, signal: NodeJS.Signals) {
   if (!child?.pid) return;
   try {
     if (child.detached && process.platform !== "win32") {
@@ -345,7 +345,7 @@ function signalChild(child: any, signal: NodeJS.Signals) {
   }
 }
 
-function terminateChild(child: any) {
+function terminateChild(child: Record<string, any>) {
   return new Promise<void>((resolve) => {
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
       resolve();

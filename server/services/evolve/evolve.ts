@@ -15,7 +15,7 @@ const HIGH_RISK_PATTERNS = [
 /**
  * Check whether an issue passes all guarded-run policy checks.
  */
-export function checkPolicy(issue: any, opts: Record<string, any> = {}) {
+export function checkPolicy(issue: Record<string, any>, opts: Record<string, any> = {}) {
   const reasons = [];
   const allowlist = opts.allowlist || [];
   const requireCleanWorktree = opts.requireCleanWorktree !== false;
@@ -102,10 +102,10 @@ const RISKY_CATEGORIES = [
 const DEFAULT_DAILY_LIMIT = 10;
 const DEFAULT_CONSECUTIVE_FAILURE_LIMIT = 3;
 
-function classifyCategory(payload: any) {
+function classifyCategory(payload: Record<string, any>) {
   const title = (payload.title || "").toLowerCase();
   const body = (payload.body || "").toLowerCase();
-  const labels = (payload.labels || []).map((l: any) => l.toLowerCase());
+  const labels = (payload.labels || []).map((l: string) => l.toLowerCase());
   const combined = `${title} ${body} ${labels.join(" ")}`;
 
   if (/typo|docs?|readme|comment|changelog/i.test(combined)) return "documentation";
@@ -121,28 +121,28 @@ function classifyCategory(payload: any) {
   return "general";
 }
 
-function isSafeAuto(category: any) {
+function isSafeAuto(category: string) {
   return SAFE_AUTO_CATEGORIES.includes(category);
 }
 
-function isRisky(category: any) {
+function isRisky(category: string) {
   return RISKY_CATEGORIES.includes(category);
 }
 
-function recommendWorkflow(category: any) {
+function recommendWorkflow(category: string) {
   if (category === "documentation") return "standard";
   if (category === "test-fix" || category === "ci-diagnosis") return "standard";
   return "standard";
 }
 
-function recommendAgent(category: any, _availableAgents: any) {
+function recommendAgent(category: string, _availableAgents: string[]) {
   return null;
 }
 
 /**
  * Evaluate a candidate event and produce a task recommendation.
  */
-export async function evaluateCandidate(cpbRoot: any, candidate: any, { availableAgents = [] } = {}) {
+export async function evaluateCandidate(cpbRoot: string, candidate: Record<string, any>, { availableAgents = [] }: { availableAgents?: string[] } = {}) {
   if (!candidate || !candidate.payload) return null;
 
   const category = classifyCategory(candidate.payload);
@@ -168,7 +168,7 @@ export async function evaluateCandidate(cpbRoot: any, candidate: any, { availabl
 /**
  * Scan pending candidates and evaluate them for task generation.
  */
-export async function scanCandidates(cpbRoot: any, { availableAgents = [], ...rootOptions }: Record<string, any> = {}) {
+export async function scanCandidates(cpbRoot: string, { availableAgents = [], ...rootOptions }: Record<string, any> = {}) {
   const pending = await listCandidates(cpbRoot, { status: "pending", ...rootOptions });
 
   const results = [];
@@ -185,7 +185,7 @@ export async function scanCandidates(cpbRoot: any, { availableAgents = [], ...ro
 /**
  * Check if proactive mode is enabled and within budget.
  */
-export async function checkProactiveBudget(cpbRoot: any, options: Record<string, any> = {}) {
+export async function checkProactiveBudget(cpbRoot: string, options: Record<string, any> = {}) {
   const enabled = process.env.CPB_PROACTIVE === "1";
   if (!enabled) {
     return { allowed: false, reason: "proactive disabled (CPB_PROACTIVE not set to 1)" };
@@ -197,7 +197,7 @@ export async function checkProactiveBudget(cpbRoot: any, options: Record<string,
   const jobs = await listJobs(cpbRoot, { hubRoot: options.hubRoot });
   const windowMs = 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - windowMs;
-  const windowProactive = jobs.filter((j: any) => {
+  const windowProactive = jobs.filter((j: Record<string, any>) => {
     if (j.trigger !== "proactive" && j.sourceContext?.type !== "proactive") return false;
     const ts = j.createdAt ? new Date(j.createdAt).getTime() : 0;
     return ts > cutoff;
@@ -219,7 +219,7 @@ export async function checkProactiveBudget(cpbRoot: any, options: Record<string,
   return { allowed: true, remaining: dailyLimit - windowProactive.length };
 }
 
-function buildTaskDescription(candidate: any) {
+function buildTaskDescription(candidate: Record<string, any>) {
   const parts = [`Source: ${candidate.source}`];
   if (candidate.payload.title) parts.push(`Title: ${candidate.payload.title}`);
   if (candidate.payload.body) parts.push(candidate.payload.body.slice(0, 500));

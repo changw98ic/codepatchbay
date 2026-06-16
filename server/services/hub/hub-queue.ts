@@ -13,22 +13,22 @@
  * Scheduler, claimEligible API, and any future caller all go through here.
  */
 
-export function priorityScore(priority: any) {
+export function priorityScore(priority: string) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
   return 3;
 }
 
-export function isMutatingEntry(entry: any) {
+export function isMutatingEntry(entry: Record<string, any>) {
   return entry.metadata?.mutating !== false;
 }
 
-export function isActiveEntry(entry: any) {
+export function isActiveEntry(entry: Record<string, any>) {
   return entry.status === "in_progress" || entry.status === "scheduled";
 }
 
-export function clearClaim(entry: any) {
+export function clearClaim(entry: Record<string, any>) {
   entry.claimedBy = null;
   entry.claimedAt = null;
   entry.workerId = null;
@@ -38,7 +38,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-export function isCodegraphUnavailableStatus(status: any) {
+export function isCodegraphUnavailableStatus(status: string) {
   return status === "codegraph_unavailable" || status === "index_unavailable";
 }
 
@@ -55,7 +55,7 @@ export function isCodegraphUnavailableStatus(status: any) {
  * @param {import("../../shared/orchestrator/assignment-store.js").AssignmentStore} opts.assignmentStore
  * @returns {{ recovered: string[], refreshed: string[] }}
  */
-export function recoverStaleInProgress(entries: any, opts: any) {
+export function recoverStaleInProgress(entries: Record<string, any>[], opts: Record<string, any>) {
   const { claimTimeoutMs, assignmentStore } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgress requires assignmentStore");
@@ -93,7 +93,7 @@ export function recoverStaleInProgress(entries: any, opts: any) {
  * Async variant for callers that have an AssignmentStore with async getAssignment().
  * Used by Scheduler and claimEligible.  assignmentStore is required.
  */
-export async function recoverStaleInProgressAsync(entries: any, opts: any) {
+export async function recoverStaleInProgressAsync(entries: Record<string, any>[], opts: Record<string, any>) {
   const { claimTimeoutMs, assignmentStore } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgressAsync requires assignmentStore");
@@ -128,7 +128,7 @@ export async function recoverStaleInProgressAsync(entries: any, opts: any) {
 /**
  * Recover codegraph_unavailable entries whose retry window has elapsed.
  */
-export function recoverCodegraphUnavailable(entries: any, retryMs: any) {
+export function recoverCodegraphUnavailable(entries: Record<string, any>[], retryMs: number) {
   if (!retryMs || retryMs <= 0) return { recovered: [] };
   const now = Date.now();
   const recovered = [];
@@ -174,11 +174,12 @@ function defaultQueue(): QueueState {
   return { version: QUEUE_VERSION, entries: [] };
 }
 
-function normalizeQueue(raw: any): QueueState {
+function normalizeQueue(raw: unknown): QueueState {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultQueue();
+  const obj = raw as Record<string, any>;
   return {
-    version: raw.version || QUEUE_VERSION,
-    entries: Array.isArray(raw.entries) ? raw.entries : [],
+    version: obj.version || QUEUE_VERSION,
+    entries: Array.isArray(obj.entries) ? obj.entries : [],
   };
 }
 
@@ -257,7 +258,7 @@ async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
   }
 }
 
-export async function loadQueue(hubRoot: any) {
+export async function loadQueue(hubRoot: string) {
   try {
     const raw = await readFile(queuePath(hubRoot), "utf8");
     return normalizeQueue(JSON.parse(raw));
@@ -267,7 +268,7 @@ export async function loadQueue(hubRoot: any) {
   }
 }
 
-async function saveQueue(hubRoot: any, queue: any) {
+async function saveQueue(hubRoot: string, queue: Record<string, any>) {
   const normalized = { version: QUEUE_VERSION, entries: queue.entries };
   await writeAtomic(queuePath(hubRoot), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
@@ -284,12 +285,12 @@ function generateId() {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function hasIssueLink(metadata: any) {
+function hasIssueLink(metadata: Record<string, any> | null | undefined) {
   if (!metadata || typeof metadata !== "object") return false;
   return Boolean(metadata.issueNumber || metadata.issueUrl);
 }
 
-export function validateIssueLink(entry: any) {
+export function validateIssueLink(entry: Record<string, any>) {
   if (!entry) return { linked: false, reason: "no entry" };
   if (entry.status === "needs_issue_link") return { linked: false, reason: "awaiting issue link" };
   if (entry.status === "archived") return { linked: false, reason: "archived" };
@@ -498,7 +499,7 @@ export async function queueStatus(hubRoot: string) {
 
 const ACTIVE_RETRY_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
 
-function failedTargetKey(entry: any) {
+function failedTargetKey(entry: Record<string, any>) {
   const targetJobId = entry.type === "cli_retry"
     ? entry.metadata?.retryJobId
     : `job-${entry.id}`;
@@ -506,21 +507,21 @@ function failedTargetKey(entry: any) {
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function activeRetryTargetKey(entry: any) {
+function activeRetryTargetKey(entry: Record<string, any>) {
   if (entry.type !== "cli_retry" || !ACTIVE_RETRY_STATUSES.has(entry.status)) return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function completedRetryTargetKey(entry: any) {
+function completedRetryTargetKey(entry: Record<string, any>) {
   if (entry.type !== "cli_retry" || entry.status !== "completed") return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-export function summarizeFailedTargets(entries: any = []) {
+export function summarizeFailedTargets(entries: Record<string, any>[] = []) {
   const failedTargets = new Set();
   const activeRetryTargets = new Set();
   const completedRetryTargets = new Set();
@@ -553,7 +554,7 @@ export function summarizeFailedTargets(entries: any = []) {
   };
 }
 
-function limitForProject(projectLimits: any, projectId: string, fallback: number) {
+function limitForProject(projectLimits: Record<string, any> | null | undefined, projectId: string, fallback: number) {
   if (projectLimits instanceof Map) {
     return positiveInt(projectLimits.get(projectId), fallback);
   }
@@ -859,13 +860,13 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
 
 import { readGithubIssues } from "../github/github-issues.js";
 
-export function matchAutomationRule(issue: any, rules: any) {
+export function matchAutomationRule(issue: Record<string, any>, rules: Record<string, any>[]) {
   if (!Array.isArray(rules) || rules.length === 0) return null;
   for (const rule of rules) {
     const m = rule.match || {};
     if (m.labels && Array.isArray(m.labels)) {
       const issueLabels = new Set(issue.labels || []);
-      const hasAll = m.labels.every((l: any) => issueLabels.has(l));
+      const hasAll = m.labels.every((l: string) => issueLabels.has(l));
       if (!hasAll) continue;
     }
     if (m.titlePattern) {
@@ -880,16 +881,16 @@ export function matchAutomationRule(issue: any, rules: any) {
   return null;
 }
 
-export function isExcluded(issue: any, exclude: any) {
+export function isExcluded(issue: Record<string, any>, exclude: Record<string, any>) {
   if (!exclude) return false;
   if (exclude.labels && Array.isArray(exclude.labels)) {
     const issueLabels = new Set(issue.labels || []);
-    if (exclude.labels.some((l: any) => issueLabels.has(l))) return true;
+    if (exclude.labels.some((l: string) => issueLabels.has(l))) return true;
   }
   return false;
 }
 
-export function issueToNormalizedEvent(issue: any, project: any) {
+export function issueToNormalizedEvent(issue: Record<string, any>, project: Record<string, any>) {
   return {
     status: "ok",
     type: "github_issue",
@@ -907,18 +908,18 @@ export function issueToNormalizedEvent(issue: any, project: any) {
   };
 }
 
-function issueMatchesProject(issue: any, project: any) {
+function issueMatchesProject(issue: Record<string, any>, project: Record<string, any>) {
   if (issue.projectId === project.id) return true;
   if (issue.projectId && issue.projectId !== "flow") return false;
   const repo = project.github?.fullName;
   return Boolean(repo && (issue.repository || issue.repo || issue.repositoryFullName) === repo);
 }
 
-function issueQueueKey(repo: any, number: any) {
+function issueQueueKey(repo: string, number: number) {
   return `${repo || ""}#${Number(number)}`;
 }
 
-export async function autoEnqueueSyncedIssues(hubRoot: any, cpbRoot: any, projectId: any, { createJobFn = null, dryRun = false } = {}) {
+export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, projectId: string, { createJobFn = null, dryRun = false }: { createJobFn?: ((...args: any[]) => any) | null; dryRun?: boolean } = {}) {
   const project = await getProject(hubRoot, projectId);
   if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
 
