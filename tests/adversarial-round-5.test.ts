@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -47,7 +48,6 @@ import { tempRoot } from "./helpers.js";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 function frozenChecklist() {
   return {

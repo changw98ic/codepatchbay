@@ -3,13 +3,13 @@ import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { executorEnv, resolveExecutorRoot } from "../services/setup.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
 const MAX_RESTARTS = 3;
-type AnyRecord = Record<string, any>;
 
 export class WorkerSupervisor {
   hubRoot: string;

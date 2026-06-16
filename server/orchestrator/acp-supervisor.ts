@@ -1,11 +1,11 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 const DEFAULT_SUPERVISOR_AGENT = "codex";
 const DEFAULT_SUPERVISOR_TIMEOUT_MS = 120_000;
 const SUPERVISOR_POOL_SCOPE = "control-plane";
-type AnyRecord = Record<string, any>;
 
 function resolveSupervisorAgent(env = process.env) {
   return (

@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 import { deriveDagResumeState } from "../../../core/workflow/dag-executor.js";
 import { resolveCachedProjectRuntimeRoot } from "../phase-locator.js";
 import {
@@ -11,7 +12,6 @@ import {
 } from "../secret-policy.js";
 
 const EVENT_LOCK_TTL_MS = 30_000;
-type AnyRecord = Record<string, any>;
 
 async function withEventLock(eventFile: string, callback: () => Promise<any>) {
   const lockDir = `${eventFile}.lock`;

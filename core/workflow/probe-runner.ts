@@ -28,10 +28,10 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 
 const execFileAsync = promisify(execFile);
 
-type AnyRecord = Record<string, any>;
 
 /** Command probe wall-clock timeout. Treats timeout as an honest fail. */
 const COMMAND_PROBE_TIMEOUT_MS = 30_000;

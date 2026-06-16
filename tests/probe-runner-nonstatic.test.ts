@@ -3,11 +3,11 @@ import { execFile } from "node:child_process";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { runChecklistProbes } from "../core/workflow/probe-runner.js";
 import { validateEvidenceObservation } from "../core/workflow/evidence-probes.js";
 
-type AnyRecord = Record<string, any>;
 
 const exec = (cmd: string, args: string[], opts: AnyRecord = {}) =>
   new Promise<void>((resolve, reject) => {

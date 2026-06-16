@@ -1,3 +1,4 @@
+import { AnyRecord } from "../../shared/types.js";
 import { phasesToDag, validateDag } from "./dag-executor.js";
 import { resolveSquadAgent } from "../agents/registry.js";
 import {
@@ -6,7 +7,6 @@ import {
   resolveEffectiveRouting,
 } from "../agents/routing.js";
 
-type AnyRecord = Record<string, any>;
 type WorkflowNode = AnyRecord & {
   id: string;
   phase: string;

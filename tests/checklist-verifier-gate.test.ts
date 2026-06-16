@@ -10,13 +10,13 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { runJob } from "../core/engine/run-job.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { buildArtifactIndex } from "../server/services/job/job-projection.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 function jsonEnvelope(data: AnyRecord) {
   return "```json\n" + JSON.stringify(data, null, 2) + "\n```";

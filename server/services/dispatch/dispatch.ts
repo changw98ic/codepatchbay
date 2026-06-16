@@ -5,7 +5,6 @@ import path from "node:path";
 import { buildMeta } from "../../../core/job/meta.js";
 import { listJobs } from "../job/job-store.js";
 
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
@@ -302,6 +301,7 @@ export async function deleteDispatchFile(hubRoot, dispatchId) {
 
 // ── worker-dispatch ──
 import { realpath } from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 import { getProject } from "../hub/hub-registry.js";
 
 function dispatchEnabled() {

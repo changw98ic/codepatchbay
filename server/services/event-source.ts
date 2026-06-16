@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { getProject } from "./hub/hub-registry.js";
 import { createJob as createJobStore } from "./job/job-store.js";
@@ -15,7 +16,6 @@ const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
 const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 
-type AnyRecord = Record<string, any>;
 
 function controlRoot(cpbRoot, { hubRoot, controlRoot: explicitControlRoot }: AnyRecord = {}) {
   const root = explicitControlRoot || hubRoot || cpbRoot;

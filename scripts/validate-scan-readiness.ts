@@ -21,6 +21,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AnyRecord } from "../shared/types.js";
 
 import { AcpPool } from "../server/services/acp/acp-pool.js";
 import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub/hub-queue.js";
@@ -28,7 +29,6 @@ import { resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { assertProviderAvailable, ProviderQuotaError } from "../server/services/provider-quota.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-type AnyRecord = Record<string, any>;
 type CliOptions = {
   live: boolean;
   hubRoot: string | null;

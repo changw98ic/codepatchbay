@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { AnyRecord } from "../../../shared/types.js";
 import {
   checkPermission,
   classifyDeleteRisk,
@@ -23,7 +24,6 @@ import {
 import { buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 
-type AnyRecord = Record<string, any>;
 
 // Permission matrix integration (Stage 3 / #13)
 let _permCheck: any = checkPermission;

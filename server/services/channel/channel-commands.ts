@@ -1,6 +1,7 @@
 import { detectSecretInput, redactSecrets } from "../secret-policy.js";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 import { runtimeDataRoot } from "../runtime.js";
 import { resolveHubRoot } from "../hub/hub-registry.js";
 
@@ -308,7 +309,6 @@ export function parseChannelCommand(input) {
 // channel-policy (formerly channel-policy.ts)
 // ============================================================
 
-type AnyRecord = Record<string, any>;
 
 function channelPolicyRoot(cpbRoot, options: Record<string, any> = {}) {
   if (options.controlRoot) return path.resolve(options.controlRoot);

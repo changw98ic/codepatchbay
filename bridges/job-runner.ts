@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runCommandTree } from "../core/runtime/process-tree.js";
 import path from "node:path";
+import { AnyRecord } from "../shared/types.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import {
   acquireLease,
@@ -21,7 +22,6 @@ import {
 } from "../server/services/infra.js";
 import { pinSessionToJob } from "../core/engine/session-pin.js";
 
-type AnyRecord = Record<string, any>;
 type GuardedError = Error & { guardResult?: AnyRecord };
 type ChildResult = {
   exitCode: number;

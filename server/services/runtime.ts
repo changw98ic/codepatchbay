@@ -67,6 +67,7 @@ export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHu
 
 // ── runtime-health ──
 import { readFile } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 import { inspectCurrentRelease } from "./release/release-store.js";
 import { loadQueue } from "./hub/hub-queue.js";
 import { readLeaderStatus } from "../orchestrator/leader-lock.js";
@@ -74,7 +75,6 @@ import { readJobsIndex } from "./job/job-store.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event/event-store.js";
 import { readLease, isLeaseStale } from "./infra.js";
 
-type AnyRecord = Record<string, any>;
 type RuntimeJob = AnyRecord & {
   jobId?: string;
   project?: string;

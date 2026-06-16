@@ -1,7 +1,7 @@
+import { AnyRecord } from "../../shared/types.js";
 import { mergeRoutePolicy, normalizeRoute } from "../../core/triage/schema.js";
 import { classifyIssueRules } from "../../core/triage/rules.js";
 
-type AnyRecord = Record<string, any>;
 
 function stripJsonFence(raw) {
   return String(raw || "")

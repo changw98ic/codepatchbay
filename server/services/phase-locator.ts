@@ -1,11 +1,11 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 import { resolveProjectDataRoot } from "./runtime.js";
 import { getJob } from "./job/job-store.js";
 import { getProject, resolveHubRoot } from "./hub/hub-registry.js";
 import { getWorkflow } from "../../core/workflow/definition.js";
 
-type AnyRecord = Record<string, any>;
 
 function validateName(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {

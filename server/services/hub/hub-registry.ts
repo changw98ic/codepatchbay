@@ -21,7 +21,6 @@ const SAFE_GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const SAFE_GITHUB_REPO = /^[A-Za-z0-9._-]+$/;
 const REGISTRY_LOCK_TTL_MS = 30_000;
 
-type AnyRecord = Record<string, any>;
 
 export const DEFAULT_GITHUB_TRIGGERS = [
   { event: "issues.labeled", label: "cpb", workflow: "standard" },
@@ -360,6 +359,7 @@ export async function hubStatus(hubRoot) {
 // ─── hub-runtime.ts ─────────────────────────────────────────────────────────
 
 import { openSync, readSync, closeSync, writeSync, fstatSync } from "node:fs";
+import { AnyRecord } from "../../../shared/types.js";
 
 const RUNTIME_VERSION = "0.2.0";
 

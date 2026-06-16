@@ -11,6 +11,7 @@
 import { runPhase } from "./run-phase.js";
 import { readFile as _readFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { resolveSemanticPhases } from "./phase-policy.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
@@ -35,7 +36,6 @@ import {
 import { decomposeTaskToChecklistItems } from "../workflow/checklist-decomposer.js";
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
-type AnyRecord = Record<string, any>;
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);

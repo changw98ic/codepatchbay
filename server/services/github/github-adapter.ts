@@ -1,5 +1,6 @@
 // Merged from: git-platform-adapter.ts, git-adapters/github.ts, github-triggers.ts, github-events.ts
 
+import { AnyRecord } from "../../../shared/types.js";
 import { isValidPlatform, validateGitPlatformAdapter } from "../../../core/contracts/git-platform.js";
 import { BOUNDARY_VERSION, validateTransportResult } from "../../../core/contracts/git-platform.js";
 import { resolveGithubTransport } from "./github-api.js";
@@ -177,7 +178,6 @@ export function matchGithubTrigger(event, rules = DEFAULT_GITHUB_TRIGGERS) {
 // github-events.ts exports
 // ============================================================
 
-type AnyRecord = Record<string, any>;
 
 function ignored(event, reason) {
   return {

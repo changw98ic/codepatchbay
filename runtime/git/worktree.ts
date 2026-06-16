@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 const REQUIRED_IGNORES = [
   ".env",
@@ -30,7 +31,6 @@ const BASELINE_ENV = {
   GIT_COMMITTER_NAME: "CodePatchbay Supervisor",
   GIT_COMMITTER_EMAIL: "cpb-supervisor@local.invalid",
 };
-type AnyRecord = Record<string, any>;
 type RunResult = {
   code: number | null;
   stdout: string;

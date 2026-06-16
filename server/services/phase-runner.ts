@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
 import { getJob, listJobsFromIndex } from "./job/job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
 import { resolveProjectDataRoot } from "./runtime.js";
 
-type AnyRecord = Record<string, any>;
 type RunChildResult = { exitCode: number; stdout: string; error?: any };
 const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

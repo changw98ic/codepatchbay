@@ -1,11 +1,11 @@
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event/event-store.js";
 
 const DEFAULT_MAX_BYTES = 8192;
 
-type AnyRecord = Record<string, any>;
 
 export const HOOK_POINTS = Object.freeze({
   PRE_PLAN: "pre-plan",

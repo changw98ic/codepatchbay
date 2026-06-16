@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { FailureKind, failure, isValidFailureKind } from "../core/contracts/failure.js";
 import { runJob } from "../core/engine/run-job.js";
@@ -10,7 +11,6 @@ import { materializeJob } from "../server/services/event/event-store.js";
 import { jobToPipelineState } from "../server/services/job/job-projection.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";

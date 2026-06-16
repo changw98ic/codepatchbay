@@ -1,7 +1,7 @@
+import { AnyRecord } from "../../shared/types.js";
 import { FailureKind } from "../../core/contracts/failure.js";
 import { mapChecklistRoutingLabel } from "../../core/workflow/acceptance-checklist.js";
 
-type AnyRecord = Record<string, any>;
 
 const MAX_RETRIES: Record<string, number> = {
   runtime_interrupted: 2,

@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AnyRecord } from "../shared/types.js";
 
 import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
@@ -26,7 +27,6 @@ const CPB_EXECUTOR_ROOT = resolveExecutorRoot({
   fallbackRoot: path.join(__dirname, ".."),
 });
 export const AGENT_OUTAGE_EXIT_CODE = 2;
-type AnyRecord = Record<string, any>;
 
 function numericOption(value: unknown, fallback: number) {
   const parsed = Number(value);

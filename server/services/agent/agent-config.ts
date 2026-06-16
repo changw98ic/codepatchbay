@@ -1,6 +1,7 @@
 // ── agent-config ──
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 
 /**
  * Agent config service -- reads hub-level and project-level agent/variant config.
@@ -9,7 +10,6 @@ import path from "node:path";
  */
 
 const HUB_CONFIG_FILE = "config.json";
-type AnyRecord = Record<string, any>;
 
 async function readJson(filePath: string): Promise<AnyRecord> {
   try {

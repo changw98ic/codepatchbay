@@ -1,11 +1,11 @@
 import { mkdir, readFile, writeFile, rm, rename } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { AnyRecord } from "../../shared/types.js";
 import { writeJsonAtomic } from "../../shared/fs-utils.js";
 
 const DEFAULT_TTL_MS = 60_000;
 const RENEW_INTERVAL_MS = 20_000;
-type AnyRecord = Record<string, any>;
 
 export class LeaderLock {
   lockDir: string;

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { AnyRecord } from "../../shared/types.js";
 import {
   AcpPool,
   appendHistory,
@@ -34,7 +35,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKER_PATH = path.resolve(__dirname, "../worker/managed-worker.js");
-type AnyRecord = Record<string, any>;
 
 function parseArgs(argv: string[]) {
   const opts: AnyRecord = {

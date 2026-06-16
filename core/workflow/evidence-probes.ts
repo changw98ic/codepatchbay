@@ -1,4 +1,4 @@
-type AnyRecord = Record<string, any>;
+import { AnyRecord } from "../../shared/types.js";
 
 /**
  * Evidence observation validation result.

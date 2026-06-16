@@ -11,12 +11,12 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { runJob } from "../core/engine/run-job.js";
 import { validateChecklistDagCoverage } from "../core/workflow/acceptance-checklist.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 function jsonEnvelope(data: AnyRecord) {
   return "```json\n" + JSON.stringify(data, null, 2) + "\n```";

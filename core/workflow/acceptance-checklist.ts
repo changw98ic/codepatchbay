@@ -1,7 +1,7 @@
+import { AnyRecord } from "../../shared/types.js";
 import { validateEvidenceObservation } from "./evidence-probes.js";
 import { FailureKind } from "../contracts/failure.js";
 
-type AnyRecord = Record<string, any>;
 
 export function mapChecklistRoutingLabel(label: string, context: AnyRecord = {}): { kind: string; action: string; retryPhase: string | null; requiresFixScope: boolean; retryable: boolean } {
   const fixScope: string[] = Array.isArray(context.fixScope) ? context.fixScope : [];

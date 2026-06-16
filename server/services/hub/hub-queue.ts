@@ -146,7 +146,6 @@ export function recoverCodegraphUnavailable(entries, retryMs) {
 
 // ─── hub-queue.ts ───────────────────────────────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -975,6 +974,7 @@ export async function autoEnqueueSyncedIssues(hubRoot, cpbRoot, projectId, { cre
 // ─── inbox-mail.ts ──────────────────────────────────────────────────────────
 
 import { readdir } from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 
 const SCHEMA = "cpb.inbox-mail.v1";
 const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);

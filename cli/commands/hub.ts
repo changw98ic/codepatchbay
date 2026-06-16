@@ -1,4 +1,4 @@
-type AnyRecord = Record<string, any>;
+import { AnyRecord } from "../../shared/types.js";
 
 export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) {
   const sub = args[0] || "status";

@@ -6,10 +6,10 @@
  * no I/O, no side effects, no external dependencies.
  */
 
+import { AnyRecord } from "../../shared/types.js";
 import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
-type AnyRecord = Record<string, any>;
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
 
 /**

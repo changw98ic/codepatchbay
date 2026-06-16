@@ -2,6 +2,7 @@ import { readFile, mkdir, writeFile, rename, readdir, stat } from "node:fs/promi
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { loadRegistry, saveRegistry } from "./hub/hub-registry.js";
 
 const VALID_STATES = new Set(["indexed", "stale", "failed", "indexing", "unmerged"]);
@@ -147,7 +148,6 @@ export function formatProjectIndexLine(idx) {
 // ── project-pollution (inlined) ──
 
 const TEST_VISIBILITY = new Set(["test", "fixture", "generated"]);
-type AnyRecord = Record<string, any>;
 const POLLUTION_NAME_PATTERNS = [
   { pattern: /fake-repo/i, reason: "fake-repo name" },
   { pattern: /-test$/i, reason: "test-suffix name" },

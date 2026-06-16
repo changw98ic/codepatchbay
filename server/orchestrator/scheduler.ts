@@ -1,3 +1,4 @@
+import { AnyRecord } from "../../shared/types.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
@@ -17,7 +18,6 @@ import { projectCapabilityMapGate } from "../services/project/project-index.js";
 import { checkCodeGraphReady } from "../services/infra.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();

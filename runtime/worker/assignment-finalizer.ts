@@ -6,9 +6,9 @@
  */
 
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { finalizeSuccessfulQueueEntry, resolveGithubTransport } from "../../bridges/runtime-services.js";
 import { writeJsonOnce } from "../../shared/fs-utils.js";
-type AnyRecord = Record<string, any>;
 
 export async function maybeFinalizeSuccessfulAssignment({
   cpbRoot,

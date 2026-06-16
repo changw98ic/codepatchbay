@@ -277,6 +277,7 @@ export function assertReviewBudget(session) {
 // ─── review-bundle.ts ─────────────────────────────────────────────
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../../shared/types.js";
 import { readEventsReadOnly, materializeJob } from "../event/event-store.js";
 import { buildArtifactIndex } from "../job/job-projection.js";
 import { parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
@@ -545,7 +546,6 @@ import { readEventsReadOnly as readEventsReadOnlyForLoop, appendEvent, checkpoin
 import { enqueue, updateEntry } from "../hub/hub-queue.js";
 import { updateJobsIndexEntry } from "../job/job-store.js";
 
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();

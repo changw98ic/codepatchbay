@@ -7,6 +7,7 @@ import { access } from "node:fs/promises";
 import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 
 import { executeInstallPlan } from "../../core/setup/install-plan.js";
 import { buildChildEnv } from "../../core/policy/child-env.js";
@@ -210,7 +211,6 @@ export async function installBin({ target, executorRoot }) {
 
 // ── apply-variant (from apply-variant.ts) ──────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
   for (const name of names) {

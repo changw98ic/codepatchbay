@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, writeFile, mkdtemp, rm, chmod } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../../shared/types.js";
 import { appendEvent, readEvents } from "../event/event-store.js";
 import { getJob } from "../job/job-store.js";
 import { buildCodePatchBayPrBody } from "../pr-body.js";
@@ -15,7 +16,6 @@ import { redactSecrets } from "../secret-policy.js";
 
 const execFileAsync = promisify(execFileCb);
 
-type AnyRecord = Record<string, any>;
 type LooseRecord = Record<string, any>;
 
 // ============================================================

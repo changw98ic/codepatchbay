@@ -4,6 +4,7 @@ import { createSign, createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 import { redactSecrets } from "../secret-policy.js";
 
 // ============================================================
@@ -12,7 +13,6 @@ import { redactSecrets } from "../secret-policy.js";
 
 const SCHEMA_VERSION = 1;
 const PERMISSION_LEVELS = new Set(["read", "write"]);
-type AnyRecord = Record<string, any>;
 
 export const DEFAULT_GITHUB_APP_PERMISSIONS = {
   metadata: "read",

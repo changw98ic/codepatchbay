@@ -12,6 +12,7 @@
 
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../shared/types.js";
 import {
   buildPlannerPrompt,
   buildExecutorPrompt,
@@ -160,7 +161,6 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 
 // --- ACP runner ---
 
-type AnyRecord = Record<string, any>;
 
 async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
   const { spawn } = await import("node:child_process");

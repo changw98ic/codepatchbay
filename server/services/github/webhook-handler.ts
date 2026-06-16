@@ -4,6 +4,7 @@ import {
   verifyGithubWebhookSignature,
   resolveGithubTransport,
 } from "./github-api.js";
+import { AnyRecord } from "../../../shared/types.js";
 import { normalizeGithubWebhookEvent, matchGithubTrigger } from "./github-adapter.js";
 import { createGithubIssueQueueJob } from "../event/event-source.js";
 import { listProjects } from "../hub/hub-registry.js";
@@ -13,7 +14,6 @@ import {
 import { parseChannelCommand, channelPolicyRequest, enforceChannelPolicy } from "../channel/channel-commands.js";
 import { loadQueue, updateEntry } from "../hub/hub-queue.js";
 
-type AnyRecord = Record<string, any>;
 
 export interface WebhookRequest {
   rawBody: Buffer;

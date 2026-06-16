@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 import { FailureKind } from "../../core/contracts/failure.js";
 import { writeJsonAtomic } from "../../shared/fs-utils.js";
 import { createLogger } from "../../shared/logger.js";
@@ -29,7 +30,6 @@ const WAITLESS_LOG_PATTERNS = [
   /\bENOENT\b/,
 ];
 
-type AnyRecord = Record<string, any>;
 
 function resolveProgressThresholdMs(value: unknown, fallback: number) {
   if (value === undefined || value === null || value === "") return fallback;

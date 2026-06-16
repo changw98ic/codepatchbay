@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -609,7 +610,6 @@ export async function releaseLease(
 
 // ── concurrency-limits (from concurrency-limits.ts) ────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 export const DEFAULT_MAX_ACTIVE_PER_PROJECT = Number(process.env.CPB_HUB_MAX_ACTIVE_PER_PROJECT || 2);
 export const DEFAULT_ACP_PROVIDER_MAX = Number(process.env.CPB_ACP_POOL_PROVIDER_MAX || 3);

@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 
 // ── knowledge-policy ──────────────────────────────────────────────────
 
@@ -238,7 +239,6 @@ export async function ensureKnowledgePaths(sourcePath: string, sessionId: string
 // ── knowledge-promotion ───────────────────────────────────────────────
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();

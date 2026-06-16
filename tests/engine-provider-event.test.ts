@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { appendEvent, materializeJob, readEvents } from "../server/services/event/event-store.js";
@@ -19,7 +20,6 @@ import {
 import { resolveTaskRoute } from "../core/workflow/auto-route.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";

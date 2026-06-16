@@ -4,7 +4,6 @@ import path from "node:path";
 import { assertExecutorRoot, readExecutorPackage, REQUIRED_EXECUTOR_FILES } from "../setup.js";
 
 export const RELEASE_METADATA_FORMAT_VERSION = 1;
-type AnyRecord = Record<string, any>;
 
 const REQUIRED_METADATA_FIELDS = [
   "metadataVersion", "releaseId", "sourcePath", "installedPath",
@@ -515,6 +514,7 @@ export async function selectRelease({ releaseId, destRoot, env = process.env, no
 
 // ── release-gc ──
 import { lstat as lstatFn, readdir as readdirFn, readFile as readFileFn, rm as rmFn, stat as statFn } from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 import { listJobs } from "../job/job-store.js";
 
 async function gcExists(p) {

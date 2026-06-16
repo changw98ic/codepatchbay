@@ -5,7 +5,6 @@ import { resolveKnowledgePath } from "../knowledge/knowledge.js";
 // ── profile-loader ────────────────────────────────────────────────────
 
 const PROFILES_DIR = "profiles";
-type AnyRecord = Record<string, any>;
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -471,6 +470,7 @@ function updateFrontmatterStatus(content: string, newStatus: string, reviewer: a
 // ── knowledge-compose ─────────────────────────────────────────────────
 
 import fs from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 import {
   PROMPT_COMPOSITION_ORDER,
 } from "../knowledge/knowledge.js";

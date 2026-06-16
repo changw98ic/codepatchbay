@@ -16,6 +16,7 @@ import { execFile as _execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import chokidar from "chokidar";
 import { poolExhaustedJob, releaseManagedAcpWorktree, stopManagedAcpPool } from "../../bridges/runtime-services.js";
 import { createLogger } from "../../shared/logger.js";
@@ -30,7 +31,6 @@ const execFileAsync = promisify(_execFile);
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
 const CANCEL_POLL_MS = 1_000;
-type AnyRecord = Record<string, any>;
 
 function parseArgs(argv: string[]) {
   const opts: AnyRecord = {};

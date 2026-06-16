@@ -1,4 +1,5 @@
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import {
   dispatchForPhase as coreDispatchForPhase,
   getWorkflow as getCoreWorkflow,
@@ -8,7 +9,6 @@ import {
   roleForPhase as coreRoleForPhase,
 } from "../../core/workflow/definition.js";
 
-type AnyRecord = Record<string, any>;
 type CoreWorkflow = ReturnType<typeof getCoreWorkflow>;
 type ServerWorkflow = CoreWorkflow & AnyRecord;
 

@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AnyRecord } from "../../../shared/types.js";
 import { AcpClient, parseToolPolicy, resolveAcpAuditFile, resolveWriteAllowPaths } from "./acp-client.js";
 import { applyVariantToEnv, resolveVariantConfig } from "../setup.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../../core/agents/session-cache.js";
@@ -16,7 +17,6 @@ import {
 import { getProviderAdapter } from "../provider-adapters.js";
 
 let _registryCache: any = null;
-type AnyRecord = Record<string, any>;
 
 /**
  * Compound key for persistent client isolation.
