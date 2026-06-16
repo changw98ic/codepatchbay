@@ -149,18 +149,8 @@ async function main() {
     return 1;
   }
 
-  // Resolve per-project runtime root from hub registry for project-scoped commands
-  const MIGRATION_COMMANDS = new Set(["doctor", "version"]);
-  if (!MIGRATION_COMMANDS.has(cmd)) {
-    try {
-      const { assertNoLegacyRuntimeData } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "runtime-migration-guard.js"));
-      await assertNoLegacyRuntimeData(CPB_ROOT);
-    } catch (err) {
-      if (err?.code !== "ENOENT") throw err;
-    }
-  }
-
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
+    // Resolve per-project runtime root from hub registry for project-scoped commands
     const PROJECT_COMMANDS = new Set(["pipeline", "run", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect", "hub"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       let projectArg = cmdArgs.find((a) => !a.startsWith("-"));

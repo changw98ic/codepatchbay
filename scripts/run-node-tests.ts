@@ -85,12 +85,21 @@ if (allFiles.length === 0) {
 const integrationFiles = allFiles.filter((f) => f.startsWith("tests/integration/"));
 const unitFiles = allFiles.filter((f) => !f.startsWith("tests/integration/"));
 
+const isolatedUnitFiles = new Set([
+  // Real process-group teardown test. It is unit-scoped source-wise, but it
+  // depends on OS scheduler timing and must not compete with the full unit
+  // suite's child-process load.
+  "tests/process-tree.test.js",
+]);
+
 const isolatedIntegrationFiles = new Set([
   "tests/integration/acp-test-agent.test.js",
   "tests/integration/managed-worker.test.js",
   "tests/integration/worker-supervisor.test.js",
   "tests/integration/reconcile.test.js",
 ]);
+const isolatedUnitTestFiles = unitFiles.filter((f) => isolatedUnitFiles.has(f));
+const parallelUnitFiles = unitFiles.filter((f) => !isolatedUnitTestFiles.includes(f));
 const isolatedFiles = integrationFiles.filter((f) => isolatedIntegrationFiles.has(f));
 const parallelIntegrationFiles = integrationFiles.filter((f) => !isolatedFiles.includes(f));
 
@@ -101,8 +110,11 @@ const integrationOnly = process.argv.includes("--integration");
 
 try {
   if (unitOnly) {
-    if (unitFiles.length > 0) {
-      await runTests(unitFiles, { label: "unit tests" });
+    if (parallelUnitFiles.length > 0) {
+      await runTests(parallelUnitFiles, { label: "unit tests" });
+    }
+    if (isolatedUnitTestFiles.length > 0) {
+      await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });
     }
   } else if (integrationOnly) {
     // Parallel-safe integration tests
@@ -115,9 +127,13 @@ try {
     }
   } else {
     // Default: run everything
-    // Unit tests: run in parallel (fast)
-    if (unitFiles.length > 0) {
-      await runTests(unitFiles, { label: "unit tests" });
+    // Unit tests: run in parallel, except real-process tests that need
+    // isolation from child-process load.
+    if (parallelUnitFiles.length > 0) {
+      await runTests(parallelUnitFiles, { label: "unit tests" });
+    }
+    if (isolatedUnitTestFiles.length > 0) {
+      await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });
     }
     // Parallel-safe integration tests
     if (parallelIntegrationFiles.length > 0) {
