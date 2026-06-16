@@ -144,7 +144,7 @@ function runChild(
   options: {
     signal?: AbortSignal;
     env?: NodeJS.ProcessEnv;
-    onSpawn?: (child: { pid: number }) => Promise<any> | any;
+    onSpawn?: (child: { pid: number }) => Promise<void> | void;
   } = {},
 ): Promise<ChildResult> {
   const guardResult = classifyDeleteRisk(command, args, { cwd, repoRoot: cwd });

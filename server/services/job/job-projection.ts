@@ -244,7 +244,7 @@ function warningForBrokenArtifact(entry: Record<string, any>) {
 async function parseVerdictEntry(entry: Record<string, any> | null | undefined) {
   if (!entry || entry.broken || !entry.path) return null;
   try {
-    const envelope: any = parseVerdictEnvelope(await readFile(entry.path, "utf8"));
+    const envelope: Record<string, any> = parseVerdictEnvelope(await readFile(entry.path, "utf8")) as Record<string, any>;
     return {
       status: envelope.status,
       confidence: envelope.confidence ?? null,
@@ -270,7 +270,7 @@ async function parseVerdictEntry(entry: Record<string, any> | null | undefined) 
 }
 
 export async function buildJobArtifactDetail(cpbRoot: string, project: string, jobId: string, { dataRoot, wikiDir }: { dataRoot?: string; wikiDir?: string } = {}) {
-  const artifactIndex = await (buildArtifactIndex as any)(cpbRoot, project, jobId, { dataRoot, wikiDir });
+  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot, wikiDir });
   const verdictEntry = [...artifactIndex.entries].reverse().find((entry) => entry.kind === "verdict");
   const verdict = await parseVerdictEntry(verdictEntry);
   const warnings = artifactIndex.entries

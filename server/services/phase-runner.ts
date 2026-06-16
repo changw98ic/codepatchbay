@@ -9,7 +9,7 @@ import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as 
 import { checkPermission } from "./permission-matrix.js";
 import { resolveProjectDataRoot } from "./runtime.js";
 
-type RunChildResult = { exitCode: number; stdout: string; error?: any };
+type RunChildResult = { exitCode: number; stdout: string; error?: Error | null };
 const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function roleForBridge(scriptPath: string) {

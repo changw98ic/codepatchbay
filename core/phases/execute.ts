@@ -87,14 +87,14 @@ export async function runExecute(ctx: Record<string, any>) {
     });
   }
 
-  const parsed: Record<string, any> = parseExecutorJson(agentResult.output) as any;
+  const parsed: Record<string, unknown> = parseExecutorJson(agentResult.output) as Record<string, unknown>;
   if (!parsed.ok) {
     return phaseFailed({
       phase: "execute",
       failure: failure({
         kind: FailureKind.AGENT_CONTRACT_INVALID,
         phase: "execute",
-        reason: parsed.reason,
+        reason: parsed.reason as string,
         retryable: true,
         stderrSnippet: agentResult.output.slice(-500),
         cause: { rawOutput: agentResult.output.slice(0, 2000) },
@@ -108,8 +108,9 @@ export async function runExecute(ctx: Record<string, any>) {
 
   // Build execution map connecting changed files to checklist items
   const normalizedChangedFiles = normalizeRepoRelativePaths(changedFiles);
+  const checklistMapping = (parsed.checklistMapping || []) as Array<Record<string, unknown>>;
   const mappedFiles = normalizeRepoRelativePaths(
-    (parsed.checklistMapping || []).flatMap((entry: Record<string, any>) => entry.changedFiles || []),
+    checklistMapping.flatMap((entry) => (entry.changedFiles || []) as string[]),
   );
   const executionMap = {
     schemaVersion: 1,
@@ -132,14 +133,14 @@ export async function runExecute(ctx: Record<string, any>) {
 
   const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
-  const validation: Record<string, any> = validateDeliverable(deliverable, { ...ctx, changedFiles }) as any;
+  const validation = validateDeliverable(deliverable, { ...ctx, changedFiles }) as { ok: boolean; reason?: string; kind?: string; retryable?: boolean };
   if (!validation.ok) {
     return phaseFailed({
       phase: "execute",
       failure: failure({
-        kind: validation.kind || FailureKind.ARTIFACT_INVALID,
+        kind: (validation.kind || FailureKind.ARTIFACT_INVALID) as string,
         phase: "execute",
-        reason: validation.reason,
+        reason: validation.reason ?? "deliverable validation failed",
         retryable: validation.retryable ?? false,
         cause: { rawOutput: deliverable.slice(0, 2000) },
       }),
@@ -175,7 +176,7 @@ async function computeChangedFiles(cwd: string, before: string[]) {
   }
 }
 
-function getRequiredArtifact(previousResults: any[], kind: string) {
+function getRequiredArtifact(previousResults: Array<{ artifact?: { kind?: string } & Record<string, unknown> }>, kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) {
       return previousResults[i].artifact;

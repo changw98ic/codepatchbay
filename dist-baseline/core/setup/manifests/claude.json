@@ -1,0 +1,53 @@
+{
+  "id": "claude",
+  "displayName": "Claude Code",
+  "vendor": "Anthropic",
+  "binary": "claude",
+  "tier": 1,
+  "recommended": true,
+  "roles": ["executor", "remediator"],
+  "capabilities": ["repo_inspect", "file_edit", "shell", "large_context"],
+  "sourceUrl": "https://code.claude.com/docs/en/installation",
+  "install": {
+    "native": {
+      "label": "native installer",
+      "command": "curl -fsSL https://claude.ai/install.sh | bash",
+      "sourceUrl": "https://code.claude.com/docs/en/quickstart",
+      "notes": ["Shows a fetched installer command; require local confirmation before executing."]
+    },
+    "brew": {
+      "label": "Homebrew",
+      "command": "brew install --cask claude-code",
+      "sourceUrl": "https://code.claude.com/docs/en/quickstart"
+    },
+    "npm": {
+      "label": "npm",
+      "command": "npm install -g @anthropic-ai/claude-code",
+      "pinnedCommandTemplate": "npm install -g @anthropic-ai/claude-code@{version}",
+      "sourceUrl": "https://support.claude.com/en/articles/14552382-your-first-day-in-claude-code",
+      "notes": ["Do not use sudo with global npm installs."]
+    }
+  },
+  "upgrade": {
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade --cask claude-code",
+      "sourceUrl": "https://code.claude.com/docs/en/quickstart"
+    },
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g @anthropic-ai/claude-code",
+      "sourceUrl": "https://support.claude.com/en/articles/14552382-your-first-day-in-claude-code"
+    }
+  },
+  "auth": {
+    "methods": ["browser_login", "console", "bedrock", "vertex"],
+    "connectCommand": "claude",
+    "statusCommand": "claude doctor"
+  },
+  "adapter": {
+    "protocol": "acp",
+    "command": "claude-agent-acp",
+    "npxPkg": "@agentclientprotocol/claude-agent-acp"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cpb": {
+      "command": "node",
+      "args": ["${CPB_ROOT}/skills/claude-code/cpb-mcp-server.ts"],
+      "env": {
+        "CPB_ROOT": "/path/to/codepatchbay"
+      }
+    }
+  }
+}

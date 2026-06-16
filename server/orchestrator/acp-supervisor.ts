@@ -1,6 +1,7 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AcpPool } from "../services/acp/acp-pool.js";
 import { AnyRecord } from "../../shared/types.js";
 
 const DEFAULT_SUPERVISOR_AGENT = "codex";
@@ -26,11 +27,11 @@ function resolveSupervisorProviderKey(agent: string, env: Record<string, any> = 
 export class AcpSupervisor {
   cpbRoot: string;
   hubRoot: string;
-  pool: any;
+  pool: AcpPool | null;
   supervisorAgent: string;
   supervisorProviderKey: string;
   timeoutMs: number;
-  _poolPromise: Promise<any> | null;
+  _poolPromise: Promise<AcpPool | null> | null;
   decisionsDir: string;
   statePath: string;
   state: AnyRecord;
@@ -82,7 +83,7 @@ export class AcpSupervisor {
     this._poolPromise = (async () => {
       try {
         const { getManagedAcpPool } = await import("../services/acp/acp-pool.js");
-        this.pool = getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true });
+        this.pool = (getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true }) as AcpPool | undefined) ?? null;
         return this.pool;
       } catch {
         this._poolPromise = null;

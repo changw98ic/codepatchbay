@@ -1,0 +1,15 @@
+{
+  "name": "fake-acp",
+  "displayName": "Fake ACP Agent",
+  "command": "node",
+  "fallbackCommand": "node",
+  "fallbackArgs": ["tests/fixtures/test-acp-agent.js"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
+  "defaultRoles": [],
+  "stability": "test",
+  "envPrefix": "CPB_ACP_FAKE_ACP",
+  "description": "Deterministic ACP-compatible fake provider for CPB full-chain tests",
+  "lifecycle": "one-shot",
+  "poolLimit": 1
+}

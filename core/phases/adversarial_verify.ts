@@ -73,7 +73,7 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
     });
   }
 
-  const verdict: Record<string, any> = parseVerifierJson(agentResult.output) as any;
+  const verdict: Record<string, unknown> = parseVerifierJson(agentResult.output) as Record<string, unknown>;
   if (!verdict.ok) {
     return phaseFailed({
       phase: "adversarial_verify",

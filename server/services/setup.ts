@@ -220,8 +220,8 @@ function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
   return undefined;
 }
 
-function normalizeVariant(requested: any): string {
-  return (requested || "").trim().toLowerCase();
+function normalizeVariant(requested: unknown): string {
+  return (typeof requested === "string" ? requested : "").trim().toLowerCase();
 }
 
 function resolveVariant(env: AnyRecord = process.env): string {

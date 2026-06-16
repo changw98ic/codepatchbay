@@ -111,13 +111,14 @@ async function askRunAuthCheck({ mode, questionFn }: Record<string, any> = {}) {
   return yes(await askQuestion("Run auth check? y/N ", questionFn));
 }
 
-function installationRecord(plan: AnyRecord, result: AnyRecord | null, error: any = null): AnyRecord {
+function installationRecord(plan: AnyRecord, result: AnyRecord | null, error: unknown = null): AnyRecord {
+  const err = error as Record<string, unknown> | null;
   return {
     agentId: plan.agent.id,
     method: plan.method,
-    status: error ? "failed" : "succeeded",
-    exitCode: error ? (Number.isInteger(error.code) ? error.code : null) : result?.code ?? 0,
-    error: error ? { message: error.message, code: error.code || null } : null,
+    status: err ? "failed" : "succeeded",
+    exitCode: err ? (Number.isInteger(err.code) ? err.code : null) : result?.code ?? 0,
+    error: err ? { message: err.message, code: err.code || null } : null,
   };
 }
 

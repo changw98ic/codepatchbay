@@ -161,7 +161,7 @@ export function matchGithubTrigger(event: AnyRecord, rules: AnyRecord[] = DEFAUL
     return {
       matched: true,
       workflow: rule.workflow || "standard",
-      planMode: (rule as any).planMode || null,
+      planMode: (rule as Record<string, unknown>).planMode || null,
       rule,
       reason,
     };

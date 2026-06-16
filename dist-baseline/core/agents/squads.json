@@ -1,0 +1,24 @@
+{
+  "squads": {
+    "frontend": {
+      "leader": "claude",
+      "members": ["claude", "codex"],
+      "strategy": "leader-first"
+    },
+    "backend": {
+      "leader": "codex",
+      "members": ["codex", "claude"],
+      "strategy": "leader-first"
+    },
+    "full-stack": {
+      "leader": "claude",
+      "members": ["claude", "codex"],
+      "strategy": "round-robin"
+    },
+    "review": {
+      "leader": "codex",
+      "members": ["codex", "claude"],
+      "strategy": "least-busy"
+    }
+  }
+}

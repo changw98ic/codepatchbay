@@ -1060,7 +1060,7 @@ async function main() {
     const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
     printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
     return 1;
-  } catch (err) {
+  } catch (err: any) {
     fail(`Unhandled error: ${err.message}`);
     try {
       await failCurrentJob(failure(`unhandled: ${err.message}`, {

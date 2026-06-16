@@ -25,7 +25,7 @@ async function statFile(filePath: string) {
   }
 }
 
-async function readFileOrNull(filePath: string, onSecretBlocked: ((event: any) => void) | null) {
+async function readFileOrNull(filePath: string, onSecretBlocked: ((event: Record<string, unknown>) => void) | null) {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, 'secret path read blocked');
     return null;

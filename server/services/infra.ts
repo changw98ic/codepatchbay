@@ -333,7 +333,7 @@ function leaseOwnerTokenFor(cpbRoot: string, leaseId: string, suppliedToken: str
   return suppliedToken ?? ownedLeaseTokens.get(leaseTokenKey(cpbRoot, leaseId));
 }
 
-function assertLeaseOwner(lease: AnyRecord, ownerToken: any) {
+function assertLeaseOwner(lease: AnyRecord, ownerToken: string | undefined) {
   if (lease.ownerToken !== undefined && lease.ownerToken !== ownerToken) {
     throw new Error("lease owner mismatch");
   }
@@ -446,7 +446,7 @@ async function acquireLeaseFileLock(file: string, { lockTtlMs }: AnyRecord = {})
   };
 }
 
-async function withLeaseLock(file: string, callback: () => Promise<any>, { lockTtlMs }: AnyRecord = {}) {
+async function withLeaseLock(file: string, callback: () => Promise<unknown>, { lockTtlMs }: AnyRecord = {}) {
   const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
   try {
     return await callback();

@@ -1,0 +1,17 @@
+{
+  "name": "{{name}}",
+  "displayName": "{{displayName}}",
+  "command": "{{command}}",
+  "fallbackCommand": "ollama",
+  "fallbackArgs": [],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
+  "defaultRoles": ["planner", "executor", "verifier", "reviewer", "remediator"],
+  "envPrefix": "CPB_ACP_{{NAME_UPPER}}",
+  "stability": "experimental",
+  "description": "{{description}}",
+  "provider": {
+    "type": "ollama",
+    "model": "{{model}}"
+  }
+}

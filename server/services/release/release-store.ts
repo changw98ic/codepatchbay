@@ -54,7 +54,7 @@ export function resolveReleaseStoreRoot({ destRoot, env = process.env }: AnyReco
   return path.join(cpbHome, "releases");
 }
 
-export function validateReleaseId(releaseId: any) {
+export function validateReleaseId(releaseId: unknown) {
   if (typeof releaseId !== "string" || releaseId.length === 0) {
     throw new Error("release id must be a non-empty string");
   }
@@ -96,7 +96,7 @@ function formatTimestampId(date: Date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
-function generateDefaultReleaseId(codeVersion: any, now: any) {
+function generateDefaultReleaseId(codeVersion: string | undefined, now: Date) {
   const stamp = formatTimestampId(now instanceof Date ? now : new Date());
   return `${codeVersion || "dev"}-${stamp}`;
 }

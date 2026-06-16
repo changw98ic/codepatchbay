@@ -163,7 +163,7 @@ async function projectInstructionsSection(wikiDir: string): Promise<string> {
   return `\n\n## Project Instructions\n${content}`;
 }
 
-function parseJsonEnv(name: string): any {
+function parseJsonEnv(name: string): Record<string, unknown> | null {
   const raw = process.env[name];
   if (!raw) return null;
   try {

@@ -23,7 +23,7 @@ export interface EvidenceValidation {
 
 const INVALID: EvidenceValidation = { valid: false, satisfied: false };
 
-function text(value: any) {
+function text(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 

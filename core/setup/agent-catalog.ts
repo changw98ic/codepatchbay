@@ -11,7 +11,7 @@ const BUILTIN_ORDER = new Map([
   ["reasonix", 50],
 ]);
 
-function clone(value: any) {
+function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 

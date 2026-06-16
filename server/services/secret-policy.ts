@@ -113,8 +113,8 @@ export function assertNoSecretInput(input: unknown): Record<string, any> {
   const detected = detectSecretInput(input);
   if (detected.matched) {
     const error = new Error(SECRET_INPUT_GUIDANCE);
-    (error as Error & { code?: string; detection?: any }).code = "SECRET_INPUT_REJECTED";
-    (error as Error & { code?: string; detection?: any }).detection = detected;
+    (error as Error & { code?: string; detection?: Record<string, unknown> }).code = "SECRET_INPUT_REJECTED";
+    (error as Error & { code?: string; detection?: Record<string, unknown> }).detection = detected;
     throw error;
   }
   return detected;
@@ -213,7 +213,7 @@ export function makeSecretBlockedEvent(artifactName: unknown, reason?: string): 
   };
 }
 
-export function notifySecretBlocked(onSecretBlocked: ((event: any) => void) | null, artifactName: unknown, reason?: string): Record<string, any> {
+export function notifySecretBlocked(onSecretBlocked: ((event: Record<string, unknown>) => void) | null, artifactName: unknown, reason?: string): Record<string, any> {
   const event = makeSecretBlockedEvent(artifactName, reason);
   if (typeof onSecretBlocked === "function") {
     onSecretBlocked(event);

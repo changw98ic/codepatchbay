@@ -45,7 +45,7 @@ function triageStrategyLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
   const scopes = r.protectedScopes || [];
-  const scopeNames = scopes.map((s: any) => {
+  const scopeNames = scopes.map((s: Record<string, unknown>) => {
     const sev = s.severity ? ` [${s.severity}]` : "";
     return `${s.scope}${sev}`;
   });
@@ -102,7 +102,7 @@ function planCacheLines(rc: LooseRecord | null | undefined) {
 function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   if (!rc?.finalDiffGuard) return [];
   const dg = rc.finalDiffGuard;
-  const scopes = (dg.protectedScopes || []).map((s: any) => s.scope || s);
+  const scopes = (dg.protectedScopes || []).map((s: Record<string, unknown> | string) => typeof s === "string" ? s : (s.scope || s));
   const gr = dg.guardResult || {};
   return [
     "",

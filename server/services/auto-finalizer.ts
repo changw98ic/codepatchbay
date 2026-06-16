@@ -192,7 +192,7 @@ function unsafeFiles(summary: Record<string, any>): Record<string, any>[] {
   ));
 }
 
-function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<string, any> = {}): any {
+function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<string, any> = {}): Record<string, unknown> {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   return normalizeRoute(
@@ -348,7 +348,7 @@ async function requeueProtectedDiffUpgrade({
   return upgraded;
 }
 
-function buildRoutingContext(entry: any, job: any, routeGuard: any = null): Record<string, any> {
+function buildRoutingContext(entry: Record<string, any>, job: Record<string, any>, routeGuard: Record<string, any> | null = null): Record<string, any> {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   let finalDiffGuard = null;
@@ -431,14 +431,16 @@ function testEvidenceFromVerdict(verdict: Record<string, any>): string[] {
   return [...new Set(lines)].slice(0, 8);
 }
 
-function verdictEvidenceForBody(verdict: any): Record<string, any> {
+function verdictEvidenceForBody(verdict: Record<string, unknown> | null): Record<string, unknown> {
   if (!verdict || typeof verdict !== "object") {
-    return { status: "pass", reason: "No structured verdict evidence was found" } as Record<string, any>;
+    return { status: "pass", reason: "No structured verdict evidence was found" };
   }
-  const out: Record<string, any> = {
+  const blocking = Array.isArray(verdict.blocking) ? verdict.blocking : undefined;
+  const blockingMissing = Array.isArray(verdict.blockingMissingInputs) ? verdict.blockingMissingInputs : undefined;
+  const out: Record<string, unknown> = {
     ...verdict,
     status: verdict.status || verdict.verdict || "unavailable",
-    blockingCount: verdict.blockingCount ?? verdict.blocking?.length ?? verdict.blockingMissingInputs?.length ?? undefined,
+    blockingCount: verdict.blockingCount ?? blocking?.length ?? blockingMissing?.length ?? undefined,
   };
   return out;
 }
@@ -550,7 +552,7 @@ async function finalizeAsReviewBundle({
       jobId,
       bundlePath,
       changedFiles: bundle.evidence.changedFiles,
-      verdict: (bundle.evidence.verdict as any)?.verdict || null,
+      verdict: (bundle.evidence.verdict as Record<string, unknown>)?.verdict || null,
     };
   } catch (err) {
     return reject("REVIEW_BUNDLE_FAILED", { jobId, error: err.message });

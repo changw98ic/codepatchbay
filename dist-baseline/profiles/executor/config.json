@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "write_paths": ["wiki/projects/*/outputs/deliverable-*"],
+    "deny_tools": [],
+    "deny_commands": false
+  },
+  "agent": {
+    "command": "claude-agent-acp",
+    "args": []
+  },
+  "acp": {
+    "profile": "headless"
+  }
+}

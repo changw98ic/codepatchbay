@@ -122,7 +122,7 @@ function requireCapabilityMap(project: Record<string, any>, sourceContext: Recor
   return maps;
 }
 
-function valuesToStrings(value: any): string[] {
+function valuesToStrings(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(valuesToStrings);
   if (typeof value === "string") return [value];
   if (value && typeof value === "object") {

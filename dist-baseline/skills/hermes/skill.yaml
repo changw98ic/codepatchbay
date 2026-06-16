@@ -1,0 +1,106 @@
+name: cpb
+version: "1.0.0"
+description: CodePatchbay pipeline orchestration with real-time streaming
+type: tool
+
+commands:
+  pipeline:
+    description: "Run a plan->execute->verify pipeline"
+    usage: "cpb pipeline <project> \"<task>\""
+    output: jobId
+
+  status:
+    description: "Check project/job status"
+    usage: "cpb status <project>"
+    output: jobState
+
+  stream:
+    description: "Start streaming event server"
+    usage: "cpb stream [--port PORT]"
+    output: streamUrl
+
+  jobs:
+    description: "List active jobs"
+    usage: "cpb jobs"
+    output: jobList
+
+  cancel:
+    description: "Cancel a running job"
+    usage: "cpb cancel <project> <jobId> \"<reason>\""
+    output: confirmation
+
+streaming:
+  transport: sse
+  url: "http://127.0.0.1:9741/stream"
+  format: ndjson
+  reconnect: true
+  reconnect_interval_ms: 3000
+
+  event_schema:
+    type: object
+    properties:
+      type:
+        type: string
+        enum:
+          - event
+          - wiki
+          - state
+          - ping
+      ts:
+        type: string
+        format: date-time
+      project:
+        type: string
+      jobId:
+        type: string
+      event:
+        type: object
+        properties:
+          type:
+            type: string
+            enum:
+              - job_created
+              - job_started
+              - job_completed
+              - job_failed
+              - job_blocked
+              - job_cancelled
+              - phase_started
+              - phase_completed
+              - phase_failed
+              - phase_retry
+              - phase_activity
+              - phase_result
+              - job_approved
+              - job_panic
+              - phase_hook_diagnostic
+          phase:
+            type: string
+          agent:
+            type: string
+          verdict:
+            type: string
+            enum:
+              - PASS
+              - FAIL
+              - PARTIAL
+
+data_endpoints:
+  server_info: "GET /"
+  jobs: "GET /jobs"
+  job_state: "GET /jobs/:project/:jobId"
+  wiki_file: "GET /wiki/:project/*path"
+
+workflow:
+  - step: Start stream server
+    action: "cpb stream --port 9741"
+  - step: Connect to SSE
+    action: "GET http://127.0.0.1:9741/stream"
+  - step: Enqueue pipeline
+    action: "cpb pipeline <project> \"<task>\""
+  - step: Monitor progress
+    action: "Receive phase_started/phase_completed/phase_failed events"
+  - step: Retrieve deliverable
+    action: "GET /wiki/:project/outputs/deliverable-<id>.md"
+  - step: Check verdict
+    action: "GET /wiki/:project/outputs/verdict-<id>.md"

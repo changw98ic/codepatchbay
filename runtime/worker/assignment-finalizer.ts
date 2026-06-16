@@ -67,8 +67,8 @@ export async function maybeFinalizeSuccessfulAssignment({
     }
 
     return finalizeResult;
-  } catch (err: any) {
-    log?.warn?.(`finalize failed: ${err.message}`);
+  } catch (err: unknown) {
+    log?.warn?.(`finalize failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

@@ -16,7 +16,7 @@ import { resolveHubRoot } from "../hub/hub-registry.js";
 const LOCK_MAX_ATTEMPTS = 10;
 const LOCK_BASE_DELAY_MS = 10;
 
-async function withFileLock(lockDir: string, fn: () => Promise<any>) {
+async function withFileLock<T>(lockDir: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       await mkdir(lockDir, { recursive: false });
@@ -574,8 +574,13 @@ export class ReviewLoopError extends Error {
   }
 }
 
-export function isReviewLoopError(error: any) {
-  return error instanceof ReviewLoopError || Boolean(error?.code && error?.statusCode);
+export function isReviewLoopError(error: unknown): boolean {
+  if (error instanceof ReviewLoopError) return true;
+  if (error && typeof error === "object") {
+    const rec = error as Record<string, unknown>;
+    return Boolean(rec.code && rec.statusCode);
+  }
+  return false;
 }
 
 function reviewLoopError(message: string, code: string, statusCode: number) {

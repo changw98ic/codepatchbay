@@ -1,0 +1,46 @@
+{
+  "id": "codex",
+  "displayName": "OpenAI Codex CLI",
+  "vendor": "OpenAI",
+  "binary": "codex",
+  "tier": 1,
+  "recommended": true,
+  "roles": ["planner", "verifier", "executor"],
+  "capabilities": ["repo_inspect", "file_edit", "shell", "verify", "pr_review"],
+  "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md",
+  "install": {
+    "npm": {
+      "label": "npm",
+      "command": "npm i -g @openai/codex",
+      "pinnedCommandTemplate": "npm i -g @openai/codex@{version}",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    },
+    "brew": {
+      "label": "Homebrew",
+      "command": "brew install --cask codex",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    }
+  },
+  "upgrade": {
+    "npm": {
+      "label": "npm upgrade",
+      "command": "npm update -g @openai/codex",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    },
+    "brew": {
+      "label": "Homebrew upgrade",
+      "command": "brew upgrade --cask codex",
+      "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md"
+    }
+  },
+  "auth": {
+    "methods": ["chatgpt", "api_key"],
+    "connectCommand": "codex",
+    "statusCommand": "codex auth status"
+  },
+  "adapter": {
+    "protocol": "acp",
+    "command": "codex-acp",
+    "npxPkg": "@zed-industries/codex-acp"
+  }
+}

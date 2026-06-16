@@ -449,7 +449,7 @@ function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean): 
   return lines.join("\n");
 }
 
-function updateFrontmatterStatus(content: string, newStatus: string, reviewer: any): string {
+function updateFrontmatterStatus(content: string, newStatus: string, reviewer: string | null | undefined): string {
   const parts = content.split("---");
   if (parts.length < 3) return content;
 
@@ -476,7 +476,7 @@ import {
 } from "../knowledge/knowledge.js";
 import { isSecretPath, notifySecretBlocked } from "../secret-policy.js";
 
-async function readFileOrNull(filePath: string, onSecretBlocked: any): Promise<string | null> {
+async function readFileOrNull(filePath: string, onSecretBlocked: ((event: Record<string, unknown>) => void) | null | undefined): Promise<string | null> {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, "secret path read blocked");
     return null;
