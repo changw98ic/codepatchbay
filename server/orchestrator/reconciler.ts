@@ -64,7 +64,7 @@ function compactStructuredValue(value: any, { maxItems = 8, maxChars = 500 }: Re
   );
 }
 
-function compactVerifierArtifact(artifact: any): AnyRecord | null {
+function compactVerifierArtifact(artifact: Record<string, any>): AnyRecord | null {
   if (!artifact || typeof artifact !== "object") return null;
   return {
     kind: artifact.kind || null,
@@ -76,7 +76,7 @@ function compactVerifierArtifact(artifact: any): AnyRecord | null {
   };
 }
 
-function compactVerifierVerdict(verdict: any) {
+function compactVerifierVerdict(verdict: Record<string, any>) {
   if (!verdict || typeof verdict !== "object") return null;
   const blocking = Array.isArray(verdict.blocking)
     ? compactStructuredValue(verdict.blocking, { maxItems: 8, maxChars: 500 })
@@ -103,7 +103,7 @@ function compactVerifierVerdict(verdict: any) {
   };
 }
 
-function verificationRetryContext(failure: any) {
+function verificationRetryContext(failure: Record<string, any>) {
   const cause = failure?.cause || {};
   const verdict = compactVerifierVerdict(cause.verdict || failure?.verdict);
   const artifact = compactVerifierArtifact(cause.artifact || failure?.artifact);
@@ -111,13 +111,13 @@ function verificationRetryContext(failure: any) {
   // Extract checklist retry state from checklistVerdict in failure cause
   const checklistVerdict = cause.verdict?.checklistVerdict || cause.checklistVerdict || null;
   const checklistItems = Array.isArray(checklistVerdict?.items) ? checklistVerdict.items : [];
-  const failedChecklistIds = checklistItems.filter((item: any) => item.result === "fail").map((item: any) => item.checklistId).filter(Boolean);
-  const uncheckedChecklistIds = checklistItems.filter((item: any) => item.result === "unchecked").map((item: any) => item.checklistId).filter(Boolean);
-  const passedChecklistIds = checklistItems.filter((item: any) => item.result === "pass").map((item: any) => item.checklistId).filter(Boolean);
-  const previousEvidenceRefs = checklistItems.filter((item: any) => item.result === "pass").flatMap((item: any) => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : []);
+  const failedChecklistIds = checklistItems.filter((item: Record<string, any>) => item.result === "fail").map((item: Record<string, any>) => item.checklistId).filter(Boolean);
+  const uncheckedChecklistIds = checklistItems.filter((item: Record<string, any>) => item.result === "unchecked").map((item: Record<string, any>) => item.checklistId).filter(Boolean);
+  const passedChecklistIds = checklistItems.filter((item: Record<string, any>) => item.result === "pass").map((item: Record<string, any>) => item.checklistId).filter(Boolean);
+  const previousEvidenceRefs = checklistItems.filter((item: Record<string, any>) => item.result === "pass").flatMap((item: Record<string, any>) => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : []);
   const checklistFixScope = [...new Set([
     ...(Array.isArray(checklistVerdict?.fixScope) ? checklistVerdict.fixScope : []),
-    ...checklistItems.flatMap((item: any) => Array.isArray(item.fixScope) ? item.fixScope : []),
+    ...checklistItems.flatMap((item: Record<string, any>) => Array.isArray(item.fixScope) ? item.fixScope : []),
   ].filter(Boolean))];
   const targetChecklistIds = [...new Set([...failedChecklistIds, ...uncheckedChecklistIds])];
   const lockedPassedChecklistIds = passedChecklistIds;
@@ -136,7 +136,7 @@ function verificationRetryContext(failure: any) {
   };
 }
 
-function summarizeBlockingForRetry(blocking: any): string[] {
+function summarizeBlockingForRetry(blocking: unknown): string[] {
   if (!Array.isArray(blocking) || blocking.length === 0) return [];
   return blocking.map((entry) => {
     if (typeof entry === "string") return `- ${entry}`;
@@ -150,7 +150,7 @@ function summarizeBlockingForRetry(blocking: any): string[] {
   });
 }
 
-function verifierRetryOutputChunk(failure: any) {
+function verifierRetryOutputChunk(failure: Record<string, any>) {
   const verification = verificationRetryContext(failure);
   if (!verification) return "";
   const verdict: AnyRecord = verification.verdict || {};
@@ -167,7 +167,7 @@ function verifierRetryOutputChunk(failure: any) {
   return lines.filter(Boolean).join("\n");
 }
 
-function extractPreviousOutput(failure: any): string {
+function extractPreviousOutput(failure: Record<string, any>): string {
   const cause = failure?.cause || {};
   const chunks: string[] = [];
   const verifierChunk = verifierRetryOutputChunk(failure);
@@ -188,7 +188,7 @@ function extractPreviousOutput(failure: any): string {
   return truncateText(chunks.filter(Boolean).join("\n\n"));
 }
 
-function previousFailureCount(assignment: any, base: any) {
+function previousFailureCount(assignment: Record<string, any>, base: Record<string, any>) {
   const candidates = [
     assignment?.metadata?.failureCount,
     assignment?.failureCount,
@@ -202,7 +202,7 @@ function previousFailureCount(assignment: any, base: any) {
   return 0;
 }
 
-export function buildRetrySourceContext(assignment: any, attempt: any, result: any, decision: any) {
+export function buildRetrySourceContext(assignment: Record<string, any>, attempt: Record<string, any>, result: Record<string, any>, decision: Record<string, any>) {
   const failure = result?.jobResult?.failure || result?.failure || {};
   const base = assignment.sourceContext && typeof assignment.sourceContext === "object"
     ? { ...assignment.sourceContext }
@@ -248,8 +248,8 @@ export function buildRetrySourceContext(assignment: any, attempt: any, result: a
 
 export class Reconciler {
   hubRoot: string;
-  assignments: any;
-  workers: any;
+  assignments: Record<string, any>;
+  workers: Record<string, any>;
   workerSupervisor: any;
   leaderLock: any;
   failureRouter: any;

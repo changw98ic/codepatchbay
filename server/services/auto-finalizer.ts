@@ -178,15 +178,15 @@ async function changedWorktreeFiles(worktreePath: string, { runCommand }: Record
   ])];
 }
 
-function hasUnsafeChanges(summary: any): boolean {
+function hasUnsafeChanges(summary: Record<string, any>): boolean {
   return (
     summary.counts[MERGE_CLASSIFICATION.SHARED_STATE] > 0
     || summary.counts[MERGE_CLASSIFICATION.NEEDS_HUMAN] > 0
   );
 }
 
-function unsafeFiles(summary: any): any[] {
-  return summary.entries.filter((entry: any) => (
+function unsafeFiles(summary: Record<string, any>): Record<string, any>[] {
+  return summary.entries.filter((entry: Record<string, any>) => (
     entry.classification === MERGE_CLASSIFICATION.SHARED_STATE
     || entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN
   ));
@@ -206,7 +206,7 @@ function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<stri
   );
 }
 
-function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []): { allowed: boolean; escalation: any; reviewer: boolean } {
+function routeAllowsProtectedDiff(route: Record<string, any>, protectedScopes: string[] = []): { allowed: boolean; escalation: Record<string, any> | null; reviewer: boolean } {
   if (route?.workflow === "complex" && route?.planMode === "full") {
     return { allowed: true, escalation: null, reviewer: false };
   }
@@ -250,7 +250,7 @@ function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []): { al
   };
 }
 
-function protectedDiffForRoute(files: string[], entry: any, job: any): { blocked: boolean; route: any; protectedDiff: any; guardResult: any } {
+function protectedDiffForRoute(files: string[], entry: Record<string, any>, job: Record<string, any>): { blocked: boolean; route: Record<string, any>; protectedDiff: Record<string, any>; guardResult: Record<string, any> } {
   const route = routingEffectiveRoute(entry, job);
   const protectedDiff = actualDiffRiskGuard({ files });
   if (!protectedDiff.actualDiffRisk.protected) {
@@ -377,7 +377,7 @@ function isInsideRoot(root: string, targetPath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function displayArtifactPath(artifactPath: any, roots: string[] = []): string | null {
+function displayArtifactPath(artifactPath: unknown, roots: string[] = []): string | null {
   if (!artifactPath) return null;
   const value = String(artifactPath);
   if (!path.isAbsolute(value)) return value;
@@ -387,12 +387,12 @@ function displayArtifactPath(artifactPath: any, roots: string[] = []): string | 
   return path.basename(value);
 }
 
-function artifactIdFromPath(artifactPath: any): string {
+function artifactIdFromPath(artifactPath: unknown): string {
   const name = path.basename(String(artifactPath || "artifact"));
   return name.replace(/\.(?:md|patch|diff|txt|json)$/i, "") || "artifact";
 }
 
-function artifactReferenceFromEntry(entry: any, roots: string[]): { id: string; path: string | null } | null {
+function artifactReferenceFromEntry(entry: Record<string, any>, roots: string[]): { id: string; path: string | null } | null {
   if (!entry || entry.broken) return null;
   return {
     id: entry.id || artifactIdFromPath(entry.path),
@@ -400,15 +400,15 @@ function artifactReferenceFromEntry(entry: any, roots: string[]): { id: string; 
   };
 }
 
-function artifactReferenceForKind(bundle: any, kind: string, roots: string[]): { id: string; path: string | null } | null {
+function artifactReferenceForKind(bundle: Record<string, any>, kind: string, roots: string[]): { id: string; path: string | null } | null {
   const matches = (bundle?.links?.artifacts || [])
-    .filter((entry: any) => entry?.kind === kind && !entry.broken);
+    .filter((entry: Record<string, any>) => entry?.kind === kind && !entry.broken);
   if (matches.length === 0) return null;
   const entry = kind === "verdict" ? matches[matches.length - 1] : matches[0];
   return artifactReferenceFromEntry(entry, roots);
 }
 
-function pushEvidenceLine(lines: string[], value: any): void {
+function pushEvidenceLine(lines: string[], value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) pushEvidenceLine(lines, item);
     return;
@@ -418,12 +418,12 @@ function pushEvidenceLine(lines: string[], value: any): void {
   if (text) lines.push(text);
 }
 
-function testEvidenceFromVerdict(verdict: any): string[] {
+function testEvidenceFromVerdict(verdict: Record<string, any>): string[] {
   const lines: string[] = [];
   pushEvidenceLine(lines, verdict?.tests);
   pushEvidenceLine(lines, verdict?.basis?.tests);
   if (verdict?.layers && typeof verdict.layers === "object") {
-    for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, any]>) {
+    for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, Record<string, any>]>) {
       if (!layer?.detail) continue;
       pushEvidenceLine(lines, `${name}: ${layer.detail}`);
     }
@@ -443,7 +443,7 @@ function verdictEvidenceForBody(verdict: any): Record<string, any> {
   return out;
 }
 
-export function buildPrEvidenceFromReviewBundle(bundle: any, {
+export function buildPrEvidenceFromReviewBundle(bundle: Record<string, any>, {
   cpbRoot = null,
   dataRoot = null,
   hubRoot = null,
@@ -538,7 +538,7 @@ async function finalizeAsReviewBundle({
         project,
         bundlePath,
         changedFiles: bundle.evidence.changedFiles,
-        verdict: (bundle.evidence.verdict as any)?.verdict || null,
+        verdict: (bundle.evidence.verdict as Record<string, any>)?.verdict || null,
         ts: new Date().toISOString(),
       }, { dataRoot }).catch(() => {});
     }

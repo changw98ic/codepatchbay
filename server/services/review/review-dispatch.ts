@@ -193,8 +193,8 @@ export async function analyzeSession(cpbRoot: string, sessionId: string, options
     if (latest.codex) sections.push(`## Codex Review (Round ${latest.round})\n${latest.codex.slice(0, 3000)}`);
     if (latest.claude) sections.push(`## Claude Review (Round ${latest.round})\n${latest.claude.slice(0, 3000)}`);
     const issues = [
-      ...(latest.codexIssues || []).map((i: any) => `[Codex P${i.severity}] ${i.message || "issue"}`),
-      ...(latest.claudeIssues || []).map((i: any) => `[Claude P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.codexIssues || []).map((i: Record<string, any>) => `[Codex P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.claudeIssues || []).map((i: Record<string, any>) => `[Claude P${i.severity}] ${i.message || "issue"}`),
     ];
     if (issues.length > 0) sections.push(`## Issues Found\n${issues.join("\n")}`);
   }
@@ -432,8 +432,8 @@ function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env
 class PersistentAcp {
   agent: string;
   nextId: number;
-  pending: Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>;
-  child: any;
+  pending: Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>;
+  child: Record<string, any> | null;
   initialized: boolean;
   closed: boolean;
   lastActivity: number;
@@ -474,7 +474,7 @@ class PersistentAcp {
       this.handleLine(line);
     });
 
-    this.child.stderr.on("data", (chunk: any) => {
+    this.child.stderr.on("data", (chunk: Buffer) => {
       this.lastActivity = Date.now();
       process.stderr.write(`[${this.agent}] ${chunk}`);
     });
@@ -521,7 +521,7 @@ class PersistentAcp {
     const STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
     const MAX_MS = parseInt(process.env.ACP_PROMPT_MAX_MS || "600000", 10);
 
-    const collectUpdate = (params: any) => {
+    const collectUpdate = (params: Record<string, any>) => {
       const update = params?.update;
       if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
         response += update.content.text;
@@ -543,7 +543,7 @@ class PersistentAcp {
     });
 
     const origHandle = this.handleClientRequest;
-    this.handleClientRequest = async (msg: any) => {
+    this.handleClientRequest = async (msg: Record<string, any>) => {
       if (msg.method === "session/update") {
         collectUpdate(msg.params);
         if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
@@ -591,7 +591,7 @@ class PersistentAcp {
     await this.#closeSession();
   }
 
-  request(method: string, params: any): Promise<any> {
+  request(method: string, params: Record<string, any>): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error(`${this.agent} connection closed`));
     const id = this.nextId++;
     this.lastActivity = Date.now();
@@ -601,11 +601,11 @@ class PersistentAcp {
     });
   }
 
-  respond(id: number, result: any): void {
+  respond(id: number, result: unknown): void {
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  write(msg: any): void {
+  write(msg: Record<string, any>): void {
     if (this.child?.stdin.destroyed) throw new Error("stdin closed");
     this.child.stdin.write(JSON.stringify(msg) + "\n");
   }
@@ -627,7 +627,7 @@ class PersistentAcp {
     if (msg.method) this.handleClientRequest(msg);
   }
 
-  handleClientRequest(msg: any): void {
+  handleClientRequest(msg: Record<string, any>): void {
     if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
   }
 
@@ -724,10 +724,10 @@ If the plan has no P2+ issues, respond with: "REVIEW: PASS"
 ${plan}`;
 }
 
-function followUpReviewPrompt(reviewer: string, previousIssues: any[], revisedPlan: string): string {
+function followUpReviewPrompt(reviewer: string, previousIssues: Record<string, any>[], revisedPlan: string): string {
   const issueSummary = previousIssues
-    .filter((i: any) => i.severity >= 2)
-    .map((i: any) => `[P${i.severity}] ${i.description}`)
+    .filter((i: Record<string, any>) => i.severity >= 2)
+    .map((i: Record<string, any>) => `[P${i.severity}] ${i.description}`)
     .join("\n") || "None";
 
   return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer (follow-up).
@@ -742,10 +742,10 @@ ${revisedPlan}
 Review ONLY whether the previous issues were adequately addressed. For new issues use [P0]-[P3] tags. If all previous P2+ issues are resolved and no new P2+ issues exist, respond with: "REVIEW: PASS"`;
 }
 
-function revisePrompt(plan: string, codexIssues: any[], claudeIssues: any[]): string {
+function revisePrompt(plan: string, codexIssues: Record<string, any>[], claudeIssues: Record<string, any>[]): string {
   const allIssues = [...codexIssues, ...claudeIssues]
-    .filter((i: any) => i.severity >= 2)
-    .map((i: any) => `[P${i.severity}] ${i.description}`)
+    .filter((i: Record<string, any>) => i.severity >= 2)
+    .map((i: Record<string, any>) => `[P${i.severity}] ${i.description}`)
     .join("\n");
 
   return `You are CodePatchbay Plan Reviser. Revise this plan to address the issues below.
