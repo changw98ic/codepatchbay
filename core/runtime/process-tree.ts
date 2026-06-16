@@ -90,8 +90,7 @@ export async function runCommandTree(
 
   return new Promise((resolve) => {
     let settled = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let child: any = null;
+    let child: (import("node:child_process").ChildProcess & { detached?: boolean }) | null = null;
     let timedOut = false;
     let aborted = false;
     let stdout = "";

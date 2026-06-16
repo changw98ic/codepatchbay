@@ -134,7 +134,7 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
     verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics,
-  } as any);
+  } as { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown>; verdict?: string });
 }
 
 function renderAdversarialVerdictMarkdown(verdict: Record<string, any>, riskMap: Record<string, any> | null = null) {

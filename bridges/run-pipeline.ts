@@ -1060,17 +1060,18 @@ async function main() {
     const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
     printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
     return 1;
-  } catch (err: any) {
-    fail(`Unhandled error: ${err.message}`);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    fail(`Unhandled error: ${errMsg}`);
     try {
-      await failCurrentJob(failure(`unhandled: ${err.message}`, {
+      await failCurrentJob(failure(`unhandled: ${errMsg}`, {
         code: FAILURE_CODES.FATAL,
-        cause: { message: err.message },
+        cause: { message: errMsg },
       }));
     } catch {
       // Best effort — job may already be in terminal state
     }
-    printFailureSummary(cpbRoot, project, jobId, { reason: err.message });
+    printFailureSummary(cpbRoot, project, jobId, { reason: errMsg });
     return 1;
   } finally {
     if (watchdogTimer !== null) {

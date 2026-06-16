@@ -19,7 +19,7 @@ function orderFor(agent: Record<string, any>) {
   return BUILTIN_ORDER.get(agent.id) ?? 1000;
 }
 
-function sortCatalog(agents: any[]) {
+function sortCatalog(agents: Record<string, any>[]) {
   return [...agents].sort((a: Record<string, any>, b: Record<string, any>) => {
     const byOrder = orderFor(a) - orderFor(b);
     return byOrder || a.id.localeCompare(b.id);
