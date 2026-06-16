@@ -41,9 +41,9 @@ function dedupeKey(source: string, externalId: unknown): string {
   return `${source}:${externalId}`;
 }
 
-const candidateChains = new Map<string, Promise<any>>();
+const candidateChains = new Map<string, Promise<void>>();
 
-async function withCandidateFileLock(cpbRoot: string, options: AnyRecord, fn: () => Promise<any>) {
+async function withCandidateFileLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
   const file = candidateFile(cpbRoot, options);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -78,11 +78,11 @@ async function withCandidateFileLock(cpbRoot: string, options: AnyRecord, fn: ()
   }
 }
 
-function withCandidateLock(cpbRoot: string, options: AnyRecord, fn: () => Promise<any>) {
+function withCandidateLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
   const key = controlRoot(cpbRoot, options);
   const prev = candidateChains.get(key) || Promise.resolve();
-  const next = prev.then(() => withCandidateFileLock(cpbRoot, options, fn));
-  candidateChains.set(key, next.catch(() => {}));
+  const next = prev.then(() => withCandidateFileLock<T>(cpbRoot, options, fn));
+  candidateChains.set(key, next.catch(() => {}) as Promise<void>);
   const cleanup = () => {
     if (candidateChains.get(key) === next) candidateChains.delete(key);
   };
@@ -117,7 +117,7 @@ async function readQueue(file: string): Promise<AnyRecord[]> {
  * Ingest an external event into the candidate queue.
  * Returns the created candidate entry.
  */
-export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: AnyRecord = {}) {
+export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: AnyRecord = {}): Promise<AnyRecord> {
   const {
     source,
     externalId,
@@ -173,7 +173,7 @@ function githubQueueExternalId(event: AnyRecord) {
   ].join(":");
 }
 
-function githubPriority(labels: any[] = []) {
+function githubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
 }
 
@@ -379,11 +379,11 @@ function githubQueuePayload(event: AnyRecord, match: AnyRecord, route: AnyRecord
   };
 }
 
-function githubHubPriority(labels: any[] = []) {
+function githubHubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2";
 }
 
-async function resolveRegisteredProject(hubRoot: string, projectId: string, getProjectFn: any) {
+async function resolveRegisteredProject(hubRoot: string, projectId: string, getProjectFn: ((root: string, id: string) => Promise<AnyRecord | null>) | null) {
   if (!hubRoot || !projectId || typeof getProjectFn !== "function") return null;
   try {
     return await getProjectFn(hubRoot, projectId);
@@ -769,8 +769,8 @@ export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecor
     source: "github-issue",
     externalId: String(issue.number || issue.id),
     projectId: projectId || issue.projectId || null,
-    priority: issue.labels?.some?.((l: any) => {
-      const name = typeof l === "string" ? l : l.name;
+    priority: issue.labels?.some?.((l: string | Record<string, unknown>) => {
+      const name = typeof l === "string" ? l : (typeof l.name === "string" ? l.name : "");
       return name && /p0|critical|urgent|blocker/i.test(name);
     }) ? "high" : "normal",
     payload: {

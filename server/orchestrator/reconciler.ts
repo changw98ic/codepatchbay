@@ -50,7 +50,7 @@ function compactText(value: unknown, maxChars = 500) {
   return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-function compactStructuredValue(value: any, { maxItems = 8, maxChars = 500 }: Record<string, any> = {}): any {
+function compactStructuredValue(value: unknown, { maxItems = 8, maxChars = 500 }: Record<string, number> = {}): unknown {
   if (value === undefined || value === null) return value;
   if (typeof value === "string") return compactText(value, maxChars);
   if (typeof value !== "object") return value;
@@ -124,7 +124,7 @@ function verificationRetryContext(failure: Record<string, any>) {
   return {
     verdict,
     artifact,
-    retryScope: [...new Set([...(verdict?.retryScope || []), ...checklistFixScope])],
+    retryScope: [...new Set([...(Array.isArray(verdict?.retryScope) ? verdict.retryScope : []), ...checklistFixScope])],
     checklistVerdict: checklistVerdict ? {
       failedChecklistIds,
       uncheckedChecklistIds,
@@ -250,16 +250,16 @@ export class Reconciler {
   hubRoot: string;
   assignments: Record<string, any>;
   workers: Record<string, any>;
-  workerSupervisor: any;
-  leaderLock: any;
-  failureRouter: any;
+  workerSupervisor: Record<string, any> | null; // any: worker supervisor interface
+  leaderLock: { stillHeld: () => Promise<boolean> };
+  failureRouter: { route: (ctx: AnyRecord) => Promise<AnyRecord>; resetBudget: (entryId: string) => void };
   progressInfoMs: number;
   progressWarnMs: number;
   progressErrorMs: number;
   progressForceRetryMs: number;
-  progressAlertLevels: Map<any, any>;
-  progressProbeCheckedAt: Map<any, any>;
-  log: any;
+  progressAlertLevels: Map<string, number>;
+  progressProbeCheckedAt: Map<string, number>;
+  log: Record<string, (...args: unknown[]) => void> & { child: (meta: Record<string, unknown>) => Record<string, (...args: unknown[]) => void> };
 
   constructor(hubRoot: string, {
     assignmentStore,
@@ -549,7 +549,7 @@ export class Reconciler {
     };
   }
 
-  _logProgressDelay(aLog: any, assignment: AnyRecord, attempt: AnyRecord, progressDelay: AnyRecord): void {
+  _logProgressDelay(aLog: Record<string, (...args: unknown[]) => void>, assignment: AnyRecord, attempt: AnyRecord, progressDelay: AnyRecord): void {
     const key = `${assignment.assignmentId}:${attempt?.attempt ?? "unknown"}`;
     const rank = PROGRESS_ALERT_RANK[progressDelay.level] || 0;
     const previousRank = this.progressAlertLevels.get(key) || 0;
@@ -670,10 +670,11 @@ export class Reconciler {
     probe.reason = probe.failureSignals.join(", ");
   }
 
-  _pidAlive(pid: any): boolean | null {
-    if (!Number.isInteger(pid) || pid <= 0) return null;
+  _pidAlive(pid: unknown): boolean | null {
+    const numPid = Number(pid);
+    if (!Number.isInteger(numPid) || numPid <= 0) return null;
     try {
-      process.kill(pid, 0);
+      process.kill(numPid, 0);
       return true;
     } catch {
       return false;

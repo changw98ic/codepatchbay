@@ -86,7 +86,7 @@ async function registryLockIsStale(lockDir: string) {
   }
 }
 
-async function withRegistryLock(hubRoot: string, callback: () => Promise<any>) {
+async function withRegistryLock<T>(hubRoot: string, callback: () => Promise<T>): Promise<T> {
   const file = registryPath(hubRoot);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(file), { recursive: true });
@@ -828,7 +828,7 @@ function normalizeText(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function uniqueKeys(keys: any[]) {
+function uniqueKeys(keys: (string | null | undefined)[]) {
   return [...new Set(keys.filter(Boolean))];
 }
 
@@ -877,13 +877,13 @@ function jobDedupeKeys(job: AnyRecord, kind: string, project: string, title: str
 
 function toIso(value: unknown) {
   if (!value) return null;
-  const date = new Date(value as any);
+  const date = new Date(value as string | number | Date);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function ageMs(updatedAt: unknown) {
   if (!updatedAt) return null;
-  const time = new Date(updatedAt as any).getTime();
+  const time = new Date(updatedAt as string | number | Date).getTime();
   if (Number.isNaN(time)) return null;
   return Math.max(0, Date.now() - time);
 }

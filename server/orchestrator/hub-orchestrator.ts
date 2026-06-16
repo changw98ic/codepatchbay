@@ -16,12 +16,12 @@ const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
-function providerAgentForEntry(entry: any) {
+function providerAgentForEntry(entry: Record<string, any>) {
   const agentSpec = entry?.metadata?.agents?.executor || entry?.metadata?.agents?.default || {};
   return agentSpec.agent || "claude";
 }
 
-export function normalizedSourceContext(candidate: any) {
+export function normalizedSourceContext(candidate: Record<string, any>) {
   const metadata = candidate?.metadata || {};
   const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
     ? { ...metadata.sourceContext }
@@ -89,21 +89,21 @@ export class HubOrchestrator {
   running: boolean;
   _stopped: Promise<void> | null;
   _resolveStopped?: () => void;
-  log: any;
-  leaderLock: any;
-  assignmentStore: any;
-  workerStore: any;
-  scheduler: any;
-  workerSupervisor: any;
-  acpSupervisor: any;
-  reconciler: any;
-  failureRouter: any;
+  log: ReturnType<typeof createLogger>;
+  leaderLock: LeaderLock;
+  assignmentStore: AssignmentStore;
+  workerStore: WorkerStore;
+  scheduler: Scheduler;
+  workerSupervisor: WorkerSupervisor;
+  acpSupervisor: AcpSupervisor | null;
+  reconciler: Reconciler;
+  failureRouter: FailureRouter;
   _tickTimer: NodeJS.Timeout | null;
   _janitorTimer: NodeJS.Timeout | null;
   _backoff: number;
   _consecutiveErrors: number;
 
-  constructor(hubRoot: string, cpbRoot: string, { executorRoot, acpSupervisor = null }: Record<string, any> = {}) {
+  constructor(hubRoot: string, cpbRoot: string, { executorRoot, acpSupervisor = null }: { executorRoot?: string; acpSupervisor?: AcpSupervisor | null } = {}) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.executorRoot = executorRoot || resolveExecutorRoot({ env: process.env, fallbackRoot: cpbRoot });
@@ -366,7 +366,7 @@ export class HubOrchestrator {
    * Returns provider-scoped slots so Scheduler can project same-tick
    * dispatches before queue status writes make capacity visible.
    */
-  async _providerCapacity(agentKey: string, entry: Record<string, any> = null) {
+  async _providerCapacity(agentKey: string, entry: Record<string, any> | null = null) {
     const providerKey = agentKey || providerAgentForEntry(entry);
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot);
     const total = hubLimits.acpProviderMax;
@@ -384,8 +384,8 @@ export class HubOrchestrator {
     };
   }
 
-  _recordError(err: Record<string, any>) {
-    this.log.error(`tick error: ${err.message}`);
+  _recordError(err: unknown) {
+    this.log.error(`tick error: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   async reconcileQueueVsAssignments() {

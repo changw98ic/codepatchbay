@@ -370,7 +370,7 @@ export async function extractExperienceFromVerdict(cpbRoot: string, project: str
 /**
  * Extract experience from a terminal job state (cancel/budget/pool_exhausted/etc).
  */
-export async function extractExperienceFromTerminalState(cpbRoot: any, project: any, jobId: any, state: any, eventType: any, { force = false, skipIndexRebuild = false } = {}) {
+export async function extractExperienceFromTerminalState(cpbRoot: string, project: string, jobId: string, state: Record<string, any>, eventType: string, { force = false, skipIndexRebuild = false } = {}) {
   if (!TERMINAL_GOTCHA_EVENTS.has(eventType) && eventType !== "job_failed" && eventType !== "phase_failed") return null;
 
   const experience = buildExperienceFromTerminalState(project, jobId, state, eventType);
@@ -382,9 +382,9 @@ export async function extractExperienceFromTerminalState(cpbRoot: any, project: 
  * Tries verdict artifact first, then falls back to terminal state.
  */
 export async function extractExperienceForJob(
-  cpbRoot: any,
-  project: any,
-  jobId: any,
+  cpbRoot: string,
+  project: string,
+  jobId: string,
   { dataRoot, force = false, skipIndexRebuild = false }: AnyRecord = {},
 ) {
   const { getJob } = await import("./job/job-store.js");
@@ -411,11 +411,11 @@ export async function extractExperienceForJob(
  * Find verdict artifact path using artifact index (authoritative),
  * falling back to job state artifacts + standard wiki path.
  */
-async function findVerdictArtifactPath(cpbRoot: any, project: any, jobId: any, state: any, { dataRoot }: AnyRecord = {}) {
+async function findVerdictArtifactPath(cpbRoot: string, project: string, jobId: string, state: Record<string, any>, { dataRoot }: AnyRecord = {}) {
   // Primary: use artifact index for authoritative path resolution
   try {
     const { buildArtifactIndex } = await import("./job/job-projection.js");
-    const index = await (buildArtifactIndex as any)(cpbRoot, project, jobId, { dataRoot });
+    const index = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot });
     const verdictEntry = [...index.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
     if (verdictEntry?.path) return verdictEntry.path;
   } catch { /* index not available — fall through */ }
@@ -431,7 +431,7 @@ async function findVerdictArtifactPath(cpbRoot: any, project: any, jobId: any, s
   return null;
 }
 
-function inferTerminalEventType(state: any) {
+function inferTerminalEventType(state: Record<string, any>) {
   if (state.failureCode === "pool_exhausted") return "pool_exhausted";
   if (state.blockedReason?.includes("budget")) return "budget_exceeded";
   if (state.blockedReason?.includes("approval") || state.blockedReason?.includes("timed out")) return "approval_timed_out";
@@ -443,10 +443,10 @@ function inferTerminalEventType(state: any) {
 /**
  * Rebuild wiki/experience/index.md from filesystem.
  */
-export async function rebuildExperienceIndex(cpbRoot: any) {
+export async function rebuildExperienceIndex(cpbRoot: string) {
   const expDir = path.join(cpbRoot, "wiki", "experience");
 
-  const sections = { failures: [], patterns: [], gotchas: [] };
+  const sections: Record<string, Array<{ file: string; title: string; project: string; date: string; severity: string; tags: string[] }>> = { failures: [], patterns: [], gotchas: [] };
 
   for (const category of Object.keys(sections)) {
     const dir = path.join(expDir, category);
@@ -496,16 +496,16 @@ export async function rebuildExperienceIndex(cpbRoot: any) {
   await writeFile(path.join(expDir, "index.md"), lines.join("\n"), "utf8");
 }
 
-function parseFrontmatter(content: any) {
+function parseFrontmatter(content: string) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
   const meta: AnyRecord = {};
   for (const line of match[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.+)/);
     if (kv) {
-      let val = kv[2].trim();
+      let val: string | string[] = kv[2].trim();
       if (val.startsWith("[") && val.endsWith("]")) {
-        val = val.slice(1, -1).split(",").map((s: any) => s.trim()).filter(Boolean);
+        val = val.slice(1, -1).split(",").map((s: string) => s.trim()).filter(Boolean);
       }
       meta[kv[1]] = val;
     }
@@ -513,7 +513,7 @@ function parseFrontmatter(content: any) {
   return meta;
 }
 
-function extractTitle(content: any) {
+function extractTitle(content: string) {
   const match = content.match(/^#\s+(.+)/m);
   return match ? match[1].trim() : "untitled";
 }

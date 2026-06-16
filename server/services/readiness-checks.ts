@@ -195,7 +195,7 @@ async function checkGit() {
   }
 }
 
-async function findExistingDiskProbePath(targetPath: string, statFn: any = statFs) {
+async function findExistingDiskProbePath(targetPath: string, statFn: (path: string) => Promise<import("node:fs").Stats> = statFs) {
   let current = path.resolve(targetPath);
   while (true) {
     try {
@@ -212,7 +212,7 @@ async function findExistingDiskProbePath(targetPath: string, statFn: any = statF
   }
 }
 
-export async function checkDiskSpace(dirPath: string, label: string, { execFileFn = execFileAsync, statFn = statFs }: Record<string, any> = {}) {
+export async function checkDiskSpace(dirPath: string, label: string, { execFileFn = execFileAsync, statFn = statFs }: { execFileFn?: typeof execFileAsync; statFn?: (path: string) => Promise<import("node:fs").Stats> } = {}) {
   const id = `disk-${label}`;
   try {
     const resolved = path.resolve(dirPath);
@@ -236,7 +236,7 @@ export async function checkDiskSpace(dirPath: string, label: string, { execFileF
   }
 }
 
-async function checkAcpAdapter(adapterName: string, command: string, args: string[], { npxPkg, stability }: Record<string, any> = {}) {
+async function checkAcpAdapter(adapterName: string, command: string, args: string[], { npxPkg, stability }: { npxPkg?: string; stability?: string } = {}) {
   const id = `acp-adapter-${adapterName}`;
 
   let stdout;
@@ -287,7 +287,7 @@ function preferredInstallMethod(agent: Record<string, any>, setupSnapshot: Recor
   return methods[0] || "manual";
 }
 
-export function buildSetupReadinessChecks(setupSnapshot: Record<string, any> = {}, catalog: any[] = []) {
+export function buildSetupReadinessChecks(setupSnapshot: Record<string, any> = {}, catalog: Record<string, any>[] = []) {
   const checks = [];
   for (const agent of catalog) {
     const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
@@ -787,7 +787,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
   // Resolve adapter checks from registry
   let adapterChecks: Promise<Check>[] = [];
   try {
-    await (agentRegistry.loadRegistry as any)();
+    await (agentRegistry.loadRegistry as () => Promise<void>)();
     const agents = agentRegistry.listAgents();
     for (const d of agents) {
       const override = adapterOverrides?.[d.name];
@@ -1232,7 +1232,7 @@ async function canonicalDir(value: string) {
   }
 }
 
-async function firstUsableIndexFile(codebaseRoot: any) {
+async function firstUsableIndexFile(codebaseRoot: string) {
   const candidates = [
     path.join(codebaseRoot, ".codegraph", "codegraph.db"),
     path.join(codebaseRoot, ".codegraph", "index.sqlite"),
@@ -1250,7 +1250,7 @@ async function firstUsableIndexFile(codebaseRoot: any) {
 
 const MIN_CODEGRAPH_DB_BYTES = 1024;
 
-async function readDaemonState(sourceRoot: any) {
+async function readDaemonState(sourceRoot: string) {
   const daemonPidFile = path.join(sourceRoot, ".codegraph", "daemon.pid");
   const state = await readJson(daemonPidFile);
   if (!state?.pid) return null;
@@ -1338,7 +1338,7 @@ function nowSafe() {
   return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 }
 
-async function bestEffortGitInit(sourcePath: any) {
+async function bestEffortGitInit(sourcePath: string) {
   try {
     await execFileAsync("git", ["init", "-b", "main"], { cwd: sourcePath, timeout: 10_000 });
     await execFileAsync("git", ["config", "user.email", "demo@example.invalid"], { cwd: sourcePath, timeout: 10_000 });
@@ -1350,7 +1350,7 @@ async function bestEffortGitInit(sourcePath: any) {
   }
 }
 
-async function writeToyRepo(sourcePath: any) {
+async function writeToyRepo(sourcePath: string) {
   await mkdir(path.join(sourcePath, "src"), { recursive: true });
   await writeFile(
     path.join(sourcePath, "package.json"),
@@ -1381,7 +1381,7 @@ index 6fbc235..e741ad8 100644
 `;
 }
 
-async function captureToyDiff(sourcePath: any) {
+async function captureToyDiff(sourcePath: string) {
   try {
     const result = await execFileAsync("git", ["diff", "--", "src/sum.js"], {
       cwd: sourcePath,
@@ -1396,7 +1396,7 @@ async function captureToyDiff(sourcePath: any) {
   return demoDiffPatch();
 }
 
-async function runToyTests(sourcePath: any) {
+async function runToyTests(sourcePath: string) {
   const started = Date.now();
   const command = "node src/sum.test.js";
   try {
@@ -1424,7 +1424,7 @@ async function runToyTests(sourcePath: any) {
   }
 }
 
-function formatTestReport(result: any) {
+function formatTestReport(result: { command: string; status: string; exitCode: number; durationMs: number; stdout: string; stderr: string }) {
   const stdout = result.stdout.trim() || "(no stdout)";
   const stderr = result.stderr.trim() || "(no stderr)";
   return `# TESTS
@@ -1444,7 +1444,7 @@ ${stderr}
 `;
 }
 
-function makeRiskSummary(sourcePath: any) {
+function makeRiskSummary(sourcePath: string) {
   return {
     level: "low",
     summary: "Demo-only temporary toy repo; no user project, network provider, or credentialed agent is touched.",
@@ -1457,14 +1457,14 @@ function makeRiskSummary(sourcePath: any) {
   };
 }
 
-function formatRiskReport(risk: any) {
+function formatRiskReport(risk: { level: string; summary: string; factors: string[] }) {
   return `# RISK
 
 Level: ${risk.level}
 Summary: ${risk.summary}
 
 ## Factors
-${risk.factors.map((factor: any) => `- ${factor}`).join("\n")}
+${risk.factors.map((factor: string) => `- ${factor}`).join("\n")}
 `;
 }
 
@@ -1491,7 +1491,7 @@ function storyEntries({ planPath, diffPath, testsPath, verdictPath, riskPath, te
   }));
 }
 
-async function writeProjectForDemo(cpbRoot: any, project: any, sourcePath: any) {
+async function writeProjectForDemo(cpbRoot: string, project: string, sourcePath: string) {
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
@@ -1678,7 +1678,7 @@ The local demo fixed the toy repo sum implementation and exercised the CodePatch
 
 // ── Audit export (from audit-export.ts) ────────────────────────────────────
 
-function collectRuntimeFailureRefs(events: any[], materialized?: any) {
+function collectRuntimeFailureRefs(events: Record<string, any>[], materialized?: Record<string, any>) {
   // Prefer materialized state (event-replay source of truth)
   if (materialized?.runtimeFailures && Array.isArray(materialized.runtimeFailures) && materialized.runtimeFailures.length > 0) {
     return materialized.runtimeFailures;
@@ -1705,14 +1705,14 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
 
   const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
 
-  const artifactIndex = await (buildArtifactIndexForAudit as any)(cpbRoot, project, jobId, {
+  const artifactIndex = await buildArtifactIndexForAudit(cpbRoot, project, jobId, {
     events,
     dataRoot,
     wikiDir,
     restrictToWiki: true,
   });
   delete artifactIndex.generatedAt;
-  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e: any) => ({ ...e }));
+  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e: Record<string, any>) => ({ ...e }));
 
   let verdict = null;
   const verdictEntry = [...artifactIndex.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
@@ -1736,7 +1736,7 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
     };
   }
 
-  const materialized = (materializeJob as any)(events);
+  const materialized = (materializeJob as (events: Record<string, any>[]) => Record<string, any>)(events);
 
   const checklistArtifacts = await readActiveChecklistArtifacts({
     artifactIndex,

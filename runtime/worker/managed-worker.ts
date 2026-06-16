@@ -82,22 +82,22 @@ export async function main() {
   // Bridge: service injection + sourcePath resolution (no direct core import)
   const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
 
-  async function stopWorkerAcpPool(jobLog: any = log) {
+  async function stopWorkerAcpPool(jobLog: ReturnType<typeof createLogger> = log) {
     try {
       const stopped = await stopManagedAcpPool({ cpbRoot, hubRoot });
       if (stopped) jobLog.info("ACP pool stopped");
-    } catch (err: any) {
-      jobLog.warn(`ACP pool stop failed: ${err.message}`);
+    } catch (err: unknown) {
+      jobLog.warn(`ACP pool stop failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  async function releaseWorkerAcpWorktree(worktreePath: string | null | undefined, jobLog: any = log) {
+  async function releaseWorkerAcpWorktree(worktreePath: string | null | undefined, jobLog: ReturnType<typeof createLogger> = log) {
     if (!worktreePath) return;
     try {
       const released = await releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd: worktreePath });
       if (released) jobLog.info("ACP worktree session released");
-    } catch (err: any) {
-      jobLog.warn(`ACP worktree session release failed: ${err.message}`);
+    } catch (err: unknown) {
+      jobLog.warn(`ACP worktree session release failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -371,8 +371,8 @@ export async function main() {
               await execFileAsync("git", ["add", "-A"], { cwd: worktreeInfo.path });
               await execFileAsync("git", ["commit", "-m", assignment.task || "automated change"], { cwd: worktreeInfo.path });
             }
-          } catch (commitErr: any) {
-            jobLog.warn(`worktree commit failed: ${commitErr.message}`);
+          } catch (commitErr: unknown) {
+            jobLog.warn(`worktree commit failed: ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`);
           }
         }
 
@@ -388,20 +388,21 @@ export async function main() {
           worktreeInfo,
           log: jobLog,
         });
-      } catch (err: any) {
+      } catch (err: unknown) {
         clearInterval(assignmentHeartbeat);
         clearInterval(cancelTimer);
-        const isPoolExhausted = err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError";
-        const isWorktreeUnavailable = err.code === "WORKTREE_UNAVAILABLE";
+        const errObj = err instanceof Error ? err as Error & Record<string, unknown> : { message: String(err) } as Error & Record<string, unknown>;
+        const isPoolExhausted = errObj.code === "POOL_EXHAUSTED" || errObj.name === "PoolExhaustedError";
+        const isWorktreeUnavailable = errObj.code === "WORKTREE_UNAVAILABLE";
         const failureKind = isPoolExhausted ? "pool_exhausted" : (isWorktreeUnavailable ? "worktree_unavailable" : "worker_crashed");
-        jobLog.error(`job failed (${failureKind}): ${err.message}`);
+        jobLog.error(`job failed (${failureKind}): ${errObj.message}`);
         if (isPoolExhausted) {
           try {
             await poolExhaustedJob(cpbRoot, assignment.projectId, jobId, {
-              reason: err.message,
-              providerKey: err.providerKey,
-              agent: err.agent,
-              elapsedMs: err.elapsedMs,
+              reason: errObj.message,
+              providerKey: errObj.providerKey,
+              agent: errObj.agent,
+              elapsedMs: errObj.elapsedMs,
               ts: new Date().toISOString(),
             });
           } catch {}
@@ -413,7 +414,7 @@ export async function main() {
           status: "failed",
           jobResult: {
             status: "failed",
-            failure: { kind: failureKind, reason: err.message, retryable: true },
+            failure: { kind: failureKind, reason: errObj.message, retryable: true },
           },
           writtenAt: new Date().toISOString(),
         });
@@ -468,8 +469,8 @@ export async function main() {
   });
 
   watcher.on("add", async () => {
-    try { await processInboxGuarded(); } catch (err: any) {
-      log.error(`process error: ${err.message}`);
+    try { await processInboxGuarded(); } catch (err: unknown) {
+      log.error(`process error: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 

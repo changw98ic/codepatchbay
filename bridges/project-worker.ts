@@ -43,7 +43,7 @@ function truncateOutput(output: string, maxLength = 2_000) {
   return `${output.slice(0, maxLength)}\n[truncated ${output.length - maxLength} chars]`;
 }
 
-function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: Record<string, any>): Promise<any> {
+function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: { agent: string; cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const script = [
@@ -113,7 +113,7 @@ function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: Record<
   });
 }
 
-async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: Record<string, any>) {
+async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) {
   const [codex, claude] = await Promise.all([
     runAgentSmoke({ agent: "codex", cpbRoot, executorRoot, cwd, timeoutMs }),
     runAgentSmoke({ agent: "claude", cpbRoot, executorRoot, cwd, timeoutMs }),
@@ -125,7 +125,7 @@ async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: Rec
   };
 }
 
-function priorityScore(p: any): number {
+function priorityScore(p: unknown): number {
   if (p === "P0") return 0;
   if (p === "P1") return 1;
   if (p === "P2") return 2;
@@ -179,11 +179,33 @@ export function parseArgs(argv: string[]): AnyRecord {
   return opts;
 }
 
+interface ProjectWorkerOpts {
+  projectId?: string | null;
+  pool?: boolean;
+  workerId?: string;
+  once?: boolean;
+  heartbeatMs?: number;
+  pollMs?: number;
+  claimTimeoutMs?: number;
+  maxActivePerProject?: number;
+  requireIssueLink?: boolean;
+  agentPreflightRetries?: unknown;
+  agentPreflightBackoffMs?: unknown;
+  agentPreflightTimeoutMs?: unknown;
+  workflow?: string;
+  assignmentStore?: AssignmentStore | null;
+  runPipelineFn?: ((entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string) => Promise<AnyRecord>) | null;
+  agentHealthFn?: ((opts: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) => Promise<Record<string, unknown>>);
+  cpbRoot?: string;
+  executorRoot?: string;
+  hubRoot?: string;
+}
+
 export class ProjectWorker {
   cpbRoot: string;
   executorRoot: string;
   hubRoot: string;
-  projectId: any;
+  projectId: string;
   pool: boolean;
   workerId: string;
   once: boolean;
@@ -196,15 +218,15 @@ export class ProjectWorker {
   agentPreflightBackoffMs: number;
   agentPreflightTimeoutMs: number;
   workflow: string;
-  assignmentStore: any;
-  _runPipelineFn: any;
-  _agentHealthFn: any;
+  assignmentStore: AssignmentStore | null;
+  _runPipelineFn: ((entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string) => Promise<AnyRecord>) | null;
+  _agentHealthFn: (opts: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) => Promise<Record<string, unknown>>;
   _heartbeatTimer: NodeJS.Timeout | null;
   _stopRequested: boolean;
-  _activeEntryId: any;
-  project: any;
+  _activeEntryId: string | null;
+  project: AnyRecord | null;
 
-  constructor(opts: Record<string, any> = {}) {
+  constructor(opts: ProjectWorkerOpts = {}) {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
     this.executorRoot = path.resolve(opts.executorRoot || CPB_EXECUTOR_ROOT);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(this.cpbRoot));

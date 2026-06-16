@@ -24,7 +24,7 @@ async function writeJson(filePath: string, data: AnyRecord) {
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function normalizeHubConfig(data: any): AnyRecord {
+function normalizeHubConfig(data: unknown): AnyRecord {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const removedHubTotalKey = ["maxActive", "Total"].join("");
   const next: AnyRecord = { ...data };
@@ -75,7 +75,7 @@ function projectConfigPath(root: string, project: string) {
   return path.join(root, "wiki", "projects", project, "project.json");
 }
 
-function uniqueRoots(roots: any[]) {
+function uniqueRoots(roots: (string | null | undefined)[]) {
   const seen = new Set();
   const result = [];
   for (const root of roots) {
@@ -92,7 +92,7 @@ export async function readProjectJson(cpbRoot: string, project: string) {
   return readJson(projectConfigPath(cpbRoot, project));
 }
 
-export async function readProjectJsonFromRoots(roots: any[], project: string) {
+export async function readProjectJsonFromRoots(roots: (string | null | undefined)[], project: string) {
   for (const root of uniqueRoots(roots)) {
     const data = await readProjectJson(root, project);
     if (data && Object.keys(data).length > 0) return data;
@@ -109,7 +109,7 @@ export async function readProjectConfig(cpbRoot: string, project: string) {
   return data.agents || null;
 }
 
-export async function readProjectConfigFromRoots(roots: any[], project: string) {
+export async function readProjectConfigFromRoots(roots: (string | null | undefined)[], project: string) {
   for (const root of uniqueRoots(roots)) {
     const agents = await readProjectConfig(root, project);
     if (agents && Object.keys(agents).length > 0) return agents;
@@ -129,18 +129,19 @@ export async function writeProjectAgents(cpbRoot: string, project: string, agent
 
 // -- Merge: resolve effective agents config --
 
-export function normalizeAgentSpec(raw: any) {
+export function normalizeAgentSpec(raw: unknown) {
   if (!raw) return null;
   if (typeof raw === "object" && raw !== null) {
-    if (raw.agent === null && raw.variant) {
-      return { agent: null, variant: raw.variant };
+    const obj = raw as Record<string, unknown>;
+    if (obj.agent === null && obj.variant) {
+      return { agent: null, variant: obj.variant };
     }
-    const agentStr = raw.agent || "";
+    const agentStr = String(obj.agent || "");
     if (agentStr.includes(":")) {
       const [agent, variant] = agentStr.split(":", 2);
-      return { agent, variant: variant || raw.variant || null };
+      return { agent, variant: variant || obj.variant || null };
     }
-    return { agent: agentStr || "claude", variant: raw.variant || null };
+    return { agent: agentStr || "claude", variant: obj.variant || null };
   }
   const colonIdx = String(raw).indexOf(":");
   if (colonIdx >= 0) {

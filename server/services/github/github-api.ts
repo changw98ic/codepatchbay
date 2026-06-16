@@ -31,7 +31,7 @@ export function githubAppConfigPath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "github", "app.json");
 }
 
-function normalizeId(value: any, field: string, errors: string[], { required = true }: AnyRecord = {}) {
+function normalizeId(value: unknown, field: string, errors: string[], { required = true }: AnyRecord = {}) {
   if (value === null || value === undefined || value === "") {
     if (required) errors.push(`${field} is required`);
     return null;
@@ -44,7 +44,7 @@ function normalizeId(value: any, field: string, errors: string[], { required = t
   return text;
 }
 
-function normalizeWebhookSecretRef(value: any, errors: string[]) {
+function normalizeWebhookSecretRef(value: unknown, errors: string[]) {
   if (typeof value !== "string" || value.trim() === "") {
     errors.push("webhookSecretRef is required");
     return null;
@@ -57,7 +57,7 @@ function normalizeWebhookSecretRef(value: any, errors: string[]) {
   return ref;
 }
 
-function normalizePrivateKeyRef(value: any, errors: string[]) {
+function normalizePrivateKeyRef(value: unknown, errors: string[]) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value !== "string") {
     errors.push("privateKeyRef must be a string");
@@ -71,7 +71,7 @@ function normalizePrivateKeyRef(value: any, errors: string[]) {
   return ref;
 }
 
-function normalizePermissions(value: any, errors: string[]) {
+function normalizePermissions(value: unknown, errors: string[]) {
   const permissions: AnyRecord = {
     ...DEFAULT_GITHUB_APP_PERMISSIONS,
     ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
@@ -199,7 +199,7 @@ export function buildGithubAppReadiness(config: AnyRecord | null) {
   ];
 }
 
-export function resolveSecretRef(secretRef: any, { env = process.env }: AnyRecord = {}) {
+export function resolveSecretRef(secretRef: string, { env = process.env }: AnyRecord = {}) {
   if (typeof secretRef !== "string" || secretRef.trim() === "") {
     throw new Error("secret reference is required");
   }
@@ -304,8 +304,8 @@ async function fetchJson(url: string, options: AnyRecord = {}) {
   const body = await res.json();
   if (!res.ok) {
     const error = new Error(body.message || `GitHub API ${res.status}`);
-    (error as Error & { status?: number; body?: any }).status = res.status;
-    (error as Error & { status?: number; body?: any }).body = body;
+    (error as Error & { status?: number; body?: unknown }).status = res.status;
+    (error as Error & { status?: number; body?: unknown }).body = body;
     throw error;
   }
   return body;

@@ -19,11 +19,11 @@ function prepareTaskForEnv(env: Record<string, string | undefined>) {
     return async (): Promise<Record<string, any>> => ({
       riskLevel: "low",
       domains: ["test_fixture"],
-      highRiskFiles: [] as any[],
-      safetyBoundaries: [] as any[],
+      highRiskFiles: [] as string[],
+      safetyBoundaries: [] as string[],
       verificationDepth: "standard",
       adversarialRequired: false,
-      adversarialFocus: [] as any[],
+      adversarialFocus: [] as string[],
       confidence: "high",
       generatedAt: new Date().toISOString(),
       source: { testFixture: true },
@@ -33,7 +33,7 @@ function prepareTaskForEnv(env: Record<string, string | undefined>) {
 }
 
 export function buildServices(cpbRoot: string, { hubRoot = null, env = process.env, dataRoot = null }: Record<string, any> = {}) {
-  const withJobOptions = (fn: any) => dataRoot
+  const withJobOptions = (fn: (...args: unknown[]) => unknown) => dataRoot
     ? (root: string, project: string, jobId: string, opts: Record<string, any> = {}) => fn(root, project, jobId, { ...opts, dataRoot })
     : fn;
   return {

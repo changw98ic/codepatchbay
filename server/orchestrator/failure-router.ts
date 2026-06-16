@@ -31,10 +31,10 @@ const SMART_MODE_SUPERVISOR_KINDS = new Set<string>([
 function collectVerificationRetryScope(failure: AnyRecord = {}) {
   const verdict = failure.cause?.verdict || {};
   const scope = new Set<string>();
-  const add = (value: any) => {
+  const add = (value: unknown) => {
     if (typeof value === "string" && value.trim()) scope.add(value.trim());
   };
-  const addMany = (values: any) => {
+  const addMany = (values: unknown) => {
     if (Array.isArray(values)) values.forEach(add);
   };
 
@@ -56,7 +56,7 @@ function collectVerificationRetryScope(failure: AnyRecord = {}) {
 }
 
 export class FailureRouter {
-  supervisor: any;
+  supervisor: { diagnoseFailure: (ctx: AnyRecord) => Promise<AnyRecord> } | null;
   readModeFn: (() => Promise<string> | string) | null;
 
   /**
@@ -64,7 +64,7 @@ export class FailureRouter {
    * @param {object} [opts]
    * @param {Function} [opts.readModeFn] - async () => "default"|"smart"
    */
-  constructor(supervisor: any = null, opts: AnyRecord = {}) {
+  constructor(supervisor: { diagnoseFailure: (ctx: AnyRecord) => Promise<AnyRecord> } | null = null, opts: AnyRecord = {}) {
     this.supervisor = supervisor;
     this.readModeFn = opts.readModeFn || null;
   }

@@ -12,8 +12,8 @@ type WorkflowNode = AnyRecord & {
   phase: string;
   role?: string;
   agent?: string | null;
-  squad?: any;
-  _squad?: any;
+  squad?: string | AnyRecord;
+  _squad?: string | AnyRecord;
   dependsOn?: string[];
 };
 type WorkflowDefinition = AnyRecord & {
@@ -24,7 +24,7 @@ type WorkflowDefinition = AnyRecord & {
   nodes?: WorkflowNode[];
   maxConcurrentNodes?: number;
 };
-type WorkflowOptions = { category?: any; routing?: any };
+type WorkflowOptions = { category?: string; routing?: AnyRecord | null };
 
 const WORKFLOWS: Record<string, WorkflowDefinition> = {
   standard: {
@@ -208,9 +208,10 @@ function resolveSquadsInNodes(nodes: WorkflowNode[]) {
  * Resolve a node's agent at execution time with current pool status.
  * Supports squad strategies (least-busy, round-robin, leader-first).
  */
-export function resolveNodeAgent(node: WorkflowNode, { poolStatus }: { poolStatus?: any } = {}) {
+export function resolveNodeAgent(node: WorkflowNode, { poolStatus }: { poolStatus?: AnyRecord } = {}) {
   if (node._squad) {
-    const agent = resolveSquadAgent(node._squad, { poolStatus });
+    const squadName = typeof node._squad === "string" ? node._squad : String(node._squad);
+    const agent = resolveSquadAgent(squadName, { poolStatus });
     if (agent) return agent;
   }
   return node.agent || null;

@@ -824,8 +824,8 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     content: "OPENAI_API_KEY=sk-1234567890abcdef",
     ts: new Date().toISOString(),
   }, { dataRoot });
-  assert.equal(blocked.type, "secret_blocked");
-  assert.match(blocked.reason, /secret-like/);
+  assert.equal((blocked as any).type, "secret_blocked");
+  assert.match((blocked as any).reason, /secret-like/);
   const secretEvents = await readEvents(cpbRoot, project, secretJobId, { dataRoot });
   assert.equal(secretEvents.length, 1);
   assert.equal(secretEvents[0].type, "secret_blocked");

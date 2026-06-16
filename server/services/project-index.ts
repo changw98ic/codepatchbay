@@ -15,10 +15,11 @@ const STATE_NORMALIZE = {
   merge_failed: "failed",
 };
 
-export function normalizeProjectIndex(raw: any) {
+export function normalizeProjectIndex(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
 
-  const rawState = raw.state || raw.status || "";
+  const rawState = (obj.state || obj.status || "") as string;
   const state =
     STATE_NORMALIZE[rawState] ||
     (VALID_STATES.has(rawState) ? rawState : null);
@@ -26,26 +27,27 @@ export function normalizeProjectIndex(raw: any) {
   if (!state) return null;
 
   const timestamp =
-    raw.timestamp || raw.indexedAt || raw.updatedAt || raw.failedAt || null;
-  const shortHead = raw.gitHead
-    ? raw.gitHead.length > 12
-      ? raw.gitHead.slice(0, 12)
-      : raw.gitHead
+    obj.timestamp || obj.indexedAt || obj.updatedAt || obj.failedAt || null;
+  const gitHead = obj.gitHead as string | null;
+  const shortHead = gitHead
+    ? gitHead.length > 12
+      ? gitHead.slice(0, 12)
+      : gitHead
     : null;
 
   return {
     state,
     raw: rawState !== state ? rawState : null,
-    branch: raw.branch || null,
-    gitHead: raw.gitHead || null,
+    branch: obj.branch || null,
+    gitHead: gitHead || null,
     gitHeadShort: shortHead,
-    indexedFrom: raw.indexedFrom || null,
-    timestamp: timestamp ? new Date(timestamp).toISOString() : null,
-    error: raw.error || null,
+    indexedFrom: obj.indexedFrom || null,
+    timestamp: timestamp ? new Date(String(timestamp)).toISOString() : null,
+    error: obj.error || null,
   };
 }
 
-export async function readProjectIndex(hubRoot: any, cpbRoot: any, projectId: any) {
+export async function readProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string) {
   // Primary: Hub registry metadata
   if (hubRoot) {
     try {
@@ -77,7 +79,7 @@ export async function readProjectIndex(hubRoot: any, cpbRoot: any, projectId: an
   return null;
 }
 
-export async function writeProjectIndex(hubRoot: any, cpbRoot: any, projectId: any, data: any) {
+export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string, data: Record<string, unknown>) {
   const normalized = normalizeProjectIndex(data);
   if (!normalized) {
     throw new Error("Invalid project index data: cannot normalize");
@@ -131,7 +133,7 @@ export async function writeProjectIndex(hubRoot: any, cpbRoot: any, projectId: a
   throw new Error("No writable storage: hubRoot or cpbRoot required");
 }
 
-export function formatProjectIndexLine(idx: any) {
+export function formatProjectIndexLine(idx: Record<string, unknown> | null) {
   if (!idx) return null;
   const parts = [
     `Project index: ${idx.state}`,
@@ -158,7 +160,7 @@ const POLLUTION_NAME_PATTERNS = [
   { pattern: /^calc-test/i, reason: "calc-test prefix" },
 ];
 
-export function isUnderTestPath(filePath: any) {
+export function isUnderTestPath(filePath: unknown) {
   if (!filePath || typeof filePath !== "string") return false;
   const tmpDir = realpathSync(os.tmpdir());
   try {

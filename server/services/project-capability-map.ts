@@ -33,7 +33,7 @@ function isTestFile(file: Record<string, any>) {
   return TEST_FILE_RE.test(file.path);
 }
 
-function topFiles(files: any[], predicate: (file: Record<string, any>) => boolean, limit: number) {
+function topFiles(files: Record<string, unknown>[], predicate: (file: Record<string, unknown>) => boolean, limit: number) {
   return files
     .filter(predicate)
     .sort((a: Record<string, any>, b: Record<string, any>) => Number(b.nodeCount || 0) - Number(a.nodeCount || 0) || a.path.localeCompare(b.path))
@@ -88,15 +88,16 @@ async function packageScripts(sourcePath: string) {
   }
 }
 
-function languageSummary(files: any[]) {
-  const counts = {};
+function languageSummary(files: Record<string, unknown>[]) {
+  const counts: Record<string, number> = {};
   for (const file of files) {
-    counts[file.language] = (counts[file.language] || 0) + 1;
+    const lang = String(file.language || "unknown");
+    counts[lang] = (counts[lang] || 0) + 1;
   }
   return counts;
 }
 
-function highRiskAreas(files: any[]) {
+function highRiskAreas(files: Record<string, unknown>[]) {
   return HIGH_RISK_AREAS.map((area: Record<string, any>) => ({
     domain: area.domain,
     files: topFiles(
@@ -107,7 +108,7 @@ function highRiskAreas(files: any[]) {
   })).filter((area: Record<string, any>) => area.files.length > 0);
 }
 
-function safetyBoundaries(areas: any[]) {
+function safetyBoundaries(areas: Record<string, unknown>[]) {
   const domains = new Set(areas.map((area: Record<string, any>) => area.domain));
   const boundaries = [];
   if (domains.has("security")) boundaries.push("secrets", "github_write");

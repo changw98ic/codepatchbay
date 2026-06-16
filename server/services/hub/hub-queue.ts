@@ -215,7 +215,7 @@ async function queueLockOwnerPid(lockDir: string) {
   }
 }
 
-async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
+async function withQueueLock<T>(hubRoot: string, callback: () => Promise<T>): Promise<T> {
   const file = queuePath(hubRoot);
   const lockDir = `${file}.lock`;
   const ownerPid = process.pid;
@@ -233,7 +233,7 @@ async function withQueueLock(hubRoot: string, callback: () => Promise<any>) {
       acquired = true;
       break;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       if (await queueLockIsStale(lockDir)) {
         await rm(lockDir, { recursive: true, force: true });
         continue;
@@ -263,7 +263,7 @@ export async function loadQueue(hubRoot: string) {
     const raw = await readFile(queuePath(hubRoot), "utf8");
     return normalizeQueue(JSON.parse(raw));
   } catch (err) {
-    if (err && err.code === "ENOENT") return defaultQueue();
+    if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return defaultQueue();
     throw err;
   }
 }
@@ -485,12 +485,12 @@ export async function queueStatus(hubRoot: string) {
     maxActivePerProject: hubLimits.maxActivePerProject,
     projectLimits,
   });
-  counts.activeProjects = (Object.entries(counts.projects) as Array<[string, any]>)
+  counts.activeProjects = (Object.entries(counts.projects) as Array<[string, Record<string, any>]>)
     .filter(([, ps]) => ps.activeMutating > 0)
     .map(([projectId, ps]) => ({ projectId, ...ps }));
   counts.eligibleQueued = 0;
   counts.eligibleProjects = [];
-  for (const [pid, ps] of Object.entries(counts.projects) as Array<[string, any]>) {
+  for (const [pid, ps] of Object.entries(counts.projects) as Array<[string, Record<string, any>]>) {
     counts.eligibleQueued += ps.eligiblePending;
     if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
   }
@@ -641,7 +641,7 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
   } = opts;
 
   if (!providerSlotsAvailable) {
-    return { entry: null, reason: "provider-slots-exhausted", recovered: [], activeProjects: [] };
+    return { entry: null, reason: "provider-slots-exhausted", recovered: [], activeProjects: [], skippedBusy: [] };
   }
 
   return withQueueLock(hubRoot, async () => {
@@ -919,7 +919,7 @@ function issueQueueKey(repo: string, number: number) {
   return `${repo || ""}#${Number(number)}`;
 }
 
-export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, projectId: string, { createJobFn = null, dryRun = false }: { createJobFn?: ((...args: any[]) => any) | null; dryRun?: boolean } = {}) {
+export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, projectId: string, { createJobFn = null, dryRun = false }: { createJobFn?: ((...args: unknown[]) => unknown) | null; dryRun?: boolean } = {}) {
   const project = await getProject(hubRoot, projectId);
   if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
 
@@ -984,18 +984,18 @@ const VALID_TRANSITIONS = {
   acknowledged: "completed",
 };
 
-function inboxDir(cpbRoot: any, project: any) {
+function inboxDir(cpbRoot: string, project: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "inbox");
 }
 
-function safeId(id: any) {
+function safeId(id: string | null | undefined) {
   if (!id || typeof id !== "string") return false;
   if (id.includes("..") || id.includes("/") || id.includes(path.sep) || id.includes("\\")) return false;
   if (!/^msg-\d{8}-\d{6}-[0-9a-f]{4,}$/.test(id)) return false;
   return true;
 }
 
-function safeMessagePath(cpbRoot: any, project: any, id: any) {
+function safeMessagePath(cpbRoot: string, project: string, id: string) {
   const dir = inboxDir(cpbRoot, project);
   const resolved = path.resolve(dir, `${id}.md`);
   if (resolved !== dir && !resolved.startsWith(dir + path.sep)) {
@@ -1015,7 +1015,7 @@ function generateMessageId() {
   return `msg-${y}${m}${d}-${seq}-${_pidHex}`;
 }
 
-function serializeFrontmatter(meta: any) {
+function serializeFrontmatter(meta: Record<string, any>) {
   const lines = ["---"];
   for (const [key, value] of Object.entries(meta)) {
     if (value === undefined || value === null) {
@@ -1030,7 +1030,7 @@ function serializeFrontmatter(meta: any) {
   return lines.join("\n");
 }
 
-function parseFrontmatter(raw: any) {
+function parseFrontmatter(raw: string) {
   if (!raw.startsWith("---")) return null;
   const end = raw.indexOf("---", 3);
   if (end === -1) return null;
@@ -1057,7 +1057,7 @@ function parseFrontmatter(raw: any) {
   return { meta, content };
 }
 
-async function withInboxLock(cpbRoot: any, project: any, callback: any) {
+async function withInboxLock<T>(cpbRoot: string, project: string, callback: () => Promise<T>): Promise<T> {
   const dir = inboxDir(cpbRoot, project);
   const lockDir = `${dir}.lock`;
   await mkdir(dir, { recursive: true });
@@ -1069,7 +1069,7 @@ async function withInboxLock(cpbRoot: any, project: any, callback: any) {
       acquired = true;
       break;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       // Check staleness (30s)
       try {
         const info = await stat(lockDir);
@@ -1099,11 +1099,27 @@ async function withInboxLock(cpbRoot: any, project: any, callback: any) {
   }
 }
 
-function messageToOutput(meta: any) {
-  return { ...meta };
+interface InboxMessageOutput {
+  id: string;
+  type: string;
+  project: string;
+  jobId: string;
+  phase: string;
+  from: string;
+  to: string;
+  status: string;
+  owner: string;
+  locator: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  [key: string]: unknown;
 }
 
-export async function writeInboxMessage(cpbRoot: any, project: any, input: any) {
+function messageToOutput(meta: Record<string, any>): InboxMessageOutput {
+  return { ...meta } as InboxMessageOutput;
+}
+
+export async function writeInboxMessage(cpbRoot: string, project: string, input: Record<string, any>) {
   const id = generateMessageId();
   const ts = nowIso();
 
@@ -1134,7 +1150,7 @@ export async function writeInboxMessage(cpbRoot: any, project: any, input: any) 
   return messageToOutput(meta);
 }
 
-export async function listInboxMessages(cpbRoot: any, project: any, filters: AnyRecord = {}) {
+export async function listInboxMessages(cpbRoot: string, project: string, filters: AnyRecord = {}) {
   const dir = inboxDir(cpbRoot, project);
   let files;
   try {
@@ -1171,7 +1187,7 @@ export async function listInboxMessages(cpbRoot: any, project: any, filters: Any
   return messages;
 }
 
-export async function readInboxMessage(cpbRoot: any, project: any, id: any) {
+export async function readInboxMessage(cpbRoot: string, project: string, id: string) {
   if (!safeId(id)) return null;
   const filePath = safeMessagePath(cpbRoot, project, id);
   try {
@@ -1184,7 +1200,7 @@ export async function readInboxMessage(cpbRoot: any, project: any, id: any) {
   }
 }
 
-export async function ackInboxMessage(cpbRoot: any, project: any, id: any, { owner }: AnyRecord = {}) {
+export async function ackInboxMessage(cpbRoot: string, project: string, id: string, { owner }: AnyRecord = {}) {
   if (!safeId(id)) return null;
   return withInboxLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);
@@ -1215,7 +1231,7 @@ export async function ackInboxMessage(cpbRoot: any, project: any, id: any, { own
   });
 }
 
-export async function completeInboxMessage(cpbRoot: any, project: any, id: any) {
+export async function completeInboxMessage(cpbRoot: string, project: string, id: string) {
   if (!safeId(id)) return null;
   return withInboxLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);

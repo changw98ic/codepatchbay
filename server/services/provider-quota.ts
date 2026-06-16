@@ -28,16 +28,16 @@ const TERMINAL_STATUSES = new Set([
 
 // ─── Error ──────────────────────────────────────────────────────────
 export class ProviderQuotaError extends Error {
-  providerKey: any;
-  agent: any;
-  variant: any;
-  status: any;
-  nextEligibleAt: any;
-  source: any;
-  confidence: any;
-  reason: any;
-  phase: any;
-  role: any;
+  providerKey: string;
+  agent: string;
+  variant: string | null;
+  status: string;
+  nextEligibleAt: number | null;
+  source: string;
+  confidence: number;
+  reason: string;
+  phase: string | null;
+  role: string | null;
 
   /**
    * @param {string} message
@@ -53,7 +53,18 @@ export class ProviderQuotaError extends Error {
    * @param {string} [opts.phase]
    * @param {string} [opts.role]
    */
-  constructor(message: string, opts: Record<string, any>) {
+  constructor(message: string, opts: {
+    providerKey: string;
+    agent: string;
+    variant?: string | null;
+    status: string;
+    nextEligibleAt?: number | null;
+    source?: string;
+    confidence?: number;
+    reason?: string;
+    phase?: string | null;
+    role?: string | null;
+  }) {
     super(redactSecrets(message));
     this.name = "ProviderQuotaError";
     this.providerKey = opts.providerKey;
@@ -107,9 +118,9 @@ export async function readProviderQuotas(hubRoot: string) {
 }
 
 // In-process write queue to prevent concurrent write corruption
-const _writeQueues = new Map<string, Promise<any>>();
+const _writeQueues = new Map<string, Promise<Record<string, unknown> | null>>();
 
-export async function _internalWriteProviderQuota(hubRoot: string, providerKey: string, entry: Record<string, any>) {
+export async function _internalWriteProviderQuota(hubRoot: string, providerKey: string, entry: Record<string, unknown>) {
   const filePath = quotasFilePath(hubRoot);
   const queueKey = filePath;
   const prev = _writeQueues.get(queueKey) || Promise.resolve();
@@ -134,6 +145,17 @@ export async function _internalWriteProviderQuota(hubRoot: string, providerKey: 
 }
 
 // ─── State Transitions ──────────────────────────────────────────────
+interface MarkUnavailableOpts {
+  providerKey: string;
+  agent: string;
+  variant?: string | null;
+  status: string;
+  nextEligibleAt?: number | null;
+  source?: string;
+  confidence?: number;
+  reason?: string;
+}
+
 export async function _internalMarkProviderUnavailable(hubRoot: string, {
   providerKey,
   agent,
@@ -143,8 +165,8 @@ export async function _internalMarkProviderUnavailable(hubRoot: string, {
   source,
   confidence,
   reason,
-}: Record<string, any>) {
-  const validStatuses = [
+}: MarkUnavailableOpts) {
+  const validStatuses: string[] = [
     QuotaStatus.RATE_LIMITED,
     QuotaStatus.WINDOW_EXHAUSTED,
     QuotaStatus.WEEKLY_EXHAUSTED,
@@ -180,13 +202,21 @@ export async function _internalMarkProviderAvailable(hubRoot: string, providerKe
 }
 
 // ─── Gate ───────────────────────────────────────────────────────────
+interface AssertAvailableOpts {
+  providerKey: string;
+  agent: string;
+  variant?: string;
+  phase?: string;
+  role?: string;
+}
+
 export async function assertProviderAvailable(hubRoot: string, {
   providerKey,
   agent,
   variant,
   phase,
   role,
-}: Record<string, any>) {
+}: AssertAvailableOpts) {
   const quotas = await readProviderQuotas(hubRoot);
   const entry = quotas[providerKey];
   if (!entry) return; // no entry = never seen = available
@@ -330,7 +360,7 @@ function getTimezoneOffsetMinutes(utcMs: number, timezone: string) {
       hour12: false,
     });
     const parts = dtf.formatToParts(new Date(utcMs));
-    const get = (type) => Number(parts.find((p) => p.type === type)?.value);
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
     const localMs = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
     // offset = local - utc (positive for east of Greenwich)
     return (localMs - utcMs) / 60_000;
@@ -359,7 +389,26 @@ function getTimezoneOffsetMinutes(utcMs: number, timezone: string) {
  * @param {object} [opts.adapter] - provider adapter (optional)
  * @returns {Promise<{isQuota: boolean, status?: string, nextEligibleAt?: number, confidence?: number, reason?: string}>}
  */
-export async function classifyQuotaFailure({ providerKey, agent, variant, error, stdout, stderr, adapter }: Record<string, any>) {
+interface ClassifyFailureOpts {
+  providerKey: string;
+  agent: string;
+  variant?: string;
+  error: Error;
+  stdout?: string;
+  stderr?: string;
+  adapter?: {
+    timezone?: string;
+    parseLimitError?: (args: { error: Error; stdout?: string; stderr?: string }) => Promise<{
+      isQuota: boolean;
+      status?: string;
+      nextEligibleAt?: number;
+      confidence?: number;
+      reason?: string;
+    } | null>;
+  };
+}
+
+export async function classifyQuotaFailure({ providerKey, agent, variant, error, stdout, stderr, adapter }: ClassifyFailureOpts) {
   const msg = error?.message || String(error || "");
   const combined = `${msg}\n${stderr || ""}\n${stdout || ""}`;
 
@@ -458,7 +507,14 @@ const AMBIGUOUS_BACKOFFS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
  * @param {number} [opts.ambiguous429Attempt] - 0-indexed attempt for ambiguous 429
  * @returns {{nextEligibleAt: number, reason: string}}
  */
-export function computeFixedBackoff({ retryAfter, windowReset, weeklyReset, ambiguous429Attempt = 0 }: Record<string, any>) {
+interface FixedBackoffOpts {
+  retryAfter?: number;
+  windowReset?: number;
+  weeklyReset?: number;
+  ambiguous429Attempt?: number;
+}
+
+export function computeFixedBackoff({ retryAfter, windowReset, weeklyReset, ambiguous429Attempt = 0 }: FixedBackoffOpts) {
   if (retryAfter != null && retryAfter > 0) {
     return { nextEligibleAt: Date.now() + retryAfter, reason: `retry-after ${retryAfter}ms` };
   }

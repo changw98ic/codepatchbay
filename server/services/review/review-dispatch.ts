@@ -831,8 +831,8 @@ export async function runReview(cpbRoot: string, sessionId: string): Promise<voi
 
     // Phase 3: Review Loop
     let currentPlan = plan;
-    let prevCodexIssues: any[] = [];
-    let prevClaudeIssues: any[] = [];
+    let prevCodexIssues: Record<string, unknown>[] = [];
+    let prevClaudeIssues: Record<string, unknown>[] = [];
     for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
@@ -1045,7 +1045,7 @@ export async function collectVerifierEvidence(cpbRoot: string, project: string, 
     eventLog: null,
     projectContext: null,
     testResults: null,
-    diagnostics: [] as any[],
+    diagnostics: [] as Record<string, unknown>[],
   };
 
   const dataRoot = explicitDataRoot || jobState?.stateRoot || null;
@@ -1134,7 +1134,7 @@ async function resolveRemediationDataRoot(cpbRoot: string, project: string, { hu
   });
 }
 
-function validateIdRem(name: string, value: any): void {
+function validateIdRem(name: string, value: unknown): void {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${name}: ${value}`);
   }
@@ -1393,7 +1393,7 @@ import { resolveHubRoot as resolveHubRootRepair } from "../hub/hub-registry.js";
 import { enqueue as enqueueRepair, listQueue as listQueueRepair } from "../hub/hub-queue.js";
 import { allocateArtifactId as allocateArtifactIdRepair } from "../artifact-locator.js";
 
-function validateIdRepair(name: string, value: any): void {
+function validateIdRepair(name: string, value: unknown): void {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${name}: ${value}`);
   }

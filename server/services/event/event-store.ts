@@ -13,7 +13,7 @@ import {
 
 const EVENT_LOCK_TTL_MS = 30_000;
 
-async function withEventLock(eventFile: string, callback: () => Promise<any>) {
+async function withEventLock<T>(eventFile: string, callback: () => Promise<T>): Promise<T> {
   const lockDir = `${eventFile}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
@@ -79,7 +79,7 @@ function validatePathComponent(name: string, value: unknown) {
   }
 }
 
-function serializeEvent(event: any) {
+function serializeEvent(event: unknown) {
   if (event === null || typeof event !== "object" || Array.isArray(event)) {
     throw new Error("invalid event: expected a non-null object");
   }
@@ -405,7 +405,7 @@ const NODE_STATE_DEFAULTS: AnyRecord = {
   durationMs: null,
 };
 
-function _updateNodeState(state: AnyRecord, nodeId: any, updates: AnyRecord) {
+function _updateNodeState(state: AnyRecord, nodeId: string | undefined | null, updates: AnyRecord) {
   if (!nodeId) return;
   const prev = state.nodeStates[nodeId] || { ...NODE_STATE_DEFAULTS };
   const definedUpdates = Object.fromEntries(
@@ -428,7 +428,7 @@ function _workflowNodeIds(state: AnyRecord) {
   return new Set(_workflowNodes(state).map((node) => node?.id).filter(Boolean));
 }
 
-function _workflowHasNodeId(state: AnyRecord, nodeId: any): boolean {
+function _workflowHasNodeId(state: AnyRecord, nodeId: string | undefined | null): boolean {
   return _workflowNodeIds(state).has(nodeId);
 }
 
@@ -440,7 +440,7 @@ function _syncDagResume(state: AnyRecord) {
     workflowDag: state.workflowDag,
     nodeStates: state.nodeStates,
     phaseStates,
-  } as any);
+  } as Record<string, unknown>);
   state.completedNodes = state.dagResume.completedNodeIds;
 }
 

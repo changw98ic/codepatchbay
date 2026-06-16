@@ -14,7 +14,17 @@ import { validateChecklistVerdict } from "../workflow/acceptance-checklist.js";
 import { buildEvidenceProbePlan, validateEvidenceObservation } from "../workflow/evidence-probes.js";
 import { runChecklistProbes } from "../workflow/probe-runner.js";
 
-const execFile: any = promisify(execFileCb);
+interface VerifierVerdict {
+  ok: boolean;
+  status: string;
+  reason: string;
+  details?: string;
+  confidence?: number;
+  checklistVerdict?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+const execFile: (cmd: string, args: string[], opts?: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }> = promisify(execFileCb) as unknown as (cmd: string, args: string[], opts?: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
 const OUTPUT_TAIL_CHARS = 4000;
 const PROMPT_PLAN_CHARS = 12_000;
 const PROMPT_DIFF_CHARS = 16_000;
@@ -262,13 +272,13 @@ function synthesizeUncheckedChecklistVerdict({ jobId, acceptanceChecklist, reaso
       .map((item: Record<string, any>) => ({
         checklistId: item.id,
         result: "unchecked",
-        evidenceRefs: [] as any[],
+        evidenceRefs: [] as Record<string, unknown>[],
         actualResult: "",
         reason,
-        fixScope: [] as any[],
+        fixScope: [] as Record<string, unknown>[],
       })),
-    blocking: [] as any[],
-    fixScope: [] as any[],
+    blocking: [] as Record<string, unknown>[],
+    fixScope: [] as Record<string, unknown>[],
     reason,
   };
 }
@@ -374,7 +384,7 @@ export async function runVerify(ctx: Record<string, any>) {
         attemptId,
         finalWorktree: verificationEvidence.git,
       })
-    : { probes: [] as any[] };
+    : { probes: [] as Record<string, unknown>[] };
   const evidenceLedger = buildEvidenceLedger({
     jobId,
     project,
@@ -427,7 +437,7 @@ export async function runVerify(ctx: Record<string, any>) {
     });
   }
 
-  const verdict: Record<string, any> = parseVerifierJson(agentResult.output) as any;
+  const verdict = parseVerifierJson(agentResult.output) as VerifierVerdict;
   if (!verdict.ok) {
     return phaseFailed({
       phase: "verify",
@@ -550,7 +560,7 @@ export async function runVerify(ctx: Record<string, any>) {
         { ...agentResult.diagnostics, verdict, verificationEvidence, evidenceLedgerArtifact, checklistVerdictArtifact },
         promptArtifact,
       ),
-    } as any);
+    } as unknown as { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown> });
   }
 
   // ── Legacy (non-checklist-aware) path ───────────────────────────────
@@ -583,7 +593,7 @@ export async function runVerify(ctx: Record<string, any>) {
     verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics: withPromptArtifactDiagnostics({ ...agentResult.diagnostics, verdict, verificationEvidence }, promptArtifact),
-  } as any);
+  } as unknown as { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown> });
 }
 
 async function collectVerificationEvidence(cwd: string, planArtifact: Record<string, any>, hardGate: Record<string, any>, planEvidence: Record<string, any> | null = null) {
@@ -694,7 +704,7 @@ async function collectGitEvidence(cwd: string) {
 
 async function git(cwd: string, args: string[]) {
   return execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 })
-    .then(({ stdout = "", stderr = "" }: any) => ({ stdout, stderr }));
+    .then(({ stdout = "", stderr = "" }: { stdout?: string; stderr?: string }) => ({ stdout, stderr }));
 }
 
 function uniqueLines(text: unknown): string[] {

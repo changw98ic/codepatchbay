@@ -89,11 +89,11 @@ const TOP_STATUSES = new Set(["pass", "fail"]);
 const RISK_VALUES = new Set(["low", "medium", "high"]);
 const VERIFICATION_METHODS = new Set(["command", "test", "static", "runtime_event", "artifact_event", "audit_export", "dag_event", "worker_lifecycle", "manual", "absence_check"]);
 
-function text(value: any) {
+function text(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function isRepoRelativePosixPath(value: any) {
+function isRepoRelativePosixPath(value: unknown) {
   const path = text(value);
   return Boolean(path) && !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
 }
@@ -101,11 +101,11 @@ function isRepoRelativePosixPath(value: any) {
 const CHECKLIST_ID_RE = /^AC-\d+$/;
 
 /** A fixScope entry must be a file path, never a checklist ID like "AC-002". */
-function isChecklistId(value: any) {
+function isChecklistId(value: unknown) {
   return CHECKLIST_ID_RE.test(text(value));
 }
 
-function stripGitStatusPrefix(value: any) {
+function stripGitStatusPrefix(value: unknown) {
   return text(value).replace(/^[ MADRCU?!]{1,2}\s+/, "");
 }
 
@@ -264,7 +264,7 @@ export async function buildAcceptanceChecklist({ jobId, project, task, documents
         verificationMethod: text(entry.verificationMethod) || "static",
         expectedEvidence: text(entry.expectedEvidence) || expectedEvidenceDefault,
         dependsOn: Array.isArray(entry.dependsOn) ? entry.dependsOn : [],
-        allowedFiles: Array.isArray(entry.allowedFiles) ? entry.allowedFiles.filter((f: any) => isRepoRelativePosixPath(f)) : [],
+        allowedFiles: Array.isArray(entry.allowedFiles) ? entry.allowedFiles.filter((f: unknown) => isRepoRelativePosixPath(f)) : [],
       }))
     : classification.classifiedRequirements.map((entry: AnyRecord, index: number) => ({
         id: `AC-${String(index + 1).padStart(3, "0")}`,

@@ -105,7 +105,7 @@ function warn(msg: string) {
   console.log(`${YELLOW}[WARN]${NC} ${msg}`);
 }
 
-function failure(reason: any, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, any> = {}): any {
+function failure(reason: string, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     reason,
     code,
@@ -181,7 +181,7 @@ function ts() {
 
 // ─── Run a bridge script as child process ───
 
-function killChildProcess(proc: any) {
+function killChildProcess(proc: import("node:child_process").ChildProcess & { detached?: boolean }) {
   try {
     if (proc.detached && process.platform !== "win32") {
       process.kill(-proc.pid, "SIGTERM");
@@ -204,13 +204,13 @@ function killChildProcess(proc: any) {
   }, 2_000).unref?.();
 }
 
-function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<any> {
+function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<Record<string, any>> {
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks: any[] = [];
+    const stdoutChunks: Buffer[] = [];
     const detached = Boolean(options.signal) && process.platform !== "win32";
 
-    function finish(result: any) {
+    function finish(result: Record<string, any>) {
       if (settled) return;
       settled = true;
       if (options.signal && proc) {
@@ -219,7 +219,7 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
       resolve(result);
     }
 
-    let proc: any;
+    let proc: ReturnType<typeof spawn> & { detached?: boolean };
     const onAbort = () => {
       if (!settled && proc) {
         killChildProcess(proc);
@@ -264,7 +264,7 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
   });
 }
 
-function combineChunks(chunks: any[]) {
+function combineChunks(chunks: Buffer[]) {
   if (chunks.length === 0) return "";
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -452,7 +452,7 @@ async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, projec
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<any> {
+async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<{ cancelled: boolean; redirect: Record<string, unknown> | null }> {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (job.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}`, dataRoot });

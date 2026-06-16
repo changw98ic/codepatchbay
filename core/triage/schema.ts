@@ -41,8 +41,8 @@ export function defaultPlanModeForWorkflow(workflow: string) {
   return WORKFLOW_DEFAULT_PLAN_MODE[workflow] || "light";
 }
 
-export function scopesContainCritical(protectedScopes: any[] = []) {
-  return (protectedScopes || []).some((scope: Record<string, any>) => scope.severity === "critical");
+export function scopesContainCritical(protectedScopes: (string | Record<string, unknown>)[] = []) {
+  return (protectedScopes || []).some((scope) => typeof scope === "object" && scope !== null && scope.severity === "critical");
 }
 
 export function normalizeActorTrust({
@@ -70,31 +70,39 @@ export function normalizeActorTrust({
 }
 
 type NormalizedRoute = {
-  category: any;
-  workflow: any;
-  planMode: any;
+  category: string;
+  workflow: string;
+  planMode: string;
   reviewer: boolean;
-  reason: any;
-  source: any;
+  reason: string;
+  source: string;
 };
 
-export function normalizeRoute(route: Record<string, any> = {}, defaults: Record<string, any> = {}): NormalizedRoute {
-  const fallbackWorkflow = defaults.workflow && WORKFLOWS.has(defaults.workflow)
-    ? defaults.workflow
+export function normalizeRoute(route: Record<string, unknown> = {}, defaults: Record<string, unknown> = {}): NormalizedRoute {
+  const routeWorkflow = typeof route.workflow === "string" ? route.workflow : undefined;
+  const defaultsWorkflow = typeof defaults.workflow === "string" ? defaults.workflow : undefined;
+  const routePlanMode = typeof route.planMode === "string" ? route.planMode : undefined;
+  const defaultsPlanMode = typeof defaults.planMode === "string" ? defaults.planMode : undefined;
+  const defaultsCategory = typeof defaults.category === "string" ? defaults.category : undefined;
+  const defaultsReason = typeof defaults.reason === "string" ? defaults.reason : undefined;
+  const defaultsSource = typeof defaults.source === "string" ? defaults.source : undefined;
+
+  const fallbackWorkflow = defaultsWorkflow && WORKFLOWS.has(defaultsWorkflow)
+    ? defaultsWorkflow
     : "standard";
-  const workflow = WORKFLOWS.has(route?.workflow) ? route.workflow : fallbackWorkflow;
-  const fallbackPlanMode = defaults.planMode && PLAN_MODES.has(defaults.planMode)
-    ? defaults.planMode
+  const workflow: string = routeWorkflow && WORKFLOWS.has(routeWorkflow) ? routeWorkflow : fallbackWorkflow;
+  const fallbackPlanMode = defaultsPlanMode && PLAN_MODES.has(defaultsPlanMode)
+    ? defaultsPlanMode
     : defaultPlanModeForWorkflow(workflow);
-  const planMode = PLAN_MODES.has(route?.planMode) ? route.planMode : fallbackPlanMode;
+  const planMode: string = routePlanMode && PLAN_MODES.has(routePlanMode) ? routePlanMode : fallbackPlanMode;
 
   return {
-    category: cleanString(route?.category) || defaults.category || workflow,
+    category: cleanString(route?.category) || defaultsCategory || workflow,
     workflow,
     planMode,
     reviewer: Boolean(route?.reviewer || workflow === "complex" || defaults.reviewer),
-    reason: cleanString(route?.reason) || defaults.reason || "route policy",
-    source: cleanString(route?.source) || defaults.source || "rules",
+    reason: cleanString(route?.reason) || defaultsReason || "route policy",
+    source: cleanString(route?.source) || defaultsSource || "rules",
   };
 }
 
@@ -111,7 +119,7 @@ export function isRouteDowngrade(candidate: NormalizedRoute, current: Normalized
   return routeStrength(candidate) < routeStrength(current);
 }
 
-export function normalizeProtectedScopes(scopes: any[] = []) {
+export function normalizeProtectedScopes(scopes: Record<string, unknown>[] = []) {
   const byScope = new Map();
   for (const scope of scopes || []) {
     const name = cleanString(scope?.scope || scope);
@@ -135,12 +143,22 @@ export function normalizeProtectedScopes(scopes: any[] = []) {
   return [...byScope.values()];
 }
 
-function actualDiffProtected(actualDiffRisk: Record<string, any>) {
+function actualDiffProtected(actualDiffRisk: Record<string, unknown>) {
   return Boolean(actualDiffRisk?.protected || actualDiffRisk?.risk === "protected");
 }
 
 function strongerRoute(a: NormalizedRoute, b: NormalizedRoute): NormalizedRoute {
   return routeStrength(b) >= routeStrength(a) ? b : a;
+}
+
+interface MergeRoutePolicyInput {
+  ruleRoute?: Record<string, unknown>;
+  requestedRoute?: Record<string, unknown>;
+  acpRoute?: Record<string, unknown> | null;
+  actorTrust?: Record<string, unknown>;
+  protectedScopes?: Record<string, unknown>[];
+  actualDiffRisk?: Record<string, unknown> | null;
+  reasons?: string[];
 }
 
 export function mergeRoutePolicy({
@@ -151,10 +169,7 @@ export function mergeRoutePolicy({
   protectedScopes = [],
   actualDiffRisk = null,
   reasons = [],
-}: Record<string, any> = {}) {
-  ruleRoute = ruleRoute as Record<string, any> | undefined;
-  requestedRoute = requestedRoute as Record<string, any> | undefined;
-  actorTrust = actorTrust as Record<string, any> | undefined;
+}: MergeRoutePolicyInput = {}) {
   const base = normalizeRoute(SAFE_DEFAULT_ROUTE);
   const rule = normalizeRoute(ruleRoute || base, {
     ...base,

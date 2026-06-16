@@ -16,7 +16,7 @@ import {
 } from "../provider-quota.js";
 import { getProviderAdapter } from "../provider-adapters.js";
 
-let _registryCache: Record<string, any> | null = null;
+let _registryCache: AnyRecord | null = null;
 
 /**
  * Compound key for persistent client isolation.
@@ -24,7 +24,7 @@ let _registryCache: Record<string, any> | null = null;
  * reuse the same ACP provider process across sequential jobs. Agents with
  * launch-scoped MCP config can opt into processCwd to avoid stale launch args.
  */
-export function poolClientKey(agent: string, options: Record<string, any> = {}) {
+export function poolClientKey(agent: string, options: AnyRecord = {}) {
   const projectId = options.projectId || "";
   const workspaceId = options.workspaceId || "";
   const processCwd = options.processCwd || "";
@@ -33,10 +33,10 @@ export function poolClientKey(agent: string, options: Record<string, any> = {}) 
   return [agent, projectId, workspaceId, processCwd, policyHash, variant].join("::");
 }
 
-async function getRegistry(): Promise<Record<string, any> | null> {
+async function getRegistry(): Promise<AnyRecord | null> {
   if (_registryCache) return _registryCache;
   try {
-    const mod: Record<string, any> = await import("../../../core/agents/registry.js");
+    const mod: AnyRecord = await import("../../../core/agents/registry.js");
     await mod.loadRegistry();
     _registryCache = mod;
   } catch {
@@ -55,7 +55,7 @@ const CONNECTION_POLL_MS = 50;
 const DEFAULT_POOL_WAIT_TIMEOUT_MS = resolvePoolWaitTimeoutMs();
 const POOL_WAIT_WARN_INTERVAL_MS = 30_000;
 
-function resolveHubRootFromEnv(cpbRoot: string, env: Record<string, any> = {}) {
+function resolveHubRootFromEnv(cpbRoot: string, env: AnyRecord = {}) {
   if (env.CPB_HUB_ROOT) return path.resolve(env.CPB_HUB_ROOT);
   const home = os.homedir();
   return home ? path.join(home, ".cpb") : path.join(path.resolve(cpbRoot), ".cpb", "hub");
@@ -76,7 +76,7 @@ function emptyUsageRollup() {
   };
 }
 
-function addUsageRollup(target: Record<string, any>, usage: Record<string, any> = {}) {
+function addUsageRollup(target: AnyRecord, usage: AnyRecord = {}) {
   for (const key of [
     "inputTokens",
     "cachedInputTokens",
@@ -94,7 +94,7 @@ function addUsageRollup(target: Record<string, any>, usage: Record<string, any> 
   target.tokenSource = usage.tokenSource || target.tokenSource || "acp_audit";
 }
 
-function finalizeUsageRollup(rollup: Record<string, any>, { tokenEvents = 0, toolCalls = 0, source = "acp_audit" }: Record<string, any> = {}) {
+function finalizeUsageRollup(rollup: AnyRecord, { tokenEvents = 0, toolCalls = 0, source = "acp_audit" }: AnyRecord = {}) {
   if (toolCalls > 0 && rollup.toolCalls === 0) rollup.toolCalls = toolCalls;
   if (rollup.events <= 0 && tokenEvents <= 0) {
     return toolCalls > 0
@@ -106,13 +106,13 @@ function finalizeUsageRollup(rollup: Record<string, any>, { tokenEvents = 0, too
   return rollup;
 }
 
-function auditEventMatches(event: Record<string, any>, { phase = null, role = null }: Record<string, any> = {}) {
+function auditEventMatches(event: AnyRecord, { phase = null, role = null }: AnyRecord = {}) {
   if (phase && event.phase !== phase) return false;
   if (role && event.role !== role) return false;
   return true;
 }
 
-export async function readAcpUsageFromAudit(auditFile: string | null, filter: Record<string, any> = {}) {
+export async function readAcpUsageFromAudit(auditFile: string | null, filter: AnyRecord = {}) {
   if (!auditFile) return null;
   let raw;
   try {
@@ -184,7 +184,7 @@ export class AcpExecutionError extends Error {
   signal: string | null;
   phase: string | null;
   role: string | null;
-  quota: Record<string, any> | null;
+  quota: AnyRecord | null;
 
   constructor(message: string, {
     agent,
@@ -196,7 +196,7 @@ export class AcpExecutionError extends Error {
     phase = null,
     role = null,
     quota = null,
-  }: { agent?: string; providerKey?: string; stdout?: string; stderr?: string; exitCode?: number | null; signal?: string | null; phase?: string | null; role?: string | null; quota?: Record<string, any> | null } = {}) {
+  }: { agent?: string; providerKey?: string; stdout?: string; stderr?: string; exitCode?: number | null; signal?: string | null; phase?: string | null; role?: string | null; quota?: AnyRecord | null } = {}) {
     super(message);
     this.name = "AcpExecutionError";
     this.agent = agent ?? "";
@@ -213,11 +213,11 @@ export class AcpExecutionError extends Error {
 
 export class PoolExhaustedError extends Error {
   code: string;
-  agent: any;
-  providerKey: any;
-  elapsedMs: any;
+  agent: string;
+  providerKey: string;
+  elapsedMs: number;
 
-  constructor(agent: any, providerKey: any, elapsedMs: any, message?: string) {
+  constructor(agent: string, providerKey: string, elapsedMs: number, message?: string) {
     super(message || `ACP pool exhausted: ${agent}/${providerKey} waited ${Math.round(elapsedMs / 1000)}s`);
     this.name = "PoolExhaustedError";
     this.code = "POOL_EXHAUSTED";
@@ -231,7 +231,7 @@ function agentEnvName(agent: string) {
   return String(agent || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-export function providerKeyForAgent(agent: string, env: Record<string, any> = {}, variant: string | null = null) {
+export function providerKeyForAgent(agent: string, env: AnyRecord = {}, variant: string | null = null) {
   if (variant) return `${agent}:${variant}`;
 
   if (agent === "claude") {
@@ -249,7 +249,7 @@ function variantNameFromProviderKey(providerKey: string, agent: string) {
   return providerKey.startsWith(prefix) ? providerKey.slice(prefix.length) : null;
 }
 
-export function envForAgent(agent: string, env: Record<string, any> = {}, variant: string | null = null) {
+export function envForAgent(agent: string, env: AnyRecord = {}, variant: string | null = null) {
   const next = { ...env };
 
   if (variant) {
@@ -265,8 +265,8 @@ export function envForAgent(agent: string, env: Record<string, any> = {}, varian
   return next;
 }
 
-function acpMetadataEnv(options: Record<string, any> = {}) {
-  const meta: Record<string, any> = {};
+function acpMetadataEnv(options: AnyRecord = {}) {
+  const meta: AnyRecord = {};
   if (options.projectId) meta.CPB_ACP_PROJECT = options.projectId;
   if (options.jobId) meta.CPB_ACP_JOB_ID = options.jobId;
   if (options.dataRoot) meta.CPB_PROJECT_RUNTIME_ROOT = options.dataRoot;
@@ -280,7 +280,7 @@ function acpMetadataEnv(options: Record<string, any> = {}) {
 // Re-export from provider-quota (redaction unified there)
 export { sanitizeProviderReason } from "../provider-quota.js";
 
-async function normalizeLimitsAsync(limits: Record<string, any> = {}) {
+async function normalizeLimitsAsync(limits: AnyRecord = {}) {
   const registry = await getRegistry();
 
   const result = { ...limits };
@@ -297,7 +297,7 @@ async function normalizeLimitsAsync(limits: Record<string, any> = {}) {
 }
 
 // Sync fallback for constructor (registry not loaded yet)
-function normalizeLimits(limits: Record<string, any> = {}) {
+function normalizeLimits(limits: AnyRecord = {}) {
   const result = { ...limits };
   if (!result.codex) result.codex = 1;
   if (!result.claude) result.claude = 1;
@@ -332,7 +332,7 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function signalChild(child: Record<string, any>, signal: NodeJS.Signals) {
+function signalChild(child: AnyRecord, signal: NodeJS.Signals) {
   if (!child?.pid) return;
   try {
     if (child.detached && process.platform !== "win32") {
@@ -345,7 +345,7 @@ function signalChild(child: Record<string, any>, signal: NodeJS.Signals) {
   }
 }
 
-function terminateChild(child: Record<string, any>) {
+function terminateChild(child: AnyRecord) {
   return new Promise<void>((resolve) => {
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
       resolve();
@@ -374,39 +374,39 @@ function terminateChild(child: Record<string, any>) {
 export class AcpPool {
   cpbRoot: string;
   hubRoot: string;
-  env: any;
-  limits: any;
-  runner: any;
+  env: AnyRecord;
+  limits: AnyRecord;
+  runner: ((opts: AnyRecord) => Promise<string>) | null;
   persistentProcesses: boolean;
   maxSessionRequests: number;
   maxSessionAgeMs: number;
   sessionIdleMs: number;
   providerConnectionLimit: number;
-  providerConnectionLimits: Record<string, any>;
+  providerConnectionLimits: Record<string, number>;
   connectionPollMs: number;
-  active: Map<any, any>;
-  activeProviders: Map<any, any>;
-  pending: Map<any, any>;
-  requestCount: Map<any, any>;
-  errorCount: Map<any, any>;
-  lastSpawnAt: Map<any, any>;
-  spawnCount: Map<any, any>;
-  recycleCount: Map<any, any>;
-  liveRequests: Map<any, any>;
-  sessions: Map<any, any>;
-  persistentClients: Map<any, any>;
-  persistentChains: Map<any, any>;
-  lastRecycleReason: Map<any, any>;
-  toolPolicyPromise: any;
+  active: Map<string, number>;
+  activeProviders: Map<string, number>;
+  pending: Map<string, AnyRecord[]>;
+  requestCount: Map<string, number>;
+  errorCount: Map<string, number>;
+  lastSpawnAt: Map<string, number>;
+  spawnCount: Map<string, number>;
+  recycleCount: Map<string, number>;
+  liveRequests: Map<string, AnyRecord>;
+  sessions: Map<string, AnyRecord>;
+  persistentClients: Map<string, AnyRecord>;
+  persistentChains: Map<string, Promise<unknown>>;
+  lastRecycleReason: Map<string, string>;
+  toolPolicyPromise: Promise<Map<string, string> | null> | null;
   _seq: number;
   stopped: boolean;
   createdAt: number;
 
-  constructor(opts: Record<string, any> = {}) {
+  constructor(opts: AnyRecord = {}) {
     const parentEnv = opts.env || process.env;
     this.cpbRoot = path.resolve(opts.cpbRoot || parentEnv.CPB_ROOT || path.join(__dirname, ".."));
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRootFromEnv(this.cpbRoot, parentEnv));
-    this.env = (buildAcpPoolEnv as any)(parentEnv, {
+    this.env = (buildAcpPoolEnv as (parentEnv: AnyRecord, extra: AnyRecord) => AnyRecord)(parentEnv, {
       CPB_ROOT: this.cpbRoot,
       CPB_ACP_CPB_ROOT: this.cpbRoot,
       CPB_HUB_ROOT: this.hubRoot,
@@ -488,7 +488,7 @@ export class AcpPool {
     this.persistentChains.clear();
   }
 
-  async releaseWorktree(cwd: string, reason: any = "worktree_release", options: Record<string, any> = {}) {
+  async releaseWorktree(cwd: string, reason: string | Record<string, unknown> = "worktree_release", options: Record<string, unknown> = {}) {
     if (!cwd) return false;
     if (reason && typeof reason === "object") {
       options = reason;
@@ -622,18 +622,18 @@ export class AcpPool {
     return Boolean(this.persistentProcesses && !this.runner);
   }
 
-  #usesLaunchScopedMcp(agent: string, options: Record<string, any> = {}) {
+  #usesLaunchScopedMcp(agent: string, options: AnyRecord = {}) {
     if (agent !== "codex") return false;
     const env = this.#executionEnv(agent, options);
     return env.CPB_CODEGRAPH_ENABLED !== "0";
   }
 
-  #persistentClientKey(agent: string, options: Record<string, any> = {}) {
+  #persistentClientKey(agent: string, options: AnyRecord = {}) {
     const processCwd = this.#usesLaunchScopedMcp(agent, options) ? options.cwd || "" : "";
     return poolClientKey(agent, { ...options, processCwd });
   }
 
-  #providerKeyForRequest(agent: string, options: Record<string, any> = {}) {
+  #providerKeyForRequest(agent: string, options: AnyRecord = {}) {
     return options.providerKey || this.providerKey(agent, options.variant);
   }
 
@@ -641,7 +641,7 @@ export class AcpPool {
     return `${agent}-${Date.now()}-${++this._seq}`;
   }
 
-  acquire(agent: string, options: Record<string, any> = {}) {
+  acquire(agent: string, options: AnyRecord = {}) {
     const providerKey = this.#providerKeyForRequest(agent, options);
     const limit = this.#providerConnectionLimit(providerKey);
     // Count all agents sharing the same provider key
@@ -656,11 +656,11 @@ export class AcpPool {
     const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
     const start = Date.now();
     let warnTimer = null;
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<AnyRecord>((resolve, reject) => {
       // Queue under provider key (not agent name) so cross-agent waits are shared
       const queueKey = `provider:${providerKey}`;
       const queue = this.pending.get(queueKey) || [];
-      const entry: Record<string, any> = { resolve, reject, agent, providerKey };
+      const entry: AnyRecord = { resolve, reject, agent, providerKey };
       queue.push(entry);
       this.pending.set(queueKey, queue);
 
@@ -692,11 +692,11 @@ export class AcpPool {
    * Count active sessions across all agents that share the same provider key.
    * This is the in-process gate; the file-based lease in #run() handles cross-process.
    */
-  #providerActiveCount(providerKey: any) {
+  #providerActiveCount(providerKey: string) {
     return this.activeProviders.get(providerKey) || 0;
   }
 
-  release(agent: any, requestId: any) {
+  release(agent: string, requestId: string) {
     const request = requestId ? this.liveRequests.get(requestId) : null;
     const providerKey = request?.providerKey || this.providerKey(agent);
     const active = Math.max(0, (this.active.get(agent) || 1) - 1);
@@ -719,7 +719,7 @@ export class AcpPool {
     next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
   }
 
-  providerKey(agent: any, variant: any = null) {
+  providerKey(agent: string, variant: string | null = null) {
     return providerKeyForAgent(agent, this.env, variant);
   }
 
@@ -731,13 +731,13 @@ export class AcpPool {
     return path.join(this.#connectionLeasesDir(), ".lock");
   }
 
-  #providerConnectionLimit(providerKey: any) {
+  #providerConnectionLimit(providerKey: string) {
     const specific = this.providerConnectionLimits[providerKey]
       ?? this.env[`CPB_ACP_POOL_PROVIDER_${providerEnvKey(providerKey)}_MAX`];
     return positiveIntOption(specific, this.providerConnectionLimit);
   }
 
-  async #connectionLockIsStale(lockDir: any) {
+  async #connectionLockIsStale(lockDir: string) {
     try {
       const info = await stat(lockDir);
       return Date.now() - info.mtimeMs >= CONNECTION_LOCK_TTL_MS;
@@ -746,7 +746,7 @@ export class AcpPool {
     }
   }
 
-  async #withConnectionLock(callback: any) {
+  async #withConnectionLock<T>(callback: () => Promise<T>) {
     const dir = this.#connectionLeasesDir();
     const lockDir = this.#connectionLockDir();
     await mkdir(dir, { recursive: true });
@@ -775,7 +775,7 @@ export class AcpPool {
     }
   }
 
-  #leaseAlive(lease: any) {
+  #leaseAlive(lease: AnyRecord) {
     if (!lease?.pid) return false;
     try {
       process.kill(Number(lease.pid), 0);
@@ -812,7 +812,7 @@ export class AcpPool {
     return leases;
   }
 
-  async #tryAcquireConnectionLease(agent: string, providerKey: string, options: Record<string, any> = {}) {
+  async #tryAcquireConnectionLease(agent: string, providerKey: string, options: AnyRecord = {}) {
     return this.#withConnectionLock(async () => {
       const leases = await this.#listLiveConnectionLeasesLocked();
       const providerLimit = this.#providerConnectionLimit(providerKey);
@@ -838,7 +838,7 @@ export class AcpPool {
     });
   }
 
-  async #acquireConnectionLease(agent: string, providerKey: string, options: Record<string, any> = {}) {
+  async #acquireConnectionLease(agent: string, providerKey: string, options: AnyRecord = {}) {
     const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
     const start = Date.now();
     let lastWarnAt = start;
@@ -865,20 +865,20 @@ export class AcpPool {
   async #countProviderLeases(providerKey: string) {
     try {
       const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
-      return leases.filter((l: any) => l.providerKey === providerKey).length;
+      return leases.filter((l: AnyRecord) => l.providerKey === providerKey).length;
     } catch {
       return -1;
     }
   }
 
-  async #releaseConnectionLease(lease: any) {
+  async #releaseConnectionLease(lease: AnyRecord | null) {
     if (!lease?.filePath) return;
     await rm(lease.filePath, { force: true }).catch(() => null);
   }
 
-  #executionEnv(agent: string, options: Record<string, any> = {}): AnyRecord {
+  #executionEnv(agent: string, options: AnyRecord = {}): AnyRecord {
     const projectRuntimeRoot = options.dataRoot || this.env.CPB_PROJECT_RUNTIME_ROOT;
-    return (buildChildEnv as any)(
+    return (buildChildEnv as (parentEnv: AnyRecord, extra: AnyRecord, opts: AnyRecord) => AnyRecord)(
       envForAgent(agent, this.env, options.variant),
       {
         CPB_ROOT: this.cpbRoot,
@@ -964,7 +964,7 @@ export class AcpPool {
     return session;
   }
 
-  #sessionRecycleReason(session: any) {
+  #sessionRecycleReason(session: AnyRecord | null) {
     if (!session) return null;
     if (this.maxSessionRequests > 0 && session.requestCount >= this.maxSessionRequests) {
       return "max_requests";
@@ -1008,7 +1008,7 @@ export class AcpPool {
     if (!this.runner) this.lastSpawnAt.set(agent, Date.now());
   }
 
-  async execute(agent: string, prompt: string, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options: Record<string, any> = {}) {
+  async execute(agent: string, prompt: string, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options: AnyRecord = {}) {
     const scopedOptions: AnyRecord = { ...options, cwd };
     if (options.bypass) {
       const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
@@ -1052,7 +1052,7 @@ export class AcpPool {
       lifecycle.recycleReason = null;
       return { output, providerKey, agent, variant: scopedOptions.variant || null, acpAuditFile, usage };
     } catch (error) {
-      const execError = error as AnyRecord;
+      const execError = error as Error & AnyRecord;
       const usage = await readAcpUsageFromAudit(acpAuditFile, {
         phase: scopedOptions.phase || null,
         role: scopedOptions.role || null,
@@ -1063,7 +1063,7 @@ export class AcpPool {
 
       // Classify via provider-quota (replaces old is429 + noteRateLimit)
       const adapter = getProviderAdapter(providerKey);
-      const quotaResult: any = await classifyQuotaFailure({
+      const quotaResult: AnyRecord = await classifyQuotaFailure({
         providerKey,
         agent,
         variant: scopedOptions.variant,
@@ -1111,7 +1111,7 @@ export class AcpPool {
     }
   }
 
-  async #run(agent: string, prompt: string, cwd: string, timeoutMs: number, options: Record<string, any> = {}) {
+  async #run(agent: string, prompt: string, cwd: string, timeoutMs: number, options: AnyRecord = {}) {
     if (this.runner) {
       const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
       try {
@@ -1125,7 +1125,7 @@ export class AcpPool {
     return this.#runOneShot(agent, prompt, cwd, timeoutMs, options);
   }
 
-  async #runOneShot(agent: string, prompt: string, cwd: string, timeoutMs: number, options: Record<string, any> = {}) {
+  async #runOneShot(agent: string, prompt: string, cwd: string, timeoutMs: number, options: AnyRecord = {}) {
     const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
     const customClient = this.env.CPB_ACP_CLIENT;
     const clientPath = customClient || path.join(__dirname, "acp-client.js");
@@ -1177,7 +1177,7 @@ export class AcpPool {
     }
   }
 
-  #runPersistent(agent: string, prompt: string, cwd: string, timeoutMs: number, options: Record<string, any> = {}) {
+  #runPersistent(agent: string, prompt: string, cwd: string, timeoutMs: number, options: AnyRecord = {}) {
     const key = this.#persistentClientKey(agent, { ...options, cwd });
     const prior = this.persistentChains.get(key) || Promise.resolve();
     const providerKey = this.#providerKeyForRequest(agent, options);
@@ -1206,7 +1206,7 @@ export class AcpPool {
     return run;
   }
 
-  async #runPersistentNow(key: string, agent: string, prompt: string, cwd: string, timeoutMs: number, options: Record<string, any> = {}) {
+  async #runPersistentNow(key: string, agent: string, prompt: string, cwd: string, timeoutMs: number, options: AnyRecord = {}) {
     const persistent = await this.#getPersistentClient(key, agent, cwd, options);
     persistent.lastCwd = cwd;
     const client = persistent.client;
@@ -1231,8 +1231,8 @@ export class AcpPool {
         })
       : new Promise<never>(() => {}); // never resolves — no timeout
 
-    client.outputSink = (chunk: any) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
-    client.errorSink = (chunk: any) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };
+    client.outputSink = (chunk: string | Buffer) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
+    client.errorSink = (chunk: string | Buffer) => { stderr += chunk?.toString ? chunk.toString() : String(chunk); };
 
     try {
       const sessionId = await Promise.race([client.promptOnce(prompt, cwd), timeout]);
@@ -1257,7 +1257,7 @@ export class AcpPool {
     }
   }
 
-  async #getPersistentClient(key: string, agent: string, cwd: string, options: Record<string, any> = {}) {
+  async #getPersistentClient(key: string, agent: string, cwd: string, options: AnyRecord = {}) {
     const existing = this.persistentClients.get(key);
     if (existing && !existing.client.closed) return existing;
     if (existing) this.persistentClients.delete(key);
@@ -1277,6 +1277,7 @@ export class AcpPool {
     const client = new AcpClient({
       agent,
       cwd,
+      prompt: "",
       writeAllowPaths: resolveWriteAllowPaths(cwd, this.env),
       terminalPolicy: this.env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow",
       toolPolicy: await this.#getToolPolicy(),
@@ -1286,7 +1287,7 @@ export class AcpPool {
       resumeSessionId,
       reuseSession: true,
     });
-    const meta: Record<string, any> = {
+    const meta: AnyRecord = {
       client,
       agent,
       providerKey,
@@ -1344,10 +1345,10 @@ export class AcpPool {
 
 // ─── Singleton management (from server/services/acp-pool-runtime.js) ───
 
-const runtimes = new Map<string, any>();
-const managedViews = new Map<string, any>();
+const runtimes = new Map<string, AcpPool>();
+const managedViews = new Map<string, AnyRecord>();
 
-function managedStatus(pool: any) {
+function managedStatus(pool: AcpPool) {
   const status = pool.status();
   return {
     ...status,
@@ -1365,7 +1366,7 @@ function managedStatus(pool: any) {
   };
 }
 
-function managedView(pool: any) {
+function managedView(pool: AcpPool) {
   return new Proxy(pool, {
     get(target, prop, receiver) {
       if (prop === "status") return () => managedStatus(target);
@@ -1375,7 +1376,7 @@ function managedView(pool: any) {
   });
 }
 
-function resolvePoolRoots(hubRoot: any, cpbRoot: any, env: Record<string, any> = process.env) {
+function resolvePoolRoots(hubRoot: string | undefined, cpbRoot: string | undefined, env: Record<string, string | undefined> = process.env) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || path.join(__dirname, ".."));
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRootFromEnv(resolvedCpbRoot, env));
   return {
@@ -1385,7 +1386,7 @@ function resolvePoolRoots(hubRoot: any, cpbRoot: any, env: Record<string, any> =
   };
 }
 
-export function getPoolRuntime(hubRoot: any, cpbRoot: any, opts: Record<string, any> = {}) {
+export function getPoolRuntime(hubRoot: string | undefined, cpbRoot: string | undefined, opts: AnyRecord = {}) {
   const env = opts.env || process.env;
   const roots = resolvePoolRoots(hubRoot, cpbRoot, env);
   if (!runtimes.has(roots.key)) {
@@ -1397,7 +1398,7 @@ export function getPoolRuntime(hubRoot: any, cpbRoot: any, opts: Record<string, 
   return runtimes.get(roots.key);
 }
 
-export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts }: Record<string, any> = {}) {
+export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts }: AnyRecord = {}) {
   const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
   const pool = getPoolRuntime(roots.hubRoot, roots.cpbRoot, opts);
   if (!managedViews.has(roots.key)) {
@@ -1406,7 +1407,7 @@ export function getManagedAcpPool({ cpbRoot, hubRoot, ...opts }: Record<string, 
   return managedViews.get(roots.key);
 }
 
-export async function stopPoolRuntime(hubRootOrObj: any) {
+export async function stopPoolRuntime(hubRootOrObj: string | AnyRecord) {
   let key;
   if (typeof hubRootOrObj === "string") {
     key = hubRootOrObj;
@@ -1427,7 +1428,7 @@ export async function stopPoolRuntime(hubRootOrObj: any) {
   return false;
 }
 
-export function resetPoolRuntime(hubRootOrObj: any) {
+export function resetPoolRuntime(hubRootOrObj: string | AnyRecord) {
   void stopPoolRuntime(hubRootOrObj);
 }
 
@@ -1442,11 +1443,11 @@ export function resetAllPoolRuntimes() {
   void stopAllPoolRuntimes();
 }
 
-export function stopManagedAcpPool({ cpbRoot, hubRoot, ...opts }: Record<string, any> = {}) {
+export function stopManagedAcpPool({ cpbRoot, hubRoot, ...opts }: AnyRecord = {}) {
   return stopPoolRuntime({ cpbRoot, hubRoot, env: opts.env || process.env });
 }
 
-export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "worktree_release", closeProvider = false, closePersistent = false, ...opts }: Record<string, any> = {}) {
+export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "worktree_release", closeProvider = false, closePersistent = false, ...opts }: AnyRecord = {}) {
   const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
   const pool = runtimes.get(roots.key);
   if (!pool) return false;

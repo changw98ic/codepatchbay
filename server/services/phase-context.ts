@@ -119,7 +119,7 @@ export async function runPhaseHooks(context: AnyRecord) {
   const hooks = getPhaseHooks(point);
 
   if (hooks.length === 0) {
-    return { ok: true, diagnostics: [] as any[], events: [] as any[], blockPhase: false, hookResults: [] as any[], hookEvents: [] as any[] };
+    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false, hookResults: [] as Record<string, any>[], hookEvents: [] as Record<string, any>[] };
   }
 
   const hookEvents = [makeHookEvent("phase_hook_started", context, { hookCount: hooks.length })];
@@ -137,7 +137,7 @@ export async function runPhaseHooks(context: AnyRecord) {
       hookResult = {
         ok: false,
         diagnostics: [{ message: (err as Error).message, classification: "infra" }],
-        events: [] as any[],
+        events: [] as Record<string, any>[],
         blockPhase: false,
         classification: "infra",
       };
@@ -163,7 +163,7 @@ export async function runPhaseHooks(context: AnyRecord) {
     }
   }
 
-  return { ok, diagnostics: allDiagnostics, events: [] as any[], blockPhase, classification, hookResults, hookEvents };
+  return { ok, diagnostics: allDiagnostics, events: [] as Record<string, any>[], blockPhase, classification, hookResults, hookEvents };
 }
 
 function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecord) => { ok: boolean; message?: string }) | null = null) {
@@ -173,7 +173,7 @@ function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecor
       return {
         ok: false,
         diagnostics: [{ message: `missing required fields: ${missing.join(", ")}`, classification: "blocking" }],
-        events: [] as any[],
+        events: [] as Record<string, any>[],
         blockPhase: true,
         classification: "blocking",
       };
@@ -184,13 +184,13 @@ function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecor
         return {
           ok: false,
           diagnostics: [{ message: r.message, classification: "blocking" }],
-          events: [] as any[],
+          events: [] as Record<string, any>[],
           blockPhase: true,
           classification: "blocking",
         };
       }
     }
-    return { ok: true, diagnostics: [] as any[], events: [] as any[], blockPhase: false };
+    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
   };
 }
 
@@ -216,12 +216,12 @@ const builtinHooks = {
   [HOOK_POINTS.POST_EXECUTE]: function postExecuteVerify() {
     const cmd = process.env.CPB_HOOK_POST_EXECUTE_VERIFY_CMD;
     if (!cmd) {
-      return { ok: true, diagnostics: [] as any[], events: [] as any[], blockPhase: false };
+      return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
     }
     return {
       ok: true,
       diagnostics: [{ message: `post-execute verification configured: ${cmd}`, classification: "info" }],
-      events: [] as any[],
+      events: [] as Record<string, any>[],
       blockPhase: false,
     };
   },
@@ -248,7 +248,7 @@ const builtinHooks = {
           worktree: context.worktree,
         },
       }],
-      events: [] as any[],
+      events: [] as Record<string, any>[],
       blockPhase: false,
       classification: failureClassification,
     };

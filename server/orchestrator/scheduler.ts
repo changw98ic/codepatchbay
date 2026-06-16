@@ -28,7 +28,7 @@ function providerAgentForEntry(entry: AnyRecord) {
   return agentSpec.agent || "claude";
 }
 
-function parseRetryUntilMs(value: any) {
+function parseRetryUntilMs(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string") {
@@ -43,11 +43,11 @@ function parseRetryUntilMs(value: any) {
 export class Scheduler {
   hubRoot: string;
   cpbRoot: string | null;
-  assignments: any;
-  workers: any;
+  assignments: AssignmentStore;
+  workers: Record<string, any>; // any: worker store interface varies
   maxActivePerProject: number;
-  getProjectFn: any;
-  providerCapacityFn: any;
+  getProjectFn: ((hubRoot: string, projectId: string) => Promise<AnyRecord | null>) | null;
+  providerCapacityFn: ((agentKey: string, entry: AnyRecord) => Promise<{ available: number; total: number; providerKey?: string } | boolean>) | null;
 
   /**
    * @param {string} hubRoot
@@ -385,7 +385,7 @@ export class Scheduler {
 
     const eligible: AnyRecord[] = [];
     const projectedByProvider = new Map<string, number>();
-    const fits = async (entry: AnyRecord, prechecked: any = null) => {
+    const fits = async (entry: AnyRecord, prechecked: { available: number; total: number; providerKey?: string } | null = null) => {
       const provider = providerAgentForEntry(entry);
       const cap = prechecked || await this.providerCapacityFn(provider, entry);
       if (!cap || typeof cap !== "object") return false;

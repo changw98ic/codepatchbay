@@ -238,7 +238,7 @@ function normalizeProviderServices(services: AnyRecord = {}) {
   };
 }
 
-function normalizePrepareFailure(err: any) {
+function normalizePrepareFailure(err: Record<string, unknown> & { message?: string }) {
   const code = err?.kind || err?.code || "prepare_task_unavailable";
   const reason = err?.reason || err?.message || "prepareTask service is unavailable";
   return failure({
@@ -2208,7 +2208,7 @@ async function runJobInner(ctx: AnyRecord) {
  * exception.  Best-effort fails the job so it doesn't remain stuck in
  * "running" state forever.
  */
-async function handleRunJobPanic(ctx: AnyRecord, panic: any) {
+async function handleRunJobPanic(ctx: AnyRecord, panic: Error | { message?: string; stack?: string }) {
   const { cpbRoot, project, failJob, appendEvent } = ctx;
   const jobId = ctx._jobId || "unknown";
   const phase = ctx._currentPhase || "unknown";
@@ -2280,7 +2280,7 @@ function resolveRawAgent(agents: AnyRecord | null | undefined, agent: string | n
   return { agent: raw, variant: null };
 }
 
-function resolveProviderKey(pool: AnyRecord | null | undefined, rawAgent: any, defaultAgent: string | null | undefined) {
+function resolveProviderKey(pool: AnyRecord | null | undefined, rawAgent: string | Record<string, unknown> | null | undefined, defaultAgent: string | null | undefined) {
   const { agent, variant } = typeof rawAgent === "object" && rawAgent !== null
     ? { agent: rawAgent.agent || defaultAgent, variant: rawAgent.variant || null }
     : { agent: rawAgent || defaultAgent, variant: null };

@@ -78,12 +78,12 @@ async function writeAtomic(filePath: string, content: string) {
   await rename(tmp, filePath);
 }
 
-function normalizeLabel(label: any) {
+function normalizeLabel(label: string | { name?: string }) {
   if (typeof label === "string") return label;
   return label?.name || null;
 }
 
-export function normalizeGithubLabels(labels: any) {
+export function normalizeGithubLabels(labels: unknown) {
   return Array.isArray(labels) ? labels.map(normalizeLabel).filter(Boolean) : [];
 }
 
@@ -261,7 +261,7 @@ function hashBody(body: string) {
   return createHash("sha256").update(body || "", "utf8").digest("hex");
 }
 
-function responseSummary(response: any) {
+function responseSummary(response: Record<string, unknown> | null | undefined) {
   if (!response || typeof response !== "object") return null;
   return {
     id: response.id ?? null,
@@ -546,13 +546,13 @@ function prTitle(job: AnyRecord) {
   return `[cpb] ${title}`;
 }
 
-function verdictForBody(verdict: string, verdictDetail: any) {
+function verdictForBody(verdict: string, verdictDetail: Record<string, unknown> | null) {
   if (verdictDetail && typeof verdictDetail === "object") return verdictDetail;
   const status = String(verdict || "").toLowerCase();
   return { status: status || "unavailable" };
 }
 
-function prBody(job: AnyRecord, routingContext: any = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
+function prBody(job: AnyRecord, routingContext: AnyRecord | null = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
   const {
     artifacts = {},
     tests = [],
@@ -590,7 +590,7 @@ function prepareCommitMessage(job: AnyRecord) {
   ].filter(Boolean).join("\n");
 }
 
-function blocked(reason: string, evidence: AnyRecord = {}, error: any = null) {
+function blocked(reason: string, evidence: AnyRecord = {}, error: Record<string, unknown> | null = null) {
   return {
     status: "blocked.pr",
     jobStatus: "passed",

@@ -31,9 +31,9 @@ const LOCK_TTL_MS = 30_000;
 const LOCK_RETRY_COUNT = 6_000;
 const LOCK_RETRY_DELAY_MS = 10;
 
-type IndexOpts = Record<string, any>;
+type IndexOpts = Record<string, any>; // any: dynamic options bag with heterogeneous optional keys (dataRoot, legacyOnly, etc.)
 
-async function withIndexLock(lockDir: string, callback: () => Promise<any>) {
+async function withIndexLock<T>(lockDir: string, callback: () => Promise<T>): Promise<T> {
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
   for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
@@ -63,9 +63,9 @@ async function withIndexLock(lockDir: string, callback: () => Promise<any>) {
   }
 }
 
-const _writeQueues = new Map();
+const _writeQueues = new Map<string, Promise<unknown>>();
 
-function enqueueWrite(cpbRoot: string, opts: IndexOpts, fn: () => Promise<any>) {
+function enqueueWrite<T>(cpbRoot: string, opts: IndexOpts, fn: () => Promise<T>): Promise<T> {
   const key = indexFilePath(cpbRoot, opts);
   const lockDir = `${key}.lock`;
   const prev = _writeQueues.get(key) || Promise.resolve();
@@ -254,7 +254,7 @@ async function getJobAndUpdateIndex(cpbRoot: string, project: string, jobId: str
 async function extractJobExperienceBestEffort(cpbRoot: string, project: string, jobId: string, { dataRoot }: Record<string, any> = {}) {
   try {
     const { extractExperienceForJob } = await import("../event/event-source.js");
-    await extractExperienceForJob(cpbRoot, project, jobId, { dataRoot } as any);
+    await extractExperienceForJob(cpbRoot, project, jobId, { dataRoot });
   } catch {
     // Experience extraction should never change the terminal job outcome.
   }
@@ -317,7 +317,7 @@ export async function createJob(
     assertValidRoutingRules(routing, { isWorkflowName });
     const routingSelection = resolveEffectiveRouting(routingCategory, routing, { workflow });
     selectedWorkflow = routingSelection.workflow || selectedWorkflow;
-    executorSelection = (selectAgentWithFallback as any)({
+    executorSelection = selectAgentWithFallback({
       role: "executor",
       preferredAgent: routingSelection.executor,
       fallbackAgent: fallbackAgentForRole(routingSelection, "executor"),
@@ -421,7 +421,7 @@ export async function startPhase(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
-async function resolveAgentForPhase(cpbRoot: string, job: any, phase: string) {
+async function resolveAgentForPhase(cpbRoot: string, job: Record<string, any>, phase: string) {
   if (job?.agent && typeof job.agent === "string") {
     return job.agent;
   }
@@ -455,7 +455,7 @@ async function resolveAgentForPhase(cpbRoot: string, job: any, phase: string) {
     const wf = getWorkflow(job.workflow || "standard");
     const role = roleForPhase(wf, phase) || "executor";
     const agentRegistry = await import("../../../core/agents/registry.js");
-    await (agentRegistry.loadRegistry as any)().catch(() => {});
+    await (agentRegistry.loadRegistry as (configDir?: string) => Promise<void>)().catch(() => {});
     const agent = agentRegistry.defaultAgentForRole(role);
     if (agent) return agent;
   } catch {}
@@ -605,7 +605,7 @@ function recoveryDagResume(job: Record<string, any>) {
   };
 }
 
-function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, recoveryReason, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}) {
+function buildRecoverySourceContext(originalJob: Record<string, any>, { fromPhase, trigger, recoveryReason, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}) {
   const base = originalJob?.sourceContext && typeof originalJob.sourceContext === "object"
     ? { ...originalJob.sourceContext }
     : {};
@@ -653,7 +653,7 @@ function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, reco
 export async function createRecoveryJob(
   cpbRoot: string,
   project: string,
-  originalJob: any,
+  originalJob: Record<string, any>,
   { fromPhase, trigger, recoveryReason, ts, dataRoot, executor, executorSelection, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}
 ) {
   const lineage = terminalJobLineage(originalJob);
@@ -1005,7 +1005,7 @@ export async function listJobs(cpbRoot: string, options: Record<string, any> = {
     const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
     return rest.project ? jobs.filter((job: Record<string, any>) => job.project === rest.project) : jobs;
   }
-  const jobs: any[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
+  const jobs: Record<string, any>[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
   return rest.project ? jobs.filter((job: Record<string, any>) => job.project === rest.project) : jobs;
 }
 

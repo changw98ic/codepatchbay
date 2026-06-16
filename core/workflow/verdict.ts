@@ -84,7 +84,7 @@ function truncate(value: unknown, max = 240): string {
   return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-function uniqueNonEmpty(values: any[]): string[] {
+function uniqueNonEmpty(values: unknown[]): string[] {
   const seen = new Set();
   const result = [];
   for (const value of values) {
@@ -96,14 +96,15 @@ function uniqueNonEmpty(values: any[]): string[] {
   return result;
 }
 
-function summarizeBlockingEntry(entry: any): string {
+function summarizeBlockingEntry(entry: unknown): string {
   if (typeof entry === "string") return truncate(entry);
   if (!entry || typeof entry !== "object") return truncate(entry);
 
-  const criterion = oneLine(entry.criterion || entry.input || entry.check || entry.title);
-  const file = oneLine(entry.file || entry.path);
-  const evidence = oneLine(entry.evidence || entry.detail || entry.reason);
-  const fixHint = oneLine(entry.fix_hint || entry.fixHint || entry.hint);
+  const rec = entry as Record<string, unknown>;
+  const criterion = oneLine(rec.criterion || rec.input || rec.check || rec.title);
+  const file = oneLine(rec.file || rec.path);
+  const evidence = oneLine(rec.evidence || rec.detail || rec.reason);
+  const fixHint = oneLine(rec.fix_hint || rec.fixHint || rec.hint);
 
   const parts = [];
   if (criterion) parts.push(criterion);
@@ -222,7 +223,7 @@ function backfillLegacy(envelope: Record<string, any>) {
     });
   }
   if (!envelope.blockingMissingInputs) {
-    envelope.blockingMissingInputs = (envelope.blocking || []).map((b: any) =>
+    envelope.blockingMissingInputs = (envelope.blocking || []).map((b: Record<string, unknown>) =>
       typeof b === "string" ? b : b.criterion || b.input || String(b)
     );
   }

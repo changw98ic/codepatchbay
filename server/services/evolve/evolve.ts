@@ -261,19 +261,19 @@ const NEEDS_HUMAN_BASENAMES = new Set([
   "Cargo.lock",
 ]);
 
-function splitLines(value: any) {
+function splitLines(value: string | null | undefined) {
   return String(value || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 }
 
-function gitError(args: any, err: any) {
+function gitError(args: string[], err: Record<string, any>) {
   const details = String(err?.stderr || err?.stdout || err?.message || "").trim();
   return new Error(`git ${args.join(" ")} failed${details ? `: ${details}` : ""}`);
 }
 
-async function runGit(cwd: any, args: any, { allowFailure = false } = {}) {
+async function runGit(cwd: string, args: string[], { allowFailure = false } = {}) {
   try {
     const result = await execFileAsync("git", args, {
       cwd,
@@ -294,7 +294,7 @@ async function runGit(cwd: any, args: any, { allowFailure = false } = {}) {
   }
 }
 
-async function pathExists(targetPath: any) {
+async function pathExists(targetPath: string) {
   try {
     await access(targetPath, fsConstants.F_OK);
     return true;
@@ -303,14 +303,14 @@ async function pathExists(targetPath: any) {
   }
 }
 
-export function normalizeMergePath(filePath: any) {
+export function normalizeMergePath(filePath: string | null | undefined) {
   return String(filePath || "")
     .replaceAll("\\", "/")
     .replace(/^\.\/+/, "")
     .replace(/^\/+/, "");
 }
 
-export function classifyMergePath(filePath: any) {
+export function classifyMergePath(filePath: string | null | undefined) {
   const normalized = normalizeMergePath(filePath);
   const basename = path.posix.basename(normalized);
 
@@ -333,9 +333,9 @@ export function classifyMergePath(filePath: any) {
   return MERGE_CLASSIFICATION.RESOLVABLE_CODE;
 }
 
-export function summarizeMergeFiles(files: any = []) {
+export function summarizeMergeFiles(files: string[] = []) {
   const entries = [...new Set(files.map(normalizeMergePath).filter(Boolean))]
-    .sort((a: any, b: any) => a.localeCompare(b))
+    .sort((a: string, b: string) => a.localeCompare(b))
     .map((file) => ({
       file,
       classification: classifyMergePath(file),
@@ -349,7 +349,7 @@ export function summarizeMergeFiles(files: any = []) {
   return { entries, counts };
 }
 
-async function resolveCandidateCommit(repoRoot: any, candidate: any) {
+async function resolveCandidateCommit(repoRoot: string, candidate: string) {
   const refResult = await runGit(repoRoot, ["rev-parse", "--verify", `${candidate}^{commit}`], {
     allowFailure: true,
   });
@@ -379,7 +379,7 @@ async function resolveCandidateCommit(repoRoot: any, candidate: any) {
   throw new Error(`candidate is not a git ref or worktree: ${candidate}`);
 }
 
-function abortReasonsForSummary(changedSummary: any, conflictSummary: any, mergeStatus: any) {
+function abortReasonsForSummary(changedSummary: Record<string, any>, conflictSummary: Record<string, any>, mergeStatus: string) {
   const reasons = [];
 
   if (changedSummary.counts[MERGE_CLASSIFICATION.SHARED_STATE] > 0) {
@@ -387,8 +387,8 @@ function abortReasonsForSummary(changedSummary: any, conflictSummary: any, merge
       code: "shared_state_changed",
       message: "candidate changes CPB/shared-state files; merge steward must not touch them",
       files: changedSummary.entries
-        .filter((entry: any) => entry.classification === MERGE_CLASSIFICATION.SHARED_STATE)
-        .map((entry: any) => entry.file),
+        .filter((entry: Record<string, any>) => entry.classification === MERGE_CLASSIFICATION.SHARED_STATE)
+        .map((entry: Record<string, any>) => entry.file),
     });
   }
 
@@ -397,8 +397,8 @@ function abortReasonsForSummary(changedSummary: any, conflictSummary: any, merge
       code: "needs_human_changed",
       message: "candidate changes governance/config/schema files that need human review",
       files: changedSummary.entries
-        .filter((entry: any) => entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN)
-        .map((entry: any) => entry.file),
+        .filter((entry: Record<string, any>) => entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN)
+        .map((entry: Record<string, any>) => entry.file),
     });
   }
 
@@ -492,11 +492,11 @@ const YELLOW = "\x1b[1;33m";
 const CYAN = "\x1b[0;36m";
 const NC = "\x1b[0m";
 
-function isValidName(name: any) {
+function isValidName(name: string) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(name);
 }
 
-async function nextId(dir: any, prefix: any) {
+async function nextId(dir: string, prefix: string) {
   await mkdir(dir, { recursive: true });
   const lockDir = path.join(dir, ".cpb-id.lock");
   let acquired = false;
@@ -506,7 +506,7 @@ async function nextId(dir: any, prefix: any) {
       acquired = true;
       break;
     } catch (err) {
-      if ((err as any).code !== "EEXIST") throw err;
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 100));
     }
   }
@@ -526,7 +526,7 @@ async function nextId(dir: any, prefix: any) {
   }
 }
 
-async function logAppend(wikiDir: any, msg: any) {
+async function logAppend(wikiDir: string, msg: string) {
   const logFile = path.join(wikiDir, "log.md");
   const lockDir = path.join(wikiDir, ".cpb-log.lock");
   let acquired = false;
@@ -536,7 +536,7 @@ async function logAppend(wikiDir: any, msg: any) {
       acquired = true;
       break;
     } catch (err) {
-      if ((err as any).code !== "EEXIST") throw err;
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -548,7 +548,7 @@ async function logAppend(wikiDir: any, msg: any) {
   }
 }
 
-async function buildSkillsSection(executorRoot: any, role: any) {
+async function buildSkillsSection(executorRoot: string, role: string) {
   const skillsDir = path.join(executorRoot, "profiles", role, "skills");
   try {
     const { readdir, readFile } = await import("node:fs/promises");
@@ -577,7 +577,7 @@ async function buildSkillsSection(executorRoot: any, role: any) {
   }
 }
 
-async function buildResearchPrompt(executorRoot: any, project: any, task: any) {
+async function buildResearchPrompt(executorRoot: string, project: string, task: string) {
   const skills = await buildSkillsSection(executorRoot, "planner");
   return `You are CodePatchbay Research Agent. Analyze this task for project "${project}".
 
@@ -633,7 +633,7 @@ function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot: strin
   });
 }
 
-export async function runResearch({ project, task, executorRoot, cpbRoot }) {
+export async function runResearch({ project, task, executorRoot, cpbRoot }: { project: string; task: string; executorRoot: string; cpbRoot: string }) {
   if (!isValidName(project)) {
     console.error(`${RED}Error: Invalid project name: '${project}'${NC}`);
     process.exit(1);
@@ -709,40 +709,40 @@ export async function runResearch({ project, task, executorRoot, cpbRoot }) {
 const EVOLVE_LOCK_TTL_MS = 30_000;
 const SAFE_PROJECT = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-function assertProject(project: any) {
+function assertProject(project: string) {
   if (!SAFE_PROJECT.test(project || "")) {
     throw new Error(`invalid project name: ${project}`);
   }
 }
 
-export function evolveDir(projectRoot: any, project: any, options: Record<string, any> = {}) {
+export function evolveDir(projectRoot: string, project: string, options: Record<string, any> = {}) {
   assertProject(project);
   const dataRoot = options.dataRoot || options.projectRuntimeRoot;
   return path.join(path.resolve(dataRoot || path.join(projectRoot, "cpb-task")), "evolve", project);
 }
 
-function statePath(projectRoot: any, project: any, file: any, options: Record<string, any> = {}) {
+function statePath(projectRoot: string, project: string, file: string, options: Record<string, any> = {}) {
   return path.join(evolveDir(projectRoot, project, options), file);
 }
 
-async function readJSON(filePath: any, fallback: any) {
+async function readJSON(filePath: string, fallback: unknown) {
   try {
     const raw = await readFile(filePath, "utf8");
     return JSON.parse(raw);
   } catch (err) {
-    if (err && err.code === "ENOENT") return fallback;
+    if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return fallback;
     return fallback;
   }
 }
 
-async function writeAtomic(filePath: any, content: any) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
 }
 
-export async function loadProjectState(projectRoot: any, project: any, options: Record<string, any> = {}) {
+export async function loadProjectState(projectRoot: string, project: string, options: Record<string, any> = {}) {
   return readJSON(statePath(projectRoot, project, "state.json", options), {
     knownGoodCommit: null,
     round: 0,
@@ -752,22 +752,22 @@ export async function loadProjectState(projectRoot: any, project: any, options: 
   });
 }
 
-export async function saveProjectState(projectRoot: any, project: any, state: any, options: Record<string, any> = {}) {
+export async function saveProjectState(projectRoot: string, project: string, state: Record<string, any>, options: Record<string, any> = {}) {
   const next = { ...state, updatedAt: new Date().toISOString() };
   await writeAtomic(statePath(projectRoot, project, "state.json", options), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
 
-export async function loadBacklog(projectRoot: any, project: any, options: Record<string, any> = {}) {
+export async function loadBacklog(projectRoot: string, project: string, options: Record<string, any> = {}) {
   return readJSON(statePath(projectRoot, project, "backlog.json", options), []);
 }
 
-export async function saveBacklog(projectRoot: any, project: any, backlog: any, options: Record<string, any> = {}) {
+export async function saveBacklog(projectRoot: string, project: string, backlog: Record<string, any>[], options: Record<string, any> = {}) {
   await writeAtomic(statePath(projectRoot, project, "backlog.json", options), `${JSON.stringify(backlog, null, 2)}\n`);
   return backlog;
 }
 
-async function withBacklogLock(projectRoot: any, project: any, callback: any, options: Record<string, any> = {}) {
+async function withBacklogLock<T>(projectRoot: string, project: string, callback: () => Promise<T>, options: Record<string, any> = {}): Promise<T> {
   const lockDir = statePath(projectRoot, project, "backlog.json.lock", options);
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
@@ -777,7 +777,7 @@ async function withBacklogLock(projectRoot: any, project: any, callback: any, op
       acquired = true;
       break;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       try {
         const info = await stat(lockDir);
         if (Date.now() - info.mtimeMs >= EVOLVE_LOCK_TTL_MS) {
@@ -798,11 +798,11 @@ async function withBacklogLock(projectRoot: any, project: any, callback: any, op
   }
 }
 
-function issueKeyFn2(issue: any) {
+function issueKeyFn2(issue: Record<string, any>) {
   return issue.id || issue.description;
 }
 
-export async function pushIssues(projectRoot: any, project: any, issues: any, options: Record<string, any> = {}) {
+export async function pushIssues(projectRoot: string, project: string, issues: Record<string, any>[], options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
     const existing = new Set(backlog.map(issueKeyFn2));
@@ -825,18 +825,18 @@ export async function pushIssues(projectRoot: any, project: any, issues: any, op
   }, options);
 }
 
-function priorityScore(priority: any) {
+function priorityScore(priority: string) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
   return 3;
 }
 
-export async function popIssue(projectRoot: any, project: any, options: Record<string, any> = {}) {
+export async function popIssue(projectRoot: string, project: string, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const pending = backlog.filter((issue: any) => issue.status === "pending");
-    pending.sort((a: any, b: any) => priorityScore(a.priority) - priorityScore(b.priority));
+    const pending = backlog.filter((issue: Record<string, any>) => issue.status === "pending");
+    pending.sort((a: Record<string, any>, b: Record<string, any>) => priorityScore(a.priority) - priorityScore(b.priority));
     const issue = pending[0] || null;
     if (!issue) return null;
     issue.status = "in_progress";
@@ -846,15 +846,15 @@ export async function popIssue(projectRoot: any, project: any, options: Record<s
   }, options);
 }
 
-function matchesIssue(issue: any, identity: any) {
+function matchesIssue(issue: Record<string, any>, identity: string) {
   return Boolean(identity)
     && (issue.id === identity || issue.description === identity || issueKeyFn2(issue) === identity);
 }
 
-export async function updateIssueStatus(projectRoot: any, project: any, identity: any, status: any, detail = {}, options: Record<string, any> = {}) {
+export async function updateIssueStatus(projectRoot: string, project: string, identity: string, status: string, detail: Record<string, any> = {}, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const issue = backlog.find((item: any) => matchesIssue(item, identity));
+    const issue = backlog.find((item: Record<string, any>) => matchesIssue(item, identity));
     if (!issue) return null;
     issue.status = status;
     issue.updatedAt = new Date().toISOString();
@@ -866,10 +866,10 @@ export async function updateIssueStatus(projectRoot: any, project: any, identity
   }, options);
 }
 
-export async function claimIssue(projectRoot: any, project: any, identity: any, options: Record<string, any> = {}) {
+export async function claimIssue(projectRoot: string, project: string, identity: string, options: Record<string, any> = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const issue = backlog.find((item: any) => matchesIssue(item, identity) && item.status === "pending");
+    const issue = backlog.find((item: Record<string, any>) => matchesIssue(item, identity) && item.status === "pending");
     if (!issue) return null;
     issue.status = "in_progress";
     issue.claimedAt = new Date().toISOString();
@@ -888,18 +888,18 @@ export async function completeIssue(projectRoot: any, project: any, identity: an
   }, options);
 }
 
-export async function appendHistory(projectRoot: any, project: any, entry: any, options: Record<string, any> = {}) {
+export async function appendHistory(projectRoot: string, project: string, entry: Record<string, any>, options: Record<string, any> = {}) {
   await mkdir(evolveDir(projectRoot, project, options), { recursive: true });
   const filePath = statePath(projectRoot, project, "history.jsonl", options);
   const line = JSON.stringify({ ...entry, project, timestamp: new Date().toISOString() }) + "\n";
   await writeFile(filePath, line, { flag: "a", encoding: "utf8" });
 }
 
-export async function loadGlobalConfig(hubRoot: any) {
+export async function loadGlobalConfig(hubRoot: string) {
   return readJSON(path.join(path.resolve(hubRoot), "evolve", "global", "config.json"), { projects: {} });
 }
 
-export async function saveGlobalConfig(hubRoot: any, config: any) {
+export async function saveGlobalConfig(hubRoot: string, config: Record<string, any>) {
   const filePath = path.join(path.resolve(hubRoot), "evolve", "global", "config.json");
   await writeAtomic(filePath, `${JSON.stringify(config, null, 2)}\n`);
   return config;

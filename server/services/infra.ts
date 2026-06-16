@@ -48,7 +48,7 @@ async function runCommand(command: string, args: string[], opts: Record<string, 
   }
 }
 
-async function withProcessEnv(env: Record<string, string>, fn: () => Promise<any>) {
+async function withProcessEnv(env: Record<string, string>, fn: () => Promise<unknown>) {
   const previous = new Map();
   for (const key of Object.keys(env)) {
     previous.set(key, Object.hasOwn(process.env, key) ? process.env[key] : undefined);
@@ -287,7 +287,7 @@ function leaseBase(cpbRoot: string, opts: AnyRecord) {
 const ownedLeaseTokens = new Map<string, string>();
 const DEFAULT_LOCK_TTL_MS = 30_000;
 
-function validateLeaseId(leaseId: any) {
+function validateLeaseId(leaseId: unknown) {
   if (
     typeof leaseId !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(leaseId)
@@ -329,7 +329,7 @@ function forgetOwnerToken(cpbRoot: string, leaseId: string, ownerToken: string) 
   }
 }
 
-function leaseOwnerTokenFor(cpbRoot: string, leaseId: string, suppliedToken: any) {
+function leaseOwnerTokenFor(cpbRoot: string, leaseId: string, suppliedToken: string | undefined) {
   return suppliedToken ?? ownedLeaseTokens.get(leaseTokenKey(cpbRoot, leaseId));
 }
 
@@ -339,7 +339,7 @@ function assertLeaseOwner(lease: AnyRecord, ownerToken: any) {
   }
 }
 
-async function atomicWriteJson(file: string, value: any) {
+async function atomicWriteJson(file: string, value: unknown) {
   const tempFile = path.join(
     path.dirname(file),
     `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`
@@ -360,9 +360,9 @@ async function readLeaseFile(file: string): Promise<AnyRecord | null> {
   }
 }
 
-function lockTtlMsFor(lockTtlMs: any): number {
+function lockTtlMsFor(lockTtlMs: unknown): number {
   if (lockTtlMs !== undefined) {
-    return lockTtlMs;
+    return Number(lockTtlMs);
   }
 
   const fromEnv = Number.parseInt(process.env.CPB_LEASE_LOCK_TTL_MS ?? "", 10);
@@ -705,7 +705,7 @@ export function hubConcurrencyEnv(limits = {}) {
 
 export const PROCESS_REGISTRY_FORMAT_VERSION = 1;
 
-function validateId(value: any, label: string) {
+function validateId(value: unknown, label: string) {
   if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value)) {
     throw new Error(`invalid ${label}: ${value}`);
   }
@@ -726,7 +726,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function readJsonFile(file: string): Promise<any> {
+async function readJsonFile(file: string): Promise<Record<string, any> | null> {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -734,7 +734,7 @@ async function readJsonFile(file: string): Promise<any> {
   }
 }
 
-async function writeJsonFile(file: string, data: any) {
+async function writeJsonFile(file: string, data: unknown) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
@@ -751,12 +751,12 @@ export async function registerProcess(cpbRoot: string, { jobId, project, phase, 
     phase: phase || null,
     runnerPid: runnerPid || process.pid,
     treeId: treeId || null,
-    childPids: [] as any[],
+    childPids: [] as number[],
     leaseId: leaseId || null,
     startedAt: startedAt || nowIso(),
     lastHeartbeat: nowIso(),
     status: "running",
-    exitCode: null as any,
+    exitCode: null as number | null,
     command: command || null,
     cwd: cwd || null,
     executorRoot: executorRoot || null,
@@ -1141,8 +1141,8 @@ export async function checkIndexFreshness(project: AnyRecord, opts: Record<strin
     worktreeDirty: false,
     indexDirty: false,
     indexStale: false,
-    dirtyReasons: [] as any[],
-    manifest: null as any,
+    dirtyReasons: [] as string[],
+    manifest: null as Record<string, any> | null,
   };
 
   if (!sourcePath || !rtRoot) {
@@ -1345,8 +1345,8 @@ export function snapshotForJob(result: AnyRecord) {
     };
   }
   return {
-    indexSnapshotId: result.indexSnapshotId as any,
-    sourceFingerprint: result.sourceFingerprint as any,
+    indexSnapshotId: result.indexSnapshotId as string | null,
+    sourceFingerprint: result.sourceFingerprint as Record<string, any> | null,
     indexFreshness: {
       available: true,
       indexDirty: false,

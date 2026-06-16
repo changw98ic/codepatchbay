@@ -30,9 +30,9 @@ export function makeDispatchId(ts = nowIso(), suffix = randomBytes(3).toString("
   return `dispatch-${compact.slice(0, 8)}-${compact.slice(9, 15)}-${suffix}`;
 }
 
-const mutationChains = new Map<string, Promise<any>>();
+const mutationChains = new Map<string, Promise<unknown>>();
 
-async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
+async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const file = dispatchFile(hubRoot, dispatchId);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -67,7 +67,7 @@ async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () 
   }
 }
 
-function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
+function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const key = `${path.resolve(hubRoot)}:${dispatchId}`;
   const prev = mutationChains.get(key) || Promise.resolve();
   const next = prev.then(() => fn());
@@ -330,7 +330,7 @@ export async function guardSourcePath(hubRoot: string, projectId: string, source
 
 export async function recordDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId }: Record<string, any> = {}) {
   if (!dispatchEnabled()) return null;
-  return (createDispatch as any)(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
+  return createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
 }
 
 export async function lookupDispatch(hubRoot: string, dispatchId: string) {
@@ -339,7 +339,7 @@ export async function lookupDispatch(hubRoot: string, dispatchId: string) {
 
 export async function markDispatchAssigned(hubRoot: string, dispatchId: string, { workerId }: { workerId?: string } = {}) {
   if (!dispatchEnabled()) return null;
-  return (assignWorker as any)(hubRoot, dispatchId, { workerId });
+  return assignWorker(hubRoot, dispatchId, { workerId });
 }
 
 export async function markDispatchStarted(hubRoot: string, dispatchId: string) {
@@ -485,7 +485,7 @@ function issueSource(issue: Record<string, any>) {
   };
 }
 
-function bodySummary(body: any, fallback: any) {
+function bodySummary(body: unknown, fallback: string) {
   const goalMatch = String(body || "").match(/##\s+Goal\s+([\s\S]*?)(?:\n##\s+|$)/i);
   const content = goalMatch ? goalMatch[1] : body;
   return truncate(firstLine(content, fallback), 220);
@@ -528,7 +528,7 @@ function progressFor({ queueEntry, issue }: Record<string, any> = {}) {
   return { stage: "open", label: "Open, not queued", detail: "Known from source ledger only", percent: 0 };
 }
 
-function humanNextAction(progress: any, queueEntry: any) {
+function humanNextAction(progress: Record<string, any>, queueEntry: Record<string, any>) {
   if (progress.stage === "ready") return "Start a CPB worker or let the queue dispatcher pick it up.";
   if (progress.label === "Needs issue link") return "Link a GitHub issue to this task before it can be claimed for execution.";
   if (progress.stage === "open") return "Import or queue this issue before expecting CPB to execute it.";
@@ -573,26 +573,26 @@ function evidenceFor({ queueEntry, jobs = [], dispatches = [] }) {
   return evidence;
 }
 
-function matchingJobs(queueEntries: any, jobs: any) {
+function matchingJobs(queueEntries: Record<string, any> | Record<string, any>[], jobs: Record<string, any>[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const descriptions = new Set(entries.map((entry) => entry.description || ""));
   const projects = new Set(entries.map((entry) => entry.projectId));
   return jobs
-    .filter((job: any) => projects.has(job.project) && descriptions.has(job.task))
-    .sort((a: any, b: any) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((job: Record<string, any>) => projects.has(job.project) && descriptions.has(job.task))
+    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function matchingDispatches(queueEntries: any, dispatches: any) {
+function matchingDispatches(queueEntries: Record<string, any> | Record<string, any>[], dispatches: Record<string, any>[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const entryIds = new Set(entries.map((entry) => entry.id));
   return dispatches
-    .filter((dispatch: any) => entryIds.has(dispatch.queueEntryId))
-    .sort((a: any, b: any) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((dispatch: Record<string, any>) => entryIds.has(dispatch.queueEntryId))
+    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function issueTask(issue: any, { queueEntry, queueEntries = [], jobs, dispatches }) {
+function issueTask(issue: Record<string, any>, { queueEntry, queueEntries = [], jobs, dispatches }: { queueEntry: Record<string, any>; queueEntries?: Record<string, any>[]; jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
   const labels = normalizeLabels(issue.labels);
   const progress = progressFor({ queueEntry, issue });
   const source = issueSource(issue);
@@ -663,7 +663,7 @@ function issueTask(issue: any, { queueEntry, queueEntries = [], jobs, dispatches
   };
 }
 
-function queueTask(entry: any, { jobs, dispatches }) {
+function queueTask(entry: Record<string, any>, { jobs, dispatches }: { jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
   const progress = progressFor({ queueEntry: entry });
   const source = queueSource(entry);
   const title = queueTitle(entry);
@@ -725,7 +725,7 @@ function queueTask(entry: any, { jobs, dispatches }) {
   };
 }
 
-function summarize(tasks: any) {
+function summarize(tasks: Record<string, any>[]) {
   const summary = {
     total: tasks.length,
     ready: 0,

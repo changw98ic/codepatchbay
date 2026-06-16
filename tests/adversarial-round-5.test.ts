@@ -532,7 +532,7 @@ test("adversarial round 5: completion_gate_evaluated event IS allowed post-termi
   }, { dataRoot });
 
   assert.ok(result !== null, "completion_gate_evaluated must be allowed post-terminal");
-  assert.strictEqual(result.type, "completion_gate_evaluated");
+  assert.strictEqual((result as any).type, "completion_gate_evaluated");
 
   const eventsAfter = await readEvents(cpbRoot, project, job.jobId, { dataRoot });
   assert.strictEqual(eventsAfter.length, countBefore + 1,
