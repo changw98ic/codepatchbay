@@ -12,7 +12,7 @@ const TERMINAL_GOTCHA_EVENTS = new Set([
   "job_cancelled",
 ]);
 
-function slugify(text: any) {
+function slugify(text: unknown) {
   return String(text)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -20,7 +20,7 @@ function slugify(text: any) {
     .slice(0, 80);
 }
 
-function stableKey(project: any, jobId: any, source: any, category: any) {
+function stableKey(project: string, jobId: string, source: string, category: string) {
   return `${project}-${jobId}-${source}-${category}`;
 }
 
@@ -32,7 +32,7 @@ function today() {
  * Categorize a parsed verdict envelope into experience category.
  * Returns { category, severity } or null to skip.
  */
-export function categorizeVerdictEnvelope(envelope: any) {
+export function categorizeVerdictEnvelope(envelope: Record<string, any>) {
   const status = String(envelope?.status || "").toLowerCase();
 
   if (status === "fail") {
@@ -59,7 +59,7 @@ export function categorizeVerdictEnvelope(envelope: any) {
 /**
  * Extract tags from verdict envelope content.
  */
-function extractTags(envelope: any, content = "") {
+function extractTags(envelope: Record<string, any>, content = "") {
   const tags = new Set();
 
   // From fix_scope
@@ -103,7 +103,7 @@ function extractTags(envelope: any, content = "") {
 /**
  * Build experience object from verdict envelope.
  */
-function buildExperienceFromVerdict(project: any, jobId: any, artifactId: any, artifactPath: any, envelope: any) {
+function buildExperienceFromVerdict(project: string, jobId: string, artifactId: string, artifactPath: string, envelope: Record<string, any>) {
   const cat = categorizeVerdictEnvelope(envelope);
   if (!cat) return null;
 
@@ -131,13 +131,13 @@ function buildExperienceFromVerdict(project: any, jobId: any, artifactId: any, a
   };
 }
 
-function buildTitle(category: any, envelope: any) {
+function buildTitle(category: string, envelope: Record<string, any>) {
   const reason = String(envelope?.reason || "").slice(0, 120);
   const prefix = category === "failure" ? "FAIL" : category === "pattern" ? "FIX" : "GOTCHA";
   return `[${prefix}] ${reason || "unknown"}`;
 }
 
-function buildDetails(envelope: any) {
+function buildDetails(envelope: Record<string, any>) {
   const parts = [];
   if (envelope?._legacyDetails) {
     parts.push(envelope._legacyDetails);
@@ -157,7 +157,7 @@ function buildDetails(envelope: any) {
   return parts.join("\n");
 }
 
-function buildFix(envelope: any) {
+function buildFix(envelope: Record<string, any>) {
   const parts = [];
   if (Array.isArray(envelope?.fix_scope) && envelope.fix_scope.length > 0) {
     parts.push(`修复范围: ${envelope.fix_scope.join(", ")}`);
@@ -171,7 +171,7 @@ function buildFix(envelope: any) {
   return parts.length > 0 ? parts.join("\n") : "待补充";
 }
 
-function buildPrevention(envelope: any) {
+function buildPrevention(envelope: Record<string, any>) {
   const parts = [];
   if (envelope?.layers && typeof envelope.layers === "object") {
     const failed = Object.entries(envelope.layers as AnyRecord)
@@ -181,7 +181,7 @@ function buildPrevention(envelope: any) {
   }
   if (Array.isArray(envelope?.blocking) && envelope.blocking.length > 0) {
     const criteria = envelope.blocking
-      .map((e: any) => typeof e === "string" ? e : e?.criterion)
+      .map((e: unknown) => typeof e === "string" ? e : (e as Record<string, any>)?.criterion)
       .filter(Boolean);
     if (criteria.length > 0) parts.push(`验收标准: ${criteria.join("; ")}`);
   }
@@ -191,9 +191,10 @@ function buildPrevention(envelope: any) {
 /**
  * Extract ## Status / ## Reason / ## Details / ## Confidence from legacy Markdown verdict.
  */
-function extractLegacyMarkdownSections(content: any) {
+function extractLegacyMarkdownSections(content: unknown) {
   const result: AnyRecord = {};
-  const sections = content.split(/^## /m);
+  const text = typeof content === "string" ? content : String(content ?? "");
+  const sections = text.split(/^## /m);
   for (const section of sections) {
     const headerMatch = section.match(/^(\w[\w -]*)\s*\n([\s\S]*)/);
     if (!headerMatch) continue;
@@ -218,7 +219,7 @@ function extractLegacyMarkdownSections(content: any) {
 /**
  * Build experience object from terminal job state (no verdict).
  */
-function buildExperienceFromTerminalState(project: any, jobId: any, state: any, eventType: any) {
+function buildExperienceFromTerminalState(project: string, jobId: string, state: Record<string, any>, eventType: string) {
   // job_failed / phase_failed without verdict → failure; others → gotcha
   const category = (eventType === "job_failed" || eventType === "phase_failed") ? "failure" : "gotcha";
   const key = stableKey(project, jobId, eventType, category);
@@ -267,7 +268,7 @@ function buildExperienceFromTerminalState(project: any, jobId: any, state: any, 
  * Write experience file if it doesn't exist (idempotent).
  * Returns true if written, false if skipped.
  */
-export async function writeExperience(cpbRoot: any, experience: any, { force = false, skipIndexRebuild = false } = {}) {
+export async function writeExperience(cpbRoot: string, experience: Record<string, any>, { force = false, skipIndexRebuild = false }: { force?: boolean; skipIndexRebuild?: boolean } = {}) {
   const dir = path.join(cpbRoot, "wiki", "experience", `${experience.category}s`);
   await mkdir(dir, { recursive: true });
 
@@ -289,7 +290,7 @@ export async function writeExperience(cpbRoot: any, experience: any, { force = f
   return true;
 }
 
-function formatExperienceFile(exp: any) {
+function formatExperienceFile(exp: Record<string, any>) {
   const frontmatter = [
     "---",
     `source: ${exp.source}`,
@@ -328,7 +329,7 @@ function formatExperienceFile(exp: any) {
 /**
  * Extract experience from a verdict artifact for a completed job.
  */
-export async function extractExperienceFromVerdict(cpbRoot: any, project: any, jobId: any, artifactPath: any, { force = false, skipIndexRebuild = false } = {}) {
+export async function extractExperienceFromVerdict(cpbRoot: string, project: string, jobId: string, artifactPath: string, { force = false, skipIndexRebuild = false }: { force?: boolean; skipIndexRebuild?: boolean } = {}) {
   const { parseVerdictEnvelope } = await import("../../core/workflow/verdict.js");
 
   let content;

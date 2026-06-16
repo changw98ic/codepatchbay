@@ -280,7 +280,7 @@ async function checkAcpAdapter(adapterName: string, command: string, args: strin
   return ok(id, "acp", msg, { details: version ? { version } : undefined });
 }
 
-function preferredInstallMethod(agent: any, setupSnapshot: any) {
+function preferredInstallMethod(agent: Record<string, any>, setupSnapshot: Record<string, any>) {
   const methods = Object.keys(agent.install || {});
   if (methods.includes("brew") && setupSnapshot?.tools?.brew?.installed) return "brew";
   if (methods.includes("npm") && setupSnapshot?.tools?.npm?.installed) return "npm";
@@ -362,7 +362,7 @@ async function checkHubWritability(hubRoot: string) {
 async function checkRegistryConsistency(hubRoot: string) {
   try {
     const registry = await loadRegistry(hubRoot);
-    const projects: any[] = Object.values(registry.projects || {});
+    const projects: Record<string, any>[] = Object.values(registry.projects || {});
     const issues = [];
     for (const project of projects) {
       if (!project.id) {
@@ -385,7 +385,7 @@ async function checkRegistryConsistency(hubRoot: string) {
 
 async function checkStaleJobs(cpbRoot: string) {
   try {
-    const allJobs: any[] = await listJobs(cpbRoot);
+    const allJobs: Record<string, any>[] = await listJobs(cpbRoot);
     const terminalStates = ["completed", "failed", "blocked", "cancelled"];
     const running = allJobs.filter((j) => !terminalStates.includes(j.status));
     if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
@@ -433,7 +433,7 @@ async function checkOrphanLeases(cpbRoot: string) {
     const leaseFiles = files.filter((f) => f.endsWith(".json"));
     if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
 
-    const allJobs: any[] = await listJobs(cpbRoot);
+    const allJobs: Record<string, any>[] = await listJobs(cpbRoot);
     const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
     const orphans = [];
     for (const f of leaseFiles) {
@@ -688,7 +688,7 @@ export async function runAgentSandboxSelfTestCheck({
 
 // --- Orchestrator ---
 
-async function checkServerDeps(cpbRoot: any) {
+async function checkServerDeps(cpbRoot: string) {
   const nmPath = path.join(path.resolve(cpbRoot), "server", "node_modules");
   try {
     await access(nmPath, fsConstants.R_OK);
@@ -700,7 +700,7 @@ async function checkServerDeps(cpbRoot: any) {
   }
 }
 
-async function checkGithubReadiness(hubRoot: any) {
+async function checkGithubReadiness(hubRoot: string) {
   const checks = [];
   try {
     const { resolveGithubTransport } = await import("./github/github-api.js");
@@ -794,7 +794,7 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
       const command = override?.command || d.command;
       const args = override?.args || (d.args?.length ? d.args : ["--help"]);
       const npxPkg = d.fallbackCommand === "npx" && d.fallbackArgs?.length
-        ? d.fallbackArgs.find((a: any) => !a.startsWith("-"))
+        ? d.fallbackArgs.find((a: string) => !a.startsWith("-"))
         : undefined;
       adapterChecks.push(
         checkAcpAdapter(d.name, command, args, {
@@ -1080,7 +1080,7 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Rec
   };
 }
 
-export function formatReleaseDoctorHuman(result: any) {
+export function formatReleaseDoctorHuman(result: Record<string, any>) {
   const { summary, checks } = result;
   const lines = [];
   lines.push(`${BOLD}Release Doctor${NC}`);
@@ -1105,7 +1105,7 @@ export function formatReleaseDoctorHuman(result: any) {
   return lines.join("\n");
 }
 
-export function formatReleaseDoctorJson(result: any) {
+export function formatReleaseDoctorJson(result: Record<string, any>) {
   return JSON.stringify(result, null, 2);
 }
 
@@ -1196,7 +1196,7 @@ export function formatReadinessJson(result: Record<string, unknown>) {
 // ── CodeGraph readiness (from codegraph-readiness.ts) ──────────────────────
 
 export class CodeGraphUnavailableError extends Error {
-  constructor(reason: any, details = {}) {
+  constructor(reason: string, details: Record<string, any> = {}) {
     super(reason);
     this.name = "CodeGraphUnavailableError";
     (this as Error & { code?: string; details?: Record<string, any> }).code = "codegraph_unavailable";
@@ -1204,7 +1204,7 @@ export class CodeGraphUnavailableError extends Error {
   }
 }
 
-function isAlive(pid: any) {
+function isAlive(pid: number) {
   const parsed = Number(pid);
   if (!Number.isInteger(parsed) || parsed <= 0) return false;
   try {
@@ -1215,7 +1215,7 @@ function isAlive(pid: any) {
   }
 }
 
-async function readJson(file: any) {
+async function readJson(file: string) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -1223,7 +1223,7 @@ async function readJson(file: any) {
   }
 }
 
-async function canonicalDir(value: any) {
+async function canonicalDir(value: string) {
   if (!value || typeof value !== "string") return null;
   try {
     return await realpath(path.resolve(value));

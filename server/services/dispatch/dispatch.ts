@@ -10,11 +10,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function dispatchDir(hubRoot: any) {
+function dispatchDir(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "dispatches");
 }
 
-function dispatchFile(hubRoot: any, dispatchId: any) {
+function dispatchFile(hubRoot: string, dispatchId: string) {
   if (!/^dispatch-[A-Za-z0-9-]+$/.test(dispatchId)) {
     throw new Error(`invalid dispatchId: ${dispatchId}`);
   }
@@ -294,7 +294,7 @@ export async function listDispatches(hubRoot: string, { projectId, status }: Any
   return results.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 }
 
-export async function deleteDispatchFile(hubRoot: any, dispatchId: any) {
+export async function deleteDispatchFile(hubRoot: string, dispatchId: string) {
   const file = dispatchFile(hubRoot, dispatchId);
   await rm(file, { force: true });
 }
@@ -363,17 +363,17 @@ import { readGithubIssues } from "../github/github-issues.js";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
-function clampLimit(limit: any) {
-  const parsed = Number.parseInt(limit, 10);
+function clampLimit(limit: unknown) {
+  const parsed = Number.parseInt(String(limit), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
   return Math.min(parsed, MAX_LIMIT);
 }
 
-function timestampOf(task: any) {
+function timestampOf(task: Record<string, any>) {
   return task.updatedAt || task.createdAt || "";
 }
 
-function statusRank(status: any) {
+function statusRank(status: string) {
   const ranks = {
     running: 0,
     ready: 1,
@@ -387,7 +387,7 @@ function statusRank(status: any) {
   return ranks[status] ?? 8;
 }
 
-function priorityRank(priority: any) {
+function priorityRank(priority: string) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
@@ -395,55 +395,55 @@ function priorityRank(priority: any) {
   return 4;
 }
 
-function firstLine(value: any, fallback = "") {
+function firstLine(value: unknown, fallback = "") {
   const line = String(value || "").split("\n").find((part) => part.trim());
   return line ? line.trim() : fallback;
 }
 
-function truncate(value: any, max = 180) {
+function truncate(value: unknown, max = 180) {
   const text = String(value || "");
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
-function normalizeLabels(labels: any) {
+function normalizeLabels(labels: unknown) {
   if (!Array.isArray(labels)) return [];
   return labels
     .map((label) => (typeof label === "string" ? label : label?.name))
     .filter(Boolean);
 }
 
-function issueKeyFn(issue: any) {
+function issueKeyFn(issue: Record<string, any>) {
   const repo = issue.repository || issue.repo || issue.repositoryFullName || "github";
   return `github:${repo}#${issue.number}`;
 }
 
-function queueIssueKey(entry: any) {
+function queueIssueKey(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   if (!metadata.issueNumber) return null;
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName || "github";
   return `github:${repo}#${metadata.issueNumber}`;
 }
 
-function isClosedIssue(issue: any) {
+function isClosedIssue(issue: Record<string, any>) {
   return String(issue?.state || "").toUpperCase() === "CLOSED";
 }
 
-function isTerminalQueueEntry(entry: any) {
+function isTerminalQueueEntry(entry: Record<string, any>) {
   return ["completed", "failed", "cancelled"].includes(entry?.status);
 }
 
-function isArchivedQueueEntry(entry: any) {
+function isArchivedQueueEntry(entry: Record<string, any>) {
   return Boolean(entry?.metadata?.finalDisposition?.startsWith("superseded"));
 }
 
-function queueActivityRank(entry: any) {
+function queueActivityRank(entry: Record<string, any>) {
   if (entry?.status === "in_progress") return 0;
   if (entry?.status === "pending") return 1;
   if (entry?.status === "needs_issue_link") return 2;
   return 3;
 }
 
-function selectQueueEntry(entries: any = []) {
+function selectQueueEntry(entries: Record<string, any>[] = []) {
   return [...entries].sort(
     (a, b) =>
       queueActivityRank(a) - queueActivityRank(b)
@@ -451,12 +451,12 @@ function selectQueueEntry(entries: any = []) {
   )[0] || null;
 }
 
-function queueTitle(entry: any) {
+function queueTitle(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   return firstLine(metadata.issueTitle || entry.description, entry.id);
 }
 
-function queueSource(entry: any) {
+function queueSource(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   if (metadata.issueNumber || metadata.issueUrl) {
     return {
@@ -475,7 +475,7 @@ function queueSource(entry: any) {
   };
 }
 
-function issueSource(issue: any) {
+function issueSource(issue: Record<string, any>) {
   return {
     kind: "github",
     label: `GitHub issue #${issue.number}`,
