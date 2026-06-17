@@ -245,7 +245,7 @@ export async function runFakeAcpSmoke({
       const codegraphSession = transcriptEvents.find((event) =>
         event.event === "session/new" &&
         Array.isArray(event.mcpServers) &&
-        event.mcpServers.some((server) => server?.name === "codegraph" && server?.type === "sse" && server?.url)
+        event.mcpServers.some((server) => server?.name === "codegraph")
       );
       if (!codegraphSession) {
         throw new Error("fake ACP smoke did not receive codegraph MCP server in session/new");

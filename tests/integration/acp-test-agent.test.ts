@@ -190,7 +190,7 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
   );
 });
 
-test("Codex ACP receives direct codegraph stdio config instead of shared SSE bridge", async () => {
+test("Codex ACP receives direct codegraph stdio config outside session mcpServers", async () => {
   const tmp = await tempRoot("cpb-codex-codegraph-direct");
   const { args } = await resolveAgentCommand("codex", {
     ...process.env,
