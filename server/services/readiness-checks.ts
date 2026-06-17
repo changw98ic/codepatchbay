@@ -1177,12 +1177,13 @@ export function formatReadinessHuman(result) {
   return lines.join("\n");
 }
 
-export function formatReadinessJson(result) {
-  const redacted = redactSecrets(result);
+export function formatReadinessJson(result: Record<string, unknown>) {
+  const redacted = redactSecrets(result) as Record<string, unknown>;
+  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Record<string, unknown>[];
   const normalized = {
     ...redacted,
-    readiness: redacted.readiness ?? deriveReadinessLevels(redacted.checks || []),
-    checks: (redacted.checks || []).map((check) => ({
+    readiness: redacted.readiness ?? deriveReadinessLevels(checks),
+    checks: checks.map((check: Record<string, unknown>) => ({
       ...check,
       evidence: check.evidence ?? check.details ?? { message: check.message },
       recommendedAction: check.recommendedAction ?? check.remediation ?? null,

@@ -537,8 +537,8 @@ function collectReleasePins(jobs) {
 }
 
 async function collectProcessAndLeaseEvidence(cpbRoot, jobs) {
-  const processReleaseIds = new Set();
-  const leaseReleaseIds = new Set();
+  const processReleaseIds = new Set<string>();
+  const leaseReleaseIds = new Set<string>();
 
   const jobMap = new Map();
   for (const job of jobs) {
