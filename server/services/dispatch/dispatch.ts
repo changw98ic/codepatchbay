@@ -5,17 +5,16 @@ import path from "node:path";
 import { buildMeta } from "../../../core/job/meta.js";
 import { listJobs } from "../job/job-store.js";
 
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function dispatchDir(hubRoot) {
+function dispatchDir(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "dispatches");
 }
 
-function dispatchFile(hubRoot, dispatchId) {
+function dispatchFile(hubRoot: string, dispatchId: string) {
   if (!/^dispatch-[A-Za-z0-9-]+$/.test(dispatchId)) {
     throw new Error(`invalid dispatchId: ${dispatchId}`);
   }
@@ -31,9 +30,9 @@ export function makeDispatchId(ts = nowIso(), suffix = randomBytes(3).toString("
   return `dispatch-${compact.slice(0, 8)}-${compact.slice(9, 15)}-${suffix}`;
 }
 
-const mutationChains = new Map<string, Promise<any>>();
+const mutationChains = new Map<string, Promise<unknown>>();
 
-async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
+async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const file = dispatchFile(hubRoot, dispatchId);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -68,7 +67,7 @@ async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () 
   }
 }
 
-function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<any>) {
+function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const key = `${path.resolve(hubRoot)}:${dispatchId}`;
   const prev = mutationChains.get(key) || Promise.resolve();
   const next = prev.then(() => fn());
@@ -295,13 +294,14 @@ export async function listDispatches(hubRoot: string, { projectId, status }: Any
   return results.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 }
 
-export async function deleteDispatchFile(hubRoot, dispatchId) {
+export async function deleteDispatchFile(hubRoot: string, dispatchId: string) {
   const file = dispatchFile(hubRoot, dispatchId);
   await rm(file, { force: true });
 }
 
 // ── worker-dispatch ──
 import { realpath } from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 import { getProject } from "../hub/hub-registry.js";
 
 function dispatchEnabled() {
@@ -330,7 +330,7 @@ export async function guardSourcePath(hubRoot: string, projectId: string, source
 
 export async function recordDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId }: Record<string, any> = {}) {
   if (!dispatchEnabled()) return null;
-  return (createDispatch as any)(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
+  return createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
 }
 
 export async function lookupDispatch(hubRoot: string, dispatchId: string) {
@@ -339,7 +339,7 @@ export async function lookupDispatch(hubRoot: string, dispatchId: string) {
 
 export async function markDispatchAssigned(hubRoot: string, dispatchId: string, { workerId }: { workerId?: string } = {}) {
   if (!dispatchEnabled()) return null;
-  return (assignWorker as any)(hubRoot, dispatchId, { workerId });
+  return assignWorker(hubRoot, dispatchId, { workerId });
 }
 
 export async function markDispatchStarted(hubRoot: string, dispatchId: string) {
@@ -363,17 +363,17 @@ import { readGithubIssues } from "../github/github-issues.js";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
-function clampLimit(limit) {
-  const parsed = Number.parseInt(limit, 10);
+function clampLimit(limit: unknown) {
+  const parsed = Number.parseInt(String(limit), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
   return Math.min(parsed, MAX_LIMIT);
 }
 
-function timestampOf(task) {
+function timestampOf(task: Record<string, any>) {
   return task.updatedAt || task.createdAt || "";
 }
 
-function statusRank(status) {
+function statusRank(status: string) {
   const ranks = {
     running: 0,
     ready: 1,
@@ -387,7 +387,7 @@ function statusRank(status) {
   return ranks[status] ?? 8;
 }
 
-function priorityRank(priority) {
+function priorityRank(priority: string) {
   if (priority === "P0") return 0;
   if (priority === "P1") return 1;
   if (priority === "P2") return 2;
@@ -395,55 +395,55 @@ function priorityRank(priority) {
   return 4;
 }
 
-function firstLine(value, fallback = "") {
+function firstLine(value: unknown, fallback = "") {
   const line = String(value || "").split("\n").find((part) => part.trim());
   return line ? line.trim() : fallback;
 }
 
-function truncate(value, max = 180) {
+function truncate(value: unknown, max = 180) {
   const text = String(value || "");
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
-function normalizeLabels(labels) {
+function normalizeLabels(labels: unknown) {
   if (!Array.isArray(labels)) return [];
   return labels
     .map((label) => (typeof label === "string" ? label : label?.name))
     .filter(Boolean);
 }
 
-function issueKeyFn(issue) {
+function issueKeyFn(issue: Record<string, any>) {
   const repo = issue.repository || issue.repo || issue.repositoryFullName || "github";
   return `github:${repo}#${issue.number}`;
 }
 
-function queueIssueKey(entry) {
+function queueIssueKey(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   if (!metadata.issueNumber) return null;
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName || "github";
   return `github:${repo}#${metadata.issueNumber}`;
 }
 
-function isClosedIssue(issue) {
+function isClosedIssue(issue: Record<string, any>) {
   return String(issue?.state || "").toUpperCase() === "CLOSED";
 }
 
-function isTerminalQueueEntry(entry) {
+function isTerminalQueueEntry(entry: Record<string, any>) {
   return ["completed", "failed", "cancelled"].includes(entry?.status);
 }
 
-function isArchivedQueueEntry(entry) {
+function isArchivedQueueEntry(entry: Record<string, any>) {
   return Boolean(entry?.metadata?.finalDisposition?.startsWith("superseded"));
 }
 
-function queueActivityRank(entry) {
+function queueActivityRank(entry: Record<string, any>) {
   if (entry?.status === "in_progress") return 0;
   if (entry?.status === "pending") return 1;
   if (entry?.status === "needs_issue_link") return 2;
   return 3;
 }
 
-function selectQueueEntry(entries = []) {
+function selectQueueEntry(entries: Record<string, any>[] = []) {
   return [...entries].sort(
     (a, b) =>
       queueActivityRank(a) - queueActivityRank(b)
@@ -451,12 +451,12 @@ function selectQueueEntry(entries = []) {
   )[0] || null;
 }
 
-function queueTitle(entry) {
+function queueTitle(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   return firstLine(metadata.issueTitle || entry.description, entry.id);
 }
 
-function queueSource(entry) {
+function queueSource(entry: Record<string, any>) {
   const metadata = entry.metadata || {};
   if (metadata.issueNumber || metadata.issueUrl) {
     return {
@@ -475,7 +475,7 @@ function queueSource(entry) {
   };
 }
 
-function issueSource(issue) {
+function issueSource(issue: Record<string, any>) {
   return {
     kind: "github",
     label: `GitHub issue #${issue.number}`,
@@ -485,7 +485,7 @@ function issueSource(issue) {
   };
 }
 
-function bodySummary(body, fallback) {
+function bodySummary(body: unknown, fallback: string) {
   const goalMatch = String(body || "").match(/##\s+Goal\s+([\s\S]*?)(?:\n##\s+|$)/i);
   const content = goalMatch ? goalMatch[1] : body;
   return truncate(firstLine(content, fallback), 220);
@@ -528,7 +528,7 @@ function progressFor({ queueEntry, issue }: Record<string, any> = {}) {
   return { stage: "open", label: "Open, not queued", detail: "Known from source ledger only", percent: 0 };
 }
 
-function humanNextAction(progress, queueEntry) {
+function humanNextAction(progress: Record<string, any>, queueEntry: Record<string, any>) {
   if (progress.stage === "ready") return "Start a CPB worker or let the queue dispatcher pick it up.";
   if (progress.label === "Needs issue link") return "Link a GitHub issue to this task before it can be claimed for execution.";
   if (progress.stage === "open") return "Import or queue this issue before expecting CPB to execute it.";
@@ -573,26 +573,26 @@ function evidenceFor({ queueEntry, jobs = [], dispatches = [] }) {
   return evidence;
 }
 
-function matchingJobs(queueEntries, jobs) {
+function matchingJobs(queueEntries: Record<string, any> | Record<string, any>[], jobs: Record<string, any>[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const descriptions = new Set(entries.map((entry) => entry.description || ""));
   const projects = new Set(entries.map((entry) => entry.projectId));
   return jobs
-    .filter((job) => projects.has(job.project) && descriptions.has(job.task))
-    .sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((job: Record<string, any>) => projects.has(job.project) && descriptions.has(job.task))
+    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function matchingDispatches(queueEntries, dispatches) {
+function matchingDispatches(queueEntries: Record<string, any> | Record<string, any>[], dispatches: Record<string, any>[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const entryIds = new Set(entries.map((entry) => entry.id));
   return dispatches
-    .filter((dispatch) => entryIds.has(dispatch.queueEntryId))
-    .sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((dispatch: Record<string, any>) => entryIds.has(dispatch.queueEntryId))
+    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function issueTask(issue, { queueEntry, queueEntries = [], jobs, dispatches }) {
+function issueTask(issue: Record<string, any>, { queueEntry, queueEntries = [], jobs, dispatches }: { queueEntry: Record<string, any>; queueEntries?: Record<string, any>[]; jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
   const labels = normalizeLabels(issue.labels);
   const progress = progressFor({ queueEntry, issue });
   const source = issueSource(issue);
@@ -663,7 +663,7 @@ function issueTask(issue, { queueEntry, queueEntries = [], jobs, dispatches }) {
   };
 }
 
-function queueTask(entry, { jobs, dispatches }) {
+function queueTask(entry: Record<string, any>, { jobs, dispatches }: { jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
   const progress = progressFor({ queueEntry: entry });
   const source = queueSource(entry);
   const title = queueTitle(entry);
@@ -725,7 +725,7 @@ function queueTask(entry, { jobs, dispatches }) {
   };
 }
 
-function summarize(tasks) {
+function summarize(tasks: Record<string, any>[]) {
   const summary = {
     total: tasks.length,
     ready: 0,

@@ -31,7 +31,9 @@ const LOCK_TTL_MS = 30_000;
 const LOCK_RETRY_COUNT = 6_000;
 const LOCK_RETRY_DELAY_MS = 10;
 
-async function withIndexLock(lockDir, callback) {
+type IndexOpts = Record<string, any>; // any: dynamic options bag with heterogeneous optional keys (dataRoot, legacyOnly, etc.)
+
+async function withIndexLock<T>(lockDir: string, callback: () => Promise<T>): Promise<T> {
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
   for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
@@ -61,9 +63,9 @@ async function withIndexLock(lockDir, callback) {
   }
 }
 
-const _writeQueues = new Map();
+const _writeQueues = new Map<string, Promise<unknown>>();
 
-function enqueueWrite(cpbRoot, opts, fn) {
+function enqueueWrite<T>(cpbRoot: string, opts: IndexOpts, fn: () => Promise<T>): Promise<T> {
   const key = indexFilePath(cpbRoot, opts);
   const lockDir = `${key}.lock`;
   const prev = _writeQueues.get(key) || Promise.resolve();
@@ -72,26 +74,26 @@ function enqueueWrite(cpbRoot, opts, fn) {
   return next;
 }
 
-function _base(cpbRoot, opts) {
+function _base(cpbRoot: string, opts: IndexOpts) {
   if (opts?.dataRoot) return path.resolve(opts.dataRoot);
   if (opts?.legacyOnly === true) return runtimeDataRoot(cpbRoot);
   throw new Error("dataRoot is required for project jobs-index paths");
 }
 
-function indexFilePath(cpbRoot, opts = {}) {
+function indexFilePath(cpbRoot: string, opts: IndexOpts = {}) {
   return path.join(_base(cpbRoot, opts), "jobs-index.json");
 }
 
-function tempIndexFilePath(cpbRoot, opts = {}) {
+function tempIndexFilePath(cpbRoot: string, opts: IndexOpts = {}) {
   const suffix = `${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}`;
   return path.join(_base(cpbRoot, opts), `jobs-index.${suffix}.tmp`);
 }
 
-function compositeKey(project, jobId) {
+function compositeKey(project: string, jobId: string) {
   return `${project}/${jobId}`;
 }
 
-export async function readJobsIndex(cpbRoot, opts = {}) {
+export async function readJobsIndex(cpbRoot: string, opts: IndexOpts = {}) {
   const indexFile = indexFilePath(cpbRoot, opts);
   try {
     const raw = await readFile(indexFile, "utf8");
@@ -106,7 +108,7 @@ export async function readJobsIndex(cpbRoot, opts = {}) {
   }
 }
 
-async function writeJobsIndex(cpbRoot, index, opts = {}) {
+async function writeJobsIndex(cpbRoot: string, index: Record<string, any>, opts: IndexOpts = {}) {
   const target = indexFilePath(cpbRoot, opts);
   const tmp = tempIndexFilePath(cpbRoot, opts);
   await mkdir(path.dirname(target), { recursive: true });
@@ -114,7 +116,7 @@ async function writeJobsIndex(cpbRoot, index, opts = {}) {
   await rename(tmp, target);
 }
 
-export async function updateJobsIndexEntry(cpbRoot, project, jobId, state, opts = {}) {
+export async function updateJobsIndexEntry(cpbRoot: string, project: string, jobId: string, state: Record<string, any>, opts: IndexOpts = {}) {
   return enqueueWrite(cpbRoot, opts, async () => {
     const index = await readJobsIndex(cpbRoot, opts) || {
       _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
@@ -129,7 +131,7 @@ export async function updateJobsIndexEntry(cpbRoot, project, jobId, state, opts 
   });
 }
 
-export async function rebuildJobsIndex(cpbRoot, opts = {}) {
+export async function rebuildJobsIndex(cpbRoot: string, opts: IndexOpts = {}) {
   return enqueueWrite(cpbRoot, opts, async () => {
     const files = await listEventFiles(cpbRoot, opts);
     const jobs = {};
@@ -157,7 +159,7 @@ export async function rebuildJobsIndex(cpbRoot, opts = {}) {
   });
 }
 
-async function mergeMissingEventStreams(cpbRoot, index, opts = {}) {
+async function mergeMissingEventStreams(cpbRoot: string, index: Record<string, any>, opts: IndexOpts = {}) {
   const files = await listEventFiles(cpbRoot, opts);
   const validKeys = new Set(files.map(({ project, jobId }) => compositeKey(project, jobId)));
   let changed = false;
@@ -190,7 +192,7 @@ async function mergeMissingEventStreams(cpbRoot, index, opts = {}) {
   return index;
 }
 
-export async function listJobsFromIndex(cpbRoot, opts = {}) {
+export async function listJobsFromIndex(cpbRoot: string, opts: IndexOpts = {}) {
   let index = await readJobsIndex(cpbRoot, opts);
   if (!index) {
     index = await rebuildJobsIndex(cpbRoot, opts);
@@ -210,7 +212,7 @@ export async function listJobsFromIndex(cpbRoot, opts = {}) {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-async function retryUpdate(fn, maxRetries = 3) {
+async function retryUpdate(fn: () => Promise<void>, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       await fn();
@@ -252,7 +254,7 @@ async function getJobAndUpdateIndex(cpbRoot: string, project: string, jobId: str
 async function extractJobExperienceBestEffort(cpbRoot: string, project: string, jobId: string, { dataRoot }: Record<string, any> = {}) {
   try {
     const { extractExperienceForJob } = await import("../event/event-source.js");
-    await extractExperienceForJob(cpbRoot, project, jobId, { dataRoot } as any);
+    await extractExperienceForJob(cpbRoot, project, jobId, { dataRoot });
   } catch {
     // Experience extraction should never change the terminal job outcome.
   }
@@ -315,7 +317,7 @@ export async function createJob(
     assertValidRoutingRules(routing, { isWorkflowName });
     const routingSelection = resolveEffectiveRouting(routingCategory, routing, { workflow });
     selectedWorkflow = routingSelection.workflow || selectedWorkflow;
-    executorSelection = (selectAgentWithFallback as any)({
+    executorSelection = selectAgentWithFallback({
       role: "executor",
       preferredAgent: routingSelection.executor,
       fallbackAgent: fallbackAgentForRole(routingSelection, "executor"),
@@ -419,7 +421,7 @@ export async function startPhase(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
-async function resolveAgentForPhase(cpbRoot: string, job: any, phase: string) {
+async function resolveAgentForPhase(cpbRoot: string, job: Record<string, any>, phase: string) {
   if (job?.agent && typeof job.agent === "string") {
     return job.agent;
   }
@@ -434,7 +436,7 @@ async function resolveAgentForPhase(cpbRoot: string, job: any, phase: string) {
     const { normalizeWorkflow, resolveNodeAgent } = await import("../../../core/workflow/definition.js");
     const dag = normalizeWorkflow(job.workflow || "standard");
     if (dag && dag.nodes) {
-      const node = dag.nodes.find(n => n.id === phase || n.phase === phase);
+      const node = dag.nodes.find((n: Record<string, any>) => n.id === phase || n.phase === phase);
       if (node) {
         let poolStatus = null;
         try {
@@ -453,7 +455,7 @@ async function resolveAgentForPhase(cpbRoot: string, job: any, phase: string) {
     const wf = getWorkflow(job.workflow || "standard");
     const role = roleForPhase(wf, phase) || "executor";
     const agentRegistry = await import("../../../core/agents/registry.js");
-    await (agentRegistry.loadRegistry as any)().catch(() => {});
+    await (agentRegistry.loadRegistry as (configDir?: string) => Promise<void>)().catch(() => {});
     const agent = agentRegistry.defaultAgentForRole(role);
     if (agent) return agent;
   } catch {}
@@ -548,7 +550,7 @@ export async function failJob(
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
 }
 
-function inferRetryPhase(job) {
+function inferRetryPhase(job: Record<string, any>) {
   const workflow = getWorkflow(job.workflow);
   if (job.failurePhase && workflow.phases.includes(job.failurePhase)) {
     return job.failurePhase;
@@ -559,7 +561,7 @@ function inferRetryPhase(job) {
   return workflow.phases[workflow.phases.length - 1] ?? null;
 }
 
-function terminalJobLineage(job) {
+function terminalJobLineage(job: Record<string, any>) {
   return {
     parentJobId: job.jobId,
     parentStatus: job.status ?? null,
@@ -569,12 +571,12 @@ function terminalJobLineage(job) {
   };
 }
 
-function truncateRecoveryText(value, maxChars = 4000) {
+function truncateRecoveryText(value: unknown, maxChars = 4000) {
   const text = String(value || "");
   return text.length > maxChars ? text.slice(-maxChars) : text;
 }
 
-function recoveryPreviousOutput(job) {
+function recoveryPreviousOutput(job: Record<string, any>) {
   const cause = job?.failureCause || {};
   const chunks = [];
   if (cause.stderrSnippet) chunks.push(`stderr snippet:\n${cause.stderrSnippet}`);
@@ -593,7 +595,7 @@ function recoveryPreviousOutput(job) {
   return truncateRecoveryText(chunks.filter(Boolean).join("\n\n"));
 }
 
-function recoveryDagResume(job) {
+function recoveryDagResume(job: Record<string, any>) {
   const resume = job?.dagResume;
   if (!resume || typeof resume !== "object") return null;
   return {
@@ -603,7 +605,7 @@ function recoveryDagResume(job) {
   };
 }
 
-function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, recoveryReason, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}) {
+function buildRecoverySourceContext(originalJob: Record<string, any>, { fromPhase, trigger, recoveryReason, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}) {
   const base = originalJob?.sourceContext && typeof originalJob.sourceContext === "object"
     ? { ...originalJob.sourceContext }
     : {};
@@ -651,7 +653,7 @@ function buildRecoverySourceContext(originalJob: any, { fromPhase, trigger, reco
 export async function createRecoveryJob(
   cpbRoot: string,
   project: string,
-  originalJob: any,
+  originalJob: Record<string, any>,
   { fromPhase, trigger, recoveryReason, ts, dataRoot, executor, executorSelection, retryCount, maxRetries, forceFreshSession }: Record<string, any> = {}
 ) {
   const lineage = terminalJobLineage(originalJob);
@@ -1001,16 +1003,16 @@ export async function listJobs(cpbRoot: string, options: Record<string, any> = {
   const { dataRoot, legacyOnly, ...rest } = options;
   if (!dataRoot && legacyOnly !== true) {
     const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
-    return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+    return rest.project ? jobs.filter((job: Record<string, any>) => job.project === rest.project) : jobs;
   }
-  const jobs: any[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
-  return rest.project ? jobs.filter((job) => job.project === rest.project) : jobs;
+  const jobs: Record<string, any>[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
+  return rest.project ? jobs.filter((job: Record<string, any>) => job.project === rest.project) : jobs;
 }
 
 export async function getJobByQueueEntryId(cpbRoot: string, project: string, queueEntryId: string, { dataRoot }: Record<string, any> = {}) {
   if (!queueEntryId) return null;
   const jobs = await listJobs(cpbRoot, { project, dataRoot });
-  return jobs.find((job) => job.queueEntryId === queueEntryId) || null;
+  return jobs.find((job: Record<string, any>) => job.queueEntryId === queueEntryId) || null;
 }
 
 export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Record<string, any> = {}) {
@@ -1037,17 +1039,17 @@ export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Recor
 // job-recovery.ts (merged)
 // ──────────────────────────────────────────────────────────────────────────────
 
-export function isTerminal(job) {
+export function isTerminal(job: Record<string, any>) {
   return !job?.jobId || TERMINAL_STATUSES.has(job.status);
 }
 
-export function isRecoverable(job) {
+export function isRecoverable(job: Record<string, any>) {
   if (!isTerminal(job)) return false;
   if (job.status === "completed") return false;
   return ["failed", "blocked", "cancelled"].includes(job.status);
 }
 
-async function resolveRecoveryRuntimeOptions(cpbRoot, project, options: Record<string, any> = {}) {
+async function resolveRecoveryRuntimeOptions(cpbRoot: string, project: string, options: Record<string, any> = {}) {
   if (options.dataRoot) {
     return { dataRoot: options.dataRoot, includeLegacyFallback: false };
   }
@@ -1061,7 +1063,7 @@ async function resolveRecoveryRuntimeOptions(cpbRoot, project, options: Record<s
   return {};
 }
 
-export async function recoverAsNewJob(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+export async function recoverAsNewJob(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
   const { ts, reason, trigger = "recovery", useCurrentExecutor = false, currentExecutor = null } = options;
   const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
   const dataRoot = runtimeOpts.dataRoot;
@@ -1100,7 +1102,7 @@ export async function recoverAsNewJob(cpbRoot, project, jobId, options: Record<s
   });
 }
 
-export async function retryAsNewJob(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+export async function retryAsNewJob(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
   const { ts, fromPhase, trigger = "manual", useCurrentExecutor = false, currentExecutor = null } = options;
   const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
   const dataRoot = runtimeOpts.dataRoot;
@@ -1136,7 +1138,7 @@ export async function retryAsNewJob(cpbRoot, project, jobId, options: Record<str
   });
 }
 
-export async function verifyTerminalImmutability(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+export async function verifyTerminalImmutability(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
   const runtimeOpts = await resolveRecoveryRuntimeOptions(cpbRoot, project, options);
   const before = await getJob(cpbRoot, project, jobId, runtimeOpts);
   if (!before?.jobId) return { immutable: false, reason: "job not found" };
@@ -1156,7 +1158,7 @@ export async function verifyTerminalImmutability(cpbRoot, project, jobId, option
   return { immutable: true };
 }
 
-export function getLineage(job) {
+export function getLineage(job: Record<string, any>) {
   if (!job?.jobId) return null;
 
   return {

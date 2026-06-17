@@ -83,7 +83,7 @@ async function runConnect(args: string[], { cpbRoot }: LooseRecord = {}) {
   if (parsed.privateKeyRef) raw.privateKeyRef = parsed.privateKeyRef;
 
   try {
-    const config = await save(hubRoot, raw);
+    const config = await save(hubRoot, raw) as Record<string, any>;
     if (parsed.json) {
       console.log(JSON.stringify({ connected: true, config }, null, 2));
     } else {

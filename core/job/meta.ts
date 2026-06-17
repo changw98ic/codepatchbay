@@ -25,7 +25,7 @@ export function buildMeta(input: Record<string, any> = {}) {
 /**
  * Build an execution_boundary event from normalized meta.
  */
-export function executionBoundaryEvent(meta, { jobId, project, ts }) {
+export function executionBoundaryEvent(meta: Record<string, any>, { jobId, project, ts }: { jobId: string; project: string; ts: string }) {
   return {
     type: "execution_boundary",
     jobId,

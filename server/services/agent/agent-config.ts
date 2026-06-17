@@ -1,6 +1,7 @@
 // ── agent-config ──
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 
 /**
  * Agent config service -- reads hub-level and project-level agent/variant config.
@@ -9,7 +10,6 @@ import path from "node:path";
  */
 
 const HUB_CONFIG_FILE = "config.json";
-type AnyRecord = Record<string, any>;
 
 async function readJson(filePath: string): Promise<AnyRecord> {
   try {
@@ -24,7 +24,7 @@ async function writeJson(filePath: string, data: AnyRecord) {
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function normalizeHubConfig(data: any): AnyRecord {
+function normalizeHubConfig(data: unknown): AnyRecord {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const removedHubTotalKey = ["maxActive", "Total"].join("");
   const next: AnyRecord = { ...data };
@@ -48,11 +48,11 @@ function normalizeHubConfig(data: any): AnyRecord {
 
 const VALID_SCHEDULER_MODES = new Set(["default", "smart"]);
 
-export function isValidSchedulerMode(mode) {
+export function isValidSchedulerMode(mode: string) {
   return VALID_SCHEDULER_MODES.has(mode);
 }
 
-export function readSchedulerConfig(hubConfig) {
+export function readSchedulerConfig(hubConfig: AnyRecord) {
   const scheduler = hubConfig?.scheduler;
   if (!scheduler || typeof scheduler !== "object") return { mode: "default" };
   const mode = VALID_SCHEDULER_MODES.has(scheduler.mode) ? scheduler.mode : "default";
@@ -61,11 +61,11 @@ export function readSchedulerConfig(hubConfig) {
 
 // -- Hub config (~/.cpb/config.json) --
 
-export async function readHubConfig(hubRoot) {
+export async function readHubConfig(hubRoot: string) {
   return normalizeHubConfig(await readJson(path.join(hubRoot, HUB_CONFIG_FILE)));
 }
 
-export async function writeHubConfig(hubRoot, data) {
+export async function writeHubConfig(hubRoot: string, data: AnyRecord) {
   await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), normalizeHubConfig(data));
 }
 
@@ -75,7 +75,7 @@ function projectConfigPath(root: string, project: string) {
   return path.join(root, "wiki", "projects", project, "project.json");
 }
 
-function uniqueRoots(roots: any[]) {
+function uniqueRoots(roots: (string | null | undefined)[]) {
   const seen = new Set();
   const result = [];
   for (const root of roots) {
@@ -88,11 +88,11 @@ function uniqueRoots(roots: any[]) {
   return result;
 }
 
-export async function readProjectJson(cpbRoot, project) {
+export async function readProjectJson(cpbRoot: string, project: string) {
   return readJson(projectConfigPath(cpbRoot, project));
 }
 
-export async function readProjectJsonFromRoots(roots, project) {
+export async function readProjectJsonFromRoots(roots: (string | null | undefined)[], project: string) {
   for (const root of uniqueRoots(roots)) {
     const data = await readProjectJson(root, project);
     if (data && Object.keys(data).length > 0) return data;
@@ -100,16 +100,16 @@ export async function readProjectJsonFromRoots(roots, project) {
   return {};
 }
 
-export async function writeProjectJson(cpbRoot, project, data) {
+export async function writeProjectJson(cpbRoot: string, project: string, data: AnyRecord) {
   await writeJson(projectConfigPath(cpbRoot, project), data);
 }
 
-export async function readProjectConfig(cpbRoot, project) {
+export async function readProjectConfig(cpbRoot: string, project: string) {
   const data = await readProjectJson(cpbRoot, project);
   return data.agents || null;
 }
 
-export async function readProjectConfigFromRoots(roots, project) {
+export async function readProjectConfigFromRoots(roots: (string | null | undefined)[], project: string) {
   for (const root of uniqueRoots(roots)) {
     const agents = await readProjectConfig(root, project);
     if (agents && Object.keys(agents).length > 0) return agents;
@@ -117,7 +117,7 @@ export async function readProjectConfigFromRoots(roots, project) {
   return null;
 }
 
-export async function writeProjectAgents(cpbRoot, project, agents) {
+export async function writeProjectAgents(cpbRoot: string, project: string, agents: AnyRecord | null) {
   const data = await readProjectJson(cpbRoot, project);
   if (agents && Object.keys(agents).length > 0) {
     data.agents = agents;
@@ -129,18 +129,19 @@ export async function writeProjectAgents(cpbRoot, project, agents) {
 
 // -- Merge: resolve effective agents config --
 
-export function normalizeAgentSpec(raw) {
+export function normalizeAgentSpec(raw: unknown) {
   if (!raw) return null;
   if (typeof raw === "object" && raw !== null) {
-    if (raw.agent === null && raw.variant) {
-      return { agent: null, variant: raw.variant };
+    const obj = raw as Record<string, unknown>;
+    if (obj.agent === null && obj.variant) {
+      return { agent: null, variant: obj.variant };
     }
-    const agentStr = raw.agent || "";
+    const agentStr = String(obj.agent || "");
     if (agentStr.includes(":")) {
       const [agent, variant] = agentStr.split(":", 2);
-      return { agent, variant: variant || raw.variant || null };
+      return { agent, variant: variant || obj.variant || null };
     }
-    return { agent: agentStr || "claude", variant: raw.variant || null };
+    return { agent: agentStr || "claude", variant: obj.variant || null };
   }
   const colonIdx = String(raw).indexOf(":");
   if (colonIdx >= 0) {
@@ -199,7 +200,7 @@ const PHASE_TO_ROLE = {
  * Returns { planner, executor, verifier, reviewer } objects with { agent, variant }.
  * Later sources override earlier ones.
  */
-export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
+export function mergeAgentConfig(hubAgents: AnyRecord | null | undefined, projectAgents: AnyRecord | null | undefined, metadataAgents: AnyRecord | null | undefined) {
   const merged: AnyRecord = {};
 
   function applyResolved(resolved: AnyRecord, overrideDefault: boolean) {
@@ -254,7 +255,7 @@ export function mergeAgentConfig(hubAgents, projectAgents, metadataAgents) {
  * Build the `agents` object for queue entry metadata from config.
  * Called at enqueue time.
  */
-export async function resolveAgentsForEntry(hubRoot, cpbRoot, project, metadata = {}) {
+export async function resolveAgentsForEntry(hubRoot: string, cpbRoot: string, project: string, metadata: AnyRecord = {}) {
   const metadataRecord = metadata as AnyRecord;
   const hubConfig = await readHubConfig(hubRoot);
   const projectAgents = await readProjectConfigFromRoots(
@@ -286,7 +287,7 @@ import { getAgentPerformance, getAgentQuality } from "../observability/observabi
 
 const TERMINAL_STATES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function resolveAgentForJob(j) {
+function resolveAgentForJob(j: AnyRecord) {
   if (j.agent && typeof j.agent === "string") {
     return j.agent;
   }
@@ -308,7 +309,7 @@ function resolveAgentForJob(j) {
   return "unknown";
 }
 
-function classifyJobsByAgent(allJobs) {
+function classifyJobsByAgent(allJobs: AnyRecord[]) {
   const byAgent = new Map();
   for (const j of allJobs) {
     const agent = resolveAgentForJob(j);
@@ -318,7 +319,7 @@ function classifyJobsByAgent(allJobs) {
   return byAgent;
 }
 
-function buildJobStats(jobs) {
+function buildJobStats(jobs: AnyRecord[]) {
   const completed = jobs.filter((j) => j.status === "completed");
   const failed = jobs.filter((j) => j.status === "failed");
   const cancelled = jobs.filter((j) => j.status === "cancelled");
@@ -348,7 +349,7 @@ function buildJobStats(jobs) {
     if (j.failureCode) failureCodes[j.failureCode] = (failureCodes[j.failureCode] || 0) + 1;
   }
 
-  const retryCount = jobs.reduce((sum, j) => sum + Math.max(0, Number(j.retryCount) || 0), 0);
+  const retryCount = jobs.reduce((sum: number, j: AnyRecord) => sum + Math.max(0, Number(j.retryCount) || 0), 0);
   const timeoutCount = jobs.filter((j) => {
     const evidence = `${j.failureCode || ""} ${j.blockedReason || ""} ${j.error || ""}`.toLowerCase();
     return evidence.includes("timeout") || evidence.includes("timed out");
@@ -379,7 +380,7 @@ function buildJobStats(jobs) {
   };
 }
 
-function buildScoreInput(stats, performance, quality) {
+function buildScoreInput(stats: AnyRecord, performance: AnyRecord, quality: AnyRecord) {
   const performanceDuration = performance.avgDurationMs && performance.totalRequests
     ? performance.avgDurationMs * performance.totalRequests
     : 0;
@@ -396,7 +397,7 @@ function buildScoreInput(stats, performance, quality) {
   };
 }
 
-export async function collectAgentMetrics(cpbRoot, _options: Record<string, any> = {}) {
+export async function collectAgentMetrics(cpbRoot: string, _options: Record<string, any> = {}) {
   let descriptors = [];
   try {
     await agentRegistry.loadRegistry(undefined);
@@ -475,19 +476,19 @@ export async function collectAgentMetrics(cpbRoot, _options: Record<string, any>
   return { agents: result, timestamp: new Date().toISOString() };
 }
 
-export async function getAgentDetail(cpbRoot, agentName) {
+export async function getAgentDetail(cpbRoot: string, agentName: string) {
   const metrics = await collectAgentMetrics(cpbRoot);
-  return metrics.agents.find((a) => a.name === agentName) || null;
+  return metrics.agents.find((a: AnyRecord) => a.name === agentName) || null;
 }
 
-export async function getAgentJobs(cpbRoot, agentName, opts: Record<string, any> = {}) {
+export async function getAgentJobs(cpbRoot: string, agentName: string, opts: Record<string, any> = {}) {
   const limit = opts.limit ?? 50;
   const allJobs = await listJobs(cpbRoot).catch(() => []);
   return allJobs
-    .filter((j) => resolveAgentForJob(j) === agentName)
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .filter((j: AnyRecord) => resolveAgentForJob(j) === agentName)
+    .sort((a: AnyRecord, b: AnyRecord) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, limit)
-    .map((j) => ({
+    .map((j: AnyRecord) => ({
       jobId: j.jobId,
       project: j.project,
       task: j.task,
@@ -507,11 +508,11 @@ export async function getAgentJobs(cpbRoot, agentName, opts: Record<string, any>
 import { listSetupAgents } from "../../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../../core/setup/detect.js";
 
-function installMethods(agent) {
+function installMethods(agent: AnyRecord) {
   return Object.keys(agent.install || {});
 }
 
-function preferredMethod(agent, setupSnapshot = {}) {
+function preferredMethod(agent: AnyRecord, setupSnapshot: AnyRecord = {}) {
   const snapshot = setupSnapshot as Record<string, any>;
   const methods = installMethods(agent);
   if (methods.includes("brew") && snapshot.tools?.brew?.installed) return "brew";
@@ -519,12 +520,12 @@ function preferredMethod(agent, setupSnapshot = {}) {
   return methods[0] || "manual";
 }
 
-function splitSimpleCommand(command) {
+function splitSimpleCommand(command: string) {
   const parts = String(command || "").trim().split(/\s+/).filter(Boolean);
   return { command: parts[0] || "", args: parts.slice(1) };
 }
 
-function buildNonExecutingPlan(agent, method) {
+function buildNonExecutingPlan(agent: AnyRecord, method: string) {
   const install = agent.install?.[method] || null;
   if (!install) return null;
   const shell = /[|&;<>()]/.test(install.command || "");
@@ -551,7 +552,7 @@ export function buildAgentSetupReadiness({
   setupSnapshot = {},
   catalog = listSetupAgents(),
 }: Record<string, any> = {}) {
-  const agents = catalog.map((agent) => {
+  const agents = catalog.map((agent: AnyRecord) => {
     const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
     const installed = Boolean(probe.installed);
     const method = preferredMethod(agent, setupSnapshot);

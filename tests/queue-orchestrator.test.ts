@@ -378,7 +378,7 @@ test("HubOrchestrator.tick stops on leader lock loss", async () => {
   orchestrator.leaderLock = {
     stillHeld: async () => false,
     release: async () => { released = true; },
-  };
+  } as any;
 
   const result = await orchestrator.tick();
 
@@ -452,8 +452,8 @@ test("HubOrchestrator scheduler gates missing project capability maps before dis
     stillHeld: async () => true,
     getEpoch: () => 7,
     release: async () => {},
-  };
-  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+  } as any;
+  orchestrator.reconciler = { reconcileAssignments: async () => {} } as any;
 
   const result = await orchestrator.tick();
 
@@ -493,8 +493,8 @@ test("HubOrchestrator scheduler gates missing live CodeGraph readiness before di
     stillHeld: async () => true,
     getEpoch: () => 9,
     release: async () => {},
-  };
-  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+  } as any;
+  orchestrator.reconciler = { reconcileAssignments: async () => {} } as any;
 
   const result = await orchestrator.tick();
 
@@ -541,8 +541,8 @@ test("HubOrchestrator scheduler does not oversubscribe one provider in a single 
     stillHeld: async () => true,
     getEpoch: () => 8,
     release: async () => {},
-  };
-  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+  } as any;
+  orchestrator.reconciler = { reconcileAssignments: async () => {} } as any;
 
   const result = await orchestrator.tick();
   const entries = await listQueue(hubRoot);
@@ -578,16 +578,16 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
     stillHeld: async () => true,
     getEpoch: () => 42,
     release: async () => {},
-  };
+  } as any;
   orchestrator.scheduler = {
     nextCandidates: async () => [entry],
     nextCandidate: async () => entry,
     findIdleWorker: async () => worker,
-  };
+  } as any;
   orchestrator.workerSupervisor = {
     ensureWorkerFor: async () => worker,
-  };
-  orchestrator.reconciler = { reconcileAssignments: async () => {} };
+  } as any;
+  orchestrator.reconciler = { reconcileAssignments: async () => {} } as any;
 
   const result = await orchestrator.tick();
 

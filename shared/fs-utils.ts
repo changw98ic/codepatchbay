@@ -5,7 +5,7 @@ import path from "node:path";
  * Atomic JSON write: write to temp file, then rename.
  * Crash-safe — partial writes go to .tmp, final file is always complete.
  */
-export async function writeJsonAtomic(filePath, data) {
+export async function writeJsonAtomic(filePath: string, data: unknown) {
   const content = typeof data === "string" ? data : `${JSON.stringify(data, null, 2)}\n`;
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
@@ -18,7 +18,7 @@ export async function writeJsonAtomic(filePath, data) {
  * Returns true if written, false if already exists.
  * Use for result files that must not be overwritten.
  */
-export async function writeJsonOnce(filePath, data) {
+export async function writeJsonOnce(filePath: string, data: unknown) {
   const content = typeof data === "string" ? data : `${JSON.stringify(data, null, 2)}\n`;
   await mkdir(path.dirname(filePath), { recursive: true });
   let fh;

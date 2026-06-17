@@ -8,7 +8,7 @@ const CPB = path.join(ROOT, "cli", "cpb.js");
 const PASS = "\x1b[0;32mPASS\x1b[0m";
 const FAIL = "\x1b[0;31mFAIL\x1b[0m";
 
-function run(cmd, args) {
+function run(cmd: string, args: string[]) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cmd, ...args], {
       cwd: ROOT,
@@ -16,7 +16,7 @@ function run(cmd, args) {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 60_000,
     });
-    const chunks = { stdout: [], stderr: [] };
+    const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
     child.stdout.on("data", (d) => chunks.stdout.push(d));
     child.stderr.on("data", (d) => chunks.stderr.push(d));
     child.on("close", (code) => {
@@ -30,12 +30,12 @@ function run(cmd, args) {
   });
 }
 
-function snippet(text, maxLen = 500) {
+function snippet(text: string, maxLen = 500) {
   const s = text.trim();
   return s.length <= maxLen ? s : s.slice(0, maxLen) + "...";
 }
 
-function failContext(label, result, detail) {
+function failContext(label: string, result: unknown, detail: string | null) {
   const info = result as Record<string, any>;
   const lines = [`${FAIL} ${label}`];
   lines.push(`  command: ${info.commandText}`);
@@ -48,7 +48,7 @@ function failContext(label, result, detail) {
 
 // --- validators ---
 
-function validateSetup(data) {
+function validateSetup(data: Record<string, any>) {
   const setup = data.detected || data;
   if (!setup.system || typeof setup.system !== "object") return "missing or invalid detected .system";
   if (typeof setup.system.platform !== "string") return ".detected.system.platform is not a string";
@@ -70,7 +70,7 @@ function validateSetup(data) {
 
 // --- runner ---
 
-async function smoke(label, args, validator) {
+async function smoke(label: string, args: string[], validator: (data: Record<string, any>) => string | null) {
   const result = await run(CPB, args) as Record<string, any>;
   result.command = CPB;
   result.commandText = `node ${path.relative(ROOT, CPB)} ${args.join(" ")}`;

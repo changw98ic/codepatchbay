@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -47,7 +48,6 @@ import { tempRoot } from "./helpers.js";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 function frozenChecklist() {
   return {
@@ -532,7 +532,7 @@ test("adversarial round 5: completion_gate_evaluated event IS allowed post-termi
   }, { dataRoot });
 
   assert.ok(result !== null, "completion_gate_evaluated must be allowed post-terminal");
-  assert.strictEqual(result.type, "completion_gate_evaluated");
+  assert.strictEqual((result as any).type, "completion_gate_evaluated");
 
   const eventsAfter = await readEvents(cpbRoot, project, job.jobId, { dataRoot });
   assert.strictEqual(eventsAfter.length, countBefore + 1,

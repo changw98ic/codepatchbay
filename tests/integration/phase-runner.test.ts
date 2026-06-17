@@ -182,7 +182,7 @@ const noRunnerResult = await dispatchPhase(noRunnerRoot, {
   executorRoot: noRunnerRoot,
 });
 assert.equal(noRunnerResult.exitCode, 1);
-assert.ok(noRunnerResult.error.message.includes("job-runner not found"));
+assert.ok((noRunnerResult.error as Error).message.includes("job-runner not found"));
 
 // dispatchPhase delegates to job-runner.js, Node APIs record lifecycle events
 const dispatchRoot = await mkdtemp(path.join(tmpdir(), "cpb-dispatch-"));
@@ -225,7 +225,7 @@ const dispatchResult = await dispatchPhase(dispatchRoot, {
   env: { ...process.env, CPB_PROJECT_RUNTIME_ROOT: dispatchDataRoot },
 });
 
-assert.equal(dispatchResult.exitCode, 0, `dispatchPhase should succeed: ${dispatchResult.error?.message || ""}`);
+assert.equal(dispatchResult.exitCode, 0, `dispatchPhase should succeed: ${(dispatchResult.error as Error)?.message || ""}`);
 assert.ok(dispatchResult.envelope, "dispatchPhase returns envelope");
 assert.equal(dispatchResult.envelope.project, dispatchProject);
 

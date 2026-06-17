@@ -32,6 +32,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -294,7 +295,6 @@ function executionMap() {
   return { unmappedChangedFiles: [] };
 }
 
-type AnyRecord = Record<string, any>;
 
 // ─── Test 1: Pure gate — command item + worker heartbeat evidence → evidence_mismatch ──
 

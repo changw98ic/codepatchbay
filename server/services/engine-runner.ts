@@ -14,16 +14,16 @@ import {
   delegateEnqueueProviderUsage,
 } from "./quota-delegate-client.js";
 
-function prepareTaskForEnv(env) {
+function prepareTaskForEnv(env: Record<string, string | undefined>) {
   if (env?.CPB_ACP_FAKE_ACP_COMMAND) {
-    return async () => ({
+    return async (): Promise<Record<string, any>> => ({
       riskLevel: "low",
       domains: ["test_fixture"],
-      highRiskFiles: [],
-      safetyBoundaries: [],
+      highRiskFiles: [] as string[],
+      safetyBoundaries: [] as string[],
       verificationDepth: "standard",
       adversarialRequired: false,
-      adversarialFocus: [],
+      adversarialFocus: [] as string[],
       confidence: "high",
       generatedAt: new Date().toISOString(),
       source: { testFixture: true },
@@ -32,23 +32,23 @@ function prepareTaskForEnv(env) {
   return prepareTask;
 }
 
-export function buildServices(cpbRoot, { hubRoot = null, env = process.env, dataRoot = null } = {}) {
-  const withJobOptions = (fn) => dataRoot
-    ? (root, project, jobId, opts = {}) => fn(root, project, jobId, { ...opts, dataRoot })
+export function buildServices(cpbRoot: string, { hubRoot = null, env = process.env, dataRoot = null }: Record<string, any> = {}) {
+  const withJobOptions = (fn: (...args: unknown[]) => unknown) => dataRoot
+    ? (root: string, project: string, jobId: string, opts: Record<string, any> = {}) => fn(root, project, jobId, { ...opts, dataRoot })
     : fn;
   return {
     createJob: dataRoot
-      ? (root, opts = {}) => createJob(root, { ...opts, dataRoot })
+      ? (root: string, opts: Record<string, any> = {}) => createJob(root, { ...opts, dataRoot })
       : createJob,
     startPhase: withJobOptions(startPhase),
     completePhase: withJobOptions(completePhase),
     completeJob: dataRoot
-      ? (root, project, jobId, opts = {}) => completeJob(root, project, jobId, { ...opts, dataRoot })
+      ? (root: string, project: string, jobId: string, opts: Record<string, any> = {}) => completeJob(root, project, jobId, { ...opts, dataRoot })
       : completeJob,
     failJob: withJobOptions(failJob),
     blockJob: withJobOptions(blockJob),
     appendEvent: dataRoot
-      ? (root, project, jobId, event, opts = {}) => {
+      ? (root: string, project: string, jobId: string, event: Record<string, any>, opts: Record<string, any> = {}) => {
         if (typeof jobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) {
           throw new Error(`invalid jobId for appendEvent: ${JSON.stringify(jobId)}`);
         }
@@ -57,7 +57,7 @@ export function buildServices(cpbRoot, { hubRoot = null, env = process.env, data
       : appendEvent,
     prepareTask: prepareTaskForEnv(env),
     getPool: () => getManagedAcpPool({ cpbRoot, hubRoot, env }),
-    getArtifactIndex: (root, project, jobId, opts = {}) =>
+    getArtifactIndex: (root: string, project: string, jobId: string, opts: Record<string, any> = {}) =>
       buildArtifactIndex(root, project, jobId, { ...opts, dataRoot }),
     providerServices: {
       assertProviderAvailable,
@@ -68,7 +68,7 @@ export function buildServices(cpbRoot, { hubRoot = null, env = process.env, data
   };
 }
 
-export async function runJobWithServices(opts) {
+export async function runJobWithServices(opts: Record<string, any>) {
   const { cpbRoot, project, sourcePath: explicitSourcePath, hubRoot: explicitHubRoot } = opts;
   await mkdir(cpbRoot, { recursive: true });
   const { sourcePath: resolvedSourcePath, hubRoot: resolvedHubRoot, projectRuntimeRoot } = await resolveSourcePath(cpbRoot, project, explicitHubRoot);
@@ -104,7 +104,7 @@ export async function runJobWithServices(opts) {
   });
 }
 
-async function resolveSourcePath(cpbRoot, project, hubRootOverride = null) {
+async function resolveSourcePath(cpbRoot: string, project: string, hubRootOverride: string | null = null) {
   try {
     const hubRoot = hubRootOverride || resolveHubRoot(cpbRoot);
     const registered = await getProject(hubRoot, project);

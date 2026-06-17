@@ -45,7 +45,7 @@ test("audit export includes checklist artifacts from artifact index", async () =
     classifier: "poisoned-session-v1",
     ts: "2026-06-12T00:00:01Z",
   }, { dataRoot });
-  const audit = await buildJobAuditExport(cpbRoot, "proj", "job-audit-checklist", { dataRoot }) as Record<string, any>;
+  const audit: Record<string, any> = await buildJobAuditExport(cpbRoot, "proj", "job-audit-checklist", { dataRoot }) as Record<string, any>;
   assert.equal(audit.checklist.items[0].id, "AC-001");
   assert.deepEqual(audit.executionMap.changedFiles, ["README.md"]);
   assert.equal(audit.evidenceLedger.finalWorktree.diffHash, "sha256:one");

@@ -3,7 +3,7 @@ import { triageByRules } from "../triage/rules.js";
 const AUTO_TRIAGE_MODES = new Set(["auto", "rules", "", null, undefined]);
 const LOCAL_TRUSTED_ACTORS = Object.freeze(["api", "cli", "ui"]);
 
-function clean(value, fallback) {
+function clean(value: unknown, fallback: string): string {
   const text = String(value ?? "").trim();
   return text || fallback;
 }

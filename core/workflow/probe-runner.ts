@@ -28,15 +28,15 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 
 const execFileAsync = promisify(execFile);
 
-type AnyRecord = Record<string, any>;
 
 /** Command probe wall-clock timeout. Treats timeout as an honest fail. */
 const COMMAND_PROBE_TIMEOUT_MS = 30_000;
 
-function text(value: any): string {
+function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
@@ -152,25 +152,26 @@ async function runDeclaredCommand(
       // observation clears validateCommandObservation's record-gate (which
       // requires a non-empty digest) for both pass and fail paths.
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Non-zero exit: Node attaches .code === number on a spawned process that
     // exited non-zero. Record the real exit code honestly. Output digests are
     // ALWAYS produced (even for empty output) — an empty stdout is itself an
     // objective, recordable result, and validateCommandObservation requires a
     // non-empty digest for the record-gate.
-    if (typeof err?.code === "number") {
-      const stdout = typeof err.stdout === "string" ? err.stdout : "";
-      const stderr = typeof err.stderr === "string" ? err.stderr : "";
+    const e = err as Record<string, unknown> | null;
+    if (typeof e?.code === "number") {
+      const stdout = typeof e.stdout === "string" ? e.stdout : "";
+      const stderr = typeof e.stderr === "string" ? e.stderr : "";
       return {
-        exitCode: err.code,
+        exitCode: e.code,
         stdoutSha256: sha256Hex(stdout),
         stderrSha256: sha256Hex(stderr),
       };
     }
     // Timeout or ENOENT (binary not found) — honest fail, no fabricated code.
-    const reason = err?.signal === "SIGTERM" || /TIMEDOUT/i.test(String(err?.message || ""))
+    const reason = e?.signal === "SIGTERM" || /TIMEDOUT/i.test(String(e?.message || ""))
       ? `command probe timed out after ${COMMAND_PROBE_TIMEOUT_MS}ms`
-      : `command probe failed to execute: ${text(err?.code) || text(err?.message) || "unknown error"}`;
+      : `command probe failed to execute: ${text(e?.code) || text(e?.message) || "unknown error"}`;
     return { exitCode: -1, stdoutSha256: "", stderrSha256: "", note: reason };
   }
 }

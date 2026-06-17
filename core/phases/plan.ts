@@ -25,7 +25,7 @@ Rules:
 - The planMarkdown field must contain the full plan in markdown
 - Do NOT write any files yourself. The system will persist the plan`;
 
-export async function runPlan(ctx) {
+export async function runPlan(ctx: Record<string, any>) {
   const { task, project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "planner";
@@ -120,7 +120,7 @@ export async function runPlan(ctx) {
   });
 }
 
-async function buildPlanPrompt(ctx) {
+async function buildPlanPrompt(ctx: Record<string, any>) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("plan", ctx);
   }
@@ -162,7 +162,7 @@ Browse the repository to understand the codebase before planning.`;
     filesSection = `
 
 ## Relevant Files
-${contextPack.files.map((f) => `- ${f}`).join("\n")}`;
+${contextPack.files.map((f: string) => `- ${f}`).join("\n")}`;
   }
 
   return `You are a software planning agent. Create a detailed implementation plan for the following task:
@@ -184,14 +184,14 @@ The plan should include:
 - Potential risks and mitigations${buildRetrySection(ctx.sourceContext)}`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "planner";
   const raw = ctx.agents?.[role] || ctx.agents?.planner || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
   return { agent: raw, variant: null };
 }
 
-function buildRetrySection(sourceContext) {
+function buildRetrySection(sourceContext: Record<string, any>) {
   const retry = sourceContext?.retry;
   if (!retry || typeof retry !== "object") return "";
   return `

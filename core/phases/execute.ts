@@ -31,7 +31,7 @@ Rules:
 - Do NOT include any text outside the code block
 - Do NOT write any artifact files yourself. The system will persist the deliverable.`;
 
-export async function runExecute(ctx) {
+export async function runExecute(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "executor";
@@ -87,14 +87,14 @@ export async function runExecute(ctx) {
     });
   }
 
-  const parsed: Record<string, any> = parseExecutorJson(agentResult.output) as any;
+  const parsed: Record<string, unknown> = parseExecutorJson(agentResult.output) as Record<string, unknown>;
   if (!parsed.ok) {
     return phaseFailed({
       phase: "execute",
       failure: failure({
         kind: FailureKind.AGENT_CONTRACT_INVALID,
         phase: "execute",
-        reason: parsed.reason,
+        reason: parsed.reason as string,
         retryable: true,
         stderrSnippet: agentResult.output.slice(-500),
         cause: { rawOutput: agentResult.output.slice(0, 2000) },
@@ -108,8 +108,9 @@ export async function runExecute(ctx) {
 
   // Build execution map connecting changed files to checklist items
   const normalizedChangedFiles = normalizeRepoRelativePaths(changedFiles);
+  const checklistMapping = (parsed.checklistMapping || []) as Array<Record<string, unknown>>;
   const mappedFiles = normalizeRepoRelativePaths(
-    (parsed.checklistMapping || []).flatMap((entry: Record<string, any>) => entry.changedFiles || []),
+    checklistMapping.flatMap((entry) => (entry.changedFiles || []) as string[]),
   );
   const executionMap = {
     schemaVersion: 1,
@@ -132,14 +133,14 @@ export async function runExecute(ctx) {
 
   const deliverable = renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles);
 
-  const validation: Record<string, any> = validateDeliverable(deliverable, { ...ctx, changedFiles }) as any;
+  const validation = validateDeliverable(deliverable, { ...ctx, changedFiles }) as { ok: boolean; reason?: string; kind?: string; retryable?: boolean };
   if (!validation.ok) {
     return phaseFailed({
       phase: "execute",
       failure: failure({
-        kind: validation.kind || FailureKind.ARTIFACT_INVALID,
+        kind: (validation.kind || FailureKind.ARTIFACT_INVALID) as string,
         phase: "execute",
-        reason: validation.reason,
+        reason: validation.reason ?? "deliverable validation failed",
         retryable: validation.retryable ?? false,
         cause: { rawOutput: deliverable.slice(0, 2000) },
       }),
@@ -163,7 +164,7 @@ export async function runExecute(ctx) {
   });
 }
 
-async function computeChangedFiles(cwd, before) {
+async function computeChangedFiles(cwd: string, before: string[]) {
   try {
     const { stdout } = await execFile("git", ["status", "--porcelain"], { cwd });
     const after = stdout.trim().split("\n").filter(Boolean);
@@ -175,7 +176,7 @@ async function computeChangedFiles(cwd, before) {
   }
 }
 
-function getRequiredArtifact(previousResults, kind) {
+function getRequiredArtifact(previousResults: Array<{ artifact?: { kind?: string } & Record<string, unknown> }>, kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) {
       return previousResults[i].artifact;
@@ -184,9 +185,9 @@ function getRequiredArtifact(previousResults, kind) {
   return null;
 }
 
-function renderDeliverableMarkdown(ctx, planArtifact, parsed, changedFiles) {
+function renderDeliverableMarkdown(ctx: Record<string, any>, planArtifact: Record<string, any> | null, parsed: Record<string, any>, changedFiles: string[]) {
   const changedSection = changedFiles.length > 0
-    ? changedFiles.map((f) => `- ${f}`).join("\n")
+    ? changedFiles.map((f: string) => `- ${f}`).join("\n")
     : "- No file changes detected";
   return `# Deliverable
 
@@ -203,14 +204,14 @@ ${parsed.summary}
 ${changedSection}
 
 ## Tests
-${parsed.tests.map((t) => `- ${t}`).join("\n") || "- No test descriptions provided"}
+${parsed.tests.map((t: string) => `- ${t}`).join("\n") || "- No test descriptions provided"}
 
 ## Risks
-${parsed.risks.map((r) => `- ${r}`).join("\n") || "- None identified"}
+${parsed.risks.map((r: string) => `- ${r}`).join("\n") || "- None identified"}
 `;
 }
 
-async function buildExecutePrompt(ctx, planArtifact) {
+async function buildExecutePrompt(ctx: Record<string, any>, planArtifact: Record<string, any> | null) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("execute", ctx, { planArtifact });
   }
@@ -235,7 +236,7 @@ ${planArtifact ? `\nPlan reference: ${planArtifact.name}\n` : ""}
 Execute the implementation. Make code changes as needed.${retrySection}`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "executor";
   const raw = ctx.agents?.[role] || ctx.agents?.executor || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

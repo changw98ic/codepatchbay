@@ -9,7 +9,7 @@ export const SupervisorAction = Object.freeze({
   MARK_BLOCKED: "mark_blocked",
 });
 
-const VALID_ACTIONS = new Set(Object.values(SupervisorAction));
+const VALID_ACTIONS: Set<string> = new Set(Object.values(SupervisorAction));
 
 const ACTION_SCHEMAS = {
   [SupervisorAction.REROUTE]: {
@@ -43,14 +43,14 @@ const FORBIDDEN_PARAMS = new Set([
   "args", "token", "secret", "writeAllowPaths", "dangerous",
 ]);
 
-export function isValidSupervisorAction(action) {
+export function isValidSupervisorAction(action: string) {
   return VALID_ACTIONS.has(action);
 }
 
 /**
  * P1-1 fix: strict schema validation with enum, type, and additionalProperties checks.
  */
-export function validateSupervisorDecision(decision) {
+export function validateSupervisorDecision(decision: Record<string, any>) {
   if (!decision || typeof decision !== "object") {
     return { valid: false, errors: ["decision must be an object"] };
   }

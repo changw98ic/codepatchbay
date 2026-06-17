@@ -10,7 +10,7 @@ test("AcpClient.request registers pending response before writing to stdio", asy
     prompt: "",
     writeAllowPaths: [],
     terminalPolicy: "deny",
-    toolPolicy: "deny",
+    toolPolicy: "deny" as unknown as Map<string, string>,
     env: {},
   });
 

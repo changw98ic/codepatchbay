@@ -19,12 +19,12 @@ import { buildReviewBundle, writeReviewBundle, reviewBundleDir } from "./review/
 
 const execFileAsync = promisify(execFile);
 
-const PHASE_ROLE_MAP = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
+const PHASE_ROLE_MAP: Record<string, string> = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", remediate: "remediator" };
 
 async function resolveAgentsFromEvents(cpbRoot: string, projectId: string, jobId: string, { dataRoot }: Record<string, any> = {}) {
   try {
     const events = await readEvents(cpbRoot, projectId, jobId, { dataRoot });
-    const agents = {};
+    const agents: Record<string, any> = {};
     for (const ev of events) {
       if (ev.type === "phase_result" && ev.phase && ev.agent) {
         const role = PHASE_ROLE_MAP[ev.phase] || ev.phase;
@@ -136,7 +136,7 @@ function skipped(code: string, details: Record<string, any> = {}) {
   };
 }
 
-function parseIssueUrl(issueUrl: unknown) {
+function parseIssueUrl(issueUrl: unknown): { repo: string; number: number; url: string } | null {
   if (!issueUrl) return null;
   const match = String(issueUrl).match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)(?:[/?#].*)?$/);
   if (!match) return null;
@@ -147,7 +147,7 @@ function parseIssueUrl(issueUrl: unknown) {
   };
 }
 
-function resolveIssue(metadata: Record<string, any> = {}) {
+function resolveIssue(metadata: Record<string, any> = {}): { repo: string; number: number; url: string } | null {
   const number = Number(metadata.issueNumber);
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName;
   if (Number.isInteger(number) && number > 0 && typeof repo === "string" && repo.includes("/")) {
@@ -161,7 +161,7 @@ function resolveIssue(metadata: Record<string, any> = {}) {
   return parseIssueUrl(metadata.issueUrl);
 }
 
-function splitNul(value: unknown) {
+function splitNul(value: unknown): string[] {
   return String(value || "").split("\0").filter(Boolean);
 }
 
@@ -178,21 +178,21 @@ async function changedWorktreeFiles(worktreePath: string, { runCommand }: Record
   ])];
 }
 
-function hasUnsafeChanges(summary: any) {
+function hasUnsafeChanges(summary: Record<string, any>): boolean {
   return (
     summary.counts[MERGE_CLASSIFICATION.SHARED_STATE] > 0
     || summary.counts[MERGE_CLASSIFICATION.NEEDS_HUMAN] > 0
   );
 }
 
-function unsafeFiles(summary: any) {
-  return summary.entries.filter((entry) => (
+function unsafeFiles(summary: Record<string, any>): Record<string, any>[] {
+  return summary.entries.filter((entry: Record<string, any>) => (
     entry.classification === MERGE_CLASSIFICATION.SHARED_STATE
     || entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN
   ));
 }
 
-function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<string, any> = {}) {
+function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<string, any> = {}): Record<string, unknown> {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   return normalizeRoute(
@@ -206,7 +206,7 @@ function routingEffectiveRoute(entry: Record<string, any> = {}, job: Record<stri
   );
 }
 
-function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []) {
+function routeAllowsProtectedDiff(route: Record<string, any>, protectedScopes: string[] = []): { allowed: boolean; escalation: Record<string, any> | null; reviewer: boolean } {
   if (route?.workflow === "complex" && route?.planMode === "full") {
     return { allowed: true, escalation: null, reviewer: false };
   }
@@ -250,7 +250,7 @@ function routeAllowsProtectedDiff(route: any, protectedScopes: any[] = []) {
   };
 }
 
-function protectedDiffForRoute(files: string[], entry: any, job: any) {
+function protectedDiffForRoute(files: string[], entry: Record<string, any>, job: Record<string, any>): { blocked: boolean; route: Record<string, any>; protectedDiff: Record<string, any>; guardResult: Record<string, any> } {
   const route = routingEffectiveRoute(entry, job);
   const protectedDiff = actualDiffRiskGuard({ files });
   if (!protectedDiff.actualDiffRisk.protected) {
@@ -348,7 +348,7 @@ async function requeueProtectedDiffUpgrade({
   return upgraded;
 }
 
-function buildRoutingContext(entry: any, job: any, routeGuard: any = null) {
+function buildRoutingContext(entry: Record<string, any>, job: Record<string, any>, routeGuard: Record<string, any> | null = null): Record<string, any> {
   const metadata = entry?.metadata || {};
   const routing = metadata.routing || {};
   let finalDiffGuard = null;
@@ -371,13 +371,13 @@ function buildRoutingContext(entry: any, job: any, routeGuard: any = null) {
   };
 }
 
-function isInsideRoot(root: string, targetPath: string) {
+function isInsideRoot(root: string, targetPath: string): boolean {
   if (!root || !targetPath || !path.isAbsolute(targetPath)) return false;
   const relative = path.relative(path.resolve(root), path.resolve(targetPath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function displayArtifactPath(artifactPath: any, roots: string[] = []) {
+function displayArtifactPath(artifactPath: unknown, roots: string[] = []): string | null {
   if (!artifactPath) return null;
   const value = String(artifactPath);
   if (!path.isAbsolute(value)) return value;
@@ -387,12 +387,12 @@ function displayArtifactPath(artifactPath: any, roots: string[] = []) {
   return path.basename(value);
 }
 
-function artifactIdFromPath(artifactPath: any) {
+function artifactIdFromPath(artifactPath: unknown): string {
   const name = path.basename(String(artifactPath || "artifact"));
   return name.replace(/\.(?:md|patch|diff|txt|json)$/i, "") || "artifact";
 }
 
-function artifactReferenceFromEntry(entry: any, roots: string[]) {
+function artifactReferenceFromEntry(entry: Record<string, any>, roots: string[]): { id: string; path: string | null } | null {
   if (!entry || entry.broken) return null;
   return {
     id: entry.id || artifactIdFromPath(entry.path),
@@ -400,15 +400,15 @@ function artifactReferenceFromEntry(entry: any, roots: string[]) {
   };
 }
 
-function artifactReferenceForKind(bundle: any, kind: string, roots: string[]) {
+function artifactReferenceForKind(bundle: Record<string, any>, kind: string, roots: string[]): { id: string; path: string | null } | null {
   const matches = (bundle?.links?.artifacts || [])
-    .filter((entry) => entry?.kind === kind && !entry.broken);
+    .filter((entry: Record<string, any>) => entry?.kind === kind && !entry.broken);
   if (matches.length === 0) return null;
   const entry = kind === "verdict" ? matches[matches.length - 1] : matches[0];
   return artifactReferenceFromEntry(entry, roots);
 }
 
-function pushEvidenceLine(lines: string[], value: any) {
+function pushEvidenceLine(lines: string[], value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) pushEvidenceLine(lines, item);
     return;
@@ -418,12 +418,12 @@ function pushEvidenceLine(lines: string[], value: any) {
   if (text) lines.push(text);
 }
 
-function testEvidenceFromVerdict(verdict: any) {
+function testEvidenceFromVerdict(verdict: Record<string, any>): string[] {
   const lines: string[] = [];
   pushEvidenceLine(lines, verdict?.tests);
   pushEvidenceLine(lines, verdict?.basis?.tests);
   if (verdict?.layers && typeof verdict.layers === "object") {
-    for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, any]>) {
+    for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, Record<string, any>]>) {
       if (!layer?.detail) continue;
       pushEvidenceLine(lines, `${name}: ${layer.detail}`);
     }
@@ -431,18 +431,21 @@ function testEvidenceFromVerdict(verdict: any) {
   return [...new Set(lines)].slice(0, 8);
 }
 
-function verdictEvidenceForBody(verdict: any) {
+function verdictEvidenceForBody(verdict: Record<string, unknown> | null): Record<string, unknown> {
   if (!verdict || typeof verdict !== "object") {
     return { status: "pass", reason: "No structured verdict evidence was found" };
   }
-  return {
+  const blocking = Array.isArray(verdict.blocking) ? verdict.blocking : undefined;
+  const blockingMissing = Array.isArray(verdict.blockingMissingInputs) ? verdict.blockingMissingInputs : undefined;
+  const out: Record<string, unknown> = {
     ...verdict,
     status: verdict.status || verdict.verdict || "unavailable",
-    blockingCount: verdict.blockingCount ?? verdict.blocking?.length ?? verdict.blockingMissingInputs?.length ?? undefined,
+    blockingCount: verdict.blockingCount ?? blocking?.length ?? blockingMissing?.length ?? undefined,
   };
+  return out;
 }
 
-export function buildPrEvidenceFromReviewBundle(bundle, {
+export function buildPrEvidenceFromReviewBundle(bundle: Record<string, any>, {
   cpbRoot = null,
   dataRoot = null,
   hubRoot = null,
@@ -474,7 +477,7 @@ export function buildPrEvidenceFromReviewBundle(bundle, {
   };
 }
 
-function commitMessage({ jobId, issueNumber }: Record<string, any>) {
+function commitMessage({ jobId, issueNumber }: Record<string, any>): string {
   return [
     `Finalize CPB job ${jobId} for issue #${issueNumber}`,
     "",
@@ -537,7 +540,7 @@ async function finalizeAsReviewBundle({
         project,
         bundlePath,
         changedFiles: bundle.evidence.changedFiles,
-        verdict: bundle.evidence.verdict?.verdict || null,
+        verdict: (bundle.evidence.verdict as Record<string, any>)?.verdict || null,
         ts: new Date().toISOString(),
       }, { dataRoot }).catch(() => {});
     }
@@ -549,7 +552,7 @@ async function finalizeAsReviewBundle({
       jobId,
       bundlePath,
       changedFiles: bundle.evidence.changedFiles,
-      verdict: bundle.evidence.verdict?.verdict || null,
+      verdict: (bundle.evidence.verdict as Record<string, unknown>)?.verdict || null,
     };
   } catch (err) {
     return reject("REVIEW_BUNDLE_FAILED", { jobId, error: err.message });
@@ -625,7 +628,7 @@ export async function finalizeSuccessfulQueueEntry({
   const worktreeBranch = await currentBranch(canonicalWorktreePath, { runCommand });
   const worktreeHead = await revParse(canonicalWorktreePath, "HEAD", { runCommand });
   const uncommittedFiles = await changedWorktreeFiles(canonicalWorktreePath, { runCommand });
-  let committedFiles = [];
+  let committedFiles: string[] = [];
   if (worktreeHead !== sourceHead) {
     if (!(await isAncestor(canonicalWorktreePath, sourceHead, worktreeHead, { runCommand }))) {
       // Source HEAD advanced since the worktree branched — likely a parallel finalize.
@@ -636,14 +639,14 @@ export async function finalizeSuccessfulQueueEntry({
         const baseCommit = mbResult.stdout.trim();
         const worktreeFiles = [
           ...uncommittedFiles,
-          ...(await diffFiles(canonicalWorktreePath, baseCommit, worktreeHead, { runCommand }).catch(() => [])),
+          ...(await diffFiles(canonicalWorktreePath, baseCommit, worktreeHead, { runCommand }).catch((): string[] => [])),
         ];
         const conflictInfo = await detectParallelConflict(
           canonicalSourcePath,
           baseCommit,
           worktreeFiles,
           { runCommand },
-        ).catch(() => null);
+        ).catch((): null => null);
 
         if (conflictInfo?.sourceAdvanced) {
           if (cpbRoot && projectId) {
@@ -927,7 +930,7 @@ export async function finalizeSuccessfulQueueEntry({
 
 // ── Approval gate (from approval-gate.ts) ──────────────────────────────────
 
-function nowIso() {
+function nowIso(): string {
   return new Date().toISOString();
 }
 

@@ -26,7 +26,7 @@ export class AssignmentStore {
    * Idempotent: creates assignment on first call, updates mutable fields on retry/reroute.
    * Preserves attempt history (counter + attempt directories) across retries.
    */
-  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext, metadata }: Record<string, any>) {
+  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext, metadata }: Record<string, any>): Promise<Record<string, any>> {
     const id = `a-${entryId}`;
     const dir = path.join(this.baseDir, id);
 
@@ -252,7 +252,7 @@ export class AssignmentStore {
     return entries;
   }
 
-  async _readState(assignmentId: string): Promise<any> {
+  async _readState(assignmentId: string): Promise<Record<string, any> | null> {
     try {
       return JSON.parse(await readFile(path.join(this.baseDir, assignmentId, "state.json"), "utf8"));
     } catch { return null; }
@@ -262,7 +262,7 @@ export class AssignmentStore {
     await writeJsonAtomic(path.join(this.baseDir, assignmentId, "state.json"), state);
   }
 
-  async _readAttempt(assignmentId: string, attemptNum: number): Promise<any> {
+  async _readAttempt(assignmentId: string, attemptNum: number): Promise<Record<string, any>> {
     const dir = String(attemptNum).padStart(3, "0");
     return JSON.parse(await readFile(path.join(this.baseDir, assignmentId, "attempts", dir, "attempt.json"), "utf8"));
   }

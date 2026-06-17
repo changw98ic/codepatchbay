@@ -32,7 +32,7 @@ const CYAN = "\x1b[0;36m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 
-export function normalizeGithubRepo(value) {
+export function normalizeGithubRepo(value: unknown) {
   const raw = String(value || "").trim();
   if (!raw) return "";
 
@@ -67,23 +67,23 @@ export function resolveGithubRepo({ env = process.env, root = ROOT, execSyncFn =
   throw new Error("Could not resolve GitHub repo. Set CPB_E2E_GITHUB_REPO=owner/repo.");
 }
 
-function log(tag, msg) {
+function log(tag: string, msg: string) {
   console.log(`${CYAN}[${tag}]${RESET} ${msg}`);
 }
 
-function pass(msg) {
+function pass(msg: string) {
   console.log(`${GREEN}  PASS${RESET} ${msg}`);
 }
 
-function fail(msg) {
+function fail(msg: string) {
   console.log(`${RED}  FAIL${RESET} ${msg}`);
 }
 
-function shellQuote(value) {
+function shellQuote(value: unknown) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function run(cmd, opts: Record<string, any> = {}) {
+function run(cmd: string, opts: Record<string, any> = {}) {
   try {
     const result = execSync(cmd, {
       encoding: "utf8",
@@ -103,12 +103,12 @@ function run(cmd, opts: Record<string, any> = {}) {
   }
 }
 
-function wait(ms) {
+function wait(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function assertPackedExecutorFiles(packEntry) {
-  const packedPaths = new Set((packEntry.files || []).map((file) => file.path).filter(Boolean));
+function assertPackedExecutorFiles(packEntry: Record<string, any>) {
+  const packedPaths = new Set((packEntry.files || []).map((file: Record<string, any>) => file.path).filter(Boolean));
   const missing = REQUIRED_EXECUTOR_FILES.filter((required) => !packedPaths.has(required));
   if (missing.length > 0) {
     fail(`Pack is missing executor files: ${missing.join(", ")}`);
@@ -270,10 +270,10 @@ function stepDoctor() {
   try {
     const data = JSON.parse(r.stdout || "{}");
     const agentErrors = (data.checks || []).filter(
-      (c) => c.status === "error" && c.category === "agents"
+      (c: Record<string, any>) => c.status === "error" && c.category === "agents"
     );
     if (agentErrors.length > 0) {
-      fail(`Critical agent errors: ${agentErrors.map((c) => c.message).join(", ")}`);
+      fail(`Critical agent errors: ${agentErrors.map((c: Record<string, any>) => c.message).join(", ")}`);
       process.exit(1);
     }
     const summary = data.summary || {};
@@ -383,7 +383,7 @@ function latestGithubQueueEntry() {
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] || null;
 }
 
-function remoteFinalizerComplete(entry) {
+function remoteFinalizerComplete(entry: Record<string, any>) {
   const finalizer = entry?.metadata?.finalizer;
   return Boolean(
     finalizer?.ok === true
@@ -436,7 +436,7 @@ async function stepMonitor() {
 
     if (status !== lastStatus) {
       lastStatus = status;
-      const lines = status.split("\n").filter((l) => l.trim());
+      const lines = status.split("\n").filter((l: string) => l.trim());
       for (const line of lines) {
         if (line.includes("Latest job")) {
           log("MONITOR", line.replace(/\x1b\[[0-9;]*m/g, "").trim());

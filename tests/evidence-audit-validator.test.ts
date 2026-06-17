@@ -16,10 +16,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { validateEvidenceObservation } from "../core/workflow/evidence-probes.js";
 
-type AnyRecord = Record<string, any>;
 
 const ATTEMPT_ID = "attempt-audit-001";
 

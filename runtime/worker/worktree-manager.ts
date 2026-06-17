@@ -17,17 +17,17 @@ export const WORKTREE_SLUG = "pipeline";
 export const WORKTREE_CREATE_MAX_ATTEMPTS = 3;
 export const WORKTREE_CREATE_RETRY_DELAY_MS = 500;
 
-function delay(ms) {
+function delay(ms: number) {
   if (!ms) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function childPathOf(parent, candidate) {
+function childPathOf(parent: string, candidate: string) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function canonicalPath(candidate) {
+async function canonicalPath(candidate: string) {
   try {
     return await realpath(candidate);
   } catch {
@@ -35,7 +35,7 @@ async function canonicalPath(candidate) {
   }
 }
 
-async function assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo }) {
+async function assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo }: { sourcePath: string; worktreesRoot: string; worktreeInfo: Record<string, any> }) {
   if (!worktreeInfo?.path) {
     throw new Error("worktree creation returned no path");
   }
@@ -58,7 +58,7 @@ export async function cleanupFailedWorktreeCreate({
   runGit = execFileAsync,
   removePath = rm,
   log = null,
-}) {
+}: Record<string, any>) {
   const gitOpts = { cwd: sourcePath, maxBuffer: 10 * 1024 * 1024 };
   try {
     await runGit("git", ["worktree", "remove", "--force", worktreePath], gitOpts);

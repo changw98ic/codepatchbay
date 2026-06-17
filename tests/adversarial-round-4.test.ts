@@ -24,6 +24,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { validateChecklistVerdict } from "../core/workflow/acceptance-checklist.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
@@ -31,7 +32,6 @@ import { buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
   return {

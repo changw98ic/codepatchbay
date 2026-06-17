@@ -15,20 +15,20 @@ import { scanHubPollution, isUnderTestPath } from "../project/project-index.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function findMatchingQueueEntry(queueEntries, job) {
-  const inProgress = queueEntries.filter((e) => e.status === "in_progress");
-  let match = inProgress.find((e) => e.metadata?.jobId === job.jobId);
+function findMatchingQueueEntry(queueEntries: Record<string, any>[], job: Record<string, any>) {
+  const inProgress = queueEntries.filter((e: Record<string, any>) => e.status === "in_progress");
+  let match = inProgress.find((e: Record<string, any>) => e.metadata?.jobId === job.jobId);
   if (match) return match;
-  match = inProgress.find((e) => e.metadata?.originJobId === job.jobId);
+  match = inProgress.find((e: Record<string, any>) => e.metadata?.originJobId === job.jobId);
   if (match) return match;
   const byTask = inProgress.filter(
-    (e) => e.projectId === job.project && e.description === job.task
+    (e: Record<string, any>) => e.projectId === job.project && e.description === job.task
   );
   if (byTask.length === 1) return byTask[0];
   return null;
 }
 
-function isProcessAlive(pid) {
+function isProcessAlive(pid: number) {
   if (typeof pid !== "number" || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -43,11 +43,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function resolvedHubRoot(cpbRoot, options: Record<string, any> = {}) {
+function resolvedHubRoot(cpbRoot: string, options: Record<string, any> = {}) {
   return options.hubRoot ? path.resolve(options.hubRoot) : resolveHubRoot(cpbRoot);
 }
 
-async function cleanupRuntimeRoots(cpbRoot, options: Record<string, any> = {}) {
+async function cleanupRuntimeRoots(cpbRoot: string, options: Record<string, any> = {}) {
   if (options.dataRoot) {
     return [{ kind: "project", dataRoot: path.resolve(options.dataRoot), projectId: options.project || null }];
   }
@@ -64,10 +64,10 @@ async function cleanupRuntimeRoots(cpbRoot, options: Record<string, any> = {}) {
   }
 }
 
-async function listJobsForCleanup(cpbRoot, options: Record<string, any> = {}) {
+async function listJobsForCleanup(cpbRoot: string, options: Record<string, any> = {}) {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
-  const jobs = [];
-  const seen = new Set();
+  const jobs: Record<string, any>[] = [];
+  const seen = new Set<string>();
   for (const root of roots) {
     const batch = await listJobs(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
     for (const job of batch) {
@@ -80,10 +80,10 @@ async function listJobsForCleanup(cpbRoot, options: Record<string, any> = {}) {
   return jobs;
 }
 
-async function listProcessesForCleanup(cpbRoot, options: Record<string, any> = {}) {
+async function listProcessesForCleanup(cpbRoot: string, options: Record<string, any> = {}) {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
-  const entries = [];
-  const seen = new Set();
+  const entries: Record<string, any>[] = [];
+  const seen = new Set<string>();
   for (const root of roots) {
     const batch = await listProcesses(cpbRoot, { dataRoot: root.dataRoot });
     for (const entry of batch) {
@@ -96,7 +96,7 @@ async function listProcessesForCleanup(cpbRoot, options: Record<string, any> = {
   return entries;
 }
 
-async function eventOptionsForProject(cpbRoot, project, options: Record<string, any> = {}) {
+async function eventOptionsForProject(cpbRoot: string, project: string, options: Record<string, any> = {}) {
   if (options.legacyOnly === true) {
     return { ...options, legacyOnly: true };
   }
@@ -110,8 +110,8 @@ async function eventOptionsForProject(cpbRoot, project, options: Record<string, 
   throw new Error("dataRoot is required for project event store paths");
 }
 
-export async function validateEventStream(cpbRoot, project, jobId, { dryRun = false, ...options }: Record<string, any> = {}) {
-  const events = [];
+export async function validateEventStream(cpbRoot: string, project: string, jobId: string, { dryRun = false, ...options }: Record<string, any> = {}) {
+  const events: Record<string, any>[] = [];
   let raw;
   const eventOptions = await eventOptionsForProject(cpbRoot, project, options);
   const file = eventFileFor(cpbRoot, project, jobId, eventOptions);
@@ -131,8 +131,8 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
 
   const hasTrailingNewline = raw.endsWith("\n");
   const lines = raw.split("\n");
-  const nonEmpty = lines.map((line, idx) => ({ line, lineNumber: idx + 1 }))
-    .filter(({ line }) => line.trim().length > 0);
+  const nonEmpty = lines.map((line: string, idx: number) => ({ line, lineNumber: idx + 1 }))
+    .filter(({ line }: { line: string }) => line.trim().length > 0);
 
   for (let i = 0; i < nonEmpty.length; i++) {
     const { line, lineNumber } = nonEmpty[i];
@@ -142,7 +142,7 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
       event = JSON.parse(line);
     } catch {
       if (isLast && !hasTrailingNewline) {
-        const recoveredEvents = nonEmpty.slice(0, i).map(({ line: l }) => JSON.parse(l));
+        const recoveredEvents = nonEmpty.slice(0, i).map(({ line: l }: { line: string }) => JSON.parse(l));
         if (dryRun) {
           return {
             valid: true,
@@ -199,25 +199,25 @@ export async function validateEventStream(cpbRoot, project, jobId, { dryRun = fa
  *
  * Returns { recovered: [{jobId, reason}], failed: [{jobId, error}] }
  */
-export async function recoverOrphanedJobs(cpbRoot, options: Record<string, any> = {}) {
+export async function recoverOrphanedJobs(cpbRoot: string, options: Record<string, any> = {}) {
   const dryRun = options.dryRun || false;
-  const recovered = [];
-  const failed = [];
+  const recovered: Record<string, any>[] = [];
+  const failed: Record<string, any>[] = [];
 
   const jobs = await listJobsForCleanup(cpbRoot, options);
   const processEntries = await listProcessesForCleanup(cpbRoot, options);
-  const processByJobId = new Map();
+  const processByJobId = new Map<string, any>();
   for (const pe of processEntries) {
     if (pe.jobId) processByJobId.set(pe.jobId, pe);
   }
 
   const hubRoot = resolvedHubRoot(cpbRoot, options);
-  let queueEntries = [];
+  let queueEntries: Record<string, any>[] = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
   const now = new Date();
   const runningJobs = jobs.filter(
-    (j) => !TERMINAL_STATUSES.has(j.status) && j.jobId
+    (j: Record<string, any>) => !TERMINAL_STATUSES.has(j.status) && j.jobId
   );
 
   for (const job of runningJobs) {
@@ -347,8 +347,8 @@ export async function recoverOrphanedJobs(cpbRoot, options: Record<string, any> 
   return { recovered, failed };
 }
 
-export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Record<string, any> = {}) {
-  const streamRecoveries = [];
+export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...options }: Record<string, any> = {}) {
+  const streamRecoveries: Record<string, any>[] = [];
   const report: Record<string, any> = {
     staleJobs: [],
     orphanLeases: [],
@@ -366,18 +366,18 @@ export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Rec
   const now = new Date();
 
   const processEntries = await listProcessesForCleanup(cpbRoot, options);
-  const processByJobId = new Map();
+  const processByJobId = new Map<string, any>();
   for (const pe of processEntries) {
     if (pe.jobId) processByJobId.set(pe.jobId, pe);
   }
 
   const hubRoot = resolvedHubRoot(cpbRoot, options);
-  let queueEntries = [];
+  let queueEntries: Record<string, any>[] = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
   // 1. Detect stale running jobs
   const runningJobs = jobs.filter(
-    (j) => !TERMINAL_STATUSES.has(j.status) && j.jobId
+    (j: Record<string, any>) => !TERMINAL_STATUSES.has(j.status) && j.jobId
   );
 
   for (const job of runningJobs) {
@@ -583,10 +583,10 @@ export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Rec
   }
 
   // 2. Detect orphan leases
-  const activeJobIds = new Set(jobs.map((j) => j.jobId));
+  const activeJobIds = new Set(jobs.map((j: Record<string, any>) => j.jobId));
   for (const root of roots) {
     const leasesDir = path.join(root.dataRoot, "leases");
-    let leaseFiles;
+    let leaseFiles: string[];
     try {
       leaseFiles = await readdir(leasesDir);
     } catch {
@@ -644,7 +644,7 @@ export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Rec
       ? registry.projects
       : Object.values(registry.projects);
 
-    for (const project of projectEntries) {
+    for (const project of projectEntries as Record<string, any>[]) {
       if (!project.worker || !project.worker.lastSeenAt) continue;
       const age = now.getTime() - new Date(project.worker.lastSeenAt).getTime();
       const pid = project.worker.pid;
@@ -731,8 +731,8 @@ export async function reconcileJobs(cpbRoot, { dryRun = false, ...options }: Rec
   return report;
 }
 
-export async function cleanupDryRun(cpbRoot, options: Record<string, any> = {}) {
-  const report = {
+export async function cleanupDryRun(cpbRoot: string, options: Record<string, any> = {}) {
+  const report: Record<string, any> = {
     leasesToRemove: [],
     worktreesPreserved: [],
     totalLeaseFiles: 0,
@@ -755,13 +755,13 @@ export async function cleanupDryRun(cpbRoot, options: Record<string, any> = {}) 
 
   for (const root of roots) {
     const leasesDir = path.join(root.dataRoot, "leases");
-    let leaseFiles;
+    let leaseFiles: string[];
     try {
       leaseFiles = await readdir(leasesDir);
     } catch {
       leaseFiles = [];
     }
-    report.totalLeaseFiles += leaseFiles.filter((f) => f.endsWith(".json")).length;
+    report.totalLeaseFiles += leaseFiles.filter((f: string) => f.endsWith(".json")).length;
 
     for (const f of leaseFiles) {
       if (!f.endsWith(".json")) continue;
@@ -804,21 +804,21 @@ export async function cleanupDryRun(cpbRoot, options: Record<string, any> = {}) 
   return report;
 }
 
-export async function cleanupJobs(cpbRoot, options: Record<string, any> = {}) {
+export async function cleanupJobs(cpbRoot: string, options: Record<string, any> = {}) {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
   const jobs = await listJobsForCleanup(cpbRoot, options);
   const terminal = new Set(["completed", "failed", "blocked", "cancelled"]);
   const terminalJobIds = new Set(
-    jobs.filter((j) => terminal.has(j.status)).map((j) => j.jobId)
+    jobs.filter((j: Record<string, any>) => terminal.has(j.status)).map((j: Record<string, any>) => j.jobId)
   );
   const terminalLeaseIds = new Set(
-    jobs.filter((j) => terminal.has(j.status) && j.leaseId).map((j) => j.leaseId)
+    jobs.filter((j: Record<string, any>) => terminal.has(j.status) && j.leaseId).map((j: Record<string, any>) => j.leaseId)
   );
 
   let cleaned = 0;
   for (const root of roots) {
     const leasesDir = path.join(root.dataRoot, "leases");
-    let files;
+    let files: string[];
     try {
       files = await readdir(leasesDir);
     } catch {
@@ -856,7 +856,7 @@ export async function cleanupJobs(cpbRoot, options: Record<string, any> = {}) {
  * project, or a child path under that expected root. Rejects hubRoot, <hubRoot>/projects,
  * another registered project's expected root, sourcePath, and ancestors of sourcePath.
  */
-function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }) {
+function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }: Record<string, any>) {
   const hubResolved = path.resolve(hubRoot);
   const hubProjectsResolved = path.join(hubResolved, "projects");
   const targetRaw = project.projectRuntimeRoot;
@@ -907,7 +907,7 @@ function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }) {
   return { canDelete: false, reason: "unsafe-runtime-root" };
 }
 
-export async function cleanupPollution(cpbRoot, options: Record<string, any> = {}) {
+export async function cleanupPollution(cpbRoot: string, options: Record<string, any> = {}) {
   const hubRoot = resolvedHubRoot(cpbRoot, options);
   let projectsRemoved = 0;
   let orphanDirsRemoved = 0;
@@ -1003,7 +1003,7 @@ export function resolveRetentionPolicy(workflow: string | null | undefined, stat
   return DEFAULT_WORKFLOW_RETENTION[status] || "preserve";
 }
 
-function normalizePolicy(cpbRoot, policy: Record<string, any> = {}) {
+function normalizePolicy(cpbRoot: string, policy: Record<string, any> = {}) {
   // completed: null means "not specified, use workflow-aware default"
   const completed = policy.completed != null && COMPLETED_ACTIONS.has(policy.completed)
     ? policy.completed
@@ -1014,11 +1014,11 @@ function normalizePolicy(cpbRoot, policy: Record<string, any> = {}) {
   };
 }
 
-function archivePathFor(policy, worktree) {
+function archivePathFor(policy: Record<string, any>, worktree: string) {
   return path.join(policy.archiveRoot, path.basename(worktree));
 }
 
-function entryForJob(job, policy): Record<string, any> {
+function entryForJob(job: Record<string, any>, policy: Record<string, any>): Record<string, any> {
   const workflow = job.workflow || null;
   const base: Record<string, any> = {
     jobId: job.jobId,
@@ -1054,7 +1054,7 @@ function entryForJob(job, policy): Record<string, any> {
   return { ...base, reason: `${status} job worktree retained because it is not completed` };
 }
 
-export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
+export async function buildWorktreeRetentionPlan(cpbRoot: string, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
   const jobs = await listJobsForCleanup(cpbRoot, options);
 
@@ -1125,7 +1125,7 @@ export async function buildWorktreeRetentionPlan(cpbRoot, { policy = {}, dryRun 
   };
 }
 
-export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
+export async function cleanupWorktrees(cpbRoot: string, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
   const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun, ...options });
   if (plan.dryRun) return plan;
 
@@ -1146,7 +1146,7 @@ export async function cleanupWorktrees(cpbRoot, { policy = {}, dryRun = true, ..
   return { ...plan, entries: results };
 }
 
-export function formatWorktreeRetentionHuman(plan) {
+export function formatWorktreeRetentionHuman(plan: Record<string, any>) {
   const lines = [
     plan.dryRun ? "CodePatchBay Worktree Cleanup (dry-run)" : "CodePatchBay Worktree Cleanup",
     "",
@@ -1174,20 +1174,20 @@ const execFileAsync = promisify(execFile);
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const HYGIENE_TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
 
-function isTerminalJob(job) {
+function isTerminalJob(job: Record<string, any>) {
   return HYGIENE_TERMINAL_STATUSES.has(job.status);
 }
 
-function issueKey(repo, number) {
+function issueKey(repo: string, number: string | number) {
   return `${repo}#${number}`;
 }
 
-function isStale(timestamp) {
+function isStale(timestamp: string) {
   if (!timestamp) return false;
   return Date.now() - new Date(timestamp).getTime() > STALE_THRESHOLD_MS;
 }
 
-async function runGh(args, { runCommand = execFileAsync } = {}) {
+async function runGh(args: string[], { runCommand = execFileAsync }: Record<string, any> = {}) {
   const result = await runCommand("gh", args, {
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf8",
@@ -1195,7 +1195,7 @@ async function runGh(args, { runCommand = execFileAsync } = {}) {
   return typeof result === "string" ? result : result.stdout;
 }
 
-async function listIssueComments({ repo, issueNumber }, { runCommand = execFileAsync } = {}) {
+async function listIssueComments({ repo, issueNumber }: Record<string, any>, { runCommand = execFileAsync }: Record<string, any> = {}) {
   const stdout = await runGh([
     "issue", "view", String(issueNumber),
     "--repo", repo,
@@ -1209,7 +1209,7 @@ async function listIssueComments({ repo, issueNumber }, { runCommand = execFileA
   }
 }
 
-export function isCpbComment(body) {
+export function isCpbComment(body: string) {
   if (!body) return false;
   return body.includes("CodePatchBay queued this issue.")
     || body.includes("CodePatchBay failed this run.")
@@ -1220,8 +1220,8 @@ export function isCpbComment(body) {
     || body.includes("<!-- cpb-stale-marker -->");
 }
 
-export function parseCpbCommentMeta(body) {
-  const meta = { kind: null, jobId: null, status: null };
+export function parseCpbCommentMeta(body: string) {
+  const meta: Record<string, any> = { kind: null, jobId: null, status: null };
   if (!body) return meta;
 
   const jobMatch = body.match(/- Job:\s*(\S+)/);
@@ -1250,7 +1250,7 @@ export function parseCpbCommentMeta(body) {
   return meta;
 }
 
-export function buildStaleMarkerComment({ jobId, supersededBy, reason }) {
+export function buildStaleMarkerComment({ jobId, supersededBy, reason }: Record<string, any>) {
   const lines = [
     "<!-- cpb-stale-marker -->",
     "> **CPB run superseded**",
@@ -1263,7 +1263,7 @@ export function buildStaleMarkerComment({ jobId, supersededBy, reason }) {
   return lines.join("\n");
 }
 
-export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQueueEntryId, reason }) {
+export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQueueEntryId, reason }: Record<string, any>) {
   return [
     "### Issue superseded by newer CPB run",
     "",
@@ -1277,7 +1277,7 @@ export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQue
   ].filter((line) => line !== null).join("\n");
 }
 
-export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo = null, runCommand = execFileAsync } = {}) {
+export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryRun = false, repo = null, runCommand = execFileAsync }: Record<string, any> = {}) {
   const jobs = await listJobsForCleanup(cpbRoot, { hubRoot });
   const queueEntries = await listHubQueue(hubRoot);
   const { readGithubIssues } = await import("../github/github-issues.js");
@@ -1308,7 +1308,7 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
     }
   }
 
-  const report = {
+  const report: Record<string, any> = {
     issuesScanned: 0,
     staleComments: [],
     supersededIssues: [],
@@ -1329,7 +1329,7 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
     const issueJobs = jobsByIssue.get(key) || [];
 
     if (issueJobs.length === 0) continue;
-    const hasActiveRun = issueJobs.some((j) => !isTerminalJob(j));
+    const hasActiveRun = issueJobs.some((j: Record<string, any>) => !isTerminalJob(j));
     if (hasActiveRun) continue;
 
     let comments;
@@ -1341,21 +1341,21 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
     }
 
     const cpbComments = comments
-      .map((c) => ({ ...c, meta: parseCpbCommentMeta(c.body) }))
-      .filter((c) => isCpbComment(c.body) || c.meta.kind === "already-marked");
+      .map((c: Record<string, any>) => ({ ...c, meta: parseCpbCommentMeta(c.body) }))
+      .filter((c: Record<string, any>) => isCpbComment(c.body) || c.meta.kind === "already-marked");
 
     if (cpbComments.length === 0) continue;
 
-    const terminalComments = cpbComments.filter((c) => c.meta.kind === "terminal");
+    const terminalComments = cpbComments.filter((c: Record<string, any>) => c.meta.kind === "terminal");
     const latestTerminal = terminalComments.length > 0
       ? terminalComments[terminalComments.length - 1]
       : null;
 
     const alreadyMarkedIds = new Set(
-      cpbComments.filter((c) => c.meta.kind === "already-marked").map((c) => c.id),
+      cpbComments.filter((c: Record<string, any>) => c.meta.kind === "already-marked").map((c: Record<string, any>) => c.id),
     );
 
-    const staleCandidates = cpbComments.filter((c) => {
+    const staleCandidates = cpbComments.filter((c: Record<string, any>) => {
       if (c.meta.kind === "already-marked") return false;
       if (alreadyMarkedIds.has(c.id)) return false;
       if (c.meta.kind === "queued" && terminalComments.length > 0) return true;
@@ -1447,7 +1447,7 @@ export async function scanStaleComments(cpbRoot, hubRoot, { dryRun = false, repo
   return report;
 }
 
-export async function runBacklogHygiene(cpbRoot, { dryRun = false, repo = null, runCommand = execFileAsync } = {}) {
+export async function runBacklogHygiene(cpbRoot: string, { dryRun = false, repo = null, runCommand = execFileAsync }: Record<string, any> = {}) {
   const hubRoot = resolvedHubRoot(cpbRoot);
   return scanStaleComments(cpbRoot, hubRoot, { dryRun, repo, runCommand });
 }

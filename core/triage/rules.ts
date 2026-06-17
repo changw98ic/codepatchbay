@@ -78,10 +78,10 @@ const PROTECTED_RULES = [
   },
 ];
 
-function normalizeLabels(labels = []) {
+function normalizeLabels(labels: unknown[] = []) {
   return Array.isArray(labels)
     ? labels
-      .map((label) => (typeof label === "string" ? label : label?.name))
+      .map((label) => (typeof label === "string" ? label : (label as Record<string, unknown>)?.name))
       .filter(Boolean)
       .map((label) => String(label).trim().toLowerCase())
     : [];
@@ -97,15 +97,15 @@ function textInput(input: Record<string, any> = {}) {
   ].filter(Boolean).join(" ");
 }
 
-function includesLabel(labels, expected) {
+function includesLabel(labels: unknown[], expected: string) {
   return normalizeLabels(labels).includes(expected);
 }
 
-function matchesAny(text, patterns) {
+function matchesAny(text: string, patterns: RegExp[]) {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function isComplexImplementationTask(text) {
+function isComplexImplementationTask(text: string) {
   return matchesAny(text, IMPLEMENTATION_VERBS) && matchesAny(text, COMPLEX_IMPLEMENTATION_OBJECTS);
 }
 
@@ -213,10 +213,10 @@ export function classifyIssueRules(input: Record<string, any> = {}) {
 }
 
 export function triageByRules(input: Record<string, any> = {}) {
-  const rules: Record<string, any> = classifyIssueRules(input) as any;
+  const rules = classifyIssueRules(input) as Record<string, unknown>;
   return mergeRoutePolicy({
     ...rules,
     requestedRoute: input.requestedRoute || rules.requestedRoute,
-    reasons: rules.reasons,
+    reasons: rules.reasons as string[],
   });
 }

@@ -136,7 +136,7 @@ test("appendEvent with a project runtime root seals only the target event stream
       ts: "2026-06-11T05:10:02.000Z",
     }, { dataRoot });
 
-    assert.equal(written?.task, "project root job");
+    assert.equal((written as any)?.task, "project root job");
     const projectEvents = await readEvents(cpbRoot, "flow", jobId, { dataRoot, includeLegacyFallback: false });
     assert.equal(projectEvents.length, 1);
     assert.equal(projectEvents[0].task, "project root job");

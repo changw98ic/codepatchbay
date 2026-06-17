@@ -43,7 +43,7 @@ const CODEX_HEADLESS_CONFIG_OVERRIDES = [
 
 const CODEX_COMMANDS = new Set(["codex-acp", "npx"]);
 
-export function normalizeAcpProfile(profile) {
+export function normalizeAcpProfile(profile: unknown): string | null {
   if (profile === undefined || profile === null || profile === "") return "headless";
   const lower = String(profile).toLowerCase();
   if (VALID_PROFILES.has(lower)) return lower;
@@ -66,7 +66,7 @@ export function resolveAcpLane({ profile, uiLane, uiLaneReason }: Record<string,
   };
 }
 
-export function headlessCodexConfigArgs(command, args = []) {
+export function headlessCodexConfigArgs(command: string, args: string[] = []) {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return [...CODEX_HEADLESS_CONFIG_OVERRIDES];
   // npx fallback: npx -y @zed-industries/codex-acp
@@ -76,7 +76,7 @@ export function headlessCodexConfigArgs(command, args = []) {
   return [];
 }
 
-export function classifyUiToolRequest(message) {
+export function classifyUiToolRequest(message: Record<string, any>) {
   if (!message || typeof message !== "object") return false;
   const method = message.method || "";
   const params = message.params || {};
@@ -135,7 +135,7 @@ export function mergeHeadlessDenyTools(existingDenyTools = "") {
   return [...combined].join(",");
 }
 
-export function detectUiEscalation(text) {
+export function detectUiEscalation(text: string) {
   if (!text || typeof text !== "string") return [];
   const found = [];
   for (const marker of ESCALATION_MARKERS) {

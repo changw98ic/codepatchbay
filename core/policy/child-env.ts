@@ -152,22 +152,22 @@ const ACP_POOL_ENV = new Set([
   "CPB_ACP_POOL_CONNECTION_POLL_MS",
 ]);
 
-function isDynamicAllowedEnvKey(key) {
+function isDynamicAllowedEnvKey(key: string): boolean {
   return (
     key === "CPB_ACP_AGENT_VARIANT" ||
     /^CPB_ACP_[A-Z0-9_]+_(?:COMMAND|ARGS|VARIANT|PROVIDER|PROFILE_ROOT|HEADLESS|RECORD|TRACE|SLOW_MO|TIMEOUT_MS)$/.test(key)
   );
 }
 
-function isDynamicAcpPoolEnvKey(key) {
+function isDynamicAcpPoolEnvKey(key: string): boolean {
   return /^CPB_ACP_POOL_PROVIDER_[A-Z0-9_]+_MAX$/.test(key);
 }
 
-function isNumericEnvValue(value) {
+function isNumericEnvValue(value: unknown): boolean {
   return /^\d+$/.test(String(value ?? "").trim());
 }
 
-function normalizeAgentName(agent) {
+function normalizeAgentName(agent: unknown): string {
   return String(agent || "").trim().toLowerCase();
 }
 
@@ -176,7 +176,7 @@ function agentNameFromOptions(options: ChildEnvOptions = {}) {
   return normalizeAgentName(options.agent || options.agentName || options.provider);
 }
 
-export function providerCredentialKeysForAgent(agent) {
+export function providerCredentialKeysForAgent(agent: unknown): Set<string> {
   const normalized = normalizeAgentName(agent);
   const scoped = PROVIDER_CREDENTIALS_BY_AGENT.get(normalized);
   return new Set(scoped || PROVIDER_CREDENTIALS);
@@ -188,19 +188,19 @@ function allowedProviderCredentialsForOptions(options: ChildEnvOptions = {}) {
   return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;
 }
 
-function isAcpPoolNumericEntry(key, value) {
+function isAcpPoolNumericEntry(key: string, value: unknown): boolean {
   return (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) && isNumericEnvValue(value);
 }
 
-function shouldCopyAcpPoolEnvEntry(key, value) {
+function shouldCopyAcpPoolEnvEntry(key: string, value: unknown): boolean {
   return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key);
 }
 
-function shouldCopyChildEnvEntry(key, value, options = {}) {
+function shouldCopyChildEnvEntry(key: string, value: unknown, options: ChildEnvOptions = {}): boolean {
   return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, options);
 }
 
-export function isAllowedChildEnvKey(key, options: ChildEnvOptions = {}) {
+export function isAllowedChildEnvKey(key: string, options: ChildEnvOptions = {}): boolean {
   if (PROVIDER_CREDENTIALS.has(key)) {
     return allowedProviderCredentialsForOptions(options).has(key);
   }

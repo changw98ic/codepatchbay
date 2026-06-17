@@ -11,7 +11,7 @@ import { WorkerStore, summarizeWorkers } from "../../../shared/orchestrator/work
 
 type LooseRecord = Record<string, any>;
 
-export function redactDiagnostics(value, key = "") {
+export function redactDiagnostics(value: unknown, key = "") {
   return redactSecrets(value, key);
 }
 
@@ -342,7 +342,7 @@ export function analyzeChainSnapshot(snapshot: LooseRecord) {
 
   if (job.status === "running" && lease && job.phase) {
     const recentActivity = eventTail.filter(
-      (e) => e.type === "phase_activity" || e.type === "phase_started",
+      (e: Record<string, any>) => e.type === "phase_activity" || e.type === "phase_started",
     );
     if (recentActivity.length > 0) {
       const lastActivityTs =
@@ -380,12 +380,12 @@ import { appendEvent, eventFileFor } from "../event/event-store.js";
 
 const PERFORMANCE_DIR = "performance";
 
-function perfDir(cpbRoot, options: Record<string, any> = {}) {
+function perfDir(cpbRoot: string, options: Record<string, any> = {}) {
   if (!options.dataRoot) throw new Error("dataRoot is required");
   return path.join(path.resolve(options.dataRoot), PERFORMANCE_DIR);
 }
 
-function agentKey(agent, role, phase) {
+function agentKey(agent: string, role: string, phase: string) {
   return `${agent}:${role}:${phase}`;
 }
 
@@ -393,7 +393,7 @@ function agentKey(agent, role, phase) {
  * Record a performance entry from a completed job phase.
  * Writes a performance_recorded event and appends to agent metrics file.
  */
-export async function recordPerformance(cpbRoot, project, jobId, entry) {
+export async function recordPerformance(cpbRoot: string, project: string, jobId: string, entry: Record<string, any>) {
   const { agent, role, phase, status, durationMs, error, ts } = entry;
   if (!agent || !phase) return;
   if (!entry.dataRoot) throw new Error("dataRoot is required");
@@ -432,7 +432,7 @@ export async function recordPerformance(cpbRoot, project, jobId, entry) {
 /**
  * Get aggregated performance metrics for an agent.
  */
-export async function getAgentPerformance(cpbRoot, agent, options: Record<string, any> = {}) {
+export async function getAgentPerformance(cpbRoot: string, agent: string, options: Record<string, any> = {}) {
   const dir = perfDir(cpbRoot, options);
   const file = path.join(dir, `${agent}.jsonl`);
 
@@ -466,7 +466,7 @@ export async function getAgentPerformance(cpbRoot, agent, options: Record<string
 /**
  * Record a quality score for an agent based on verifier verdict.
  */
-export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase, verdict, ts }) {
+export async function recordQualityScore(cpbRoot: string, project: string, jobId: string, { agent, phase, verdict, ts }: Record<string, any>) {
   try {
     await appendEvent(cpbRoot, project, jobId, {
       type: "agent_quality_scored",
@@ -493,7 +493,7 @@ export async function recordQualityScore(cpbRoot, project, jobId, { agent, phase
 /**
  * Get quality metrics for an agent.
  */
-export async function getAgentQuality(cpbRoot, agent) {
+export async function getAgentQuality(cpbRoot: string, agent: string) {
   const dir = perfDir(cpbRoot);
   const file = path.join(dir, `${agent}-quality.jsonl`);
 
@@ -522,7 +522,7 @@ export async function getAgentQuality(cpbRoot, agent) {
   };
 }
 
-async function appendLine(file, line) {
+async function appendLine(file: string, line: string) {
   const { appendFile } = await import("node:fs/promises");
   await appendFile(file, line + "\n", "utf8");
 }
@@ -530,7 +530,7 @@ async function appendLine(file, line) {
 // ── diagnostics-bundle ──
 import { listJobs } from "../job/job-store.js";
 
-function jobSummary(job) {
+function jobSummary(job: Record<string, any>) {
   return {
     jobId: job.jobId,
     project: job.project,

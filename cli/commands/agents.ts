@@ -1,11 +1,11 @@
 #!/usr/bin/env node
+import { AnyRecord } from "../../shared/types.js";
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
 import { createInstallPlan, upgradeFor } from "../../core/setup/install-plan.js";
 import { runInstallPlanWithEvents } from "../../server/services/setup.js";
 
-type AnyRecord = Record<string, any>;
 
 const runInstallPlan = runInstallPlanWithEvents as (plan: AnyRecord, options?: AnyRecord) => Promise<AnyRecord>;
 

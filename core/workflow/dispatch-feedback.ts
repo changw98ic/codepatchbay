@@ -7,7 +7,7 @@ export const DISPATCH_FEEDBACK_SCHEMA_VERSION = 1;
 const WORKFLOWS = new Set(["standard", "complex"]);
 const PLAN_MODES = new Set(["light", "full", "parent"]);
 
-export function dispatchFeedbackPath(cpbRoot, project, jobId) {
+export function dispatchFeedbackPath(cpbRoot: string, project: string, jobId: string): string {
   return path.join(
     path.resolve(cpbRoot),
     "wiki",
@@ -53,9 +53,9 @@ export function normalizeDispatchFeedback(input: Record<string, any> = {}, defau
   };
 }
 
-export async function readDispatchFeedbackFile(cpbRoot, project, jobId, { phase = "execute" } = {}) {
+export async function readDispatchFeedbackFile(cpbRoot: string, project: string, jobId: string, { phase = "execute" }: Record<string, any> = {}) {
   const file = dispatchFeedbackPath(cpbRoot, project, jobId);
-  let raw;
+  let raw: string;
   try {
     raw = await readFile(file, "utf8");
   } catch (error) {
@@ -68,7 +68,7 @@ export async function readDispatchFeedbackFile(cpbRoot, project, jobId, { phase 
   };
 }
 
-export function buildRoutingFeedbackEvent(feedback, { jobId, project, phase, upgradedQueueEntryId = null }: Record<string, any> = {}) {
+export function buildRoutingFeedbackEvent(feedback: Record<string, any>, { jobId, project, phase, upgradedQueueEntryId = null }: Record<string, any> = {}) {
   feedback = feedback as Record<string, any>;
   return {
     type: "executor_routing_feedback",

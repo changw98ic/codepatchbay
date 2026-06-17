@@ -6,7 +6,7 @@ import { listSetupAgents } from "./agent-catalog.js";
 const SCHEMA_VERSION = 1;
 const execFileAsync = promisify(execFile);
 
-async function defaultRunCommand(command, args = []) {
+async function defaultRunCommand(command: string, args: string[] = []) {
   try {
     const result = await execFileAsync(command, args, {
       timeout: 5_000,
@@ -23,18 +23,18 @@ async function defaultRunCommand(command, args = []) {
   }
 }
 
-function firstLine(text) {
+function firstLine(text: string) {
   return String(text || "").trim().split(/\r?\n/)[0] || null;
 }
 
-function errorKind(error) {
+function errorKind(error: Record<string, any> | null | undefined) {
   if (!error) return "unavailable";
   if (error.code === "ENOENT") return "missing";
   if (error.code === "ETIMEDOUT" || error.timedOut || error.killed) return "timeout";
   return "error";
 }
 
-function normalizeError(error) {
+function normalizeError(error: Record<string, any> | null | undefined) {
   if (!error) return { kind: "unavailable", code: null, message: "unavailable", signal: null };
   return {
     kind: errorKind(error),
@@ -44,7 +44,7 @@ function normalizeError(error) {
   };
 }
 
-export function normalizeCommandProbe(result) {
+export function normalizeCommandProbe(result: Record<string, any> | null | undefined): Record<string, any> {
   if (result?.ok) {
     return {
       installed: true,
@@ -59,20 +59,20 @@ export function normalizeCommandProbe(result) {
     installed: false,
     status: error.kind,
     version: null,
-    error,
+    error: error as Record<string, any> | null,
   };
 }
 
-function normalizeProbe(result) {
+function normalizeProbe(result: Record<string, any> | null | undefined) {
   return normalizeCommandProbe(result);
 }
 
-async function probeTool(name, args, runCommand) {
+async function probeTool(name: string, args: string[], runCommand: (command: string, args: string[]) => Promise<Record<string, any>>) {
   return normalizeProbe(await runCommand(name, args));
 }
 
-async function probeAgent(agent, runCommand) {
-  const result = {
+async function probeAgent(agent: Record<string, any>, runCommand: (command: string, args: string[]) => Promise<Record<string, any>>) {
+  const result: Record<string, any> = {
     ...normalizeProbe(await runCommand(agent.binary, ["--version"])),
     id: agent.id,
     displayName: agent.displayName,
@@ -114,10 +114,10 @@ export async function detectSetupEnvironment({
     probeTool("brew", ["--version"], runCommand),
   ]);
 
-  const agentEntries = await Promise.all(listSetupAgents().map(async (agent) => {
-    return [agent.id, await probeAgent(agent, runCommand)];
+  const agentEntries = await Promise.all(listSetupAgents().map(async (agent: Record<string, any>) => {
+    return [agent.id, await probeAgent(agent, runCommand)] as [string, Record<string, any>];
   }));
-  const agents = {};
+  const agents: Record<string, any> = {};
   for (const [id, agent] of agentEntries) {
     agents[id] = agent;
   }

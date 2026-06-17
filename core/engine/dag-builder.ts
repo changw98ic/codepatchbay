@@ -7,9 +7,9 @@
  * @module core/engine/dag-builder
  */
 
+import { AnyRecord } from "../../shared/types.js";
 import { normalizeWorkflow } from "../workflow/definition.js";
 
-type AnyRecord = Record<string, any>;
 type DagNode = AnyRecord & {
   id: string;
   phase: string;

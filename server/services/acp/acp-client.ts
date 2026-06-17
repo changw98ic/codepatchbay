@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { AnyRecord } from "../../../shared/types.js";
 import {
   checkPermission,
   classifyDeleteRisk,
@@ -23,16 +24,15 @@ import {
 import { buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 
-type AnyRecord = Record<string, any>;
 
 // Permission matrix integration (Stage 3 / #13)
-let _permCheck: any = checkPermission;
-let _permEvaluate: any = evaluatePermissionDecision;
-let _permRecord: any = recordPermissionDenial;
+let _permCheck: ((...args: Parameters<typeof checkPermission>) => AnyRecord) | null = checkPermission;
+let _permEvaluate: ((...args: Parameters<typeof evaluatePermissionDecision>) => AnyRecord) | null = evaluatePermissionDecision;
+let _permRecord: ((...args: Parameters<typeof recordPermissionDenial>) => Promise<void>) | null = recordPermissionDenial;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory: AnyRecord[] = [];
 
-function buildPermissionEnv(env: any = process.env) {
+function buildPermissionEnv(env: NodeJS.ProcessEnv = process.env) {
   const permEnv = {
     role: env.CPB_ACP_ROLE || null,
     project: env.CPB_ACP_PROJECT || null,
@@ -45,7 +45,7 @@ function buildPermissionEnv(env: any = process.env) {
   return permEnv.role && permEnv.project && permEnv.cpbRoot ? permEnv : null;
 }
 
-function loadPermissionModules(env: any = process.env) {
+function loadPermissionModules(env: NodeJS.ProcessEnv = process.env) {
   if (!env.CPB_EXECUTOR_ROOT) return null;
   return buildPermissionEnv(env);
 }
@@ -59,7 +59,7 @@ function isRepeatedDenial(targetPath: string, action: string) {
   return identicalCount >= 3;
 }
 
-async function enforcePermission(action: string, targetPath: string, env: any = process.env) {
+async function enforcePermission(action: string, targetPath: string, env: NodeJS.ProcessEnv = process.env): Promise<AnyRecord> {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = await loadPermissionModules(env);
   if (!_permCheck || !permEnv) return { allowed: true };
@@ -122,7 +122,7 @@ async function enforcePermission(action: string, targetPath: string, env: any = 
   return result;
 }
 
-function enforcePermissionSync(action: string, target: string, env: any = process.env) {
+function enforcePermissionSync(action: string, target: string, env: NodeJS.ProcessEnv = process.env): AnyRecord {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = buildPermissionEnv(env);
   if (!_permCheck || !permEnv) return { allowed: true };
@@ -243,12 +243,12 @@ export async function parseToolPolicy(env: AnyRecord = process.env) {
   return null;
 }
 
-function commandExists(command, env = process.env) {
+function commandExists(command: string, env: NodeJS.ProcessEnv = process.env) {
   const result = spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", command], { env });
   return result.status === 0;
 }
 
-function splitWords(input) {
+function splitWords(input: string) {
   const words = [];
   let current = "";
   let quote = "";
@@ -289,7 +289,7 @@ function splitWords(input) {
   return words;
 }
 
-function parseEnvArgs(value) {
+function parseEnvArgs(value: string | undefined) {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return [];
@@ -303,7 +303,7 @@ function parseEnvArgs(value) {
   return splitWords(trimmed);
 }
 
-function safeAuditSegment(value, fallback) {
+function safeAuditSegment(value: unknown, fallback: string) {
   const raw = String(value || fallback || "unknown").trim();
   const safe = raw.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "");
   return safe || fallback || "unknown";
@@ -326,7 +326,7 @@ export function resolveAcpAuditFile(env = process.env) {
   );
 }
 
-function summarizeMcpServers(servers: any[] = []): AnyRecord[] {
+function summarizeMcpServers(servers: AnyRecord[] = []): AnyRecord[] {
   if (!Array.isArray(servers)) return [];
   return servers.map((server) => ({
     name: server?.name || null,
@@ -349,16 +349,17 @@ function summarizeToolUpdate(update: AnyRecord = {}): AnyRecord {
   };
 }
 
-function numberFrom(value: any): number | null {
+function numberFrom(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
-function firstNumber(source: any, keys: string[] = []): number | null {
+function firstNumber(source: unknown, keys: string[] = []): number | null {
   if (!source || typeof source !== "object") return null;
+  const record = source as Record<string, unknown>;
   for (const key of keys) {
-    if (Object.hasOwn(source, key)) {
-      const value = numberFrom(source[key]);
+    if (Object.hasOwn(record, key)) {
+      const value = numberFrom(record[key]);
       if (value !== null) return value;
     }
   }
@@ -380,7 +381,7 @@ function createUsageTotals(): AnyRecord {
   };
 }
 
-function cloneUsageTotals(totals: any): AnyRecord {
+function cloneUsageTotals(totals: AnyRecord | null): AnyRecord {
   return { ...createUsageTotals(), ...(totals || {}) };
 }
 
@@ -516,7 +517,7 @@ export async function resolveAgentCommand(agent: string, env: AnyRecord = proces
   // Try registry-based resolution first
   try {
     const { loadRegistry, getDescriptor, hasAgent } = await import("../../../core/agents/registry.js");
-    await (loadRegistry as any)();
+    await (loadRegistry as (configDir?: string) => Promise<void>)();
     if (hasAgent(agent)) {
       const descriptor = getDescriptor(agent);
       if (descriptor) {
@@ -559,7 +560,7 @@ export function shouldIsolateAgentHome(agent: string, env: AnyRecord = process.e
   return true;
 }
 
-function jsonRpcError(code: number, message: string, data?: any): AnyRecord {
+function jsonRpcError(code: number, message: string, data?: unknown): AnyRecord {
   const err: AnyRecord = { code, message };
   if (data) err.data = data;
   return err;
@@ -567,7 +568,7 @@ function jsonRpcError(code: number, message: string, data?: any): AnyRecord {
 
 export function resolveWriteAllowPaths(cwd = process.cwd(), env: AnyRecord = process.env): string[] | null {
   return env.CPB_ACP_WRITE_ALLOW
-    ? env.CPB_ACP_WRITE_ALLOW.split(",").map((p) =>
+    ? env.CPB_ACP_WRITE_ALLOW.split(",").map((p: string) =>
         p.trim().includes("*") ? path.resolve(cwd, p.trim()) : path.resolve(p.trim())
       )
     : null;
@@ -594,7 +595,7 @@ function codexCodegraphMcpServers(env: AnyRecord): AnyRecord[] {
   return server ? [server] : [];
 }
 
-function isCodexAcpCommand(command: any, args: any[] = []): boolean {
+function isCodexAcpCommand(command: unknown, args: unknown[] = []): boolean {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return true;
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
@@ -608,10 +609,18 @@ function buildMcpServers(agent: string, env: AnyRecord): AnyRecord[] {
   // CodeGraph through process-local launch config instead.
   if (agent === "codex") return [];
 
+  // Claude ACP requires SSE-based MCP servers with a "type" field.
+  // When CPB_CODEGRAPH_PORT is set, expose CodeGraph as an SSE endpoint.
+  const port = Number(env.CPB_CODEGRAPH_PORT);
+  if (Number.isFinite(port) && port > 0) {
+    return [{ name: server.name, type: "sse", url: `http://localhost:${port}` }];
+  }
+
+  // Fallback: stdio-based MCP server for adapters that support it.
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
-function resolveTerminalLaunchCommand(command: any, args: any[] = [], env: AnyRecord = process.env): AnyRecord {
+function resolveTerminalLaunchCommand(command: unknown, args: unknown[] = [], env: AnyRecord = process.env): AnyRecord {
   if (env.CPB_ACP_RTK_ENABLED === "0") {
     return { command, args, rtkEnabled: false };
   }
@@ -639,7 +648,7 @@ function codexMcpConfigArgs(env: AnyRecord): string[] {
   return args;
 }
 
-function appendCodexLaunchConfigArgs(agent: string, command: any, args: any[], env: AnyRecord): void {
+function appendCodexLaunchConfigArgs(agent: string, command: string, args: string[], env: AnyRecord): void {
   if (agent !== "codex" || !isCodexAcpCommand(command, args)) return;
 
   if (env.CPB_ACP_LAUNCH_PROFILE !== "ui") {
@@ -655,31 +664,31 @@ export class AcpClient {
   agent: string;
   cwd: string;
   prompt: string;
-  writeAllowPaths: any;
+  writeAllowPaths: string[] | null;
   terminalPolicy: string;
-  toolPolicy: any;
-  outputSink: (chunk: any) => any;
-  errorSink: (chunk: any) => any;
-  env: any;
-  resumeSessionId: any;
+  toolPolicy: Map<string, string> | null;
+  outputSink: (chunk: string | Buffer) => void;
+  errorSink: (chunk: string | Buffer) => void;
+  env: NodeJS.ProcessEnv;
+  resumeSessionId: string | null;
   reuseSession: boolean;
   nextId: number;
-  pending: Map<any, any>;
-  terminals: Map<any, any>;
+  pending: Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>;
+  terminals: Map<string, AnyRecord>;
   nextTerminalId: number;
   closed: boolean;
-  initialized: any;
-  child: any;
-  childEnv: any;
-  lineQueue: Promise<any>;
+  initialized: AnyRecord | null;
+  child: import("node:child_process").ChildProcess | null;
+  childEnv: NodeJS.ProcessEnv | null;
+  lineQueue: Promise<void>;
   idleTimer: NodeJS.Timeout | null;
   idleTimeoutMs: number;
-  auditEnv: any;
-  auditFile: any;
-  activeSessionId: any;
-  activeSessionCwd: any;
-  usageTotals: any;
-  lastPromptUsage: any;
+  auditEnv: NodeJS.ProcessEnv;
+  auditFile: string | null;
+  activeSessionId: string | null;
+  activeSessionCwd: string | null;
+  usageTotals: AnyRecord;
+  lastPromptUsage: AnyRecord | null;
 
   constructor({
     agent,
@@ -688,12 +697,24 @@ export class AcpClient {
     writeAllowPaths,
     terminalPolicy,
     toolPolicy,
-    outputSink = (chunk) => process.stdout.write(chunk),
-    errorSink = (chunk) => process.stderr.write(chunk),
+    outputSink = (chunk: string | Buffer) => process.stdout.write(chunk),
+    errorSink = (chunk: string | Buffer) => process.stderr.write(chunk),
     env = process.env,
     resumeSessionId = null,
     reuseSession = false,
-  }: Record<string, any>) {
+  }: {
+    agent: string;
+    cwd: string;
+    prompt: string;
+    writeAllowPaths?: string[] | null;
+    terminalPolicy?: string;
+    toolPolicy?: Map<string, string> | null;
+    outputSink?: (chunk: string | Buffer) => void;
+    errorSink?: (chunk: string | Buffer) => void;
+    env?: NodeJS.ProcessEnv;
+    resumeSessionId?: string | null;
+    reuseSession?: boolean;
+  }) {
     this.agent = agent;
     this.cwd = cwd;
     this.prompt = prompt;
@@ -797,16 +818,16 @@ export class AcpClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    this.child.stderr.on("data", (chunk) => {
+    this.child.stderr.on("data", (chunk: Buffer) => {
       this.markActivity();
       this.errorSink(chunk);
     });
 
-    this.child.on("error", (error) => {
+    this.child.on("error", (error: Error) => {
       this.rejectAll(error);
     });
 
-    this.child.on("exit", (code, signal) => {
+    this.child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       this.closed = true;
       this.clearIdleTimer();
       if (this.pending.size > 0) {
@@ -987,7 +1008,7 @@ export class AcpClient {
     this.terminateTerminals("SIGKILL", { drop: true });
   }
 
-  waitForTerminalExitStatus(terminal, timeoutMs) {
+  waitForTerminalExitStatus(terminal: AnyRecord, timeoutMs: number) {
     if (!terminal?.child || terminal.exitStatus || terminal.child.exitCode !== null || terminal.child.signalCode !== null) {
       return Promise.resolve(terminal?.exitStatus || {
         exitCode: terminal?.child?.exitCode ?? null,
@@ -1000,7 +1021,7 @@ export class AcpClient {
         resolve(null);
       }, timeoutMs);
       timer.unref();
-      const done = (exitCode, signal) => {
+      const done = (exitCode: number | null, signal: NodeJS.Signals | null) => {
         cleanup();
         resolve({ exitCode, signal });
       };
@@ -1012,7 +1033,7 @@ export class AcpClient {
     });
   }
 
-  request(method: string, params: any): Promise<any> {
+  request(method: string, params: AnyRecord): Promise<AnyRecord> {
     const id = this.nextId++;
     this.markActivity();
     return new Promise((resolve, reject) => {
@@ -1026,17 +1047,17 @@ export class AcpClient {
     });
   }
 
-  respond(id: any, result: any) {
+  respond(id: number, result: unknown) {
     this.markActivity();
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  respondError(id: any, code: number, message: string, data?: any) {
+  respondError(id: number, code: number, message: string, data?: unknown) {
     this.markActivity();
     this.write({ jsonrpc: "2.0", id, error: jsonRpcError(code, message, data) });
   }
 
-  write(message: any) {
+  write(message: AnyRecord) {
     if (this.child.stdin.destroyed) {
       throw new Error("ACP agent stdin is closed");
     }
@@ -1060,7 +1081,7 @@ export class AcpClient {
     }
   }
 
-  terminateAgent(signal) {
+  terminateAgent(signal: NodeJS.Signals) {
     if (!this.child?.pid) return;
     try {
       if (process.platform !== "win32") {
@@ -1077,7 +1098,7 @@ export class AcpClient {
     }
   }
 
-  signalTerminal(terminal, signal) {
+  signalTerminal(terminal: AnyRecord, signal: NodeJS.Signals) {
     if (!terminal?.child?.pid) return;
     try {
       if (terminal.detached && process.platform !== "win32") {
@@ -1094,7 +1115,7 @@ export class AcpClient {
     }
   }
 
-  terminateTerminals(signal, { drop = false, cwd = null } = {}) {
+  terminateTerminals(signal: NodeJS.Signals, { drop = false, cwd = null }: { drop?: boolean; cwd?: string | null } = {}) {
     const target = cwd ? path.resolve(cwd) : null;
     for (const [terminalId, terminal] of this.terminals) {
       if (target && path.resolve(terminal.cwd || this.cwd) !== target) continue;
@@ -1105,7 +1126,7 @@ export class AcpClient {
     }
   }
 
-  async cleanupTerminalsForCwd(cwd, { reason = "worktree_release", termGraceMs = 500, killGraceMs = 1_500 } = {}) {
+  async cleanupTerminalsForCwd(cwd: string, { reason = "worktree_release", termGraceMs = 500, killGraceMs = 1_500 }: { reason?: string; termGraceMs?: number; killGraceMs?: number } = {}) {
     if (!cwd) return 0;
     const target = path.resolve(cwd);
     const entries = [...this.terminals.entries()]
@@ -1134,12 +1155,12 @@ export class AcpClient {
     return entries.length;
   }
 
-  rejectAll(error) {
+  rejectAll(error: Error) {
     for (const { reject } of this.pending.values()) reject(error);
     this.pending.clear();
   }
 
-  async handleLine(line) {
+  async handleLine(line: string) {
     if (!line.trim()) return;
 
     let message: AnyRecord;
@@ -1155,10 +1176,11 @@ export class AcpClient {
       if (!pending) return;
       this.pending.delete(message.id);
       if (message.error) {
-        const error: any = new Error(message.error.message || `ACP error ${message.error.code}`);
-        error.code = message.error.code ?? null;
-        error.data = message.error.data ?? null;
-        error.acpError = message.error;
+        const error = Object.assign(new Error(message.error.message || `ACP error ${message.error.code}`), {
+          code: message.error.code ?? null,
+          data: message.error.data ?? null,
+          acpError: message.error,
+        });
         pending.reject(error);
       } else {
         pending.resolve(message.result);
@@ -1247,7 +1269,7 @@ export class AcpClient {
           }
       }
     } catch (error) {
-      const err = error as any;
+      const err = error as AnyRecord;
       if (err.message?.startsWith("PERMISSION_FAIL_FAST:")) {
         this.errorSink(`[acp:${this.agent}] ${err.message}\n`);
         if (Object.hasOwn(message, "id")) {
@@ -1298,9 +1320,7 @@ export class AcpClient {
   async readTextFile(params: AnyRecord) {
     const permResult = await enforcePermission("read", params.path, this.env);
     if (!permResult.allowed) {
-      const err: any = new Error(`read denied: ${params.path} (${permResult.reason})`);
-      err.classification = permResult.classification || "deny";
-      throw err;
+      throw Object.assign(new Error(`read denied: ${params.path} (${permResult.reason})`), { classification: permResult.classification || "deny" });
     }
     const content = await readFile(params.path, "utf8");
     if (!params.line && !params.limit) return { content };
@@ -1327,7 +1347,7 @@ export class AcpClient {
         resolved = path.resolve(targetPath);
       }
     }
-    const allowed = this.writeAllowPaths.some((pattern) => {
+    const allowed = this.writeAllowPaths.some((pattern: string) => {
       const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
       const regex = new RegExp(`^${escaped}$`);
       return regex.test(resolved);
@@ -1348,13 +1368,9 @@ export class AcpClient {
         ? `write denied: ${targetPath} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `write denied: ${targetPath} (${permResult.reason})`;
       if (isRepeatedDenial(targetPath, "write")) {
-        const err: any = new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`);
-        err.classification = classification;
-        throw err;
+        throw Object.assign(new Error(`PERMISSION_FAIL_FAST: repeated write denials for ${targetPath}. ${permResult.reason}`), { classification });
       }
-      const err: any = new Error(msg);
-      err.classification = classification;
-      throw err;
+      throw Object.assign(new Error(msg), { classification });
     }
 
     await mkdir(path.dirname(targetPath), { recursive: true });
@@ -1377,7 +1393,7 @@ export class AcpClient {
     return /wiki\/projects\/[^/]+\/(inbox|outputs)\/(plan|deliverable)-\d+\.md$/.test(normalized);
   }
 
-  validateHandoffContent(content: any, filePath: string) {
+  validateHandoffContent(content: unknown, filePath: string) {
     if (!content || typeof content !== "string") return;
     const hasHeader = content.includes("## Handoff");
     const hasFooter = content.includes("## Acceptance-Criteria");
@@ -1392,7 +1408,7 @@ export class AcpClient {
   permissionResponse(params: AnyRecord) {
     const wantsReject = this.env.CPB_ACP_PERMISSION === "reject";
     const options = params?.options || [];
-    const preferred = options.find((option) =>
+    const preferred = options.find((option: AnyRecord) =>
       wantsReject ? option.kind?.startsWith("reject") : option.kind?.startsWith("allow")
     ) || options[0];
 
@@ -1415,17 +1431,13 @@ export class AcpClient {
       const msg = permResult.recoveryGuidance
         ? `execute denied: ${commandLine} (${permResult.reason}); ${permResult.recoveryGuidance}`
         : `execute denied: ${commandLine} (${permResult.reason})`;
-      const err: any = new Error(msg);
-      err.classification = classification;
-      throw err;
+      throw Object.assign(new Error(msg), { classification });
     }
 
     const guardResult = classifyDeleteRisk(params.command, params.args || [], { cwd: terminalCwd, repoRoot: this.cwd });
     if (!guardResult.allowed) {
       logDeleteBlock(params.command, params.args || [], terminalCwd, guardResult, this.errorSink);
-      const err: any = new Error(formatDeleteBlockedMessage(guardResult));
-      err.guardResult = guardResult;
-      throw err;
+      throw Object.assign(new Error(formatDeleteBlockedMessage(guardResult)), { guardResult });
     }
 
     const terminalId = `term-${this.nextTerminalId++}`;
@@ -1463,7 +1475,7 @@ export class AcpClient {
       waiters: [],
     };
 
-    const append = (chunk) => {
+    const append = (chunk: Buffer) => {
       this.markActivity();
       terminal.output += chunk.toString("utf8");
       if (Buffer.byteLength(terminal.output, "utf8") > terminal.outputByteLimit) {
@@ -1474,7 +1486,7 @@ export class AcpClient {
 
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("exit", (exitCode, signal) => {
+    child.on("exit", (exitCode: number | null, signal: NodeJS.Signals | null) => {
       terminal.exitStatus = { exitCode, signal };
       for (const resolve of terminal.waiters) resolve(terminal.exitStatus);
       terminal.waiters = [];
@@ -1484,7 +1496,7 @@ export class AcpClient {
     return { terminalId };
   }
 
-  terminalOutput(params) {
+  terminalOutput(params: AnyRecord) {
     const terminal = this.getTerminal(params.terminalId);
     return {
       output: terminal.output,
@@ -1493,26 +1505,26 @@ export class AcpClient {
     };
   }
 
-  waitForTerminalExit(params) {
+  waitForTerminalExit(params: AnyRecord) {
     const terminal = this.getTerminal(params.terminalId);
     if (terminal.exitStatus) return terminal.exitStatus;
     return new Promise((resolve) => terminal.waiters.push(resolve));
   }
 
-  killTerminal(params) {
+  killTerminal(params: AnyRecord) {
     const terminal = this.getTerminal(params.terminalId);
     if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
     return null;
   }
 
-  releaseTerminal(params) {
+  releaseTerminal(params: AnyRecord) {
     const terminal = this.getTerminal(params.terminalId);
     if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
     this.terminals.delete(params.terminalId);
     return null;
   }
 
-  getTerminal(terminalId) {
+  getTerminal(terminalId: string) {
     const terminal = this.terminals.get(terminalId);
     if (!terminal) throw new Error(`unknown terminal: ${terminalId}`);
     return terminal;
@@ -1541,7 +1553,7 @@ Environment:
 Priority: TOOL_POLICY_FILE > DENY_TOOLS/ALLOW_TOOLS > CPB_ACP_TERMINAL
 `;
 
-async function parseCli(argv) {
+async function parseCli(argv: string[]) {
   const result = { agent: "", cwd: process.cwd() };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -1560,7 +1572,7 @@ async function parseCli(argv) {
   if (result.agent !== "codex" && result.agent !== "claude") {
     try {
       const { loadRegistry, hasAgent } = await import("../../../core/agents/registry.js");
-      await (loadRegistry as any)();
+      await (loadRegistry as (configDir?: string) => Promise<void>)();
       if (!hasAgent(result.agent)) {
         throw new Error(`unknown agent: ${result.agent}`);
       }
@@ -1590,7 +1602,7 @@ export async function main() {
   const client = new AcpClient({ ...options, prompt, writeAllowPaths, terminalPolicy, toolPolicy });
 
   let shuttingDown = false;
-  const shutdown = (signal) => {
+  const shutdown = (signal: NodeJS.Signals) => {
     if (shuttingDown) return;
     shuttingDown = true;
     const code = signal === "SIGINT" ? 130 : 143;
@@ -1609,7 +1621,7 @@ export async function main() {
   }
 }
 
-function isDirectRun(metaUrl, argvPath) {
+function isDirectRun(metaUrl: string, argvPath: string | undefined) {
   if (!argvPath) return false;
   try {
     return realpathSync(fileURLToPath(metaUrl)) === realpathSync(argvPath);

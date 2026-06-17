@@ -26,7 +26,7 @@ const KNOWN_AGENTS = [
  * Find the full path of a binary by scanning PATH directories.
  * Returns the full path if found, null otherwise.
  */
-async function whichBinary(name) {
+async function whichBinary(name: string): Promise<string | null> {
   const pathDirs = (process.env.PATH || "").split(path.delimiter);
   const ext = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
 
@@ -49,8 +49,8 @@ async function whichBinary(name) {
  * Returns an array of agent descriptors with source: "auto-discovered".
  * These are meant to supplement (not replace) manually registered descriptors.
  */
-export async function autoDiscoverAgents() {
-  const discovered = [];
+export async function autoDiscoverAgents(): Promise<Record<string, any>[]> {
+  const discovered: Record<string, any>[] = [];
 
   const checks = KNOWN_AGENTS.map(async (ka) => {
     const fullPath = await whichBinary(ka.command);

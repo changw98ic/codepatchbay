@@ -2,7 +2,7 @@ import { listAuthProviders } from "./status.js";
 
 const SCHEMA_VERSION = 1;
 
-export function getAuthConnectInstructions(providerId) {
+export function getAuthConnectInstructions(providerId: string) {
   const provider = listAuthProviders().find((entry) => entry.id === providerId);
   if (!provider) {
     throw new Error(`Unknown auth provider: ${providerId}`);

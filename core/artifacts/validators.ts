@@ -31,12 +31,13 @@ export function validateDeliverable(content: unknown, ctx?: Record<string, any>)
   return { ok: true };
 }
 
-export function validateVerdict(verdict: any) {
+export function validateVerdict(verdict: unknown) {
   if (!verdict || typeof verdict !== "object") {
     return { ok: false, reason: "verdict is not an object" };
   }
-  if (!["pass", "fail", "partial"].includes(verdict.status)) {
-    return { ok: false, reason: `invalid verdict status: ${verdict.status}` };
+  const status = (verdict as Record<string, unknown>).status;
+  if (!["pass", "fail", "partial"].includes(status as string)) {
+    return { ok: false, reason: `invalid verdict status: ${status}` };
   }
   return { ok: true };
 }

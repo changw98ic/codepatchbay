@@ -4,7 +4,6 @@ import path from "node:path";
 import { assertExecutorRoot, readExecutorPackage, REQUIRED_EXECUTOR_FILES } from "../setup.js";
 
 export const RELEASE_METADATA_FORMAT_VERSION = 1;
-type AnyRecord = Record<string, any>;
 
 const REQUIRED_METADATA_FIELDS = [
   "metadataVersion", "releaseId", "sourcePath", "installedPath",
@@ -55,7 +54,7 @@ export function resolveReleaseStoreRoot({ destRoot, env = process.env }: AnyReco
   return path.join(cpbHome, "releases");
 }
 
-export function validateReleaseId(releaseId: any) {
+export function validateReleaseId(releaseId: unknown) {
   if (typeof releaseId !== "string" || releaseId.length === 0) {
     throw new Error("release id must be a non-empty string");
   }
@@ -97,7 +96,7 @@ function formatTimestampId(date: Date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
-function generateDefaultReleaseId(codeVersion: any, now: any) {
+function generateDefaultReleaseId(codeVersion: string | undefined, now: Date) {
   const stamp = formatTimestampId(now instanceof Date ? now : new Date());
   return `${codeVersion || "dev"}-${stamp}`;
 }
@@ -515,16 +514,17 @@ export async function selectRelease({ releaseId, destRoot, env = process.env, no
 
 // ── release-gc ──
 import { lstat as lstatFn, readdir as readdirFn, readFile as readFileFn, rm as rmFn, stat as statFn } from "node:fs/promises";
+import { AnyRecord } from "../../../shared/types.js";
 import { listJobs } from "../job/job-store.js";
 
-async function gcExists(p) {
+async function gcExists(p: string) {
   try { await statFn(p); return true; } catch { return false; }
 }
 
-function collectReleasePins(jobs) {
-  const pins = new Map();
+function collectReleasePins(jobs: Record<string, any>[]) {
+  const pins = new Map<string, any[]>();
   for (const job of jobs) {
-    const ids = new Set();
+    const ids = new Set<string>();
     if (job.executor?.releaseId) ids.add(job.executor.releaseId);
     if (job.lineage?.executorSelection?.selectedReleaseId) ids.add(job.lineage.executorSelection.selectedReleaseId);
     if (job.lineage?.executorSelection?.parentReleaseId) ids.add(job.lineage.executorSelection.parentReleaseId);
@@ -536,7 +536,7 @@ function collectReleasePins(jobs) {
   return pins;
 }
 
-async function collectProcessAndLeaseEvidence(cpbRoot, jobs) {
+async function collectProcessAndLeaseEvidence(cpbRoot: string, jobs: Record<string, any>[]) {
   const processReleaseIds = new Set<string>();
   const leaseReleaseIds = new Set<string>();
 
@@ -626,7 +626,7 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
 
     const jobPin = jobPins.get(releaseId);
     if (jobPin) {
-      const activeJobs = jobPin.filter(j => !["completed", "failed", "blocked", "cancelled"].includes(j.status));
+      const activeJobs = jobPin.filter((j: Record<string, any>) => !["completed", "failed", "blocked", "cancelled"].includes(j.status));
       if (activeJobs.length > 0) {
         reasons.push(`active_job:${activeJobs.length}`);
         classification = "protected";
@@ -690,10 +690,10 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   };
 }
 
-export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbRoot }: Record<string, any> = {}) {
-  const eligible = plan.candidates.filter(c => c.classification === "eligible");
-  const protected_ = plan.candidates.filter(c => c.classification === "protected");
-  const unsafe = plan.candidates.filter(c => c.classification === "unsafe");
+export async function executeReleaseGc(plan: Record<string, any>, { destRoot, env = process.env, cpbRoot }: Record<string, any> = {}) {
+  const eligible = plan.candidates.filter((c: Record<string, any>) => c.classification === "eligible");
+  const protected_ = plan.candidates.filter((c: Record<string, any>) => c.classification === "protected");
+  const unsafe = plan.candidates.filter((c: Record<string, any>) => c.classification === "unsafe");
 
   const deleted = [];
   const skipped = [];
@@ -710,10 +710,10 @@ export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbR
   } catch (err) {
     return {
       deleted: [],
-      skipped: protected_.map(c => ({ ...c, skipReason: "protected" })),
+      skipped: protected_.map((c: Record<string, any>) => ({ ...c, skipReason: "protected" })),
       refused: [
-        ...eligible.map(c => ({ ...c, refusalReason: `job_inventory_unreadable: ${(err as Error).message}` })),
-        ...unsafe.map(c => ({ ...c, refusalReason: "unsafe" })),
+        ...eligible.map((c: Record<string, any>) => ({ ...c, refusalReason: `job_inventory_unreadable: ${(err as Error).message}` })),
+        ...unsafe.map((c: Record<string, any>) => ({ ...c, refusalReason: "unsafe" })),
       ],
       executedAt: new Date().toISOString(),
     };
@@ -782,7 +782,7 @@ export async function executeReleaseGc(plan, { destRoot, env = process.env, cpbR
   };
 }
 
-export function formatGcPlanHuman(plan) {
+export function formatGcPlanHuman(plan: Record<string, any>) {
   const lines = [];
   lines.push("Release GC Plan:");
   lines.push(`  Store root: ${plan.releaseStoreRoot}`);
@@ -807,7 +807,7 @@ export function formatGcPlanHuman(plan) {
   return lines.join("\n");
 }
 
-export function formatGcResultHuman(result) {
+export function formatGcResultHuman(result: Record<string, any>) {
   const lines = [];
   lines.push("Release GC Result:");
   lines.push(`  Deleted: ${result.deleted.length}`);

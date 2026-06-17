@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 const REQUIRED_IGNORES = [
   ".env",
@@ -30,12 +31,11 @@ const BASELINE_ENV = {
   GIT_COMMITTER_NAME: "CodePatchbay Supervisor",
   GIT_COMMITTER_EMAIL: "cpb-supervisor@local.invalid",
 };
-type AnyRecord = Record<string, any>;
 type RunResult = {
   code: number | null;
   stdout: string;
   stderr: string;
-  error?: any;
+  error?: unknown;
 };
 
 function usage() {
@@ -69,7 +69,7 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-function validateComponent(name: string, value: any) {
+function validateComponent(name: string, value: unknown) {
   if (typeof value !== "string" || !SAFE_COMPONENT.test(value)) {
     throw new Error(`invalid ${name}`);
   }
@@ -99,8 +99,8 @@ function run(command: string, args: string[], options: AnyRecord = {}): Promise<
         ...options,
         stdio: ["ignore", "pipe", "pipe"],
       });
-    } catch (err: any) {
-      finish({ code: null, stdout, stderr: err?.message || String(err), error: err });
+    } catch (err: unknown) {
+      finish({ code: null, stdout, stderr: err instanceof Error ? err.message : String(err), error: err });
       return;
     }
     child.stdout.on("data", (chunk) => {
@@ -154,8 +154,8 @@ async function ensureGitignore(project: string) {
 
   try {
     raw = await readFile(file, "utf8");
-  } catch (err: any) {
-    if (!err || err.code !== "ENOENT") {
+  } catch (err: unknown) {
+    if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
     }
   }
@@ -299,8 +299,8 @@ async function pathExists(target: string) {
   try {
     await stat(target);
     return true;
-  } catch (err: any) {
-    if (err && err.code === "ENOENT") {
+  } catch (err: unknown) {
+    if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
     }
     throw err;
@@ -318,8 +318,8 @@ async function ensureLocalGitExclude(worktreePath: string, pattern: string) {
   let raw = "";
   try {
     raw = await readFile(excludePath, "utf8");
-  } catch (err: any) {
-    if (!err || err.code !== "ENOENT") {
+  } catch (err: unknown) {
+    if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
     }
   }
@@ -340,7 +340,7 @@ async function ensureLocalGitExclude(worktreePath: string, pattern: string) {
   return true;
 }
 
-async function ensureWorktreeLocalExcludes(worktreePath) {
+async function ensureWorktreeLocalExcludes(worktreePath: string) {
   for (const pattern of WORKTREE_LOCAL_EXCLUDES) {
     await ensureLocalGitExclude(worktreePath, pattern);
   }
@@ -361,7 +361,7 @@ async function initCodegraphIndex(worktreePath: string, runCommand = run) {
   return true;
 }
 
-async function isAlive(pid: any) {
+async function isAlive(pid: unknown) {
   const parsed = Number(pid);
   if (!Number.isInteger(parsed) || parsed <= 0) return false;
   try {
@@ -437,8 +437,8 @@ async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = i
       await rm(worktreeCodegraph, { force: true });
       resetCodegraph = true;
     }
-  } catch (err: any) {
-    if (!err || err.code !== "ENOENT") {
+  } catch (err: unknown) {
+    if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
     }
     resetCodegraph = true;
@@ -457,8 +457,8 @@ async function ensureSharedNodeModules(project: string, worktreePath: string) {
   try {
     const sourceStats = await stat(sourceNodeModules);
     if (!sourceStats.isDirectory()) return false;
-  } catch (err: any) {
-    if (err?.code === "ENOENT") return false;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
     throw err;
   }
 
@@ -474,12 +474,12 @@ async function ensureSharedNodeModules(project: string, worktreePath: string) {
         return false;
       }
       return false;
-    } catch (err: any) {
-      if (err?.code !== "ENOENT") throw err;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
       await rm(worktreeNodeModules, { force: true });
     }
-  } catch (err: any) {
-    if (!err || err.code !== "ENOENT") {
+  } catch (err: unknown) {
+    if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
     }
   }

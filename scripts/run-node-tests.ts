@@ -5,7 +5,7 @@ import { readdir } from "node:fs/promises";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
-function normalizeRequestedFile(arg) {
+function normalizeRequestedFile(arg: string): string {
   const resolved = path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg);
   let relative = path.relative(repoRoot, resolved).split(path.sep).join("/");
 
@@ -33,7 +33,7 @@ async function collectTestFiles(dir: string): Promise<string[]> {
   return results;
 }
 
-async function runTests(files, opts: Record<string, any> = {}) {
+async function runTests(files: string[], opts: Record<string, any> = {}) {
   const { concurrency = undefined, env: envOverrides = {}, label = "tests" } = opts;
   const args = ["--test", ...files];
   if (concurrency !== undefined) {
