@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { appendEvent, materializeJob, readEvents } from "../server/services/event/event-store.js";
@@ -19,7 +20,6 @@ import {
 import { resolveTaskRoute } from "../core/workflow/auto-route.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
@@ -824,8 +824,8 @@ test("event store seals terminal jobs and blocks or redacts secret-like artifact
     content: "OPENAI_API_KEY=sk-1234567890abcdef",
     ts: new Date().toISOString(),
   }, { dataRoot });
-  assert.equal(blocked.type, "secret_blocked");
-  assert.match(blocked.reason, /secret-like/);
+  assert.equal((blocked as any).type, "secret_blocked");
+  assert.match((blocked as any).reason, /secret-like/);
   const secretEvents = await readEvents(cpbRoot, project, secretJobId, { dataRoot });
   assert.equal(secretEvents.length, 1);
   assert.equal(secretEvents[0].type, "secret_blocked");

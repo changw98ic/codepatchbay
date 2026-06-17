@@ -20,7 +20,7 @@ import { DISPATCH_FEEDBACK_SCHEMA_VERSION, dispatchFeedbackPath } from "../../..
  * @param {string} value
  * @returns {number}
  */
-export function estimatePromptBytes(value) {
+export function estimatePromptBytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
@@ -31,7 +31,7 @@ export function estimatePromptBytes(value) {
  * @param {number} maxBytes
  * @returns {{ text: string, clipped: boolean, originalBytes: number, resultBytes: number }}
  */
-export function clipTextByBytes(text, maxBytes) {
+export function clipTextByBytes(text: string, maxBytes: number) {
   const originalBytes = Buffer.byteLength(text, "utf8");
 
   if (originalBytes <= maxBytes) {
@@ -105,8 +105,8 @@ export function clipTextByBytes(text, maxBytes) {
  *   clipped: boolean
  * }}
  */
-export function buildBudgetReport(sections, maxBytes) {
-  const report = [];
+export function buildBudgetReport(sections: Record<string, any>[], maxBytes: number) {
+  const report: Record<string, any>[] = [];
   let usedBytes = 0;
 
   for (const section of sections) {
@@ -144,12 +144,12 @@ export function buildBudgetReport(sections, maxBytes) {
 
 // ── prompt builder (original prompt-builder.ts) ───────────────────────
 
-async function resolvePromptDataRoot(cpbRoot, project, options: Record<string, any> = {}) {
+async function resolvePromptDataRoot(cpbRoot: string, project: string, options: Record<string, any> = {}) {
   if (options.dataRoot) return path.resolve(options.dataRoot);
   return resolveProjectDataRoot(cpbRoot, project, { hubRoot: options.hubRoot || process.env.CPB_HUB_ROOT });
 }
 
-async function preRead(filePath) {
+async function preRead(filePath: string): Promise<string> {
   try {
     return await readFile(filePath, "utf8");
   } catch {
@@ -157,13 +157,13 @@ async function preRead(filePath) {
   }
 }
 
-async function projectInstructionsSection(wikiDir) {
+async function projectInstructionsSection(wikiDir: string): Promise<string> {
   const content = await preRead(path.join(wikiDir, "agent-instructions.md"));
   if (!content || content.startsWith("[file not found")) return "";
   return `\n\n## Project Instructions\n${content}`;
 }
 
-function parseJsonEnv(name) {
+function parseJsonEnv(name: string): Record<string, unknown> | null {
   const raw = process.env[name];
   if (!raw) return null;
   try {
@@ -209,12 +209,12 @@ Produce a complete plan with explicit risks, acceptance criteria, and verificati
   return "";
 }
 
-function contextPackPathFromSourceContext(sourceContext = null) {
+function contextPackPathFromSourceContext(sourceContext: Record<string, any> | null = null): string | null {
   if (!sourceContext || typeof sourceContext !== "object") return null;
   return sourceContext.contextPackPath || sourceContext.contextPack?.path || null;
 }
 
-async function jobSourceContext(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+async function jobSourceContext(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
   try {
     const dataRoot = await resolvePromptDataRoot(cpbRoot, project, options);
     const job = await getJob(cpbRoot, project, jobId, { dataRoot });
@@ -223,7 +223,7 @@ async function jobSourceContext(cpbRoot, project, jobId, options: Record<string,
   return null;
 }
 
-async function resolveContextPackLocator(cpbRoot, project, jobId, options: Record<string, any> = {}) {
+async function resolveContextPackLocator(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
   const sourceContext = await jobSourceContext(cpbRoot, project, jobId, options);
   const jobPath = contextPackPathFromSourceContext(sourceContext);
   if (jobPath) return { path: jobPath, source: "job" };
@@ -238,13 +238,13 @@ async function resolveContextPackLocator(cpbRoot, project, jobId, options: Recor
   return null;
 }
 
-export async function buildSkillsSection(executorRoot, role, context = {}, options = {}) {
+export async function buildSkillsSection(executorRoot: string, role: string, context: Record<string, any> = {}, options: Record<string, any> = {}): Promise<string> {
   const selected = await selectProfileSkills(executorRoot, role, context, options);
   const { diagnostics } = await loadProfileSkills(executorRoot, role, options);
 
   if (selected.length === 0 && diagnostics.length === 0) return "";
 
-  const lines = [];
+  const lines: string[] = [];
 
   if (selected.length > 0) {
     lines.push("## Loaded Role Skills");
@@ -269,7 +269,7 @@ export async function buildSkillsSection(executorRoot, role, context = {}, optio
   return lines.join("\n");
 }
 
-async function readRoleTitle(executorRoot, role) {
+async function readRoleTitle(executorRoot: string, role: string): Promise<string> {
   const soulFile = path.join(executorRoot, "profiles", role, "soul.md");
   try {
     const content = await readFile(soulFile, "utf8");
@@ -281,14 +281,14 @@ async function readRoleTitle(executorRoot, role) {
   return role;
 }
 
-const LAYER_DESCRIPTIONS = {
+const LAYER_DESCRIPTIONS: Record<string, string> = {
   fast: "Fast focused tests - targeted tests for directly changed code paths (under 60s total).",
   changed: "Changed-scope checks - test suites for the specific modules/files modified.",
   regression: "Broad regression tests - full project test suite to catch unintended side effects.",
   acceptance: "Acceptance and static checks - linting, type checking, and plan acceptance criteria verification.",
 };
 
-function buildSubagentGuidance(phase, profile) {
+function buildSubagentGuidance(phase: string, profile: Record<string, any>): string {
   const wfName = process.env.CPB_WORKFLOW;
   const wf = wfName ? getWorkflow(wfName) : null;
   const wfRequires = wf ? phaseRequiresSubagents(wf, phase) : false;
@@ -326,7 +326,7 @@ function buildLayeredVerification() {
   const layers = getVerificationLayers(wf);
   if (!layers) return "";
 
-  const layerList = layers.map((l) => `- **${l}**: ${LAYER_DESCRIPTIONS[l] || l}`).join("\n");
+  const layerList = layers.map((l: string) => `- **${l}**: ${LAYER_DESCRIPTIONS[l] || l}`).join("\n");
 
   return `\n## Layered Verification
 Run verification in these distinct layers instead of treating tests as one serial bucket. Use independent subagent lanes for safe parallel execution of non-conflicting layers:
@@ -336,7 +336,7 @@ ${layerList}
 For each layer, report: what was run, pass/fail status, any issues found, and the subagent lane status. Aggregate results into the final verdict JSON envelope.`;
 }
 
-function executionIntensitySection(phase) {
+function executionIntensitySection(phase: string): string {
   const phaseLine = {
     plan: "Plan only the smallest file-scoped path to satisfy this task; do not design unrelated product surface.",
     execute: "Implement only the approved file-scoped path; do not re-plan the product or broaden scope unless a verifier-blocking issue proves it is required.",
@@ -367,7 +367,7 @@ function headlessEscalationSection() {
   return process.env.CPB_ACP_LAUNCH_PROFILE !== "ui" ? HEADLESS_ESCALATION_CONTRACT : "";
 }
 
-export async function buildPlannerPrompt(executorRoot, cpbRoot, project, task, planFile, _options: Record<string, any> = {}) {
+export async function buildPlannerPrompt(executorRoot: string, cpbRoot: string, project: string, task: string, planFile: string, _options: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
@@ -420,7 +420,7 @@ Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorPrompt(executorRoot, cpbRoot, project, planId, deliverableFile, verdictFile, _options: Record<string, any> = {}) {
+export async function buildExecutorPrompt(executorRoot: string, cpbRoot: string, project: string, planId: string, deliverableFile: string, verdictFile: string, _options: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -509,7 +509,7 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile, _options: Record<string, any> = {}) {
+export async function buildExecutorJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, deliverableFile: string, _options: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
   const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
@@ -593,7 +593,7 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile) {
+export async function buildRepairerPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, repairFile: string): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -634,7 +634,7 @@ ${executionIntensitySection("repair")}
 5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierPrompt(executorRoot, cpbRoot, project, deliverableId, verdictFile, { planId }: Record<string, any> = {}) {
+export async function buildVerifierPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, verdictFile: string, { planId }: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -723,7 +723,7 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierJobPrompt(executorRoot, cpbRoot, project, jobId, verdictFile, options: Record<string, any> = {}) {
+export async function buildVerifierJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, verdictFile: string, options: Record<string, any> = {}): Promise<string> {
   const { planId } = options;
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
@@ -815,7 +815,7 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRemediatorPrompt(executorRoot, cpbRoot, project, jobId, remediationFile, options: Record<string, any> = {}) {
+export async function buildRemediatorPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, remediationFile: string, options: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "remediator");
   const skillsSection = await buildSkillsSection(executorRoot, "remediator", { phase: "remediate" });
   const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, options);
@@ -874,7 +874,7 @@ REMEDIATION: BLOCKED
 After the first line, include concise findings, changed files, and verification you ran.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildReviewerReviewPrompt(executorRoot, cpbRoot, project, deliverableId, _options: Record<string, any> = {}) {
+export async function buildReviewerReviewPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, _options: Record<string, any> = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "reviewer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);

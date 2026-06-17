@@ -1,11 +1,11 @@
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event/event-store.js";
 
 const DEFAULT_MAX_BYTES = 8192;
 
-type AnyRecord = Record<string, any>;
 
 export const HOOK_POINTS = Object.freeze({
   PRE_PLAN: "pre-plan",
@@ -19,7 +19,7 @@ export const HOOK_POINTS = Object.freeze({
 const ALL_POINTS = Object.values(HOOK_POINTS) as string[];
 const registry = new Map<string, Array<(context: Record<string, any>) => any>>();
 
-export function registerPhaseHook(point, fn) {
+export function registerPhaseHook(point: string, fn: (context: Record<string, any>) => any) {
   if (!ALL_POINTS.includes(point)) {
     throw new Error(`unknown hook point: ${point}`);
   }
@@ -31,7 +31,7 @@ export function registerPhaseHook(point, fn) {
   registry.set(point, hooks);
 }
 
-export function clearPhaseHooks(point = undefined) {
+export function clearPhaseHooks(point: string | undefined = undefined) {
   if (point !== undefined) {
     registry.delete(point);
   } else {
@@ -39,22 +39,22 @@ export function clearPhaseHooks(point = undefined) {
   }
 }
 
-export function getPhaseHooks(point) {
+export function getPhaseHooks(point: string) {
   return [...(registry.get(point) || [])];
 }
 
-export function basePhase(phase) {
+export function basePhase(phase: string) {
   if (!phase || typeof phase !== "string") return phase;
   return phase.replace(/-(?:retry|fix)-\d+$/, "");
 }
 
-export function hookPointFor(bp, timing) {
+export function hookPointFor(bp: string, timing: string) {
   if (timing === "on-failure") return HOOK_POINTS.ON_FAILURE;
   const point = `${timing}-${bp}`;
   return ALL_POINTS.includes(point) ? point : null;
 }
 
-export function buildHookContext({ hookPoint, locator, envelope, role, phase, result, error }) {
+export function buildHookContext({ hookPoint, locator, envelope, role, phase, result, error }: AnyRecord) {
   const env = (envelope || locator || {}) as Record<string, any>;
   return {
     hookPoint,
@@ -86,7 +86,7 @@ export function buildHookContext({ hookPoint, locator, envelope, role, phase, re
   };
 }
 
-export function makeHookEvent(type, context, extra = {}) {
+export function makeHookEvent(type: string, context: AnyRecord, extra: AnyRecord = {}) {
   return {
     type,
     jobId: context.jobId,
@@ -99,7 +99,7 @@ export function makeHookEvent(type, context, extra = {}) {
   };
 }
 
-function makeDiagnosticEvent(context, diagnostic) {
+function makeDiagnosticEvent(context: AnyRecord, diagnostic: AnyRecord) {
   return {
     type: "phase_hook_diagnostic",
     jobId: context.jobId,
@@ -114,12 +114,12 @@ function makeDiagnosticEvent(context, diagnostic) {
   };
 }
 
-export async function runPhaseHooks(context) {
+export async function runPhaseHooks(context: AnyRecord) {
   const point = context.hookPoint;
   const hooks = getPhaseHooks(point);
 
   if (hooks.length === 0) {
-    return { ok: true, diagnostics: [], events: [], blockPhase: false, hookResults: [], hookEvents: [] };
+    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false, hookResults: [] as Record<string, any>[], hookEvents: [] as Record<string, any>[] };
   }
 
   const hookEvents = [makeHookEvent("phase_hook_started", context, { hookCount: hooks.length })];
@@ -137,7 +137,7 @@ export async function runPhaseHooks(context) {
       hookResult = {
         ok: false,
         diagnostics: [{ message: (err as Error).message, classification: "infra" }],
-        events: [],
+        events: [] as Record<string, any>[],
         blockPhase: false,
         classification: "infra",
       };
@@ -163,17 +163,17 @@ export async function runPhaseHooks(context) {
     }
   }
 
-  return { ok, diagnostics: allDiagnostics, events: [], blockPhase, classification, hookResults, hookEvents };
+  return { ok, diagnostics: allDiagnostics, events: [] as Record<string, any>[], blockPhase, classification, hookResults, hookEvents };
 }
 
-function preflightCheck(requiredFields, artifactCheck = null) {
-  return function preflight(context) {
+function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecord) => { ok: boolean; message?: string }) | null = null) {
+  return function preflight(context: AnyRecord) {
     const missing = requiredFields.filter((f) => !context[f]);
     if (missing.length > 0) {
       return {
         ok: false,
         diagnostics: [{ message: `missing required fields: ${missing.join(", ")}`, classification: "blocking" }],
-        events: [],
+        events: [] as Record<string, any>[],
         blockPhase: true,
         classification: "blocking",
       };
@@ -184,13 +184,13 @@ function preflightCheck(requiredFields, artifactCheck = null) {
         return {
           ok: false,
           diagnostics: [{ message: r.message, classification: "blocking" }],
-          events: [],
+          events: [] as Record<string, any>[],
           blockPhase: true,
           classification: "blocking",
         };
       }
     }
-    return { ok: true, diagnostics: [], events: [], blockPhase: false };
+    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
   };
 }
 
@@ -216,16 +216,16 @@ const builtinHooks = {
   [HOOK_POINTS.POST_EXECUTE]: function postExecuteVerify() {
     const cmd = process.env.CPB_HOOK_POST_EXECUTE_VERIFY_CMD;
     if (!cmd) {
-      return { ok: true, diagnostics: [], events: [], blockPhase: false };
+      return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
     }
     return {
       ok: true,
       diagnostics: [{ message: `post-execute verification configured: ${cmd}`, classification: "info" }],
-      events: [],
+      events: [] as Record<string, any>[],
       blockPhase: false,
     };
   },
-  [HOOK_POINTS.ON_FAILURE]: function onFailureDiagnostics(context) {
+  [HOOK_POINTS.ON_FAILURE]: function onFailureDiagnostics(context: AnyRecord) {
     const errorMsg = typeof context.error === "string" ? context.error : context.error?.message || "";
     const isPermissionDenial = /\b(write|execute|read)\s+denied\b/i.test(errorMsg)
       || /\bPERMISSION_FAIL_FAST\b/.test(errorMsg)
@@ -248,7 +248,7 @@ const builtinHooks = {
           worktree: context.worktree,
         },
       }],
-      events: [],
+      events: [] as Record<string, any>[],
       blockPhase: false,
       classification: failureClassification,
     };

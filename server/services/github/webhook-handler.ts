@@ -4,6 +4,7 @@ import {
   verifyGithubWebhookSignature,
   resolveGithubTransport,
 } from "./github-api.js";
+import { AnyRecord } from "../../../shared/types.js";
 import { normalizeGithubWebhookEvent, matchGithubTrigger } from "./github-adapter.js";
 import { createGithubIssueQueueJob } from "../event/event-source.js";
 import { listProjects } from "../hub/hub-registry.js";
@@ -13,7 +14,6 @@ import {
 import { parseChannelCommand, channelPolicyRequest, enforceChannelPolicy } from "../channel/channel-commands.js";
 import { loadQueue, updateEntry } from "../hub/hub-queue.js";
 
-type AnyRecord = Record<string, any>;
 
 export interface WebhookRequest {
   rawBody: Buffer;
@@ -24,7 +24,7 @@ export interface WebhookRequest {
 }
 
 export interface WebhookOptions {
-  channelPolicy?: any;
+  channelPolicy?: Record<string, any>;
   githubDryRun?: boolean;
   githubPostComment?: Function;
 }
@@ -34,12 +34,12 @@ export interface WebhookResponse {
   body: AnyRecord;
 }
 
-function headerValue(headers: AnyRecord, name: string): any {
+function headerValue(headers: AnyRecord, name: string): string | string[] | undefined {
   const value = headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
 }
 
-async function findProjectByRepo(hubRoot: string, repo: any): Promise<AnyRecord | null> {
+async function findProjectByRepo(hubRoot: string, repo: string | null): Promise<AnyRecord | null> {
   if (!repo) return null;
   const projects = await listProjects(hubRoot, { enabledOnly: true });
   return projects.find((project) => project.github?.fullName === repo) || null;
@@ -59,7 +59,7 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
 
   // Load config + verify signature
   let config: AnyRecord;
-  let secret: any;
+  let secret: string;
   try {
     config = await loadGithubAppConfig(hubRoot);
     secret = resolveGithubWebhookSecret(config);
@@ -86,7 +86,7 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
   const project = await findProjectByRepo(hubRoot, payload.repository?.full_name || null);
   if (!project) return { statusCode: 202, body: base };
 
-  const normalized: AnyRecord = (normalizeGithubWebhookEvent as any)({
+  const normalized: AnyRecord = normalizeGithubWebhookEvent({
     event,
     delivery,
     payload,
@@ -98,10 +98,10 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
 
   // Handle GitHub issue comment commands (e.g., /cpb approve)
   if (normalized.type === "github_issue_comment" && normalized.action === "created" && normalized.commandText) {
-    const parsed = parseChannelCommand(normalized.commandText);
+    const parsed = parseChannelCommand(normalized.commandText) as Record<string, any>;
     if (parsed.ok && parsed.command === "approve" && parsed.job) {
       const queue: AnyRecord = await loadQueue(hubRoot);
-      const entry = queue.entries.find((e: any) => e.id === parsed.job);
+      const entry = queue.entries.find((e: Record<string, any>) => e.id === parsed.job);
 
       const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
       const permissionDenied = (reason: string) => ({
@@ -122,7 +122,7 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
         return permissionDenied("queue entry does not belong to this issue");
       }
       if (opts.channelPolicy) {
-        const decision = await enforceChannelPolicy(hubRoot, opts.channelPolicy, (channelPolicyRequest as any)({
+        const decision = await enforceChannelPolicy(hubRoot, opts.channelPolicy, channelPolicyRequest({
           channel: "github",
           action: "approve",
           project: project.id,
@@ -165,9 +165,9 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
   const queueResult: AnyRecord = await createGithubIssueQueueJob(cpbRoot, normalized, match, {
     hubRoot,
     sourcePath: project.sourcePath || null,
-  } as any);
+  });
   const transport = await resolveGithubTransport(hubRoot);
-  const comment: AnyRecord = await (postGithubQueuedComment as any)({
+  const comment: AnyRecord = await postGithubQueuedComment({
     repo: normalized.repo,
     issueNumber: normalized.issueNumber,
     job: queueResult.job,

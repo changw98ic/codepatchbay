@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 
-type AnyRecord = Record<string, any>;
 
 /**
  * Read active checklist artifacts for the current attempt from the event-indexed

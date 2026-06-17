@@ -1,9 +1,9 @@
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 
-const ADAPTER_CACHE = {};
+const ADAPTER_CACHE: Record<string, any> = {};
 
-function phaseExportNames(phase) {
+function phaseExportNames(phase: string) {
   const pascal = String(phase || "")
     .split(/[_-]/g)
     .filter(Boolean)
@@ -13,7 +13,7 @@ function phaseExportNames(phase) {
   return [`run${pascal}`, `run${legacy}`];
 }
 
-async function loadAdapter(phase) {
+async function loadAdapter(phase: string) {
   if (ADAPTER_CACHE[phase]) return ADAPTER_CACHE[phase];
   const mod = await import(`../phases/${phase}.js`);
   const exportNames = phaseExportNames(phase);
@@ -23,7 +23,7 @@ async function loadAdapter(phase) {
   return fn;
 }
 
-export async function runPhase(ctx) {
+export async function runPhase(ctx: Record<string, any>) {
   const adapter = await loadAdapter(ctx.phase);
   try {
     return await adapter(ctx);
@@ -45,7 +45,7 @@ export async function runPhase(ctx) {
   }
 }
 
-async function releasePhaseAcpResources(ctx) {
+async function releasePhaseAcpResources(ctx: Record<string, any>) {
   const releaseWorktree = ctx.pool?.releaseWorktree;
   if (typeof releaseWorktree !== "function") return;
   const cwd = ctx.sourcePath || ctx.cwd || ctx.cpbRoot;

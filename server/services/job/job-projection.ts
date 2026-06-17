@@ -19,32 +19,32 @@ const KNOWN_KINDS = new Set([
   "acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict",
 ]);
 
-function wikiProjectDir(cpbRoot, project, wikiDir) {
+function wikiProjectDir(cpbRoot: string, project: string, wikiDir?: string | null) {
   if (wikiDir) return path.resolve(wikiDir);
   return path.join(path.resolve(cpbRoot), "wiki", "projects", project);
 }
 
-function runtimeWikiDir(dataRoot) {
+function runtimeWikiDir(dataRoot: string) {
   return path.join(path.resolve(dataRoot), "wiki");
 }
 
-function inboxDir(cpbRoot, project, wikiDir) {
+function inboxDir(cpbRoot: string, project: string, wikiDir?: string | null) {
   return path.join(wikiProjectDir(cpbRoot, project, wikiDir), "inbox");
 }
 
-function outputsDir(cpbRoot, project, wikiDir) {
+function outputsDir(cpbRoot: string, project: string, wikiDir?: string | null) {
   return path.join(wikiProjectDir(cpbRoot, project, wikiDir), "outputs");
 }
 
-function basename(value) {
+function basename(value: unknown) {
   return path.basename(String(value || ""));
 }
 
-function withoutKnownExtension(fileName) {
+function withoutKnownExtension(fileName: string) {
   return fileName.replace(/\.(?:md|patch|diff|txt|json)$/i, "");
 }
 
-function inferKind(event, artifact) {
+function inferKind(event: Record<string, any>, artifact: string) {
   if (KNOWN_KINDS.has(event.kind)) return event.kind;
   if (KNOWN_KINDS.has(event.artifactKind)) return event.artifactKind;
   if (event.type === "pr_opened" || event.prUrl || event.pullRequestUrl) return "pr";
@@ -71,20 +71,20 @@ function inferKind(event, artifact) {
   return "deliverable";
 }
 
-function artifactIdFor(artifact) {
+function artifactIdFor(artifact: string) {
   return withoutKnownExtension(basename(artifact));
 }
 
-function hasKnownExtension(fileName) {
+function hasKnownExtension(fileName: string) {
   return /\.(?:md|patch|diff|txt|json)$/i.test(fileName);
 }
 
-function isInside(root, filePath) {
+function isInside(root: string, filePath: string) {
   const relative = path.relative(path.resolve(root), path.resolve(filePath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir) {
+function candidateArtifactPaths(cpbRoot: string, project: string, kind: string, artifact: string, wikiDir?: string | null) {
   if (path.isAbsolute(artifact)) {
     return hasKnownExtension(artifact) ? [artifact] : [artifact, `${artifact}.md`];
   }
@@ -93,7 +93,7 @@ function candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir) {
   return hasKnownExtension(artifact) ? [direct] : [direct, `${direct}.md`];
 }
 
-function blockedWikiReference(cpbRoot, project, kind, artifact, wikiDir, restrictToWiki) {
+function blockedWikiReference(cpbRoot: string, project: string, kind: string, artifact: string, wikiDir: string | null | undefined, restrictToWiki: boolean) {
   if (!restrictToWiki) return null;
   const dir = kind === "plan" ? inboxDir(cpbRoot, project, wikiDir) : outputsDir(cpbRoot, project, wikiDir);
   if (path.isAbsolute(artifact)) {
@@ -112,7 +112,7 @@ function blockedWikiReference(cpbRoot, project, kind, artifact, wikiDir, restric
   return null;
 }
 
-async function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
+async function resolveArtifactPath(cpbRoot: string, project: string, kind: string, artifact: string, wikiDir?: string | null) {
   const candidates = candidateArtifactPaths(cpbRoot, project, kind, artifact, wikiDir);
   for (const candidate of candidates) {
     try {
@@ -123,7 +123,7 @@ async function resolveArtifactPath(cpbRoot, project, kind, artifact, wikiDir) {
   return candidates[0];
 }
 
-async function inspectArtifact(filePath) {
+async function inspectArtifact(filePath: string): Promise<Record<string, any>> {
   try {
     const info = await stat(filePath);
     if (!info.isFile()) {
@@ -144,7 +144,7 @@ async function inspectArtifact(filePath) {
   }
 }
 
-function artifactReferences(events) {
+function artifactReferences(events: Record<string, any>[]) {
   const refs = [];
   for (const event of events) {
     if (!event || typeof event !== "object") continue;
@@ -158,10 +158,10 @@ function artifactReferences(events) {
   return refs;
 }
 
-export async function buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir, restrictToWiki = false }: Record<string, any> = {}) {
+export async function buildArtifactIndex(cpbRoot: string, project: string, jobId: string, { events, dataRoot, wikiDir, restrictToWiki = false }: Record<string, any> = {}) {
   const sourceEvents = events || await readEvents(cpbRoot, project, jobId, { dataRoot });
   const effectiveWikiDir = wikiDir || (dataRoot ? runtimeWikiDir(dataRoot) : undefined);
-  const entries = [];
+  const entries: Record<string, any>[] = [];
   const seen = new Set();
 
   const CHECKLIST_KINDS = new Set(["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"]);
@@ -244,7 +244,7 @@ function warningForBrokenArtifact(entry: Record<string, any>) {
 async function parseVerdictEntry(entry: Record<string, any> | null | undefined) {
   if (!entry || entry.broken || !entry.path) return null;
   try {
-    const envelope = parseVerdictEnvelope(await readFile(entry.path, "utf8"));
+    const envelope: Record<string, any> = parseVerdictEnvelope(await readFile(entry.path, "utf8")) as Record<string, any>;
     return {
       status: envelope.status,
       confidence: envelope.confidence ?? null,
@@ -270,11 +270,11 @@ async function parseVerdictEntry(entry: Record<string, any> | null | undefined) 
 }
 
 export async function buildJobArtifactDetail(cpbRoot: string, project: string, jobId: string, { dataRoot, wikiDir }: { dataRoot?: string; wikiDir?: string } = {}) {
-  const artifactIndex = await (buildArtifactIndex as any)(cpbRoot, project, jobId, { dataRoot, wikiDir });
+  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot, wikiDir });
   const verdictEntry = [...artifactIndex.entries].reverse().find((entry) => entry.kind === "verdict");
   const verdict = await parseVerdictEntry(verdictEntry);
   const warnings = artifactIndex.entries
-    .filter((entry) => entry.broken)
+    .filter((entry: Record<string, any>) => entry.broken)
     .map(warningForBrokenArtifact);
 
   return {
@@ -292,7 +292,7 @@ export async function buildJobArtifactDetail(cpbRoot: string, project: string, j
 
 const STATUS_KEYS = ["running", "completed", "failed", "blocked", "cancelled", "unknown"];
 
-function anomalyReason(job, jobIdSet) {
+function anomalyReason(job: Record<string, any>, jobIdSet: Set<string>) {
   if (job.status === "failed") return job.blockedReason || job.failureCode || "failed";
   if (job.status === "blocked") return job.blockedReason || "blocked";
   if (job.status === "cancelled") return job.cancelReason || "cancelled";
@@ -302,7 +302,7 @@ function anomalyReason(job, jobIdSet) {
   return job.status;
 }
 
-function isAnomalous(job, jobIdSet) {
+function isAnomalous(job: Record<string, any>, jobIdSet: Set<string>) {
   if (["failed", "blocked", "cancelled"].includes(job.status)) return true;
   if (job.lineage?.parentJobId) return true;
   return false;
@@ -322,7 +322,7 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }:
     }
   }
 
-  const jobs = [];
+  const jobs: Record<string, any>[] = [];
   for (const { project, jobId, file, dataRoot } of eventFiles) {
     const events = await readEventsReadOnly(cpbRoot, project, jobId, dataRoot ? { dataRoot } : {});
     if (!events || events.length === 0) continue;
@@ -331,14 +331,14 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }:
     jobs.push({ ...job, eventLogPath: file });
   }
 
-  const statusCounts = {};
+  const statusCounts: Record<string, number> = {};
   for (const key of STATUS_KEYS) statusCounts[key] = 0;
   for (const job of jobs) {
     const status = STATUS_KEYS.includes(job.status) ? job.status : "unknown";
     statusCounts[status]++;
   }
 
-  const phaseMap = {};
+  const phaseMap: Record<string, Record<string, number>> = {};
   for (const job of jobs) {
     if (job.failurePhase && job.failureCode) {
       if (!phaseMap[job.failurePhase]) phaseMap[job.failurePhase] = {};
@@ -392,7 +392,7 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }:
   };
 }
 
-export function formatReportHuman(report) {
+export function formatReportHuman(report: Record<string, any>) {
   const lines = [];
   lines.push("Job run report");
   lines.push(`Generated: ${report.generatedAt}`);
@@ -429,7 +429,7 @@ export function formatReportHuman(report) {
 // job-projection.ts (merged)
 // ──────────────────────────────────────────────────────────────────────────────
 
-const STATUS_MAP = {
+const STATUS_MAP: Record<string, string> = {
   pending: "pending",
   running: "running",
   completed: "completed",
@@ -441,11 +441,11 @@ const STATUS_MAP = {
 const ACTIVE_NODE_STATUSES = new Set(["running", "retrying", "blocked"]);
 const GITHUB_STATUS_COMMENT_STATUSES = new Set(["blocked", "failed", "passed", "pr-opened"]);
 
-function orderedUnique(values) {
+function orderedUnique(values: unknown[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function projectDagNodes(job) {
+function projectDagNodes(job: Record<string, any>) {
   const nodeStates: Record<string, any> = job.nodeStates ?? {};
   const ids = orderedUnique([
     ...workflowNodeIds(job),
@@ -485,7 +485,7 @@ function projectDagNodes(job) {
   });
 }
 
-function workflowNodes(job) {
+function workflowNodes(job: Record<string, any>): Record<string, any>[] {
   try {
     const dag = normalizeWorkflow(job.workflow);
     return dag?.nodes ?? [];
@@ -494,15 +494,15 @@ function workflowNodes(job) {
   }
 }
 
-function workflowNodeIds(job) {
+function workflowNodeIds(job: Record<string, any>) {
   return workflowNodes(job).map((node) => node.id).filter(Boolean);
 }
 
-function workflowNodeById(job, id) {
+function workflowNodeById(job: Record<string, any>, id: string) {
   return workflowNodes(job).find((node) => node.id === id) ?? null;
 }
 
-export function jobToPipelineState(job) {
+export function jobToPipelineState(job: Record<string, any>): Record<string, any> {
   const retryCount = retryCountForJob(job);
   return {
     project: job.project,
@@ -532,7 +532,7 @@ export function jobToPipelineState(job) {
   };
 }
 
-function retryCountForJob(job) {
+function retryCountForJob(job: Record<string, any>) {
   const nodeAttempts = Object.values(job.nodeStates ?? {})
     .map((node) => {
       const entry = node as Record<string, any>;
@@ -541,7 +541,7 @@ function retryCountForJob(job) {
   return Math.max(job.retryCount ?? 0, job.attempt != null ? Math.max(0, job.attempt - 1) : 0, ...nodeAttempts);
 }
 
-function currentPhaseForJob(job) {
+function currentPhaseForJob(job: Record<string, any>) {
   const active = projectDagNodes(job).find((node) => ACTIVE_NODE_STATUSES.has(node.status));
   if (active?.phase) return active.phase;
   if (job.failurePhase) return job.failurePhase;
@@ -549,7 +549,7 @@ function currentPhaseForJob(job) {
   return null;
 }
 
-function sourceForJob(job) {
+function sourceForJob(job: Record<string, any>): Record<string, any> {
   const source = (job.sourceContext || {}) as Record<string, any>;
   if (source.type === "github_issue" || source.issueNumber !== undefined) {
     return {
@@ -590,13 +590,13 @@ function sourceForJob(job) {
   return { type: "manual", label: "Manual", issueNumber: null, repo: null, channel: null };
 }
 
-function queueStatusForJob(job) {
+function queueStatusForJob(job: Record<string, any>) {
   if (job.pr?.url || job.pr?.number || job.artifacts?.pr) return "pr-opened";
   if (job.status === "completed") return "passed";
   return job.status || "queued";
 }
 
-function nextHumanActionForJob(job, status) {
+function nextHumanActionForJob(job: Record<string, any>, status: string) {
   if (job.cancelRequested) {
     return { kind: "cancel", label: "Review cancellation request" };
   }
@@ -621,7 +621,7 @@ function nextHumanActionForJob(job, status) {
   return null;
 }
 
-export function jobToQueueRow(job) {
+export function jobToQueueRow(job: Record<string, any>) {
   const status = queueStatusForJob(job);
   const currentPhase = currentPhaseForJob(job);
   return {
@@ -652,7 +652,7 @@ export function jobToQueueRow(job) {
   };
 }
 
-export function githubStatusCommentDedupeKey(projection) {
+export function githubStatusCommentDedupeKey(projection: Record<string, any> | null | undefined) {
   if (!projection?.jobId || !projection?.status) return null;
   const prMarker = projection.pr?.url || projection.pr?.number || "";
   return ["github-status", projection.jobId, projection.status, prMarker]
@@ -661,7 +661,7 @@ export function githubStatusCommentDedupeKey(projection) {
     .join(":");
 }
 
-export function jobToGithubStatusUpdate(job) {
+export function jobToGithubStatusUpdate(job: Record<string, any>) {
   const row = jobToQueueRow(job || {});
   if (!GITHUB_STATUS_COMMENT_STATUSES.has(row.status)) return null;
 
@@ -694,23 +694,23 @@ export function jobToGithubStatusUpdate(job) {
   };
 }
 
-async function allJobs(cpbRoot, options: Record<string, any> = {}) {
+async function allJobs(cpbRoot: string, options: Record<string, any> = {}) {
   // Import from sibling job-store module
   const { listJobsAcrossRuntimeRoots } = await import("./job-store.js");
   return listJobsAcrossRuntimeRoots(cpbRoot, options);
 }
 
-export async function projectPipelineState(cpbRoot, project, options: Record<string, any> = {}) {
-  const jobs = await allJobs(cpbRoot, options);
-  const matching = jobs.filter((j) => j.project === project);
+export async function projectPipelineState(cpbRoot: string, project: string, options: Record<string, any> = {}) {
+  const jobs: Record<string, any>[] = await allJobs(cpbRoot, options);
+  const matching = jobs.filter((j: Record<string, any>) => j.project === project);
   if (matching.length === 0) return null;
 
   const running = matching.find((j) => j.status === "running");
   return jobToPipelineState(running ?? matching[0]);
 }
 
-export async function listProjectPipelineStates(cpbRoot, options: Record<string, any> = {}) {
-  const jobs = await allJobs(cpbRoot, options);
+export async function listProjectPipelineStates(cpbRoot: string, options: Record<string, any> = {}) {
+  const jobs: Record<string, any>[] = await allJobs(cpbRoot, options);
   const byProject = new Map();
   for (const job of jobs) {
     const existing = byProject.get(job.project);
@@ -718,7 +718,7 @@ export async function listProjectPipelineStates(cpbRoot, options: Record<string,
       byProject.set(job.project, job);
     }
   }
-  const result = {};
+  const result: Record<string, any> = {};
   for (const [project, job] of byProject) {
     result[project] = jobToPipelineState(job);
   }

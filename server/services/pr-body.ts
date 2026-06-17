@@ -1,6 +1,6 @@
 type LooseRecord = Record<string, any>;
 
-function valueOrUnavailable(value) {
+function valueOrUnavailable(value: unknown) {
   return value === null || value === undefined || value === "" ? "unavailable" : String(value);
 }
 
@@ -12,11 +12,11 @@ function artifactRef(artifact: LooseRecord | null | undefined) {
   return id || path || "unavailable";
 }
 
-function agentValue(agents: LooseRecord, key) {
+function agentValue(agents: LooseRecord, key: string) {
   return valueOrUnavailable(agents?.[key]);
 }
 
-function testLines(tests) {
+function testLines(tests: unknown[]) {
   if (!Array.isArray(tests) || tests.length === 0) return ["- Tests: unavailable"];
   return tests.map((test) => `- ${test}`);
 }
@@ -45,7 +45,7 @@ function triageStrategyLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
   const scopes = r.protectedScopes || [];
-  const scopeNames = scopes.map((s) => {
+  const scopeNames = scopes.map((s: Record<string, unknown>) => {
     const sev = s.severity ? ` [${s.severity}]` : "";
     return `${s.scope}${sev}`;
   });
@@ -80,7 +80,7 @@ function childTaskLines(rc: LooseRecord | null | undefined) {
     "",
     "## Child Tasks",
     "",
-    ...rc.childTaskIds.map((id) => `- ${id}`),
+    ...rc.childTaskIds.map((id: string) => `- ${id}`),
   ];
 }
 
@@ -102,7 +102,7 @@ function planCacheLines(rc: LooseRecord | null | undefined) {
 function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   if (!rc?.finalDiffGuard) return [];
   const dg = rc.finalDiffGuard;
-  const scopes = (dg.protectedScopes || []).map((s) => s.scope || s);
+  const scopes = (dg.protectedScopes || []).map((s: Record<string, unknown> | string) => typeof s === "string" ? s : (s.scope || s));
   const gr = dg.guardResult || {};
   return [
     "",

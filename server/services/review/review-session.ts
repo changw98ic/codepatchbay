@@ -16,7 +16,7 @@ import { resolveHubRoot } from "../hub/hub-registry.js";
 const LOCK_MAX_ATTEMPTS = 10;
 const LOCK_BASE_DELAY_MS = 10;
 
-async function withFileLock(lockDir, fn) {
+async function withFileLock<T>(lockDir: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       await mkdir(lockDir, { recursive: false });
@@ -55,7 +55,7 @@ const VALID_TRANSITIONS = {
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
-function validateSessionId(sessionId) {
+function validateSessionId(sessionId: string) {
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     throw new Error("invalid sessionId: must be a non-empty string");
   }
@@ -65,13 +65,13 @@ function validateSessionId(sessionId) {
   return sessionId;
 }
 
-function reviewsDir(cpbRoot, options: Record<string, any> = {}) {
+function reviewsDir(cpbRoot: string, options: Record<string, any> = {}) {
   const controlRoot = options.controlRoot || options.hubRoot;
   if (controlRoot) return path.join(path.resolve(controlRoot), "reviews");
   return path.join(resolveHubRoot(cpbRoot), "reviews");
 }
 
-function sessionFile(cpbRoot, sessionId, options: Record<string, any> = {}) {
+function sessionFile(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   const resolved = path.resolve(dir, `${safeId}.json`);
@@ -88,7 +88,7 @@ export function makeSessionId() {
   return `rev-${ts}-${suffix}`;
 }
 
-export async function createSession(cpbRoot, { project, intent, ...options }: Record<string, any>) {
+export async function createSession(cpbRoot: string, { project, intent, ...options }: Record<string, any>) {
   const session = {
     sessionId: makeSessionId(),
     project,
@@ -121,7 +121,7 @@ export async function createSession(cpbRoot, { project, intent, ...options }: Re
   return session;
 }
 
-export async function getSession(cpbRoot, sessionId, options: Record<string, any> = {}) {
+export async function getSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
   validateSessionId(sessionId);
   try {
     const raw = await readFile(sessionFile(cpbRoot, sessionId, options), "utf8");
@@ -132,7 +132,7 @@ export async function getSession(cpbRoot, sessionId, options: Record<string, any
   }
 }
 
-export async function listSessions(cpbRoot, options: Record<string, any> = {}) {
+export async function listSessions(cpbRoot: string, options: Record<string, any> = {}) {
   const dir = reviewsDir(cpbRoot, options);
   let entries;
   try {
@@ -152,7 +152,7 @@ export async function listSessions(cpbRoot, options: Record<string, any> = {}) {
   return sessions;
 }
 
-export async function updateSession(cpbRoot, sessionId, patch, options: Record<string, any> = {}) {
+export async function updateSession(cpbRoot: string, sessionId: string, patch: Record<string, any>, options: Record<string, any> = {}) {
   const safeId = validateSessionId(sessionId);
   const { skipTransitionCheck = false } = options;
 
@@ -188,11 +188,11 @@ export async function updateSession(cpbRoot, sessionId, patch, options: Record<s
   });
 }
 
-export async function cancelReviewSession(cpbRoot, sessionId, reason) {
+export async function cancelReviewSession(cpbRoot: string, sessionId: string, reason: string) {
   return updateSession(cpbRoot, sessionId, { status: "cancelled", detail: reason }, { skipTransitionCheck: true });
 }
 
-export function parseIssues(text) {
+export function parseIssues(text: string) {
   if (!text || typeof text !== "string") return [];
   const issues = [];
   const regex = /\[P([0-3])\]\s*(.*?)(?=\n\[P[0-3]\]|$)/gs;
@@ -206,7 +206,7 @@ export function parseIssues(text) {
   return issues;
 }
 
-export async function startSessionResearch(cpbRoot, sessionId, key, options: Record<string, any> = {}) {
+export async function startSessionResearch(cpbRoot: string, sessionId: string, key: string, options: Record<string, any> = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
@@ -237,7 +237,7 @@ export async function startSessionResearch(cpbRoot, sessionId, key, options: Rec
   });
 }
 
-export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes }, options: Record<string, any> = {}) {
+export async function noteReviewAcpCall(cpbRoot: string, sessionId: string, { agent, promptBytes }: Record<string, any>, options: Record<string, any> = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
@@ -262,7 +262,7 @@ export async function noteReviewAcpCall(cpbRoot, sessionId, { agent, promptBytes
   });
 }
 
-export function assertReviewBudget(session) {
+export function assertReviewBudget(session: Record<string, any>) {
   const budget = session.budget;
   if (!budget) return session;
   if (budget.usedAcpCalls >= budget.maxAcpCalls) {
@@ -277,13 +277,14 @@ export function assertReviewBudget(session) {
 // ─── review-bundle.ts ─────────────────────────────────────────────
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../../shared/types.js";
 import { readEventsReadOnly, materializeJob } from "../event/event-store.js";
 import { buildArtifactIndex } from "../job/job-projection.js";
 import { parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
 
 const execFileAsync = promisify(execFile);
 
-async function runGit(cwd, args, { allowFailure = false } = {}) {
+async function runGit(cwd: string, args: string[], { allowFailure = false }: Record<string, any> = {}) {
   try {
     const result = await execFileAsync("git", args, { cwd, maxBuffer: 10 * 1024 * 1024 });
     return { stdout: result.stdout || "", stderr: result.stderr || "", exitCode: 0 };
@@ -297,36 +298,36 @@ async function runGit(cwd, args, { allowFailure = false } = {}) {
   }
 }
 
-async function getDiff(worktreePath, sourceHead) {
+async function getDiff(worktreePath: string, sourceHead: string | null) {
   if (!sourceHead) return "";
   const result = await runGit(worktreePath, ["diff", sourceHead, "HEAD"], { allowFailure: true });
   return result.exitCode === 0 ? result.stdout : "";
 }
 
-async function getDiffStat(worktreePath, sourceHead) {
+async function getDiffStat(worktreePath: string, sourceHead: string | null) {
   if (!sourceHead) return "";
   const result = await runGit(worktreePath, ["diff", "--stat", sourceHead, "HEAD"], { allowFailure: true });
   return result.exitCode === 0 ? result.stdout : "";
 }
 
-async function getChangedFiles(worktreePath, sourceHead) {
+async function getChangedFiles(worktreePath: string, sourceHead: string | null) {
   if (!sourceHead) return [];
   const result = await runGit(worktreePath, ["diff", "--name-only", sourceHead, "HEAD"], { allowFailure: true });
   if (result.exitCode !== 0) return [];
   return result.stdout.split("\n").filter(Boolean);
 }
 
-async function getUncommittedDiff(worktreePath) {
+async function getUncommittedDiff(worktreePath: string) {
   const result = await runGit(worktreePath, ["diff", "HEAD"], { allowFailure: true });
   return result.exitCode === 0 ? result.stdout : "";
 }
 
-async function getCurrentHead(repoPath) {
+async function getCurrentHead(repoPath: string) {
   const result = await runGit(repoPath, ["rev-parse", "HEAD"], { allowFailure: true });
   return result.exitCode === 0 ? result.stdout.trim() : null;
 }
 
-async function getLog(worktreePath, sourceHead, maxCount = 20) {
+async function getLog(worktreePath: string, sourceHead: string | null, maxCount: number = 20) {
   if (!sourceHead) return [];
   const result = await runGit(worktreePath, [
     "log", "--oneline", `${sourceHead}..HEAD`, `--max-count=${maxCount}`,
@@ -335,7 +336,7 @@ async function getLog(worktreePath, sourceHead, maxCount = 20) {
   return result.stdout.split("\n").filter(Boolean);
 }
 
-export async function buildReviewBundle(cpbRoot, project, jobId, {
+export async function buildReviewBundle(cpbRoot: string, project: string, jobId: string, {
   entry = null,
   job = null,
   sourcePath = null,
@@ -486,7 +487,7 @@ export async function buildReviewBundle(cpbRoot, project, jobId, {
   return bundle;
 }
 
-export async function writeReviewBundle(outputDir, bundle) {
+export async function writeReviewBundle(outputDir: string, bundle: Record<string, any>) {
   const slug = `${bundle.project}-${bundle.jobId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
   const fileName = `${slug}-review-bundle.json`;
   const filePath = path.join(outputDir, fileName);
@@ -498,7 +499,7 @@ export async function writeReviewBundle(outputDir, bundle) {
 /**
  * Build the DW (Dynamic Workflow) evidence section from materialized job state.
  */
-function buildDwSection(jobState) {
+function buildDwSection(jobState: Record<string, any>) {
   const dag = jobState.workflowDag;
   const dagNodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
   const dagEdges = Array.isArray(dag?.edges) ? dag.edges : [];
@@ -526,7 +527,7 @@ function buildDwSection(jobState) {
   };
 }
 
-export function reviewBundleDir(hubRoot, project, jobId) {
+export function reviewBundleDir(hubRoot: string, project: string, jobId: string) {
   return path.join(hubRoot, "review-bundles", project);
 }
 
@@ -545,18 +546,17 @@ import { readEventsReadOnly as readEventsReadOnlyForLoop, appendEvent, checkpoin
 import { enqueue, updateEntry } from "../hub/hub-queue.js";
 import { updateJobsIndexEntry } from "../job/job-store.js";
 
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function trimText(value, maxChars = 6000) {
+function trimText(value: string, maxChars: number = 6000) {
   const text = String(value || "").trim();
   return text.length > maxChars ? text.slice(-maxChars) : text;
 }
 
-function bundleIdFor(project, jobId) {
+function bundleIdFor(project: string, jobId: string) {
   return `rb-${project}-${jobId}`.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
@@ -574,15 +574,20 @@ export class ReviewLoopError extends Error {
   }
 }
 
-export function isReviewLoopError(error: any) {
-  return error instanceof ReviewLoopError || Boolean(error?.code && error?.statusCode);
+export function isReviewLoopError(error: unknown): boolean {
+  if (error instanceof ReviewLoopError) return true;
+  if (error && typeof error === "object") {
+    const rec = error as Record<string, unknown>;
+    return Boolean(rec.code && rec.statusCode);
+  }
+  return false;
 }
 
-function reviewLoopError(message, code, statusCode) {
+function reviewLoopError(message: string, code: string, statusCode: number) {
   return new ReviewLoopError(message, code, statusCode);
 }
 
-function assertReviewableJob(job) {
+function assertReviewableJob(job: Record<string, any>) {
   if (!REVIEWABLE_TERMINAL_STATUSES.has(job?.status)) {
     throw reviewLoopError(
       `review bundle can only be accepted or rejected after the job is terminal; current status: ${job?.status || "unknown"}`,
@@ -592,7 +597,7 @@ function assertReviewableJob(job) {
   }
 }
 
-function assertReviewNotFinalized(loop) {
+function assertReviewNotFinalized(loop: Record<string, any>) {
   const latestVerdict = loop?.latest?.verdict;
   if (latestVerdict === "accepted" || latestVerdict === "rejected") {
     throw reviewLoopError(
@@ -603,14 +608,14 @@ function assertReviewNotFinalized(loop) {
   }
 }
 
-async function refreshJobIndex(cpbRoot, project, jobId, { dataRoot }: AnyRecord = {}) {
+async function refreshJobIndex(cpbRoot: string, project: string, jobId: string, { dataRoot }: AnyRecord = {}) {
   const job = await checkpointJob(cpbRoot, project, jobId, { dataRoot })
     || materializeJob(await readEventsReadOnlyForLoop(cpbRoot, project, jobId, { dataRoot }));
   await updateJobsIndexEntry(cpbRoot, project, jobId, job, { dataRoot });
   return job;
 }
 
-function reviewLoopState(events) {
+function reviewLoopState(events: AnyRecord[]) {
   const rounds = [];
   for (const event of events) {
     if (event.type === "review_bundle_accepted" || event.type === "review_bundle_rejected") {
@@ -628,7 +633,7 @@ function reviewLoopState(events) {
   return { rounds, nextRound: rounds.length + 1, latest: rounds[rounds.length - 1] ?? null };
 }
 
-function retryPreviousOutput(bundle) {
+function retryPreviousOutput(bundle: Record<string, any>) {
   const chunks = [];
   if (bundle?.evidence?.verdict) {
     chunks.push(`Previous verdict:\n${typeof bundle.evidence.verdict === "string" ? bundle.evidence.verdict : JSON.stringify(bundle.evidence.verdict, null, 2)}`);
@@ -645,7 +650,7 @@ function retryPreviousOutput(bundle) {
   return trimText(chunks.join("\n\n"), 8000);
 }
 
-function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retryQueueEntryId }: AnyRecord) {
+function buildRetrySourceContext(job: Record<string, any>, bundle: Record<string, any>, { round, feedback, actor, ts, retryQueueEntryId }: AnyRecord) {
   const base = job?.sourceContext && typeof job.sourceContext === "object" ? { ...job.sourceContext } : {};
   const dagResume = job?.dagResume && typeof job.dagResume === "object"
     ? {
@@ -702,12 +707,12 @@ function buildRetrySourceContext(job, bundle, { round, feedback, actor, ts, retr
   };
 }
 
-export async function getReviewLoop(cpbRoot, project, jobId, { dataRoot }: AnyRecord = {}) {
+export async function getReviewLoop(cpbRoot: string, project: string, jobId: string, { dataRoot }: AnyRecord = {}) {
   const events = await readEventsReadOnlyForLoop(cpbRoot, project, jobId, { dataRoot });
   return reviewLoopState(events);
 }
 
-export async function acceptReviewBundle(cpbRoot, project, jobId, {
+export async function acceptReviewBundle(cpbRoot: string, project: string, jobId: string, {
   actor = null,
   feedback = "",
   ts = nowIso(),
@@ -744,7 +749,7 @@ export async function acceptReviewBundle(cpbRoot, project, jobId, {
   };
 }
 
-export async function rejectReviewBundle(cpbRoot, project, jobId, {
+export async function rejectReviewBundle(cpbRoot: string, project: string, jobId: string, {
   feedback,
   actor = null,
   hubRoot,

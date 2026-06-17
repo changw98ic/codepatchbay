@@ -12,6 +12,7 @@
 
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../shared/types.js";
 import {
   buildPlannerPrompt,
   buildExecutorPrompt,
@@ -33,7 +34,7 @@ import { runRepair, completeRepair } from "../server/services/review/review-disp
 
 // --- CLI arg parsing ---
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]) {
   const phase = argv[0];
   if (!phase || !["plan", "execute", "verify", "review", "repair"].includes(phase)) {
     throw new Error(`first argument must be a phase name (plan|execute|verify|review|repair), got: ${phase}`);
@@ -58,7 +59,7 @@ function parseArgs(argv) {
   // When positional args are present, map them to --flags by phase.
   // This lets job-runner.js call: node run-phase.js <phase> <project> <id> [args...]
   if (positional.length > 0 && !options.has("--project")) {
-    const POSITIONAL_MAP = {
+    const POSITIONAL_MAP: Record<string, string[]> = {
       plan:   ["--project", "--task"],
       execute: ["--project", "--plan-id"],
       verify: ["--project", "--deliverable-id"],
@@ -109,7 +110,7 @@ const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-async function logAppend(cpbRoot, project, msg, runtime: AnyRecord | null = null) {
+async function logAppend(cpbRoot: string, project: string, msg: string, runtime: AnyRecord | null = null) {
   const logFile = runtime?.wikiDir
     ? path.join(runtime.wikiDir, "log.md")
     : wikiLogPath(cpbRoot, project);
@@ -139,7 +140,7 @@ async function logAppend(cpbRoot, project, msg, runtime: AnyRecord | null = null
   }
 }
 
-async function dashboardUpdate(cpbRoot, project, phase, status, next) {
+async function dashboardUpdate(cpbRoot: string, project: string, phase: string, status: string, next: string) {
   const dashFile = dashboardPath(cpbRoot);
   try {
     let content = await readFile(dashFile, "utf8");
@@ -160,9 +161,8 @@ async function dashboardUpdate(cpbRoot, project, phase, status, next) {
 
 // --- ACP runner ---
 
-type AnyRecord = Record<string, any>;
 
-async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
+async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: string): Promise<AnyRecord> {
   const { spawn } = await import("node:child_process");
   const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.js");
   const useDirect = !!process.env.CPB_ACP_CLIENT;
@@ -173,8 +173,8 @@ async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
 
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks = [];
-    const stderrChunks = [];
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
 
     function finish(result: AnyRecord) {
       if (settled) return;
@@ -223,7 +223,7 @@ async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
     });
 
     // Forward signals to child process group when possible
-    const forwardSignal = (sig) => {
+    const forwardSignal = (sig: NodeJS.Signals) => {
       try {
         if (child.pid && !child.killed) {
           process.kill(-child.pid, sig);
@@ -241,13 +241,13 @@ async function runAcp(agent, prompt, cwd, executorRoot): Promise<AnyRecord> {
 
 // --- Verdict parsing ---
 
-function parseVerdictFromContent(content) {
+function parseVerdictFromContent(content: string) {
   const envelope = parseVerdictEnvelope(content);
-  const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
+  const mapped: Record<string, string> = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
   return mapped[envelope.status] || "UNKNOWN";
 }
 
-function parseReviewVerdict(content) {
+function parseReviewVerdict(content: string) {
   const lines = content.split(/\r?\n/).slice(0, 20);
   for (const line of lines) {
     const match = line.match(/^REVIEW:\s*(PASS|FAIL)\b/i);
@@ -262,7 +262,7 @@ function parseReviewVerdict(content) {
 
 // --- Phase handlers ---
 
-async function handlePlan(args) {
+async function handlePlan(args: AnyRecord) {
   const { executorRoot, cpbRoot, project, options } = args;
   const task = options.get("--task") || "";
   if (!task) throw new Error("--task is required for plan phase");
@@ -299,7 +299,7 @@ async function handlePlan(args) {
   return 0;
 }
 
-async function handleExecute(args) {
+async function handleExecute(args: AnyRecord) {
   const { executorRoot, cpbRoot, project, options } = args;
   const planId = options.get("--plan-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -351,7 +351,7 @@ async function handleExecute(args) {
   return 0;
 }
 
-async function handleVerify(args) {
+async function handleVerify(args: AnyRecord) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -419,7 +419,7 @@ async function handleVerify(args) {
   return 0;
 }
 
-async function handleReview(args) {
+async function handleReview(args: AnyRecord) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   if (!deliverableId) throw new Error("--deliverable-id is required for review phase");
@@ -465,7 +465,7 @@ async function handleReview(args) {
   return 0;
 }
 
-async function handleRepair(args) {
+async function handleRepair(args: AnyRecord) {
   const { executorRoot, cpbRoot, project, options } = args;
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
@@ -483,7 +483,7 @@ async function handleRepair(args) {
   const { updateJobsIndexEntry } = await import("../server/services/job/job-store.js");
   const eventOpts = { dataRoot, includeLegacyFallback: false };
 
-  async function recordEvent(event) {
+  async function recordEvent(event: AnyRecord) {
     await appendEv(cpbRoot, project, jobId, event, eventOpts);
     await checkpointJob(cpbRoot, project, jobId, eventOpts).catch(() => {});
     const state = materializeJob(await readEv(cpbRoot, project, jobId, eventOpts));
@@ -558,7 +558,7 @@ async function main() {
   process.env.CPB_ROOT = parsed.cpbRoot;
 
   // Permission matrix context for ACP enforcement
-  const roleMap = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
+  const roleMap: Record<string, string> = { plan: "planner", execute: "executor", verify: "verifier", review: "reviewer", repair: "repairer" };
   process.env.CPB_ACP_ROLE = roleMap[parsed.phase] || "";
   process.env.CPB_ACP_PROJECT = parsed.project;
   process.env.CPB_ACP_PHASE = parsed.phase;

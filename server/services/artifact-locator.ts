@@ -6,13 +6,13 @@ export { buildArtifactIndex } from "./job/job-projection.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
-function validateName(value, label) {
+function validateName(value: unknown, label: string) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
     throw new Error(`invalid ${label}: ${value}`);
   }
 }
 
-export async function allocateArtifactId(dir, prefix) {
+export async function allocateArtifactId(dir: string, prefix: string) {
   validateName(prefix, "prefix");
   await mkdir(dir, { recursive: true });
 
@@ -54,63 +54,63 @@ export async function allocateArtifactId(dir, prefix) {
 
 // --- Wiki artifact path helpers ---
 
-export function planFilePath(cpbRoot, project, planId) {
+export function planFilePath(cpbRoot: string, project: string, planId: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "inbox", `plan-${planId}.md`);
 }
 
-export function deliverableFilePath(cpbRoot, project, deliverableId) {
+export function deliverableFilePath(cpbRoot: string, project: string, deliverableId: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "outputs", `deliverable-${deliverableId}.md`);
 }
 
-export function verdictFilePath(cpbRoot, project, artifactId) {
+export function verdictFilePath(cpbRoot: string, project: string, artifactId: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "outputs", `verdict-${artifactId}.md`);
 }
 
-export function reviewFilePath(cpbRoot, project, deliverableId) {
+export function reviewFilePath(cpbRoot: string, project: string, deliverableId: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "outputs", `review-${deliverableId}.md`);
 }
 
-export function remediationFilePath(cpbRoot, project, jobId) {
+export function remediationFilePath(cpbRoot: string, project: string, jobId: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "outputs", `remediation-${jobId}.md`);
 }
 
-export function wikiLogPath(cpbRoot, project) {
+export function wikiLogPath(cpbRoot: string, project: string) {
   return path.join(cpbRoot, "wiki", "projects", project, "log.md");
 }
 
-export function dashboardPath(cpbRoot) {
+export function dashboardPath(cpbRoot: string) {
   return path.join(cpbRoot, "wiki", "system", "dashboard.md");
 }
 
 // --- Runtime root path helpers (issue #26) ---
 
-export function runtimeWikiDir(hubRoot, projectId) {
+export function runtimeWikiDir(hubRoot: string, projectId: string) {
   validateName(projectId, "projectId");
   return projectRuntimePath(hubRoot, projectId, "wiki");
 }
 
-export function runtimeInboxDir(hubRoot, projectId) {
+export function runtimeInboxDir(hubRoot: string, projectId: string) {
   return path.join(runtimeWikiDir(hubRoot, projectId), "inbox");
 }
 
-export function runtimeOutputsDir(hubRoot, projectId) {
+export function runtimeOutputsDir(hubRoot: string, projectId: string) {
   return path.join(runtimeWikiDir(hubRoot, projectId), "outputs");
 }
 
-export function legacyWikiDir(cpbRoot, projectId) {
+export function legacyWikiDir(cpbRoot: string, projectId: string) {
   validateName(projectId, "projectId");
   return path.join(path.resolve(cpbRoot), "wiki", "projects", projectId);
 }
 
-export function legacyInboxDir(cpbRoot, projectId) {
+export function legacyInboxDir(cpbRoot: string, projectId: string) {
   return path.join(legacyWikiDir(cpbRoot, projectId), "inbox");
 }
 
-export function legacyOutputsDir(cpbRoot, projectId) {
+export function legacyOutputsDir(cpbRoot: string, projectId: string) {
   return path.join(legacyWikiDir(cpbRoot, projectId), "outputs");
 }
 
-async function dirExists(dirPath) {
+async function dirExists(dirPath: string) {
   try {
     const s = await stat(dirPath);
     return s.isDirectory();
@@ -119,38 +119,38 @@ async function dirExists(dirPath) {
   }
 }
 
-function hasHubRoot(hubRoot) {
+function hasHubRoot(hubRoot: unknown) {
   return typeof hubRoot === "string" && hubRoot.trim().length > 0;
 }
 
-export async function resolveWikiDir(hubRoot, cpbRoot, projectId) {
+export async function resolveWikiDir(hubRoot: unknown, cpbRoot: string, projectId: string) {
   if (hasHubRoot(hubRoot)) {
-    return runtimeWikiDir(hubRoot, projectId);
+    return runtimeWikiDir(hubRoot as string, projectId);
   }
   const legDir = legacyWikiDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
   return legDir;
 }
 
-export async function resolveInboxDir(hubRoot, cpbRoot, projectId) {
+export async function resolveInboxDir(hubRoot: unknown, cpbRoot: string, projectId: string) {
   if (hasHubRoot(hubRoot)) {
-    return runtimeInboxDir(hubRoot, projectId);
+    return runtimeInboxDir(hubRoot as string, projectId);
   }
   const legDir = legacyInboxDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
   return legDir;
 }
 
-export async function resolveOutputsDir(hubRoot, cpbRoot, projectId) {
+export async function resolveOutputsDir(hubRoot: unknown, cpbRoot: string, projectId: string) {
   if (hasHubRoot(hubRoot)) {
-    return runtimeOutputsDir(hubRoot, projectId);
+    return runtimeOutputsDir(hubRoot as string, projectId);
   }
   const legDir = legacyOutputsDir(cpbRoot, projectId);
   if (await dirExists(legDir)) return legDir;
   return legDir;
 }
 
-function validateRelativePath(relativePath) {
+function validateRelativePath(relativePath: string) {
   if (String(relativePath).includes("\0")) {
     throw new Error("relative path traversal denied");
   }
@@ -161,41 +161,41 @@ function validateRelativePath(relativePath) {
   return normalized;
 }
 
-export function runtimeArtifactPath(hubRoot, projectId, relativePath) {
+export function runtimeArtifactPath(hubRoot: string, projectId: string, relativePath: string) {
   const normalized = validateRelativePath(relativePath);
   return path.join(runtimeWikiDir(hubRoot, projectId), normalized);
 }
 
-export function legacyArtifactPath(cpbRoot, projectId, relativePath) {
+export function legacyArtifactPath(cpbRoot: string, projectId: string, relativePath: string) {
   const normalized = validateRelativePath(relativePath);
   return path.join(legacyWikiDir(cpbRoot, projectId), normalized);
 }
 
-export async function resolveArtifactPath(hubRoot, cpbRoot, projectId, relativePath) {
+export async function resolveArtifactPath(hubRoot: unknown, cpbRoot: string, projectId: string, relativePath: string) {
   if (hasHubRoot(hubRoot)) {
-    return runtimeArtifactPath(hubRoot, projectId, relativePath);
+    return runtimeArtifactPath(hubRoot as string, projectId, relativePath);
   }
   return legacyArtifactPath(cpbRoot, projectId, relativePath);
 }
 
 // --- Runtime-aware artifact writers ---
 
-export async function runtimePlanFilePath(hubRoot, cpbRoot, project, planId) {
+export async function runtimePlanFilePath(hubRoot: unknown, cpbRoot: string, project: string, planId: string) {
   const dir = await resolveInboxDir(hubRoot, cpbRoot, project);
   return path.join(dir, `plan-${planId}.md`);
 }
 
-export async function runtimeDeliverableFilePath(hubRoot, cpbRoot, project, deliverableId) {
+export async function runtimeDeliverableFilePath(hubRoot: unknown, cpbRoot: string, project: string, deliverableId: string) {
   const dir = await resolveOutputsDir(hubRoot, cpbRoot, project);
   return path.join(dir, `deliverable-${deliverableId}.md`);
 }
 
-export async function runtimeVerdictFilePath(hubRoot, cpbRoot, project, artifactId) {
+export async function runtimeVerdictFilePath(hubRoot: unknown, cpbRoot: string, project: string, artifactId: string) {
   const dir = await resolveOutputsDir(hubRoot, cpbRoot, project);
   return path.join(dir, `verdict-${artifactId}.md`);
 }
 
-export async function runtimeWikiLogPath(hubRoot, cpbRoot, project) {
+export async function runtimeWikiLogPath(hubRoot: unknown, cpbRoot: string, project: string) {
   const dir = await resolveWikiDir(hubRoot, cpbRoot, project);
   return path.join(dir, "log.md");
 }

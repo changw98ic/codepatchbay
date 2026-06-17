@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { getProject } from "./hub/hub-registry.js";
 import { createJob as createJobStore } from "./job/job-store.js";
@@ -15,9 +16,8 @@ const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
 const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 
-type AnyRecord = Record<string, any>;
 
-function controlRoot(cpbRoot, { hubRoot, controlRoot: explicitControlRoot }: AnyRecord = {}) {
+function controlRoot(cpbRoot: string, { hubRoot, controlRoot: explicitControlRoot }: AnyRecord = {}): string {
   const root = explicitControlRoot || hubRoot || cpbRoot;
   if (!root || typeof root !== "string" || !root.trim()) {
     throw new Error("hubRoot or controlRoot is required for event source storage");
@@ -25,11 +25,11 @@ function controlRoot(cpbRoot, { hubRoot, controlRoot: explicitControlRoot }: Any
   return path.resolve(root);
 }
 
-function sourceDir(cpbRoot, options: AnyRecord = {}) {
+function sourceDir(cpbRoot: string, options: AnyRecord = {}): string {
   return path.join(controlRoot(cpbRoot, options), EVENT_SOURCE_DIR);
 }
 
-function candidateFile(cpbRoot, options: AnyRecord = {}) {
+function candidateFile(cpbRoot: string, options: AnyRecord = {}): string {
   return path.join(sourceDir(cpbRoot, options), CANDIDATE_QUEUE_FILE);
 }
 
@@ -37,13 +37,13 @@ function generateId() {
   return `evt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function dedupeKey(source, externalId) {
+function dedupeKey(source: string, externalId: unknown): string {
   return `${source}:${externalId}`;
 }
 
-const candidateChains = new Map<string, Promise<any>>();
+const candidateChains = new Map<string, Promise<void>>();
 
-async function withCandidateFileLock(cpbRoot, options: AnyRecord, fn: () => Promise<any>) {
+async function withCandidateFileLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
   const file = candidateFile(cpbRoot, options);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -78,11 +78,11 @@ async function withCandidateFileLock(cpbRoot, options: AnyRecord, fn: () => Prom
   }
 }
 
-function withCandidateLock(cpbRoot, options: AnyRecord, fn: () => Promise<any>) {
+function withCandidateLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
   const key = controlRoot(cpbRoot, options);
   const prev = candidateChains.get(key) || Promise.resolve();
-  const next = prev.then(() => withCandidateFileLock(cpbRoot, options, fn));
-  candidateChains.set(key, next.catch(() => {}));
+  const next = prev.then(() => withCandidateFileLock<T>(cpbRoot, options, fn));
+  candidateChains.set(key, next.catch(() => {}) as Promise<void>);
   const cleanup = () => {
     if (candidateChains.get(key) === next) candidateChains.delete(key);
   };
@@ -90,13 +90,13 @@ function withCandidateLock(cpbRoot, options: AnyRecord, fn: () => Promise<any>) 
   return next;
 }
 
-async function atomicWriteJson(file, data) {
+async function atomicWriteJson(file: string, data: unknown) {
   const tmp = `${file}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
   await rename(tmp, file);
 }
 
-async function readQueue(file): Promise<AnyRecord[]> {
+async function readQueue(file: string): Promise<AnyRecord[]> {
   try {
     const raw = await readFile(file, "utf8");
     const queue = JSON.parse(raw);
@@ -117,7 +117,7 @@ async function readQueue(file): Promise<AnyRecord[]> {
  * Ingest an external event into the candidate queue.
  * Returns the created candidate entry.
  */
-export async function ingestEvent(cpbRoot, event: AnyRecord, options: AnyRecord = {}) {
+export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: AnyRecord = {}): Promise<AnyRecord> {
   const {
     source,
     externalId,
@@ -173,7 +173,7 @@ function githubQueueExternalId(event: AnyRecord) {
   ].join(":");
 }
 
-function githubPriority(labels: any[] = []) {
+function githubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
 }
 
@@ -205,7 +205,7 @@ function routingMetadata(route: AnyRecord | null | undefined) {
     effective: effectiveRoute(route),
     effectiveRoute: route.effectiveRoute || null,
     protectedUpgrade: route.protectedUpgrade ?? ((route.protectedScopes || []).length > 0 || Boolean(route.actualDiffRisk?.protected)),
-    protectedKeywords: route.protectedKeywords || (route.protectedScopes || []).map((scope) => scope.scope),
+    protectedKeywords: route.protectedKeywords || (route.protectedScopes || []).map((scope: AnyRecord) => scope.scope),
     protectedScopes: route.protectedScopes || [],
     actualDiffRisk: route.actualDiffRisk || null,
     actorTrust: route.actorTrust || null,
@@ -214,7 +214,7 @@ function routingMetadata(route: AnyRecord | null | undefined) {
   };
 }
 
-function normalizeTriageMode(mode, fallback = "rules") {
+function normalizeTriageMode(mode: unknown, fallback: string = "rules"): string {
   const value = String(mode || fallback || "rules").trim().toLowerCase();
   if (value === "acp" || value === "auto" || value === "rules" || value === "none") return value;
   return fallback;
@@ -224,13 +224,13 @@ function acpEnabledForAuto() {
   return process.env.CPB_TRIAGE_ACP === "1" || process.env.CPB_TRIAGE_MODE === "acp";
 }
 
-function autoTriageMode(explicitMode, envMode) {
+function autoTriageMode(explicitMode: unknown, envMode: unknown): string {
   if (explicitMode) return normalizeTriageMode(explicitMode, "rules");
   if (envMode) return normalizeTriageMode(envMode, "rules");
   return process.env.CPB_TRIAGE_ACP === "1" ? "auto" : "rules";
 }
 
-function routeConflict(decision) {
+function routeConflict(decision: AnyRecord): boolean {
   return Boolean(
     decision?.requestedRoute
       && decision?.ruleRoute
@@ -257,7 +257,7 @@ function autoAcpDecision(decision: AnyRecord = {}) {
   return { useAcp: false, reason: "confident deterministic route" };
 }
 
-function withTriageStrategy(decision: AnyRecord, mode, strategy: AnyRecord) {
+function withTriageStrategy(decision: AnyRecord, mode: string, strategy: AnyRecord): AnyRecord {
   return {
     ...decision,
     triageMode: mode,
@@ -269,7 +269,7 @@ function withTriageStrategy(decision: AnyRecord, mode, strategy: AnyRecord) {
   };
 }
 
-async function resolveGithubRoute(cpbRoot, event, {
+async function resolveGithubRoute(cpbRoot: string, event: AnyRecord, {
   hubRoot,
   triageMode,
   acpPool,
@@ -314,7 +314,7 @@ async function resolveGithubRoute(cpbRoot, event, {
   };
 }
 
-async function resolveChannelRoute(cpbRoot, command, context, {
+async function resolveChannelRoute(cpbRoot: string, command: AnyRecord, context: AnyRecord, {
   hubRoot,
   triageMode,
   acpPool,
@@ -379,11 +379,11 @@ function githubQueuePayload(event: AnyRecord, match: AnyRecord, route: AnyRecord
   };
 }
 
-function githubHubPriority(labels: any[] = []) {
+function githubHubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2";
 }
 
-async function resolveRegisteredProject(hubRoot, projectId, getProjectFn) {
+async function resolveRegisteredProject(hubRoot: string, projectId: string, getProjectFn: ((root: string, id: string) => Promise<AnyRecord | null>) | null) {
   if (!hubRoot || !projectId || typeof getProjectFn !== "function") return null;
   try {
     return await getProjectFn(hubRoot, projectId);
@@ -392,16 +392,16 @@ async function resolveRegisteredProject(hubRoot, projectId, getProjectFn) {
   }
 }
 
-function sourcePathForQueue(explicitSourcePath, project: AnyRecord | null) {
+function sourcePathForQueue(explicitSourcePath: string | null, project: AnyRecord | null): string | null {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
-function projectRuntimeRootForImmediateJob(project: AnyRecord | null) {
+function projectRuntimeRootForImmediateJob(project: AnyRecord | null): string | null {
   const dataRoot = project?.projectRuntimeRoot;
   return typeof dataRoot === "string" && dataRoot.trim() ? dataRoot : null;
 }
 
-async function maybeGenerateQueueContextPack(project, hubRoot, task) {
+async function maybeGenerateQueueContextPack(project: AnyRecord | null, hubRoot: string, task: string): Promise<null> {
   return null;
 }
 
@@ -440,9 +440,9 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
 }
 
 export async function createGithubIssueQueueJob(
-  cpbRoot,
-  event,
-  match,
+  cpbRoot: string,
+  event: AnyRecord,
+  match: AnyRecord,
   {
     hubRoot = cpbRoot,
     enqueueFn = enqueueHubQueue,
@@ -543,7 +543,7 @@ export async function createGithubIssueQueueJob(
   };
 }
 
-function channelExternalId(source, context: AnyRecord = {}) {
+function channelExternalId(source: string, context: AnyRecord = {}): string {
   if (context.externalId) return context.externalId;
   if (context.triggerId) return context.triggerId;
   return [
@@ -582,7 +582,7 @@ function channelQueuePayload(command: AnyRecord, context: AnyRecord = {}, route:
   };
 }
 
-function channelDescription(payload: AnyRecord) {
+function channelDescription(payload: AnyRecord): string {
   return payload.task || (payload.issueNumber ? `GitHub issue #${payload.issueNumber}` : "");
 }
 
@@ -625,8 +625,8 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
 }
 
 export async function createChannelQueueJob(
-  cpbRoot,
-  command,
+  cpbRoot: string,
+  command: AnyRecord,
   context: AnyRecord = {},
   {
     hubRoot = cpbRoot,
@@ -728,7 +728,7 @@ export async function createChannelQueueJob(
 /**
  * List candidate events, optionally filtered by status or source.
  */
-export async function listCandidates(cpbRoot, { status, source, ...rootOptions }: AnyRecord = {}) {
+export async function listCandidates(cpbRoot: string, { status, source, ...rootOptions }: AnyRecord = {}): Promise<AnyRecord[]> {
   const file = candidateFile(cpbRoot, rootOptions);
   const queue = await readQueue(file);
 
@@ -742,7 +742,7 @@ export async function listCandidates(cpbRoot, { status, source, ...rootOptions }
 /**
  * Update a candidate's status (pending → processed | dismissed).
  */
-export async function updateCandidate(cpbRoot, candidateId, { status, reason, ...inlineRootOptions }: AnyRecord, options: AnyRecord = {}) {
+export async function updateCandidate(cpbRoot: string, candidateId: string, { status, reason, ...inlineRootOptions }: AnyRecord, options: AnyRecord = {}) {
   const rootOptions = { ...inlineRootOptions, ...options };
   return withCandidateLock(cpbRoot, rootOptions, async () => {
     const file = candidateFile(cpbRoot, rootOptions);
@@ -769,15 +769,15 @@ export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecor
     source: "github-issue",
     externalId: String(issue.number || issue.id),
     projectId: projectId || issue.projectId || null,
-    priority: issue.labels?.some?.((l) => {
-      const name = typeof l === "string" ? l : l.name;
+    priority: issue.labels?.some?.((l: string | Record<string, unknown>) => {
+      const name = typeof l === "string" ? l : (typeof l.name === "string" ? l.name : "");
       return name && /p0|critical|urgent|blocker/i.test(name);
     }) ? "high" : "normal",
     payload: {
       title: issue.title || `Issue #${issue.number}`,
       body: (issue.body || "").slice(0, 2000),
       labels: Array.isArray(issue.labels)
-        ? issue.labels.map((l) => (typeof l === "string" ? l : l.name)).filter(Boolean)
+        ? issue.labels.map((l: AnyRecord) => (typeof l === "string" ? l : l.name)).filter(Boolean)
         : [],
       url: issue.url || null,
       state: issue.state || "OPEN",

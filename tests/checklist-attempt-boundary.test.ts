@@ -2,12 +2,12 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { materializeJob } from "../server/services/event/event-store.js";
 import { evaluateCompletionGate, completionGateEvent } from "../core/engine/completion-gate.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
 
-type AnyRecord = Record<string, any>;
 
 function ts(offset = 0) {
   return new Date(Date.now() + offset).toISOString();

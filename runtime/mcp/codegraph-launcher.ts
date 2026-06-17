@@ -12,7 +12,7 @@ const STATE_FILE = resolve(
 
 let proc = null;
 
-function shellQuoteArg(value) {
+function shellQuoteArg(value: string) {
   const str = String(value);
   if (/^[A-Za-z0-9_./:=@%+-]+$/.test(str)) return str;
   return `'${str.replace(/'/g, `'\\''`)}'`;
@@ -23,7 +23,7 @@ function resolveMcpStdioCommand() {
   return `codegraph serve --mcp --path ${shellQuoteArg(CODEBASE_ROOT)}`;
 }
 
-function isAlive(pid) {
+function isAlive(pid: number) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 

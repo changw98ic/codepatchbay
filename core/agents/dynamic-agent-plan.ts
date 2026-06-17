@@ -12,7 +12,7 @@ function highRisk(riskMap: Record<string, any> = {}) {
 /**
  * Determine which agentConfig role a DAG node maps to.
  */
-function matchNodeToRole(node, agentConfig) {
+function matchNodeToRole(node: Record<string, any>, agentConfig: Record<string, any>) {
   if (!agentConfig) return null;
 
   if (node.role === "adversarial_verifier" || node.phase === "adversarial_verify") {
@@ -28,7 +28,7 @@ function matchNodeToRole(node, agentConfig) {
  * Build per-node agent configs from a DAG, collecting which DAG node IDs
  * each required role maps to.
  */
-function nodeConfigForDag(workflowDag, agentConfig) {
+function nodeConfigForDag(workflowDag: Record<string, any>, agentConfig: Record<string, any>) {
   const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : [];
   const result = {};
   const roleToNodeIds = {};
@@ -65,7 +65,7 @@ const PHASE_ROLE_MAP = {
   adversarial_verify: "adversarial_verifier",
 };
 
-export function validateDynamicAgentPlan(plan, workflowDag) {
+export function validateDynamicAgentPlan(plan: Record<string, any>, workflowDag: Record<string, any>) {
   if (!plan) return { valid: true };
 
   const agentConfig = plan.agentConfig || {};
@@ -74,7 +74,7 @@ export function validateDynamicAgentPlan(plan, workflowDag) {
 
   // Determine which roles have corresponding DAG nodes
   const dagPhases = Array.isArray(workflowDag?.nodes)
-    ? workflowDag.nodes.map((n) => n.phase || n.id)
+    ? workflowDag.nodes.map((n: Record<string, any>) => n.phase || n.id)
     : [];
   const dagBoundRoles = new Set();
   for (const phase of dagPhases) {

@@ -12,12 +12,12 @@ const SECRET_PATTERNS = [
   /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi,
 ];
 
-function splitCommand(commandLine) {
+function splitCommand(commandLine: string) {
   const parts = String(commandLine || "").trim().split(/\s+/).filter(Boolean);
   return { command: parts[0], args: parts.slice(1) };
 }
 
-function redact(value) {
+function redact(value: unknown) {
   let text = String(value ?? "");
   for (const pattern of SECRET_PATTERNS) {
     text = text.replace(pattern, "[REDACTED]");
@@ -25,7 +25,7 @@ function redact(value) {
   return text;
 }
 
-async function defaultRunCommand(command, args = []) {
+async function defaultRunCommand(command: string, args: string[] = []) {
   try {
     const result = await execFileAsync(command, args, {
       timeout: 5_000,
@@ -39,8 +39,8 @@ async function defaultRunCommand(command, args = []) {
 
 export function listAuthProviders() {
   const agentProviders = listSetupAgents({ includeOptional: false })
-    .filter((agent) => ["codex", "claude", "opencode"].includes(agent.id))
-    .map((agent) => ({
+    .filter((agent: Record<string, any>) => ["codex", "claude", "opencode"].includes(agent.id))
+    .map((agent: Record<string, any>) => ({
       id: agent.id,
       displayName: agent.displayName,
       kind: "agent",
@@ -62,24 +62,24 @@ export function listAuthProviders() {
   ];
 }
 
-function errorCode(error) {
+function errorCode(error: Record<string, any> | null | undefined) {
   if (!error) return null;
   return error.code ?? null;
 }
 
-function exitCode(error) {
+function exitCode(error: Record<string, any> | null | undefined) {
   if (!error) return null;
   return Number.isInteger(error.code) ? error.code : null;
 }
 
-function errorKind(error) {
+function errorKind(error: Record<string, any> | null | undefined) {
   if (!error) return "unknown";
   if (error.code === "ENOENT") return "missing";
   if (error.code === "ETIMEDOUT" || error.timedOut || error.killed) return "timeout";
   return "error";
 }
 
-function providerResult(provider, probe, statusCommand) {
+function providerResult(provider: Record<string, any>, probe: Record<string, any> | null | undefined, statusCommand: string) {
   const parsed = splitCommand(statusCommand);
   const evidence = {
     command: redact([parsed.command, ...parsed.args].join(" ")),
@@ -111,7 +111,7 @@ function providerResult(provider, probe, statusCommand) {
   };
 }
 
-function skippedProvider(provider) {
+function skippedProvider(provider: Record<string, any>) {
   return {
     id: provider.id,
     displayName: provider.displayName,
@@ -123,7 +123,7 @@ function skippedProvider(provider) {
   };
 }
 
-async function checkProvider(provider, runCommand) {
+async function checkProvider(provider: Record<string, any>, runCommand: (command: string, args: string[]) => Promise<Record<string, any>>) {
   const statusCommand = provider.auth?.statusCommand;
   if (!statusCommand) return skippedProvider(provider);
 

@@ -3,12 +3,12 @@ import { normalizeCommandProbe } from "./detect.js";
 
 const SCHEMA_VERSION = 1;
 
-function splitCommand(commandLine) {
+function splitCommand(commandLine: string) {
   const parts = String(commandLine || "").trim().split(/\s+/).filter(Boolean);
   return { command: parts[0], args: parts.slice(1) };
 }
 
-async function defaultRunCommand(command, args = []) {
+async function defaultRunCommand(command: string, args: string[] = []) {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const execFileAsync = promisify(execFile);
@@ -23,7 +23,7 @@ async function defaultRunCommand(command, args = []) {
   }
 }
 
-function asAgent(agentOrId) {
+function asAgent(agentOrId: unknown): Record<string, any> {
   if (typeof agentOrId === "string") {
     const agent = getSetupAgent(agentOrId);
     if (!agent) throw new Error(`Unknown setup agent: ${agentOrId}`);
@@ -35,17 +35,17 @@ function asAgent(agentOrId) {
   return agentOrId;
 }
 
-function skippedCheck(reason) {
+function skippedCheck(reason: string) {
   return {
     installed: false,
     status: "skipped",
-    version: null,
-    error: null,
+    version: null as string | null,
+    error: null as unknown,
     evidence: { reason },
   };
 }
 
-function okOrProbe(result) {
+function okOrProbe(result: Record<string, any>) {
   const probe = normalizeCommandProbe(result);
   if (probe.status === "installed") {
     return { ...probe, status: "ok" };
@@ -53,13 +53,13 @@ function okOrProbe(result) {
   return probe;
 }
 
-function overallStatus(checks) {
+function overallStatus(checks: Record<string, Record<string, any>>): string {
   if (checks.binary.status !== "installed") return "missing";
   const blocking = [checks.auth, checks.adapter].some((check) => !["ok", "skipped"].includes(check.status));
   return blocking ? "degraded" : "ready";
 }
 
-export async function checkSetupAgentHealth(agentOrId, { runCommand = defaultRunCommand } = {}) {
+export async function checkSetupAgentHealth(agentOrId: unknown, { runCommand = defaultRunCommand }: Record<string, any> = {}) {
   const agent = asAgent(agentOrId);
   const binary = normalizeCommandProbe(await runCommand(agent.binary, ["--version"]));
 

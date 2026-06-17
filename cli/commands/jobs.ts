@@ -4,7 +4,7 @@ export async function run(args: string[], { cpbRoot }: { cpbRoot: string; execut
     console.error("gc/reconcile has been removed. Use: jobs report");
   } else if (sub === "report") {
     const { buildJobRunReport, formatReportHuman } = await import("../../server/services/job/job-projection.js");
-    const report = await (buildJobRunReport as any)({ cpbRoot });
+    const report = await (buildJobRunReport as (opts: Record<string, unknown>) => Promise<unknown>)({ cpbRoot });
     if (args.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else console.log(formatReportHuman(report));
   } else if (sub === "worktrees") {

@@ -12,11 +12,11 @@ import { isSecretPath, notifySecretBlocked } from '../secret-policy.js';
 
 const CACHE_ENABLED = process.env.CPB_PROJECT_CACHE !== '0';
 
-const cache = new Map();
+const cache = new Map<string, { data: Record<string, string | null>; stats: Record<string, { mtimeMs: number; size: number } | null> }>();
 
 const ALL_FILES = ['context', 'tasks', 'decisions', 'log'];
 
-async function statFile(filePath) {
+async function statFile(filePath: string) {
   try {
     const s = await fs.stat(filePath);
     return { mtimeMs: s.mtimeMs, size: s.size };
@@ -25,7 +25,7 @@ async function statFile(filePath) {
   }
 }
 
-async function readFileOrNull(filePath, onSecretBlocked) {
+async function readFileOrNull(filePath: string, onSecretBlocked: ((event: Record<string, unknown>) => void) | null) {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, 'secret path read blocked');
     return null;
@@ -37,7 +37,7 @@ async function readFileOrNull(filePath, onSecretBlocked) {
   }
 }
 
-function statsEqual(a, b) {
+function statsEqual(a: { mtimeMs: number; size: number } | null, b: { mtimeMs: number; size: number } | null) {
   if (a === b) return true;
   if (!a || !b) return false;
   return a.mtimeMs === b.mtimeMs && a.size === b.size;
@@ -51,8 +51,8 @@ function statsEqual(a, b) {
  * @param {string[]} [opts.files] - subset to load (default: all 4)
  * @returns {Object<string, string|null>} file contents keyed by name (no .md extension)
  */
-export async function loadProjectFiles(projDir, opts: Record<string, any> = {}) {
-  const requested = opts.files || ALL_FILES;
+export async function loadProjectFiles(projDir: string, opts: Record<string, any> = {}) {
+  const requested: string[] = opts.files || ALL_FILES;
   const onSecretBlocked = opts.onSecretBlocked;
 
   if (!CACHE_ENABLED) {
@@ -66,13 +66,13 @@ export async function loadProjectFiles(projDir, opts: Record<string, any> = {}) 
   }
 
   const cached = cache.get(projDir);
-  const result = {};
-  const toLoad = [];
+  const result: Record<string, string | null> = {};
+  const toLoad: Array<{ name: string; stat: { mtimeMs: number; size: number } | null }> = [];
 
-  const statEntries = await Promise.all(
+  const statEntries: Array<[string, { mtimeMs: number; size: number } | null]> = await Promise.all(
     requested.map(async (name) => {
       const stat = await statFile(path.join(projDir, `${name}.md`));
-      return [name, stat];
+      return [name, stat] as [string, { mtimeMs: number; size: number } | null];
     })
   );
 
@@ -94,7 +94,7 @@ export async function loadProjectFiles(projDir, opts: Record<string, any> = {}) 
     }))
   );
 
-  const entry = cached || { data: {}, stats: {} };
+  const entry: { data: Record<string, string | null>; stats: Record<string, { mtimeMs: number; size: number } | null> } = cached || { data: {}, stats: {} };
   for (const { name, content, stat } of loaded) {
     entry.data[name] = content;
     entry.stats[name] = stat;
@@ -108,7 +108,7 @@ export async function loadProjectFiles(projDir, opts: Record<string, any> = {}) 
 /**
  * Extract recent log lines from log content.
  */
-export function extractLogTail(logContent, count = 3) {
+export function extractLogTail(logContent: string, count: number = 3) {
   if (!logContent) return [];
   return logContent.split('\n').filter(l => l.startsWith('- **')).slice(-count);
 }
@@ -117,7 +117,7 @@ export function extractLogTail(logContent, count = 3) {
  * Clear the project file cache.
  * @param {string} [projDir] - clear specific project, or omit to clear all
  */
-export function clearProjectCache(projDir) {
+export function clearProjectCache(projDir?: string) {
   if (projDir) cache.delete(projDir);
   else cache.clear();
 }

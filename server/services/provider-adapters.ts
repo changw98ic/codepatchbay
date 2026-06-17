@@ -10,9 +10,9 @@
 import { parseResetTime } from "./provider-quota.js";
 
 // ─── Adapter Registry ───────────────────────────────────────────────
-const adapters = new Map();
+const adapters = new Map<string, Record<string, any>>();
 
-function register(key, adapter) {
+function register(key: string, adapter: Record<string, any>) {
   adapters.set(key, Object.freeze({ providerKeyPattern: key, ...adapter }));
 }
 
@@ -23,14 +23,14 @@ register("codex", {
   timezone: "UTC",
   quotaPolicy: { type: "per-minute", description: "OpenAI per-minute rate limit" },
   parseLimitError: null, // uses deterministic parser
-  parseResetTime: (msg) => parseResetTime(msg, "UTC"),
+  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
 });
 
 register("claude", {
   region: "global",
   timezone: "UTC",
   quotaPolicy: { type: "per-minute", description: "Anthropic per-minute rate limit" },
-  parseLimitError({ error, stderr }) {
+  parseLimitError({ error, stderr }: Record<string, any>) {
     const msg = `${error?.message || ""}\n${stderr || ""}`;
     if (Number(error?.code) === 529 || /\b529\b|访问量过大|模型当前访问量|当前访问量过大/i.test(msg)) {
       return {
@@ -42,7 +42,7 @@ register("claude", {
     }
     return null;
   },
-  parseResetTime: (msg) => parseResetTime(msg, "UTC"),
+  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
 });
 
 register("claude:mimo-v2.5pro", {
@@ -53,7 +53,7 @@ register("claude:mimo-v2.5pro", {
     description: "MiMo 5-hour usage window, weekly cap",
     windowHours: 5,
   },
-  parseLimitError({ error, stderr }) {
+  parseLimitError({ error, stderr }: Record<string, any>) {
     const msg = `${error?.message || ""}\n${stderr || ""}`;
     if (/weekly|week.?limit/i.test(msg)) {
       return {
@@ -73,7 +73,7 @@ register("claude:mimo-v2.5pro", {
     }
     return null;
   },
-  parseResetTime: (msg) => parseResetTime(msg, "Asia/Shanghai"),
+  parseResetTime: (msg: string) => parseResetTime(msg, "Asia/Shanghai"),
 });
 
 register("generic", {
@@ -81,7 +81,7 @@ register("generic", {
   timezone: "UTC",
   quotaPolicy: { type: "unknown", description: "default fallback" },
   parseLimitError: null,
-  parseResetTime: (msg) => parseResetTime(msg, "UTC"),
+  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
 });
 
 // ─── Lookup ─────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ register("generic", {
  * @param {string} providerKey - e.g. "claude", "claude:mimo-v2.5pro", "codex"
  * @returns {object} adapter
  */
-export function getProviderAdapter(providerKey) {
+export function getProviderAdapter(providerKey: string) {
   if (adapters.has(providerKey)) return adapters.get(providerKey);
   // Try agent-level fallback (e.g. "claude:mimo-v2.5pro" -> "claude")
   const agent = providerKey.split(":")[0];

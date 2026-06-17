@@ -28,12 +28,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { buildEvidenceProbePlan, validateEvidenceObservation } from "../core/workflow/evidence-probes.js";
 import { buildEvidenceLedger } from "../core/phases/verify.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
 
-type AnyRecord = Record<string, any>;
 
 const ATTEMPT_ID = "attempt-static-001";
 const LEDGER_ID = "ledger-static-001";

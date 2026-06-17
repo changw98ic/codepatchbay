@@ -261,7 +261,7 @@ test("HubOrchestrator starts resident supervisor and exposes health in status", 
     },
     diagnoseFailure: async () => null,
   };
-  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { acpSupervisor: fakeSupervisor });
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { acpSupervisor: fakeSupervisor as unknown as AcpSupervisor });
 
   await orchestrator.start();
   try {

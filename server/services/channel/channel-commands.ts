@@ -1,6 +1,7 @@
 import { detectSecretInput, redactSecrets } from "../secret-policy.js";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 import { runtimeDataRoot } from "../runtime.js";
 import { resolveHubRoot } from "../hub/hub-registry.js";
 
@@ -21,7 +22,7 @@ export const CHANNEL_COMMAND_HELP = [
 
 const SAFE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
-function baseFields(extra = {}) {
+function baseFields(extra: Record<string, any> = {}): Record<string, any> {
   return {
     project: null,
     job: null,
@@ -34,7 +35,7 @@ function baseFields(extra = {}) {
   };
 }
 
-function errorResult(code, message, extra: Record<string, any> = {}) {
+function errorResult(code: string, message: string, extra: Record<string, any> = {}) {
   return {
     ok: false,
     type: "error",
@@ -46,7 +47,7 @@ function errorResult(code, message, extra: Record<string, any> = {}) {
   };
 }
 
-export function tokenizeChannelCommand(input) {
+export function tokenizeChannelCommand(input: string) {
   const text = String(input ?? "");
   const tokens = [];
   let current = "";
@@ -86,7 +87,7 @@ export function tokenizeChannelCommand(input) {
   return tokens;
 }
 
-function stripInvocation(tokens) {
+function stripInvocation(tokens: string[]) {
   const rest = [...tokens];
   while (rest[0] && (/^<@[^>]+>$/.test(rest[0]) || /^@\S+$/.test(rest[0]))) {
     rest.shift();
@@ -98,7 +99,7 @@ function stripInvocation(tokens) {
   return null;
 }
 
-function extractRoutingOptions(tokens) {
+function extractRoutingOptions(tokens: string[]): Record<string, any> {
   const positional = [];
   let workflow = null;
   let planMode = null;
@@ -187,17 +188,17 @@ function extractRoutingOptions(tokens) {
   };
 }
 
-function validProject(project) {
+function validProject(project: string) {
   return typeof project === "string" && SAFE_PROJECT.test(project);
 }
 
-function parsePositiveInteger(value) {
+function parsePositiveInteger(value: unknown): number | null {
   if (!/^[0-9]+$/.test(String(value ?? ""))) return null;
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number.parseInt(String(value), 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function okResult(type, fields) {
+function okResult(type: string, fields: Record<string, any>) {
   return {
     ok: true,
     type,
@@ -206,7 +207,7 @@ function okResult(type, fields) {
   };
 }
 
-function parseRun(command, tokens) {
+function parseRun(command: string, tokens: string[]) {
   const {
     positional,
     workflow,
@@ -237,7 +238,7 @@ function parseRun(command, tokens) {
   });
 }
 
-function parseIssue(command, tokens) {
+function parseIssue(command: string, tokens: string[]) {
   const {
     positional,
     workflow,
@@ -268,7 +269,7 @@ function parseIssue(command, tokens) {
   });
 }
 
-function parseJobCommand(command, tokens) {
+function parseJobCommand(command: string, tokens: string[]) {
   const [job] = tokens;
   if (!job) {
     return errorResult("INVALID_COMMAND", `${command} requires job`, { command });
@@ -276,7 +277,7 @@ function parseJobCommand(command, tokens) {
   return okResult(command, { job });
 }
 
-export function parseChannelCommand(input) {
+export function parseChannelCommand(input: string) {
   const detection = detectSecretInput(input);
   if (detection.matched) {
     return {
@@ -308,24 +309,23 @@ export function parseChannelCommand(input) {
 // channel-policy (formerly channel-policy.ts)
 // ============================================================
 
-type AnyRecord = Record<string, any>;
 
-function channelPolicyRoot(cpbRoot, options: Record<string, any> = {}) {
+function channelPolicyRoot(cpbRoot: string, options: Record<string, any> = {}) {
   if (options.controlRoot) return path.resolve(options.controlRoot);
   if (options.hubRoot) return path.resolve(options.hubRoot);
   return process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : runtimeDataRoot(cpbRoot);
 }
 
-function channelPolicyEventsPath(cpbRoot, options: Record<string, any> = {}) {
+function channelPolicyEventsPath(cpbRoot: string, options: Record<string, any> = {}) {
   return path.join(channelPolicyRoot(cpbRoot, options), "channel-policy-events.jsonl");
 }
 
-function asList(value) {
+function asList(value: unknown) {
   if (value === undefined || value === null) return [];
   return Array.isArray(value) ? value : [value];
 }
 
-function matchesField(ruleValue, requestValue) {
+function matchesField(ruleValue: unknown, requestValue: unknown) {
   const values = asList(ruleValue);
   if (values.length === 0) return true;
   return values.some((value) => value === "*" || String(value) === String(requestValue ?? ""));
@@ -367,7 +367,7 @@ export function channelPolicyRequest({
   };
 }
 
-export function evaluateChannelPolicy(policy, request) {
+export function evaluateChannelPolicy(policy: AnyRecord | null | undefined, request: AnyRecord) {
   if (!policy || policy.enabled === false) {
     return { allowed: true, reason: "channel policy not configured", matchedRule: null };
   }
@@ -394,7 +394,7 @@ export function evaluateChannelPolicy(policy, request) {
   return { allowed: true, reason: "default allow", matchedRule: null };
 }
 
-export async function recordChannelPolicyDecision(cpbRoot, decision, request, options: Record<string, any> = {}) {
+export async function recordChannelPolicyDecision(cpbRoot: string, decision: AnyRecord, request: AnyRecord, options: Record<string, any> = {}) {
   const event = {
     type: "channel_policy_decision",
     allowed: Boolean(decision.allowed),
@@ -408,13 +408,13 @@ export async function recordChannelPolicyDecision(cpbRoot, decision, request, op
   return event;
 }
 
-export async function enforceChannelPolicy(cpbRoot, policy, request, _options: Record<string, any> = {}) {
+export async function enforceChannelPolicy(cpbRoot: string, policy: AnyRecord | null | undefined, request: AnyRecord, _options: Record<string, any> = {}) {
   const decision = evaluateChannelPolicy(policy, request);
   await recordChannelPolicyDecision(cpbRoot, decision, request, _options);
   return decision;
 }
 
-export async function readChannelPolicyEvents(cpbRoot, options: Record<string, any> = {}) {
+export async function readChannelPolicyEvents(cpbRoot: string, options: Record<string, any> = {}) {
   let raw;
   try {
     raw = await readFile(channelPolicyEventsPath(cpbRoot, options), "utf8");

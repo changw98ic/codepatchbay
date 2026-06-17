@@ -80,7 +80,7 @@ describe("D40 manifest registry layout", () => {
       assert.equal(agents.length, 2);
       assert.equal(agents[0].id, "codex");
       assert.equal(agents[1].id, "claude");
-      assert.equal(agents[0].install.npm.command, "npm i -g @openai/codex");
+      assert.equal((agents[0].install as any).npm.command, "npm i -g @openai/codex");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -159,10 +159,10 @@ describe("D40 manifest registry layout", () => {
     const { listSetupAgents, getSetupAgent } = await import("../core/setup/agent-catalog.js");
     const agents = listSetupAgents();
     assert.equal(agents.length, 5);
-    assert.equal(getSetupAgent("codex").install.npm.command, "npm i -g @openai/codex");
-    assert.equal(getSetupAgent("claude").install.brew.command, "brew install --cask claude-code");
-    assert.equal(getSetupAgent("opencode").install.npm.command, "npm install -g opencode-ai");
-    assert.equal(getSetupAgent("cursor").install.script.command, "curl https://cursor.com/install -fsS | bash");
+    assert.equal((getSetupAgent("codex")!.install as any).npm.command, "npm i -g @openai/codex");
+    assert.equal((getSetupAgent("claude")!.install as any).brew.command, "brew install --cask claude-code");
+    assert.equal((getSetupAgent("opencode")!.install as any).npm.command, "npm install -g opencode-ai");
+    assert.equal((getSetupAgent("cursor")!.install as any).script.command, "curl https://cursor.com/install -fsS | bash");
   });
 
   it("loadSetupAgentCatalog returns empty array for empty directory", async () => {

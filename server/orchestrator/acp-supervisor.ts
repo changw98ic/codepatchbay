@@ -1,11 +1,12 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AcpPool } from "../services/acp/acp-pool.js";
+import { AnyRecord } from "../../shared/types.js";
 
 const DEFAULT_SUPERVISOR_AGENT = "codex";
 const DEFAULT_SUPERVISOR_TIMEOUT_MS = 120_000;
 const SUPERVISOR_POOL_SCOPE = "control-plane";
-type AnyRecord = Record<string, any>;
 
 function resolveSupervisorAgent(env = process.env) {
   return (
@@ -15,7 +16,7 @@ function resolveSupervisorAgent(env = process.env) {
   );
 }
 
-function resolveSupervisorProviderKey(agent, env = process.env) {
+function resolveSupervisorProviderKey(agent: string, env: Record<string, any> = process.env) {
   return (
     env.CPB_ACP_SUPERVISOR_PROVIDER_KEY ||
     env.CPB_SUPERVISOR_PROVIDER_KEY ||
@@ -26,11 +27,11 @@ function resolveSupervisorProviderKey(agent, env = process.env) {
 export class AcpSupervisor {
   cpbRoot: string;
   hubRoot: string;
-  pool: any;
+  pool: AcpPool | null;
   supervisorAgent: string;
   supervisorProviderKey: string;
   timeoutMs: number;
-  _poolPromise: Promise<any> | null;
+  _poolPromise: Promise<AcpPool | null> | null;
   decisionsDir: string;
   statePath: string;
   state: AnyRecord;
@@ -82,7 +83,7 @@ export class AcpSupervisor {
     this._poolPromise = (async () => {
       try {
         const { getManagedAcpPool } = await import("../services/acp/acp-pool.js");
-        this.pool = getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true });
+        this.pool = (getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true }) as AcpPool | undefined) ?? null;
         return this.pool;
       } catch {
         this._poolPromise = null;
@@ -375,7 +376,7 @@ For switch_agent, params must include: { "role": "planner"|"executor"|"verifier"
 For wait_for_rate_limit, params must include: { "untilTs": "<ISO datetime>" }`;
 }
 
-function parseDecisionOutput(output) {
+function parseDecisionOutput(output: string): { decision: Record<string, any> | null; error: string | null } {
   if (!output || typeof output !== "string") {
     return { decision: null, error: "empty supervisor output" };
   }

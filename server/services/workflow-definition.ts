@@ -1,4 +1,5 @@
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import {
   dispatchForPhase as coreDispatchForPhase,
   getWorkflow as getCoreWorkflow,
@@ -8,7 +9,6 @@ import {
   roleForPhase as coreRoleForPhase,
 } from "../../core/workflow/definition.js";
 
-type AnyRecord = Record<string, any>;
 type CoreWorkflow = ReturnType<typeof getCoreWorkflow>;
 type ServerWorkflow = CoreWorkflow & AnyRecord;
 
@@ -16,7 +16,7 @@ type ServerWorkflow = CoreWorkflow & AnyRecord;
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function hasArtifact(value: any) {
+function hasArtifact(value: unknown) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
@@ -24,10 +24,11 @@ function hasCompletedPhase(state: AnyRecord, phase: string) {
   return state.completedPhases?.includes(phase) || hasArtifact(state.artifacts?.[phase]);
 }
 
-function artifactId(value: any, prefix: string) {
+function artifactId(value: unknown, prefix: string) {
   if (!hasArtifact(value)) return "";
-  const base = path.basename(value, ".md");
-  return base.startsWith(`${prefix}-`) ? base.slice(prefix.length + 1) : value;
+  const str = value as string;
+  const base = path.basename(str, ".md");
+  return base.startsWith(`${prefix}-`) ? base.slice(prefix.length + 1) : str;
 }
 
 // --- Job-level convenience functions ---

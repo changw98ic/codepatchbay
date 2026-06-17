@@ -33,10 +33,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 
-type AnyRecord = Record<string, any>;
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 

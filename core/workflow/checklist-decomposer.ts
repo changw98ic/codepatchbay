@@ -15,11 +15,11 @@
  *
  * core/ layering: imports only core/. No server/ or bridges/.
  */
+import { AnyRecord } from "../../shared/types.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseAgentJson } from "../agents/response-parser.js";
 import { validateDecomposedItems } from "./acceptance-checklist.js";
 
-type AnyRecord = Record<string, any>;
 
 export interface DecomposedItem {
   requirement: string;

@@ -6,9 +6,9 @@ const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
 const NC = "\x1b[0m";
 
-function parseArgs(args) {
-  const flags = {};
-  const positional = [];
+function parseArgs(args: string[]) {
+  const flags: Record<string, any> = {};
+  const positional: string[] = [];
   for (const arg of args) {
     if (arg.startsWith("--")) {
       if (arg.includes("=")) {
@@ -24,7 +24,7 @@ function parseArgs(args) {
   return { positional, flags };
 }
 
-export async function run(args, { cpbRoot }) {
+export async function run(args: string[], { cpbRoot }: Record<string, any>) {
   const { positional, flags } = parseArgs(args);
   const project = positional[0];
   if (!project) {
@@ -55,7 +55,7 @@ export async function run(args, { cpbRoot }) {
   }
 }
 
-async function listMessages(cpbRoot, project, flags) {
+async function listMessages(cpbRoot: string, project: string, flags: Record<string, any>) {
   const { listInboxMessages } = await import("../../server/services/hub/hub-queue.js");
 
   const messages = await listInboxMessages(cpbRoot, project);
@@ -81,7 +81,7 @@ async function listMessages(cpbRoot, project, flags) {
   }
 }
 
-async function readMessage(cpbRoot, project, id) {
+async function readMessage(cpbRoot: string, project: string, id: string) {
   if (!id) {
     console.error("Usage: cpb inbox <project> read <id>");
     process.exit(1);
@@ -111,7 +111,7 @@ async function readMessage(cpbRoot, project, id) {
   }
 }
 
-async function ackMessage(cpbRoot, project, id, flags) {
+async function ackMessage(cpbRoot: string, project: string, id: string, flags: Record<string, any>) {
   if (!id) {
     console.error("Usage: cpb inbox <project> ack <id> --owner <role>");
     process.exit(1);
@@ -138,7 +138,7 @@ async function ackMessage(cpbRoot, project, id, flags) {
   }
 }
 
-async function doneMessage(cpbRoot, project, id) {
+async function doneMessage(cpbRoot: string, project: string, id: string) {
   if (!id) {
     console.error("Usage: cpb inbox <project> done <id>");
     process.exit(1);
@@ -159,7 +159,7 @@ async function doneMessage(cpbRoot, project, id) {
   }
 }
 
-async function listOutputs(cpbRoot, project) {
+async function listOutputs(cpbRoot: string, project: string) {
   const { readdir, readFile } = await import("node:fs/promises");
   const dir = path.join(cpbRoot, "wiki/projects", project, "outputs");
   console.log(`${BOLD}Outputs: ${project}${NC}`);

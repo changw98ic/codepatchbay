@@ -2,20 +2,20 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
-import { open } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { executorEnv, resolveExecutorRoot } from "../services/setup.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
 const MAX_RESTARTS = 3;
-type AnyRecord = Record<string, any>;
 
 export class WorkerSupervisor {
   hubRoot: string;
   cpbRoot: string;
   executorRoot: string;
-  workers: any;
+  workers: WorkerStore;
   _children: Map<string, ChildProcess>;
 
   constructor(hubRoot: string, cpbRoot: string, { workerStore, executorRoot }: AnyRecord = {}) {
@@ -55,7 +55,7 @@ export class WorkerSupervisor {
         CPB_HUB_ROOT: this.hubRoot,
       },
       detached: true,
-      stdio: ["ignore", logFd as any, logFd as any],
+      stdio: ["ignore", logFd as unknown as NodeJS.WriteStream, logFd as unknown as NodeJS.WriteStream],
     });
     child.unref();
 

@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../../shared/types.js";
 
 // ── knowledge-policy ──────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ const GLOBAL_CONFIRM_KINDS = new Set([
   "global-soul",
 ]);
 
-export function classifyKnowledgeKind(kind) {
+export function classifyKnowledgeKind(kind: string) {
   if (RUNTIME_STATE_KINDS.has(kind)) return "machine-state";
   if (kind === "session" || kind === "session-memory" || kind === "session-log") return "session";
   if (kind === "project-memory") return "project-memory";
@@ -39,7 +40,7 @@ export function classifyKnowledgeKind(kind) {
   return "unknown";
 }
 
-export function assertKnowledgeWriteAllowed(kind, { automatic = false, markdown = true } = {}) {
+export function assertKnowledgeWriteAllowed(kind: string, { automatic = false, markdown = true } = {}) {
   const classification = classifyKnowledgeKind(kind);
   if (markdown && classification === "machine-state") {
     throw new Error(`${kind} is runtime state and must not be written to markdown knowledge files`);
@@ -88,7 +89,7 @@ export function knowledgePolicySummary() {
   };
 }
 
-export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Record<string, any> = {}) {
+export async function scanKnowledgeContamination(sourcePath: string, { fs: fsMod }: Record<string, any> = {}) {
   const realFs = fsMod || await import("node:fs/promises");
   const src = path.resolve(sourcePath);
   const issues = [];
@@ -100,7 +101,7 @@ export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Reco
     /"dispatchState"/, /"backlogEntry"/, /"eventLog"/,
   ];
 
-  async function scanDir(dir, relBase) {
+  async function scanDir(dir: string, relBase: string) {
     let entries;
     try { entries = await realFs.readdir(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
@@ -129,7 +130,7 @@ export async function scanKnowledgeContamination(sourcePath, { fs: fsMod }: Reco
   return issues;
 }
 
-export async function findPromotionCandidates(sourcePath, { sessionId = null, fs = null, projectRuntimeRoot = null, dataRoot = null }: Record<string, any> = {}) {
+export async function findPromotionCandidates(sourcePath: string, { sessionId = null, fs = null, projectRuntimeRoot = null, dataRoot = null }: Record<string, any> = {}) {
   const realFs = fs || await import("node:fs/promises");
   const src = path.resolve(sourcePath);
   const candidates = [];
@@ -238,13 +239,12 @@ export async function ensureKnowledgePaths(sourcePath: string, sessionId: string
 // ── knowledge-promotion ───────────────────────────────────────────────
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
-type AnyRecord = Record<string, any>;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function slugifyPromo(value: any, fallback = "candidate") {
+function slugifyPromo(value: unknown, fallback = "candidate") {
   const slug = String(value || fallback)
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
@@ -274,7 +274,7 @@ export function promotionCandidatePath(sourcePath: string, sessionId: string, ca
 function renderCandidate({ title, content, sourceLinks = [] }: AnyRecord) {
   const lines = [`# ${title}`, "", String(content || "").trim(), ""];
   if (sourceLinks.length > 0) {
-    lines.push("## Sources", ...sourceLinks.map((link) => `- ${link}`), "");
+    lines.push("## Sources", ...sourceLinks.map((link: string) => `- ${link}`), "");
   }
   return `${lines.join("\n").trim()}\n`;
 }
@@ -315,7 +315,7 @@ async function readCandidateContent(sourcePath: string, sessionId: string, candi
 function renderPromotion({ title, content, sourceLinks = [] }: AnyRecord) {
   const lines = [`## ${title}`, "", String(content || "").trim(), "", `Promoted: ${nowIso()}`];
   if (sourceLinks.length > 0) {
-    lines.push("", "Sources:", ...sourceLinks.map((link) => `- ${link}`));
+    lines.push("", "Sources:", ...sourceLinks.map((link: string) => `- ${link}`));
   }
   return `${lines.join("\n").trim()}\n\n`;
 }

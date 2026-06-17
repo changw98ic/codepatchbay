@@ -13,7 +13,7 @@ export function defaultPolicy() {
   return { approvals };
 }
 
-export function validatePolicy(policy) {
+export function validatePolicy(policy: Record<string, any>) {
   if (policy === null || policy === undefined || typeof policy !== "object" || Array.isArray(policy)) {
     return { valid: false, errors: ["policy must be a non-null object"] };
   }
@@ -111,6 +111,6 @@ export function validatePolicy(policy) {
   return { valid: errors.length === 0, errors };
 }
 
-export function requiresApproval(policy, operation) {
+export function requiresApproval(policy: Record<string, any>, operation: string) {
   return policy?.approvals?.[operation]?.required === true;
 }

@@ -6,10 +6,10 @@
  * no I/O, no side effects, no external dependencies.
  */
 
+import { AnyRecord } from "../../shared/types.js";
 import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
-type AnyRecord = Record<string, any>;
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
 
 /**
@@ -19,9 +19,10 @@ type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
  * @param {string|null|undefined} verdictText
  * @returns {{ status: "pass"|"fail", raw: string }|null}
  */
-export function parseVerdict(verdictText: any): ParsedVerdict {
+export function parseVerdict(verdictText: unknown): ParsedVerdict {
   if (verdictText && typeof verdictText === "object") {
-    const raw = (verdictText.verdict || verdictText.status || "").toString().toUpperCase()
+    const obj = verdictText as Record<string, unknown>;
+    const raw = ((obj.verdict || obj.status || "") as string).toString().toUpperCase()
     if (raw === "PASS") return { status: "pass", raw }
     if (raw === "FAIL" || raw === "PARTIAL") return { status: "fail", raw }
   }

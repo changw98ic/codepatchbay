@@ -11,6 +11,7 @@
 import { runPhase } from "./run-phase.js";
 import { readFile as _readFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 import { resolveSemanticPhases } from "./phase-policy.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
@@ -35,7 +36,6 @@ import {
 import { decomposeTaskToChecklistItems } from "../workflow/checklist-decomposer.js";
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
-type AnyRecord = Record<string, any>;
 
 const HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
 const PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
@@ -56,7 +56,7 @@ function ts() {
   return new Date().toISOString();
 }
 
-function numericEnv(name, fallback) {
+function numericEnv(name: string, fallback: number) {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
@@ -67,9 +67,9 @@ function phaseRetryBaseDelayMs() {
   return numericEnv("CPB_PHASE_RETRY_BASE_DELAY_MS", PHASE_RETRY_BASE_DELAY_MS);
 }
 
-function dagSequentialExecutionPlan(workflowDag) {
+function dagSequentialExecutionPlan(workflowDag: AnyRecord) {
   const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : [];
-  const completed = new Set();
+  const completed = new Set<string>();
   const planned = [];
 
   while (planned.length < nodes.length) {
@@ -88,7 +88,7 @@ function dagSequentialExecutionPlan(workflowDag) {
   return planned;
 }
 
-function arrayOfStrings(value) {
+function arrayOfStrings(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
 }
 
@@ -108,7 +108,7 @@ function normalizeDagResumeContext(sourceContext: AnyRecord = {}) {
   };
 }
 
-function artifactKindForPhase(phase) {
+function artifactKindForPhase(phase: string) {
   if (phase === "plan") return "plan";
   if (phase === "execute" || phase === "remediate") return "deliverable";
   if (phase === "verify" || phase === "adversarial_verify") return "verdict";
@@ -153,7 +153,7 @@ function recoveredVerdictForPhase(sourceContext: AnyRecord = {}, phase: string) 
   return null;
 }
 
-async function reportProgress(ctx, event) {
+async function reportProgress(ctx: AnyRecord, event: AnyRecord) {
   if (typeof ctx.onProgress !== "function") return;
   try {
     await ctx.onProgress({ ts: ts(), ...event });
@@ -162,13 +162,13 @@ async function reportProgress(ctx, event) {
   }
 }
 
-function extractArtifactId(artifact) {
+function extractArtifactId(artifact: AnyRecord | null | undefined) {
   if (!artifact?.name) return null;
   const parts = artifact.name.split("-");
   return parts.length > 1 ? parts[parts.length - 1] : artifact.id || null;
 }
 
-function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
+function normalizePhaseUsage(usage: AnyRecord | null | undefined, { hardGateFailed = false }: AnyRecord = {}) {
   if (hardGateFailed) {
     return {
       calls: 0,
@@ -198,7 +198,7 @@ function normalizePhaseUsage(usage, { hardGateFailed = false } = {}) {
   };
 }
 
-function retryFailureCause(fail) {
+function retryFailureCause(fail: AnyRecord | null | undefined) {
   if (fail?.kind !== FailureKind.VERIFICATION_FAILED) return undefined;
   const cause = fail.cause || {};
   return {
@@ -238,7 +238,7 @@ function normalizeProviderServices(services: AnyRecord = {}) {
   };
 }
 
-function normalizePrepareFailure(err) {
+function normalizePrepareFailure(err: Record<string, unknown> & { message?: string }) {
   const code = err?.kind || err?.code || "prepare_task_unavailable";
   const reason = err?.reason || err?.message || "prepareTask service is unavailable";
   return failure({
@@ -255,7 +255,7 @@ function normalizePrepareFailure(err) {
   });
 }
 
-async function blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail }) {
+async function blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail }: AnyRecord) {
   const reason = fail.cause?.code || fail.reason;
   if (typeof blockJob === "function") {
     await blockJob(cpbRoot, project, jobId, {
@@ -278,11 +278,11 @@ async function blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob
   });
 }
 
-function normalizeRiskMapResult(result) {
+function normalizeRiskMapResult(result: AnyRecord | null | undefined) {
   return result?.riskMap || result?.riskmap || result;
 }
 
-function normalizeDynamicAgentEntry(entry) {
+function normalizeDynamicAgentEntry(entry: AnyRecord | string | null | undefined) {
   if (!entry) return null;
   if (typeof entry === "string") {
     return { selectedAgent: entry, required: false };
@@ -299,14 +299,14 @@ function normalizeDynamicAgentEntry(entry) {
   };
 }
 
-function dynamicAgentPlanFrom(ctx, phaseSourceContext) {
+function dynamicAgentPlanFrom(ctx: AnyRecord, phaseSourceContext: AnyRecord | null | undefined) {
   return ctx.dynamicAgentPlan
     || phaseSourceContext?.dynamicAgentPlan
     || ctx.sourceContext?.dynamicAgentPlan
     || null;
 }
 
-function dynamicAgentForRole(plan, role, phase) {
+function dynamicAgentForRole(plan: AnyRecord | null | undefined, role: string, phase: string) {
   const agentConfig = plan?.agentConfig || plan?.agents || {};
   return normalizeDynamicAgentEntry(agentConfig?.[role] || agentConfig?.[phase]);
 }
@@ -317,13 +317,13 @@ function dynamicAgentForRole(plan, role, phase) {
 /**
  * Extract fix scope from phase results and risk map for adversarial retry context.
  */
-function extractFixScope(phaseResults, riskMap) {
-  const adversarialResult = phaseResults.find(r => r?.phase === "adversarial_verify");
+function extractFixScope(phaseResults: AnyRecord[], riskMap: AnyRecord | null | undefined) {
+  const adversarialResult = phaseResults.find((r: AnyRecord) => r?.phase === "adversarial_verify");
   const advCause = adversarialResult?.failure?.cause || {};
   if (Array.isArray(advCause.fix_scope) && advCause.fix_scope.length > 0) return advCause.fix_scope;
   if (Array.isArray(riskMap?.adversarialFocus) && riskMap.adversarialFocus.length > 0) return riskMap.adversarialFocus;
   if (Array.isArray(riskMap?.highRiskFiles) && riskMap.highRiskFiles.length > 0) return riskMap.highRiskFiles;
-  const executeResult = phaseResults.find(r => r?.phase === "execute");
+  const executeResult = phaseResults.find((r: AnyRecord) => r?.phase === "execute");
   const executeArtifact = executeResult?.artifact;
   if (executeArtifact) {
     const paths = [];
@@ -337,9 +337,9 @@ function extractFixScope(phaseResults, riskMap) {
 /**
  * Build adversarial retry context from gate result, phase results, and risk map.
  */
-function buildAdversarialRetryContext(gateResult, phaseResults, riskMap) {
+function buildAdversarialRetryContext(gateResult: AnyRecord, phaseResults: AnyRecord[], riskMap: AnyRecord | null | undefined) {
   if (gateResult.outcome !== "adversarial_failed") return null;
-  const adversarialResult = phaseResults.find(r => r?.phase === "adversarial_verify");
+  const adversarialResult = phaseResults.find((r: AnyRecord) => r?.phase === "adversarial_verify");
   const advCause = adversarialResult?.failure?.cause || {};
   const advVerdict = advCause.verdict || {};
   return {
@@ -458,7 +458,7 @@ function attachChecklistIdsToWorkflowDag(workflowDag: AnyRecord, acceptanceCheck
  * Crash barrier wrapper — catches unhandled exceptions from runJobInner()
  * and ensures the job is failed rather than stuck in "running" forever.
  */
-export async function runJob(ctx) {
+export async function runJob(ctx: AnyRecord) {
   ctx._jobId = "unknown";
   ctx._currentPhase = null;
   try {
@@ -504,7 +504,7 @@ export async function runJob(ctx) {
  * job with a blocked status; `{ kind: "ok", job, jobId, attemptId }` proceeds
  * to prepareTask.
  */
-async function createJobAndHandleBlocked(ctx) {
+async function createJobAndHandleBlocked(ctx: AnyRecord) {
   const {
     cpbRoot,
     project,
@@ -588,7 +588,7 @@ async function createJobAndHandleBlocked(ctx) {
  * Returns `{ kind: "blocked", result }` or
  * `{ kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan }`.
  */
-async function prepareTaskAndRiskMap(ctx, { job, jobId }) {
+async function prepareTaskAndRiskMap(ctx: AnyRecord, { job, jobId }: AnyRecord) {
   const {
     cpbRoot,
     hubRoot,
@@ -690,9 +690,9 @@ async function prepareTaskAndRiskMap(ctx, { job, jobId }) {
  * Inputs mutate `phaseSourceContext` / `dynamicAgentPlan`. Returns
  * `{ kind: "blocked", result }` or `{ kind: "ok", ...dagInputs }`.
  */
-async function freezeChecklistAndMaterializeDag(ctx, {
+async function freezeChecklistAndMaterializeDag(ctx: AnyRecord, {
   jobId, riskMap, phaseSourceContext, dynamicAgentPlan,
-}) {
+}: AnyRecord) {
   const {
     cpbRoot,
     project,
@@ -909,7 +909,7 @@ async function freezeChecklistAndMaterializeDag(ctx, {
  * in place so the outer loop observes handoff/usage telemetry. Returns the
  * latest phase `result`.
  */
-async function runQuotaFallbackRetry(ctx, n) {
+async function runQuotaFallbackRetry(ctx: AnyRecord, n: AnyRecord) {
   const {
     hubRoot, pool, phase, role, nodeId, dagNode, project, task, jobId, job,
     workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
@@ -991,7 +991,7 @@ async function runQuotaFallbackRetry(ctx, n) {
     const fallback = await preflightProvider({
       providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
       excludeProvider: quotaCause.providerKey,
-    }).catch(() => null);
+    }).catch((): null => null);
 
     if (!fallback || !fallback.available) {
       // Ensure fallbackCount is in failure cause before breaking
@@ -1114,7 +1114,7 @@ async function runQuotaFallbackRetry(ctx, n) {
  * feedback appended (up to PHASE_FEEDBACK_RETRY_MAX). Quota-delegate write
  * failures are never retried here. Returns the latest phase `result`.
  */
-async function runPhaseRetryLoops(ctx, n) {
+async function runPhaseRetryLoops(ctx: AnyRecord, n: AnyRecord) {
   const {
     phase, role, nodeId, dagNode, project, task, jobId, job,
     workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
@@ -1251,7 +1251,7 @@ async function runPhaseRetryLoops(ctx, n) {
   return result;
 }
 
-async function runJobInner(ctx) {
+async function runJobInner(ctx: AnyRecord) {
   const {
     cpbRoot,
     hubRoot,
@@ -1335,8 +1335,8 @@ async function runJobInner(ctx) {
   const pool = getPool();
 
   // 4. Execute phases sequentially
-  const phaseResults = [];
-  const state = { planId: null, deliverableId: null, riskMap };
+  const phaseResults: AnyRecord[] = [];
+  const state: AnyRecord = { planId: null, deliverableId: null, riskMap };
 
   const envTimeout = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS) || 0;
   // Explicit timeoutMin takes priority, then env var, then disabled
@@ -1469,15 +1469,15 @@ async function runJobInner(ctx) {
     }
 
     // Provider selection + fallback for this phase — consolidated handoff state
-    const handoffState = { count: 0, from: null, to: null, reason: null };
-    const providerAttempts = [];
-    let result = null;
+    const handoffState: AnyRecord = { count: 0, from: null, to: null, reason: null };
+    const providerAttempts: AnyRecord[] = [];
+    let result: AnyRecord | null = null;
 
     // Pre-flight: check if preferred provider is available
     if (hubRoot && pool) {
       const preflight = await preflightProvider({
         providerServices, hubRoot, pool, phase, role, agents: phaseAgents, agent: ctx.agent,
-      }).catch(() => null);
+      }).catch((): null => null);
       if (preflight?.switched) {
         if (dynamicAgent?.required) {
           result = phaseFailed({
@@ -1659,7 +1659,7 @@ async function runJobInner(ctx) {
           || result.artifact?.files
           || [];
         const cleanPaths = rawChangedFiles
-          .map(f => stripGitStatusPrefix(String(f)))
+          .map((f: string) => stripGitStatusPrefix(String(f)))
           .filter(Boolean);
         const scopeResult = validateScopeConstraint({
           diffPaths: cleanPaths,
@@ -1917,7 +1917,7 @@ async function runJobInner(ctx) {
             } : { used: false, fromProviderKey: null, toProviderKey: null, count: 0, reason: null },
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
             usage: normalizePhaseUsage(diag.usage, { hardGateFailed }),
-          }).catch(() => null);
+          }).catch((): null => null);
         }
       } catch { /* usage tracking is best-effort */ }
     }
@@ -2208,7 +2208,7 @@ async function runJobInner(ctx) {
  * exception.  Best-effort fails the job so it doesn't remain stuck in
  * "running" state forever.
  */
-async function handleRunJobPanic(ctx, panic) {
+async function handleRunJobPanic(ctx: AnyRecord, panic: Error | { message?: string; stack?: string }) {
   const { cpbRoot, project, failJob, appendEvent } = ctx;
   const jobId = ctx._jobId || "unknown";
   const phase = ctx._currentPhase || "unknown";
@@ -2274,13 +2274,13 @@ async function handleRunJobPanic(ctx, panic) {
 
 // ─── Provider Selection Helpers ─────────────────────────────────────
 
-function resolveRawAgent(agents, agent, role, phase) {
+function resolveRawAgent(agents: AnyRecord | null | undefined, agent: string | null | undefined, role: string, phase: string) {
   const raw = agents?.[role] || agent || legacyAgentForPhase(phase);
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || raw.name || legacyAgentForPhase(phase), variant: raw.variant || null };
   return { agent: raw, variant: null };
 }
 
-function resolveProviderKey(pool, rawAgent, defaultAgent) {
+function resolveProviderKey(pool: AnyRecord | null | undefined, rawAgent: string | Record<string, unknown> | null | undefined, defaultAgent: string | null | undefined) {
   const { agent, variant } = typeof rawAgent === "object" && rawAgent !== null
     ? { agent: rawAgent.agent || defaultAgent, variant: rawAgent.variant || null }
     : { agent: rawAgent || defaultAgent, variant: null };
@@ -2293,7 +2293,7 @@ function resolveProviderKey(pool, rawAgent, defaultAgent) {
  * Pre-flight provider availability check.
  * Returns { available, switched, selectedAgent, selectedProviderKey, reason, from } or null.
  */
-async function preflightProvider({ providerServices, hubRoot, pool, phase, role, agents, agent, excludeProvider = null }) {
+async function preflightProvider({ providerServices, hubRoot, pool, phase, role, agents, agent, excludeProvider = null }: AnyRecord) {
   const assertProviderAvailable = providerServices?.assertProviderAvailable;
   if (typeof assertProviderAvailable !== "function" || !hubRoot) return null;
 
@@ -2360,7 +2360,7 @@ async function preflightProvider({ providerServices, hubRoot, pool, phase, role,
   };
 }
 
-function getFallbackCandidates(pool, agent, currentVariant, excludeKey) {
+function getFallbackCandidates(pool: AnyRecord | null | undefined, agent: string, currentVariant: string | null | undefined, excludeKey: string | null | undefined) {
   if (pool?.fallbackCandidates) {
     try {
       const poolCandidates = pool.fallbackCandidates(agent, currentVariant, excludeKey);

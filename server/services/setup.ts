@@ -7,6 +7,7 @@ import { access } from "node:fs/promises";
 import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../shared/types.js";
 
 import { executeInstallPlan } from "../../core/setup/install-plan.js";
 import { buildChildEnv } from "../../core/policy/child-env.js";
@@ -24,11 +25,11 @@ const SECRET_PATTERNS = [
   /SECRET_[A-Z0-9_]+/g,
 ];
 
-function setupEventsPath(cpbRoot) {
+function setupEventsPath(cpbRoot: string) {
   return path.join(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd()), "cpb-task", "setup-events.jsonl");
 }
 
-function redact(value) {
+function redact(value: unknown): string {
   let text = String(value ?? "");
   for (const pattern of SECRET_PATTERNS) {
     text = text.replace(pattern, "[REDACTED]");
@@ -36,18 +37,18 @@ function redact(value) {
   return text;
 }
 
-function commandHash(plan) {
+function commandHash(plan: Record<string, any>) {
   const text = plan.displayCommand || [plan.command, ...(plan.args || [])].join(" ");
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-async function appendSetupEvent(cpbRoot, event) {
+async function appendSetupEvent(cpbRoot: string, event: Record<string, any>) {
   const file = setupEventsPath(cpbRoot);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
 }
 
-function startedEvent(plan, startedAt) {
+function startedEvent(plan: Record<string, any>, startedAt: string) {
   return {
     type: "setup_install_started",
     schemaVersion: 1,
@@ -60,7 +61,7 @@ function startedEvent(plan, startedAt) {
   };
 }
 
-function finishedEvent(plan, startedAt, result, error) {
+function finishedEvent(plan: Record<string, any>, startedAt: string, result: Record<string, any>, error: Record<string, any>) {
   const finishedAt = new Date().toISOString();
   const failed = Boolean(error);
   return {
@@ -78,7 +79,7 @@ function finishedEvent(plan, startedAt, result, error) {
   };
 }
 
-export async function runInstallPlanWithEvents(plan, { cpbRoot, stdio = "inherit" }: Record<string, any> = {}) {
+export async function runInstallPlanWithEvents(plan: Record<string, any>, { cpbRoot, stdio = "inherit" }: Record<string, any> = {}) {
   const startedAt = new Date().toISOString();
   await appendSetupEvent(cpbRoot, startedEvent(plan, startedAt));
   try {
@@ -91,7 +92,7 @@ export async function runInstallPlanWithEvents(plan, { cpbRoot, stdio = "inherit
   }
 }
 
-export async function readSetupEvents(cpbRoot) {
+export async function readSetupEvents(cpbRoot: string) {
   let raw;
   try {
     raw = await readFile(setupEventsPath(cpbRoot), "utf8");
@@ -118,11 +119,11 @@ export async function runInitProject(argv: string[]) {
 
 // ── install-bin (from install-bin.ts) ──────────────────────────────────────
 
-export function shellQuoteSingle(s) {
+export function shellQuoteSingle(s: string) {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-export function renderLauncher({ executorRoot, runtimeRootDefault }) {
+export function renderLauncher({ executorRoot, runtimeRootDefault }: Record<string, any>) {
   const quotedRoot = shellQuoteSingle(executorRoot);
   const escapedDefault = runtimeRootDefault;
 
@@ -147,7 +148,7 @@ exec "\${CPB_EXECUTOR_ROOT}/cpb" "$@"
 `;
 }
 
-export async function resolveInstallBinExecutorRoot({ executorRootOption, scriptRoot, env }) {
+export async function resolveInstallBinExecutorRoot({ executorRootOption, scriptRoot, env }: Record<string, any>) {
   if (executorRootOption && executorRootOption !== "current") {
     return assertExecutorRoot(executorRootOption);
   }
@@ -182,7 +183,7 @@ export async function resolveInstallBinExecutorRoot({ executorRootOption, script
   return assertExecutorRoot(scriptRoot);
 }
 
-export async function installBin({ target, executorRoot }) {
+export async function installBin({ target, executorRoot }: Record<string, any>) {
   const resolvedExecutorRoot = await assertExecutorRoot(executorRoot);
   const resolvedTarget = path.resolve(target);
   const runtimeRootDefault = `\${CPB_HOME:-\$HOME/.cpb}`;
@@ -210,7 +211,6 @@ export async function installBin({ target, executorRoot }) {
 
 // ── apply-variant (from apply-variant.ts) ──────────────────────────────────
 
-type AnyRecord = Record<string, any>;
 
 function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
   for (const name of names) {
@@ -220,8 +220,8 @@ function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
   return undefined;
 }
 
-function normalizeVariant(requested: any): string {
-  return (requested || "").trim().toLowerCase();
+function normalizeVariant(requested: unknown): string {
+  return (typeof requested === "string" ? requested : "").trim().toLowerCase();
 }
 
 function resolveVariant(env: AnyRecord = process.env): string {
@@ -370,7 +370,7 @@ export function executorEnv(env = process.env, { cpbRoot, executorRoot, extra }:
   });
 }
 
-export async function assertExecutorRoot(executorRoot) {
+export async function assertExecutorRoot(executorRoot: string) {
   const root = path.resolve(executorRoot);
   const info = await stat(root);
   if (!info.isDirectory()) {
@@ -388,7 +388,7 @@ export async function assertExecutorRoot(executorRoot) {
   return root;
 }
 
-export async function readExecutorPackage(executorRoot) {
+export async function readExecutorPackage(executorRoot: string) {
   try {
     const raw = await readFile(path.join(path.resolve(executorRoot), "package.json"), "utf8");
     const parsed = JSON.parse(raw);
@@ -404,7 +404,7 @@ export async function readExecutorPackage(executorRoot) {
   }
 }
 
-export async function executorMetadata(executorRoot, { codeVersion, env = process.env }: Record<string, any> = {}) {
+export async function executorMetadata(executorRoot: string, { codeVersion, env = process.env }: Record<string, any> = {}) {
   const root = await assertExecutorRoot(executorRoot);
   const pkg = await readExecutorPackage(root);
 

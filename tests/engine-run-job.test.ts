@@ -7,12 +7,12 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { AnyRecord } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { runJob } from "../core/engine/run-job.js";
 import { tempRoot } from "./helpers.js";
 
-type AnyRecord = Record<string, any>;
 
 // ─── Env overrides for deterministic retry timing ─────────────────
 process.env.CPB_PHASE_RETRY_MAX = "1";

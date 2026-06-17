@@ -1,4 +1,4 @@
-type AnyRecord = Record<string, any>;
+import { AnyRecord } from "../../shared/types.js";
 
 /**
  * Evidence observation validation result.
@@ -23,7 +23,7 @@ export interface EvidenceValidation {
 
 const INVALID: EvidenceValidation = { valid: false, satisfied: false };
 
-function text(value: any) {
+function text(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 

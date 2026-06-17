@@ -1,4 +1,4 @@
-type AnyRecord = Record<string, any>;
+import { AnyRecord } from "../../shared/types.js";
 
 export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) {
   const sub = args[0] || "status";
@@ -213,7 +213,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: AnyRecord) 
     }
   } else if (sub === "diagnostics") {
     const { gatherDiagnostics } = await import("../../server/services/observability/observability.js");
-    const diag = await gatherDiagnostics({ cpbRoot, hubRoot } as any);
+    const diag = await gatherDiagnostics({ cpbRoot, hubRoot } as any) as Record<string, any>;
     if (json) console.log(JSON.stringify(diag, null, 2));
     else {
       console.log(`Diagnostics gathered at: ${diag.gatheredAt}`);

@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, writeFile, mkdtemp, rm, chmod } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AnyRecord } from "../../../shared/types.js";
 import { appendEvent, readEvents } from "../event/event-store.js";
 import { getJob } from "../job/job-store.js";
 import { buildCodePatchBayPrBody } from "../pr-body.js";
@@ -15,7 +16,6 @@ import { redactSecrets } from "../secret-policy.js";
 
 const execFileAsync = promisify(execFileCb);
 
-type AnyRecord = Record<string, any>;
 type LooseRecord = Record<string, any>;
 
 // ============================================================
@@ -67,23 +67,23 @@ export function buildGithubIssueBranchParts({ issueNumber, title, jobId, maxSlug
 
 const CACHE_VERSION = 1;
 
-function cachePath(hubRoot) {
+function cachePath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "github", "issues.json");
 }
 
-async function writeAtomic(filePath, content) {
+async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, filePath);
 }
 
-function normalizeLabel(label) {
+function normalizeLabel(label: string | { name?: string }) {
   if (typeof label === "string") return label;
   return label?.name || null;
 }
 
-export function normalizeGithubLabels(labels) {
+export function normalizeGithubLabels(labels: unknown) {
   return Array.isArray(labels) ? labels.map(normalizeLabel).filter(Boolean) : [];
 }
 
@@ -103,7 +103,7 @@ export function normalizeGithubIssue(issue: AnyRecord = {}, { repo, projectId }:
   };
 }
 
-export async function readGithubIssues(hubRoot) {
+export async function readGithubIssues(hubRoot: string) {
   try {
     const parsed = JSON.parse(await readFile(cachePath(hubRoot), "utf8"));
     const issues = Array.isArray(parsed) ? parsed : parsed.issues;
@@ -115,12 +115,12 @@ export async function readGithubIssues(hubRoot) {
   }
 }
 
-export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() }: AnyRecord = {}) {
+export async function writeGithubIssues(hubRoot: string, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() }: AnyRecord = {}) {
   const normalized = (issues || [])
-    .map((issue) => normalizeGithubIssue(issue, { repo, projectId }))
-    .filter((issue) => Number.isFinite(issue.number));
+    .map((issue: AnyRecord) => normalizeGithubIssue(issue, { repo, projectId }))
+    .filter((issue: AnyRecord) => Number.isFinite(issue.number));
   const existing = await readGithubIssues(hubRoot);
-  const retained = existing.filter((issue) => !issueBelongsToSyncScope(issue, { repo, projectId }));
+  const retained = existing.filter((issue: AnyRecord) => !issueBelongsToSyncScope(issue, { repo, projectId }));
   const merged = [...retained, ...normalized];
   const payload = {
     version: CACHE_VERSION,
@@ -135,7 +135,7 @@ export async function writeGithubIssues(hubRoot, { repo, projectId = "flow", iss
   return payload;
 }
 
-function issueBelongsToSyncScope(issue, { repo, projectId }: AnyRecord = {}) {
+function issueBelongsToSyncScope(issue: AnyRecord, { repo, projectId }: AnyRecord = {}) {
   const normalized = normalizeGithubIssue(issue);
   if (projectId && normalized.projectId === projectId) return true;
   if (!repo) return false;
@@ -143,7 +143,7 @@ function issueBelongsToSyncScope(issue, { repo, projectId }: AnyRecord = {}) {
   return !projectId || !normalized.projectId || normalized.projectId === "flow";
 }
 
-async function runGh(args, { cwd, execFile = execFileAsync }: AnyRecord = {}) {
+async function runGh(args: string[], { cwd, execFile = execFileAsync }: AnyRecord = {}) {
   const result = await execFile("gh", args, {
     cwd,
     maxBuffer: 20 * 1024 * 1024,
@@ -152,20 +152,20 @@ async function runGh(args, { cwd, execFile = execFileAsync }: AnyRecord = {}) {
   return typeof result === "string" ? result : result.stdout;
 }
 
-async function resolveRepo(repo, { cwd, execFile }: AnyRecord = {}) {
+async function resolveRepo(repo: string | null, { cwd, execFile }: AnyRecord = {}) {
   if (repo) return repo;
   const stdout = await runGh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd, execFile });
   return stdout.trim();
 }
 
-export async function closeGithubIssueWithGh({ repo, number, body }, { runCommand = execFileAsync } = {}) {
+export async function closeGithubIssueWithGh({ repo, number, body }: AnyRecord, { runCommand = execFileAsync }: AnyRecord = {}) {
   const args = ["issue", "close", String(number), "--repo", repo];
   if (body) args.push("--comment", body);
   await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
   return { ok: true };
 }
 
-export async function syncGithubIssuesFromGh(hubRoot, {
+export async function syncGithubIssuesFromGh(hubRoot: string, {
   repo,
   projectId = "flow",
   state = "open",
@@ -198,7 +198,7 @@ export async function syncGithubIssuesFromGh(hubRoot, {
   });
 }
 
-export async function syncConfiguredGithubIssuesFromGh(hubRoot, {
+export async function syncConfiguredGithubIssuesFromGh(hubRoot: string, {
   projectId = null,
   state = "open",
   limit = 1000,
@@ -253,15 +253,15 @@ export async function syncConfiguredGithubIssuesFromGh(hubRoot, {
 // github-comments.ts exports
 // ============================================================
 
-function agentLine(label, value) {
+function agentLine(label: string, value: string) {
   return `- ${label}: ${value || "not selected"}`;
 }
 
-function hashBody(body) {
+function hashBody(body: string) {
   return createHash("sha256").update(body || "", "utf8").digest("hex");
 }
 
-function responseSummary(response) {
+function responseSummary(response: Record<string, unknown> | null | undefined) {
   if (!response || typeof response !== "object") return null;
   return {
     id: response.id ?? null,
@@ -280,14 +280,14 @@ export async function postGithubCommentWithGh({ repo, issueNumber, body }: Loose
     body,
   ], { maxBuffer: 1024 * 1024 });
   return {
-    url: null,
-    html_url: null,
+    url: null as string | null,
+    html_url: null as string | null,
     stdout: result.stdout || "",
     stderr: result.stderr || "",
   };
 }
 
-function statusHeading(status) {
+function statusHeading(status: string) {
   if (status === "blocked") return "CodePatchBay blocked this run.";
   if (status === "failed") return "CodePatchBay failed this run.";
   if (status === "passed") return "Verified patch ready.";
@@ -295,7 +295,7 @@ function statusHeading(status) {
   return "CodePatchBay updated this run.";
 }
 
-function statusDetailLines(projection) {
+function statusDetailLines(projection: LooseRecord) {
   if (projection.status === "blocked") {
     return [`- Reason: ${projection.reason || "approval or manual review required"}`];
   }
@@ -411,7 +411,7 @@ export function buildGithubStatusComment({ projection, job }: LooseRecord = {}) 
   ].join("\n");
 }
 
-async function alreadyPostedStatusComment(cpbRoot, project, jobId, dedupeKey, { dataRoot }: LooseRecord = {}) {
+async function alreadyPostedStatusComment(cpbRoot: string, project: string, jobId: string, dedupeKey: string, { dataRoot }: LooseRecord = {}) {
   if (!cpbRoot || !project || !jobId || !dedupeKey) return false;
   const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
   return events.some((event) => (
@@ -537,7 +537,7 @@ export async function postGithubStatusComment({
 // github-pr.ts exports
 // ============================================================
 
-function isPass(verdict) {
+function isPass(verdict: string) {
   return String(verdict || "").toUpperCase() === "PASS";
 }
 
@@ -546,13 +546,13 @@ function prTitle(job: AnyRecord) {
   return `[cpb] ${title}`;
 }
 
-function verdictForBody(verdict, verdictDetail) {
+function verdictForBody(verdict: string, verdictDetail: Record<string, unknown> | null) {
   if (verdictDetail && typeof verdictDetail === "object") return verdictDetail;
   const status = String(verdict || "").toLowerCase();
   return { status: status || "unavailable" };
 }
 
-function prBody(job, routingContext = null, agents = {}, bodyContext: AnyRecord = {}) {
+function prBody(job: AnyRecord, routingContext: AnyRecord | null = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
   const {
     artifacts = {},
     tests = [],
@@ -570,7 +570,7 @@ function prBody(job, routingContext = null, agents = {}, bodyContext: AnyRecord 
   });
 }
 
-function buildPrRequest(job: AnyRecord, routingContext = null, agents = {}, bodyContext: AnyRecord = {}) {
+function buildPrRequest(job: AnyRecord, routingContext: AnyRecord | null = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
   return {
     repo: job.sourceContext?.repo || null,
     title: prTitle(job),
@@ -590,7 +590,7 @@ function prepareCommitMessage(job: AnyRecord) {
   ].filter(Boolean).join("\n");
 }
 
-function blocked(reason, evidence = {}, error = null) {
+function blocked(reason: string, evidence: AnyRecord = {}, error: Record<string, unknown> | null = null) {
   return {
     status: "blocked.pr",
     jobStatus: "passed",
@@ -602,19 +602,19 @@ function blocked(reason, evidence = {}, error = null) {
   };
 }
 
-function parseGhPrUrl(stdout) {
+function parseGhPrUrl(stdout: string) {
   const match = String(stdout || "").match(/https:\/\/github\.com\/[^\s]+\/pull\/([0-9]+)/);
   if (!match) return { url: null, number: null };
   return { url: match[0], number: Number.parseInt(match[1], 10) };
 }
 
-async function runGit(cwd, args, { runCommand = execFileAsync, env }: AnyRecord = {}) {
+async function runGit(cwd: string, args: string[], { runCommand = execFileAsync, env }: AnyRecord = {}) {
   const opts: AnyRecord = { cwd, maxBuffer: 1024 * 1024 };
   if (env) opts.env = env;
   return runCommand("git", args, opts);
 }
 
-async function createGitAskpassScript(tmpDir, token) {
+async function createGitAskpassScript(tmpDir: string, token: string) {
   const askpass = path.join(tmpDir, "git-askpass.sh");
   const script = `#!/bin/sh
 case "$1" in
@@ -636,7 +636,7 @@ export async function preparePullRequestBranchWithGit(request: AnyRecord, job: A
     return {
       ok: false,
       reason: "branch has not been pushed",
-      evidence: { worktree: null },
+      evidence: { worktree: null as string | null },
     };
   }
 
@@ -791,7 +791,7 @@ export async function openDraftPullRequest({
   try {
     const transport = typeof createPullRequest === "function"
       ? createPullRequest
-      : (req) => createPullRequestWithGh(req, { runCommand });
+      : (req: AnyRecord) => createPullRequestWithGh(req, { runCommand });
     const response = await transport(request);
     return {
       status: "pr.opened",
@@ -810,7 +810,7 @@ export async function openDraftPullRequest({
   }
 }
 
-export async function maybeOpenDraftPrAfterPass(cpbRoot, project, jobId, options: AnyRecord = {}) {
+export async function maybeOpenDraftPrAfterPass(cpbRoot: string, project: string, jobId: string, options: AnyRecord = {}) {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot: options.dataRoot });
   const result = await openDraftPullRequest({
     job,

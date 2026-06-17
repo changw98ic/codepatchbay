@@ -33,7 +33,7 @@ export async function runAgent({
   scope,
   env,
   dataRoot = null,
-}) {
+}: Record<string, any>) {
   const startedAt = Date.now();
 
   try {
@@ -77,7 +77,7 @@ export async function runAgent({
   }
 }
 
-function classifyError(err, { agent, role, startedAt }) {
+function classifyError(err: any, { agent, role, startedAt }: Record<string, any>) {
   const msg = err?.message || String(err || "");
   const lowerMsg = msg.toLowerCase();
   const snippet = msg.slice(0, 500);
@@ -200,7 +200,7 @@ function classifyError(err, { agent, role, startedAt }) {
   };
 }
 
-function parseResetTime(msg) {
+function parseResetTime(msg: string) {
   const iso = msg.match(/20\d\d-\d\d-\d\d[T\s]\d\d:\d\d:\d\d/);
   if (iso) {
     const ts = Date.parse(iso[0].includes("T") ? iso[0] : iso[0].replace(" ", "T"));

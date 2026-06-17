@@ -11,38 +11,70 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+interface DelegateMarkOpts {
+  providerKey: string;
+  agent: string;
+  variant?: string;
+  status: string;
+  nextEligibleAt?: number;
+  source?: string;
+  confidence?: number;
+  reason?: string;
+}
+
+interface DelegateUsageRecord {
+  project?: string;
+  issueNumber?: number;
+  attempt?: number;
+  phase: string;
+  role?: string;
+  providerKey: string;
+  agent: string;
+  variant?: string;
+  providerRegion?: string;
+  providerAdapter?: string;
+  status: string;
+  phaseStatus: string;
+  durationMs?: number;
+  quota?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+  fallback?: Record<string, unknown>;
+  providerAttempts?: number;
+  source?: string;
+}
+
 const ACK_POLL_MS = Number(process.env.CPB_DELEGATE_ACK_POLL_MS || 50);
 const ACK_TIMEOUT_MS = Number(process.env.CPB_DELEGATE_ACK_TIMEOUT_MS || 5000);
 
 // ─── Paths ───────────────────────────────────────────────────────────
 
-function delegateDir(hubRoot) {
+function delegateDir(hubRoot: string) {
   return path.join(hubRoot, "providers", "delegate");
 }
 
-function inboxDir(hubRoot) {
+function inboxDir(hubRoot: string) {
   return path.join(delegateDir(hubRoot), "inbox");
 }
 
-function acksDir(hubRoot) {
+function acksDir(hubRoot: string) {
   return path.join(delegateDir(hubRoot), "acks");
 }
 
-function commandFilePath(hubRoot, commandId) {
+function commandFilePath(hubRoot: string, commandId: string) {
   return path.join(inboxDir(hubRoot), `${commandId}.json`);
 }
 
-function ackFilePath(hubRoot, commandId) {
+function ackFilePath(hubRoot: string, commandId: string) {
   return path.join(acksDir(hubRoot), `${commandId}.json`);
 }
 
-function lockFilePath(hubRoot) {
+function lockFilePath(hubRoot: string) {
   return path.join(delegateDir(hubRoot), "delegate.lock");
 }
 
 // ─── Command Write (per-file, atomic rename) ─────────────────────────
 
-export async function appendCommand(hubRoot, command) {
+export async function appendCommand(hubRoot: string, command: { commandId: string } & Record<string, unknown>) {
   const dir = inboxDir(hubRoot);
   await mkdir(dir, { recursive: true });
   const filePath = commandFilePath(hubRoot, command.commandId);
@@ -53,7 +85,7 @@ export async function appendCommand(hubRoot, command) {
 
 // ─── Ack Polling ─────────────────────────────────────────────────────
 
-export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS) {
+export async function waitForAck(hubRoot: string, commandId: string, timeoutMs = ACK_TIMEOUT_MS) {
   const ackPath = ackFilePath(hubRoot, commandId);
   const deadline = Date.now() + timeoutMs;
 
@@ -70,7 +102,7 @@ export async function waitForAck(hubRoot, commandId, timeoutMs = ACK_TIMEOUT_MS)
 
 // ─── Delegate Liveness ───────────────────────────────────────────────
 
-export async function isDelegateAlive(hubRoot) {
+export async function isDelegateAlive(hubRoot: string) {
   try {
     const lock = JSON.parse(await readFile(lockFilePath(hubRoot), "utf8"));
     if (!lock.pid) return false;
@@ -88,7 +120,7 @@ export async function isDelegateAlive(hubRoot) {
  * Strong ack: blocks until delegate confirms the quota write.
  * Fails closed: returns null if delegate is unavailable (no fallback).
  */
-export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutMs) {
+export async function delegateMarkProviderUnavailable(hubRoot: string, opts: DelegateMarkOpts, ackTimeoutMs?: number) {
   const commandId = randomUUID();
   const command = {
     commandId,
@@ -120,7 +152,7 @@ export async function delegateMarkProviderUnavailable(hubRoot, opts, ackTimeoutM
  * Enqueue a usage record via the delegate.
  * Fire-and-forget: no ack, no waiting.
  */
-export async function delegateEnqueueProviderUsage(hubRoot, record) {
+export async function delegateEnqueueProviderUsage(hubRoot: string, record: DelegateUsageRecord) {
   const commandId = randomUUID();
   const command = {
     commandId,

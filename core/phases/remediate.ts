@@ -24,7 +24,7 @@ Rules:
 - remediationStatus MUST be exactly "FIXED", "UNFIXABLE", or "NEEDS_RETRY"
 - Do NOT write any artifact files yourself. The system will persist the remediation report.`;
 
-export async function runRemediate(ctx) {
+export async function runRemediate(ctx: Record<string, any>) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "remediator";
@@ -108,7 +108,7 @@ export async function runRemediate(ctx) {
   });
 }
 
-function renderRemediationMarkdown(data) {
+function renderRemediationMarkdown(data: Record<string, any>) {
   return `# Remediation Report
 
 ## Status
@@ -118,11 +118,11 @@ ${data.remediationStatus || "UNKNOWN"}
 ${data.summary || "N/A"}
 
 ## Changes
-${(data.changes || []).map((c) => `- ${c}`).join("\n") || "- None"}
+${(data.changes || []).map((c: string) => `- ${c}`).join("\n") || "- None"}
 `;
 }
 
-async function buildRemediatePrompt(ctx) {
+async function buildRemediatePrompt(ctx: Record<string, any>) {
   if (typeof ctx.buildPrompt === "function") {
     return ctx.buildPrompt("remediate", ctx);
   }
@@ -135,7 +135,7 @@ Job: ${ctx.jobId}
 Analyze the failure and apply fixes.`;
 }
 
-function resolveAgent(ctx, fallback) {
+function resolveAgent(ctx: Record<string, any>, fallback: string) {
   const role = ctx.role || "remediator";
   const raw = ctx.agents?.[role] || ctx.agents?.remediator || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };

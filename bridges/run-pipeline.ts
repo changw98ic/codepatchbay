@@ -38,7 +38,7 @@ import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/se
 
 // ─── CLI arg parsing ───
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]) {
   const args = argv.slice(2);
   const options = new Map();
 
@@ -85,7 +85,7 @@ const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-function tag(project) {
+function tag(project: string) {
   return `${CYAN}[pipeline:${project}]${NC}`;
 }
 
@@ -105,7 +105,7 @@ function warn(msg: string) {
   console.log(`${YELLOW}[WARN]${NC} ${msg}`);
 }
 
-function failure(reason: any, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, any> = {}): any {
+function failure(reason: string, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     reason,
     code,
@@ -181,7 +181,7 @@ function ts() {
 
 // ─── Run a bridge script as child process ───
 
-function killChildProcess(proc) {
+function killChildProcess(proc: import("node:child_process").ChildProcess & { detached?: boolean }) {
   try {
     if (proc.detached && process.platform !== "win32") {
       process.kill(-proc.pid, "SIGTERM");
@@ -204,13 +204,13 @@ function killChildProcess(proc) {
   }, 2_000).unref?.();
 }
 
-function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<any> {
+function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<Record<string, any>> {
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks: any[] = [];
+    const stdoutChunks: Buffer[] = [];
     const detached = Boolean(options.signal) && process.platform !== "win32";
 
-    function finish(result: any) {
+    function finish(result: Record<string, any>) {
       if (settled) return;
       settled = true;
       if (options.signal && proc) {
@@ -219,7 +219,7 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
       resolve(result);
     }
 
-    let proc: any;
+    let proc: ReturnType<typeof spawn> & { detached?: boolean };
     const onAbort = () => {
       if (!settled && proc) {
         killChildProcess(proc);
@@ -243,17 +243,17 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
       else options.signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    proc.stdout.on("data", (chunk) => {
+    proc.stdout.on("data", (chunk: Buffer) => {
       stdoutChunks.push(chunk);
       process.stdout.write(chunk);
     });
-    proc.stderr.on("data", (chunk) => {
+    proc.stderr.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
     });
-    proc.on("error", (err) => {
+    proc.on("error", (err: Error) => {
       finish({ exitCode: 1, stdout: combineChunks(stdoutChunks), childPid, error: err });
     });
-    proc.on("close", (code, signal) => {
+    proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       finish({
         exitCode: code ?? 1,
         stdout: combineChunks(stdoutChunks),
@@ -264,12 +264,12 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
   });
 }
 
-function combineChunks(chunks) {
+function combineChunks(chunks: Buffer[]) {
   if (chunks.length === 0) return "";
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function writeIfMissing(filePath, content) {
+async function writeIfMissing(filePath: string, content: string) {
   try {
     await access(filePath);
   } catch {
@@ -277,7 +277,7 @@ async function writeIfMissing(filePath, content) {
   }
 }
 
-async function readJsonObject(filePath) {
+async function readJsonObject(filePath: string) {
   try {
     const parsed = JSON.parse(await readFile(filePath, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
@@ -290,7 +290,7 @@ function sourcePathRebindAllowed() {
   return process.env.CPB_ALLOW_SOURCEPATH_REBIND === "1";
 }
 
-async function canonicalSourcePathOrThrow(sourcePath, label) {
+async function canonicalSourcePathOrThrow(sourcePath: string, label: string) {
   try {
     return await canonicalSourcePath(sourcePath);
   } catch (err) {
@@ -298,7 +298,7 @@ async function canonicalSourcePathOrThrow(sourcePath, label) {
   }
 }
 
-async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
+async function assertHubProjectBoundary(cpbRoot: string, project: string, sourcePath: string) {
   if (!process.env.CPB_HUB_ROOT) return;
 
   const hubRoot = resolveHubRoot(cpbRoot);
@@ -313,7 +313,7 @@ async function assertHubProjectBoundary(cpbRoot, project, sourcePath) {
   }
 }
 
-export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath, { dataRoot = null }: Record<string, any> = {}) {
+export async function ensureWikiProjectBoundary(cpbRoot: string, project: string, sourcePath: string, { dataRoot = null }: Record<string, any> = {}) {
   if (!sourcePath) return;
   const wikiDir = dataRoot
     ? path.join(path.resolve(dataRoot), "wiki")
@@ -356,30 +356,30 @@ export async function ensureWikiProjectBoundary(cpbRoot, project, sourcePath, { 
 
 // ─── ID extraction from bridge stdout ───
 
-function extractPlanId(stdout) {
+function extractPlanId(stdout: string) {
   const match = stdout.match(/^Plan: .*\/plan-(\d+)\.md$/m);
   return match ? match[1] : null;
 }
 
-function extractDeliverableId(stdout) {
+function extractDeliverableId(stdout: string) {
   const match = stdout.match(/^Deliverable: .*\/deliverable-(\d+)\.md$/m);
   return match ? match[1] : null;
 }
 
 // ─── Verdict parsing from verdict file ───
 
-export async function parseVerdict(verdictPath) {
+export async function parseVerdict(verdictPath: string) {
   try {
     const content = await readFile(verdictPath, "utf8");
     const envelope = parseVerdictEnvelope(content);
-    const mapped = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
+    const mapped: Record<string, string> = { pass: "PASS", fail: "FAIL", inconclusive: "UNKNOWN", infra_error: "INFRA_FAILURE" };
     return mapped[envelope.status] || "UNKNOWN";
   } catch {
     return null;
   }
 }
 
-async function parseReviewVerdict(reviewPath) {
+async function parseReviewVerdict(reviewPath: string) {
   try {
     const content = await readFile(reviewPath, "utf8");
     const lines = content.split(/\r?\n/).slice(0, 20);
@@ -399,7 +399,7 @@ async function parseReviewVerdict(reviewPath) {
 
 // ─── Phase execution ───
 
-async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDir, dataRoot, sourcePathOverride = null) {
+async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, project: string, jobId: string, wikiDir: string, dataRoot: string, sourcePathOverride: string | null = null) {
   if (process.env.CPB_USE_WORKTREE !== "1") {
     return null;
   }
@@ -452,7 +452,7 @@ async function maybeCreateWorktree(cpbRoot, executorRoot, project, jobId, wikiDi
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<any> {
+async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<{ cancelled: boolean; redirect: Record<string, unknown> | null }> {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (job.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}`, dataRoot });
@@ -522,7 +522,7 @@ async function main() {
     }
   }
 
-  async function markDispatchDone(ok) {
+  async function markDispatchDone(ok: boolean) {
     if (!dispatchEnabled() || !hubRoot || !dispatchId) return;
     const fn = ok ? markDispatchCompleted : markDispatchFailed;
     await fn(hubRoot, dispatchId).catch(() => {});
@@ -531,7 +531,7 @@ async function main() {
   let pipelineOk = false;
   const workflowDef = getWorkflow(workflow);
   const phaseTotal = workflowDef.phases.length || 0;
-  const phaseIndex = (phase) => {
+  const phaseIndex = (phase: string) => {
     const idx = workflowDef.phases.indexOf(phase);
     return idx >= 0 ? idx + 1 : "?";
   };
@@ -1060,17 +1060,18 @@ async function main() {
     const vf = path.join(wikiDir, "outputs", `verdict-${deliverableId || jobId}.md`);
     printFailureSummary(cpbRoot, project, jobId, { phase: "verify", reason: `failed after ${maxRetries} quality verification failures`, deliverableId, verdictFile: vf });
     return 1;
-  } catch (err) {
-    fail(`Unhandled error: ${err.message}`);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    fail(`Unhandled error: ${errMsg}`);
     try {
-      await failCurrentJob(failure(`unhandled: ${err.message}`, {
+      await failCurrentJob(failure(`unhandled: ${errMsg}`, {
         code: FAILURE_CODES.FATAL,
-        cause: { message: err.message },
+        cause: { message: errMsg },
       }));
     } catch {
       // Best effort — job may already be in terminal state
     }
-    printFailureSummary(cpbRoot, project, jobId, { reason: err.message });
+    printFailureSummary(cpbRoot, project, jobId, { reason: errMsg });
     return 1;
   } finally {
     if (watchdogTimer !== null) {

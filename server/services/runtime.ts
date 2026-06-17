@@ -67,6 +67,7 @@ export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHu
 
 // ── runtime-health ──
 import { readFile } from "node:fs/promises";
+import { AnyRecord } from "../../shared/types.js";
 import { inspectCurrentRelease } from "./release/release-store.js";
 import { loadQueue } from "./hub/hub-queue.js";
 import { readLeaderStatus } from "../orchestrator/leader-lock.js";
@@ -74,7 +75,6 @@ import { readJobsIndex } from "./job/job-store.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event/event-store.js";
 import { readLease, isLeaseStale } from "./infra.js";
 
-type AnyRecord = Record<string, any>;
 type RuntimeJob = AnyRecord & {
   jobId?: string;
   project?: string;
@@ -229,14 +229,14 @@ async function findStaleJobs(cpbRoot: string, hubRoot: string) {
   return stale;
 }
 
-function hasPriorDivergence(history, count) {
+function hasPriorDivergence(history: AnyRecord[], count: number) {
   return (history || []).some((entry) => {
     const prior = entry?.jobsIndexDivergence;
     return prior && prior.count > 0 && count > 0;
   });
 }
 
-function hasFailedReconcileEvidence(evidence, count) {
+function hasFailedReconcileEvidence(evidence: AnyRecord | AnyRecord[] | null, count: number) {
   if (!evidence || count <= 0) return false;
   if (Array.isArray(evidence)) {
     return evidence.some((entry) => hasFailedReconcileEvidence(entry, count));
@@ -244,7 +244,7 @@ function hasFailedReconcileEvidence(evidence, count) {
   return evidence.attempted === true && evidence.success === false;
 }
 
-export function classifyJobsIndexDivergence(count, { history = [], reconcileEvidence = null } = {}) {
+export function classifyJobsIndexDivergence(count: number, { history = [], reconcileEvidence = null }: Record<string, any> = {}) {
   if (count <= 0) return "ok";
   if (hasPriorDivergence(history, count) || hasFailedReconcileEvidence(reconcileEvidence, count)) {
     return "blocker";

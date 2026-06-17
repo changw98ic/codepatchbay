@@ -10,9 +10,9 @@
 
 import { mkdir, readFile, appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { AnyRecord } from "../../shared/types.js";
 
 const USAGE_FILE = "usage.jsonl";
-type AnyRecord = Record<string, any>;
 
 function usageFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", USAGE_FILE);

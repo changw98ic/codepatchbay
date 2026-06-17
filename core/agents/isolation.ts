@@ -19,7 +19,7 @@ function resolveSourceHome(parentEnv: StringRecord = {}) {
   return parentEnv.HOME || os.homedir() || null;
 }
 
-async function maybeLinkOrCopyFile(source, target) {
+async function maybeLinkOrCopyFile(source: string, target: string) {
   let sourceInfo;
   try {
     sourceInfo = await lstat(source);
@@ -45,7 +45,7 @@ async function maybeLinkOrCopyFile(source, target) {
   return true;
 }
 
-async function inheritCodexConfig(targetHome, parentEnv = {}) {
+async function inheritCodexConfig(targetHome: string, parentEnv: StringRecord = {}) {
   const sourceCodexHome = resolveSourceCodexHome(parentEnv);
   const targetCodexHome = path.join(targetHome, ".codex");
   await mkdir(targetCodexHome, { recursive: true });
@@ -60,7 +60,7 @@ async function inheritCodexConfig(targetHome, parentEnv = {}) {
   return targetCodexHome;
 }
 
-async function inheritClaudeConfig(targetHome, parentEnv = {}) {
+async function inheritClaudeConfig(targetHome: string, parentEnv: StringRecord = {}) {
   const sourceHome = resolveSourceHome(parentEnv);
   const targetClaudeHome = path.join(targetHome, ".claude");
   await mkdir(targetClaudeHome, { recursive: true });
@@ -90,7 +90,7 @@ function hasProjectJobContext(parentEnv: StringRecord = {}) {
   );
 }
 
-function resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
+function resolveAgentHomeRoot(cpbRoot: string, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
   const root = dataRoot || parentEnv.CPB_PROJECT_RUNTIME_ROOT;
   if (root) return path.resolve(root);
   if (hasProjectJobContext(parentEnv)) {
@@ -109,7 +109,7 @@ function resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv = {} }: { dataRoot?
  * linked from the user's agent home, so ACP adapters can reuse login without
  * sharing mutable session state.
  */
-export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {}, dataRoot = null }: { parentEnv?: StringRecord; dataRoot?: string | null } = {}) {
+export async function createAgentHome(cpbRoot: string, agentName: string, jobId: string, { parentEnv = {}, dataRoot = null }: { parentEnv?: StringRecord; dataRoot?: string | null } = {}) {
   const baseDir = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv }), "agent-homes", agentName, jobId || "default");
   await mkdir(baseDir, { recursive: true });
 
@@ -144,7 +144,7 @@ export async function createAgentHome(cpbRoot, agentName, jobId, { parentEnv = {
  *   Returns true if the job has a non-stale lease. When provided,
  *   directories with active leases are never deleted regardless of age.
  */
-export async function cleanupAgentHomes(cpbRoot, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive, dataRoot }: StringRecord = {}) {
+export async function cleanupAgentHomes(cpbRoot: string, { maxAgeMs = CLEANUP_AGE_MS, now = Date.now(), isLeaseActive, dataRoot }: StringRecord = {}) {
   const homesRoot = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv: process.env }), "agent-homes");
   let agents;
   try {
