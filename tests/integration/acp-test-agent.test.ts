@@ -149,10 +149,10 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
   const sessionNewRequest = events.find((event) => event.event === "session_new_request");
   assert.deepEqual(sessionNewRequest?.mcpServers?.[0], {
     name: "codegraph",
-    type: "stdio",
-    url: null,
-    command: "codegraph",
-    args: ["serve", "--mcp", "--path", repoRoot],
+    type: "sse",
+    url: "http://localhost:43101",
+    command: null,
+    args: null,
   });
   assert.ok(
     events.some((event) =>

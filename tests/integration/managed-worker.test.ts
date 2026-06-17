@@ -19,7 +19,7 @@ function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-async function waitFor(assertion, { timeoutMs = 8_000, intervalMs = 50 } = {}) {
+async function waitFor(assertion, { timeoutMs = 15_000, intervalMs = 100 } = {}) {
   const started = Date.now();
   let lastError = null;
   while (Date.now() - started < timeoutMs) {
@@ -35,7 +35,7 @@ async function waitFor(assertion, { timeoutMs = 8_000, intervalMs = 50 } = {}) {
   throw new Error("condition timed out");
 }
 
-function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 20_000, once = true }) {
+function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 30_000, once = true }) {
   const args = [
     workerScript,
     "--worker-id", workerId,

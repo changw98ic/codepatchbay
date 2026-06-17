@@ -609,6 +609,14 @@ function buildMcpServers(agent: string, env: AnyRecord): AnyRecord[] {
   // CodeGraph through process-local launch config instead.
   if (agent === "codex") return [];
 
+  // Claude ACP requires SSE-based MCP servers with a "type" field.
+  // When CPB_CODEGRAPH_PORT is set, expose CodeGraph as an SSE endpoint.
+  const port = Number(env.CPB_CODEGRAPH_PORT);
+  if (Number.isFinite(port) && port > 0) {
+    return [{ name: server.name, type: "sse", url: `http://localhost:${port}` }];
+  }
+
+  // Fallback: stdio-based MCP server for adapters that support it.
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
