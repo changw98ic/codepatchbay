@@ -27,7 +27,7 @@ debt**. No further work is planned on either:
   — All five built-in workflows (`standard`, `direct`, `complex`, `blocked`,
   `accelerated`) normalize to single-chain DAGs with `maxConcurrentNodes: 1`
   (`core/workflow/definition.ts:144-153`). The scheduler
-  `dagSequentialExecutionPlan` (`core/engine/run-job.ts:70-89`) keeps only the
+  `dagSequentialExecutionPlan` (`core/engine/run-job-planning.ts:80`) keeps only the
   first ready node per round, and `scheduleReadyNodes`
   (`core/workflow/dag-executor.ts:248`) is dead code with no runtime caller.
   A typical run has exactly **1 ready node** at any time — there is no

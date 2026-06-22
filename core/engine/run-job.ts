@@ -215,9 +215,7 @@ export async function runJob(ctx: AnyRecord) {
     } catch { /* best-effort finalization must not corrupt the result */ }
     return result;
   } catch (panic) {
-    const panicErr: Error | { message?: string; stack?: string } =
-      panic instanceof Error ? panic : { message: String(panic) };
-    const result = await handleRunJobPanic(ctx, panicErr);
+    const result = await handleRunJobPanic(ctx, panic);
     // Finalize even after panic recovery — best-effort
     try {
       await finalizeAuditTrail({
@@ -1168,13 +1166,20 @@ async function runJobInner(ctx: AnyRecord) {
  * exception.  Best-effort fails the job so it doesn't remain stuck in
  * "running" state forever.
  */
-async function handleRunJobPanic(ctx: AnyRecord, panic: Error | { message?: string; stack?: string }) {
+async function handleRunJobPanic(ctx: AnyRecord, panic: unknown) {
   const { cpbRoot, project, failJob, appendEvent } = ctx;
   const jobId = ctx._jobId || "unknown";
   const phase = ctx._currentPhase || "unknown";
 
-  const panicMessage = panic?.message || (panic == null ? "unknown panic" : String(panic));
-  const panicType = panic?.constructor?.name || "Error";
+  // Narrow once and preserve the original normalization semantics exactly:
+  //   null/undefined -> "unknown panic" / panicType "Error"
+  //   string         -> the string itself / panicType "String"
+  //   Error/object   -> .message / .constructor.name
+  // Callers must pass the raw caught value; pre-wrapping it (e.g. as
+  // { message: String(panic) }) collapses null/string and regresses recovery.
+  const panicObj = panic as { message?: string; stack?: string; constructor?: { name?: string } } | null | undefined;
+  const panicMessage = panicObj?.message || (panic == null ? "unknown panic" : String(panic));
+  const panicType = panicObj?.constructor?.name || "Error";
 
   // Best-effort: fail the job and write a terminal event.
   // Both operations are fire-and-forget — if they fail we still return
@@ -1188,7 +1193,7 @@ async function handleRunJobPanic(ctx: AnyRecord, panic: Error | { message?: stri
           phase,
           cause: {
             kind: "runjob_panic",
-            stack: panic?.stack?.slice(0, 4000) || null,
+            stack: panicObj?.stack?.slice(0, 4000) || null,
             panicType,
           },
         });
@@ -1227,7 +1232,7 @@ async function handleRunJobPanic(ctx: AnyRecord, panic: Error | { message?: stri
       phase,
       reason: panicMessage,
       retryable: false,
-      cause: { panicType, stack: panic?.stack?.slice(0, 2000) || null },
+      cause: { panicType, stack: panicObj?.stack?.slice(0, 2000) || null },
     },
   };
 }
