@@ -17,6 +17,39 @@ focus on:
 - type gates for `core/engine`
 - trust evidence for the flagship GitHub Issue -> draft PR path
 
+## Post-Stabilization Note (2026-06-23)
+
+An adversarial architecture review closed two recurring "remaining debt"
+items that appear through the checkpoint log below as **design intent, not
+debt**. No further work is planned on either:
+
+- **"DAG execution is still sequential despite the contract being DAG-shaped"**
+  — All five built-in workflows (`standard`, `direct`, `complex`, `blocked`,
+  `accelerated`) normalize to single-chain DAGs with `maxConcurrentNodes: 1`
+  (`core/workflow/definition.ts:144-153`). The scheduler
+  `dagSequentialExecutionPlan` (`core/engine/run-job.ts:70-89`) keeps only the
+  first ready node per round, and `scheduleReadyNodes`
+  (`core/workflow/dag-executor.ts:248`) is dead code with no runtime caller.
+  A typical run has exactly **1 ready node** at any time — there is no
+  schedulable width. The DAG-shaped contract is a data-structure affordance
+  for future wide workflows, not a runtime feature. Building a parallel
+  executor has zero current ROI. Sequential traversal is the design.
+
+- **"strict mode still excludes `run-job.ts`"** — 9 of the 23 broad-`any`
+  sites in `run-job.ts` are `ctx: AnyRecord`, the runtime context assembled
+  across the layer boundary in `server/services/engine-runner.ts`. Typing
+  `ctx` would require a cross-layer `RunJobContext` interface that pulls
+  `core/` toward a `server/` dependency the layering invariant forbids. The
+  remaining sites are runtime state (`phaseResults`, `state`, `workflowDag`)
+  that cannot be narrowed without the same `ctx` contract. Excluding the
+  orchestrator file from the strict gate is the correct boundary call, not
+  deferred debt.
+
+The only stabilization item that remains open is the flagship GitHub Issue
+-> draft PR path, which by design requires a 3-maintainer/team manual
+validation that automation cannot substitute (see
+`docs/product/cpb-flagship-validation-gate.md`).
+
 ## Baseline Metrics
 
 Measured in the isolated worktree
