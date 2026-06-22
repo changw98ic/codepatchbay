@@ -30,8 +30,8 @@ function matchNodeToRole(node: Record<string, any>, agentConfig: Record<string, 
  */
 function nodeConfigForDag(workflowDag: Record<string, any>, agentConfig: Record<string, any>) {
   const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : [];
-  const result = {};
-  const roleToNodeIds = {};
+  const result: Record<string, any> = {};
+  const roleToNodeIds: Record<string, any> = {};
 
   for (const node of nodes) {
     const matchedRole = matchNodeToRole(node, agentConfig);
@@ -60,7 +60,7 @@ function nodeConfigForDag(workflowDag: Record<string, any>, agentConfig: Record<
  * Map DAG node phases to the agent config roles they would bind to.
  * Only roles that have a corresponding DAG node should be validated.
  */
-const PHASE_ROLE_MAP = {
+const PHASE_ROLE_MAP: Record<string, string> = {
   verify: "verifier",
   adversarial_verify: "adversarial_verifier",
 };
@@ -68,8 +68,8 @@ const PHASE_ROLE_MAP = {
 export function validateDynamicAgentPlan(plan: Record<string, any>, workflowDag: Record<string, any>) {
   if (!plan) return { valid: true };
 
-  const agentConfig = plan.agentConfig || {};
-  const explicitRoleToNodeIds = plan.roleToNodeIds || {};
+  const agentConfig = (plan.agentConfig || {}) as Record<string, any>;
+  const explicitRoleToNodeIds = (plan.roleToNodeIds || {}) as Record<string, any>;
   const { roleToNodeIds: computedRoleToNodeIds } = nodeConfigForDag(workflowDag, agentConfig);
 
   // Determine which roles have corresponding DAG nodes

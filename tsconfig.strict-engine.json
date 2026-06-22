@@ -21,6 +21,7 @@
     "core/engine/phase-artifact-tracker.ts",
     "core/engine/phase-retry.ts",
     "core/engine/run-job-planning.ts",
+    "core/engine/run-job.ts",
     "core/engine/run-phase.ts",
     "core/engine/phase-result-events.ts",
     "core/engine/phase-start-events.ts",

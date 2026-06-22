@@ -26,7 +26,8 @@ async function acquireLock(cpbRoot: string, agent: string) {
       await mkdir(dir);
       return true;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      const caught = err as Record<string, unknown> | null | undefined;
+      if (!caught || caught.code !== "EEXIST") throw err;
       try {
         const info = await stat(dir);
         if (Date.now() - info.mtimeMs >= LOCK_TTL_MS) {

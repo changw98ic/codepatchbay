@@ -8,7 +8,6 @@ import { test } from "node:test";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const legacyEngineStrictExclusions = [
-  "core/engine/run-job.ts",
 ];
 
 test("strict engine gate is wired to package scripts, CI, and TypeScript", async () => {
@@ -40,6 +39,7 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
     "core/engine/phase-artifact-tracker.ts",
     "core/engine/phase-retry.ts",
     "core/engine/run-job-planning.ts",
+    "core/engine/run-job.ts",
     "core/engine/run-phase.ts",
     "core/engine/phase-result-events.ts",
     "core/engine/phase-start-events.ts",

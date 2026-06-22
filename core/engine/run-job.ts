@@ -17,7 +17,7 @@ import { legacyAgentForPhase } from "../agents/registry.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
 import { buildWorkflowDag, insertAdversarialVerify } from "./dag-builder.js";
 import { generateDynamicAgentPlan, validateDynamicAgentPlan } from "../agents/dynamic-agent-plan.js";
-import { normalizeProviderServices, preflightProvider } from "./provider-handoff.js";
+import { normalizeProviderServices, preflightProvider, type ProviderAgents } from "./provider-handoff.js";
 import { runQuotaFallbackRetry } from "./provider-quota-fallback.js";
 import { recordPhaseProviderUsage } from "./provider-usage-recorder.js";
 import { runPhaseRetryLoops } from "./phase-retry.js";
@@ -39,6 +39,7 @@ import {
   normalizeDagResumeContext,
   recoveredArtifactForPhase,
   recoveredVerdictForPhase,
+  type WorkflowDag,
 } from "./run-job-planning.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import {
@@ -49,6 +50,16 @@ import {
 } from "../workflow/acceptance-checklist.js";
 import { decomposeTaskToChecklistItems } from "../workflow/checklist-decomposer.js";
 
+
+type PhaseRoleMap = {
+  plan: string;
+  execute: string;
+  verify: string;
+  adversarial_verify: string;
+  review: string;
+  remediate: string;
+  [phase: string]: string;
+};
 
 function ts() {
   return new Date().toISOString();
@@ -195,8 +206,8 @@ export async function runJob(ctx: AnyRecord) {
       await finalizeAuditTrail({
         cpbRoot: ctx.cpbRoot,
         project: ctx.project || "unknown",
-        jobId: result.jobId || ctx._jobId,
-        attemptId: ctx._attemptId || result.jobId || ctx._jobId,
+        jobId: result?.jobId || ctx._jobId,
+        attemptId: ctx._attemptId || result?.jobId || ctx._jobId,
         appendEvent: ctx.appendEvent,
         result,
         sourceContext: ctx.sourceContext,
@@ -204,7 +215,9 @@ export async function runJob(ctx: AnyRecord) {
     } catch { /* best-effort finalization must not corrupt the result */ }
     return result;
   } catch (panic) {
-    const result = await handleRunJobPanic(ctx, panic);
+    const panicErr: Error | { message?: string; stack?: string } =
+      panic instanceof Error ? panic : { message: String(panic) };
+    const result = await handleRunJobPanic(ctx, panicErr);
     // Finalize even after panic recovery — best-effort
     try {
       await finalizeAuditTrail({
@@ -400,7 +413,11 @@ async function prepareTaskAndRiskMap(ctx: AnyRecord, { job, jobId }: AnyRecord) 
     });
     return { kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan };
   } catch (err) {
-    const fail = normalizePrepareFailure(err);
+    const fail = normalizePrepareFailure(
+      (err && typeof err === "object"
+        ? err
+        : { message: String(err) }) as Record<string, unknown> & { message?: string },
+    );
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     await reportProgress(ctx, {
       type: "job_blocked",
@@ -684,12 +701,12 @@ async function runJobInner(ctx: AnyRecord) {
   let { riskMap, phaseSourceContext, dynamicAgentPlan } = prepared;
 
   // Declared here (not const) because the checklist/DAG phase rebinds them.
-  let workflowDag: AnyRecord;
-  let executionNodes: AnyRecord[];
-  let dagResumeContext: AnyRecord;
-  let resumeCompletedNodes: Set<string>;
-  let phaseRoleMap: AnyRecord;
-  let acceptanceChecklist: AnyRecord | null;
+  let workflowDag: WorkflowDag | undefined;
+  let executionNodes: AnyRecord[] | undefined;
+  let dagResumeContext: AnyRecord | undefined;
+  let resumeCompletedNodes: Set<string> | undefined;
+  let phaseRoleMap: PhaseRoleMap | undefined;
+  let acceptanceChecklist: AnyRecord | null | undefined;
 
   // 3. Freeze acceptance checklist, materialize workflow DAG, generate +
   //    validate dynamic agent plan. Short-circuits to "blocked" on any
@@ -698,16 +715,15 @@ async function runJobInner(ctx: AnyRecord) {
     jobId, riskMap, phaseSourceContext, dynamicAgentPlan,
   });
   if (materialized.kind === "blocked") return materialized.result;
-  ({
-    phaseSourceContext,
-    dynamicAgentPlan,
-    workflowDag,
-    executionNodes,
-    dagResumeContext,
-    resumeCompletedNodes,
-    phaseRoleMap,
-    acceptanceChecklist,
-  } = materialized);
+  // After the blocked early-return, the ok variant always carries these fields.
+  workflowDag = materialized.workflowDag as WorkflowDag;
+  executionNodes = materialized.executionNodes as AnyRecord[];
+  dagResumeContext = materialized.dagResumeContext as AnyRecord;
+  resumeCompletedNodes = materialized.resumeCompletedNodes as Set<string>;
+  phaseRoleMap = materialized.phaseRoleMap as PhaseRoleMap;
+  acceptanceChecklist = materialized.acceptanceChecklist as AnyRecord | null;
+  phaseSourceContext = materialized.phaseSourceContext;
+  dynamicAgentPlan = materialized.dynamicAgentPlan;
 
   // 2.5. Clear session cache if forceFreshSession is requested (rerun vs retry)
   if (sourceContext?.retry?.forceFreshSession && cpbRoot) {
@@ -761,7 +777,7 @@ async function runJobInner(ctx: AnyRecord) {
       continue;
     }
     const {
-      phaseAgents,
+      phaseAgents: rawPhaseAgents,
       dynamicAgent,
       phaseRoutingDecision,
       effectiveSelectedAgent,
@@ -777,6 +793,7 @@ async function runJobInner(ctx: AnyRecord) {
       phase,
       role,
     });
+    const phaseAgents = rawPhaseAgents as ProviderAgents;
 
     await emitPhaseStartEvents({
       cpbRoot,
@@ -971,7 +988,7 @@ async function runJobInner(ctx: AnyRecord) {
       state, phaseResults, attemptId, phaseTimeout,
       handoffState, providerAttempts, phaseAgents, result,
     }, {
-      runPhase,
+      runPhase: runPhase as (input: AnyRecord) => Promise<any>,
       generateHandoffBundle,
     });
 
@@ -991,7 +1008,7 @@ async function runJobInner(ctx: AnyRecord) {
       workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
       state, phaseResults, attemptId, phaseTimeout, phaseAgents, result, pool,
     }, {
-      runPhase,
+      runPhase: runPhase as (input: AnyRecord) => Promise<any>,
     });
 
     const scopeGuardFailure = await evaluateExecuteScopeGuard({

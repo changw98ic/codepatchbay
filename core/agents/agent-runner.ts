@@ -70,7 +70,8 @@ export async function runAgent({
   } catch (err) {
     // Let PoolExhaustedError propagate untouched so managed-worker.js
     // can detect err.code === "POOL_EXHAUSTED" in its catch block.
-    if (err?.code === "POOL_EXHAUSTED" || err?.name === "PoolExhaustedError") {
+    const caught = err as Record<string, unknown> | null | undefined;
+    if (caught?.code === "POOL_EXHAUSTED" || caught?.name === "PoolExhaustedError") {
       throw err;
     }
     return classifyError(err, { agent, role, startedAt });
