@@ -1,0 +1,47 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noEmitOnError": true
+  },
+  "include": [
+    "core/engine/adversarial-verdict-events.ts",
+    "core/engine/completion-checklist-artifacts.ts",
+    "core/engine/completion-gate.ts",
+    "core/engine/completion-failure.ts",
+    "core/engine/completion-gate-runner.ts",
+    "core/engine/completion-success.ts",
+    "core/engine/dag-builder.ts",
+    "core/engine/dag-node-resume.ts",
+    "core/engine/dag-node-lifecycle-events.ts",
+    "core/engine/dag-node-failure.ts",
+    "core/engine/phase-policy.ts",
+    "core/engine/phase-agent-routing.ts",
+    "core/engine/phase-artifact-tracker.ts",
+    "core/engine/phase-retry.ts",
+    "core/engine/run-job-planning.ts",
+    "core/engine/run-phase.ts",
+    "core/engine/phase-result-events.ts",
+    "core/engine/phase-start-events.ts",
+    "core/engine/poisoned-session.ts",
+    "core/engine/poisoned-session-gate.ts",
+    "core/engine/provider-handoff.ts",
+    "core/engine/provider-quota-fallback.ts",
+    "core/engine/provider-usage-recorder.ts",
+    "core/engine/runtime-artifact-events.ts",
+    "core/engine/runtime-failure-recorder.ts",
+    "core/engine/scope-guard.ts",
+    "core/engine/scope-guard-runner.ts",
+    "core/engine/session-pin.ts",
+    "core/engine/workflow-runner.ts",
+    "core/workflow/acceptance-checklist.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-tests",
+    "web",
+    "tests"
+  ]
+}
