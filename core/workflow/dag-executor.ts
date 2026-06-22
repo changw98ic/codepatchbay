@@ -221,7 +221,7 @@ export function validateDag(nodes: Record<string, any>[]) {
   try {
     topologicalSort(nodes);
   } catch (e) {
-    errors.push(e.message);
+    errors.push(e instanceof Error ? e.message : String(e));
     return { valid: false, errors };
   }
 
@@ -283,6 +283,7 @@ export async function executeDag(dag: Record<string, any>, callbacks: Record<str
 
     const nodeId = ready[0];
     const node = getNode(nodes, nodeId);
+    if (!node) return { ok: false, results, failedNode: nodeId, reason: `missing node: ${nodeId}` };
     const maxAttempts = node.maxRetries ?? 3;
     const attempt = (attempts.get(nodeId) || 0) + 1;
     attempts.set(nodeId, attempt);

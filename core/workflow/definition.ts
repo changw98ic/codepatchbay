@@ -10,7 +10,7 @@ import {
 type WorkflowNode = AnyRecord & {
   id: string;
   phase: string;
-  role?: string;
+  role?: string | null;
   agent?: string | null;
   squad?: string | AnyRecord;
   _squad?: string | AnyRecord;
@@ -154,8 +154,9 @@ export function normalizeWorkflow(name: string, options: WorkflowOptions = {}) {
 }
 
 function normalizeWorkflowWithRouting(name: string, { category, routing = null }: WorkflowOptions = {}) {
-  assertValidRoutingRules(routing, { isWorkflowName });
-  const selection = resolveEffectiveRouting(category, routing, { workflow: name });
+  const routingRules = routing || {};
+  assertValidRoutingRules(routingRules, { isWorkflowName });
+  const selection = resolveEffectiveRouting(category || "", routingRules, { workflow: name });
   const wf = getWorkflow(selection.workflow || name);
 
   if (wf.nodes && wf.nodes.length > 0) {
@@ -231,7 +232,8 @@ function buildEdges(nodes: WorkflowNode[]) {
  * Get DAG nodes for a workflow. Returns empty array for blocked/empty workflows.
  */
 export function getDagNodes(name: string) {
-  return normalizeWorkflow(name).nodes;
+  const workflow = normalizeWorkflow(name);
+  return Array.isArray(workflow?.nodes) ? workflow.nodes : [];
 }
 
 /**

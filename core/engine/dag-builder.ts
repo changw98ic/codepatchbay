@@ -16,6 +16,15 @@ type DagNode = AnyRecord & {
   role?: string;
   dependsOn?: string[];
 };
+type DagEdge = { from: string; to: string };
+type WorkflowDag = {
+  name: string;
+  nodes: DagNode[];
+  edges: DagEdge[];
+  maxConcurrentNodes: number;
+  isDag: boolean;
+  source: "runtime_phase_projection";
+};
 
 /**
  * Build a DAG descriptor for a concrete run.
@@ -26,7 +35,7 @@ type DagNode = AnyRecord & {
  * @param {{ workflow: string, phases: string[], phaseRoleMap: Record<string,string> }} opts
  * @returns {{ name: string, nodes: object[], edges: object[], maxConcurrentNodes: number, isDag: boolean, source: string }}
  */
-export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }) {
+export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }): WorkflowDag {
   const base = normalizeWorkflow(workflow);
   const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
 
@@ -39,7 +48,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
   for (const existing of baseNodes) {
     const phase = existing.phase || existing.id;
     if (!phaseBudget.has(phase)) continue;
-    const remaining = phaseBudget.get(phase);
+    const remaining = phaseBudget.get(phase) || 0;
     if (remaining <= 0) continue;
     phaseBudget.set(phase, remaining - 1);
     nodes.push({
@@ -68,7 +77,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
   const includedIds = new Set(nodes.map((n) => n.id));
   const normalizedNodes = nodes.map((n) => ({
     ...n,
-    dependsOn: (n.dependsOn || []).filter((depId) => includedIds.has(depId)),
+    dependsOn: (n.dependsOn || []).filter((depId): depId is string => includedIds.has(depId)),
   }));
 
   return {
@@ -91,7 +100,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
  * @param {{ adversarialRequired?: boolean }} riskMap
  * @returns {string[]}
  */
-export function insertAdversarialVerify(phases: string[], riskMap: { adversarialRequired?: boolean } | null | undefined) {
+export function insertAdversarialVerify(phases: string[], riskMap: { adversarialRequired?: boolean } | null | undefined): string[] {
   if (
     !riskMap?.adversarialRequired ||
     !phases.includes("verify") ||
@@ -116,7 +125,7 @@ export function insertAdversarialVerify(phases: string[], riskMap: { adversarial
  * @param {{ nodes: { phase: string }[] }} dag
  * @returns {{ valid: boolean, reason?: string }}
  */
-export function validateDagForMutatingJob(dag: { nodes?: Array<{ phase?: string }> } | null | undefined) {
+export function validateDagForMutatingJob(dag: { nodes?: Array<{ phase?: string }> } | null | undefined): { valid: true } | { valid: false; reason: string } {
   const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
   const hasVerify = nodes.some((n) => n.phase === "verify");
   if (!hasVerify) {

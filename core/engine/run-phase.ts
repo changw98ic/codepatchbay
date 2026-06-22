@@ -1,7 +1,29 @@
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 
-const ADAPTER_CACHE: Record<string, any> = {};
+type LooseRecord = Record<string, unknown>;
+type PhasePool = {
+  releaseWorktree?: (cwd: string, reason: string, options: { closeProvider: boolean }) => Promise<unknown> | unknown;
+};
+type PhaseContext = LooseRecord & {
+  phase: string;
+  pool?: PhasePool;
+  sourcePath?: string;
+  cwd?: string;
+  cpbRoot?: string;
+};
+type PhaseResult = ReturnType<typeof phasePassed> | ReturnType<typeof phaseFailed>;
+type PhaseAdapter = (ctx: PhaseContext) => Promise<PhaseResult> | PhaseResult;
+
+const ADAPTER_CACHE: Record<string, PhaseAdapter> = {};
+
+function recordValue(value: unknown): LooseRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
 
 function phaseExportNames(phase: string) {
   const pascal = String(phase || "")
@@ -13,31 +35,37 @@ function phaseExportNames(phase: string) {
   return [`run${pascal}`, `run${legacy}`];
 }
 
-async function loadAdapter(phase: string) {
+async function loadAdapter(phase: string): Promise<PhaseAdapter> {
   if (ADAPTER_CACHE[phase]) return ADAPTER_CACHE[phase];
-  const mod = await import(`../phases/${phase}.js`);
+  const mod = await import(`../phases/${phase}.js`) as LooseRecord;
   const exportNames = phaseExportNames(phase);
   const fn = exportNames.map((name) => mod[name]).find((candidate) => typeof candidate === "function");
   if (typeof fn !== "function") throw new Error(`phase adapter missing export: ${exportNames.join(" or ")}`);
-  ADAPTER_CACHE[phase] = fn;
-  return fn;
+  const adapter = fn as PhaseAdapter;
+  ADAPTER_CACHE[phase] = adapter;
+  return adapter;
 }
 
-export async function runPhase(ctx: Record<string, any>) {
+export async function runPhase(ctx: PhaseContext): Promise<PhaseResult> {
   const adapter = await loadAdapter(ctx.phase);
   try {
     return await adapter(ctx);
   } catch (err) {
+    const errorRecord = recordValue(err);
+    const errorCode = stringValue(errorRecord.code);
+    const errorName = stringValue(errorRecord.name);
     // Re-throw PoolExhaustedError so callers (managed-worker) can detect it
-    if (err.code === "POOL_EXHAUSTED" || err.name === "PoolExhaustedError") throw err;
+    if (errorCode === "POOL_EXHAUSTED" || errorName === "PoolExhaustedError") throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
     return phaseFailed({
       phase: ctx.phase,
       failure: failure({
         kind: FailureKind.UNKNOWN,
         phase: ctx.phase,
-        reason: err.message,
+        reason,
         retryable: false,
-        cause: { stack: err.stack },
+        cause: { stack },
       }),
     });
   } finally {
@@ -45,7 +73,7 @@ export async function runPhase(ctx: Record<string, any>) {
   }
 }
 
-async function releasePhaseAcpResources(ctx: Record<string, any>) {
+async function releasePhaseAcpResources(ctx: PhaseContext) {
   const releaseWorktree = ctx.pool?.releaseWorktree;
   if (typeof releaseWorktree !== "function") return;
   const cwd = ctx.sourcePath || ctx.cwd || ctx.cpbRoot;

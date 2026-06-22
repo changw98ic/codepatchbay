@@ -148,9 +148,9 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] }:
         confidence: "high",
       },
     }),
-    startPhase: async (_cpbRoot, project, jobId, { phase }) => {
+    startPhase: async (_cpbRoot, project, jobId, { phase, agent, role }) => {
       starts.push(phase);
-      events.push({ type: "phase_started", project, jobId, phase });
+      events.push({ type: "phase_started", project, jobId, phase, agent: agent || null, role: role || null });
     },
     blockJob: async (_cpbRoot, project, jobId, failure) => {
       events.push({ type: "job_blocked", project, jobId, ...failure });
@@ -380,9 +380,34 @@ test("runJob applies dynamic agent plan config before provider execution", async
     },
   });
 
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "completed", JSON.stringify(result));
   assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "fake-secondary");
   assert.equal(calls.find((call) => call.meta.role === "planner")?.agent, "fake-primary");
+});
+
+test("runJob phase start event records dynamic agent selection used for execution", async () => {
+  const events = [];
+  const calls = [];
+
+  const { result } = await runEngine({
+    servicesState: { events },
+    pool: makePool({ calls }),
+    sourceContext: {
+      dynamicAgentPlan: {
+        agentConfig: {
+          executor: { agent: "fake-secondary" },
+        },
+        acceptanceChecklistArtifact: { id: "stub", name: "acceptance-checklist-stub" },
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "fake-secondary");
+  const executeStarted = events.find((event) => event.type === "phase_started" && event.phase === "execute");
+  assert.ok(executeStarted);
+  assert.equal(executeStarted.agent, "fake-secondary");
+  assert.equal(executeStarted.role, "executor");
 });
 
 test("runJob blocks required dynamic roles as agent_unavailable when provider preflight fails", async () => {

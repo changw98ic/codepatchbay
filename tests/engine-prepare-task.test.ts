@@ -199,7 +199,7 @@ test("runJob blocks before phases when prepareTask service is missing", async ()
   assert.equal(result.status, "blocked");
   assert.equal(result.failure.phase, "prepare_task");
   assert.ok(isValidFailureKind(result.failure.kind), "prepare_task block should use a current FailureKind");
-  assert.match(result.failure.reason, /prepareTask|prepare_task/i);
+  assert.match(String(result.failure.reason), /prepareTask|prepare_task/i);
   assert.deepEqual(starts, []);
   assert.equal(calls.length, 0);
 });

@@ -487,6 +487,9 @@ test("poisoned session: output containing 'I cannot assist' is detected", async 
   );
 
   assert.equal(result.status, "failed");
+  const failedResult = result as AnyRecord;
+  assert.equal(failedResult.phaseResults?.[0]?.status, "failed");
+  assert.equal(failedResult.phaseResults?.[0]?.failure?.kind, FailureKind.POISONED_SESSION);
   const poisonEvent = events.find((e) => e.type === "phase_poisoned_session");
   assert.ok(poisonEvent, "phase_poisoned_session event should be emitted");
   assert.ok(

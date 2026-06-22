@@ -1,21 +1,21 @@
 export const WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 export const PLAN_MODES = new Set(["none", "light", "full", "parent"]);
 
-const WORKFLOW_RANK = {
+const WORKFLOW_RANK: Record<string, number> = {
   direct: 0,
   standard: 1,
   complex: 2,
   blocked: 3,
 };
 
-const PLAN_MODE_RANK = {
+const PLAN_MODE_RANK: Record<string, number> = {
   none: 0,
   light: 1,
   parent: 2,
   full: 3,
 };
 
-const WORKFLOW_DEFAULT_PLAN_MODE = {
+const WORKFLOW_DEFAULT_PLAN_MODE: Record<string, string> = {
   direct: "none",
   standard: "full",
   complex: "full",
@@ -188,7 +188,8 @@ export function mergeRoutePolicy({
   let effective = base;
   const policyReasons = [base.reason, ...(reasons || [])].filter(Boolean);
 
-  for (const candidate of [rule, requested, acp].filter(Boolean)) {
+  const candidates: NormalizedRoute[] = [rule, requested, acp].filter((candidate): candidate is NormalizedRoute => Boolean(candidate));
+  for (const candidate of candidates) {
     if (!isRouteDowngrade(candidate, effective)) {
       effective = strongerRoute(effective, candidate);
       if (candidate.reason) policyReasons.push(candidate.reason);

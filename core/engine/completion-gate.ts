@@ -6,11 +6,61 @@
  * no I/O, no side effects, no external dependencies.
  */
 
-import { AnyRecord } from "../../shared/types.js";
 import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
+type LooseRecord = Record<string, unknown>;
+type CompletionGateJob = {
+  workflow?: string;
+  planMode?: string;
+  completedPhases?: string[];
+};
+type WorkflowDag = {
+  nodes?: Array<{ id?: string; phase?: string }>;
+};
+type RiskMap = {
+  adversarialRequired?: boolean;
+};
+type EvidenceRef = LooseRecord & {
+  ledgerId?: string;
+  evidenceId?: string;
+  attemptId?: string;
+};
+type ChecklistCompletionResult = LooseRecord & {
+  outcome?: string;
+  reason?: string;
+  attemptId?: string | null;
+  failedChecklistIds?: string[];
+  uncheckedChecklistIds?: string[];
+  missingEvidenceRefs?: EvidenceRef[];
+  mismatchedEvidenceRefs?: EvidenceRef[];
+  staleEvidenceRefs?: EvidenceRef[];
+  poisonedEvidenceRefs?: EvidenceRef[];
+  runtimeFailureRefs?: EvidenceRef[];
+  unmappedChangedFiles?: string[];
+};
+type CompletionGateDetails = LooseRecord & {
+  isMutating: boolean;
+  dagPhases: string[];
+  completedPhases: string[];
+  adversarialRequired: boolean;
+  checklist?: ChecklistCompletionResult;
+};
+export type CompletionGateResult = {
+  outcome: string;
+  reason: string;
+  missingGates: string[];
+  details: CompletionGateDetails;
+  attemptId?: string | null;
+};
+type CompletionGateEventInput = {
+  outcome?: string;
+  reason?: string;
+  missingGates?: string[];
+  details?: LooseRecord & { checklist?: ChecklistCompletionResult };
+  attemptId?: string | null;
+};
 
 /**
  * Parse a verdict string looking for the canonical `VERDICT: <STATUS>` line.
@@ -63,7 +113,7 @@ export function parseVerdict(verdictText: unknown): ParsedVerdict {
  * @param {{ workflow?: string, planMode?: string }} job
  * @returns {boolean}
  */
-export function isMutatingJob(job: AnyRecord | null | undefined): boolean {
+export function isMutatingJob(job: CompletionGateJob | null | undefined): boolean {
   if (!job) return false
   const mode = job.planMode
   if (mode === "parent" || mode === "none") return false
@@ -112,25 +162,25 @@ export function evaluateCompletionGate({
   attemptId,
   multiAttempt,
 }: {
-  job?: AnyRecord;
-  workflowDag?: AnyRecord;
-  riskMap?: AnyRecord;
-  dynamicAgentPlan?: AnyRecord;
-  artifactIndex?: AnyRecord;
+  job?: CompletionGateJob;
+  workflowDag?: WorkflowDag;
+  riskMap?: RiskMap;
+  dynamicAgentPlan?: LooseRecord;
+  artifactIndex?: LooseRecord;
   parsedVerdict?: ParsedVerdict;
   parsedAdversarialVerdict?: ParsedVerdict;
-  checklist?: AnyRecord;
-  checklistVerdict?: AnyRecord;
-  evidenceLedger?: AnyRecord;
-  executionMap?: AnyRecord;
-  runtimeFailures?: AnyRecord[];
+  checklist?: LooseRecord;
+  checklistVerdict?: LooseRecord;
+  evidenceLedger?: LooseRecord;
+  executionMap?: LooseRecord;
+  runtimeFailures?: LooseRecord[];
   attemptId?: string;
   multiAttempt?: boolean;
-} = {}) {
+} = {}): CompletionGateResult {
   const completedPhases = new Set(job?.completedPhases || [])
   const dagNodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : []
-  const dagPhases = new Set(dagNodes.map((n) => n.phase || n.id))
-  const details: AnyRecord = {
+  const dagPhases = new Set(dagNodes.map((n) => n.phase || n.id).filter((phase): phase is string => Boolean(phase)))
+  const details: CompletionGateDetails = {
     isMutating: isMutatingJob(job),
     dagPhases: [...dagPhases],
     completedPhases: [...completedPhases],
@@ -148,9 +198,9 @@ export function evaluateCompletionGate({
       runtimeFailures,
       attemptId,
       multiAttempt,
-    });
+    }) as ChecklistCompletionResult;
     if (checklistResult.outcome !== "complete") {
-      return gateResult(checklistResult.outcome, checklistResult.reason, ["checklist"], {
+      return gateResult(checklistResult.outcome || "checklist_invalid", checklistResult.reason || "checklist completion failed", ["checklist"], {
         ...details,
         checklist: checklistResult,
       });
@@ -244,7 +294,7 @@ export function evaluateCompletionGate({
  * @param {{ outcome: string, reason: string, missingGates: string[] }} gateResult
  * @returns {object}
  */
-export function completionGateEvent(jobId: string, project: string, gateResult: AnyRecord) {
+export function completionGateEvent(jobId: string, project: string, gateResult: CompletionGateEventInput) {
   const checklist = gateResult.details?.checklist || {};
   return {
     type: "completion_gate_evaluated",
@@ -271,6 +321,6 @@ export function completionGateEvent(jobId: string, project: string, gateResult: 
 
 // ─── Internal ─────────────────────────────────────────────────────────
 
-function gateResult(outcome: string, reason: string, missingGates: string[], details: AnyRecord) {
+function gateResult(outcome: string, reason: string, missingGates: string[], details: CompletionGateDetails): CompletionGateResult {
   return { outcome, reason, missingGates, details }
 }

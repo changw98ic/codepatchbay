@@ -32,9 +32,12 @@ export async function pinSessionToJob(
     const processesDir = path.join(path.resolve(dataRoot), "processes");
     const file = path.join(processesDir, `${jobId}.json`);
 
-    let entry: Record<string, any> | null = null;
+    let entry: Record<string, unknown> | null = null;
     try {
-      entry = JSON.parse(await readFile(file, "utf8"));
+      const parsed = JSON.parse(await readFile(file, "utf8")) as unknown;
+      entry = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
     } catch {
       // Process file not created yet — nothing to pin to.
       return;

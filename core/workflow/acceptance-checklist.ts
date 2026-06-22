@@ -1,5 +1,6 @@
 import { AnyRecord } from "../../shared/types.js";
 import { validateEvidenceObservation } from "./evidence-probes.js";
+import { normalizeRepoRelativePaths } from "../engine/scope-guard.js";
 import { FailureKind } from "../contracts/failure.js";
 
 
@@ -105,19 +106,7 @@ function isChecklistId(value: unknown) {
   return CHECKLIST_ID_RE.test(text(value));
 }
 
-function stripGitStatusPrefix(value: unknown) {
-  return text(value).replace(/^[ MADRCU?!]{1,2}\s+/, "");
-}
-
-export function normalizeRepoRelativePaths(values: unknown) {
-  const normalized = new Set<string>();
-  for (const value of Array.isArray(values) ? values : [values]) {
-    const path = stripGitStatusPrefix(value);
-    if (!isRepoRelativePosixPath(path)) throw new Error(`invalid repo-relative path: ${String(value)}`);
-    normalized.add(path);
-  }
-  return [...normalized].sort();
-}
+export { normalizeRepoRelativePaths };
 
 export const normalizeFixScope = normalizeRepoRelativePaths;
 
@@ -298,8 +287,8 @@ export function validateChecklistVerdict(verdict: AnyRecord, checklist: AnyRecor
   if (verdict.schemaVersion !== 1) return fail("verdict schemaVersion must be 1");
   if (!TOP_STATUSES.has(verdict.status)) return fail("verdict.status must be pass or fail");
   if (!Array.isArray(verdict.items)) return fail("verdict.items must be an array");
-  const checklistIds = new Set(checklist.items.map((item: AnyRecord) => item.id));
-  const requiredIds = new Set(checklist.items.filter((item: AnyRecord) => item.required).map((item: AnyRecord) => item.id));
+  const checklistIds = new Set<string>(checklist.items.map((item: AnyRecord) => text(item.id)));
+  const requiredIds = new Set<string>(checklist.items.filter((item: AnyRecord) => item.required).map((item: AnyRecord) => text(item.id)));
   const seen = new Set<string>();
   let allRequiredPassed = true;
   for (const [index, item] of verdict.items.entries()) {
@@ -384,7 +373,13 @@ function normalizeRuntimeFailureRefs(runtimeFailures: unknown, { attemptId, mult
       if (activeAttemptId && ref.attemptId && ref.attemptId !== activeAttemptId) return null;
       return ref;
     })
-    .filter(Boolean);
+    .filter((entry): entry is {
+      type: string;
+      attemptId: string | null;
+      phase: string | null;
+      nodeId: string | null;
+      reason: string | null;
+    } => Boolean(entry));
   return { refs, ambiguous };
 }
 
