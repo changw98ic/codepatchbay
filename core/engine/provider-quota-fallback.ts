@@ -1,5 +1,7 @@
 import { FailureKind, failure } from "../contracts/failure.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
+import { PhaseResult } from "../../shared/types.js";
+import { PhaseContext } from "./run-phase.js";
 import {
   normalizeProviderServices,
   preflightProvider as defaultPreflightProvider,
@@ -10,20 +12,6 @@ import {
 } from "./provider-handoff.js";
 
 type LooseRecord = Record<string, unknown>;
-
-type QuotaFailure = {
-  kind?: unknown;
-  phase?: unknown;
-  reason?: unknown;
-  retryable?: unknown;
-  cause?: unknown;
-};
-
-type PhaseResult = {
-  status?: string;
-  failure?: QuotaFailure | null;
-  [key: string]: unknown;
-};
 
 type HandoffState = {
   count: number;
@@ -84,7 +72,7 @@ type RunQuotaFallbackDeps = {
   maxHandoffs?: number;
   now?: () => string;
   nowMs?: () => number;
-  runPhase?: (input: LooseRecord) => Promise<PhaseResult>;
+  runPhase?: (ctx: PhaseContext) => Promise<PhaseResult>;
   generateHandoffBundle?: (input: HandoffBundleInput) => Promise<unknown>;
   preflightProvider?: typeof defaultPreflightProvider;
 };

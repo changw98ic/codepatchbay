@@ -3,6 +3,11 @@
 ## Project Structure & Module Organization
 CodePatchBay is a Node ESM project with a CLI, Fastify server, runtime workers, and Vite web UI. The root `cpb` launcher and `cli/cpb.mjs` dispatch commands from `cli/commands/`. Core workflow contracts and engines live in `core/`; server routes and services in `server/`; worker helpers in `runtime/`; bridge entrypoints in `bridges/`; shared utilities in `shared/`. The React UI is in `web/src/`. Tests live in `tests/`, docs in `docs/` and `wiki/`, and support assets in `assets/`, `templates/`, and `skills/`.
 
+## Codegraph & Repository Lookup
+For repository understanding tasks, prefer Codegraph before shell/file fallback. Use Codegraph first for symbol lookup, call graphs, architecture tracing, impact analysis, and "where/how does this work" questions. Use direct file reads or shell search only to confirm a specific detail Codegraph does not cover, to inspect files reported stale, or when Codegraph is unavailable.
+
+Before every Codegraph-backed lookup, run the currently available Codegraph sync step first, then verify index status. If the index reports pending or stale files, wait for sync or rerun the sync step before trusting Codegraph results. If sync is unavailable or still stale, say so briefly and read the affected files directly instead of presenting stale index results as authoritative.
+
 ## Build, Test, and Development Commands
 - `npm ci`: install root and workspace dependencies.
 - `npm test` or `npm run test:node`: run the custom Node test runner over `tests/**/*.test.mjs`.

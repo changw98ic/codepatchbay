@@ -1,22 +1,10 @@
 import { FailureKind } from "../contracts/failure.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
+import { PhaseResult } from "../../shared/types.js";
+import { PhaseContext } from "./run-phase.js";
 import { ProviderAgents } from "./provider-handoff.js";
 
 type LooseRecord = Record<string, unknown>;
-
-type PhaseFailure = {
-  kind?: unknown;
-  reason?: unknown;
-  retryable?: unknown;
-  stderrSnippet?: unknown;
-  cause?: unknown;
-};
-
-type PhaseResult = {
-  status?: string;
-  failure?: PhaseFailure | null;
-  [key: string]: unknown;
-};
 
 type RetryContext = {
   agent?: string | null;
@@ -56,7 +44,7 @@ type RetryDeps = {
   retryBaseDelayMs?: () => number;
   delay?: (ms: number) => Promise<void>;
   now?: () => string;
-  runPhase?: (input: LooseRecord) => Promise<PhaseResult>;
+  runPhase?: (ctx: PhaseContext) => Promise<PhaseResult>;
 };
 
 const DEFAULT_PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);

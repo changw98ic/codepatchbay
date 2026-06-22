@@ -990,7 +990,7 @@ async function runJobInner(ctx: AnyRecord) {
       state, phaseResults, attemptId, phaseTimeout,
       handoffState, providerAttempts, phaseAgents, result,
     }, {
-      runPhase: runPhase as (input: AnyRecord) => Promise<any>,
+      runPhase: runPhase,
       generateHandoffBundle,
     });
 
@@ -1010,7 +1010,7 @@ async function runJobInner(ctx: AnyRecord) {
       workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
       state, phaseResults, attemptId, phaseTimeout, phaseAgents, result, pool,
     }, {
-      runPhase: runPhase as (input: AnyRecord) => Promise<any>,
+      runPhase: runPhase,
     });
 
     const scopeGuardFailure = await evaluateExecuteScopeGuard({

@@ -1,18 +1,18 @@
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
+import { PhaseResult } from "../../shared/types.js";
 
 type LooseRecord = Record<string, unknown>;
 type PhasePool = {
   releaseWorktree?: (cwd: string, reason: string, options: { closeProvider: boolean }) => Promise<unknown> | unknown;
 };
-type PhaseContext = LooseRecord & {
+export type PhaseContext = LooseRecord & {
   phase: string;
-  pool?: PhasePool;
+  pool?: LooseRecord | null;
   sourcePath?: string;
   cwd?: string;
   cpbRoot?: string;
 };
-type PhaseResult = ReturnType<typeof phasePassed> | ReturnType<typeof phaseFailed>;
 type PhaseAdapter = (ctx: PhaseContext) => Promise<PhaseResult> | PhaseResult;
 
 const ADAPTER_CACHE: Record<string, PhaseAdapter> = {};
@@ -74,7 +74,7 @@ export async function runPhase(ctx: PhaseContext): Promise<PhaseResult> {
 }
 
 async function releasePhaseAcpResources(ctx: PhaseContext) {
-  const releaseWorktree = ctx.pool?.releaseWorktree;
+  const releaseWorktree = (ctx.pool as PhasePool | undefined)?.releaseWorktree;
   if (typeof releaseWorktree !== "function") return;
   const cwd = ctx.sourcePath || ctx.cwd || ctx.cpbRoot;
   if (!cwd) return;

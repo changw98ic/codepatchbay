@@ -52,26 +52,24 @@ debt" items from the checkpoint log below:
   `WorkflowDagNode` is `JsonRecord`-based and narrowing cascades `unknown`
   into 12+ downstream access sites).
 
-  **Follow-up debt surfaced by this migration:** two `runPhase` call sites
-  (`run-job.ts:989`, `run-job.ts:1009`) use `as (input: AnyRecord) =>
-  Promise<any>` to bridge a covariance gap. Root cause: `run-phase.ts`
-  defines `PhaseResult` as `ReturnType<typeof phasePassed | phaseFailed>`
-  (its `failure` field is `unknown`), while 7 other `core/engine` files each
-  declare their own local `type PhaseResult` with **structurally divergent
-  shapes** — `provider-quota-fallback` `{status, failure?: QuotaFailure|null}`,
-  `dag-node-failure` `{status, failure?: unknown}`, `poisoned-session-gate`
-  `{phase, status, artifact, failure?: PhaseFailure|null, ...}`,
-  `phase-result-events` `{status?, artifact?, diagnostics?, failure?}`,
-  `adversarial-verdict-events` `{artifact?, diagnostics?}` (no status/failure
-  at all), plus `phase-retry` / `runtime-artifact-events`. Consolidating into
-  one canonical `PhaseResult` in `shared/types.ts` removes the as-assertions.
-  This is the next strict-quality debt; non-blocking.
+  **Resolved (PhaseResult fragmentation):** canonical `PhaseResult` +
+  `PhaseFailure` now live in `shared/types.ts`. `contracts/phase-result.ts`
+  `phasePassed`/`phaseFailed` return it, narrowing the dynamic `failure` at
+  the boundary (`failure as PhaseFailure | null` — one narrow cast in
+  `contracts/`, outside the strict-engine/type-debt-guard scope).
+  `provider-quota-fallback` and `phase-retry` dropped their local `PhaseResult`
+  and their `deps.runPhase` now uses the shared `(ctx: PhaseContext) =>
+  Promise<PhaseResult>` signature, so the two `as (input: AnyRecord) =>
+  Promise<any>` assertions in `run-job.ts` are gone. Event helpers that read
+  only a subset of fields (`dag-node-failure`, `phase-result-events`,
+  `adversarial-verdict-events`, `runtime-artifact-events`, `poisoned-session-gate`)
+  keep local narrowed views — intentional, not debt: they don't cross
+  function signatures, so they don't force as-assertions.
 
-The stabilization items that remain open are: (1) the flagship GitHub Issue
+The only stabilization item that remains open is the flagship GitHub Issue
 -> draft PR path, which by design requires a 3-maintainer/team manual
 validation that automation cannot substitute (see
-`docs/product/cpb-flagship-validation-gate.md`); and (2) the `PhaseResult`
-fragmentation follow-up above.
+`docs/product/cpb-flagship-validation-gate.md`).
 
 ## Baseline Metrics
 
