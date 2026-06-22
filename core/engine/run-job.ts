@@ -74,9 +74,17 @@ async function reportProgress(ctx: AnyRecord, event: AnyRecord) {
   }
 }
 
-function normalizePrepareFailure(err: Record<string, unknown> & { message?: string }) {
-  const code = err?.kind || err?.code || "prepare_task_unavailable";
-  const reason = err?.reason || err?.message || "prepareTask service is unavailable";
+function normalizePrepareFailure(err: unknown) {
+  // Accept the raw caught value. Pre-wrapping non-objects as
+  // { message: String(err) } collapses null/undefined into reason "null"/"undefined";
+  // normalize here so null/undefined fall back to the default reason.
+  const errObj = (err != null && typeof err === "object")
+    ? err as Record<string, unknown> & { message?: string; reason?: string; kind?: string; code?: string; details?: string }
+    : null;
+  const code = errObj?.kind || errObj?.code || "prepare_task_unavailable";
+  const reason = errObj?.reason
+    || errObj?.message
+    || (typeof err === "string" && err.length > 0 ? err : "prepareTask service is unavailable");
   return failure({
     kind: code === FailureKind.CODEGRAPH_UNAVAILABLE
       ? FailureKind.CODEGRAPH_UNAVAILABLE
@@ -86,7 +94,7 @@ function normalizePrepareFailure(err: Record<string, unknown> & { message?: stri
     retryable: false,
     cause: {
       code,
-      details: err?.details || null,
+      details: errObj?.details || null,
     },
   });
 }
@@ -411,11 +419,7 @@ async function prepareTaskAndRiskMap(ctx: AnyRecord, { job, jobId }: AnyRecord) 
     });
     return { kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan };
   } catch (err) {
-    const fail = normalizePrepareFailure(
-      (err && typeof err === "object"
-        ? err
-        : { message: String(err) }) as Record<string, unknown> & { message?: string },
-    );
+    const fail = normalizePrepareFailure(err);
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     await reportProgress(ctx, {
       type: "job_blocked",

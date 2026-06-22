@@ -19,21 +19,24 @@ focus on:
 
 ## Post-Stabilization Note (2026-06-23)
 
-An adversarial architecture review closed two recurring "remaining debt"
-items that appear through the checkpoint log below as **design intent, not
-debt**. No further work is planned on either:
+An adversarial architecture review reclassified two recurring "remaining
+debt" items from the checkpoint log below:
 
 - **"DAG execution is still sequential despite the contract being DAG-shaped"**
-  — All five built-in workflows (`standard`, `direct`, `complex`, `blocked`,
-  `accelerated`) normalize to single-chain DAGs with `maxConcurrentNodes: 1`
-  (`core/workflow/definition.ts:144-153`). The scheduler
-  `dagSequentialExecutionPlan` (`core/engine/run-job-planning.ts:80`) keeps only the
-  first ready node per round, and `scheduleReadyNodes`
-  (`core/workflow/dag-executor.ts:248`) is dead code with no runtime caller.
-  A typical run has exactly **1 ready node** at any time — there is no
-  schedulable width. The DAG-shaped contract is a data-structure affordance
-  for future wide workflows, not a runtime feature. Building a parallel
-  executor has zero current ROI. Sequential traversal is the design.
+  — Reclassified as **low-ROI-now, not never**. All five built-in workflows
+  (`standard`, `direct`, `complex`, `blocked`, `accelerated`) normalize to
+  single-chain DAGs (`core/workflow/definition.ts:144-153`), and the scheduler
+  `dagSequentialExecutionPlan` (`core/engine/run-job-planning.ts:80`) keeps only
+  the first ready node per round, so `scheduleReadyNodes`
+  (`core/workflow/dag-executor.ts:248`) is effectively dead at runtime — a
+  typical run has exactly **1 ready node**. BUT the contract is not purely
+  sequential by design: `registerDagWorkflow`
+  (`core/workflow/definition.ts:242`) accepts custom DAGs with
+  `maxConcurrentNodes` (default 2). A wide custom workflow would register
+  correctly today but still execute serially, because the scheduler discards
+  extra ready nodes. A parallel executor has real ROI only once a wide
+  workflow is actually registered; none ships today. Sequential execution is
+  the current state, not a closed design decision.
 
 - **"strict mode still excludes `run-job.ts`"** — **Resolved (commit
   `057c4e77`):** `run-job.ts` is now in the strict-engine gate. An earlier
@@ -50,14 +53,19 @@ debt**. No further work is planned on either:
   into 12+ downstream access sites).
 
   **Follow-up debt surfaced by this migration:** two `runPhase` call sites
-  (`run-job.ts:991`, `run-job.ts:1011`) use `as (input: AnyRecord) =>
+  (`run-job.ts:989`, `run-job.ts:1009`) use `as (input: AnyRecord) =>
   Promise<any>` to bridge a covariance gap. Root cause: `run-phase.ts`
   defines `PhaseResult` as `ReturnType<typeof phasePassed | phaseFailed>`
   (its `failure` field is `unknown`), while 7 other `core/engine` files each
-  declare their own local `type PhaseResult` with incompatible `failure`
-  shapes (`QuotaFailure | null` etc). Consolidating into one canonical
-  `PhaseResult` in `shared/types.ts` removes the as-assertions. This is the
-  next strict-quality debt; non-blocking.
+  declare their own local `type PhaseResult` with **structurally divergent
+  shapes** — `provider-quota-fallback` `{status, failure?: QuotaFailure|null}`,
+  `dag-node-failure` `{status, failure?: unknown}`, `poisoned-session-gate`
+  `{phase, status, artifact, failure?: PhaseFailure|null, ...}`,
+  `phase-result-events` `{status?, artifact?, diagnostics?, failure?}`,
+  `adversarial-verdict-events` `{artifact?, diagnostics?}` (no status/failure
+  at all), plus `phase-retry` / `runtime-artifact-events`. Consolidating into
+  one canonical `PhaseResult` in `shared/types.ts` removes the as-assertions.
+  This is the next strict-quality debt; non-blocking.
 
 The stabilization items that remain open are: (1) the flagship GitHub Issue
 -> draft PR path, which by design requires a 3-maintainer/team manual
