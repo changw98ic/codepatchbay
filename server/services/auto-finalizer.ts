@@ -80,21 +80,6 @@ async function assertClean(repoPath: string, { runCommand }: Record<string, any>
   return status.stdout.trim() === "";
 }
 
-async function autoStash(repoPath: string, { runCommand }: Record<string, any> = {}) {
-  try {
-    await runGit(repoPath, ["stash", "push", "--include-untracked", "-m", "cpb-auto-stash"], { runCommand });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function stashPop(repoPath: string, { runCommand }: Record<string, any> = {}) {
-  try {
-    await runGit(repoPath, ["stash", "pop"], { runCommand, allowFailure: true });
-  } catch { /* ignore */ }
-}
-
 async function currentBranch(repoPath: string, { runCommand }: Record<string, any> = {}) {
   return (await runGit(repoPath, ["branch", "--show-current"], { runCommand })).stdout.trim();
 }
@@ -120,6 +105,16 @@ function reject(code: string, details: Record<string, any> = {}) {
   return {
     ok: false,
     status: "rejected",
+    code,
+    jobId: details.jobId ?? null,
+    ...details,
+  };
+}
+
+function blocked(code: string, details: Record<string, any> = {}) {
+  return {
+    ok: false,
+    status: "blocked",
     code,
     jobId: details.jobId ?? null,
     ...details,
@@ -445,6 +440,35 @@ function verdictEvidenceForBody(verdict: Record<string, unknown> | null): Record
   return out;
 }
 
+function derivePrVerdictFromBundle(bundle: Record<string, any>) {
+  const completionGate = bundle?.dw?.completionGate || null;
+  if (completionGate?.outcome !== "complete") {
+    return {
+      ok: false,
+      code: "COMPLETION_GATE_NOT_COMPLETE",
+      completionGate,
+    };
+  }
+
+  const verdict = bundle?.evidence?.verdict || null;
+  const status = String(verdict?.status || verdict?.verdict || "").trim().toLowerCase();
+  if (status !== "pass") {
+    return {
+      ok: false,
+      code: "VERDICT_NOT_PASS",
+      completionGate,
+      verdict: verdictEvidenceForBody(verdict),
+    };
+  }
+
+  return {
+    ok: true,
+    verdict: "PASS",
+    completionGate,
+    verdictDetail: verdictEvidenceForBody(verdict),
+  };
+}
+
 export function buildPrEvidenceFromReviewBundle(bundle: Record<string, any>, {
   cpbRoot = null,
   dataRoot = null,
@@ -565,7 +589,7 @@ export async function finalizeSuccessfulQueueEntry({
   entry,
   job,
   sourcePath,
-  mode = "local",
+  mode = "dry-run",
   remote = "origin",
   issueCloser,
   runCommand = execFileAsync,
@@ -574,9 +598,13 @@ export async function finalizeSuccessfulQueueEntry({
   transportMode = null,
   dataRoot,
   hubRoot = null,
+  allowLiveFinalize = false,
+  allowLive = false,
 }: Record<string, any> = {}) {
   const jobId = job?.jobId || job?.id || entry?.jobId || entry?.id || "unknown";
   const projectId = project || job?.project || entry?.projectId || null;
+  const dryRun = mode === "dry-run";
+  const liveAllowed = Boolean(allowLiveFinalize || allowLive);
 
   if (job?.status !== "completed") {
     return skipped("JOB_NOT_COMPLETED", { jobId });
@@ -588,6 +616,14 @@ export async function finalizeSuccessfulQueueEntry({
       cpbRoot, hubRoot, project: projectId, entry, job, sourcePath,
       jobId, dataRoot,
     });
+  }
+
+  if (mode !== "local" && mode !== "remote" && mode !== "pr" && mode !== "dry-run") {
+    return reject("UNSUPPORTED_MODE", { mode, jobId });
+  }
+
+  if (!dryRun && !liveAllowed) {
+    return reject("LIVE_FINALIZE_NOT_ALLOWED", { mode, jobId });
   }
 
   if (!job?.worktree || !(await pathExists(job.worktree))) {
@@ -605,15 +641,9 @@ export async function finalizeSuccessfulQueueEntry({
     return reject("SOURCE_NOT_GIT_REPO", { jobId });
   }
 
-  let stashedBeforeFinalize = false;
   if (!(await assertClean(canonicalSourcePath, { runCommand }))) {
-    stashedBeforeFinalize = await autoStash(canonicalSourcePath, { runCommand });
-    if (!stashedBeforeFinalize) {
-      return reject("SOURCE_NOT_CLEAN", { jobId });
-    }
+    return reject("SOURCE_NOT_CLEAN", { jobId, mode, dryRun });
   }
-
-  try {
 
   if (!(await isGitRepo(canonicalWorktreePath, { runCommand }))) {
     return reject("WORKTREE_NOT_GIT_REPO", { jobId });
@@ -628,6 +658,14 @@ export async function finalizeSuccessfulQueueEntry({
   const worktreeBranch = await currentBranch(canonicalWorktreePath, { runCommand });
   const worktreeHead = await revParse(canonicalWorktreePath, "HEAD", { runCommand });
   const uncommittedFiles = await changedWorktreeFiles(canonicalWorktreePath, { runCommand });
+  if (!dryRun && mode === "pr" && uncommittedFiles.length > 0) {
+    return reject("WORKTREE_NOT_CLEAN_FOR_LIVE_PR", {
+      issue,
+      jobId,
+      mode,
+      uncommittedFiles,
+    });
+  }
   let committedFiles: string[] = [];
   if (worktreeHead !== sourceHead) {
     if (!(await isAncestor(canonicalWorktreePath, sourceHead, worktreeHead, { runCommand }))) {
@@ -701,6 +739,20 @@ export async function finalizeSuccessfulQueueEntry({
 
   const routeGuard = protectedDiffForRoute(files, entry, job);
   if (routeGuard.blocked) {
+    if (dryRun) {
+      return reject("ROUTE_PROTECTED_DIFF", {
+        issue,
+        jobId,
+        mode,
+        dryRun: true,
+        files: summary.entries,
+        protectedDiff: routeGuard.protectedDiff,
+        originalRoute: routeGuard.route,
+        requeuedQueueEntryId: null,
+        requeuedWorkflow: routeGuard.guardResult?.escalation?.workflow || "complex",
+        requeuedPlanMode: routeGuard.guardResult?.escalation?.planMode || "full",
+      });
+    }
     const upgraded = await requeueProtectedDiffUpgrade({
       hubRoot,
       entry,
@@ -740,35 +792,15 @@ export async function finalizeSuccessfulQueueEntry({
   }
 
   const planned = {
-    commit: uncommittedFiles.length > 0,
-    merge: mode === "local" || mode === "remote",
-    push: mode === "remote" || mode === "pr",
-    closeIssue: mode === "remote",
-    pullRequest: mode === "pr",
+    commit: !dryRun && uncommittedFiles.length > 0,
+    merge: !dryRun && (mode === "local" || mode === "remote"),
+    push: !dryRun && (mode === "remote" || mode === "pr"),
+    closeIssue: !dryRun && mode === "remote",
+    pullRequest: !dryRun && mode === "pr",
+    pullRequestPreview: dryRun,
   };
 
-  if (mode === "dry-run") {
-    return {
-      ok: true,
-      status: "dry-run",
-      issue,
-      mode,
-      sourcePath: canonicalSourcePath,
-      worktreePath: canonicalWorktreePath,
-      sourceBranch,
-      worktreeBranch,
-      sourceHead,
-      worktreeHead,
-      files: summary.entries,
-      planned,
-    };
-  }
-
-  if (mode !== "local" && mode !== "remote" && mode !== "pr") {
-    return reject("UNSUPPORTED_MODE", { mode, jobId });
-  }
-
-  if (mode === "pr") {
+  if (mode === "pr" || mode === "dry-run") {
     if (!cpbRoot || !projectId || !job?.jobId) {
       return reject("PR_FINALIZE_REQUIRES_JOB_STORE", { issue, jobId });
     }
@@ -787,6 +819,7 @@ export async function finalizeSuccessfulQueueEntry({
     };
     const agents = await resolveAgentsFromEvents(cpbRoot, projectId, job.jobId, { dataRoot });
     let prEvidence: Record<string, any> = {};
+    let prVerdict: Record<string, any> = {};
     try {
       const bundle = await buildReviewBundle(cpbRoot, projectId, job.jobId, {
         entry,
@@ -795,21 +828,67 @@ export async function finalizeSuccessfulQueueEntry({
         worktreePath: canonicalWorktreePath,
         dataRoot,
       });
+      prVerdict = derivePrVerdictFromBundle(bundle);
+      if (!prVerdict.ok) {
+        return blocked(prVerdict.code, {
+          issue,
+          jobId,
+          mode,
+          completionGate: prVerdict.completionGate || null,
+          verdict: prVerdict.verdict || null,
+        });
+      }
       prEvidence = buildPrEvidenceFromReviewBundle(bundle, { cpbRoot, dataRoot, hubRoot });
     } catch {
-      prEvidence = {};
+      return blocked("PR_EVIDENCE_UNAVAILABLE", {
+        issue,
+        jobId,
+        mode,
+      });
     }
     const pr = await openDraftPullRequest({
       job: prJob,
-      verdict: "PASS",
+      verdict: prVerdict.verdict,
       branchPushed: false,
+      dryRun,
+      allowLive: liveAllowed,
       createPullRequest,
       runCommand,
       pushToken,
       agents,
       routingContext: buildRoutingContext(entry, job, routeGuard),
       ...prEvidence,
+      verdictDetail: prVerdict.verdictDetail || prEvidence.verdictDetail || null,
+      completionGate: prVerdict.completionGate || null,
     });
+    if (dryRun) {
+      if (pr.status !== "dry-run") {
+        return blocked("PR_DRY_RUN_FAILED", {
+          issue,
+          jobId,
+          mode,
+          pr,
+          error: pr.error || null,
+        });
+      }
+      return {
+        ok: true,
+        status: "dry-run",
+        issue,
+        mode,
+        sourcePath: canonicalSourcePath,
+        worktreePath: canonicalWorktreePath,
+        sourceBranch,
+        worktreeBranch,
+        sourceHead,
+        worktreeHead,
+        files: summary.entries,
+        planned,
+        completionGate: prVerdict.completionGate || null,
+        verdict: prVerdict.verdictDetail || null,
+        pr,
+      };
+    }
     if (pr.status !== "pr.opened") {
       return reject("PR_FINALIZE_FAILED", {
         issue,
@@ -921,11 +1000,6 @@ export async function finalizeSuccessfulQueueEntry({
     closed,
   };
 
-  } finally {
-    if (stashedBeforeFinalize) {
-      await stashPop(canonicalSourcePath, { runCommand });
-    }
-  }
 }
 
 // ── Approval gate (from approval-gate.ts) ──────────────────────────────────

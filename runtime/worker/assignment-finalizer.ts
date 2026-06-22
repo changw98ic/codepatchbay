@@ -7,12 +7,39 @@
 
 import path from "node:path";
 import { AnyRecord } from "../../shared/types.js";
-import { finalizeSuccessfulQueueEntry, resolveGithubTransport } from "../../bridges/runtime-services.js";
+import { finalizeSuccessfulQueueEntry, resolveGithubTransport, resolveProjectDataRoot } from "../../bridges/runtime-services.js";
 import { writeJsonOnce } from "../../shared/fs-utils.js";
+
+function metadataValue(metadata: AnyRecord, keys: string[]) {
+  for (const key of keys) {
+    if (metadata?.[key] !== undefined) return metadata[key];
+  }
+  return undefined;
+}
+
+function liveFinalizeAllowed(metadata: AnyRecord): boolean {
+  return Boolean(
+    metadata?.allowLiveFinalize === true
+    || metadata?.liveFinalize === true
+    || metadata?.finalize?.allowLive === true
+    || metadata?.finalizer?.allowLive === true
+  );
+}
+
+function resolveFinalizeMode(metadata: AnyRecord = {}) {
+  const requested = metadataValue(metadata, ["finalizeMode", "finalizerMode"])
+    ?? metadata?.finalize?.mode
+    ?? metadata?.finalizer?.mode;
+  const normalized = String(requested || "dry-run").trim().toLowerCase().replace(/_/g, "-");
+  if (["dry-run", "dryrun", "preview", "pr-preview"].includes(normalized)) return "dry-run";
+  if (["pr", "remote", "local"].includes(normalized) && liveFinalizeAllowed(metadata)) return normalized;
+  return "dry-run";
+}
 
 export async function maybeFinalizeSuccessfulAssignment({
   cpbRoot,
   hubRoot,
+  dataRoot,
   assignment,
   attemptNum,
   jobId,
@@ -20,6 +47,7 @@ export async function maybeFinalizeSuccessfulAssignment({
   worktreeInfo,
   log = null,
   resolveTransport = resolveGithubTransport,
+  resolveDataRoot = resolveProjectDataRoot,
   finalizeQueueEntry = finalizeSuccessfulQueueEntry,
 }: AnyRecord = {}) {
   const metadata = assignment?.metadata || {};
@@ -27,7 +55,17 @@ export async function maybeFinalizeSuccessfulAssignment({
   if (!autoFinalize || result?.status !== "completed" || !worktreeInfo) return null;
 
   try {
-    const transport = await resolveTransport(hubRoot);
+    const finalizeMode = resolveFinalizeMode(metadata);
+    const liveFinalize = finalizeMode !== "dry-run";
+    const transport = liveFinalize ? await resolveTransport(hubRoot) : null;
+    const effectiveDataRoot = dataRoot
+      || assignment?.dataRoot
+      || assignment?.projectRuntimeRoot
+      || metadata?.dataRoot
+      || metadata?.projectRuntimeRoot
+      || (cpbRoot && assignment?.projectId
+        ? await resolveDataRoot(cpbRoot, assignment.projectId, { hubRoot }).catch(() => null)
+        : null);
     const effectiveJobId = jobId || result?.jobId || `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
     const entry = {
       id: assignment.entryId,
@@ -44,19 +82,22 @@ export async function maybeFinalizeSuccessfulAssignment({
       worktreeBranch: worktreeInfo.branch,
       task: assignment.task,
       planMode: assignment.planMode,
+      completionGate: result?.completionGate || result?.completionGateResult || null,
     };
 
     const finalizeResult: AnyRecord = await finalizeQueueEntry({
       cpbRoot,
       hubRoot,
+      dataRoot: effectiveDataRoot,
       project: assignment.projectId,
       entry,
       job,
       sourcePath: assignment.sourcePath,
-      mode: "pr",
-      issueCloser: transport?.closeIssue || null,
-      createPullRequest: transport?.createPullRequest || null,
-      pushToken: transport?.getToken ? await transport.getToken().catch(() => null) : null,
+      mode: finalizeMode,
+      allowLiveFinalize: liveFinalize,
+      issueCloser: liveFinalize ? transport?.closeIssue || null : null,
+      createPullRequest: liveFinalize ? transport?.createPullRequest || null : null,
+      pushToken: liveFinalize && transport?.getToken ? await transport.getToken().catch(() => null) : null,
       transportMode: transport?.mode || null,
     });
 
@@ -76,6 +117,7 @@ export async function maybeFinalizeSuccessfulAssignment({
 export async function finalizeAndWriteSuccessfulResult({
   cpbRoot,
   hubRoot,
+  dataRoot,
   assignment,
   attemptDir,
   assignmentId,
@@ -89,6 +131,7 @@ export async function finalizeAndWriteSuccessfulResult({
   const finalizeResult = await maybeFinalizeSuccessfulAssignment({
     cpbRoot,
     hubRoot,
+    dataRoot,
     assignment,
     attemptNum,
     jobId,

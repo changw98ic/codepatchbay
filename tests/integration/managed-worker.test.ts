@@ -97,6 +97,23 @@ async function writeWorkerScenario(root) {
   await writeJson(scenarioPath, {
     responses: [
       {
+        name: "decompose",
+        matchRegex: "decomposing a task into structured acceptance-checklist items",
+        output: jsonEnvelope({
+          status: "ok",
+          decomposedItems: [
+            {
+              requirement: "README.md is updated by the managed worker fake ACP execution.",
+              predicateId: "managed-readme-change",
+              verificationMethod: "static",
+              allowedFiles: ["README.md"],
+              sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+              expectedEvidence: "static scope probe confirming README.md was modified",
+            },
+          ],
+        }),
+      },
+      {
         name: "plan",
         matchRegex: "software planning agent",
         output: jsonEnvelope({
@@ -519,6 +536,166 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.match(transcript, /software verification agent/);
 
   await rm(root, { recursive: true, force: true });
+});
+
+test("managed worker default checklist decomposition runs inside the worker path", async () => {
+  const root = await tempRoot("cpb-managed-decompose");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  const sourcePath = path.join(root, "source");
+  const workerId = "w-decompose";
+  await mkdir(sourcePath, { recursive: true });
+  await writeFile(path.join(sourcePath, "README.md"), "# Managed Worker Decompose Fixture\n", "utf8");
+  await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-decompose", private: true }, null, 2)}\n`, "utf8");
+  const scenarioPath = await writeWorkerScenario(root);
+  const transcriptPath = path.join(root, "transcript-decompose.jsonl");
+  const { assignmentId, attemptDir, project } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    assignmentId: "a-managed-decompose",
+    entryId: "managed-decompose",
+    task: "managed worker fake ACP success",
+    attemptToken: "attempt-token-decompose",
+  });
+
+  try {
+    const worker = spawnWorker({
+      workerId,
+      hubRoot,
+      cpbRoot,
+      env: {
+        CPB_ROOT: cpbRoot,
+        CPB_HUB_ROOT: hubRoot,
+        CPB_EXECUTOR_ROOT: repoRoot,
+        CPB_PROJECT_ROOTS: root,
+        CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+        CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+          testAgentScript,
+          "--scenario-file", scenarioPath,
+          "--transcript-file", transcriptPath,
+        ]),
+        CPB_CHECKLIST_DECOMPOSE: "1",
+      },
+      timeoutMs: 60_000,
+    });
+
+    const finished = await worker.done;
+    assert.equal(finished.code, 0, finished.stderr);
+
+    const result = await readJson(path.join(attemptDir, "result.json"));
+    assert.equal(result.assignmentId, assignmentId);
+    assert.equal(result.status, "completed");
+    assert.equal(result.jobResult.status, "completed");
+    const jobId = result.jobResult.jobId;
+
+    const outputsDir = path.join(project.projectRuntimeRoot, "wiki", "outputs");
+    const readArtifact = async (prefix: string) => {
+      const files = (await readdir(outputsDir)).filter((f) => f.startsWith(`${prefix}-`) && f.endsWith(".md"));
+      assert.equal(files.length, 1, `expected exactly one ${prefix} artifact, found ${files.length}`);
+      return JSON.parse(await readFile(path.join(outputsDir, files[0]), "utf8"));
+    };
+    const frozenChecklist = await readArtifact("acceptance-checklist");
+    assert.equal(frozenChecklist.status, "frozen");
+    assert.equal(frozenChecklist.items.length, 1);
+    assert.equal(frozenChecklist.items[0].id, "AC-001");
+    assert.equal(frozenChecklist.items[0].predicateId, "managed-readme-change");
+    assert.deepEqual(frozenChecklist.items[0].allowedFiles, ["README.md"]);
+    const evidenceLedger = await readArtifact("evidence-ledger");
+    assert.equal(evidenceLedger.evidence[0].result, "pass");
+    assert.ok(evidenceLedger.evidence[0].matchCount >= 1);
+    const checklistVerdict = await readArtifact("checklist-verdict");
+    assert.equal(checklistVerdict.status, "pass");
+    assert.equal(checklistVerdict.items[0].checklistId, "AC-001");
+    assert.equal(checklistVerdict.items[0].evidenceRefs[0].ledgerId, `evidence-ledger-${jobId}`);
+
+    const transcript = await readFile(transcriptPath, "utf8");
+    assert.match(transcript, /decomposing a task into structured acceptance-checklist items/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed worker writes dry-run PR preview after evidence-backed fake ACP run", async () => {
+  const root = await tempRoot("cpb-managed-finalize-dry-run");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  const sourcePath = path.join(root, "source");
+  const workerId = "w-finalize";
+  await mkdir(sourcePath, { recursive: true });
+  await writeFile(path.join(sourcePath, "README.md"), "# Managed Worker Finalizer Fixture\n", "utf8");
+  await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-finalizer", private: true }, null, 2)}\n`, "utf8");
+  const scenarioPath = await writeWorkerScenario(root);
+  const transcriptPath = path.join(root, "transcript-finalize.jsonl");
+  const injectedChecklist = buildInjectedAcceptanceChecklist({
+    jobId: "job-managed-finalize",
+    task: "managed worker fake ACP finalizer dry-run",
+  });
+  const { assignmentId, attemptDir } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    assignmentId: "a-managed-finalize",
+    entryId: "managed-finalize",
+    task: "managed worker fake ACP finalizer dry-run",
+    attemptToken: "attempt-token-finalize",
+    acceptanceChecklist: injectedChecklist,
+    metadata: {
+      autoFinalize: true,
+      finalizeMode: "pr",
+      repo: "owner/repo",
+      issueNumber: 42,
+      issueUrl: "https://github.com/owner/repo/issues/42",
+      issueTitle: "Managed worker finalizer dry-run",
+    },
+  });
+
+  try {
+    const worker = spawnWorker({
+      workerId,
+      hubRoot,
+      cpbRoot,
+      env: {
+        CPB_ROOT: cpbRoot,
+        CPB_HUB_ROOT: hubRoot,
+        CPB_EXECUTOR_ROOT: repoRoot,
+        CPB_PROJECT_ROOTS: root,
+        CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+        CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+          testAgentScript,
+          "--scenario-file", scenarioPath,
+          "--transcript-file", transcriptPath,
+        ]),
+      },
+      timeoutMs: 60_000,
+    });
+
+    const finished = await worker.done;
+    assert.equal(finished.code, 0, finished.stderr);
+
+    const result = await readJson(path.join(attemptDir, "result.json"));
+    assert.equal(result.assignmentId, assignmentId);
+    assert.equal(result.status, "completed");
+    assert.equal(result.jobResult.status, "completed");
+    assert.equal(result.finalizeResult.status, "dry-run");
+    assert.equal(result.finalizeResult.mode, "dry-run");
+    assert.equal(result.finalizeResult.issue.repo, "owner/repo");
+    assert.equal(result.finalizeResult.issue.number, 42);
+    assert.equal(result.finalizeResult.planned.pullRequestPreview, true);
+    assert.equal(result.finalizeResult.planned.push, false);
+    assert.equal(result.finalizeResult.planned.pullRequest, false);
+    assert.equal(result.finalizeResult.worktreeHead, result.finalizeResult.sourceHead);
+    assert.equal(result.finalizeResult.completionGate.outcome, "complete");
+    assert.equal(result.finalizeResult.verdict.status, "pass");
+    assert.equal(result.finalizeResult.pr.status, "dry-run");
+    assert.equal(result.finalizeResult.pr.request.draft, true);
+    assert.equal(result.finalizeResult.pr.request.repo, "owner/repo");
+    assert.match(result.finalizeResult.pr.request.head, /^cpb\/job-managed-finalize-pipeline/);
+    assert.match(result.finalizeResult.pr.request.body, /Completion Gate/i);
+    assert.match(result.finalizeResult.pr.request.body, /Verdict/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("managed worker completes blocked workflow without creating a worktree", async () => {

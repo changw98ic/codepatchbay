@@ -558,10 +558,12 @@ function prBody(job: AnyRecord, routingContext: AnyRecord | null = null, agents:
     tests = [],
     audit = {},
     verdict = { status: "pass" },
+    completionGate = null,
   } = bodyContext || {};
   return buildCodePatchBayPrBody({
     job,
     verdict,
+    completionGate,
     routingContext,
     agents,
     artifacts,
@@ -732,7 +734,8 @@ export async function openDraftPullRequest({
   job,
   verdict,
   branchPushed = false,
-  dryRun = false,
+  dryRun = true,
+  allowLive = false,
   createPullRequest,
   runCommand,
   pushToken = null,
@@ -742,6 +745,7 @@ export async function openDraftPullRequest({
   tests = [],
   audit = {},
   verdictDetail = null,
+  completionGate = null,
 }: AnyRecord = {}): Promise<AnyRecord> {
   if (!isPass(verdict)) {
     return {
@@ -756,6 +760,7 @@ export async function openDraftPullRequest({
     tests,
     audit,
     verdict: verdictForBody(verdict, verdictDetail),
+    completionGate,
   });
   const evidence = {
     repo: request.repo,
@@ -775,6 +780,10 @@ export async function openDraftPullRequest({
       request,
       posted: false,
     };
+  }
+
+  if (!allowLive) {
+    return blocked("draft PR creation requires explicit live finalization opt-in", evidence);
   }
 
   let branchPreparation = null;
@@ -817,6 +826,7 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot: string, project: string
     verdict: options.verdict,
     branchPushed: options.branchPushed,
     dryRun: options.dryRun,
+    allowLive: Boolean(options.allowLive || options.allowLiveFinalize),
     createPullRequest: options.createPullRequest,
     runCommand: options.runCommand,
     pushToken: options.pushToken,
@@ -826,6 +836,7 @@ export async function maybeOpenDraftPrAfterPass(cpbRoot: string, project: string
     tests: options.tests || [],
     audit: options.audit || {},
     verdictDetail: options.verdictDetail || null,
+    completionGate: options.completionGate || null,
   });
 
   if (result.status === "pr.opened") {

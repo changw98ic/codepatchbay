@@ -19,6 +19,7 @@ import {
 import { listProjects, loadRegistry, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { rebuildJobsIndex } from "../server/services/job/job-store.js";
 import { poolExhaustedJob } from "../server/services/job/job-store.js";
+import { resolveProjectDataRoot } from "../server/services/runtime.js";
 import {
   appendHistory,
   claimIssue,
@@ -54,6 +55,7 @@ export {
   releaseManagedAcpWorktree,
   resolveGithubTransport,
   resolveHubRoot,
+  resolveProjectDataRoot,
   stopManagedAcpPool,
   updateIssueStatus,
 };

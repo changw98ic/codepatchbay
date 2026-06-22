@@ -273,7 +273,6 @@ export async function main() {
       // Create worktree for isolation. Managed pipeline execution must never
       // fall back to the source checkout.
       const metadata = assignment.metadata || {};
-      const autoFinalize = Boolean(metadata.autoFinalize && assignment.sourcePath);
       const jobId = `job-${assignment.entryId}${attemptNum > 1 ? `-a${attemptNum}` : ""}`;
       let worktreeInfo: AnyRecord | null = null;
 
@@ -361,20 +360,6 @@ export async function main() {
 
         clearInterval(assignmentHeartbeat);
         clearInterval(cancelTimer);
-
-        // Finalize: create PR/review bundle if autoFinalize and job succeeded
-        if (autoFinalize && result.status === "completed" && worktreeInfo) {
-          // Commit any uncommitted changes in the worktree before finalizing
-          try {
-            const { stdout: wtStatus } = await execFileAsync("git", ["status", "--porcelain"], { cwd: worktreeInfo.path });
-            if (wtStatus.trim()) {
-              await execFileAsync("git", ["add", "-A"], { cwd: worktreeInfo.path });
-              await execFileAsync("git", ["commit", "-m", assignment.task || "automated change"], { cwd: worktreeInfo.path });
-            }
-          } catch (commitErr: unknown) {
-            jobLog.warn(`worktree commit failed: ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`);
-          }
-        }
 
         await finalizeAndWriteSuccessfulResult({
           cpbRoot,

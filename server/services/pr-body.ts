@@ -119,12 +119,32 @@ function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   ];
 }
 
+function completionGateLines(completionGate: LooseRecord | null | undefined) {
+  if (!completionGate) return [];
+  const checklist = completionGate.checklist || completionGate.checklistStatus || {};
+  const blocking = completionGate.blockingCount
+    ?? completionGate.blocking?.length
+    ?? checklist.blockingCount
+    ?? checklist.blocking?.length
+    ?? "unavailable";
+  return [
+    "",
+    "## Completion Gate",
+    "",
+    `- Outcome: ${valueOrUnavailable(completionGate.outcome)}`,
+    `- Reason: ${valueOrUnavailable(completionGate.reason)}`,
+    `- Checklist Status: ${valueOrUnavailable(checklist.status)}`,
+    `- Blocking: ${blocking}`,
+  ];
+}
+
 export function buildCodePatchBayPrBody({
   job = {},
   agents = {},
   artifacts = {},
   tests = [],
   verdict = {},
+  completionGate = null,
   audit = {},
   routingContext = null,
 }: LooseRecord = {}) {
@@ -173,6 +193,7 @@ export function buildCodePatchBayPrBody({
     `- Blocking: ${blocking}`,
     `- Reason: ${reason}`,
     `- Verdict: ${artifactRef(artifacts.verdict)}`,
+    ...completionGateLines(completionGate),
     ...(routingContext?.finalDiffGuard ? finalDiffGuardLines(routingContext) : []),
     "",
     "## Audit",
