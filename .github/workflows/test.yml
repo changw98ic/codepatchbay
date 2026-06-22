@@ -37,6 +37,12 @@ jobs:
       - name: Run Node typecheck
         run: npm run typecheck:node
 
+      - name: Run strict engine typecheck
+        run: npm run typecheck:strict:engine
+
+      - name: Run engine type-debt gate
+        run: npm run typecheck:type-debt:engine
+
       - name: Run web tests
         run: cd web && npm test -- --run
         if: hashFiles('web/package.json') != ''

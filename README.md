@@ -12,6 +12,18 @@ Issue / 任务 → CodePatchBay Runtime → coding agents → 有证据的可审
 
 CodePatchBay 不替代 Claude Code、Codex 或其他 coding agents。它管理 agent 之间的交接、状态、证据和产物。
 
+## 当前稳定化周期
+
+CodePatchBay 当前冻结横向能力扩张，优先清偿执行内核和发布门稳定性。稳定化周期内不新增 agent 类型、workflow 类别、scheduler 特性或 provider 集成；优先完成：
+
+- 执行内核的恢复边界、事件顺序和 provider handoff 安全拆分
+- 生产默认 checklist decomposition 合约测试和 worker 路径 E2E
+- managed-worker / ACP 隔离证据
+- 默认无外部副作用的 GitHub draft PR dry-run finalizer
+- `core/engine` 类型门禁和 broad-any 债务守卫
+
+发布级完成标准记录在 `docs/product/cpb-stabilization-baseline-2026-06-22.md` 和 `docs/product/cpb-flagship-validation-gate.md`；后续 PR 必须说明是否触及这些门禁，并在相关变更中运行 `npm run verify:release-gate`。
+
 ## 为什么需要交付运行时
 
 Coding agents 擅长写代码，但真实工程交付不只是代码生成。一个可审查的编码工作流还需要：
@@ -107,7 +119,7 @@ cpb github doctor                # 验证通信正常
 cpb hub start                    # 启动 Hub 调度器
 ```
 
-给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 创建草稿 PR。
+给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 生成 draft PR dry-run preview；live 草稿 PR 创建需要显式 opt-in。
 
 ## 支持的 Coding Agents
 

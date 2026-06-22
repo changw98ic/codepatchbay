@@ -15,7 +15,7 @@
     "types": ["node"],
     "sourceMap": false,
     "declaration": false,
-    "noEmitOnError": false
+    "noEmitOnError": true
   },
   "include": [
     "cli/**/*.ts",
