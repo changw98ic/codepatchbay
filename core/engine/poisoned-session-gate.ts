@@ -2,29 +2,9 @@ import { readFile as defaultReadFile } from "node:fs/promises";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { classifyPoisonedSession } from "./poisoned-session.js";
+import type { PhaseResult } from "../../shared/types.js";
 
 type LooseRecord = Record<string, unknown>;
-
-type PhaseArtifact = {
-  path?: unknown;
-  [key: string]: unknown;
-};
-
-type PhaseFailure = {
-  kind?: unknown;
-  reason?: unknown;
-  cause?: unknown;
-};
-
-type PhaseResult = {
-  phase?: string;
-  status?: string;
-  artifact?: PhaseArtifact | null;
-  failure?: PhaseFailure | null;
-  stderr?: unknown;
-  stderrSnippet?: unknown;
-  [key: string]: unknown;
-};
 
 type EvaluatePoisonedSessionGateContext = {
   cpbRoot: string;

@@ -1,20 +1,6 @@
+import type { PhaseResult, PhaseFailure } from "../../shared/types.js";
+
 type LooseRecord = Record<string, unknown>;
-
-type PhaseResult = {
-  status?: unknown;
-  artifact?: {
-    name?: unknown;
-    [key: string]: unknown;
-  } | null;
-  diagnostics?: unknown;
-  failure?: unknown;
-};
-
-type PhaseFailure = {
-  kind?: unknown;
-  reason?: unknown;
-  cause?: unknown;
-};
 
 type EmitPhaseResultEventInput = {
   cpbRoot: string;

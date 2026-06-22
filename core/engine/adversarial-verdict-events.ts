@@ -1,12 +1,6 @@
-type LooseRecord = Record<string, unknown>;
+import type { PhaseResult } from "../../shared/types.js";
 
-type PhaseResult = {
-  artifact?: {
-    name?: unknown;
-    [key: string]: unknown;
-  } | null;
-  diagnostics?: unknown;
-};
+type LooseRecord = Record<string, unknown>;
 
 type EmitAdversarialVerdictEventInput = {
   cpbRoot: string;

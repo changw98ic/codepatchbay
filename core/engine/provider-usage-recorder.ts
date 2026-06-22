@@ -6,6 +6,7 @@ import {
   resolveRawAgent,
   type ProviderAgents,
 } from "./provider-handoff.js";
+import type { PhaseResult, PhaseFailure } from "../../shared/types.js";
 
 type ProviderPool = Parameters<typeof resolveProviderKey>[0];
 
@@ -24,18 +25,6 @@ type PhaseUsageRecord = {
   tokenSource: unknown;
   toolCalls: unknown;
   functionCalls: unknown;
-};
-
-type PhaseFailure = {
-  kind?: unknown;
-  reason?: unknown;
-  cause?: unknown;
-};
-
-type PhaseResult = {
-  status?: string;
-  diagnostics?: unknown;
-  failure?: PhaseFailure | null;
 };
 
 type ProviderHandoffState = {

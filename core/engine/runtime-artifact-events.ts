@@ -1,3 +1,5 @@
+import type { PhaseResult } from "../../shared/types.js";
+
 type LooseRecord = Record<string, unknown>;
 
 type RuntimeArtifact = {
@@ -18,14 +20,6 @@ type WriteRuntimeArtifactEventInput = {
   appendEvent: AppendEvent;
   attemptId?: string | null;
   now?: () => string;
-};
-
-type PhaseResult = {
-  artifact?: {
-    name?: unknown;
-    [key: string]: unknown;
-  } | null;
-  diagnostics?: unknown;
 };
 
 type EmitDiagnosticArtifactEventsInput = {

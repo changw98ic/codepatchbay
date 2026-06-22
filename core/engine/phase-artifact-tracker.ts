@@ -1,15 +1,6 @@
+import type { PhaseResult, PhaseArtifact } from "../../shared/types.js";
+
 type LooseRecord = Record<string, unknown>;
-
-type PhaseArtifact = {
-  name?: string;
-  id?: unknown;
-  [key: string]: unknown;
-};
-
-type PhaseResult = {
-  status?: unknown;
-  artifact?: PhaseArtifact | null;
-};
 
 type TrackPassedPhaseArtifactInput = {
   cpbRoot: string;

@@ -1,21 +1,9 @@
 import { FailureKind } from "../contracts/failure.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
 import { evaluateScopeGuard, normalizeFixScope } from "./scope-guard.js";
+import type { PhaseResult } from "../../shared/types.js";
 
 type LooseRecord = Record<string, unknown>;
-
-type PhaseResult = {
-  status?: string;
-  artifact?: {
-    files?: unknown;
-    metadata?: {
-      changedFiles?: unknown;
-      [key: string]: unknown;
-    } | null;
-    [key: string]: unknown;
-  } | null;
-  [key: string]: unknown;
-};
 
 type ScopeGuardInput = {
   cpbRoot: string;
@@ -63,7 +51,7 @@ function retryFixScope(sourceContext: unknown) {
 }
 
 function rawChangedFiles(result: PhaseResult): unknown[] {
-  const files = result.artifact?.metadata?.changedFiles || result.artifact?.files || [];
+  const files = recordValue(result.artifact?.metadata).changedFiles || result.artifact?.files || [];
   return Array.isArray(files) ? files : [];
 }
 

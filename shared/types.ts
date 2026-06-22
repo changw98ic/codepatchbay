@@ -20,11 +20,19 @@ export type PhaseFailure = {
   [key: string]: unknown;
 };
 
+export type PhaseArtifact = {
+  name?: string;
+  path?: string;
+  id?: string;
+  kind?: string;
+  [key: string]: unknown;
+};
+
 export type PhaseResult = {
   schemaVersion?: number;
   phase?: string;
   status?: string;
-  artifact?: unknown;
+  artifact?: PhaseArtifact | null;
   failure?: PhaseFailure | null;
   diagnostics?: Record<string, unknown>;
   createdAt?: string;

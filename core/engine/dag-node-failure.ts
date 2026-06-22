@@ -1,11 +1,7 @@
 import { FailureKind } from "../contracts/failure.js";
+import type { PhaseResult } from "../../shared/types.js";
 
 type LooseRecord = Record<string, unknown>;
-
-type PhaseResult = {
-  status?: string;
-  failure?: unknown;
-};
 
 type HandleDagNodeFailureInput = {
   cpbRoot: string;

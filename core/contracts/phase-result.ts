@@ -1,11 +1,11 @@
-import { PhaseResult, PhaseFailure } from "../../shared/types.js";
+import { PhaseResult, PhaseFailure, PhaseArtifact } from "../../shared/types.js";
 
 export function phasePassed({ phase, artifact = null, diagnostics = {} }: { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown> }): PhaseResult {
   return {
     schemaVersion: 1,
     phase,
     status: "passed",
-    artifact,
+    artifact: artifact as PhaseArtifact | null,
     failure: null,
     diagnostics,
     createdAt: new Date().toISOString(),
