@@ -35,20 +35,35 @@ debt**. No further work is planned on either:
   for future wide workflows, not a runtime feature. Building a parallel
   executor has zero current ROI. Sequential traversal is the design.
 
-- **"strict mode still excludes `run-job.ts`"** — 9 of the 23 broad-`any`
-  sites in `run-job.ts` are `ctx: AnyRecord`, the runtime context assembled
-  across the layer boundary in `server/services/engine-runner.ts`. Typing
-  `ctx` would require a cross-layer `RunJobContext` interface that pulls
-  `core/` toward a `server/` dependency the layering invariant forbids. The
-  remaining sites are runtime state (`phaseResults`, `state`, `workflowDag`)
-  that cannot be narrowed without the same `ctx` contract. Excluding the
-  orchestrator file from the strict gate is the correct boundary call, not
-  deferred debt.
+- **"strict mode still excludes `run-job.ts`"** — **Resolved (commit
+  `057c4e77`):** `run-job.ts` is now in the strict-engine gate. An earlier
+  draft of this note argued the exclusion was a correct orchestrator-boundary
+  call; that argument was wrong — the `ctx: AnyRecord` sites are explicit
+  `any` (legal under `tsc --strict`, which forbids implicit any, not explicit),
+  not an architectural blocker. The migration fixed 38 strict errors across
+  `run-job.ts` (14) and its imports `handoff-bundle` / `dynamic-agent-plan` /
+  `agent-runner` / `session-cache` (24). The type-debt allowlist for
+  `run-job.ts` is 28 `AnyRecord` occurrences (`workflowDag`/`phaseRoleMap`
+  tightened to concrete types; `executionNodes`/`dagResumeContext`/
+  `acceptanceChecklist` kept as `AnyRecord | undefined` because
+  `WorkflowDagNode` is `JsonRecord`-based and narrowing cascades `unknown`
+  into 12+ downstream access sites).
 
-The only stabilization item that remains open is the flagship GitHub Issue
+  **Follow-up debt surfaced by this migration:** two `runPhase` call sites
+  (`run-job.ts:991`, `run-job.ts:1011`) use `as (input: AnyRecord) =>
+  Promise<any>` to bridge a covariance gap. Root cause: `run-phase.ts`
+  defines `PhaseResult` as `ReturnType<typeof phasePassed | phaseFailed>`
+  (its `failure` field is `unknown`), while 7 other `core/engine` files each
+  declare their own local `type PhaseResult` with incompatible `failure`
+  shapes (`QuotaFailure | null` etc). Consolidating into one canonical
+  `PhaseResult` in `shared/types.ts` removes the as-assertions. This is the
+  next strict-quality debt; non-blocking.
+
+The stabilization items that remain open are: (1) the flagship GitHub Issue
 -> draft PR path, which by design requires a 3-maintainer/team manual
 validation that automation cannot substitute (see
-`docs/product/cpb-flagship-validation-gate.md`).
+`docs/product/cpb-flagship-validation-gate.md`); and (2) the `PhaseResult`
+fragmentation follow-up above.
 
 ## Baseline Metrics
 
