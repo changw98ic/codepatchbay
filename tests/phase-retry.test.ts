@@ -3,8 +3,9 @@ import { test } from "node:test";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { runPhaseRetryLoops } from "../core/engine/phase-retry.js";
+import { recordValue } from "../shared/types.js";
 
-function failedResult(kind: string, overrides: Record<string, any> = {}) {
+function failedResult(kind: string, overrides: Record<string, unknown> = {}) {
   return {
     schemaVersion: 1,
     phase: "execute",
@@ -23,7 +24,7 @@ function failedResult(kind: string, overrides: Record<string, any> = {}) {
   };
 }
 
-function baseState(overrides: Record<string, any> = {}) {
+function baseState(overrides: Record<string, unknown> = {}) {
   return {
     phase: "execute",
     role: "executor",
@@ -50,17 +51,17 @@ function baseState(overrides: Record<string, any> = {}) {
 }
 
 test("runPhaseRetryLoops retries retryable transient failures after configured delay", async () => {
-  const events: Record<string, any>[] = [];
-  const progress: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
+  const progress: Record<string, unknown>[] = [];
   const delays: number[] = [];
-  const runInputs: Record<string, any>[] = [];
+  const runInputs: Record<string, unknown>[] = [];
 
   const result = await runPhaseRetryLoops({
     agent: "fake-acp",
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
-    onProgress: async (event: Record<string, any>) => {
+    onProgress: async (event: Record<string, unknown>) => {
       progress.push(event);
     },
   }, {
@@ -74,7 +75,7 @@ test("runPhaseRetryLoops retries retryable transient failures after configured d
       delays.push(ms);
     },
     now: () => "2026-06-22T00:00:00.000Z",
-    runPhase: async (input: Record<string, any>) => {
+    runPhase: async (input: Record<string, unknown>) => {
       runInputs.push(input);
       return {
         schemaVersion: 1,
@@ -97,13 +98,131 @@ test("runPhaseRetryLoops retries retryable transient failures after configured d
   assert.equal(progress.some((event) => event.type === "phase_retry"), true);
 });
 
+test("runPhaseRetryLoops leaves verification failures for cross-phase repair routing", async () => {
+  const events: Record<string, unknown>[] = [];
+  const progress: Record<string, unknown>[] = [];
+  let runCalls = 0;
+
+  const failedVerification = {
+    ...failedResult(FailureKind.VERIFICATION_FAILED, {
+      phase: "verify",
+      reason: "AC-002 failed",
+      retryable: true,
+      cause: {
+        verdict: {
+          status: "fail",
+          fix_scope: ["sphinx/domains/python.py"],
+          checklistVerdict: {
+            items: [{ checklistId: "AC-002", result: "fail", fixScope: ["sphinx/domains/python.py"] }],
+            fixScope: ["sphinx/domains/python.py"],
+          },
+        },
+      },
+    }),
+    phase: "verify",
+  };
+
+  const result = await runPhaseRetryLoops({
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
+      events.push(event);
+    },
+    onProgress: async (event: Record<string, unknown>) => {
+      progress.push(event);
+    },
+  }, {
+    ...baseState({
+      phase: "verify",
+      role: "verifier",
+      nodeId: "verify",
+      dagNode: { id: "verify", phase: "verify" },
+      phaseAgents: { verifier: "fake-acp" },
+    }),
+    result: failedVerification,
+  }, {
+    phaseRetryMax: 2,
+    retryBaseDelayMs: () => 0,
+    delay: async () => {},
+    runPhase: async () => {
+      runCalls += 1;
+      return {
+        schemaVersion: 1,
+        phase: "verify",
+        status: "passed",
+        artifact: { name: "incorrect-verify-rerun" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure?.kind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(runCalls, 0);
+  assert.equal(events.some((event) => event.type === "phase_retry"), false);
+  assert.equal(progress.some((event) => event.type === "phase_retry"), false);
+});
+
+test("runPhaseRetryLoops carries bounded handoff evidence into plan timeout retries", async () => {
+  const events: Record<string, unknown>[] = [];
+  const runInputs: Record<string, unknown>[] = [];
+  const carryForward = {
+    readSearchCount: 2,
+    toolCalls: [{ event: "tool_call", title: "Read src/router.ts", kind: "read" }],
+  };
+
+  const result = await runPhaseRetryLoops({
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
+      events.push(event);
+    },
+  }, {
+    ...baseState({
+      phase: "plan",
+      role: "planner",
+      nodeId: "plan",
+      dagNode: { id: "plan", phase: "plan" },
+      phaseResults: [],
+      phaseAgents: { planner: "fake-acp" },
+    }),
+    result: {
+      ...failedResult(FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT, {
+        phase: "plan",
+        reason: "plan_bounded_handoff_timeout: timed out before Bounded Handoff",
+        cause: { handoffCarryForward: carryForward },
+      }),
+      phase: "plan",
+    },
+  }, {
+    phaseRetryMax: 1,
+    retryBaseDelayMs: () => 0,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "plan",
+        status: "passed",
+        artifact: { name: "plan-retry" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  const retry = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(retry.failureKind, FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT);
+  assert.equal(retry.retryClass, "bounded_handoff_timeout");
+  assert.deepEqual(retry.handoffCarryForward, carryForward);
+  assert.match(String(retry.instruction), /reuse the carry-forward static evidence/i);
+  assert.equal(events.find((event) => event.type === "phase_retry")?.carryForward, true);
+});
+
 test("runPhaseRetryLoops appends feedback context for artifact validation failures", async () => {
-  const events: Record<string, any>[] = [];
-  const runInputs: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
+  const runInputs: Record<string, unknown>[] = [];
 
   const result = await runPhaseRetryLoops({
     agent: "fake-acp",
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
   }, {
@@ -117,7 +236,7 @@ test("runPhaseRetryLoops appends feedback context for artifact validation failur
     phaseRetryMax: 0,
     phaseFeedbackRetryMax: 1,
     now: () => "2026-06-22T00:00:00.000Z",
-    runPhase: async (input: Record<string, any>) => {
+    runPhase: async (input: Record<string, unknown>) => {
       runInputs.push(input);
       return {
         schemaVersion: 1,
@@ -133,12 +252,311 @@ test("runPhaseRetryLoops appends feedback context for artifact validation failur
   assert.equal(result.status, "passed");
   assert.equal(events[0].type, "phase_feedback_retry");
   assert.equal(events[0].failureKind, FailureKind.ARTIFACT_INVALID);
-  assert.deepEqual(runInputs[0].sourceContext.retry, {
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.deepEqual(retryContext, {
     failureKind: FailureKind.ARTIFACT_INVALID,
     failureReason: "artifact missing field",
     previousOutput: "stderr fallback",
     attempt: 1,
   });
+});
+
+test("runPhaseRetryLoops repairs hard-constraint interceptions without consuming phase retry attempts", async () => {
+  const events: Record<string, unknown>[] = [];
+  const progress: Record<string, unknown>[] = [];
+  const delays: number[] = [];
+  const runInputs: Record<string, unknown>[] = [];
+
+  const result = await runPhaseRetryLoops({
+    agent: "fake-acp",
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
+      events.push(event);
+    },
+    onProgress: async (event: Record<string, unknown>) => {
+      progress.push(event);
+    },
+  }, {
+    ...baseState({
+      phaseAgents: { executor: "codex" },
+    }),
+    result: failedResult(FailureKind.BROAD_TEST_COMMAND_DENIED, {
+      retryable: true,
+      reason: "broad_test_command_denied: use the exact canonical command",
+      stderrSnippet: "python3 tests/runtests.py",
+    }),
+  }, {
+    phaseRetryMax: 3,
+    phaseQualityRepairMax: 2,
+    retryBaseDelayMs: () => 25,
+    delay: async (ms: number) => {
+      delays.push(ms);
+    },
+    now: () => "2026-06-22T00:00:00.000Z",
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "passed",
+        artifact: { name: "deliverable-quality-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  assert.deepEqual(delays, [], "quality repair should not use phase retry backoff");
+  assert.equal(runInputs.length, 1);
+  assert.equal(events.some((event) => event.type === "phase_retry"), false);
+  assert.equal(events[0].type, "phase_quality_retry");
+  assert.equal(events[0].attempt, 1);
+  assert.equal(events[0].maxAttempts, 2);
+  assert.equal(progress.some((event) => event.type === "phase_quality_retry"), true);
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(retryContext.failureKind, FailureKind.BROAD_TEST_COMMAND_DENIED);
+  assert.equal(retryContext.retryClass, "quality_interception");
+  assert.equal(retryContext.attempt, 1);
+  assert.match(String(retryContext.instruction), /execute phase/i);
+  assert.match(String(retryContext.instruction), /do not run tests/i);
+  assert.match(String(retryContext.instruction), /python -c probes/i);
+});
+
+test("runPhaseRetryLoops keeps canonical command repair guidance for verify broad-test interceptions", async () => {
+  const runInputs: Record<string, unknown>[] = [];
+
+  await runPhaseRetryLoops({}, {
+    ...baseState({
+      phase: "verify",
+      role: "verifier",
+      nodeId: "verify",
+      dagNode: { id: "verify", phase: "verify" },
+      phaseAgents: { verifier: "fake-acp" },
+    }),
+    result: {
+      ...failedResult(FailureKind.BROAD_TEST_COMMAND_DENIED, {
+        reason: "broad_test_command_denied: canonical command was wrapped",
+      }),
+      phase: "verify",
+      failure: {
+        ...failedResult(FailureKind.BROAD_TEST_COMMAND_DENIED).failure,
+        kind: FailureKind.BROAD_TEST_COMMAND_DENIED,
+        phase: "verify",
+        reason: "broad_test_command_denied: canonical command was wrapped",
+        retryable: true,
+      },
+    },
+  }, {
+    phaseQualityRepairMax: 1,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "verify",
+        status: "passed",
+        artifact: { name: "verify-quality-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.match(String(retryContext.instruction), /exact canonical or explicitly listed diagnostic command/i);
+  assert.doesNotMatch(String(retryContext.instruction), /execute phase/i);
+});
+
+test("runPhaseRetryLoops tells SWE-bench execute retries to stop terminal exploration", async () => {
+  const runInputs: Record<string, unknown>[] = [];
+
+  await runPhaseRetryLoops({}, {
+    ...baseState(),
+    result: failedResult(FailureKind.SWEBENCH_EXECUTE_TERMINAL_DENIED, {
+      retryable: true,
+      reason: "SWE-bench execute phase cannot use terminal tools",
+    }),
+  }, {
+    phaseQualityRepairMax: 1,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "passed",
+        artifact: { name: "execute-terminal-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(retryContext.failureKind, FailureKind.SWEBENCH_EXECUTE_TERMINAL_DENIED);
+  assert.match(String(retryContext.instruction), /do not use terminal or shell commands/i);
+  assert.match(String(retryContext.instruction), /Inspect the files named by the plan first/i);
+  assert.match(String(retryContext.instruction), /make the planned source\/test edits/i);
+});
+
+test("runPhaseRetryLoops tells SWE-bench execute retries to stop no-edit exploration", async () => {
+  const runInputs: Record<string, unknown>[] = [];
+
+  await runPhaseRetryLoops({}, {
+    ...baseState(),
+    result: failedResult(FailureKind.SWEBENCH_EXECUTE_NO_EDIT_PROGRESS, {
+      retryable: true,
+      reason: "swebench_execute_no_edit_progress: exceeded no-edit read/search limit",
+    }),
+  }, {
+    phaseQualityRepairMax: 1,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "passed",
+        artifact: { name: "execute-no-edit-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(retryContext.failureKind, FailureKind.SWEBENCH_EXECUTE_NO_EDIT_PROGRESS);
+  assert.match(String(retryContext.instruction), /Stop re-reading and searching/i);
+  assert.match(String(retryContext.instruction), /make the planned source\/test edit/i);
+  assert.match(String(retryContext.instruction), /concrete blocker/i);
+});
+
+test("runPhaseRetryLoops tells ordinary execute retries to stop no-edit exploration", async () => {
+  const runInputs: Record<string, unknown>[] = [];
+
+  await runPhaseRetryLoops({}, {
+    ...baseState(),
+    result: failedResult(FailureKind.EXECUTE_NO_EDIT_PROGRESS, {
+      retryable: true,
+      reason: "execute_no_edit_progress: exceeded no-edit read/search limit",
+    }),
+  }, {
+    phaseQualityRepairMax: 1,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "passed",
+        artifact: { name: "execute-generic-no-edit-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(retryContext.failureKind, FailureKind.EXECUTE_NO_EDIT_PROGRESS);
+  assert.match(String(retryContext.instruction), /This is the execute phase/i);
+  assert.match(String(retryContext.instruction), /Stop re-reading and searching/i);
+  assert.match(String(retryContext.instruction), /concrete blocker/i);
+});
+
+test("runPhaseRetryLoops immediately falls back execute hard-constraint failures to Codex", async () => {
+  const events: Record<string, unknown>[] = [];
+  const runInputs: Record<string, unknown>[] = [];
+
+  const result = await runPhaseRetryLoops({
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
+      events.push(event);
+    },
+  }, {
+    ...baseState({
+      phaseAgents: { executor: "claude-glm" },
+    }),
+    result: failedResult(FailureKind.SWEBENCH_EXECUTE_NO_EDIT_PROGRESS, {
+      retryable: true,
+      reason: "swebench_execute_no_edit_progress: exceeded no-edit read/search limit",
+    }),
+  }, {
+    phaseRetryMax: 3,
+    phaseQualityRepairMax: 1,
+    phaseFeedbackRetryMax: 0,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      const agents = recordValue(input.agents);
+      if (agents.executor === "codex") {
+        return {
+          schemaVersion: 1,
+          phase: "execute",
+          status: "passed",
+          artifact: { name: "execute-codex-fallback" },
+          failure: null,
+          diagnostics: {},
+        };
+      }
+      return failedResult(FailureKind.SWEBENCH_EXECUTE_NO_EDIT_PROGRESS, {
+        retryable: true,
+        reason: "swebench_execute_no_edit_progress: repeated no-edit read/search limit",
+      });
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  assert.equal(runInputs.length, 1);
+  assert.equal(recordValue(runInputs[0].agents).executor, "codex");
+  assert.equal(events.some((event) => event.type === "phase_quality_retry"), false);
+  const fallbackEvent = events.find((event) => event.type === "phase_agent_fallback");
+  assert.ok(fallbackEvent);
+  assert.equal(fallbackEvent.fromAgent, "claude-glm");
+  assert.equal(fallbackEvent.toAgent, "codex");
+  assert.equal(fallbackEvent.failureKind, FailureKind.SWEBENCH_EXECUTE_NO_EDIT_PROGRESS);
+  const fallbackRetry = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.equal(fallbackRetry.retryClass, "agent_fallback");
+  assert.match(String(fallbackRetry.instruction), /Switch the execute actor to codex/i);
+});
+
+test("runPhaseRetryLoops tells plan retries to avoid dynamic probes after broad-test interceptions", async () => {
+  const runInputs: Record<string, unknown>[] = [];
+
+  await runPhaseRetryLoops({}, {
+    ...baseState({
+      phase: "plan",
+      role: "planner",
+      nodeId: "plan",
+      dagNode: { id: "plan", phase: "plan" },
+      phaseAgents: { planner: "fake-acp" },
+    }),
+    result: {
+      ...failedResult(FailureKind.BROAD_TEST_COMMAND_DENIED, {
+        reason: "broad_test_command_denied: inline Python probe was blocked",
+      }),
+      phase: "plan",
+      failure: {
+        ...failedResult(FailureKind.BROAD_TEST_COMMAND_DENIED).failure,
+        kind: FailureKind.BROAD_TEST_COMMAND_DENIED,
+        phase: "plan",
+        reason: "broad_test_command_denied: inline Python probe was blocked",
+        retryable: true,
+      },
+    },
+  }, {
+    phaseQualityRepairMax: 1,
+    runPhase: async (input: Record<string, unknown>) => {
+      runInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "plan",
+        status: "passed",
+        artifact: { name: "plan-quality-repair" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  const retryContext = recordValue(recordValue(runInputs[0].sourceContext).retry);
+  assert.match(String(retryContext.instruction), /plan phase/i);
+  assert.match(String(retryContext.instruction), /do not run tests/i);
+  assert.match(String(retryContext.instruction), /heredoc scripts/i);
+  assert.doesNotMatch(String(retryContext.instruction), /exact canonical/i);
 });
 
 test("runPhaseRetryLoops does not retry quota delegate write failures", async () => {
@@ -160,4 +578,42 @@ test("runPhaseRetryLoops does not retry quota delegate write failures", async ()
 
   assert.equal(result.status, "failed");
   assert.equal(runCalls, 0);
+});
+
+test("runPhaseRetryLoops stops after repeated hard-constraint quality repair attempts", async () => {
+  let runCalls = 0;
+  const events: Record<string, unknown>[] = [];
+  const result = await runPhaseRetryLoops({
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
+      events.push(event);
+    },
+  }, {
+    ...baseState({
+      phaseAgents: { executor: "codex" },
+    }),
+    result: failedResult(FailureKind.WEB_TOOL_DENIED, {
+      reason: "web denied",
+      retryable: true,
+    }),
+  }, {
+    phaseRetryMax: 3,
+    phaseQualityRepairMax: 2,
+    phaseFeedbackRetryMax: 0,
+    retryBaseDelayMs: () => 0,
+    delay: async () => {},
+    runPhase: async () => {
+      runCalls += 1;
+      return failedResult(FailureKind.WEB_TOOL_DENIED, {
+        reason: "web denied again",
+        retryable: true,
+      });
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(runCalls, 2);
+  assert.equal(result.failure?.kind, FailureKind.WEB_TOOL_DENIED);
+  assert.equal(events.length, 2);
+  assert.equal(events.every((event) => event.type === "phase_quality_retry"), true);
+  assert.equal(events.some((event) => event.type === "phase_retry"), false);
 });
