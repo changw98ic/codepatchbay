@@ -17,6 +17,9 @@ test("CI installs a Linux sandbox provider before ACP tests", async () => {
   const source = await readFile(ciWorkflow, "utf8");
   assert.match(source, /apt-get install -y bubblewrap redis-server redis-tools/);
   assert.match(source, /bwrap --version/);
+  assert.match(source, /apparmor_restrict_unprivileged_userns/);
+  assert.match(source, /apparmor_parser -r/);
+  assert.match(source, /bwrap --die-with-parent --ro-bind \/ \/ --proc \/proc --dev \/dev \/bin\/true/);
 });
 
 test("release gate runner refuses decomposition-disabled environments and bypasses run-node-tests", async () => {

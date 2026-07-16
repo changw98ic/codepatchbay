@@ -29,6 +29,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap redis-server redis-tools
           bwrap --version
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo tee /etc/apparmor.d/cpb-bwrap >/dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+            sudo apparmor_parser -r /etc/apparmor.d/cpb-bwrap
+          fi
+          bwrap --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true
           redis-server --version
           redis-cli --version
 

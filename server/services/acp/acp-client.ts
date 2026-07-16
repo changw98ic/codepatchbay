@@ -28,6 +28,7 @@ import {
 } from "../../../core/acp/policy.js";
 import { buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
+import { redactSecrets } from "../secret-policy.js";
 import { captureNativeUsageCursor, readNativeUsageDelta } from "./native-usage.js";
 
 type PermissionDecision = LooseRecord & {
@@ -100,6 +101,7 @@ const USAGE_METRIC_KEYS = [
   "toolCalls",
   "functionCalls",
 ] as const;
+const ACP_STDERR_TAIL_LIMIT = 4000;
 
 type UsageMetricKey = typeof USAGE_METRIC_KEYS[number];
 type UsageMetricCounts = Record<UsageMetricKey, number>;
@@ -1308,6 +1310,7 @@ export class AcpClient {
   toolPolicy: Map<string, string> | null;
   outputSink: (chunk: string | Buffer) => void;
   errorSink: (chunk: string | Buffer) => void;
+  stderrTail: string;
   env: NodeJS.ProcessEnv;
   resumeSessionId: string | null;
   reuseSession: boolean;
@@ -1373,6 +1376,7 @@ export class AcpClient {
     this.toolPolicy = toolPolicy || null;
     this.outputSink = outputSink;
     this.errorSink = errorSink;
+    this.stderrTail = "";
     this.env = { ...env };
     if (cwd) this.env.CPB_ACP_CWD = cwd;
     this.resumeSessionId = resumeSessionId;
@@ -1525,6 +1529,7 @@ export class AcpClient {
 
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.markActivity();
+      this.stderrTail = `${this.stderrTail}${chunk.toString()}`.slice(-ACP_STDERR_TAIL_LIMIT);
       this.errorSink(chunk);
     });
 
@@ -1538,7 +1543,9 @@ export class AcpClient {
       this.clearSessionUpdateIdleTimer();
       this.clearExecuteNoEditIdleTimer();
       if (this.pending.size > 0) {
-        this.rejectAll(new Error(`ACP agent exited before completing requests (code=${code}, signal=${signal})`));
+        const stderrTail = String(redactSecrets(this.stderrTail.trim()) || "").slice(-1000);
+        const detail = stderrTail ? `; stderr tail: ${stderrTail}` : "";
+        this.rejectAll(new Error(`ACP agent exited before completing requests (code=${code}, signal=${signal})${detail}`));
       }
     });
 

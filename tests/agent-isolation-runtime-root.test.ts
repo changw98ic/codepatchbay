@@ -128,6 +128,43 @@ test("AcpClient.start fails closed for project job env without runtime root", as
   }
 });
 
+test("AcpClient startup failures retain a bounded redacted stderr tail", async () => {
+  const root = await tempRoot("cpb-acp-client-startup-stderr");
+  const client = new AcpClient({
+    agent: "codex",
+    cwd: root,
+    prompt: "",
+    outputSink: () => {},
+    errorSink: () => {},
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_AGENT_SANDBOX: "off",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: JSON.stringify([
+        "-e",
+        "process.stderr.write('sandbox bootstrap denied token=supersecret123'); process.exit(23)",
+      ]),
+    },
+  });
+
+  try {
+    await assert.rejects(
+      client.start(),
+      (error: any) => {
+        assert.match(error.message, /code=23/);
+        assert.match(error.message, /sandbox bootstrap denied/);
+        assert.match(error.message, /token=\[REDACTED\]/);
+        assert.doesNotMatch(error.message, /supersecret123/);
+        return true;
+      },
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolveAcpAuditFile uses project runtime root and skips legacy fallback", async () => {
   const root = await tempRoot("cpb-acp-audit-runtime-root");
   const cpbRoot = path.join(root, "cpb");
