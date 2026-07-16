@@ -15,6 +15,12 @@ import {
 import { isDelegateAlive } from "../server/services/quota-delegate-client.js";
 import { tempRoot } from "./helpers.js";
 
+const FAKE_GLM_PROVIDER_ENV = {
+  ZHIPU_BASE_URL: "https://glm.example.invalid/anthropic",
+  ZHIPU_API_KEY: "test-only-glm-key",
+  ZHIPU_MODEL: "glm-test",
+};
+
 async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -221,7 +227,7 @@ setTimeout(() => {}, 30000);
         dependencyReadRoots: [path.dirname(installedProject)],
         denyReadPaths: [installedProject],
       }),
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -356,7 +362,7 @@ console.log(JSON.stringify({
       CPB_AGENT_SANDBOX: "off",
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CLAUDE_CLI_COMMAND: command,
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -415,7 +421,7 @@ console.log(JSON.stringify({
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CLAUDE_CLI_COMMAND: command,
       CPB_CLAUDE_PLAN_MAX_TURNS: "5",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -462,7 +468,7 @@ setTimeout(() => {}, 30000);
       CPB_CLAUDE_CLI_COMMAND: command,
       CPB_CLAUDE_PLAN_MAX_TEXT_CHARS: "1000",
       CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS: "1000",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -572,7 +578,7 @@ setTimeout(() => {}, 30000);
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CLAUDE_CLI_COMMAND: command,
       CPB_CLAUDE_MAX_INTERNAL_API_RETRIES: "2",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -640,7 +646,7 @@ setInterval(() => console.log(JSON.stringify({ type: "system", subtype: "status"
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "5000",
       CPB_ACP_TOOL_CALL_BUDGET_EXECUTE: "50",
       CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE: "100",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -706,7 +712,7 @@ console.log(JSON.stringify({
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "100",
       CPB_ACP_TOOL_CALL_BUDGET_EXECUTE: "30",
       CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE: "60",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -754,7 +760,7 @@ setInterval(() => console.log(JSON.stringify({ type: "system", subtype: "thinkin
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "75",
       CPB_ACP_TOOL_CALL_BUDGET_EXECUTE: "50",
       CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE: "100",
-      ZHIPU_MODEL: "glm-test",
+      ...FAKE_GLM_PROVIDER_ENV,
     },
   });
   try {
@@ -812,7 +818,7 @@ setInterval(() => {}, 1000);
         CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT: "0",
         CPB_ACP_TOOL_CALL_BUDGET_EXECUTE: budgetKind === "call" ? "1" : "10",
         CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE: budgetKind === "call" ? "10" : "1",
-        ZHIPU_MODEL: "glm-test",
+        ...FAKE_GLM_PROVIDER_ENV,
       },
     });
     try {
