@@ -558,9 +558,47 @@ test("ACP terminal commands launch through RTK when available", async () => {
 
   const events = await readJsonl(auditPath);
   const launch = events.find((event) => event.event === "terminal_launch");
+  const exit = events.find((event) => event.event === "terminal_exit");
   assert.equal(launch?.command, process.execPath);
   assert.equal(launch?.launchCommand, "rtk");
   assert.equal(launch?.rtkEnabled, true);
+  assert.equal(exit?.terminalId, created.terminalId);
+  assert.equal(exit?.exitCode, 0);
+  assert.equal(exit?.signal, null);
+  assert.match(String(exit?.outputTail || ""), /terminal-ok/);
+});
+
+test("ACP terminal exit audit bounds and redacts captured output", async () => {
+  const tmp = await tempRoot("cpb-acp-terminal-exit-audit");
+  const auditPath = path.join(tmp, "audit.jsonl");
+  const client = new AcpClient({
+    agent: "fake-acp",
+    cwd: tmp,
+    prompt: "",
+    env: {
+      ...process.env,
+      CPB_ACP_AUDIT_FILE: auditPath,
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+    },
+  });
+
+  const created = await client.createTerminal({
+    command: process.execPath,
+    args: ["-e", "process.stderr.write('x'.repeat(1200) + ' api_key=test-terminal-secret-value')"],
+    cwd: tmp,
+    outputByteLimit: 4096,
+  });
+  const status = await client.waitForTerminalExit({ terminalId: created.terminalId });
+  assert.deepEqual(status, { exitCode: 0, signal: null });
+
+  const events = await readJsonl(auditPath);
+  const exit = events.find((event) => event.event === "terminal_exit");
+  assert.ok(exit);
+  assert.ok(String(exit.outputTail).length <= 1000);
+  assert.match(String(exit.outputTail), /api_key=\[REDACTED\]/);
+  assert.doesNotMatch(String(exit.outputTail), /test-terminal-secret-value/);
 });
 
 test("ACP terminal denies whole-filesystem find commands", async () => {
@@ -641,7 +679,11 @@ test("ACP terminal denies mutating git commands in read-only phases", async () =
     outputByteLimit: 4096,
   });
   const readOnlyGitStatus = await client.waitForTerminalExit({ terminalId: readOnlyGit.terminalId });
-  assert.deepEqual(readOnlyGitStatus, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    readOnlyGitStatus,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: readOnlyGit.terminalId }).output,
+  );
 
   const allowed = await client.createTerminal({
     command: process.execPath,
@@ -650,7 +692,11 @@ test("ACP terminal denies mutating git commands in read-only phases", async () =
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 });
 
 test("ACP terminal exact-test policy denies commands outside the allowlist", async () => {
@@ -694,7 +740,11 @@ test("ACP terminal exact-test policy denies commands outside the allowlist", asy
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 });
 
 test("ACP terminal exact-test policy rejects transformed test commands", async () => {
@@ -768,7 +818,11 @@ test("ACP terminal exact-test policy allows listed diagnostic commands only by e
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 
   await assert.rejects(
     () => client.createTerminal({

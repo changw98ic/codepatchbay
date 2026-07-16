@@ -97,6 +97,14 @@ function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 30_000,
   return { child, done, get stdout() { return stdout; }, get stderr() { return stderr; } };
 }
 
+function sandboxTempEnv(root: string) {
+  return {
+    TMPDIR: root,
+    TEMP: root,
+    TMP: root,
+  };
+}
+
 async function listJsonFiles(dir) {
   try {
     return (await readdir(dir)).filter((file) => file.endsWith(".json")).sort();
@@ -543,6 +551,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
     hubRoot,
     cpbRoot,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,
@@ -675,6 +684,7 @@ test("managed worker default checklist decomposition runs inside the worker path
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -772,6 +782,7 @@ test("managed worker writes dry-run PR preview after evidence-backed fake ACP ru
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -849,6 +860,7 @@ test("managed worker flagship issue to draft PR dry-run uses default checklist d
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -1035,6 +1047,7 @@ test("managed worker stops an active assignment when its cancel control file app
     hubRoot,
     cpbRoot,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,
@@ -1126,6 +1139,7 @@ test("managed worker closes attempt sessions between assignments without requiri
     cpbRoot,
     once: false,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,

@@ -261,6 +261,33 @@ test("macOS sandbox permits ignored child stdio without broad device writes", ()
   assert.doesNotMatch(profile, /^\(allow mach\*\)$/m);
 });
 
+test("Linux bwrap omits read binds already covered by system or writable roots", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-agent-sandbox-bwrap-roots-"));
+  const launch = buildAgentSandboxLaunch("/bin/zsh", ["-c", "true"], {
+    cwd: root,
+    platform: "linux",
+    probe: (command) => command === "bwrap",
+    env: {
+      CPB_AGENT_SANDBOX: "required",
+      CPB_AGENT_SANDBOX_ALLOW_READ: "/usr/bin",
+    },
+  });
+
+  const readBindDestinations: string[] = [];
+  const writeBindDestinations: string[] = [];
+  for (let index = 0; index < launch.args.length; index += 1) {
+    if (launch.args[index] === "--ro-bind-try") readBindDestinations.push(launch.args[index + 2]);
+    if (launch.args[index] === "--bind-try") writeBindDestinations.push(launch.args[index + 2]);
+  }
+
+  assert.equal(launch.command, "bwrap");
+  assert.equal(readBindDestinations.filter((destination) => destination === "/bin").length, 1);
+  assert.equal(readBindDestinations.filter((destination) => destination === "/usr").length, 1);
+  assert.equal(readBindDestinations.includes("/usr/bin"), false);
+  assert.equal(readBindDestinations.includes(root), false);
+  assert.equal(writeBindDestinations.filter((destination) => destination === root).length, 1);
+});
+
 test("inherited sandbox marker prevents nested sandbox launch", () => {
   const launch = buildAgentSandboxLaunch(process.execPath, ["-e", "0"], {
     cwd: process.cwd(),

@@ -19,7 +19,10 @@ test("CI installs a Linux sandbox provider before ACP tests", async () => {
   assert.match(source, /bwrap --version/);
   assert.match(source, /apparmor_restrict_unprivileged_userns/);
   assert.match(source, /apparmor_parser -r/);
-  assert.match(source, /bwrap --die-with-parent --ro-bind \/ \/ --proc \/proc --dev \/dev \/bin\/true/);
+  assert.match(source, /--ro-bind-try \/usr \/usr/);
+  assert.match(source, /--bind-try "\$smoke_root" "\$smoke_root"/);
+  assert.match(source, /\/bin\/zsh -c 'true'/);
+  assert.doesNotMatch(source, /--ro-bind \/ \/|--ro-bind-try \/ \/|--bind \/ \/|--bind-try \/ \/|--dev-bind \/ \/|--dev-bind-try \/ \/|--overlay-src \/(?:\s|$)/);
 });
 
 test("release gate runner refuses decomposition-disabled environments and bypasses run-node-tests", async () => {

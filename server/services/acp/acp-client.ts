@@ -102,6 +102,7 @@ const USAGE_METRIC_KEYS = [
   "functionCalls",
 ] as const;
 const ACP_STDERR_TAIL_LIMIT = 4000;
+const ACP_TERMINAL_AUDIT_TAIL_LIMIT = 1000;
 
 type UsageMetricKey = typeof USAGE_METRIC_KEYS[number];
 type UsageMetricCounts = Record<UsageMetricKey, number>;
@@ -201,7 +202,13 @@ type TerminalEntry = {
   truncated: boolean;
   outputByteLimit: number;
   exitStatus: TerminalExitStatus | null;
+  exitAudit: Promise<void> | null;
   waiters: Array<(status: TerminalExitStatus) => void>;
+};
+
+type AuditTarget = {
+  file: string | null;
+  env: NodeJS.ProcessEnv;
 };
 
 type AuditContextOptions = {
@@ -1424,9 +1431,10 @@ export class AcpClient {
     if (writeAllowPaths !== undefined) this.writeAllowPaths = writeAllowPaths;
   }
 
-  async recordAudit(event: string, details: LooseRecord = {}) {
-    if (!this.auditFile) return;
-    const auditEnv = this.auditEnv || this.env;
+  async recordAudit(event: string, details: LooseRecord = {}, target?: AuditTarget) {
+    const auditFile = target ? target.file : this.auditFile;
+    if (!auditFile) return;
+    const auditEnv = target?.env || this.auditEnv || this.env;
     const entry = {
       ts: new Date().toISOString(),
       event,
@@ -1437,8 +1445,8 @@ export class AcpClient {
       role: auditEnv.CPB_ACP_ROLE || null,
       ...details,
     };
-    await mkdir(path.dirname(this.auditFile), { recursive: true });
-    await appendFile(this.auditFile, `${JSON.stringify(entry)}\n`, "utf8");
+    await mkdir(path.dirname(auditFile), { recursive: true });
+    await appendFile(auditFile, `${JSON.stringify(entry)}\n`, "utf8");
   }
 
   async start() {
@@ -2463,14 +2471,21 @@ export class AcpClient {
     const env = buildChildEnv(this.childEnv || this.env, extraEnv, { agent: this.agent });
     const terminalLaunch = resolveTerminalLaunchCommand(params.command, params.args || [], env);
 
+    const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
+    const terminalAuditTarget: AuditTarget = {
+      file: this.auditFile,
+      env: { ...(this.auditEnv || this.env) },
+    };
     await this.recordAudit("terminal_launch", {
+      terminalId,
       cwd: terminalCwd,
       command: params.command,
       launchCommand: terminalLaunch.command,
       rtkEnabled: terminalLaunch.rtkEnabled,
-    });
+      sandboxMode: launch.sandbox?.mode || null,
+      sandboxProvider: launch.sandbox?.provider || null,
+    }, terminalAuditTarget);
 
-    const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
     const detached = process.platform !== "win32";
     const child = spawn(launch.command, launch.args, {
       cwd: terminalCwd,
@@ -2487,6 +2502,7 @@ export class AcpClient {
       truncated: false,
       outputByteLimit: params.outputByteLimit || 1048576,
       exitStatus: null,
+      exitAudit: null,
       waiters: [],
     };
 
@@ -2501,10 +2517,26 @@ export class AcpClient {
 
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("exit", (exitCode: number | null, signal: NodeJS.Signals | null) => {
+    child.on("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
       terminal.exitStatus = { exitCode, signal };
-      for (const resolve of terminal.waiters) resolve(terminal.exitStatus);
-      terminal.waiters = [];
+      terminal.exitAudit = this.recordAudit("terminal_exit", {
+        terminalId,
+        cwd: terminalCwd,
+        exitCode,
+        signal,
+        outputTail: String(redactSecrets(terminal.output) || "").slice(-ACP_TERMINAL_AUDIT_TAIL_LIMIT),
+        truncated: terminal.truncated,
+      }, terminalAuditTarget).catch((error) => {
+        try {
+          this.errorSink(`[cpb] failed to record terminal exit audit: ${error instanceof Error ? error.message : String(error)}\n`);
+        } catch {
+          // Terminal waiters must still settle when a diagnostic sink fails.
+        }
+      });
+      void terminal.exitAudit.then(() => {
+        for (const resolve of terminal.waiters) resolve(terminal.exitStatus!);
+        terminal.waiters = [];
+      });
     });
 
     this.terminals.set(terminalId, terminal);
@@ -2520,9 +2552,12 @@ export class AcpClient {
     };
   }
 
-  waitForTerminalExit(params: TerminalIdParams) {
+  async waitForTerminalExit(params: TerminalIdParams) {
     const terminal = this.getTerminal(params.terminalId);
-    if (terminal.exitStatus) return terminal.exitStatus;
+    if (terminal.exitStatus) {
+      await terminal.exitAudit;
+      return terminal.exitStatus;
+    }
     return new Promise<TerminalExitStatus>((resolve) => terminal.waiters.push(resolve));
   }
 
