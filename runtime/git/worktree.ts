@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
+import type { LooseRecord } from "../../core/contracts/types.js";
 
 const REQUIRED_IGNORES = [
   ".env",
@@ -38,6 +38,34 @@ type RunResult = {
   error?: unknown;
 };
 
+type WorktreeManagerArgs = LooseRecord & {
+  command?: string;
+  project?: string;
+  "job-id"?: string;
+  jobId?: string;
+  slug?: string;
+  "worktrees-root"?: string;
+  worktreesRoot?: string;
+};
+
+type CommitOptions = {
+  allowEmpty?: boolean;
+};
+
+type InitCodegraph = (worktreePath: string) => Promise<unknown>;
+
+type WorktreeRuntimeOptions = LooseRecord & {
+  initCodegraph?: InitCodegraph;
+  codegraphEnabled?: boolean;
+};
+
+type CreateWorktreeOptions = WorktreeRuntimeOptions & {
+  project?: string;
+  jobId?: string;
+  slug?: string;
+  worktreesRoot?: string;
+};
+
 function usage() {
   return [
     "Usage:",
@@ -48,7 +76,7 @@ function usage() {
 
 function parseArgs(argv: string[]) {
   const [command, ...tokens] = argv;
-  const args: AnyRecord = { command };
+  const args: WorktreeManagerArgs = { command };
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -82,7 +110,7 @@ function ensureInside(root: string, child: string) {
   }
 }
 
-function run(command: string, args: string[], options: AnyRecord = {}): Promise<RunResult> {
+function run(command: string, args: string[], options: SpawnOptions = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result: RunResult) => {
@@ -116,11 +144,11 @@ function run(command: string, args: string[], options: AnyRecord = {}): Promise<
   });
 }
 
-async function git(project: string, args: string[], options: AnyRecord = {}) {
+async function git(project: string, args: string[], options: SpawnOptions = {}) {
   return await run("git", ["-C", project, ...args], options);
 }
 
-async function mustGit(project: string, args: string[], options: AnyRecord = {}) {
+async function mustGit(project: string, args: string[], options: SpawnOptions = {}) {
   const result = await git(project, args, options);
   if (result.code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
@@ -237,7 +265,7 @@ async function rejectPreExistingStagedChanges(project: string) {
   }
 }
 
-async function commitStaged(project: string, message: string, { allowEmpty = false }: AnyRecord = {}) {
+async function commitStaged(project: string, message: string, { allowEmpty = false }: CommitOptions = {}) {
   const commitArgs = allowEmpty
     ? ["commit", "--allow-empty", "-m", message]
     : ["commit", "-m", message];
@@ -259,16 +287,6 @@ async function createBaselineCommit(project: string) {
   });
 }
 
-async function commitIgnoreProtection(project: string) {
-  await mustGit(project, ["add", "--", ".gitignore"]);
-  await removeRequiredIgnoresFromIndex(project);
-  await assertNoRequiredIgnoresInIndex(project);
-
-  if (await hasStagedChanges(project)) {
-    await commitStaged(project, "CodePatchbay protected ignore baseline");
-  }
-}
-
 export async function bootstrap(projectInput: string) {
   if (!projectInput) {
     throw new Error("missing --project");
@@ -277,21 +295,20 @@ export async function bootstrap(projectInput: string) {
   const project = path.resolve(projectInput);
   await mkdir(project, { recursive: true });
 
-  if (!(await isGitRepo(project))) {
+  const existingRepository = await isGitRepo(project);
+  if (!existingRepository) {
     await mustGit(project, ["init"]);
   }
 
-  const gitignoreChanged = await ensureGitignore(project);
-
   if (!(await hasHead(project))) {
+    await ensureGitignore(project);
     await createBaselineCommit(project);
   } else {
-    await removeRequiredIgnoresFromIndex(project);
-    await assertNoRequiredIgnoresInIndex(project);
+    // Existing repositories are user/product state. Runtime protection belongs
+    // in Git's local exclude file so worktree creation never changes HEAD, the
+    // index, or a tracked .gitignore merely to host CPB metadata.
+    await ensureProjectLocalExcludes(project);
     await rejectPreExistingStagedChanges(project);
-    if (gitignoreChanged || (await hasStagedChanges(project))) {
-      await commitIgnoreProtection(project);
-    }
   }
 }
 
@@ -346,6 +363,12 @@ async function ensureWorktreeLocalExcludes(worktreePath: string) {
   }
 }
 
+async function ensureProjectLocalExcludes(project: string) {
+  for (const pattern of REQUIRED_IGNORES) {
+    await ensureLocalGitExclude(project, pattern);
+  }
+}
+
 function commandFailureMessage(command: string, args: string[], result: RunResult) {
   const output = `${result.stderr || ""}${result.stdout || ""}`.trim();
   const suffix = output.length > 0 ? `: ${output}` : "";
@@ -361,73 +384,7 @@ async function initCodegraphIndex(worktreePath: string, runCommand = run) {
   return true;
 }
 
-async function isAlive(pid: unknown) {
-  const parsed = Number(pid);
-  if (!Number.isInteger(parsed) || parsed <= 0) return false;
-  try {
-    process.kill(parsed, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readJson(file: string): Promise<AnyRecord | null> {
-  try {
-    return JSON.parse(await readFile(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function ensureCodegraphReadinessState(worktreePath: string) {
-  const codegraphDir = path.join(worktreePath, ".codegraph");
-  const stateDir = path.join(worktreePath, "cpb-task");
-  const statePath = path.join(stateDir, "codegraph-state.json");
-  const daemonPath = path.join(codegraphDir, "daemon.pid");
-  const existingState = await readJson(statePath);
-  const existingDaemon = await readJson(daemonPath);
-  const existingPid = existingState?.pid || existingDaemon?.pid;
-
-  if (existingPid && await isAlive(existingPid)) {
-    return false;
-  }
-
-  await mkdir(stateDir, { recursive: true });
-  await mkdir(codegraphDir, { recursive: true });
-
-  const sentinel = spawn(process.execPath, [
-    "-e",
-    "setInterval(() => {}, 2147483647)",
-  ], {
-    cwd: worktreePath,
-    detached: true,
-    stdio: "ignore",
-  });
-  sentinel.unref();
-
-  const state = {
-    pid: sentinel.pid,
-    port: null,
-    codebaseRoot: worktreePath,
-    sseUrl: null,
-    mcpStdio: `codegraph serve --mcp --path ${worktreePath}`,
-    source: "cpb_worktree_readiness_sentinel",
-    startedAt: new Date().toISOString(),
-  };
-
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await writeFile(daemonPath, `${JSON.stringify({
-    pid: state.pid,
-    codebaseRoot: worktreePath,
-    socketPath: null,
-    source: state.source,
-    startedAt: state.startedAt,
-  }, null, 2)}\n`, "utf8");
-  return true;
-}
-
-async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = initCodegraphIndex }: AnyRecord = {}) {
+async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = initCodegraphIndex }: WorktreeRuntimeOptions = {}) {
   const worktreeCodegraph = path.join(worktreePath, ".codegraph");
   let resetCodegraph = false;
 
@@ -445,7 +402,6 @@ async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = i
   }
 
   await initCodegraph(worktreePath);
-  await ensureCodegraphReadinessState(worktreePath);
 
   return resetCodegraph;
 }
@@ -488,7 +444,7 @@ async function ensureSharedNodeModules(project: string, worktreePath: string) {
   return true;
 }
 
-async function prepareWorktreeRuntime(project: string, worktreePath: string, options: AnyRecord = {}) {
+async function prepareWorktreeRuntime(project: string, worktreePath: string, options: WorktreeRuntimeOptions = {}) {
   const codegraphEnabled = options.codegraphEnabled ?? (process.env.CPB_CODEGRAPH_ENABLED !== "0");
   await ensureWorktreeLocalExcludes(worktreePath);
   if (codegraphEnabled) {
@@ -523,7 +479,7 @@ async function existingWorktreePath(project: string, branch: string) {
   return null;
 }
 
-export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled }: AnyRecord = {}) {
+export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled }: CreateWorktreeOptions = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
   validateComponent("job-id", jobId);

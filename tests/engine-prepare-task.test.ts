@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { FailureKind, failure, isValidFailureKind } from "../core/contracts/failure.js";
 import { runJob } from "../core/engine/run-job.js";
@@ -16,7 +16,7 @@ process.env.CPB_PHASE_RETRY_MAX = "1";
 process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
 process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
 
-function jsonEnvelope(data: AnyRecord) {
+function jsonEnvelope(data: LooseRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
@@ -27,6 +27,14 @@ function phaseOutput(role: string) {
       planMarkdown: [
         "## Analysis",
         "- prepare_task fixture plan.",
+        "",
+        "## Bounded Handoff",
+        "- Real actors: prepare_task fixture and README.md",
+        "- Entrypoints: prepare_task preflight workflow",
+        "- Bypass candidates: DAG materialization paths",
+        "- Edit files: README.md",
+        "- Verification targets: node:test prepare_task fixture",
+        "- Blockers: none",
         "",
         "## Files to modify",
         "- README.md",
@@ -82,6 +90,23 @@ function phaseOutput(role: string) {
   });
 }
 
+function decomposeOutput(overrides: LooseRecord = {}) {
+  return jsonEnvelope({
+    status: "ok",
+    decomposedItems: [
+      {
+        requirement: "README is updated by the prepare_task fixture.",
+        predicateId: "prepare-readme-update",
+        verificationMethod: "static",
+        allowedFiles: ["README.md"],
+        sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+        expectedEvidence: "README.md is changed by the fixture execution",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 async function makeSourceRoot() {
   const sourcePath = await tempRoot("cpb-prepare-source");
   await writeFile(path.join(sourcePath, "README.md"), "# prepare_task fixture\n", "utf8");
@@ -102,7 +127,26 @@ function mediumRiskMap() {
   };
 }
 
-function makeServices({ events = [], starts = [], completed = [], blocked = [], failed = [], prepareTask }: AnyRecord = {}) {
+type PrepareServiceOptions = {
+  events?: LooseRecord[];
+  starts?: string[];
+  completed?: string[];
+  blocked?: LooseRecord[];
+  failed?: LooseRecord[];
+  prepareTask?: (cpbRoot?: string, input?: LooseRecord) => Promise<LooseRecord> | LooseRecord;
+};
+
+type PreparePoolOptions = {
+  calls?: LooseRecord[];
+  failWhen?: ((args: { call: LooseRecord; calls: LooseRecord[] }) => boolean) | null;
+};
+
+type RunPrepareEngineOptions = {
+  prepareTask?: PrepareServiceOptions["prepareTask"];
+  includePrepareTask?: boolean;
+};
+
+function makeServices({ events = [], starts = [], completed = [], blocked = [], failed = [], prepareTask }: PrepareServiceOptions = {}) {
   return {
     createJob: async (_cpbRoot, job) => ({
       ...job,
@@ -136,10 +180,16 @@ function makeServices({ events = [], starts = [], completed = [], blocked = [], 
   };
 }
 
-function makePool({ calls = [], failWhen = null }: AnyRecord = {}) {
+function makePool({ calls = [], failWhen = null }: PreparePoolOptions = {}) {
   return {
     async execute(agent, prompt, cwd, timeoutMs, meta) {
       const call = { agent, prompt, cwd, timeoutMs, meta };
+      if (/\bdecomposedItems\b/.test(prompt)) {
+        if (failWhen?.({ call, calls })) {
+          throw new Error("fixture forced provider failure");
+        }
+        return { output: decomposeOutput(), providerKey: agent, variant: null };
+      }
       calls.push(call);
       if (failWhen?.({ call, calls })) {
         throw new Error("fixture forced provider failure");
@@ -152,7 +202,7 @@ function makePool({ calls = [], failWhen = null }: AnyRecord = {}) {
   };
 }
 
-async function runPrepareEngine({ prepareTask, includePrepareTask = true }: AnyRecord = {}) {
+async function runPrepareEngine({ prepareTask, includePrepareTask = true }: RunPrepareEngineOptions = {}) {
   const cpbRoot = await tempRoot("cpb-prepare-cpb");
   const dataRoot = path.join(cpbRoot, "runtime");
   const sourcePath = await makeSourceRoot();
@@ -199,7 +249,7 @@ test("runJob blocks before phases when prepareTask service is missing", async ()
   assert.equal(result.status, "blocked");
   assert.equal(result.failure.phase, "prepare_task");
   assert.ok(isValidFailureKind(result.failure.kind), "prepare_task block should use a current FailureKind");
-  assert.match(result.failure.reason, /prepareTask|prepare_task/i);
+  assert.match(String(result.failure.reason), /prepareTask|prepare_task/i);
   assert.deepEqual(starts, []);
   assert.equal(calls.length, 0);
 });
@@ -253,7 +303,7 @@ test("runJob emits and materializes riskmap_generated before normal phases", asy
   assert.equal(riskEvent.verificationDepth, "standard");
   assert.equal(riskEvent.adversarialRequired, false);
 
-  const materialized = materializeJob(events) as AnyRecord;
+  const materialized = materializeJob(events) as LooseRecord;
   assert.deepEqual(materialized.riskMap, riskMap);
 });
 
@@ -280,7 +330,7 @@ test("runJob materializes workflow DAG and emits node transitions for phases", a
     "dag_node_completed:verify",
   ]);
 
-  const materialized = materializeJob(events) as AnyRecord;
+  const materialized = materializeJob(events) as LooseRecord;
   assert.deepEqual(materialized.workflowDag.nodes.map((node) => node.id), ["plan", "execute", "verify"]);
   assert.deepEqual(materialized.completedNodes, ["plan", "execute", "verify"]);
   assert.equal(materialized.nodeStates.verify.status, "completed");
@@ -438,8 +488,8 @@ test("runJob failed same-phase DAG node records node-aware resume target", async
   });
 
   assert.equal(result.status, "failed");
-  assert.equal((result.failure as AnyRecord).nodeId, "execute_b");
-  const materialized = materializeJob(events) as AnyRecord;
+  assert.equal((result.failure as LooseRecord).nodeId, "execute_b");
+  const materialized = materializeJob(events) as LooseRecord;
   assert.equal(materialized.dagResume.failedNodeId, "execute_b");
   assert.deepEqual(materialized.dagResume.resumeTarget, { nodeId: "execute_b", phase: "execute" });
   assert.deepEqual(materialized.dagResume.completedNodeIds, ["plan", "execute_a"]);
@@ -514,7 +564,7 @@ test("runJob resumes DAG retries without rerunning completed nodes", async () =>
       .map((event) => event.nodeId),
     ["execute_b", "verify"],
   );
-  const materialized = materializeJob(events) as AnyRecord;
+  const materialized = materializeJob(events) as LooseRecord;
   assert.deepEqual(materialized.completedNodes, ["plan", "execute_a", "execute_b", "verify"]);
   assert.equal(materialized.nodeStates.plan.status, "skipped");
   assert.equal(materialized.nodeStates.execute_a.status, "skipped");
@@ -590,7 +640,7 @@ test("runJob emits and materializes dynamic agent plan from prepare_task", async
   assert.ok(planEvent, "dynamic_agent_plan_generated event should be emitted");
   assert.deepEqual(planEvent.dynamicAgentPlan, dynamicAgentPlan);
 
-  const materialized = materializeJob(events) as AnyRecord;
+  const materialized = materializeJob(events) as LooseRecord;
   assert.deepEqual(materialized.dynamicAgentPlan, dynamicAgentPlan);
 });
 
@@ -618,7 +668,7 @@ test("runJob inserts adversarial_verify after verify for high-risk RiskMap", asy
   assert.ok(transitions.includes("dag_node_started:adversarial_verify"));
   assert.ok(transitions.includes("dag_node_completed:adversarial_verify"));
 
-  const materialized = materializeJob(events) as AnyRecord;
+  const materialized = materializeJob(events) as LooseRecord;
   assert.equal(materialized.nodeStates.adversarial_verify.status, "completed");
   assert.ok(materialized.completedNodes.includes("adversarial_verify"));
 

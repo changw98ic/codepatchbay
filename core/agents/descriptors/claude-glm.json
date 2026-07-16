@@ -1,0 +1,21 @@
+{
+  "name": "claude-glm",
+  "displayName": "Claude GLM",
+  "command": "claude-agent-acp",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
+  "sessionMcpServers": false,
+  "defaultRoles": ["executor"],
+  "stability": "stable",
+  "envPrefix": "CPB_ACP_CLAUDE_GLM",
+  "protocol": "acp",
+  "transport": "claude-cli",
+  "description": "Claude Code ACP runner configured through the Zhipu/GLM Anthropic-compatible variant",
+  "providerKey": "claude:glm",
+  "providerVariant": "glm",
+  "lifecycle": "one-shot",
+  "resumeCommand": "claude",
+  "resumeArgs": ["--resume"]
+}

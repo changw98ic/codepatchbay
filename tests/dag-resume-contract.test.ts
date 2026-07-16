@@ -8,7 +8,7 @@ import path from "node:path";
 import { deriveDagResumeState } from "../core/workflow/dag-executor.js";
 import { materializeJob, appendEvent } from "../server/services/event/event-store.js";
 import { createJob, failJob, getJob, retryJob } from "../server/services/job/job-store.js";
-import { jobToPipelineState } from "../server/services/job/job-projection.js";
+import { jobToPipelineState, jobToQueueRow } from "../server/services/job/job-projection.js";
 
 const workflowDag = {
   name: "parallel-execute",
@@ -168,6 +168,42 @@ describe("DAG resume projection and recovery lineage", () => {
     assert.deepEqual(pipeline.workflowDag, workflowDag);
     assert.deepEqual(pipeline.dagResume, job.dagResume);
     assert.equal(pipeline.dagResume.failedNodeId, "execute_b");
+  });
+
+  it("projects completion report and runtime policy fields for Hub consumers", () => {
+    const completionReport = {
+      changedFiles: ["core/engine/run-job.ts"],
+      realActors: ["Engine.runJob"],
+      evidenceClasses: ["canonical_command"],
+      residualRisk: ["manual review still required"],
+    };
+    const phaseBudgetPolicy = {
+      riskLevel: "high",
+      phases: {
+        plan: { maxToolCalls: 40 },
+        execute: { noEditToolLimit: 5 },
+      },
+    };
+    const job = {
+      jobId: "j1",
+      project: "p",
+      task: "render report",
+      status: "completed",
+      completionGate: { outcome: "complete" },
+      completionReport,
+      phaseBudgetPolicy,
+      evidenceRequirements: ["canonical_command", "real_path_trace"],
+    };
+
+    const pipeline = jobToPipelineState(job);
+    const row = jobToQueueRow(job);
+
+    assert.deepEqual(pipeline.completionReport, completionReport);
+    assert.deepEqual(pipeline.phaseBudgetPolicy, phaseBudgetPolicy);
+    assert.deepEqual(pipeline.evidenceRequirements, ["canonical_command", "real_path_trace"]);
+    assert.deepEqual(row.completionReport, completionReport);
+    assert.deepEqual(row.phaseBudgetPolicy, phaseBudgetPolicy);
+    assert.deepEqual(row.evidenceRequirements, ["canonical_command", "real_path_trace"]);
   });
 
   it("preserves failed node resume context when retrying as a new recovery job", async () => {

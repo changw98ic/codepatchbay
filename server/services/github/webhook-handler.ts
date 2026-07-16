@@ -4,7 +4,7 @@ import {
   verifyGithubWebhookSignature,
   resolveGithubTransport,
 } from "./github-api.js";
-import { AnyRecord } from "../../../shared/types.js";
+import type { LooseRecord } from "../../../shared/types.js";
 import { normalizeGithubWebhookEvent, matchGithubTrigger } from "./github-adapter.js";
 import { createGithubIssueQueueJob } from "../event/event-source.js";
 import { listProjects } from "../hub/hub-registry.js";
@@ -14,38 +14,108 @@ import {
 import { parseChannelCommand, channelPolicyRequest, enforceChannelPolicy } from "../channel/channel-commands.js";
 import { loadQueue, updateEntry } from "../hub/hub-queue.js";
 
+type PostQueuedCommentOptions = NonNullable<Parameters<typeof postGithubQueuedComment>[0]>;
+type GithubPostComment = PostQueuedCommentOptions["postComment"];
+type GithubPostCommentResult = Awaited<ReturnType<NonNullable<GithubPostComment>>>;
+type GithubEventForWebhook = Parameters<typeof createGithubIssueQueueJob>[1];
+type GithubMatchForWebhook = Parameters<typeof createGithubIssueQueueJob>[2];
+const TRUSTED_GITHUB_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 export interface WebhookRequest {
   rawBody: Buffer;
-  headers: AnyRecord;
+  headers: LooseRecord;
   hubRoot: string;
   cpbRoot: string;
   opts?: WebhookOptions;
 }
 
 export interface WebhookOptions {
-  channelPolicy?: Record<string, any>;
+  channelPolicy?: LooseRecord;
   githubDryRun?: boolean;
-  githubPostComment?: Function;
+  githubPostComment?: GithubPostComment;
 }
 
 export interface WebhookResponse {
   statusCode: number;
-  body: AnyRecord;
+  body: LooseRecord;
 }
 
-function headerValue(headers: AnyRecord, name: string): string | string[] | undefined {
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function recordOrNull(value: unknown): LooseRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.map(String) : undefined;
+}
+
+function githubEvent(value: unknown): GithubEventForWebhook {
+  const record = recordValue(value);
+  return {
+    ...record,
+    source: stringValue(record.source) || undefined,
+    status: stringValue(record.status) || undefined,
+    delivery: stringValue(record.delivery) || undefined,
+    event: stringValue(record.event) || undefined,
+    repo: stringValue(record.repo) || undefined,
+    action: stringValue(record.action) || undefined,
+    commandText: stringValue(record.commandText) || undefined,
+    label: stringValue(record.label) || undefined,
+    labels: stringList(record.labels),
+    title: stringValue(record.title) || undefined,
+    body: stringValue(record.body) || undefined,
+    url: stringValue(record.url) || undefined,
+    actor: stringValue(record.actor) || undefined,
+    projectId: stringValue(record.projectId) || undefined,
+  };
+}
+
+function githubMatch(value: unknown): GithubMatchForWebhook {
+  const record = recordValue(value);
+  return {
+    ...record,
+    matched: record.matched === true,
+    workflow: stringValue(record.workflow) || undefined,
+    planMode: stringValue(record.planMode) || undefined,
+    reason: stringValue(record.reason) || undefined,
+  };
+}
+
+function githubPostCommentResult(value: unknown): GithubPostCommentResult {
+  return recordValue(value) as GithubPostCommentResult;
+}
+
+function hasTrustedGithubAssociation(value: unknown): boolean {
+  return TRUSTED_GITHUB_ASSOCIATIONS.has(String(value || "").trim().toUpperCase());
+}
+
+function isGithubCommentExecutionTrigger(event: LooseRecord): boolean {
+  if (event.type !== "github_issue_comment" || event.action !== "created" || !event.commandText) return false;
+  const commandText = String(event.commandText).trim();
+  return commandText === "/cpb run" || commandText.startsWith("/cpb run ");
+}
+
+function headerValue(headers: LooseRecord, name: string): string | undefined {
   const value = headers[name.toLowerCase()];
-  return Array.isArray(value) ? value[0] : value;
+  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : undefined;
+  return typeof value === "string" ? value : undefined;
 }
 
-async function findProjectByRepo(hubRoot: string, repo: string | null): Promise<AnyRecord | null> {
+async function findProjectByRepo(hubRoot: string, repo: string | null): Promise<LooseRecord | null> {
   if (!repo) return null;
-  const projects = await listProjects(hubRoot, { enabledOnly: true });
-  return projects.find((project) => project.github?.fullName === repo) || null;
+  const projectsRaw = await listProjects(hubRoot, { enabledOnly: true });
+  const projects = Array.isArray(projectsRaw) ? projectsRaw.map(recordValue) : [];
+  return projects.find((project) => recordValue(project.github).fullName === repo) || null;
 }
 
-function responseBase({ event, delivery, action }: AnyRecord): AnyRecord {
+function responseBase({ event, delivery, action }: LooseRecord): LooseRecord {
   return {
     accepted: true,
     event,
@@ -58,10 +128,10 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
   const { rawBody, headers, hubRoot, cpbRoot, opts = {} } = req;
 
   // Load config + verify signature
-  let config: AnyRecord;
+  let config: LooseRecord;
   let secret: string;
   try {
-    config = await loadGithubAppConfig(hubRoot);
+    config = recordValue(await loadGithubAppConfig(hubRoot));
     secret = resolveGithubWebhookSecret(config);
   } catch {
     return { statusCode: 401, body: { error: "invalid GitHub webhook signature" } };
@@ -73,9 +143,9 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
     return { statusCode: 401, body: { error: "invalid GitHub webhook signature" } };
   }
 
-  let payload: AnyRecord;
+  let payload: LooseRecord;
   try {
-    payload = JSON.parse(rawBody.toString("utf8"));
+    payload = recordValue(JSON.parse(rawBody.toString("utf8")));
   } catch {
     return { statusCode: 400, body: { error: "invalid JSON payload" } };
   }
@@ -83,27 +153,28 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
   const event = headerValue(headers, "x-github-event") || null;
   const delivery = headerValue(headers, "x-github-delivery") || null;
   const base = responseBase({ event, delivery, action: payload.action });
-  const project = await findProjectByRepo(hubRoot, payload.repository?.full_name || null);
+  const repository = recordValue(payload.repository);
+  const project = await findProjectByRepo(hubRoot, stringValue(repository.full_name));
   if (!project) return { statusCode: 202, body: base };
 
-  const normalized: AnyRecord = normalizeGithubWebhookEvent({
+  const normalized = recordValue(normalizeGithubWebhookEvent({
     event,
     delivery,
     payload,
     projectId: project.id,
-  });
+  }));
   if (normalized.status !== "ok") {
     return { statusCode: 202, body: { ...base, normalized } };
   }
 
   // Handle GitHub issue comment commands (e.g., /cpb approve)
   if (normalized.type === "github_issue_comment" && normalized.action === "created" && normalized.commandText) {
-    const parsed = parseChannelCommand(normalized.commandText) as Record<string, any>;
+    const parsed = recordValue(parseChannelCommand(String(normalized.commandText)));
     if (parsed.ok && parsed.command === "approve" && parsed.job) {
-      const queue: AnyRecord = await loadQueue(hubRoot);
-      const entry = queue.entries.find((e: Record<string, any>) => e.id === parsed.job);
+      const queue = recordValue(await loadQueue(hubRoot));
+      const entries = Array.isArray(queue.entries) ? queue.entries.map(recordValue) : [];
+      const entry = entries.find((e) => e.id === parsed.job);
 
-      const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
       const permissionDenied = (reason: string) => ({
         statusCode: 403,
         body: { ...base, normalized, projectId: project.id, commandHandled: "approve", error: reason },
@@ -112,13 +183,14 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
       if (!entry || entry.status !== "waiting.approval") {
         return { statusCode: 202, body: { ...base, normalized, projectId: project.id } };
       }
-      if (!trustedAssociations.has(normalized.authorAssociation)) {
+      if (!hasTrustedGithubAssociation(normalized.authorAssociation)) {
         return permissionDenied("only repo collaborators can approve");
       }
-      if (entry.metadata?.repo && entry.metadata.repo !== normalized.repo) {
+      const entryMetadata = recordValue(entry.metadata);
+      if (entryMetadata.repo && entryMetadata.repo !== normalized.repo) {
         return permissionDenied("queue entry does not belong to this repo");
       }
-      if (entry.metadata?.issueNumber && String(entry.metadata.issueNumber) !== String(normalized.issueNumber)) {
+      if (entryMetadata.issueNumber && String(entryMetadata.issueNumber) !== String(normalized.issueNumber)) {
         return permissionDenied("queue entry does not belong to this issue");
       }
       if (opts.channelPolicy) {
@@ -157,25 +229,51 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
     }
   }
 
-  const match: AnyRecord = matchGithubTrigger(normalized, project.github?.triggers);
+  const projectGithub = recordValue(project.github);
+  const triggerRules = Array.isArray(projectGithub.triggers) ? projectGithub.triggers.map(recordValue) : undefined;
+  const match = githubMatch(matchGithubTrigger(normalized, triggerRules));
   if (!match.matched) {
     return { statusCode: 202, body: { ...base, normalized, projectId: project.id, match } };
   }
 
-  const queueResult: AnyRecord = await createGithubIssueQueueJob(cpbRoot, normalized, match, {
+  if (isGithubCommentExecutionTrigger(normalized) && !hasTrustedGithubAssociation(normalized.authorAssociation)) {
+    return {
+      statusCode: 403,
+      body: {
+        ...base,
+        normalized,
+        projectId: project.id,
+        match,
+        code: "GITHUB_ACTOR_FORBIDDEN",
+        error: "only repo collaborators can trigger CodePatchBay execution",
+      },
+    };
+  }
+
+  const queueResult = recordValue(await createGithubIssueQueueJob(cpbRoot, githubEvent(normalized), match, {
     hubRoot,
-    sourcePath: project.sourcePath || null,
-  });
-  const transport = await resolveGithubTransport(hubRoot);
-  const comment: AnyRecord = await postGithubQueuedComment({
+    sourcePath: stringValue(project.sourcePath),
+  }));
+  const transport = recordValue(await resolveGithubTransport(hubRoot));
+  const job = recordOrNull(queueResult.job);
+  const queueEntry = recordOrNull(queueResult.queueEntry);
+  const candidateEntry = recordOrNull(queueResult.entry);
+  const rawPostComment = transport.postComment;
+  const transportPostComment: GithubPostComment = typeof rawPostComment === "function"
+    ? async (request) => githubPostCommentResult(await rawPostComment(request))
+    : undefined;
+  const postComment = typeof opts.githubPostComment === "function"
+    ? opts.githubPostComment
+    : transportPostComment;
+  const comment = recordValue(await postGithubQueuedComment({
     repo: normalized.repo,
     issueNumber: normalized.issueNumber,
-    job: queueResult.job,
-    queueEntry: queueResult.queueEntry,
+    job,
+    queueEntry,
     dryRun: opts.githubDryRun === true,
-    postComment: opts.githubPostComment || transport.postComment,
-    transportMode: transport.mode,
-  });
+    postComment,
+    transportMode: stringValue(transport.mode),
+  }));
 
   return {
     statusCode: 202,
@@ -186,14 +284,14 @@ export async function handleGithubWebhook(req: WebhookRequest): Promise<WebhookR
       match,
       queue: {
         status: queueResult.status,
-        candidateEntryId: queueResult.entry?.id || null,
-        queueEntryId: queueResult.queueEntry?.id || null,
-        jobId: queueResult.job?.jobId || null,
+        candidateEntryId: candidateEntry?.id || null,
+        queueEntryId: queueEntry?.id || null,
+        jobId: job?.jobId || null,
       },
-      hubQueue: queueResult.queueEntry ? {
-        id: queueResult.queueEntry.id,
-        status: queueResult.queueEntry.status,
-        projectId: queueResult.queueEntry.projectId,
+      hubQueue: queueEntry ? {
+        id: queueEntry.id,
+        status: queueEntry.status,
+        projectId: queueEntry.projectId,
       } : null,
       comment: {
         status: comment.status,

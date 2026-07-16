@@ -11,7 +11,7 @@
  */
 
 // ─── review-dispatch.ts ───────────────────────────────────────────
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { readFile, rm } from "node:fs/promises";
 import { execFile } from "child_process";
@@ -21,6 +21,134 @@ import { makeJobId } from "../job/job-store.js";
 import { getSession, updateSession, parseIssues } from "./review-session.js";
 import { buildChildEnv } from "../secret-policy.js";
 import { resolveHubRoot, getProject } from "../hub/hub-registry.js";
+import { recordValue, type LooseRecord } from "../../../core/contracts/types.js";
+
+type ReviewStorageOptions = LooseRecord & {
+  hubRoot?: string;
+  dataRoot?: string;
+  lockDir?: string;
+  skipTransitionCheck?: boolean;
+};
+
+type DispatchOptions = ReviewStorageOptions & {
+  hubRoot?: string;
+};
+
+type ReviewIssue = LooseRecord & {
+  severity?: number;
+  message?: string;
+  description?: string;
+};
+
+type AnalysisResult = LooseRecord & {
+  ok: boolean;
+  summary?: string;
+  changes?: unknown[];
+  risks?: unknown[];
+  recommendation?: string;
+  raw?: string;
+  error?: string;
+};
+
+type AgentCommand = {
+  command: string;
+  args: string[];
+};
+
+type JsonRpcMessage = {
+  [key: string]: unknown;
+  id?: number;
+  method?: string;
+  params?: LooseRecord;
+  result?: unknown;
+  error?: {
+    code?: number;
+    message?: string;
+  };
+};
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+type SessionUpdateParams = LooseRecord & {
+  update?: {
+    sessionUpdate?: string;
+    content?: {
+      type?: string;
+      text?: string;
+    };
+  };
+};
+
+type AcpChildProcess = ChildProcess & {
+  stdin: NonNullable<ChildProcess["stdin"]>;
+  stdout: NonNullable<ChildProcess["stdout"]>;
+  stderr: NonNullable<ChildProcess["stderr"]>;
+};
+
+type EvidenceAvailability = LooseRecord & {
+  available: boolean;
+  reason?: string;
+  content?: string;
+  path?: string;
+  eventCount?: number;
+  events?: LooseRecord[];
+  context?: string | null;
+};
+
+type VerifierEvidence = LooseRecord & {
+  jobState: LooseRecord | null;
+  deliverable: EvidenceAvailability | null;
+  diff: EvidenceAvailability | null;
+  uncommittedDiff: EvidenceAvailability | null;
+  eventLog: EvidenceAvailability | null;
+  projectContext: EvidenceAvailability | null;
+  testResults: EvidenceAvailability | null;
+  diagnostics: Array<{ level: string; message: string }>;
+};
+
+type ArtifactEventOptions = ReviewStorageOptions & {
+  includeLegacyFallback?: boolean;
+};
+
+type RemediationRunOptions = ReviewStorageOptions & {
+  project: string;
+  jobId: string;
+  executorRoot?: string | null;
+};
+
+type CompleteRemediationOptions = RemediationRunOptions & {
+  remediationId?: string;
+  remediationFile: string;
+  remediationArtifact: string;
+  status?: string;
+  error?: string | null;
+};
+
+type RepairRunOptions = ReviewStorageOptions & {
+  project: string;
+  jobId: string;
+  executorRoot?: string | null;
+};
+
+type CompleteRepairOptions = RepairRunOptions & {
+  repairId?: string;
+  repairFile: string;
+  repairArtifact: string;
+  status?: string;
+  error?: string | null;
+};
+
+type LineageTaskOptions = ReviewStorageOptions & {
+  project: string;
+  jobId: string;
+  remediationArtifact?: string;
+  remediationStatus?: string;
+  repairArtifact?: string;
+  repairStatus?: string;
+  executorRoot?: string | null;
+};
 
 function gitExec(cwd: string, ...args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -39,7 +167,7 @@ function worktreePathFor(cpbRoot: string, jobId: string): string {
  * Dispatch a review session to the hub queue.
  * Shared by approve and auto-approve routes.
  */
-export async function dispatchSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+export async function dispatchSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: DispatchOptions = {}) {
   const storageOptions = { hubRoot: hubRootOverride };
   const session = await getSession(cpbRoot, sessionId, storageOptions);
   if (!session) return { ok: false, error: "session_not_found" };
@@ -125,7 +253,7 @@ export async function dispatchSession(cpbRoot: string, sessionId: string, { hubR
 /**
  * Auto-approve path: handles already-dispatched sessions idempotently.
  */
-export async function autoApproveSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: Record<string, any> = {}) {
+export async function autoApproveSession(cpbRoot: string, sessionId: string, { hubRoot: hubRootOverride }: DispatchOptions = {}) {
   const session = await getSession(cpbRoot, sessionId, { hubRoot: hubRootOverride });
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -163,7 +291,7 @@ export async function autoApproveSession(cpbRoot: string, sessionId: string, { h
 /**
  * Cancel a review session.
  */
-export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, reason: string, options: Record<string, any> = {}) {
+export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, reason: string, options: ReviewStorageOptions = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -178,7 +306,7 @@ export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, r
 /**
  * Run ACP analysis on a review session.
  */
-export async function analyzeSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}): Promise<Record<string, any>> {
+export async function analyzeSession(cpbRoot: string, sessionId: string, options: ReviewStorageOptions = {}): Promise<AnalysisResult> {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
 
@@ -193,8 +321,8 @@ export async function analyzeSession(cpbRoot: string, sessionId: string, options
     if (latest.codex) sections.push(`## Codex Review (Round ${latest.round})\n${latest.codex.slice(0, 3000)}`);
     if (latest.claude) sections.push(`## Claude Review (Round ${latest.round})\n${latest.claude.slice(0, 3000)}`);
     const issues = [
-      ...(latest.codexIssues || []).map((i: Record<string, any>) => `[Codex P${i.severity}] ${i.message || "issue"}`),
-      ...(latest.claudeIssues || []).map((i: Record<string, any>) => `[Claude P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.codexIssues || []).map((i: ReviewIssue) => `[Codex P${i.severity}] ${i.message || "issue"}`),
+      ...(latest.claudeIssues || []).map((i: ReviewIssue) => `[Claude P${i.severity}] ${i.message || "issue"}`),
     ];
     if (issues.length > 0) sections.push(`## Issues Found\n${issues.join("\n")}`);
   }
@@ -229,7 +357,8 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
     { agent: "claude" },
   );
 
-  const acpResult = await new Promise((resolve) => {
+  type AcpResult = { error: string } | { output: string };
+  const acpResult = await new Promise<AcpResult>((resolve) => {
     const child = spawn("node", [scriptPath, "--agent", "claude", "--cwd", cpbRoot], {
       cwd: cpbRoot,
       env,
@@ -263,13 +392,13 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
     });
   });
 
-  const resultRecord = acpResult as Record<string, any>;
-  if (resultRecord.error) {
-    return { ok: false, summary: `Analysis failed: ${resultRecord.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
+  // acpResult narrowed by discriminant via typed Promise above.
+  if ("error" in acpResult) {
+    return { ok: false, summary: `Analysis failed: ${acpResult.error}`, changes: [], risks: [], recommendation: "Could not complete ACP analysis. Review the session content manually." };
   }
 
   let parsed = null;
-  const rawOutput = resultRecord.output || "";
+  const rawOutput = acpResult.output || "";
   const jsonMatch = rawOutput.match(/```json\s*([\s\S]*?)```/) || rawOutput.match(/\{[\s\S]*"summary"[\s\S]*\}/);
   if (jsonMatch) {
     try {
@@ -301,7 +430,7 @@ Respond with ONLY a JSON object (no markdown fences) with these fields:
 /**
  * Accept a review session — merge worktree branch into main.
  */
-export async function acceptSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
+export async function acceptSession(cpbRoot: string, sessionId: string, options: ReviewStorageOptions = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review" && session.status !== "dispatched") {
@@ -360,7 +489,7 @@ export async function acceptSession(cpbRoot: string, sessionId: string, options:
 /**
  * Reject a review session — discard worktree.
  */
-export async function rejectSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
+export async function rejectSession(cpbRoot: string, sessionId: string, options: ReviewStorageOptions = {}) {
   const session = await getSession(cpbRoot, sessionId, options);
   if (!session) return { ok: false, error: "session_not_found" };
   if (session.status !== "user_review") {
@@ -411,12 +540,12 @@ function commandExists(cmd: string): boolean {
   return spawnSync("sh", ["-c", `command -v "$1" >/dev/null 2>&1`, "sh", cmd]).status === 0;
 }
 
-function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env) {
+function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env): AgentCommand {
   const upper = agent.toUpperCase();
   const envCmd = env[`CPB_ACP_${upper}_COMMAND`];
   if (envCmd) {
     const raw = env[`CPB_ACP_${upper}_ARGS`];
-    let args = [];
+    let args: string[] = [];
     if (raw) {
       try { args = JSON.parse(raw); } catch { args = raw.split(/\s+/).filter(Boolean); }
     }
@@ -433,7 +562,7 @@ class PersistentAcp {
   agent: string;
   nextId: number;
   pending: Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>;
-  child: Record<string, any> | null;
+  child: AcpChildProcess | null;
   initialized: boolean;
   closed: boolean;
   lastActivity: number;
@@ -453,7 +582,7 @@ class PersistentAcp {
   }
 
   async start() {
-    const env = buildChildEnvForRunner(process.env, {}, { agent: this.agent }) as NodeJS.ProcessEnv;
+    const env = buildChildEnvForRunner(process.env, {}, { agent: this.agent });
     const { command, args } = resolveAgentCommand(this.agent, env);
     if (command === "npx" && !env.npm_config_cache) {
       const cache = path.join(tmpdir(), `cpb-npm-cache-${this.agent}-${randomUUID()}`);
@@ -466,7 +595,7 @@ class PersistentAcp {
       env: buildChildEnvForRunner(env, { CPB_ROOT }, { agent: this.agent }),
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
-    });
+    }) as AcpChildProcess;
 
     const rl = readline.createInterface({ input: this.child.stdout, crlfDelay: Infinity });
     rl.on("line", (line) => {
@@ -500,8 +629,10 @@ class PersistentAcp {
       clientInfo: { name: "cpb-review", title: "CodePatchbay Review", version: "0.1.0" },
     });
 
-    if ((init as Record<string, any>).protocolVersion !== PROTOCOL_VERSION) {
-      throw new Error(`unsupported ACP protocol version: ${(init as Record<string, any>).protocolVersion}`);
+    // retain: dynamic ACP JSON-RPC response from child process — shape not statically guaranteed
+    const initRec = init as LooseRecord;
+    if (initRec.protocolVersion !== PROTOCOL_VERSION) {
+      throw new Error(`unsupported ACP protocol version: ${String(initRec.protocolVersion)}`);
     }
     this.initialized = true;
 
@@ -521,7 +652,7 @@ class PersistentAcp {
     const STUCK_MS = parseInt(process.env.ACP_PROMPT_STUCK_MS || "300000", 10);
     const MAX_MS = parseInt(process.env.ACP_PROMPT_MAX_MS || "600000", 10);
 
-    const collectUpdate = (params: Record<string, any>) => {
+    const collectUpdate = (params: SessionUpdateParams) => {
       const update = params?.update;
       if (update?.sessionUpdate === "agent_message_chunk" && update?.content?.type === "text") {
         response += update.content.text;
@@ -543,9 +674,9 @@ class PersistentAcp {
     });
 
     const origHandle = this.handleClientRequest;
-    this.handleClientRequest = async (msg: Record<string, any>) => {
+    this.handleClientRequest = async (msg: JsonRpcMessage) => {
       if (msg.method === "session/update") {
-        collectUpdate(msg.params);
+        collectUpdate(msg.params as SessionUpdateParams);
         if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
       } else {
         origHandle.call(this, msg);
@@ -575,7 +706,8 @@ class PersistentAcp {
   async #ensureSession() {
     if (this.sessionId) return;
     const session = await this.request("session/new", { cwd: CPB_ROOT, mcpServers: [] });
-    this.sessionId = (session as Record<string, any>).sessionId;
+    // retain: dynamic ACP JSON-RPC response from child process — shape not statically guaranteed
+    this.sessionId = (session as { sessionId?: string }).sessionId || null;
   }
 
   async #closeSession() {
@@ -591,7 +723,7 @@ class PersistentAcp {
     await this.#closeSession();
   }
 
-  request(method: string, params: Record<string, any>): Promise<unknown> {
+  request(method: string, params: LooseRecord): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error(`${this.agent} connection closed`));
     const id = this.nextId++;
     this.lastActivity = Date.now();
@@ -605,14 +737,14 @@ class PersistentAcp {
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  write(msg: Record<string, any>): void {
+  write(msg: JsonRpcMessage): void {
     if (this.child?.stdin.destroyed) throw new Error("stdin closed");
     this.child.stdin.write(JSON.stringify(msg) + "\n");
   }
 
   handleLine(line: string): void {
     if (!line.trim()) return;
-    let msg;
+    let msg: JsonRpcMessage;
     try { msg = JSON.parse(line); } catch { return; }
 
     if (Object.hasOwn(msg, "id") && (Object.hasOwn(msg, "result") || Object.hasOwn(msg, "error"))) {
@@ -627,7 +759,7 @@ class PersistentAcp {
     if (msg.method) this.handleClientRequest(msg);
   }
 
-  handleClientRequest(msg: Record<string, any>): void {
+  handleClientRequest(msg: JsonRpcMessage): void {
     if (Object.hasOwn(msg, "id")) this.respond(msg.id, null);
   }
 
@@ -724,10 +856,10 @@ If the plan has no P2+ issues, respond with: "REVIEW: PASS"
 ${plan}`;
 }
 
-function followUpReviewPrompt(reviewer: string, previousIssues: Record<string, any>[], revisedPlan: string): string {
+function followUpReviewPrompt(reviewer: string, previousIssues: ReviewIssue[], revisedPlan: string): string {
   const issueSummary = previousIssues
-    .filter((i: Record<string, any>) => i.severity >= 2)
-    .map((i: Record<string, any>) => `[P${i.severity}] ${i.description}`)
+    .filter((i: ReviewIssue) => (i.severity || 0) >= 2)
+    .map((i: ReviewIssue) => `[P${i.severity}] ${i.description}`)
     .join("\n") || "None";
 
   return `You are CodePatchbay ${reviewer === "codex" ? "Architecture" : "Security & Quality"} Reviewer (follow-up).
@@ -742,10 +874,10 @@ ${revisedPlan}
 Review ONLY whether the previous issues were adequately addressed. For new issues use [P0]-[P3] tags. If all previous P2+ issues are resolved and no new P2+ issues exist, respond with: "REVIEW: PASS"`;
 }
 
-function revisePrompt(plan: string, codexIssues: Record<string, any>[], claudeIssues: Record<string, any>[]): string {
+function revisePrompt(plan: string, codexIssues: ReviewIssue[], claudeIssues: ReviewIssue[]): string {
   const allIssues = [...codexIssues, ...claudeIssues]
-    .filter((i: Record<string, any>) => i.severity >= 2)
-    .map((i: Record<string, any>) => `[P${i.severity}] ${i.description}`)
+    .filter((i: ReviewIssue) => (i.severity || 0) >= 2)
+    .map((i: ReviewIssue) => `[P${i.severity}] ${i.description}`)
     .join("\n");
 
   return `You are CodePatchbay Plan Reviser. Revise this plan to address the issues below.
@@ -831,8 +963,8 @@ export async function runReview(cpbRoot: string, sessionId: string): Promise<voi
 
     // Phase 3: Review Loop
     let currentPlan = plan;
-    let prevCodexIssues: Record<string, unknown>[] = [];
-    let prevClaudeIssues: Record<string, unknown>[] = [];
+    let prevCodexIssues: LooseRecord[] = [];
+    let prevClaudeIssues: LooseRecord[] = [];
     for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
       await updateSession(cpbRoot, sessionId, { status: "reviewing", round });
       console.log(`[review] ${sessionId} round ${round}: reviewing`);
@@ -941,7 +1073,7 @@ function buildVerifierCommandEnv(parentEnv: NodeJS.ProcessEnv = process.env) {
   return env;
 }
 
-export async function collectCurrentDiff(sourcePath: string, { maxLines = 200 }: Record<string, any> = {}) {
+export async function collectCurrentDiff(sourcePath: string, { maxLines = 200 }: { maxLines?: number } = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -956,7 +1088,7 @@ export async function collectCurrentDiff(sourcePath: string, { maxLines = 200 }:
   }
 }
 
-export async function collectUncommittedDiff(sourcePath: string, { maxLines = 200 }: Record<string, any> = {}) {
+export async function collectUncommittedDiff(sourcePath: string, { maxLines = 200 }: { maxLines?: number } = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -972,7 +1104,7 @@ export async function collectUncommittedDiff(sourcePath: string, { maxLines = 20
   }
 }
 
-export async function collectTestResults(sourcePath: string, { timeout = 30_000 }: Record<string, any> = {}) {
+export async function collectTestResults(sourcePath: string, { timeout = 30_000 }: { timeout?: number } = {}) {
   if (!sourcePath) return { available: false, reason: "no source path" };
 
   try {
@@ -996,7 +1128,7 @@ export async function collectTestResults(sourcePath: string, { timeout = 30_000 
   }
 }
 
-export async function collectEventLog(cpbRoot: string, project: string, jobId: string, { maxEvents = 50, dataRoot = null }: Record<string, any> = {}) {
+export async function collectEventLog(cpbRoot: string, project: string, jobId: string, { maxEvents = 50, dataRoot = null }: ReviewStorageOptions & { maxEvents?: number } = {}) {
   try {
     const events = await readEvents(cpbRoot, project, jobId, dataRoot
       ? { dataRoot, includeLegacyFallback: false }
@@ -1011,7 +1143,7 @@ export async function collectEventLog(cpbRoot: string, project: string, jobId: s
   }
 }
 
-export async function collectProjectContext(cpbRoot: string, project: string, options: Record<string, any> = {}) {
+export async function collectProjectContext(cpbRoot: string, project: string, options: ReviewStorageOptions = {}) {
   const ctx = await readFile(contextPath(cpbRoot, project, options), "utf8").catch((): null => null);
   const decisions = await readFile(decisionsPath(cpbRoot, project, options), "utf8").catch((): null => null);
 
@@ -1022,7 +1154,7 @@ export async function collectProjectContext(cpbRoot: string, project: string, op
   };
 }
 
-export async function collectDeliverable(cpbRoot: string, project: string, deliverableId: string, options: Record<string, any> = {}) {
+export async function collectDeliverable(cpbRoot: string, project: string, deliverableId: string, options: ReviewStorageOptions = {}) {
   if (!deliverableId) return { available: false, reason: "no deliverable ID" };
 
   const file = path.join(outputsDir(cpbRoot, project, options), `deliverable-${deliverableId}.md`);
@@ -1034,10 +1166,13 @@ export async function collectDeliverable(cpbRoot: string, project: string, deliv
   }
 }
 
-export async function collectVerifierEvidence(cpbRoot: string, project: string, jobId: string, { sourcePath, deliverableId, dataRoot: explicitDataRoot = null }: Record<string, any> = {}) {
+export async function collectVerifierEvidence(cpbRoot: string, project: string, jobId: string, { sourcePath, deliverableId, dataRoot: explicitDataRoot = null }: ReviewStorageOptions & {
+  sourcePath?: string | null;
+  deliverableId?: string;
+} = {}): Promise<VerifierEvidence> {
   const jobState = await reconstructJobState(cpbRoot, project, jobId);
 
-  const evidence: Record<string, any> = {
+  const evidence: VerifierEvidence = {
     jobState,
     deliverable: null,
     diff: null,
@@ -1045,12 +1180,12 @@ export async function collectVerifierEvidence(cpbRoot: string, project: string, 
     eventLog: null,
     projectContext: null,
     testResults: null,
-    diagnostics: [] as Record<string, unknown>[],
+    diagnostics: [],
   };
 
-  const dataRoot = explicitDataRoot || jobState?.stateRoot || null;
+  const dataRoot = stringValue(explicitDataRoot) || stringValue(jobState?.stateRoot) || null;
   const runtimeOptions = dataRoot ? { dataRoot } : {};
-  const resolvedSourcePath = sourcePath || jobState?.sourcePath || jobState?.worktree || null;
+  const resolvedSourcePath = stringValue(sourcePath) || stringValue(jobState?.sourcePath) || stringValue(jobState?.worktree) || null;
 
   const [deliverable, diff, uncommittedDiff, eventLog, projectContext, testResults] = await Promise.all([
     collectDeliverable(cpbRoot, project, deliverableId, runtimeOptions).catch((err) => ({
@@ -1117,11 +1252,11 @@ import { enqueue as enqueueRem, listQueue } from "../hub/hub-queue.js";
 import { allocateArtifactId } from "../artifact-locator.js";
 import { runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
 
-function remediationDataRoot(cpbRoot: string, options: Record<string, any> = {}): string {
+function remediationDataRoot(cpbRoot: string, options: ReviewStorageOptions = {}): string {
   return options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
 }
 
-async function resolveRemediationDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}): Promise<string> {
+async function resolveRemediationDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: ReviewStorageOptions = {}): Promise<string> {
   if (dataRoot) return dataRoot;
   if (lockDir) {
     const marker = `${path.sep}remediation-locks${path.sep}`;
@@ -1140,7 +1275,7 @@ function validateIdRem(name: string, value: unknown): void {
   }
 }
 
-async function acquireRemediationLock(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<string> {
+async function acquireRemediationLock(cpbRoot: string, project: string, jobId: string, options: ReviewStorageOptions = {}): Promise<string> {
   const lockDir = path.join(remediationDataRoot(cpbRoot, options), "remediation-locks", project, `${jobId}.lock`);
   await mkdirRem(path.dirname(lockDir), { recursive: true });
   try {
@@ -1160,14 +1295,14 @@ async function releaseRemediationLock(lockDir: string): Promise<void> {
   } catch {}
 }
 
-async function recordRemediationEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, options: Record<string, any> = {}): Promise<void> {
-  await appendEventRem(cpbRoot, project, jobId, event, options);
+async function recordRemediationEvent(cpbRoot: string, project: string, jobId: string, event: LooseRecord, options: ArtifactEventOptions = {}): Promise<void> {
+  await appendEventRem(cpbRoot, project, jobId, event as Parameters<typeof appendEventRem>[3], options);
   await checkpointJobRem(cpbRoot, project, jobId, options).catch(() => {});
   const state = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, options));
   await updateJobsIndexEntryRem(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRemediation(cpbRoot: string, { project, jobId, executorRoot = null, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
+export async function runRemediation(cpbRoot: string, { project, jobId, executorRoot = null, hubRoot, dataRoot: explicitDataRoot }: RemediationRunOptions) {
   validateIdRem("project", project);
   validateIdRem("jobId", jobId);
 
@@ -1210,7 +1345,7 @@ export async function runRemediation(cpbRoot: string, { project, jobId, executor
   }
 }
 
-export async function completeRemediation(cpbRoot: string, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+export async function completeRemediation(cpbRoot: string, { project, jobId, remediationId, remediationFile, remediationArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: CompleteRemediationOptions) {
   const dataRoot = await resolveRemediationDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
   const eventOpts = { dataRoot, includeLegacyFallback: false };
   try {
@@ -1286,7 +1421,7 @@ function parseRemediationStatus(content: string): string | null {
   return null;
 }
 
-async function markJobSuperseded(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<void> {
+async function markJobSuperseded(cpbRoot: string, project: string, jobId: string, options: ArtifactEventOptions = {}): Promise<void> {
   await recordRemediationEvent(cpbRoot, project, jobId, {
     type: "job_superseded",
     jobId,
@@ -1301,7 +1436,7 @@ async function markJobSuperseded(cpbRoot: string, project: string, jobId: string
   }
 }
 
-async function createRemediationLineageTask(cpbRoot: string, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }: Record<string, any>): Promise<void> {
+async function createRemediationLineageTask(cpbRoot: string, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }: LineageTaskOptions): Promise<void> {
   const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
   const job = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
@@ -1314,12 +1449,12 @@ async function createRemediationLineageTask(cpbRoot: string, { project, jobId, r
     const jobs = index?.jobs || {};
     const alreadyCompleted = Object.values(jobs).some(
       (j) => {
-        const candidate = j as Record<string, any>;
+        const candidate = j as LooseRecord;
         return candidate && candidate.task === job.task && candidate.status === "completed" && candidate.project === project;
       },
     );
     if (alreadyCompleted) {
-      console.log(`Skip lineage task: task already completed — ${job.task.slice(0, 60)}`);
+      console.log(`Skip lineage task: task already completed — ${String(job.task || "").slice(0, 60)}`);
       return;
     }
   } catch {}
@@ -1359,7 +1494,7 @@ async function createRemediationLineageTask(cpbRoot: string, { project, jobId, r
       remediationStatus,
       lineageReason: "external_remediation_fixed_cpb_self_bug",
       sourceContext: {
-        ...(origin?.metadata?.sourceContext || job.sourceContext || {}),
+        ...recordValue(origin?.metadata?.sourceContext || job.sourceContext),
         remediation: {
           previousJobId: jobId,
           previousQueueEntryId: origin?.id || null,
@@ -1373,7 +1508,7 @@ async function createRemediationLineageTask(cpbRoot: string, { project, jobId, r
         },
         retry: {
           failureKind: job.failureCode || "external_remediation",
-          failureReason: job.blockedReason || "external remediation requested",
+          failureReason: stringValue(job.blockedReason, "external remediation requested"),
           previousJobId: jobId,
           previousPhase: job.failurePhase || null,
           previousOutput: "",
@@ -1399,7 +1534,7 @@ function validateIdRepair(name: string, value: unknown): void {
   }
 }
 
-async function acquireRepairLock(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}): Promise<string> {
+async function acquireRepairLock(cpbRoot: string, project: string, jobId: string, options: ReviewStorageOptions = {}): Promise<string> {
   const root = options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
   const lockDir = path.join(root, "repair-locks", project, `${jobId}.lock`);
   await mkdirRepair(path.dirname(lockDir), { recursive: true });
@@ -1414,7 +1549,7 @@ async function acquireRepairLock(cpbRoot: string, project: string, jobId: string
   return lockDir;
 }
 
-async function resolveRepairDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: Record<string, any> = {}): Promise<string> {
+async function resolveRepairDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: ReviewStorageOptions = {}): Promise<string> {
   if (dataRoot) return dataRoot;
   if (lockDir) {
     const marker = `${path.sep}repair-locks${path.sep}`;
@@ -1433,14 +1568,14 @@ async function releaseRepairLock(lockDir: string): Promise<void> {
   } catch {}
 }
 
-async function recordRepairEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, options: Record<string, any> = {}): Promise<void> {
-  await appendEventRepair(cpbRoot, project, jobId, event, options);
+async function recordRepairEvent(cpbRoot: string, project: string, jobId: string, event: LooseRecord, options: ArtifactEventOptions = {}): Promise<void> {
+  await appendEventRepair(cpbRoot, project, jobId, event as Parameters<typeof appendEventRepair>[3], options);
   await checkpointJobRepair(cpbRoot, project, jobId, options).catch(() => {});
   const state = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, options));
   await updateJobsIndexEntryRepair(cpbRoot, project, jobId, state, options).catch(() => {});
 }
 
-export async function runRepair(cpbRoot: string, { project, jobId, executorRoot, hubRoot, dataRoot: explicitDataRoot }: Record<string, any>) {
+export async function runRepair(cpbRoot: string, { project, jobId, executorRoot, hubRoot, dataRoot: explicitDataRoot }: RepairRunOptions) {
   validateIdRepair("project", project);
   validateIdRepair("jobId", jobId);
 
@@ -1475,7 +1610,7 @@ export async function runRepair(cpbRoot: string, { project, jobId, executorRoot,
   }
 }
 
-export async function completeRepair(cpbRoot: string, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: Record<string, any>) {
+export async function completeRepair(cpbRoot: string, { project, jobId, repairId, repairFile, repairArtifact, status, error, executorRoot, hubRoot, dataRoot: explicitDataRoot, lockDir }: CompleteRepairOptions) {
   const dataRoot = await resolveRepairDataRoot(cpbRoot, project, { hubRoot, dataRoot: explicitDataRoot, lockDir });
   const eventOpts = { dataRoot, includeLegacyFallback: false };
   if (status === "failed") {
@@ -1550,7 +1685,7 @@ function parseRepairStatus(content: string): string | null {
   return null;
 }
 
-async function createRepairLineageTask(cpbRoot: string, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }: Record<string, any>): Promise<void> {
+async function createRepairLineageTask(cpbRoot: string, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }: LineageTaskOptions): Promise<void> {
   const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
   const job = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
@@ -1574,7 +1709,6 @@ async function createRepairLineageTask(cpbRoot: string, { project, jobId, repair
     } catch {}
   }
 
-  const jobRecord = job as Record<string, any>;
   const entry = await enqueueRepair(hubRoot, {
     projectId: project,
     sourcePath,
@@ -1593,21 +1727,21 @@ async function createRepairLineageTask(cpbRoot: string, { project, jobId, repair
       repairStatus,
       lineageReason: "external_repair_fixed_cpb_self_bug",
       sourceContext: {
-        ...(origin?.metadata?.sourceContext || job.sourceContext || {}),
+        ...recordValue(origin?.metadata?.sourceContext || job.sourceContext),
         repair: {
           previousJobId: jobId,
           previousQueueEntryId: origin?.id || null,
           repairArtifact,
           repairStatus,
           lineageReason: "external_repair_fixed_cpb_self_bug",
-          failureReason: job.blockedReason || null,
+          failureReason: stringValue(job.blockedReason) || null,
           failurePhase: job.failurePhase || null,
           failureCode: job.failureCode || null,
           artifacts: job.artifacts || {},
         },
         retry: {
           failureKind: job.failureCode || "external_repair",
-          failureReason: job.blockedReason || "external repair requested",
+          failureReason: stringValue(job.blockedReason, "external repair requested"),
           previousJobId: jobId,
           previousPhase: job.failurePhase || null,
           previousOutput: "",
@@ -1615,12 +1749,12 @@ async function createRepairLineageTask(cpbRoot: string, { project, jobId, repair
         },
         previousFailure: {
           kind: job.failureCode || "external_repair",
-          reason: job.blockedReason || "external repair requested",
+          reason: stringValue(job.blockedReason, "external repair requested"),
           jobId,
           phase: job.failurePhase || null,
           artifacts: job.artifacts || {},
-          verdict: jobRecord.verdict || null,
-          adversarialVerdict: jobRecord.adversarialVerdict || null,
+          verdict: job.verdict || null,
+          adversarialVerdict: job.adversarialVerdict || null,
         },
       },
     },

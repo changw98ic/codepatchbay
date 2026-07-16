@@ -20,12 +20,12 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Shorthand to build a node array. deps default to []. */
-function N(id: string, deps: string[] = [], extra: Record<string, any> = {}) {
+function N(id: string, deps: string[] = [], extra: Record<string, unknown> = {}) {
   return { id, dependsOn: deps, phase: id, ...extra };
 }
 
 /** Wrap node array into a DAG object shape expected by executeDag. */
-function dagOf(nodes: Record<string, any>[]) {
+function dagOf(nodes: Record<string, unknown>[]) {
   return { name: "test-dag", nodes };
 }
 

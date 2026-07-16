@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { triageByRules } from "../triage/rules.js";
 
 const AUTO_TRIAGE_MODES = new Set(["auto", "rules", "", null, undefined]);
@@ -42,7 +43,7 @@ export function resolveTaskRoute({
   body = null,
   commandText = null,
   trustedActors = LOCAL_TRUSTED_ACTORS,
-}: Record<string, any> = {}) {
+}: LooseRecord = {}) {
   const requestedWorkflow = clean(workflow, "standard");
   const requestedPlanMode = clean(planMode, "auto");
   const normalizedTriage = triageMode == null ? "auto" : String(triageMode).trim().toLowerCase();
@@ -73,17 +74,6 @@ export function resolveTaskRoute({
     actor,
     trustedActors,
   });
-  const ruleCategory = decision.ruleRoute?.category || decision.effectiveRoute?.category;
-  if (ruleCategory === "unknown" && !decision.protectedUpgrade) {
-    return {
-      workflow: requestedWorkflow,
-      planMode: requestedPlanMode,
-      triageMode: normalizedTriage || "auto",
-      triageApplied: false,
-      decision,
-    };
-  }
-
   return {
     workflow: decision.workflow,
     planMode: decision.planMode,

@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 const DEFAULT_DYNAMIC_VERIFIER_AGENT = process.env.CPB_DYNAMIC_VERIFIER_AGENT || "codex";
 
 export const DYNAMIC_AGENT_PLAN_SCHEMA_VERSION = 1;
@@ -5,21 +6,26 @@ export const DYNAMIC_AGENT_PLAN_SCHEMA_VERSION = 1;
 /** Roles that MUST bind to a real DAG node when marked required. */
 const REQUIRED_ROLES = new Set(["verifier", "adversarial_verifier"]);
 
-function highRisk(riskMap: Record<string, any> = {}) {
-  return riskMap.riskLevel === "high" || riskMap.riskLevel === "critical" || riskMap.adversarialRequired === true;
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function highRisk(riskMap: unknown = {}) {
+  const risk = recordValue(riskMap);
+  return risk.riskLevel === "high" || risk.riskLevel === "critical" || risk.adversarialRequired === true;
 }
 
 /**
  * Determine which agentConfig role a DAG node maps to.
  */
-function matchNodeToRole(node: Record<string, any>, agentConfig: Record<string, any>) {
-  if (!agentConfig) return null;
+function matchNodeToRole(node: LooseRecord, agentConfig: LooseRecord) {
+  const agents = recordValue(agentConfig);
 
   if (node.role === "adversarial_verifier" || node.phase === "adversarial_verify") {
-    return agentConfig.adversarial_verifier ? "adversarial_verifier" : null;
+    return agents.adversarial_verifier ? "adversarial_verifier" : null;
   }
   if (node.role === "verifier" || node.phase === "verify") {
-    return agentConfig.verifier ? "verifier" : null;
+    return agents.verifier ? "verifier" : null;
   }
   return null;
 }
@@ -28,24 +34,28 @@ function matchNodeToRole(node: Record<string, any>, agentConfig: Record<string, 
  * Build per-node agent configs from a DAG, collecting which DAG node IDs
  * each required role maps to.
  */
-function nodeConfigForDag(workflowDag: Record<string, any>, agentConfig: Record<string, any>) {
-  const nodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : [];
-  const result = {};
-  const roleToNodeIds = {};
+function nodeConfigForDag(workflowDag: LooseRecord, agentConfig: LooseRecord) {
+  const dag = recordValue(workflowDag);
+  const agents = recordValue(agentConfig);
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes.map(recordValue) : [];
+  const result: Record<string, LooseRecord> = {};
+  const roleToNodeIds: Record<string, string[]> = {};
 
   for (const node of nodes) {
-    const matchedRole = matchNodeToRole(node, agentConfig);
+    const matchedRole = matchNodeToRole(node, agents);
     if (!matchedRole) continue;
+    const nodeId = stringValue(node.id);
+    if (!nodeId) continue;
 
-    if (!result[node.id]) {
-      result[node.id] = { ...agentConfig[matchedRole] };
+    if (!result[nodeId]) {
+      result[nodeId] = { ...recordValue(agents[matchedRole]) };
     }
-    result[node.id].nodeIds = [node.id];
+    result[nodeId].nodeIds = [nodeId];
 
     if (!roleToNodeIds[matchedRole]) {
       roleToNodeIds[matchedRole] = [];
     }
-    roleToNodeIds[matchedRole].push(node.id);
+    roleToNodeIds[matchedRole].push(nodeId);
   }
 
   return { config: result, roleToNodeIds };
@@ -60,32 +70,38 @@ function nodeConfigForDag(workflowDag: Record<string, any>, agentConfig: Record<
  * Map DAG node phases to the agent config roles they would bind to.
  * Only roles that have a corresponding DAG node should be validated.
  */
-const PHASE_ROLE_MAP = {
+const PHASE_ROLE_MAP: Record<string, string> = {
   verify: "verifier",
   adversarial_verify: "adversarial_verifier",
 };
 
-export function validateDynamicAgentPlan(plan: Record<string, any>, workflowDag: Record<string, any>) {
+export function validateDynamicAgentPlan(plan: LooseRecord, workflowDag: LooseRecord) {
   if (!plan) return { valid: true };
 
-  const agentConfig = plan.agentConfig || {};
-  const explicitRoleToNodeIds = plan.roleToNodeIds || {};
+  const planRecord = recordValue(plan);
+  const dag = recordValue(workflowDag);
+  const agentConfig = recordValue(planRecord.agentConfig);
+  const explicitRoleToNodeIds = recordValue(planRecord.roleToNodeIds);
   const { roleToNodeIds: computedRoleToNodeIds } = nodeConfigForDag(workflowDag, agentConfig);
 
   // Determine which roles have corresponding DAG nodes
-  const dagPhases = Array.isArray(workflowDag?.nodes)
-    ? workflowDag.nodes.map((n: Record<string, any>) => n.phase || n.id)
+  const dagPhases = Array.isArray(dag.nodes)
+    ? dag.nodes.map((n) => {
+      const node = recordValue(n);
+      return stringValue(node.phase) || stringValue(node.id);
+    })
     : [];
-  const dagBoundRoles = new Set();
+  const dagBoundRoles = new Set<string>();
   for (const phase of dagPhases) {
     const mappedRole = PHASE_ROLE_MAP[phase];
     if (mappedRole) dagBoundRoles.add(mappedRole);
   }
 
-  const missingRoles = [];
+  const missingRoles: string[] = [];
 
   for (const role of Object.keys(agentConfig)) {
-    if (!agentConfig[role]?.required) continue;
+    const config = recordValue(agentConfig[role]);
+    if (!config.required) continue;
     if (!REQUIRED_ROLES.has(role)) continue;
     // Skip validation for roles whose phase is not in the DAG
     if (!dagBoundRoles.has(role)) continue;
@@ -108,19 +124,23 @@ export function validateDynamicAgentPlan(plan: Record<string, any>, workflowDag:
   };
 }
 
-export function generateDynamicAgentPlan(options: Record<string, any> = {}) {
-  const { riskMap: rawRiskMap = {}, workflowDag = null, workflow = null, planMode = null } = options;
-  const riskMap = rawRiskMap as Record<string, any>;
-  const requiresIndependentVerifier = highRisk(riskMap);
+export function generateDynamicAgentPlan(options: LooseRecord = {}) {
+  const riskMap = recordValue(options.riskMap);
+  const workflowDag = recordValue(options.workflowDag);
+  const workflow = options.workflow ?? null;
+  const planMode = options.planMode ?? null;
+  const requiresIndependentVerifier = options.independentVerifierRequired === true || highRisk(riskMap);
   const generatedAt = new Date().toISOString();
-  const agentConfig: Record<string, any> = {};
+  const agentConfig: LooseRecord = {};
 
   if (requiresIndependentVerifier) {
     agentConfig.verifier = {
       agent: DEFAULT_DYNAMIC_VERIFIER_AGENT,
       required: true,
       independent: true,
-      reason: `${riskMap.riskLevel || "high"} risk requires independent verification`,
+      reason: options.independentVerifierRequired === true
+        ? "assurance policy requires independent verification"
+        : `${stringValue(riskMap.riskLevel, "high")} risk requires independent verification`,
     };
     agentConfig.adversarial_verifier = {
       agent: DEFAULT_DYNAMIC_VERIFIER_AGENT,
@@ -138,7 +158,7 @@ export function generateDynamicAgentPlan(options: Record<string, any> = {}) {
     generatedAt,
     workflow,
     planMode,
-    riskLevel: riskMap.riskLevel || "medium",
+    riskLevel: stringValue(riskMap.riskLevel, "medium"),
     domains: Array.isArray(riskMap.domains) ? riskMap.domains : [],
     verificationDepth: riskMap.verificationDepth || null,
     adversarialRequired: Boolean(riskMap.adversarialRequired),

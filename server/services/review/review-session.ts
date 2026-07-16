@@ -65,13 +65,13 @@ function validateSessionId(sessionId: string) {
   return sessionId;
 }
 
-function reviewsDir(cpbRoot: string, options: Record<string, any> = {}) {
+function reviewsDir(cpbRoot: string, options: LooseRecord = {}) {
   const controlRoot = options.controlRoot || options.hubRoot;
   if (controlRoot) return path.join(path.resolve(controlRoot), "reviews");
   return path.join(resolveHubRoot(cpbRoot), "reviews");
 }
 
-function sessionFile(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
+function sessionFile(cpbRoot: string, sessionId: string, options: LooseRecord = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   const resolved = path.resolve(dir, `${safeId}.json`);
@@ -88,7 +88,7 @@ export function makeSessionId() {
   return `rev-${ts}-${suffix}`;
 }
 
-export async function createSession(cpbRoot: string, { project, intent, ...options }: Record<string, any>) {
+export async function createSession(cpbRoot: string, { project, intent, ...options }: LooseRecord) {
   const session = {
     sessionId: makeSessionId(),
     project,
@@ -121,7 +121,7 @@ export async function createSession(cpbRoot: string, { project, intent, ...optio
   return session;
 }
 
-export async function getSession(cpbRoot: string, sessionId: string, options: Record<string, any> = {}) {
+export async function getSession(cpbRoot: string, sessionId: string, options: LooseRecord = {}) {
   validateSessionId(sessionId);
   try {
     const raw = await readFile(sessionFile(cpbRoot, sessionId, options), "utf8");
@@ -132,7 +132,7 @@ export async function getSession(cpbRoot: string, sessionId: string, options: Re
   }
 }
 
-export async function listSessions(cpbRoot: string, options: Record<string, any> = {}) {
+export async function listSessions(cpbRoot: string, options: LooseRecord = {}) {
   const dir = reviewsDir(cpbRoot, options);
   let entries;
   try {
@@ -152,7 +152,7 @@ export async function listSessions(cpbRoot: string, options: Record<string, any>
   return sessions;
 }
 
-export async function updateSession(cpbRoot: string, sessionId: string, patch: Record<string, any>, options: Record<string, any> = {}) {
+export async function updateSession(cpbRoot: string, sessionId: string, patch: LooseRecord, options: LooseRecord = {}) {
   const safeId = validateSessionId(sessionId);
   const { skipTransitionCheck = false } = options;
 
@@ -206,7 +206,7 @@ export function parseIssues(text: string) {
   return issues;
 }
 
-export async function startSessionResearch(cpbRoot: string, sessionId: string, key: string, options: Record<string, any> = {}) {
+export async function startSessionResearch(cpbRoot: string, sessionId: string, key: string, options: LooseRecord = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
@@ -237,7 +237,7 @@ export async function startSessionResearch(cpbRoot: string, sessionId: string, k
   });
 }
 
-export async function noteReviewAcpCall(cpbRoot: string, sessionId: string, { agent, promptBytes }: Record<string, any>, options: Record<string, any> = {}) {
+export async function noteReviewAcpCall(cpbRoot: string, sessionId: string, { agent, promptBytes }: LooseRecord, options: LooseRecord = {}) {
   const safeId = validateSessionId(sessionId);
   const dir = reviewsDir(cpbRoot, options);
   await mkdir(dir, { recursive: true });
@@ -262,7 +262,7 @@ export async function noteReviewAcpCall(cpbRoot: string, sessionId: string, { ag
   });
 }
 
-export function assertReviewBudget(session: Record<string, any>) {
+export function assertReviewBudget(session: LooseRecord) {
   const budget = session.budget;
   if (!budget) return session;
   if (budget.usedAcpCalls >= budget.maxAcpCalls) {
@@ -277,14 +277,27 @@ export function assertReviewBudget(session: Record<string, any>) {
 // ─── review-bundle.ts ─────────────────────────────────────────────
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { AnyRecord } from "../../../shared/types.js";
+import { LooseRecord } from "../../../shared/types.js";
 import { readEventsReadOnly, materializeJob } from "../event/event-store.js";
 import { buildArtifactIndex } from "../job/job-projection.js";
 import { parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
 
 const execFileAsync = promisify(execFile);
 
-async function runGit(cwd: string, args: string[], { allowFailure = false }: Record<string, any> = {}) {
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function recordOrNull(value: unknown): LooseRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : null;
+}
+
+function artifactContent(value: unknown): string | null {
+  const record = recordValue(value);
+  return typeof record.content === "string" ? record.content : null;
+}
+
+async function runGit(cwd: string, args: string[], { allowFailure = false }: LooseRecord = {}) {
   try {
     const result = await execFileAsync("git", args, { cwd, maxBuffer: 10 * 1024 * 1024 });
     return { stdout: result.stdout || "", stderr: result.stderr || "", exitCode: 0 };
@@ -351,7 +364,7 @@ export async function buildReviewBundle(cpbRoot: string, project: string, jobId:
   const baseBranch = jobState.worktreeBaseBranch || job?.worktreeBaseBranch || "main";
   const branch = jobState.worktreeBranch || job?.worktreeBranch || null;
 
-  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, { events, dataRoot, wikiDir });
+  const artifactIndex = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot, wikiDir });
 
   const planArtifact = artifactIndex.entries.find((e) => e.kind === "plan" && !e.broken);
   const deliverableArtifact = artifactIndex.entries.find((e) => e.kind === "deliverable" && !e.broken);
@@ -487,7 +500,7 @@ export async function buildReviewBundle(cpbRoot: string, project: string, jobId:
   return bundle;
 }
 
-export async function writeReviewBundle(outputDir: string, bundle: Record<string, any>) {
+export async function writeReviewBundle(outputDir: string, bundle: LooseRecord) {
   const slug = `${bundle.project}-${bundle.jobId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
   const fileName = `${slug}-review-bundle.json`;
   const filePath = path.join(outputDir, fileName);
@@ -499,8 +512,8 @@ export async function writeReviewBundle(outputDir: string, bundle: Record<string
 /**
  * Build the DW (Dynamic Workflow) evidence section from materialized job state.
  */
-function buildDwSection(jobState: Record<string, any>) {
-  const dag = jobState.workflowDag;
+function buildDwSection(jobState: LooseRecord) {
+  const dag = recordValue(jobState.workflowDag);
   const dagNodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
   const dagEdges = Array.isArray(dag?.edges) ? dag.edges : [];
 
@@ -576,9 +589,13 @@ export class ReviewLoopError extends Error {
 
 export function isReviewLoopError(error: unknown): boolean {
   if (error instanceof ReviewLoopError) return true;
-  if (error && typeof error === "object") {
-    const rec = error as Record<string, unknown>;
-    return Boolean(rec.code && rec.statusCode);
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    "statusCode" in error
+  ) {
+    return Boolean(error.code && error.statusCode);
   }
   return false;
 }
@@ -587,7 +604,7 @@ function reviewLoopError(message: string, code: string, statusCode: number) {
   return new ReviewLoopError(message, code, statusCode);
 }
 
-function assertReviewableJob(job: Record<string, any>) {
+function assertReviewableJob(job: LooseRecord) {
   if (!REVIEWABLE_TERMINAL_STATUSES.has(job?.status)) {
     throw reviewLoopError(
       `review bundle can only be accepted or rejected after the job is terminal; current status: ${job?.status || "unknown"}`,
@@ -597,7 +614,7 @@ function assertReviewableJob(job: Record<string, any>) {
   }
 }
 
-function assertReviewNotFinalized(loop: Record<string, any>) {
+function assertReviewNotFinalized(loop: LooseRecord) {
   const latestVerdict = loop?.latest?.verdict;
   if (latestVerdict === "accepted" || latestVerdict === "rejected") {
     throw reviewLoopError(
@@ -608,14 +625,14 @@ function assertReviewNotFinalized(loop: Record<string, any>) {
   }
 }
 
-async function refreshJobIndex(cpbRoot: string, project: string, jobId: string, { dataRoot }: AnyRecord = {}) {
+async function refreshJobIndex(cpbRoot: string, project: string, jobId: string, { dataRoot }: LooseRecord = {}) {
   const job = await checkpointJob(cpbRoot, project, jobId, { dataRoot })
     || materializeJob(await readEventsReadOnlyForLoop(cpbRoot, project, jobId, { dataRoot }));
   await updateJobsIndexEntry(cpbRoot, project, jobId, job, { dataRoot });
   return job;
 }
 
-function reviewLoopState(events: AnyRecord[]) {
+function reviewLoopState(events: LooseRecord[]) {
   const rounds = [];
   for (const event of events) {
     if (event.type === "review_bundle_accepted" || event.type === "review_bundle_rejected") {
@@ -633,36 +650,41 @@ function reviewLoopState(events: AnyRecord[]) {
   return { rounds, nextRound: rounds.length + 1, latest: rounds[rounds.length - 1] ?? null };
 }
 
-function retryPreviousOutput(bundle: Record<string, any>) {
+function retryPreviousOutput(bundle: LooseRecord) {
   const chunks = [];
-  if (bundle?.evidence?.verdict) {
-    chunks.push(`Previous verdict:\n${typeof bundle.evidence.verdict === "string" ? bundle.evidence.verdict : JSON.stringify(bundle.evidence.verdict, null, 2)}`);
+  const evidence = recordValue(bundle.evidence);
+  if (evidence.verdict) {
+    chunks.push(`Previous verdict:\n${typeof evidence.verdict === "string" ? evidence.verdict : JSON.stringify(evidence.verdict, null, 2)}`);
   }
-  if (bundle?.evidence?.deliverable?.content) {
-    chunks.push(`Previous deliverable:\n${bundle.evidence.deliverable.content}`);
+  const deliverableContent = artifactContent(evidence.deliverable);
+  if (deliverableContent) {
+    chunks.push(`Previous deliverable:\n${deliverableContent}`);
   }
-  if (bundle?.evidence?.plan?.content) {
-    chunks.push(`Previous plan:\n${bundle.evidence.plan.content}`);
+  const planContent = artifactContent(evidence.plan);
+  if (planContent) {
+    chunks.push(`Previous plan:\n${planContent}`);
   }
-  if (bundle?.evidence?.diffStat) {
-    chunks.push(`Previous diff stat:\n${bundle.evidence.diffStat}`);
+  if (evidence.diffStat) {
+    chunks.push(`Previous diff stat:\n${evidence.diffStat}`);
   }
   return trimText(chunks.join("\n\n"), 8000);
 }
 
-function buildRetrySourceContext(job: Record<string, any>, bundle: Record<string, any>, { round, feedback, actor, ts, retryQueueEntryId }: AnyRecord) {
+function buildRetrySourceContext(job: LooseRecord, bundle: LooseRecord, { round, feedback, actor, ts, retryQueueEntryId }: LooseRecord) {
   const base = job?.sourceContext && typeof job.sourceContext === "object" ? { ...job.sourceContext } : {};
+  const jobResume = recordOrNull(job.dagResume);
+  const baseResume = recordOrNull(base.dagResume);
   const dagResume = job?.dagResume && typeof job.dagResume === "object"
     ? {
-        failedNodeId: job.dagResume.failedNodeId ?? null,
-        resumeTarget: job.dagResume.resumeTarget ? { ...job.dagResume.resumeTarget } : null,
-        completedNodeIds: Array.isArray(job.dagResume.completedNodeIds) ? [...job.dagResume.completedNodeIds] : [],
+        failedNodeId: jobResume?.failedNodeId ?? null,
+        resumeTarget: recordOrNull(jobResume?.resumeTarget),
+        completedNodeIds: Array.isArray(jobResume?.completedNodeIds) ? [...jobResume.completedNodeIds] : [],
       }
     : base.dagResume && typeof base.dagResume === "object"
       ? {
-          failedNodeId: base.dagResume.failedNodeId ?? null,
-          resumeTarget: base.dagResume.resumeTarget ? { ...base.dagResume.resumeTarget } : null,
-          completedNodeIds: Array.isArray(base.dagResume.completedNodeIds) ? [...base.dagResume.completedNodeIds] : [],
+          failedNodeId: baseResume?.failedNodeId ?? null,
+          resumeTarget: recordOrNull(baseResume?.resumeTarget),
+          completedNodeIds: Array.isArray(baseResume?.completedNodeIds) ? [...baseResume.completedNodeIds] : [],
         }
       : null;
   const bundleId = bundleIdFor(job.project, job.jobId);
@@ -707,7 +729,7 @@ function buildRetrySourceContext(job: Record<string, any>, bundle: Record<string
   };
 }
 
-export async function getReviewLoop(cpbRoot: string, project: string, jobId: string, { dataRoot }: AnyRecord = {}) {
+export async function getReviewLoop(cpbRoot: string, project: string, jobId: string, { dataRoot }: LooseRecord = {}) {
   const events = await readEventsReadOnlyForLoop(cpbRoot, project, jobId, { dataRoot });
   return reviewLoopState(events);
 }
@@ -717,7 +739,8 @@ export async function acceptReviewBundle(cpbRoot: string, project: string, jobId
   feedback = "",
   ts = nowIso(),
   dataRoot,
-}: AnyRecord = {}) {
+}: LooseRecord = {}) {
+  const normalizedActor = typeof actor === "string" ? actor : null;
   const events = await readEventsReadOnlyForLoop(cpbRoot, project, jobId, { dataRoot });
   const job = materializeJob(events);
   if (!job?.jobId) throw reviewLoopError(`job not found: ${jobId}`, "REVIEW_JOB_NOT_FOUND", 404);
@@ -734,7 +757,7 @@ export async function acceptReviewBundle(cpbRoot: string, project: string, jobId
     round,
     verdict: "accepted",
     feedback: trimText(feedback),
-    actor,
+    actor: normalizedActor,
     ts,
   }, { dataRoot });
   await refreshJobIndex(cpbRoot, project, jobId, { dataRoot });
@@ -757,8 +780,9 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
   priority = "P0",
   ts = nowIso(),
   dataRoot,
-}: AnyRecord = {}) {
+}: LooseRecord = {}) {
   const normalizedFeedback = trimText(feedback);
+  const normalizedActor = typeof actor === "string" ? actor : null;
   if (!normalizedFeedback) throw reviewLoopError("feedback required", "REVIEW_FEEDBACK_REQUIRED", 400);
   if (!hubRoot) throw reviewLoopError("hubRoot required", "REVIEW_HUB_ROOT_REQUIRED", 400);
 
@@ -767,11 +791,11 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
   if (!job?.jobId) throw reviewLoopError(`job not found: ${jobId}`, "REVIEW_JOB_NOT_FOUND", 404);
   assertReviewableJob(job);
 
-  const bundle = await buildReviewBundle(cpbRoot, project, jobId, {
+  const bundle = recordValue(await buildReviewBundle(cpbRoot, project, jobId, {
     dataRoot,
-    sourcePath,
+    sourcePath: typeof sourcePath === "string" ? sourcePath : null,
     worktreePath: job.worktree || null,
-  });
+  }));
   const loop = reviewLoopState(events);
   assertReviewNotFinalized(loop);
   const round = loop.nextRound;
@@ -781,7 +805,7 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
   const sourceContext = buildRetrySourceContext(job, bundle, {
     round,
     feedback: normalizedFeedback,
-    actor,
+    actor: normalizedActor,
     ts,
     retryQueueEntryId: null,
   });
@@ -789,7 +813,7 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
   const entry = await enqueue(hubRoot, {
     projectId: project,
     sourcePath,
-    priority,
+    priority: typeof priority === "string" ? priority : "P0",
     description: job.task || bundle.request?.task || `Retry rejected review bundle ${jobId}`,
     type: "review_bundle_retry",
     metadata: {
@@ -797,7 +821,7 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
       sourceType: "review_bundle_rejection",
       workflow: job.workflow || bundle.request?.workflow || "standard",
       planMode: job.planMode || bundle.request?.planMode || "full",
-      actor,
+      actor: normalizedActor,
       originJobId: jobId,
       originalJobId: jobId,
       originalBundleId: bundleId,
@@ -823,7 +847,7 @@ export async function rejectReviewBundle(cpbRoot: string, project: string, jobId
     round,
     verdict: "rejected",
     feedback: normalizedFeedback,
-    actor,
+    actor: normalizedActor,
     retryQueueEntryId: entry.id,
     ts,
   }, { dataRoot });

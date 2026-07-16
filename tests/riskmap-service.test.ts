@@ -71,7 +71,7 @@ function highConfidenceCapabilityContext() {
   };
 }
 
-async function callPrepareTask(api: any, overrides: Record<string, any> = {}) {
+async function callPrepareTask(api: any, overrides: Record<string, unknown> = {}) {
   const cpbRoot = overrides.cpbRoot || await tempRoot("cpb-riskmap-cpb");
   const sourcePath = overrides.sourcePath === undefined
     ? await makeCodegraphReadyProject()

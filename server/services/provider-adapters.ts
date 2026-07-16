@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 /**
  * Provider Adapters — supplier-specific quota semantics.
  *
@@ -10,9 +11,9 @@
 import { parseResetTime } from "./provider-quota.js";
 
 // ─── Adapter Registry ───────────────────────────────────────────────
-const adapters = new Map<string, Record<string, any>>();
+const adapters = new Map<string, LooseRecord>();
 
-function register(key: string, adapter: Record<string, any>) {
+function register(key: string, adapter: LooseRecord) {
   adapters.set(key, Object.freeze({ providerKeyPattern: key, ...adapter }));
 }
 
@@ -30,9 +31,10 @@ register("claude", {
   region: "global",
   timezone: "UTC",
   quotaPolicy: { type: "per-minute", description: "Anthropic per-minute rate limit" },
-  parseLimitError({ error, stderr }: Record<string, any>) {
-    const msg = `${error?.message || ""}\n${stderr || ""}`;
-    if (Number(error?.code) === 529 || /\b529\b|访问量过大|模型当前访问量|当前访问量过大/i.test(msg)) {
+  parseLimitError({ error, stderr }: LooseRecord) {
+    const err = recordValue(error);
+    const msg = `${err.message || ""}\n${stderr || ""}`;
+    if (Number(err.code) === 529 || /\b529\b|访问量过大|模型当前访问量|当前访问量过大/i.test(msg)) {
       return {
         isQuota: true,
         status: "rate_limited",
@@ -53,8 +55,9 @@ register("claude:mimo-v2.5pro", {
     description: "MiMo 5-hour usage window, weekly cap",
     windowHours: 5,
   },
-  parseLimitError({ error, stderr }: Record<string, any>) {
-    const msg = `${error?.message || ""}\n${stderr || ""}`;
+  parseLimitError({ error, stderr }: LooseRecord) {
+    const err = recordValue(error);
+    const msg = `${err.message || ""}\n${stderr || ""}`;
     if (/weekly|week.?limit/i.test(msg)) {
       return {
         isQuota: true,
@@ -68,6 +71,26 @@ register("claude:mimo-v2.5pro", {
         isQuota: true,
         status: "window_exhausted",
         confidence: 0.9,
+        reason: msg.slice(0, 200),
+      };
+    }
+    return null;
+  },
+  parseResetTime: (msg: string) => parseResetTime(msg, "Asia/Shanghai"),
+});
+
+register("claude:glm", {
+  region: "cn",
+  timezone: "Asia/Shanghai",
+  quotaPolicy: { type: "per-minute", description: "GLM Anthropic-compatible rate limit" },
+  parseLimitError({ error, stderr }: LooseRecord) {
+    const err = recordValue(error);
+    const msg = `${err.message || ""}\n${stderr || ""}`;
+    if (/rate.?limit|quota|限额|额度|访问量|频率|过载|overload/i.test(msg)) {
+      return {
+        isQuota: true,
+        status: "rate_limited",
+        confidence: 0.85,
         reason: msg.slice(0, 200),
       };
     }

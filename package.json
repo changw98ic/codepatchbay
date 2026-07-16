@@ -44,10 +44,23 @@
     "test:integration": "node dist/scripts/run-node-tests.js --integration",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "typecheck:strict:engine": "tsc -p tsconfig.strict-engine.json --noEmit",
+    "typecheck:type-debt:engine": "npm run build:node && node dist/scripts/type-debt-guard.js",
+    "verify:dependency-audit": "npm audit --omit=dev --audit-level=moderate && npm audit --audit-level=high",
+    "verify:patch-integrity": "npm run build:node && node dist/scripts/verify-patch-integrity.js",
+    "verify:product-gate": "npm run build:node && node dist/scripts/verify-product-gate.js",
+    "validate:swebench-product": "npm run build:node && node dist/scripts/run-swebench-product-validation.js",
+    "compare:coding": "npm run build:node && node dist/scripts/run-coding-comparison.js",
+    "queue:swebench-batch": "npm run build:node && node dist/scripts/queue-swebench-batch.js",
+    "compare:swebench-three-way": "npm run build:node && node dist/scripts/run-swebench-three-way.js",
+    "verify:stabilization": "npm run build && npm run build:tests && node dist/scripts/verify-stabilization.js",
+    "report:release-readiness": "npm run build:node && node dist/scripts/release-readiness-report.js",
     "build:node": "rm -rf dist && tsc -p tsconfig.node.json && find cli core server runtime bridges shared scripts \\( -path '*/.*' -o -path '*/node_modules/*' \\) -prune -o -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.html' \\) -exec sh -c 'for f do mkdir -p \"dist/$(dirname \"$f\")\"; cp \"$f\" \"dist/$f\"; done' sh {} + && for d in profiles skills templates; do if [ -d \"$d\" ]; then cp -R \"$d\" \"dist/$d\"; fi; done && if [ -f wiki/schema.md ]; then mkdir -p dist/wiki && cp wiki/schema.md dist/wiki/schema.md; fi && if [ -d wiki/projects/_template ]; then mkdir -p dist/wiki/projects && cp -R wiki/projects/_template dist/wiki/projects/_template; fi && node dist/scripts/write-dist-metadata.js",
-    "build:tests": "rm -rf dist-tests && tsc -p tsconfig.tests.json && find tests -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' \\) -exec sh -c 'for f do mkdir -p \"dist-tests/$(dirname \"$f\")\"; cp \"$f\" \"dist-tests/$f\"; done' sh {} + && rm -rf dist/tests && cp -R dist-tests/tests dist/tests",
+    "build:tests": "rm -rf dist-tests && tsc -p tsconfig.tests.json && find cli core server runtime bridges shared scripts \\( -path '*/.*' -o -path '*/node_modules/*' \\) -prune -o -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.html' \\) -exec sh -c 'for f do mkdir -p \"dist-tests/$(dirname \"$f\")\"; cp \"$f\" \"dist-tests/$f\"; done' sh {} + && find tests -type f \\( -name '*.json' -o -name '*.sh' -o -name '*.md' -o -name '*.txt' \\) -exec sh -c 'for f do mkdir -p \"dist-tests/$(dirname \"$f\")\"; cp \"$f\" \"dist-tests/$f\"; done' sh {} + && rm -rf dist/tests && cp -R dist-tests/tests dist/tests",
     "build": "npm run build:node",
-    "verify:p0p1": "npm run build && npm run build:tests && node dist/scripts/verify-p0-p1.js"
+    "verify:p0p1": "npm run build && npm run build:tests && node dist/scripts/verify-p0-p1.js",
+    "verify:enterprise-gate": "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
+    "verify:release-gate": "npm run build && npm run build:tests && node dist/scripts/verify-release-gate.js"
   },
   "dependencies": {
     "chokidar": "^4.0.0"

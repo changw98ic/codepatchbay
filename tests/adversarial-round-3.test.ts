@@ -18,7 +18,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
@@ -26,7 +26,7 @@ import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checkli
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
 
-function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
+function frozenChecklist(items: LooseRecord[] = [defaultItem()]) {
   return {
     schemaVersion: 1,
     jobId: "job-invented",
@@ -38,7 +38,7 @@ function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
   };
 }
 
-function defaultItem(overrides: AnyRecord = {}) {
+function defaultItem(overrides: LooseRecord = {}) {
   return {
     id: "AC-001",
     requirement: "required behavior",
@@ -207,12 +207,12 @@ test("adversarial round 3: mixed real and fabricated evidence → evidence_missi
   assert.equal(result.outcome, "evidence_missing",
     `expected evidence_missing for mixed case, got: ${result.outcome}`);
   assert.ok(
-    result.missingEvidenceRefs.some((r: AnyRecord) => r.evidenceId === "EV-999"),
+    result.missingEvidenceRefs.some((r: LooseRecord) => r.evidenceId === "EV-999"),
     "EV-999 must appear in missingEvidenceRefs",
   );
   // EV-001 should NOT be in missingEvidenceRefs — it exists in the ledger
   assert.ok(
-    !result.missingEvidenceRefs.some((r: AnyRecord) => r.evidenceId === "EV-001"),
+    !result.missingEvidenceRefs.some((r: LooseRecord) => r.evidenceId === "EV-001"),
     "EV-001 must NOT appear in missingEvidenceRefs",
   );
 });
@@ -350,6 +350,6 @@ test("adversarial round 3: all evidence refs fabricated → all reported missing
   assert.equal(result.outcome, "evidence_missing");
   assert.equal(result.missingEvidenceRefs.length, 2,
     "both fabricated EV IDs must be reported missing");
-  const missingIds = result.missingEvidenceRefs.map((r: AnyRecord) => r.evidenceId).sort();
+  const missingIds = result.missingEvidenceRefs.map((r: LooseRecord) => r.evidenceId).sort();
   assert.deepEqual(missingIds, ["EV-998", "EV-999"]);
 });

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified",
+  "validatedAt": "2026-06-24T13:14:23.000Z",
+  "source": {
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "datasetUrl": "https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified",
+    "datasetRowsApi": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=100&length=1",
+    "rowIndex": 100
+  },
+  "sample": {
+    "instanceId": "django__django-13128",
+    "repository": "django/django",
+    "baseCommit": "2d67222472f80f251607ae1b720527afceba06ad",
+    "createdAt": "2020-06-30T18:06:56Z",
+    "version": "3.2",
+    "difficulty": "1-4 hours",
+    "problemStatementSha256": "d05584e584d668d3bc05dac8dc889140cbec5336c30912ddf99cb5fc0f8f9716",
+    "failToPassTests": 480,
+    "passToPassTests": 9438
+  },
+  "cpbDryRunEvidence": {
+    "dryRunFinalizerStatus": "dry-run",
+    "draftPrPreview": true,
+    "noLiveSideEffects": true,
+    "prBodyRequiredManualReconstruction": false,
+    "scope": "Real external benchmark sample evidence for the CPB flagship dry-run product gate. This bundle does not claim the SWE-bench task was solved or that the benchmark test suite was executed."
+  }
+}

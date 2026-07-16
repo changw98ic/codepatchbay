@@ -78,3 +78,28 @@ test("registerProject persists high-confidence capability maps from CodeGraph", 
   assert.equal(stored.metadata.safety_boundary_map.confidence, "high");
   assert.equal(stored.metadata.high_risk_area_map.confidence, "high");
 });
+
+test("registerProject can build capability maps from an explicit static CodeGraph index", async () => {
+  const hubRoot = await tempRoot("cpb-dw01-static-hub");
+  const sourcePath = await createCodeGraphFixture({ withState: false });
+  const previous = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
+  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
+
+  try {
+    const project = await registerProject(hubRoot, { id: "flow", sourcePath });
+    const metadata = project.metadata as Record<string, unknown>;
+    const readiness = metadata.codegraphReadiness as Record<string, unknown>;
+    const readinessState = readiness.state as Record<string, unknown>;
+    const capabilityMap = metadata.project_capability_map as Record<string, unknown>;
+    const coreModules = capabilityMap.coreModules;
+
+    assert.equal(metadata.capabilityMapConfidence, "high");
+    assert.equal(readinessState.source, "index_only");
+    assert.equal(capabilityMap.confidence, "high");
+    assert.ok(Array.isArray(coreModules));
+    assert.ok(coreModules.includes("server/orchestrator/scheduler.js"));
+  } finally {
+    if (previous === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
+    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previous;
+  }
+});

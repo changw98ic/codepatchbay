@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { AnyRecord } from "../../shared/types.js";
+import type { LooseRecord } from "../../core/contracts/types.js";
 import {
   AcpPool,
   appendHistory,
@@ -36,8 +36,161 @@ const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, "..")
 const execFileAsync = promisify(execFile);
 const MANAGED_WORKER_PATH = path.resolve(__dirname, "../worker/managed-worker.js");
 
+type CliOptions = LooseRecord & {
+  dryRun: boolean;
+  once: boolean;
+  scan: boolean;
+  continuous: boolean;
+  guardedRun: boolean;
+  intervalMs: number;
+  explicitInterval: boolean;
+  maxRounds: number;
+  maxIssues: number;
+  allowlist: string[];
+  noCleanCheck: boolean;
+  project: string | null;
+  agent: string;
+  timeoutMs: number;
+  workflow: string;
+  maxDurationMs: number;
+  localAcpPool: boolean;
+  explicitDryRun: boolean;
+  help?: boolean;
+};
+
+type RuntimeMetadata = LooseRecord & {
+  source?: string;
+  sourceContext?: LooseRecord;
+  workflow?: string;
+  planMode?: string;
+  issueNumber?: string | number;
+  issueUrl?: string;
+  repo?: string;
+  repository?: string;
+  repositoryFullName?: string;
+  issueTitle?: string;
+  actor?: string;
+};
+
+type RuntimeProject = LooseRecord & {
+  id: string;
+  name?: string;
+  sourcePath: string;
+  projectRuntimeRoot?: string;
+  dataRoot?: string;
+  enabled?: boolean;
+  weight?: number;
+  rateLimitedUntil?: string | number | null;
+};
+
+type RuntimeIssue = LooseRecord & {
+  id?: string;
+  description: string;
+  priority?: string;
+  status?: string;
+  createdAt?: string;
+  project?: string;
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+  dataRoot?: string;
+  weight?: number;
+  _source?: string;
+};
+
+type RuntimeQueueEntry = LooseRecord & {
+  id?: string;
+  projectId?: string;
+  description?: string;
+  priority?: string;
+  sourcePath?: string;
+  createdAt?: string;
+  type?: string;
+  metadata?: RuntimeMetadata;
+};
+
+type WorkerRunArgs = {
+  issue: RuntimeIssue;
+  queueEntry?: RuntimeQueueEntry;
+  workflow?: string;
+  cpbRoot: string;
+  hubRoot: string;
+};
+
+type WorkerRunResult = {
+  [key: string]: unknown;
+  ok?: boolean;
+  code?: number;
+  error?: unknown;
+  stdout?: string;
+  stderr?: string;
+  status?: string;
+  jobResult?: ManagedJobResult;
+  job?: ManagedJobResult;
+};
+
+type ManagedJobResult = LooseRecord & {
+  status?: string;
+  failure?: {
+    cause?: { code?: string };
+    reason?: unknown;
+  };
+};
+
+type PoolLike = {
+  execute: (agent: string, prompt: string, cwd: string, timeoutMs: number) => Promise<{ output: string }>;
+};
+
+type ControllerOptions = LooseRecord & {
+  hubRoot?: string;
+  pool?: PoolLike;
+  localAcpPool?: boolean;
+  workerRunner?: ((args: WorkerRunArgs) => Promise<WorkerRunResult>);
+};
+
+type ExecutionOptions = {
+  workflow?: string;
+  queueEntry?: RuntimeQueueEntry;
+  timeoutMs?: number;
+};
+
+type ClaimedIssue = {
+  issue: RuntimeIssue;
+};
+
+function isRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown) {
+  return isRecord(error) && typeof error.message === "string" ? error.message : String(error || "");
+}
+
+function runtimeIssue(value: unknown): RuntimeIssue | null {
+  const record = isRecord(value) ? value : {};
+  const description = typeof record.description === "string" ? record.description : "";
+  if (!description) return null;
+  const issue: RuntimeIssue = { description };
+  Object.assign(issue, record);
+  issue.description = description;
+  return issue;
+}
+
+function runtimeIssues(value: unknown): RuntimeIssue[] {
+  return Array.isArray(value)
+    ? value.map(runtimeIssue).filter((issue): issue is RuntimeIssue => Boolean(issue))
+    : [];
+}
+
+function commandOutput(error: unknown) {
+  const record = isRecord(error) ? error : {};
+  return {
+    stdout: typeof record.stdout === "string" ? record.stdout : "",
+    stderr: typeof record.stderr === "string" ? record.stderr : errorMessage(error),
+  };
+}
+
 function parseArgs(argv: string[]) {
-  const opts: AnyRecord = {
+  const opts: CliOptions = {
     dryRun: false,
     once: false,
     scan: false,
@@ -135,7 +288,7 @@ Options:
   --local-acp-pool    bypass Hub managed pool for isolated debugging`;
 }
 
-function scanPrompt(project: Record<string, any>) {
+function scanPrompt(project: RuntimeProject) {
   return `You are CPB Multi-Evolve Scanner. Analyze this project for concrete improvement opportunities.\n\nProject: ${project.id}\nSource path: ${project.sourcePath}\n\nOutput at most 5 lines in this exact format:\n[ISSUE] <P0|P1|P2> <one-line description>\n\nFocus on real, actionable issues. Do not modify files.`;
 }
 
@@ -156,21 +309,21 @@ function priorityScore(priority: string) {
   return 3;
 }
 
-function ageScore(issue: Record<string, any>) {
+function ageScore(issue: RuntimeIssue) {
   const ts = Date.parse(issue.createdAt || "");
   if (!Number.isFinite(ts)) return 1;
   return Math.max(1, Date.now() - ts);
 }
 
-function evolveStateOpts(project: Record<string, any>) {
+function evolveStateOpts(project: RuntimeProject) {
   return { projectRuntimeRoot: project.projectRuntimeRoot || project.dataRoot };
 }
 
-function issueStateOpts(issue: Record<string, any>) {
+function issueStateOpts(issue: RuntimeIssue) {
   return { projectRuntimeRoot: issue.projectRuntimeRoot || issue.dataRoot };
 }
 
-function sourceContextForQueueEntry(entry: Record<string, any>) {
+function sourceContextForQueueEntry(entry: RuntimeQueueEntry) {
   const metadata = entry?.metadata || {};
   const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
     ? { ...metadata.sourceContext }
@@ -187,26 +340,40 @@ function sourceContextForQueueEntry(entry: Record<string, any>) {
   };
 }
 
-function resultFromManagedWorkerResult(result: Record<string, any>) {
-  const jobResult = result?.jobResult || {};
+function resultFromManagedWorkerResult(result: WorkerRunResult) {
+  const jobResult: ManagedJobResult = isRecord(result?.jobResult) ? result.jobResult as ManagedJobResult : {};
   const workflowBlockedNoop = jobResult.status === "blocked"
     && jobResult.failure?.cause?.code === "workflow_blocked";
   const completed = result?.status === "completed" || jobResult.status === "completed" || workflowBlockedNoop;
   return {
     ok: completed,
     code: completed ? 0 : 1,
-    error: completed ? null : jobResult.failure?.reason || result?.error || "managed worker failed",
+    error: completed ? null : String(jobResult.failure?.reason || result?.error || "managed worker failed"),
     stdout: "",
     stderr: "",
     job: jobResult,
   };
 }
 
+function rateLimitedUntilMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isRateLimited(project: RuntimeProject) {
+  const until = rateLimitedUntilMs(project.rateLimitedUntil);
+  return until !== null && Date.now() < until;
+}
+
 export class CrossProjectPriorityQueue {
-  projects: Record<string, any>[];
+  projects: RuntimeProject[];
   hubRoot: string | null;
 
-  constructor(projects: Record<string, any>[], hubRoot: string | null = null) {
+  constructor(projects: RuntimeProject[], hubRoot: string | null = null) {
     this.projects = projects;
     this.hubRoot = hubRoot;
   }
@@ -216,9 +383,9 @@ export class CrossProjectPriorityQueue {
     const seen = new Set();
 
     for (const project of this.projects) {
-      if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
-      const backlog = await loadBacklog(project.sourcePath, project.id, evolveStateOpts(project));
-      for (const issue of backlog.filter((item: Record<string, any>) => item.status === "pending")) {
+      if (isRateLimited(project)) continue;
+      const backlog = runtimeIssues(await loadBacklog(project.sourcePath, project.id, evolveStateOpts(project)));
+      for (const issue of backlog.filter((item) => item.status === "pending")) {
         const key = `${project.id}::${issue.description}`;
         seen.add(key);
         candidates.push({
@@ -240,7 +407,7 @@ export class CrossProjectPriorityQueue {
           if (seen.has(key)) continue;
           const project = this.projects.find((p) => p.id === entry.projectId);
           if (!project) continue;
-          if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
+          if (isRateLimited(project)) continue;
           seen.add(key);
           candidates.push({
             id: entry.id,
@@ -277,17 +444,17 @@ export class CrossProjectPriorityQueue {
 export class MultiEvolveController {
   cpbRoot: string;
   hubRoot: string;
-  pool: Record<string, any>;
-  projects: Record<string, any>[];
-  workerRunner: ((args: Record<string, any>) => Promise<Record<string, any>>) | null;
+  pool: PoolLike;
+  projects: RuntimeProject[];
+  workerRunner: ((args: WorkerRunArgs) => Promise<WorkerRunResult>) | null;
   _stopRequested: boolean;
 
-  constructor(cpbRoot = CPB_ROOT, opts: Record<string, any> = {}) {
+  constructor(cpbRoot = CPB_ROOT, opts: ControllerOptions = {}) {
     this.cpbRoot = path.resolve(cpbRoot);
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRoot(cpbRoot));
-    this.pool = opts.pool || (opts.localAcpPool
+    this.pool = (opts.pool || (opts.localAcpPool
       ? new AcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot })
-      : getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot }));
+      : getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot }))) as PoolLike;
     this.projects = [];
     this.workerRunner = opts.workerRunner || null;
     this._stopRequested = false;
@@ -297,17 +464,17 @@ export class MultiEvolveController {
     this._stopRequested = true;
   }
 
-  async init({ project }: Record<string, any> = {}) {
+  async init({ project }: { project?: string | null } = {}) {
     const projects = await listProjects(this.hubRoot, { enabledOnly: true });
     this.projects = project ? projects.filter((item) => item.id === project || item.name === project) : projects;
     return this.projects;
   }
 
-  async scanProject(project: Record<string, any>, { agent = "codex", timeoutMs = 300_000 }: Record<string, any> = {}) {
+  async scanProject(project: RuntimeProject, { agent = "codex", timeoutMs = 300_000 }: { agent?: string; timeoutMs?: number } = {}) {
     const fixture = process.env.CPB_MULTI_EVOLVE_SCAN_FIXTURE;
     const output = fixture || (await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs)).output;
     const issues = parseScanResults(output);
-    const result = await pushIssues(project.sourcePath, project.id, issues, evolveStateOpts(project)) as Record<string, any>;
+    const result = await pushIssues(project.sourcePath, project.id, issues, evolveStateOpts(project)) as LooseRecord;
 
     if (this.hubRoot && issues.length > 0) {
       const sessionId = process.env.CPB_SESSION_ID || "";
@@ -330,7 +497,7 @@ export class MultiEvolveController {
     return { project: project.id, issues, ...result };
   }
 
-  async scanAll(opts: Record<string, any> = {}) {
+  async scanAll(opts: { agent?: string; timeoutMs?: number } = {}) {
     const results = [];
     for (const project of this.projects) {
       try {
@@ -340,11 +507,11 @@ export class MultiEvolveController {
         project.rateLimitedUntil = rateLimited ? error.untilTs : null;
         await appendHistory(project.sourcePath, project.id, {
           action: "scan_failed",
-          error: error.message,
+          error: errorMessage(error),
           rateLimited,
           rateLimitedUntil: project.rateLimitedUntil,
         }, evolveStateOpts(project));
-        results.push({ project: project.id, error: error.message, rateLimited, rateLimitedUntil: project.rateLimitedUntil });
+        results.push({ project: project.id, error: errorMessage(error), rateLimited, rateLimitedUntil: project.rateLimitedUntil });
       }
     }
     return results;
@@ -357,6 +524,7 @@ export class MultiEvolveController {
         loadProjectState(project.sourcePath, project.id, evolveStateOpts(project)),
         loadBacklog(project.sourcePath, project.id, evolveStateOpts(project)),
       ]);
+      const backlogIssues = runtimeIssues(backlog);
       rows.push({
         id: project.id,
         name: project.name,
@@ -364,9 +532,9 @@ export class MultiEvolveController {
         enabled: project.enabled !== false,
         state,
         backlog: {
-          total: backlog.length,
-          pending: backlog.filter((issue: Record<string, any>) => issue.status === "pending").length,
-          inProgress: backlog.filter((issue: Record<string, any>) => issue.status === "in_progress").length,
+          total: backlogIssues.length,
+          pending: backlogIssues.filter((issue) => issue.status === "pending").length,
+          inProgress: backlogIssues.filter((issue) => issue.status === "in_progress").length,
         },
       });
     }
@@ -377,7 +545,7 @@ export class MultiEvolveController {
     return new CrossProjectPriorityQueue(this.projects, this.hubRoot).dequeue();
   }
 
-  async runManagedWorker(issue: Record<string, any>, { workflow, queueEntry, timeoutMs = 300_000 }: Record<string, any> = {}) {
+  async runManagedWorker(issue: RuntimeIssue, { workflow, queueEntry, timeoutMs = 300_000 }: ExecutionOptions = {}) {
     if (this.workerRunner) {
       return this.workerRunner({
         issue,
@@ -449,7 +617,7 @@ export class MultiEvolveController {
         maxBuffer: 1024 * 1024,
       });
     } catch (err) {
-      child = { stdout: err.stdout || "", stderr: err.stderr || err.message || "" };
+      child = commandOutput(err);
     }
 
     const resultPath = path.join(
@@ -487,7 +655,7 @@ export class MultiEvolveController {
     return normalized;
   }
 
-  async executeIssue(issue: Record<string, any>, { workflow = "standard", timeoutMs = 300_000 }: Record<string, any> = {}) {
+  async executeIssue(issue: RuntimeIssue, { workflow = "standard", timeoutMs = 300_000 }: ExecutionOptions = {}) {
     let queueEntry;
     try {
       queueEntry = await hubEnqueue(this.hubRoot, {
@@ -506,17 +674,17 @@ export class MultiEvolveController {
         },
       });
     } catch (err) {
-      return { ok: false, code: 1, error: `hub queue enqueue: ${err.message}`, stdout: "", stderr: "" };
+      return { ok: false, code: 1, error: `hub queue enqueue: ${errorMessage(err)}`, stdout: "", stderr: "" };
     }
 
     try {
       return await this.runManagedWorker(issue, { workflow, queueEntry, timeoutMs });
     } catch (err) {
-      return { ok: false, code: 1, error: `managed worker: ${err.message}`, stdout: "", stderr: "" };
+      return { ok: false, code: 1, error: `managed worker: ${errorMessage(err)}`, stdout: "", stderr: "" };
     }
   }
 
-  async completeIssueAndSync(issue: Record<string, any>, result: Record<string, any>) {
+  async completeIssueAndSync(issue: RuntimeIssue, result: WorkerRunResult) {
     await completeIssue(issue.sourcePath, issue.project, issue.id || issue.description, result, issueStateOpts(issue));
     if (!this.hubRoot) return;
     await hubSyncBacklogResult(this.hubRoot, {
@@ -529,21 +697,21 @@ export class MultiEvolveController {
     }).catch(() => {});
   }
 
-  async runOnce(opts: AnyRecord = {}) {
+  async runOnce(opts: Partial<CliOptions> = {}) {
     await this.init(opts);
     if (opts.scan) await this.scanAll(opts);
     const queue = new CrossProjectPriorityQueue(this.projects, this.hubRoot);
     const candidates = await queue.candidates();
     const next = candidates[0] || null;
     if (opts.dryRun || !next) {
-      const response: AnyRecord = { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
+      const response: LooseRecord = { dryRun: Boolean(opts.dryRun), projects: await this.status(), candidates, next };
       if (this.hubRoot) {
         try { response.hubQueue = await hubQueueStatus(this.hubRoot); } catch { /* non-blocking */ }
       }
       return response;
     }
     const identity = next.id || next.description;
-    const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as Record<string, any> | null;
+    const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as ClaimedIssue | null;
     if (!claimed) {
       return { skipped: true, reason: "issue_not_pending", next };
     }
@@ -560,7 +728,7 @@ export class MultiEvolveController {
     return { next: issue, result };
   }
 
-  async runContinuous(opts: AnyRecord = {}) {
+  async runContinuous(opts: Partial<CliOptions> & { execute?: boolean } = {}) {
     const { maxRounds = 0, intervalMs = 60_000, scan = false, execute = false, maxDurationMs = 0 } = opts;
     this._stopRequested = false;
 
@@ -580,7 +748,7 @@ export class MultiEvolveController {
 
       if (scan) {
         for (const project of this.projects) {
-          if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) {
+          if (isRateLimited(project)) {
             rateLimitedSkipped++;
             continue;
           }
@@ -594,7 +762,7 @@ export class MultiEvolveController {
             }
             await appendHistory(project.sourcePath, project.id, {
               action: "scan_failed",
-              error: error.message,
+              error: errorMessage(error),
               rateLimited: error instanceof RateLimitError,
               rateLimitedUntil: error instanceof RateLimitError ? error.untilTs : null,
               round: totalRounds,
@@ -624,7 +792,7 @@ export class MultiEvolveController {
       }
 
       const identity = next.id || next.description;
-      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as Record<string, any> | null;
+      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as ClaimedIssue | null;
       if (!claimed) {
         continue;
       }
@@ -652,7 +820,7 @@ export class MultiEvolveController {
     };
   }
 
-  async runGuardedRun(opts: AnyRecord = {}) {
+  async runGuardedRun(opts: Partial<CliOptions> = {}) {
     const {
       maxRounds = 0,
       intervalMs = 0,
@@ -676,7 +844,7 @@ export class MultiEvolveController {
 
       if (scan) {
         for (const project of this.projects) {
-          if (project.rateLimitedUntil && Date.now() < project.rateLimitedUntil) continue;
+          if (isRateLimited(project)) continue;
           try {
             await this.scanProject(project, opts);
           } catch {
@@ -718,7 +886,7 @@ export class MultiEvolveController {
       budget = budgetCheck.budget;
 
       const identity = next.id || next.description;
-      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as Record<string, any> | null;
+      const claimed = await claimIssue(next.sourcePath, next.project, identity, issueStateOpts(next)) as ClaimedIssue | null;
       if (!claimed) continue;
 
       const issue = { ...next, ...claimed.issue, sourcePath: next.sourcePath };
@@ -802,7 +970,7 @@ export async function main() {
     return 0;
   }
 
-  const result = await controller.runOnce(opts);
+  const result = await controller.runOnce(opts) as LooseRecord & { result?: WorkerRunResult };
   console.log(JSON.stringify(result, null, 2));
   return result.result && !result.result.ok ? 1 : 0;
 }

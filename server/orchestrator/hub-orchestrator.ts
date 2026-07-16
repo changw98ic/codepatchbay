@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { LeaderLock, readLeaderStatus } from "./leader-lock.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
@@ -10,23 +11,31 @@ import { createLogger } from "../../shared/logger.js";
 import { resolveExecutorRoot } from "../services/setup.js";
 import { resolveHubConcurrencyLimits } from "../services/infra.js";
 import { getProject } from "../services/hub/hub-registry.js";
+import { assertHubWritable, recoverStaleHubMaintenance } from "../../shared/hub-maintenance.js";
+import os from "node:os";
 
 const TICK_MS = 2_000;
+
+function textOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
+}
 const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
-function providerAgentForEntry(entry: Record<string, any>) {
-  const agentSpec = entry?.metadata?.agents?.executor || entry?.metadata?.agents?.default || {};
-  return agentSpec.agent || "claude";
+function providerAgentForEntry(entry: LooseRecord) {
+  const metadata = recordValue(entry.metadata);
+  const agents = recordValue(metadata.agents);
+  const agentSpec = recordValue(agents.executor || agents.default);
+  return typeof agentSpec.agent === "string" ? agentSpec.agent : "claude";
 }
 
-export function normalizedSourceContext(candidate: Record<string, any>) {
-  const metadata = candidate?.metadata || {};
-  const inherited = metadata.sourceContext && typeof metadata.sourceContext === "object"
-    ? { ...metadata.sourceContext }
-    : {};
-  const queueEntryId = candidate?.id || inherited.queueEntryId || null;
+export function normalizedSourceContext(candidate: LooseRecord) {
+  const metadata = recordValue(candidate.metadata);
+  const inherited = recordValue(metadata.sourceContext);
+  const contextPack = recordValue(metadata.contextPack);
+  const schedulerDecision = metadata.schedulerDecision ?? inherited.schedulerDecision ?? null;
+  const queueEntryId = textOrNull(candidate?.id || inherited.queueEntryId);
 
   if (metadata.source === "github" || candidate?.type === "github_issue" || metadata.issueUrl) {
     return {
@@ -34,22 +43,23 @@ export function normalizedSourceContext(candidate: Record<string, any>) {
       type: "github_issue",
       queueEntryId,
       issueNumber: metadata.issueNumber ?? inherited.issueNumber ?? null,
-      issueUrl: metadata.issueUrl ?? inherited.issueUrl ?? null,
-      repo: metadata.repo ?? metadata.repository ?? metadata.repositoryFullName ?? inherited.repo ?? null,
-      issueTitle: metadata.issueTitle ?? inherited.issueTitle ?? null,
+      issueUrl: textOrNull(metadata.issueUrl ?? inherited.issueUrl),
+      repo: textOrNull(metadata.repo ?? metadata.repository ?? metadata.repositoryFullName ?? inherited.repo),
+      issueTitle: textOrNull(metadata.issueTitle ?? inherited.issueTitle),
       actor: metadata.actor ?? inherited.actor ?? null,
-      delivery: metadata.delivery ?? inherited.delivery ?? null,
-      commandText: metadata.commandText ?? inherited.commandText ?? null,
-      triggerReason: metadata.triggerReason ?? inherited.triggerReason ?? null,
-      failedQueueId: metadata.originQueueId ?? inherited.failedQueueId ?? null,
-      failedJobId: metadata.originJobId ?? inherited.failedJobId ?? null,
-      failureArtifact: metadata.failureArtifact ?? inherited.failureArtifact ?? null,
-      taskId: metadata.taskId ?? inherited.taskId ?? null,
-      planGroupId: metadata.planGroupId ?? inherited.planGroupId ?? null,
-      parentPlanId: metadata.parentPlanId ?? inherited.parentPlanId ?? null,
-      planCacheKey: metadata.planCacheKey ?? inherited.planCacheKey ?? null,
-      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? inherited.contextPackPath ?? null,
+      delivery: textOrNull(metadata.delivery ?? inherited.delivery),
+      commandText: textOrNull(metadata.commandText ?? inherited.commandText),
+      triggerReason: textOrNull(metadata.triggerReason ?? inherited.triggerReason),
+      failedQueueId: textOrNull(metadata.originQueueId ?? inherited.failedQueueId),
+      failedJobId: textOrNull(metadata.originJobId ?? inherited.failedJobId),
+      failureArtifact: textOrNull(metadata.failureArtifact ?? inherited.failureArtifact),
+      taskId: textOrNull(metadata.taskId ?? inherited.taskId),
+      planGroupId: textOrNull(metadata.planGroupId ?? inherited.planGroupId),
+      parentPlanId: textOrNull(metadata.parentPlanId ?? inherited.parentPlanId),
+      planCacheKey: textOrNull(metadata.planCacheKey ?? inherited.planCacheKey),
+      contextPackPath: textOrNull(metadata.contextPackPath ?? contextPack.path ?? inherited.contextPackPath),
       contextPack: metadata.contextPack ?? inherited.contextPack ?? null,
+      schedulerDecision,
     };
   }
 
@@ -57,29 +67,32 @@ export function normalizedSourceContext(candidate: Record<string, any>) {
   if (channel) {
     return {
       ...inherited,
-      type: inherited.type || channel,
-      channel,
+      type: textOrNull(inherited.type || channel),
+      channel: textOrNull(channel),
       queueEntryId,
       actor: metadata.actor ?? inherited.actor ?? null,
-      actorName: metadata.actorName ?? inherited.actorName ?? null,
-      teamId: metadata.teamId ?? inherited.teamId ?? null,
-      channelId: metadata.channelId ?? inherited.channelId ?? null,
-      channelName: metadata.channelName ?? inherited.channelName ?? null,
-      commandText: metadata.commandText ?? inherited.commandText ?? null,
-      triggerId: metadata.triggerId ?? inherited.triggerId ?? null,
+      actorName: textOrNull(metadata.actorName ?? inherited.actorName),
+      teamId: textOrNull(metadata.teamId ?? inherited.teamId),
+      channelId: textOrNull(metadata.channelId ?? inherited.channelId),
+      channelName: textOrNull(metadata.channelName ?? inherited.channelName),
+      commandText: textOrNull(metadata.commandText ?? inherited.commandText),
+      triggerId: textOrNull(metadata.triggerId ?? inherited.triggerId),
       issueNumber: metadata.issueNumber ?? inherited.issueNumber ?? null,
-      issueUrl: metadata.issueUrl ?? inherited.issueUrl ?? null,
-      repo: metadata.repo ?? inherited.repo ?? null,
-      taskId: metadata.taskId ?? inherited.taskId ?? null,
-      planGroupId: metadata.planGroupId ?? inherited.planGroupId ?? null,
-      parentPlanId: metadata.parentPlanId ?? inherited.parentPlanId ?? null,
-      planCacheKey: metadata.planCacheKey ?? inherited.planCacheKey ?? null,
-      contextPackPath: metadata.contextPackPath ?? metadata.contextPack?.path ?? inherited.contextPackPath ?? null,
+      issueUrl: textOrNull(metadata.issueUrl ?? inherited.issueUrl),
+      repo: textOrNull(metadata.repo ?? inherited.repo),
+      taskId: textOrNull(metadata.taskId ?? inherited.taskId),
+      planGroupId: textOrNull(metadata.planGroupId ?? inherited.planGroupId),
+      parentPlanId: textOrNull(metadata.parentPlanId ?? inherited.parentPlanId),
+      planCacheKey: textOrNull(metadata.planCacheKey ?? inherited.planCacheKey),
+      contextPackPath: textOrNull(metadata.contextPackPath ?? contextPack.path ?? inherited.contextPackPath),
       contextPack: metadata.contextPack ?? inherited.contextPack ?? null,
+      schedulerDecision,
     };
   }
 
-  return Object.keys(inherited).length > 0 ? { ...inherited, queueEntryId } : { queueEntryId };
+  return Object.keys(inherited).length > 0
+    ? { ...inherited, queueEntryId, schedulerDecision }
+    : { queueEntryId, schedulerDecision };
 }
 
 export class HubOrchestrator {
@@ -119,7 +132,7 @@ export class HubOrchestrator {
       workerStore: this.workerStore,
       cpbRoot,
       getProjectFn: getProject,
-      providerCapacityFn: (agentKey: string, entry: Record<string, any>) => this._providerCapacity(agentKey, entry),
+      providerCapacityFn: (agentKey: string, entry: LooseRecord) => this._providerCapacity(agentKey, entry),
     });
     this.workerSupervisor = new WorkerSupervisor(hubRoot, cpbRoot, {
       workerStore: this.workerStore,
@@ -150,6 +163,13 @@ export class HubOrchestrator {
   }
 
   async start() {
+    const { recoverInterruptedHubRestore } = await import("../services/hub/hub-backup.js");
+    await recoverInterruptedHubRestore({
+      hubRoot: this.hubRoot,
+      signingKey: process.env.CPB_HUB_BACKUP_SIGNING_KEY,
+    });
+    await recoverStaleHubMaintenance(this.hubRoot);
+    await assertHubWritable(this.hubRoot);
     this.running = true;
     this._stopped = new Promise((resolve) => { this._resolveStopped = resolve; });
 
@@ -159,20 +179,27 @@ export class HubOrchestrator {
       this.log.warn("leader lock renewal failed; stopping hub");
       this.stop().catch(() => {});
     });
+    try {
+      // Init stores
+      await this.assignmentStore.init();
+      await this.workerStore.init();
+      await this._startSupervisor();
 
-    // Init stores
-    await this.assignmentStore.init();
-    await this.workerStore.init();
-    await this._startSupervisor();
+      // Full reconciliation on startup
+      await this.reconciler.recoverRuntime();
+      await this.reconcileQueueVsAssignments();
 
-    // Full reconciliation on startup
-    await this.reconciler.recoverRuntime();
-    await this.reconcileQueueVsAssignments();
-
-    // Start main tick loop (NOT unref'd — this keeps the process alive)
-    this._scheduleTick();
-    // Janitor can be unref'd — tick loop is the keepalive
-    this._scheduleJanitor();
+      // Start main tick loop (NOT unref'd — this keeps the process alive)
+      this._scheduleTick();
+      // Janitor can be unref'd — tick loop is the keepalive
+      this._scheduleJanitor();
+    } catch (error) {
+      // Do not leave a failed initialization holding the shared lease for its
+      // full TTL. stop() also disarms renewal while the retained stale process
+      // fence keeps any tail callback fail-closed.
+      await this.stop();
+      throw error;
+    }
   }
 
   async stop() {
@@ -231,6 +258,13 @@ export class HubOrchestrator {
   }
 
   async tick() {
+    try {
+      await assertHubWritable(this.hubRoot);
+    } catch (error) {
+      this.log.warn(error instanceof Error ? error.message : String(error));
+      await this.stop();
+      return { stopped: true, reason: "Hub maintenance became active" };
+    }
     // Fencing: stop hub if leader lock is lost
     if (!(await this.leaderLock.stillHeld())) {
       this.log.warn("leader lock lost; stopping hub");
@@ -251,6 +285,9 @@ export class HubOrchestrator {
     for (const candidate of candidates) {
       const sLog = this.log.child({ traceId: candidate.id });
       sLog.info(`scheduling entry ${candidate.id} for project ${candidate.projectId}`);
+      let reservation: LooseRecord | null = null;
+      let inboxWritten = false;
+      let workerReservation: { workerId: string; incarnationToken?: string; assignmentId: string; attemptToken: string } | null = null;
 
       try {
         // Fence: ensure lock still held before scheduling
@@ -258,6 +295,25 @@ export class HubOrchestrator {
           this.log.warn("leader lock lost before schedule");
           await this.stop();
           return { stopped: true, reason: "leader lock lost", dispatched };
+        }
+
+        const epoch = this.leaderLock.getEpoch();
+        const { updateEntry } = await import("../services/hub/hub-queue.js");
+        reservation = await updateEntry(this.hubRoot, candidate.id, {
+          status: "scheduled",
+          claimedBy: `orchestrator:${epoch}`,
+          claimedAt: new Date().toISOString(),
+          // Persist the exact smart-scheduler score/rank/evidence that led to
+          // dispatch. Keeping this only on the in-memory candidate made the
+          // decision disappear on a leader crash before assignment creation.
+          metadata: candidate.metadata,
+        }, {
+          expectedStatus: "pending",
+          expectedUpdatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : null,
+        });
+        if (!reservation) {
+          sLog.info(`skipping ${candidate.id}: queue state changed before dispatch reservation`);
+          continue;
         }
 
         const assignment = await this.assignmentStore.getOrCreateAssignmentForEntry({
@@ -276,7 +332,6 @@ export class HubOrchestrator {
         const worker = await this.workerSupervisor.ensureWorkerFor(assignment, existingWorker);
 
         // Create attempt with real epoch
-        const epoch = this.leaderLock.getEpoch();
         const attempt = await this.assignmentStore.createAttempt(assignment.assignmentId, {
           workerId: worker.workerId,
           orchestratorEpoch: epoch,
@@ -288,6 +343,29 @@ export class HubOrchestrator {
           await this.stop();
           return { stopped: true, reason: "leader lock lost", dispatched };
         }
+
+        // Reserve the worker before publishing the inbox record. Otherwise a
+        // fast worker can claim the message while it still appears idle.
+        const expectedWorker: Record<string, unknown> = {
+          currentAssignmentId: null,
+          currentAttemptToken: null,
+          status: "ready",
+        };
+        if (typeof worker.incarnationToken === "string") {
+          expectedWorker.incarnationToken = worker.incarnationToken;
+        }
+        const reservedWorker = await this.workerStore.updateWorkerIf(worker.workerId, {
+          status: "assigned",
+          currentAssignmentId: assignment.assignmentId,
+          currentAttemptToken: attempt.attemptToken,
+        }, expectedWorker);
+        if (!reservedWorker) throw new Error(`worker reservation lost before dispatch: ${worker.workerId}`);
+        workerReservation = {
+          workerId: worker.workerId,
+          incarnationToken: typeof worker.incarnationToken === "string" ? worker.incarnationToken : undefined,
+          assignmentId: assignment.assignmentId,
+          attemptToken: String(attempt.attemptToken),
+        };
 
         // Write flattened inbox payload
         await this.workerStore.writeInbox(worker.workerId, {
@@ -304,6 +382,7 @@ export class HubOrchestrator {
           attemptToken: attempt.attemptToken,
           orchestratorEpoch: attempt.orchestratorEpoch,
         });
+        inboxWritten = true;
 
         // Fence: ensure lock still held before updating queue
         if (!(await this.leaderLock.stillHeld())) {
@@ -313,22 +392,31 @@ export class HubOrchestrator {
         }
 
         // Update queue entry
-        const { updateEntry } = await import("../services/hub/hub-queue.js");
-        await updateEntry(this.hubRoot, candidate.id, {
+        const claimed = await updateEntry(this.hubRoot, candidate.id, {
           status: "scheduled",
           claimedBy: worker.workerId,
           claimedAt: new Date().toISOString(),
+        }, {
+          expectedStatus: "scheduled",
+          expectedUpdatedAt: typeof reservation.updatedAt === "string" ? reservation.updatedAt : null,
         });
-
-        // Update worker
-        await this.workerStore.updateWorker(worker.workerId, {
-          status: "assigned",
-          currentAssignmentId: assignment.assignmentId,
-        });
+        if (!claimed) throw new Error(`queue reservation lost before dispatch: ${candidate.id}`);
 
         sLog.info(`dispatched ${assignment.assignmentId} to worker ${worker.workerId}`);
         dispatched.push({ entryId: candidate.id, assignmentId: assignment.assignmentId });
       } catch (err) {
+        if (workerReservation && !inboxWritten) {
+          await this.workerStore.updateWorkerIf(workerReservation.workerId, {
+            status: "ready",
+            currentAssignmentId: null,
+            currentAttemptToken: null,
+          }, {
+            incarnationToken: workerReservation.incarnationToken,
+            currentAssignmentId: workerReservation.assignmentId,
+            currentAttemptToken: workerReservation.attemptToken,
+            status: "assigned",
+          }).catch(() => null);
+        }
         sLog.error(`dispatch failed for ${candidate.id}: ${err.message}`);
         dispatchFailures.push({
           entryId: candidate.id,
@@ -339,7 +427,13 @@ export class HubOrchestrator {
         // Attach dispatch failure metadata to the entry so it's visible
         try {
           const { updateEntry } = await import("../services/hub/hub-queue.js");
+          const patch = inboxWritten ? {} : {
+            status: "pending",
+            claimedBy: null,
+            claimedAt: null,
+          };
           await updateEntry(this.hubRoot, candidate.id, {
+            ...patch,
             metadata: {
               dispatchFailure: {
                 error: err.message,
@@ -347,6 +441,12 @@ export class HubOrchestrator {
                 timestamp: new Date().toISOString(),
               },
             },
+          }, reservation ? {
+            expectedStatus: "scheduled",
+            expectedUpdatedAt: typeof reservation.updatedAt === "string" ? reservation.updatedAt : null,
+          } : {
+            expectedStatus: "pending",
+            expectedUpdatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : null,
           });
         } catch { /* best-effort metadata write */ }
       }
@@ -366,7 +466,7 @@ export class HubOrchestrator {
    * Returns provider-scoped slots so Scheduler can project same-tick
    * dispatches before queue status writes make capacity visible.
    */
-  async _providerCapacity(agentKey: string, entry: Record<string, any> | null = null) {
+  async _providerCapacity(agentKey: string, entry: LooseRecord | null = null) {
     const providerKey = agentKey || providerAgentForEntry(entry);
     const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot);
     const total = hubLimits.acpProviderMax;
@@ -417,10 +517,10 @@ export class HubOrchestrator {
 
       if (assignment.workerId) {
         const worker = await this.workerStore.getWorker(assignment.workerId);
-        if (worker && worker.pid) {
+        if (worker && worker.pid && (worker.host === "local" || worker.host === os.hostname())) {
           try { process.kill(worker.pid, 0); } catch {
             eLog.warn(`startup: ${entry.id} worker ${assignment.workerId} PID ${worker.pid} is dead, writing synthetic failure`);
-            const attemptNum = assignment.activeAttempt || 1;
+            const attemptNum = typeof assignment.activeAttempt === "number" ? assignment.activeAttempt : Number(assignment.activeAttempt || 1);
             await this.assignmentStore.writeSyntheticFailure(assignment.assignmentId, attemptNum, {
               assignmentId: assignment.assignmentId,
               attempt: attemptNum,
@@ -456,10 +556,10 @@ export class HubOrchestrator {
         failed: queue.failed,
       },
       workers: {
-        ready: workers.filter((w: Record<string, any>) => w.status === "ready").length,
-        running: workers.filter((w: Record<string, any>) => w.status === "running").length,
-        unhealthy: workers.filter((w: Record<string, any>) => w.status === "unhealthy").length,
-        exited: workers.filter((w: Record<string, any>) => w.status === "exited").length,
+        ready: workers.filter((w: LooseRecord) => w.status === "ready").length,
+        running: workers.filter((w: LooseRecord) => w.status === "running").length,
+        unhealthy: workers.filter((w: LooseRecord) => w.status === "unhealthy").length,
+        exited: workers.filter((w: LooseRecord) => w.status === "exited").length,
       },
       supervisor: this.acpSupervisor && typeof this.acpSupervisor.status === "function"
         ? this.acpSupervisor.status()

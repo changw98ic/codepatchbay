@@ -21,11 +21,19 @@ const args = process.argv.slice(2);
 let scenarioPath = "";
 let transcriptPath = "";
 let directResponse: string | null = null;
+let hangOnClose = false;
+let hangOnPrompt = false;
+let stallOnPrompt = false;
+let stderrHeartbeatMs = 0;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--scenario-file" && args[i + 1]) scenarioPath = args[++i];
   else if (args[i] === "--transcript-file" && args[i + 1]) transcriptPath = args[++i];
   else if (args[i] === "--response" && args[i + 1]) directResponse = args[++i];
+  else if (args[i] === "--hang-on-close") hangOnClose = true;
+  else if (args[i] === "--hang-on-prompt") hangOnPrompt = true;
+  else if (args[i] === "--stall-on-prompt") stallOnPrompt = true;
+  else if (args[i] === "--stderr-heartbeat-ms" && args[i + 1]) stderrHeartbeatMs = Number(args[++i]) || 0;
 }
 
 interface ScenarioWrite {
@@ -70,12 +78,13 @@ let scenario: Scenario = { responses: [], default: { output: "" } };
 if (scenarioPath) {
   try {
     scenario = JSON.parse(await readFile(scenarioPath, "utf8"));
-  } catch (err: any) {
-    process.stderr.write(`test-acp-agent: failed to load scenario: ${err.message}\n`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`test-acp-agent: failed to load scenario: ${message}\n`);
   }
 }
 
-async function appendTranscript(entry: any) {
+async function appendTranscript(entry: unknown) {
   if (!transcriptPath) return;
   await appendFile(transcriptPath, JSON.stringify(entry) + "\n").catch(() => {});
 }
@@ -102,10 +111,20 @@ function selectResponse(text: string): ScenarioResponse | undefined {
 
 const PROTOCOL_VERSION = 1;
 let sessionId = "test-session";
+let currentSessionCwd = process.cwd();
 let nextId = 1;
 const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+let stderrHeartbeatTimer: NodeJS.Timeout | null = null;
+
+function startStderrHeartbeat() {
+  if (stderrHeartbeatMs <= 0 || stderrHeartbeatTimer) return;
+  stderrHeartbeatTimer = setInterval(() => {
+    process.stderr.write("test-acp-agent heartbeat\n");
+  }, stderrHeartbeatMs);
+  stderrHeartbeatTimer.unref();
+}
 
 function write(message: any) {
   process.stdout.write(JSON.stringify(message) + "\n");
@@ -172,17 +191,15 @@ function sendUsage(usage: ScenarioUsage) {
 }
 
 function interpolate(text: string, promptText: string): string {
-  // {{cwd}} resolves to the fake agent's process.cwd(), which under the one-shot
-  // provider path is CPB_ROOT (NOT the worktree) — so writes via {{cwd}} land in
-  // the wrong place and are silently dropped. {{worktree}} resolves to the actual
-  // task worktree ({CPB_HUB_ROOT}/worktrees/{CPB_ACP_JOB_ID}-pipeline) so fixture
-  // writes reach the worktree the verifier's deterministic probes actually diff.
+  // {{cwd}} resolves to the current ACP session cwd. Persistent ACP processes
+  // keep the same process.env across assignments, so {{worktree}} must follow
+  // session/new.cwd instead of stale CPB_ACP_JOB_ID from process launch.
   const hubRoot = process.env.CPB_HUB_ROOT || "";
   const jobId = process.env.CPB_ACP_JOB_ID || "";
-  const worktreePath = hubRoot && jobId ? path.join(hubRoot, "worktrees", `${jobId}-pipeline`) : process.cwd();
+  const worktreePath = currentSessionCwd || (hubRoot && jobId ? path.join(hubRoot, "worktrees", `${jobId}-pipeline`) : process.cwd());
   return text
     .split("{{prompt}}").join(promptText)
-    .split("{{cwd}}").join(process.cwd())
+    .split("{{cwd}}").join(currentSessionCwd || process.cwd())
     .split("{{worktree}}").join(worktreePath);
 }
 
@@ -200,7 +217,13 @@ async function performWrites(writes: ScenarioWrite[] | undefined, promptText: st
     }
     if (!target) continue;
     const content = interpolate(w.content, promptText);
-    await call("fs/write_text_file", { path: target, content }).catch(() => null);
+    try {
+      await call("fs/write_text_file", { path: target, content });
+      await appendTranscript({ event: "fs/write_text_file", path: target, ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      await appendTranscript({ event: "fs/write_text_file", path: target, ok: false, error: message });
+    }
   }
 }
 
@@ -212,6 +235,10 @@ function textFromPrompt(params: any): string {
 async function handlePrompt(params: any) {
   sessionId = params?.sessionId || sessionId;
   const text = textFromPrompt(params);
+  if (hangOnPrompt) {
+    await appendTranscript({ event: "session/prompt", text: text.substring(0, 200), hung: true });
+    return;
+  }
 
   // --response overrides everything: stream fixed text and return.
   if (directResponse !== null) {
@@ -254,13 +281,28 @@ async function handleRequest(message: any) {
       });
       break;
     case "session/new":
+      currentSessionCwd = typeof message.params?.cwd === "string" && message.params.cwd
+        ? message.params.cwd
+        : process.cwd();
       result(message.id, { sessionId });
       break;
+    case "session/resume":
+      currentSessionCwd = typeof message.params?.cwd === "string" && message.params.cwd
+        ? message.params.cwd
+        : process.cwd();
+      result(message.id, { sessionId: message.params?.sessionId || sessionId });
+      break;
     case "session/prompt":
+      if (stallOnPrompt) {
+        await appendTranscript({ event: "session/prompt", text: textFromPrompt(message.params).substring(0, 200), stalled: true });
+        startStderrHeartbeat();
+        return;
+      }
       await handlePrompt(message.params);
       result(message.id, null);
       break;
     case "session/close":
+      if (hangOnClose) return;
       // Persistent ACP pools reuse one process across many sessions: closing a
       // session must NOT terminate the process. Only stdin EOF (client killed
       // the child) ends the agent. Re-initialize sessionId for the next session.

@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { assertValidSetupAgentCatalog, validateSetupAgentManifest } from "./manifest-schema.js";
@@ -15,12 +16,12 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
-function orderFor(agent: Record<string, any>) {
+function orderFor(agent: LooseRecord) {
   return BUILTIN_ORDER.get(agent.id) ?? 1000;
 }
 
-function sortCatalog(agents: Record<string, any>[]) {
-  return [...agents].sort((a: Record<string, any>, b: Record<string, any>) => {
+function sortCatalog(agents: LooseRecord[]) {
+  return [...agents].sort((a: LooseRecord, b: LooseRecord) => {
     const byOrder = orderFor(a) - orderFor(b);
     return byOrder || a.id.localeCompare(b.id);
   });
@@ -69,12 +70,12 @@ export function loadSetupAgentCatalog({ manifestDir = BUILTIN_MANIFEST_DIR, stri
 export function listSetupAgents({ includeOptional = true } = {}) {
   const agents = loadSetupAgentCatalog({ strict: true });
   assertValidSetupAgentCatalog(agents);
-  return includeOptional ? agents : agents.filter((agent: Record<string, any>) => agent.recommended);
+  return includeOptional ? agents : agents.filter((agent: LooseRecord) => agent.recommended);
 }
 
 export function getSetupAgent(id: string) {
   const agents = loadSetupAgentCatalog({ strict: true });
   assertValidSetupAgentCatalog(agents);
-  const agent = agents.find((entry: Record<string, any>) => entry.id === id);
+  const agent = agents.find((entry: LooseRecord) => entry.id === id);
   return agent ? clone(agent) : null;
 }

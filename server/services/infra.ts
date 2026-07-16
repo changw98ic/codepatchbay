@@ -8,9 +8,153 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AnyRecord } from "../../shared/types.js";
+import { type LooseRecord } from "../../core/contracts/types.js";
+import { openPinnedHubRedisStateBackend, type HubRedisStateBackend } from "../../shared/hub-state-redis.js";
 
 const execFileAsync = promisify(execFile);
+
+function errorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : null;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "");
+}
+
+function recordValue(value: unknown): LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+type CommandOptions = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+};
+
+type RuntimeStorageOptions = LooseRecord & {
+  dataRoot?: string;
+  includeLegacyFallback?: boolean;
+};
+
+type LeaseLockOptions = {
+  lockTtlMs?: unknown;
+};
+
+type LeaseRecord = LooseRecord & {
+  leaseId?: string;
+  jobId?: string;
+  phase?: string;
+  ownerPid?: number;
+  ownerHost?: string;
+  ownerToken?: string;
+  acquiredAt?: string;
+  heartbeatAt?: string;
+  expiresAt?: string;
+  expiresAtMs?: number;
+};
+
+type AcquireLeaseOptions = RuntimeStorageOptions & {
+  leaseId: string;
+  jobId: string;
+  phase: string;
+  ttlMs: number;
+  now?: Date;
+  ownerPid?: number;
+  lockTtlMs?: unknown;
+};
+
+type RenewLeaseOptions = RuntimeStorageOptions & {
+  ttlMs: number;
+  now?: Date;
+  ownerToken?: string;
+  lockTtlMs?: unknown;
+};
+
+type ReleaseLeaseOptions = RuntimeStorageOptions & {
+  ownerToken?: string;
+  lockTtlMs?: unknown;
+};
+
+type ProcessRegistryOptions = RuntimeStorageOptions & {
+  dryRun?: boolean;
+};
+
+type ProcessEntry = LooseRecord & {
+  jobId?: string;
+  project?: string | null;
+  phase?: string | null;
+  runnerPid?: number;
+  treeId?: string | null;
+  childPids?: number[];
+  leaseId?: string | null;
+  startedAt?: string;
+  lastHeartbeat?: string;
+  status?: string;
+  exitCode?: number | null;
+  command?: string | null;
+  cwd?: string | null;
+  executorRoot?: string | null;
+  sessionPin?: LooseRecord & {
+    sessionId?: string;
+    phase?: string;
+  };
+};
+
+type RegisterProcessOptions = ProcessRegistryOptions & Partial<ProcessEntry>;
+
+type MarkExitedOptions = ProcessRegistryOptions & {
+  exitCode?: number | null;
+  status?: string;
+};
+
+type JobLike = LooseRecord & {
+  jobId?: string;
+  project?: string | null;
+  worktree?: string | null;
+  lineage?: LooseRecord & {
+    parentJobId?: string | null;
+  };
+};
+
+type IndexProject = LooseRecord & {
+  id?: string;
+  name?: string;
+  sourcePath?: string;
+  projectRoot?: string;
+  projectRuntimeRoot?: string;
+  metadata?: LooseRecord;
+};
+
+type IndexManifest = LooseRecord & {
+  schemaVersion?: number;
+  sourcePath?: string;
+  branch?: string;
+  gitHead?: string;
+  worktreeStatusHash?: string;
+  fileInventoryHash?: string;
+  importantConfigHash?: string;
+  indexedAt?: string;
+  indexSnapshotId?: string;
+};
+
+type IndexFreshnessResult = LooseRecord & {
+  available?: boolean;
+  worktreeDirty: boolean;
+  indexDirty: boolean;
+  indexStale: boolean;
+  dirtyReasons: string[];
+  manifest: IndexManifest | null;
+  indexSnapshotId?: string | null;
+  sourceFingerprint?: LooseRecord | null;
+  error?: string;
+};
+
+type GetProjectFn = (hubRoot: string, projectId: string) => Promise<LooseRecord | null>;
+
+type ResolveProjectConcurrencyOptions = {
+  maxActivePerProject?: unknown;
+  getProjectFn?: GetProjectFn | null;
+};
 
 // ── local-smoke (from local-smoke.ts) ──────────────────────────────────────
 
@@ -21,11 +165,11 @@ const EXECUTE_PROMPT_RE = "software execution agent";
 const REVIEW_PROMPT_RE = "code review agent";
 const VERIFY_PROMPT_RE = "software verification agent";
 
-function jsonEnvelope(data: AnyRecord) {
+function jsonEnvelope(data: LooseRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-async function runCommand(command: string, args: string[], opts: Record<string, any> = {}) {
+async function runCommand(command: string, args: string[], opts: CommandOptions = {}) {
   try {
     const result = await execFileAsync(command, args, {
       cwd: opts.cwd,
@@ -35,14 +179,14 @@ async function runCommand(command: string, args: string[], opts: Record<string, 
     });
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
-    const error = err as Record<string, any>;
-    const stdout = error.stdout || "";
-    const stderr = error.stderr || "";
+    const error = recordValue(err);
+    const stdout = String(error.stdout || "");
+    const stderr = String(error.stderr || "");
     const message = [
       `command failed: ${command} ${args.join(" ")}`,
       stdout.trim(),
       stderr.trim(),
-      error.message,
+      errorMessage(err),
     ].filter(Boolean).join("\n");
     throw new Error(message);
   }
@@ -75,7 +219,7 @@ async function writeTestAgentScenario(tmpRoot: string) {
           matchRegex: PLAN_PROMPT_RE,
           output: jsonEnvelope({
             status: "ok",
-            planMarkdown: "## Analysis\n- Exercise CPB's full fake ACP chain through the registered fake-acp agent.\n\n## Files to modify\n- README.md (smoke target only)\n\n## Implementation Steps\n1. Use the deterministic fake ACP provider.\n2. Return JSON envelopes for plan, execute, review, and verify phases.\n3. Let CPB persist every phase artifact.\n\n## Testing\n- Confirm CPB creates plan, deliverable, review, and verdict artifacts.\n\n## Risks\n- This smoke proves orchestration and ACP transport, not real provider quality.",
+            planMarkdown: "## Analysis\n- Exercise CPB's full fake ACP chain through the registered fake-acp agent.\n\n## Bounded Handoff\n- Real actors: fake ACP provider chain and README.md smoke target\n- Entrypoints: registered fake-acp smoke workflow\n- Bypass candidates: plan, execute, review, and verify phase adapters\n- Edit files: README.md (smoke target only)\n- Verification targets: fake ACP smoke artifact persistence checks\n- Blockers: none\n\n## Files to modify\n- README.md (smoke target only)\n\n## Implementation Steps\n1. Use the deterministic fake ACP provider.\n2. Return JSON envelopes for plan, execute, review, and verify phases.\n3. Let CPB persist every phase artifact.\n\n## Testing\n- Confirm CPB creates plan, deliverable, review, and verdict artifacts.\n\n## Risks\n- This smoke proves orchestration and ACP transport, not real provider quality.",
           }),
         },
         {
@@ -243,10 +387,10 @@ export async function runFakeAcpSmoke({
 
     const transcriptEvents = await collectTranscriptEvents(transcriptFile);
     if (codegraph) {
-      const codegraphSession = transcriptEvents.find((event: AnyRecord) =>
+      const codegraphSession = transcriptEvents.find((event: LooseRecord) =>
         event.event === "session/new" &&
         Array.isArray(event.mcpServers) &&
-        event.mcpServers.some((server: AnyRecord) => server?.name === "codegraph")
+        event.mcpServers.some((server) => recordValue(server).name === "codegraph")
       );
       if (!codegraphSession) {
         throw new Error("fake ACP smoke did not receive codegraph MCP server in session/new");
@@ -263,7 +407,7 @@ export async function runFakeAcpSmoke({
       artifacts,
       codegraph: {
         enabled: Boolean(codegraph),
-        sessionsWithMcp: transcriptEvents.filter((event: AnyRecord) => event.event === "session/new" && event.mcpServers?.length > 0).length,
+        sessionsWithMcp: transcriptEvents.filter((event: LooseRecord) => event.event === "session/new" && Array.isArray(event.mcpServers) && event.mcpServers.length > 0).length,
       },
       keptTemp: keepTemp,
     };
@@ -278,7 +422,7 @@ export async function runFakeAcpSmoke({
 
 export const LEASE_FORMAT_VERSION = 1;
 
-function leaseBase(cpbRoot: string, opts: AnyRecord) {
+function leaseBase(cpbRoot: string, opts: RuntimeStorageOptions) {
   if (opts?.dataRoot) return path.resolve(opts.dataRoot);
   if (opts?.includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
   throw new Error("project runtime root required for lease storage");
@@ -296,7 +440,7 @@ function validateLeaseId(leaseId: unknown) {
   }
 }
 
-function leaseFileFor(cpbRoot: string, leaseId: string, opts: AnyRecord = {}) {
+function leaseFileFor(cpbRoot: string, leaseId: string, opts: RuntimeStorageOptions = {}) {
   validateLeaseId(leaseId);
 
   const leasesRoot = path.join(leaseBase(cpbRoot, opts), "leases");
@@ -308,6 +452,41 @@ function leaseFileFor(cpbRoot: string, leaseId: string, opts: AnyRecord = {}) {
   }
 
   return file;
+}
+
+function redisLeaseField(leaseId: string) {
+  validateLeaseId(leaseId);
+  return `lease:${Buffer.from(leaseId, "utf8").toString("base64url")}`;
+}
+
+async function redisLeaseBackend(): Promise<HubRedisStateBackend | null> {
+  const hubRoot = process.env.CPB_HUB_ROOT;
+  const configFile = process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
+  if (!hubRoot || !configFile) return null;
+  return await openPinnedHubRedisStateBackend({ configFile, hubRoot });
+}
+
+async function assertNoLocalLeaseState(cpbRoot: string, opts: RuntimeStorageOptions) {
+  const root = path.join(leaseBase(cpbRoot, opts), "leases");
+  const entries = await readdir(root).catch((): string[] => []);
+  if (entries.some((entry) => entry.endsWith(".json"))) {
+    throw Object.assign(new Error("local leases require an explicit Redis migration"), {
+      code: "HUB_LEASE_MIGRATION_REQUIRED",
+    });
+  }
+}
+
+function parseRedisLease(value: unknown, leaseId: string): LeaseRecord | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new Error(`invalid Redis lease: ${leaseId}`), { code: "HUB_STATE_RECORD_INVALID" });
+  }
+  const lease = value as LeaseRecord;
+  if (lease.leaseId !== leaseId || typeof lease.ownerToken !== "string"
+    || !Number.isSafeInteger(lease.expiresAtMs) || Number(lease.expiresAtMs) < 0) {
+    throw Object.assign(new Error(`invalid Redis lease: ${leaseId}`), { code: "HUB_STATE_RECORD_INVALID" });
+  }
+  return lease;
 }
 
 function expiresAtFor(now: Date, ttlMs: number) {
@@ -333,7 +512,7 @@ function leaseOwnerTokenFor(cpbRoot: string, leaseId: string, suppliedToken: str
   return suppliedToken ?? ownedLeaseTokens.get(leaseTokenKey(cpbRoot, leaseId));
 }
 
-function assertLeaseOwner(lease: AnyRecord, ownerToken: string | undefined) {
+function assertLeaseOwner(lease: LeaseRecord, ownerToken: string | undefined) {
   if (lease.ownerToken !== undefined && lease.ownerToken !== ownerToken) {
     throw new Error("lease owner mismatch");
   }
@@ -349,9 +528,9 @@ async function atomicWriteJson(file: string, value: unknown) {
   await rename(tempFile, file);
 }
 
-async function readLeaseFile(file: string): Promise<AnyRecord | null> {
+async function readLeaseFile(file: string): Promise<LeaseRecord | null> {
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return JSON.parse(await readFile(file, "utf8")) as LeaseRecord;
   } catch (err) {
     if (err && err.code === "ENOENT") {
       return null;
@@ -410,7 +589,7 @@ async function writeLockMetadata(lockDir: string) {
   );
 }
 
-async function acquireLeaseFileLock(file: string, { lockTtlMs }: AnyRecord = {}) {
+async function acquireLeaseFileLock(file: string, { lockTtlMs }: LeaseLockOptions = {}) {
   const lockDir = `${file}.lock`;
   let acquired = false;
   const effectiveLockTtlMs = lockTtlMsFor(lockTtlMs);
@@ -446,7 +625,7 @@ async function acquireLeaseFileLock(file: string, { lockTtlMs }: AnyRecord = {})
   };
 }
 
-async function withLeaseLock(file: string, callback: () => Promise<unknown>, { lockTtlMs }: AnyRecord = {}) {
+async function withLeaseLock<T>(file: string, callback: () => Promise<T>, { lockTtlMs }: LeaseLockOptions = {}): Promise<T> {
   const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
   try {
     return await callback();
@@ -463,7 +642,15 @@ function createLease({
   now,
   ownerPid,
   ownerToken = randomUUID(),
-}: AnyRecord) {
+}: {
+  leaseId: string;
+  jobId: string;
+  phase: string;
+  ttlMs: number;
+  now: Date;
+  ownerPid: number;
+  ownerToken?: string;
+}): LeaseRecord {
   const timestamp = now.toISOString();
   return {
     leaseId,
@@ -490,8 +677,34 @@ export async function acquireLease(
     lockTtlMs,
     dataRoot,
     includeLegacyFallback = false,
-  }: AnyRecord
+  }: AcquireLeaseOptions
 ) {
+  const redis = await redisLeaseBackend();
+  if (redis) {
+    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
+    const field = redisLeaseField(leaseId);
+    const ownerToken = randomUUID();
+    for (let retry = 0; retry < 64; retry += 1) {
+      const [snapshot, nowMs] = await Promise.all([redis.readStateRecord(field), redis.serverTimeMs()]);
+      const existing = parseRedisLease(snapshot.data, leaseId);
+      if (existing && Number(existing.expiresAtMs) > nowMs) {
+        throw Object.assign(new Error(`lease already exists: ${leaseId}`), { code: "EEXIST" });
+      }
+      const timestamp = new Date(nowMs).toISOString();
+      const lease: LeaseRecord = {
+        leaseId, jobId, phase, ownerPid, ownerHost: hostname(), ownerToken,
+        acquiredAt: timestamp, heartbeatAt: timestamp,
+        expiresAtMs: nowMs + ttlMs,
+        expiresAt: new Date(nowMs + ttlMs).toISOString(),
+      };
+      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, lease);
+      if (committed.committed) {
+        rememberOwnerToken(cpbRoot, leaseId, ownerToken);
+        return lease;
+      }
+    }
+    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
+  }
   const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   const lease = createLease({
     leaseId,
@@ -532,11 +745,16 @@ export async function acquireLease(
   }
 }
 
-export async function readLease(cpbRoot: string, leaseId: string, { dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
+export async function readLease(cpbRoot: string, leaseId: string, { dataRoot, includeLegacyFallback = false }: RuntimeStorageOptions = {}) {
+  const redis = await redisLeaseBackend();
+  if (redis) {
+    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
+    return parseRedisLease((await redis.readStateRecord(redisLeaseField(leaseId))).data, leaseId);
+  }
   return await readLeaseFile(leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback }));
 }
 
-export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
+export function isLeaseStale(lease: LeaseRecord | null, now = new Date()) {
   if (
     lease === null ||
     typeof lease !== "object" ||
@@ -556,8 +774,35 @@ export function isLeaseStale(lease: AnyRecord | null, now = new Date()) {
 export async function renewLease(
   cpbRoot: string,
   leaseId: string,
-  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: AnyRecord = {}
+  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: RenewLeaseOptions
 ) {
+  const redis = await redisLeaseBackend();
+  if (redis) {
+    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
+    const field = redisLeaseField(leaseId);
+    for (let retry = 0; retry < 64; retry += 1) {
+      const [snapshot, nowMs] = await Promise.all([redis.readStateRecord(field), redis.serverTimeMs()]);
+      const existing = parseRedisLease(snapshot.data, leaseId);
+      if (!existing) throw new Error(`lease not found: ${leaseId}`);
+      const effectiveOwnerToken = leaseOwnerTokenFor(cpbRoot, leaseId, ownerToken);
+      assertLeaseOwner(existing, effectiveOwnerToken);
+      if (Number(existing.expiresAtMs) <= nowMs) {
+        throw Object.assign(new Error(`lease expired: ${leaseId}`), { code: "ESTALE" });
+      }
+      const renewed: LeaseRecord = {
+        ...existing,
+        heartbeatAt: new Date(nowMs).toISOString(),
+        expiresAtMs: nowMs + ttlMs,
+        expiresAt: new Date(nowMs + ttlMs).toISOString(),
+      };
+      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, renewed);
+      if (committed.committed) {
+        rememberOwnerToken(cpbRoot, leaseId, String(renewed.ownerToken));
+        return renewed;
+      }
+    }
+    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
+  }
   const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(
     file,
@@ -570,7 +815,7 @@ export async function renewLease(
       const effectiveOwnerToken = leaseOwnerTokenFor(cpbRoot, leaseId, ownerToken);
       assertLeaseOwner(existing, effectiveOwnerToken);
 
-      const renewed: AnyRecord = {
+      const renewed: LeaseRecord = {
         ...existing,
         heartbeatAt: now.toISOString(),
         expiresAt: expiresAtFor(now, ttlMs),
@@ -587,8 +832,26 @@ export async function renewLease(
 export async function releaseLease(
   cpbRoot: string,
   leaseId: string,
-  { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: AnyRecord = {}
+  { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: ReleaseLeaseOptions = {}
 ) {
+  const redis = await redisLeaseBackend();
+  if (redis) {
+    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
+    const field = redisLeaseField(leaseId);
+    for (let retry = 0; retry < 64; retry += 1) {
+      const snapshot = await redis.readStateRecord(field);
+      const existing = parseRedisLease(snapshot.data, leaseId);
+      if (!existing) return;
+      const effectiveOwnerToken = leaseOwnerTokenFor(cpbRoot, leaseId, ownerToken);
+      assertLeaseOwner(existing, effectiveOwnerToken);
+      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, null);
+      if (committed.committed) {
+        forgetOwnerToken(cpbRoot, leaseId, String(existing.ownerToken));
+        return;
+      }
+    }
+    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
+  }
   const file = leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
 
   const releaseLock = await acquireLeaseFileLock(file, { lockTtlMs });
@@ -619,42 +882,48 @@ export function positiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-export function maxActiveForProject(project: AnyRecord, fallback = DEFAULT_MAX_ACTIVE_PER_PROJECT): number {
+export function maxActiveForProject(project: LooseRecord | null | undefined, fallback = DEFAULT_MAX_ACTIVE_PER_PROJECT): number {
+  const projectRecord = recordValue(project);
+  const concurrency = recordValue(projectRecord.concurrency);
+  const metadata = recordValue(projectRecord.metadata);
   return positiveInt(
-    project?.concurrency?.maxActivePerProject
-      ?? project?.concurrency?.maxActive
-      ?? project?.metadata?.maxActivePerProject
-      ?? project?.metadata?.maxActive,
+    concurrency.maxActivePerProject
+      ?? concurrency.maxActive
+      ?? metadata.maxActivePerProject
+      ?? metadata.maxActive,
     fallback,
   );
 }
 
-function hasConfig(value: AnyRecord) {
+function hasConfig(value: LooseRecord | null | undefined) {
   return value && typeof value === "object" && Object.keys(value).length > 0;
 }
 
-function mergeProjectConfig(registryProject: AnyRecord, projectJson: AnyRecord) {
+function mergeProjectConfig(registryProject: LooseRecord | null | undefined, projectJson: LooseRecord | null | undefined) {
   if (!hasConfig(registryProject) && !hasConfig(projectJson)) return null;
+  const registry = recordValue(registryProject);
+  const project = recordValue(projectJson);
   return {
-    ...(registryProject || {}),
-    ...(projectJson || {}),
+    ...registry,
+    ...project,
     metadata: {
-      ...(registryProject?.metadata || {}),
-      ...(projectJson?.metadata || {}),
+      ...recordValue(registry.metadata),
+      ...recordValue(project.metadata),
     },
     concurrency: {
-      ...(registryProject?.concurrency || {}),
-      ...(projectJson?.concurrency || {}),
+      ...recordValue(registry.concurrency),
+      ...recordValue(project.concurrency),
     },
   };
 }
 
-async function defaultGetProject(hubRoot: string, projectId: string) {
+async function defaultGetProject(hubRoot: string, projectId: string): Promise<LooseRecord | null> {
   const { getProject } = await import("./hub/hub-registry.js");
-  return getProject(hubRoot, projectId);
+  const project = await getProject(hubRoot, projectId);
+  return project ? recordValue(project) : null;
 }
 
-export async function readProjectConcurrencyConfig(hubRoot: string, projectId: string, getProjectFn: ((hubRoot: string, projectId: string) => Promise<AnyRecord | null>) | null = null) {
+export async function readProjectConcurrencyConfig(hubRoot: string, projectId: string, getProjectFn: GetProjectFn | null = null) {
   const { readProjectJsonFromRoots } = await import("./agent/agent-config.js");
   if (!projectId) return null;
   const registryProject = await (getProjectFn || defaultGetProject)(hubRoot, projectId).catch(() => null);
@@ -665,7 +934,7 @@ export async function readProjectConcurrencyConfig(hubRoot: string, projectId: s
 export async function resolveProjectConcurrencyLimits(hubRoot: string, projectIds: string[], {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
   getProjectFn = null,
-}: AnyRecord = {}) {
+}: ResolveProjectConcurrencyOptions = {}) {
   const fallback = positiveInt(maxActivePerProject, DEFAULT_MAX_ACTIVE_PER_PROJECT);
   const limits = new Map();
   for (const projectId of [...new Set((projectIds || []).filter(Boolean))]) {
@@ -675,12 +944,12 @@ export async function resolveProjectConcurrencyLimits(hubRoot: string, projectId
   return limits;
 }
 
-export async function resolveHubConcurrencyLimits(hubRoot: string, fallback: AnyRecord = {}) {
+export async function resolveHubConcurrencyLimits(hubRoot: string, fallback: LooseRecord = {}) {
   const { readHubConfig } = await import("./agent/agent-config.js");
-  const config: AnyRecord = await readHubConfig(hubRoot).catch(() => ({}));
-  const concurrency: AnyRecord = config.concurrency || {};
-  const acpPool: AnyRecord = config.acpPool || {};
-  const fallbackLimits = fallback as AnyRecord;
+  const config = recordValue(await readHubConfig(hubRoot).catch(() => ({})));
+  const concurrency = recordValue(config.concurrency);
+  const acpPool = recordValue(config.acpPool);
+  const fallbackLimits = fallback;
   return {
     maxActivePerProject: positiveInt(
       concurrency.maxActivePerProject ?? fallbackLimits.maxActivePerProject,
@@ -693,9 +962,9 @@ export async function resolveHubConcurrencyLimits(hubRoot: string, fallback: Any
   };
 }
 
-export function hubConcurrencyEnv(limits = {}) {
-  const limitValues = limits as AnyRecord;
-  const env: AnyRecord = {};
+export function hubConcurrencyEnv(limits: LooseRecord = {}): Record<string, string> {
+  const limitValues = limits;
+  const env: Record<string, string> = {};
   if (limitValues.maxActivePerProject) env.CPB_HUB_MAX_ACTIVE_PER_PROJECT = String(limitValues.maxActivePerProject);
   if (limitValues.acpProviderMax) env.CPB_ACP_POOL_PROVIDER_MAX = String(limitValues.acpProviderMax);
   return env;
@@ -711,13 +980,13 @@ function validateId(value: unknown, label: string) {
   }
 }
 
-function processDir(cpbRoot: string, { dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
+function processDir(cpbRoot: string, { dataRoot, includeLegacyFallback = false }: RuntimeStorageOptions = {}) {
   if (dataRoot) return path.join(path.resolve(dataRoot), "processes");
   if (includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task", "processes");
   throw new Error("project runtime root required for process registry");
 }
 
-function processFile(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
+function processFile(cpbRoot: string, jobId: string, options: RuntimeStorageOptions = {}) {
   validateId(jobId, "jobId");
   return path.join(processDir(cpbRoot, options), `${jobId}.json`);
 }
@@ -726,9 +995,9 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function readJsonFile(file: string): Promise<Record<string, any> | null> {
+async function readJsonFile(file: string): Promise<ProcessEntry | null> {
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return JSON.parse(await readFile(file, "utf8")) as ProcessEntry;
   } catch {
     return null;
   }
@@ -742,21 +1011,21 @@ async function writeJsonFile(file: string, data: unknown) {
   await renameFn(tmp, file);
 }
 
-export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback = false }: AnyRecord = {}) {
+export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback = false }: RegisterProcessOptions = {}) {
   validateId(jobId, "jobId");
   const file = processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
-  const entry: AnyRecord = {
+  const entry: ProcessEntry = {
     jobId,
     project: project || null,
     phase: phase || null,
     runnerPid: runnerPid || process.pid,
     treeId: treeId || null,
-    childPids: [] as number[],
+    childPids: [],
     leaseId: leaseId || null,
     startedAt: startedAt || nowIso(),
     lastHeartbeat: nowIso(),
     status: "running",
-    exitCode: null as number | null,
+    exitCode: null,
     command: command || null,
     cwd: cwd || null,
     executorRoot: executorRoot || null,
@@ -765,7 +1034,7 @@ export async function registerProcess(cpbRoot: string, { jobId, project, phase, 
   return entry;
 }
 
-export async function updateHeartbeat(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
+export async function updateHeartbeat(cpbRoot: string, jobId: string, options: RuntimeStorageOptions = {}) {
   const file = processFile(cpbRoot, jobId, options);
   const entry = await readJsonFile(file);
   if (!entry) return null;
@@ -774,8 +1043,8 @@ export async function updateHeartbeat(cpbRoot: string, jobId: string, options: A
   return entry;
 }
 
-export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited" }: AnyRecord = {}) {
-  const file = processFile(cpbRoot, jobId);
+export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited", dataRoot, includeLegacyFallback = false }: MarkExitedOptions = {}) {
+  const file = processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
   const entry = await readJsonFile(file);
   if (!entry) return null;
   entry.status = status;
@@ -784,7 +1053,7 @@ export async function markExited(cpbRoot: string, jobId: string, { exitCode, sta
   return entry;
 }
 
-export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, options: AnyRecord = {}) {
+export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, options: RuntimeStorageOptions = {}) {
   const file = processFile(cpbRoot, jobId, options);
   const entry = await readJsonFile(file);
   if (!entry) return null;
@@ -795,11 +1064,11 @@ export async function addChildPid(cpbRoot: string, jobId: string, childPid: numb
   return entry;
 }
 
-export async function getProcess(cpbRoot: string, jobId: string, options: AnyRecord = {}) {
+export async function getProcess(cpbRoot: string, jobId: string, options: RuntimeStorageOptions = {}) {
   return readJsonFile(processFile(cpbRoot, jobId, options));
 }
 
-export async function listProcesses(cpbRoot: string, options: AnyRecord = {}) {
+export async function listProcesses(cpbRoot: string, options: RuntimeStorageOptions = {}): Promise<ProcessEntry[]> {
   const dir = processDir(cpbRoot, options);
   let entries;
   try {
@@ -807,7 +1076,7 @@ export async function listProcesses(cpbRoot: string, options: AnyRecord = {}) {
   } catch {
     return [];
   }
-  const results = [];
+  const results: ProcessEntry[] = [];
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
     const entry = await readJsonFile(path.join(dir, name));
@@ -830,14 +1099,14 @@ function isProcessAlive(pid: number) {
   }
 }
 
-export function computeAge(entry: AnyRecord) {
+export function computeAge(entry: ProcessEntry) {
   if (!entry?.startedAt) return null;
   const started = new Date(entry.startedAt).getTime();
   if (Number.isNaN(started)) return null;
   return Date.now() - started;
 }
 
-export function classifyLiveness(entry: AnyRecord, { staleThresholdMs = 180_000 }: AnyRecord = {}) {
+export function classifyLiveness(entry: ProcessEntry | null | undefined, { staleThresholdMs = 180_000 }: { staleThresholdMs?: number } = {}) {
   if (!entry) return "unknown";
   if (entry.status === "exited" || entry.status === "stopped") return entry.status;
 
@@ -859,7 +1128,7 @@ export async function stopProcess(cpbRoot: string, jobId: string) {
   const { project } = entry;
   const ts = nowIso();
 
-  async function audit(type: string, extra: AnyRecord = {}) {
+  async function audit(type: string, extra: LooseRecord = {}) {
     if (!project) return;
     try {
       const { appendEvent } = await import("./event/event-store.js");
@@ -909,9 +1178,9 @@ export async function stopProcess(cpbRoot: string, jobId: string) {
   return { stopped: true, jobId, signaledPids: pids };
 }
 
-export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRecord = {}) {
+export async function cleanProcesses(cpbRoot: string, { dryRun = false }: { dryRun?: boolean } = {}) {
   const entries = await listProcesses(cpbRoot);
-  const eligible: AnyRecord[] = [];
+  const eligible: ProcessEntry[] = [];
 
   for (const entry of entries) {
     const liveness = classifyLiveness(entry);
@@ -933,7 +1202,7 @@ export async function cleanProcesses(cpbRoot: string, { dryRun = false }: AnyRec
   return { dryRun: false, removed, eligible };
 }
 
-export async function removeProcess(cpbRoot: string, jobId: string, { dryRun = false, dataRoot }: AnyRecord = {}) {
+export async function removeProcess(cpbRoot: string, jobId: string, { dryRun = false, dataRoot }: ProcessRegistryOptions = {}) {
   validateId(jobId, "jobId");
   const file = processFile(cpbRoot, jobId, { dataRoot });
   if (dryRun) {
@@ -974,7 +1243,7 @@ export async function inspectProcess(cpbRoot: string, jobId: string) {
     }
     if (!job) {
       const allJobs = await listJobs(cpbRoot);
-      job = allJobs.find((j: AnyRecord) => j.jobId === jobId) || null;
+      job = allJobs.find((j: JobLike) => j.jobId === jobId) || null;
       if (job && !project) project = job.project;
     }
   } catch {}
@@ -988,17 +1257,17 @@ export async function inspectProcess(cpbRoot: string, jobId: string) {
     } catch {}
   }
 
-  let lineage = (job as AnyRecord)?.lineage || null;
+  let lineage = job?.lineage || null;
 
   let ancestors = [];
   let children = [];
   try {
     const { listJobs: listAllJobs, getJob: getJobForLineage } = await import("./job/job-store.js");
     const allJobs = await listAllJobs(cpbRoot);
-    children = allJobs.filter((j: AnyRecord) => j.lineage?.parentJobId === jobId);
+    children = allJobs.filter((j: JobLike) => j.lineage?.parentJobId === jobId);
 
     if (lineage?.parentJobId) {
-      const ancestorMap = new Map(allJobs.map((j: AnyRecord) => [j.jobId, j]));
+      const ancestorMap = new Map(allJobs.map((j: JobLike) => [j.jobId, j]));
       let curId = lineage.parentJobId;
       let depth = 0;
       while (curId && depth < 5) {
@@ -1080,7 +1349,7 @@ function filterCpbPaths(lines: string[]) {
   });
 }
 
-async function git(args: string[], cwd: string, { timeoutMs = 10_000 }: AnyRecord = {}) {
+async function git(args: string[], cwd: string, { timeoutMs = 10_000 }: { timeoutMs?: number } = {}) {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     timeout: timeoutMs,
@@ -1107,9 +1376,9 @@ async function gitBranch(sourcePath: string) {
   return (await git(["rev-parse", "--abbrev-ref", "HEAD"], sourcePath)).trim();
 }
 
-async function importantConfigHash(project: AnyRecord) {
+async function importantConfigHash(project: IndexProject) {
   const { realpath: realpathFn } = await import("node:fs/promises");
-  const resolvedSourcePath = await realpathFn(project.sourcePath).catch(() => project.sourcePath);
+  const resolvedSourcePath = await realpathFn(project.sourcePath || "").catch(() => project.sourcePath);
   const stable = {
     id: project.id,
     name: project.name,
@@ -1132,17 +1401,17 @@ function generateSnapshotId() {
   return `idx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function checkIndexFreshness(project: AnyRecord, opts: Record<string, any> = {}) {
+export async function checkIndexFreshness(project: IndexProject, opts: { ttlMs?: number; now?: number } = {}) {
   const { ttlMs = DEFAULT_INDEX_TTL_MS, now = Date.now() } = opts;
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
 
-  const result: AnyRecord = {
+  const result: IndexFreshnessResult = {
     worktreeDirty: false,
     indexDirty: false,
     indexStale: false,
-    dirtyReasons: [] as string[],
-    manifest: null as Record<string, any> | null,
+    dirtyReasons: [],
+    manifest: null,
   };
 
   if (!sourcePath || !rtRoot) {
@@ -1151,11 +1420,11 @@ export async function checkIndexFreshness(project: AnyRecord, opts: Record<strin
     return result;
   }
 
-  let existing;
+  let existing: IndexManifest;
   try {
     existing = JSON.parse(await readFile(manifestFile(rtRoot), "utf8"));
   } catch (err) {
-    if (err.code === "ENOENT") {
+    if (errorCode(err) === "ENOENT") {
       result.indexDirty = true;
       result.dirtyReasons.push("missing_manifest");
       return result;
@@ -1212,7 +1481,7 @@ export async function checkIndexFreshness(project: AnyRecord, opts: Record<strin
   return result;
 }
 
-export async function refreshIndexManifest(project: AnyRecord, opts: Record<string, any> = {}) {
+export async function refreshIndexManifest(project: IndexProject, opts: { now?: string | number } = {}) {
   const rtRoot = project.projectRuntimeRoot;
   const sourcePath = project.sourcePath;
   const { realpath: realpathFn } = await import("node:fs/promises");
@@ -1257,7 +1526,7 @@ export async function refreshIndexManifest(project: AnyRecord, opts: Record<stri
   };
 }
 
-export async function ensureIndexFresh(project: AnyRecord, opts: AnyRecord = {}) {
+export async function ensureIndexFresh(project: IndexProject, opts: { ttlMs?: number; now?: number | string } = {}) {
   if (project.sourcePath) {
     const isGit = await git(["rev-parse", "--git-dir"], project.sourcePath).then(() => true).catch(() => false);
     if (!isGit) {
@@ -1268,7 +1537,10 @@ export async function ensureIndexFresh(project: AnyRecord, opts: AnyRecord = {})
     }
   }
   try {
-    const check = await checkIndexFreshness(project, opts);
+    const check = await checkIndexFreshness(project, {
+      ttlMs: opts.ttlMs,
+      ...(typeof opts.now === "number" ? { now: opts.now } : {}),
+    });
 
     if (!check.indexDirty && !check.indexStale && check.manifest?.indexSnapshotId) {
       const m = check.manifest;
@@ -1292,15 +1564,16 @@ export async function ensureIndexFresh(project: AnyRecord, opts: AnyRecord = {})
 
     return await refreshIndexManifest(project, opts);
   } catch (err) {
+    const message = errorMessage(err);
     return {
       available: false,
       indexDirty: true,
       indexStale: false,
       worktreeDirty: false,
-      dirtyReasons: [`refresh_failed: ${err.message}`],
+      dirtyReasons: [`refresh_failed: ${message}`],
       indexSnapshotId: null,
       sourceFingerprint: null,
-      error: err.message,
+      error: message,
     };
   }
 }
@@ -1330,7 +1603,7 @@ export function parseEnvSnapshot(raw: string) {
   }
 }
 
-export function snapshotForJob(result: AnyRecord) {
+export function snapshotForJob(result: Partial<IndexFreshnessResult> | null | undefined) {
   if (!result || !result.available) {
     return {
       indexSnapshotId: null,
@@ -1345,8 +1618,8 @@ export function snapshotForJob(result: AnyRecord) {
     };
   }
   return {
-    indexSnapshotId: result.indexSnapshotId as string | null,
-    sourceFingerprint: result.sourceFingerprint as Record<string, any> | null,
+    indexSnapshotId: result.indexSnapshotId,
+    sourceFingerprint: result.sourceFingerprint,
     indexFreshness: {
       available: true,
       indexDirty: false,

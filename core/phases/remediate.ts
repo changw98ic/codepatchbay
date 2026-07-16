@@ -1,8 +1,10 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { parseAgentJson } from "../agents/response-parser.js";
+import { buildPhaseAcpEnv } from "./phase-env.js";
 
 const JSON_INSTRUCTION = `
 
@@ -24,14 +26,23 @@ Rules:
 - remediationStatus MUST be exactly "FIXED", "UNFIXABLE", or "NEEDS_RETRY"
 - Do NOT write any artifact files yourself. The system will persist the remediation report.`;
 
-export async function runRemediate(ctx: Record<string, any>) {
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+export async function runRemediate(ctx: LooseRecord) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
-  const role = ctx.role || "remediator";
+  const role = stringValue(ctx.role, "remediator");
 
   const prompt = await buildRemediatePrompt(ctx) + JSON_INSTRUCTION;
 
   const agentResult = await runAgent({
+    phase: "remediate",
     role,
     ...resolveAgent(ctx, "claude"),
     project,
@@ -40,28 +51,30 @@ export async function runRemediate(ctx: Record<string, any>) {
     cwd: sourcePath || cpbRoot,
     pool,
     scope: ctx.scope || null,
-    env: ctx.env || {},
-    timeoutMs: ctx.timeouts?.remediate ?? 0,
+    env: buildPhaseAcpEnv(ctx, "remediate"),
+    timeoutMs: typeof recordValue(ctx.timeouts).remediate === "number" ? recordValue(ctx.timeouts).remediate : 0,
     dataRoot,
+    onProgress: ctx.onProgress,
   });
 
   if (!agentResult.ok) {
-    const failed = agentResult as Record<string, any>;
+    const failed = recordValue(agentResult);
+    const failureKind = typeof failed.kind === "string" ? failed.kind : FailureKind.UNKNOWN;
     return phaseFailed({
       phase: "remediate",
       failure: failure({
-        kind: failed.kind,
+        kind: failureKind,
         phase: "remediate",
         reason: failed.reason,
-        retryable: failed.retryable,
-        cause: failed.cause || {},
+        retryable: failed.retryable === true,
+        cause: recordValue(failed.cause),
       }),
-      diagnostics: failed.diagnostics,
+      diagnostics: recordValue(failed.diagnostics),
     });
   }
 
-  const success = agentResult as Record<string, any>;
-  const parsed = parseAgentJson(success.output);
+  const success = recordValue(agentResult);
+  const parsed = recordValue(parseAgentJson(success.output));
   if (!parsed.ok) {
     return phaseFailed({
       phase: "remediate",
@@ -71,12 +84,13 @@ export async function runRemediate(ctx: Record<string, any>) {
         reason: parsed.reason,
         retryable: true,
       }),
-      diagnostics: success.diagnostics,
+      diagnostics: recordValue(success.diagnostics),
     });
   }
 
-  const status = parsed.data.remediationStatus || "UNFIXABLE";
-  const content = renderRemediationMarkdown(parsed.data);
+  const parsedData = recordValue(parsed.data);
+  const status = stringValue(parsedData.remediationStatus, "UNFIXABLE");
+  const content = renderRemediationMarkdown(parsedData);
 
   const artifact = await writeArtifact(cpbRoot, {
     project,
@@ -104,11 +118,11 @@ export async function runRemediate(ctx: Record<string, any>) {
   return phasePassed({
     phase: "remediate",
     artifact,
-    diagnostics: success.diagnostics,
+    diagnostics: recordValue(success.diagnostics),
   });
 }
 
-function renderRemediationMarkdown(data: Record<string, any>) {
+function renderRemediationMarkdown(data: LooseRecord) {
   return `# Remediation Report
 
 ## Status
@@ -118,13 +132,35 @@ ${data.remediationStatus || "UNKNOWN"}
 ${data.summary || "N/A"}
 
 ## Changes
-${(data.changes || []).map((c: string) => `- ${c}`).join("\n") || "- None"}
+${stringArray(data.changes).map((c) => `- ${c}`).join("\n") || "- None"}
 `;
 }
 
-async function buildRemediatePrompt(ctx: Record<string, any>) {
+function buildRetrySection(sourceContext: LooseRecord) {
+  const retry = recordValue(sourceContext.retry);
+  if (Object.keys(retry).length === 0) return "";
+  return `
+
+## Previous Attempt Failed
+Your previous remediation pass was rejected. Rerun this same phase with the corrected behavior below.
+
+Error type: ${stringValue(retry.failureKind)}
+Error: ${stringValue(retry.failureReason)}
+Failure class: ${stringValue(retry.failureClass, "unknown")}
+Failure fingerprint: ${stringValue(retry.failureFingerprint, "unavailable")}
+Recovery strategy: ${stringValue(retry.retryStrategy, "unavailable")}
+Strategy changed: ${retry.strategyChanged === true ? "yes" : "no"}
+${retry.retryClass ? `Repair class: ${retry.retryClass}` : ""}
+${Array.isArray(retry.fixScope) && retry.fixScope.length > 0 ? `Fix scope: ${retry.fixScope.join(", ")}` : ""}
+${retry.failureEvidence ? `Failure evidence:\n\`\`\`json\n${JSON.stringify(retry.failureEvidence, null, 2)}\n\`\`\`` : ""}
+${retry.instruction ? `Repair instruction: ${retry.instruction}` : ""}
+${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`;
+}
+
+async function buildRemediatePrompt(ctx: LooseRecord) {
+  const retrySection = buildRetrySection(recordValue(ctx.sourceContext));
   if (typeof ctx.buildPrompt === "function") {
-    return ctx.buildPrompt("remediate", ctx);
+    return await ctx.buildPrompt("remediate", ctx) + retrySection;
   }
   return `You are a remediation agent. Fix the CPB/runtime issues from the failed job:
 
@@ -132,12 +168,17 @@ Task: ${ctx.task}
 Project: ${ctx.project}
 Job: ${ctx.jobId}
 
-Analyze the failure and apply fixes.`;
+Analyze the failure and apply fixes.
+${retrySection}`;
 }
 
-function resolveAgent(ctx: Record<string, any>, fallback: string) {
-  const role = ctx.role || "remediator";
-  const raw = ctx.agents?.[role] || ctx.agents?.remediator || ctx.agent || fallback;
-  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
-  return { agent: raw, variant: null };
+function resolveAgent(ctx: LooseRecord, fallback: string) {
+  const role = stringValue(ctx.role, "remediator");
+  const agents = recordValue(ctx.agents);
+  const raw = agents[role] || agents.remediator || ctx.agent || fallback;
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = recordValue(raw);
+    return { agent: stringValue(record.agent, fallback), variant: stringValue(record.variant) || null };
+  }
+  return { agent: stringValue(raw, fallback), variant: null };
 }

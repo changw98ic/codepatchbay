@@ -13,6 +13,34 @@
  * @param {string[]} params.fixScope   - Allowed scope entries (exact paths, directory prefixes, glob patterns).
  * @returns {{ withinScope: boolean, violations: string[] }}
  */
+export type ScopeGuardResult = {
+  withinScope: boolean;
+  violations: string[];
+  changedFiles: string[];
+  fixScope: string[];
+};
+
+function repoPathText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isRepoRelativePosixPath(value: unknown) {
+  const path = repoPathText(value);
+  return Boolean(path) && !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
+}
+
+export function normalizeRepoRelativePaths(values: unknown) {
+  const normalized = new Set<string>();
+  for (const value of Array.isArray(values) ? values : [values]) {
+    const path = stripGitStatusPrefix(repoPathText(value));
+    if (!isRepoRelativePosixPath(path)) throw new Error(`invalid repo-relative path: ${String(value)}`);
+    normalized.add(path);
+  }
+  return [...normalized].sort();
+}
+
+export const normalizeFixScope = normalizeRepoRelativePaths;
+
 export function validateScopeConstraint({ diffPaths, fixScope }: { diffPaths: string[]; fixScope: string[] }) {
   if (!Array.isArray(fixScope) || fixScope.length === 0) {
     return { withinScope: true, violations: [] };
@@ -29,6 +57,30 @@ export function validateScopeConstraint({ diffPaths, fixScope }: { diffPaths: st
   return { withinScope: violations.length === 0, violations };
 }
 
+export function evaluateScopeGuard({
+  changedFiles,
+  fixScope,
+}: {
+  changedFiles: unknown[];
+  fixScope: string[];
+}): ScopeGuardResult {
+  const cleanPaths = (Array.isArray(changedFiles) ? changedFiles : [])
+    .map((file) => stripGitStatusPrefix(String(file)))
+    .filter((file) => file.length > 0);
+  const cleanFixScope = (Array.isArray(fixScope) ? fixScope : [])
+    .map((scope) => String(scope || ""))
+    .filter((scope) => scope.length > 0);
+  const result = validateScopeConstraint({
+    diffPaths: cleanPaths,
+    fixScope: cleanFixScope,
+  });
+  return {
+    ...result,
+    changedFiles: cleanPaths,
+    fixScope: cleanFixScope,
+  };
+}
+
 /**
  * Strip git status porcelain prefix from a line.
  * "M  src/foo.js" → "src/foo.js"
@@ -40,10 +92,10 @@ export function validateScopeConstraint({ diffPaths, fixScope }: { diffPaths: st
  */
 export function stripGitStatusPrefix(line: string) {
   if (!line || typeof line !== "string") return "";
-  // porcelain v1 format: XY<space>path  where XY is exactly 2 known status chars
-  // Only strip when the first 2 chars are a recognized git status letter combo
-  const match = line.match(/^([MADRCU?\s!])([MADRCU?\s!])\s(.+)$/);
-  return match ? match[3] : line;
+  // porcelain v1 format: XY<space>path. Some upstream artifacts collapse this
+  // to one status character, so accept 1-2 known status chars before spacing.
+  const match = line.match(/^[ MADRCU?!]{1,2}\s+(.+)$/);
+  return match ? match[1] : line;
 }
 
 /**

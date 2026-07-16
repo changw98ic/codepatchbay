@@ -27,7 +27,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -396,11 +396,11 @@ test("adversarial round 5: buildArtifactIndex ignores post-terminal artifact_cre
   const index = await buildArtifactIndex(cpbRoot, project, job.jobId, { dataRoot });
 
   // The pre-terminal artifact (plan) should be present in the index
-  const planEntry = index.entries.find((e: AnyRecord) => e.kind === "plan");
+  const planEntry = index.entries.find((e: LooseRecord) => e.kind === "plan");
   assert.ok(planEntry, "pre-terminal plan artifact should be indexed");
 
   // The post-terminal checklist-verdict appears in the index but is broken
-  const verdictEntry = index.entries.find((e: AnyRecord) => e.kind === "checklist-verdict");
+  const verdictEntry = index.entries.find((e: LooseRecord) => e.kind === "checklist-verdict");
   assert.ok(verdictEntry, "artifact index lists the post-terminal reference (raw event scan)");
   assert.strictEqual(verdictEntry.exists, false,
     "post-terminal artifact must not resolve to an existing file");

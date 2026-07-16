@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { LooseRecord } from "../../shared/types.js";
 // init-project.js — Initialize project integration (Node.js, replaces init-project.sh)
 
 import { mkdir, cp, writeFile, readFile, symlink, access, constants } from "node:fs/promises";
@@ -50,7 +51,7 @@ async function copyProjectTemplate(templateDir: string, wikiDir: string, project
   }
 }
 
-export async function initProject(args: string[], { cpbRoot, executorRoot }: Record<string, any>) {
+export async function initProject(args: string[], { cpbRoot, executorRoot }: LooseRecord) {
   const projectPathRaw = args[0];
   let projectName = args[1];
 
@@ -239,7 +240,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   initProject(args, { cpbRoot, executorRoot });
 }
 
-export async function run(args: string[], context: Record<string, any>) {
+export async function run(args: string[], context: LooseRecord) {
   await initProject(args, context);
   return 0;
 }

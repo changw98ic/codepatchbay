@@ -10,6 +10,7 @@ import { completeRepair, runRepair } from "../server/services/review/review-disp
 import { completeRemediation, runRemediation } from "../server/services/review/review-dispatch.js";
 import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
+import { recordValue } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
 
 async function withHubRoot(hubRoot, fn) {
@@ -188,15 +189,21 @@ test("repair FIXED lineage carries retry, previousFailure, and artifact context"
     const entries = await listQueue(hubRoot, { projectId: "proj" });
     const lineage = entries.find((entry) => entry.metadata?.originJobId === job.jobId);
     assert.ok(lineage, "repair should enqueue a lineage task");
-    const sourceContext = lineage.metadata.sourceContext;
+    const sourceContext = recordValue(lineage.metadata?.sourceContext);
+    const repairContext = recordValue(sourceContext.repair);
+    const repairArtifacts = recordValue(repairContext.artifacts);
+    const retryContext = recordValue(sourceContext.retry);
+    const retryArtifacts = recordValue(retryContext.artifacts);
+    const previousFailure = recordValue(sourceContext.previousFailure);
+    const previousArtifacts = recordValue(previousFailure.artifacts);
     assert.equal(sourceContext.issueNumber, 42);
-    assert.equal(sourceContext.repair.repairArtifact, repair.repairArtifact);
-    assert.equal(sourceContext.repair.artifacts.plan, "plan-001");
-    assert.equal(sourceContext.retry.failureKind, "verification_failed");
-    assert.equal(sourceContext.retry.previousJobId, job.jobId);
-    assert.equal(sourceContext.retry.artifacts.plan, "plan-001");
-    assert.equal(sourceContext.previousFailure.kind, "verification_failed");
-    assert.equal(sourceContext.previousFailure.reason, "verification failed");
-    assert.equal(sourceContext.previousFailure.artifacts.plan, "plan-001");
+    assert.equal(repairContext.repairArtifact, repair.repairArtifact);
+    assert.equal(repairArtifacts.plan, "plan-001");
+    assert.equal(retryContext.failureKind, "verification_failed");
+    assert.equal(retryContext.previousJobId, job.jobId);
+    assert.equal(retryArtifacts.plan, "plan-001");
+    assert.equal(previousFailure.kind, "verification_failed");
+    assert.equal(previousFailure.reason, "verification failed");
+    assert.equal(previousArtifacts.plan, "plan-001");
   });
 });

@@ -213,19 +213,21 @@ describe('AC6: parent plan cache runtime root', () => {
         task: 'Ship reliable onboarding',
         planId: 'parent-1',
       });
+      const cachePath = String(stored.cachePath);
+      const planCacheKey = String(stored.planCacheKey);
 
-      assert.equal(stored.cachePath.startsWith(path.join(dataRoot, 'plan-cache', 'flow')), true);
+      assert.equal(cachePath.startsWith(path.join(dataRoot, 'plan-cache', 'flow')), true);
       assert.equal(parentPlanStoreDir(cpbRoot, 'flow', { dataRoot }), path.join(dataRoot, 'plan-cache', 'flow'));
       assert.equal(
-        parentPlanRecordPath(cpbRoot, 'flow', stored.planCacheKey, { dataRoot }),
-        stored.cachePath,
+        parentPlanRecordPath(cpbRoot, 'flow', planCacheKey, { dataRoot }),
+        cachePath,
       );
       assert.equal(
-        await fs.readFile(stored.cachePath, 'utf8').then((raw) => JSON.parse(raw).parentPlanId),
+        await fs.readFile(cachePath, 'utf8').then((raw) => JSON.parse(raw).parentPlanId),
         'parent-1',
       );
       await assert.rejects(
-        fs.stat(path.join(cpbRoot, 'cpb-task', 'plan-cache', 'flow', `${stored.planCacheKey}.json`)),
+        fs.stat(path.join(cpbRoot, 'cpb-task', 'plan-cache', 'flow', `${planCacheKey}.json`)),
         /ENOENT/,
       );
 

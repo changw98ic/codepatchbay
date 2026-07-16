@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 import { assertNoSecretInput } from "../../server/services/secret-policy.js";
 
-type LooseRecord = Record<string, any>;
+type LooseRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function recordArray(value: unknown): LooseRecord[] {
+  return Array.isArray(value) ? value.map(recordValue) : [];
+}
 
 function usage() {
   return [
@@ -43,11 +55,13 @@ function parseConnectArgs(args: string[] = []) {
 }
 
 function formatBindHuman(project: LooseRecord) {
+  const github = recordValue(project.github);
+  const triggers = recordArray(github.triggers);
   return [
-    `Bound ${project.id} to GitHub repo ${project.github.fullName}.`,
+    `Bound ${project.id} to GitHub repo ${github.fullName}.`,
     "",
     "Default triggers:",
-    ...project.github.triggers.map((trigger) => {
+    ...triggers.map((trigger) => {
       const selector = trigger.label || trigger.command || trigger.assignee || "";
       return `- ${trigger.event}${selector ? `: ${selector}` : ""} -> ${trigger.workflow}`;
     }),
@@ -73,7 +87,7 @@ async function runConnect(args: string[], { cpbRoot }: LooseRecord = {}) {
 
   const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const { saveGithubAppConfig: save } = await import("../../server/services/github/github-api.js");
-  const hubRoot = resolveHubRoot(cpbRoot);
+  const hubRoot = resolveHubRoot(stringValue(cpbRoot));
 
   const raw: LooseRecord = {
     appId: parsed.appId,
@@ -83,7 +97,7 @@ async function runConnect(args: string[], { cpbRoot }: LooseRecord = {}) {
   if (parsed.privateKeyRef) raw.privateKeyRef = parsed.privateKeyRef;
 
   try {
-    const config = await save(hubRoot, raw) as Record<string, any>;
+    const config = recordValue(await save(hubRoot, raw));
     if (parsed.json) {
       console.log(JSON.stringify({ connected: true, config }, null, 2));
     } else {
@@ -115,7 +129,8 @@ function buildTransportSummary(transport: LooseRecord | null) {
     };
   }
   if (transport.mode === "gh") {
-    const reason = transport.diagnostics?.find((d) => d.level === "info")?.message || "fallback active";
+    const diagnostics = recordArray(transport.diagnostics);
+    const reason = diagnostics.find((d) => d.level === "info")?.message || "fallback active";
     return {
       mode: "gh",
       healthy: true,
@@ -125,7 +140,7 @@ function buildTransportSummary(transport: LooseRecord | null) {
   return {
     mode: "unavailable",
     healthy: false,
-    errors: transport.diagnostics?.map((d) => d.message) || ["Transport unavailable"],
+    errors: recordArray(transport.diagnostics).map((d) => d.message) || ["Transport unavailable"],
   };
 }
 
@@ -137,7 +152,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const execFileAsync = promisify(execFile);
-  const hubRoot = resolveHubRoot(cpbRoot);
+  const hubRoot = resolveHubRoot(stringValue(cpbRoot));
 
   const layers: LooseRecord[] = [];
   let transportResult: LooseRecord | null = null;
@@ -145,7 +160,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   // Layer 1: App config
   let config: LooseRecord | null = null;
   try {
-    config = await loadGithubAppConfig(hubRoot);
+    config = recordValue(await loadGithubAppConfig(hubRoot));
     layers.push({ id: "github-app-config", status: "ok", message: `App config: app ${config.appId} configured` });
   } catch {
     layers.push({ id: "github-app-config", status: "error", message: "App config missing or invalid", action: "Run: cpb github connect" });
@@ -157,7 +172,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
       resolveGithubWebhookSecret(config);
       layers.push({ id: "github-webhook-secret", status: "ok", message: `Webhook secret: ${config.webhookSecretRef} available` });
     } catch {
-      const envName = config.webhookSecretRef.replace("env:", "");
+      const envName = stringValue(config.webhookSecretRef).replace("env:", "");
       layers.push({ id: "github-webhook-secret", status: "error", message: `Webhook secret: ${config.webhookSecretRef} not found`, action: `Set: export ${envName}=<your-webhook-secret>` });
     }
   } else {
@@ -176,7 +191,7 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
     try {
       const { resolvePrivateKey } = await import("../../server/services/github/github-api.js");
       resolvePrivateKey(config);
-      layers.push({ id: "github-app-private-key", status: "ok", message: `Private key: ${config.privateKeyRef.split(":")[0]}:* available` });
+      layers.push({ id: "github-app-private-key", status: "ok", message: `Private key: ${stringValue(config.privateKeyRef).split(":")[0]}:* available` });
     } catch {
       layers.push({ id: "github-app-private-key", status: "error", message: `Private key: ${config.privateKeyRef} not found`, action: "Set the private key secret and retry" });
     }
@@ -187,11 +202,12 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   // Layer 5: Transport
   try {
     const transport = await resolveGithubTransport(hubRoot);
-    transportResult = transport;
-    if (transport.mode === "api") {
+    transportResult = recordValue(transport);
+    if (transportResult.mode === "api") {
       layers.push({ id: "github-transport", status: "ok", message: "Transport: api", mode: "api" });
-    } else if (transport.mode === "gh") {
-      const reason = transport.diagnostics?.find((d) => d.level === "warn" || d.level === "info")?.message || "gh CLI fallback";
+    } else if (transportResult.mode === "gh") {
+      const diagnostics = recordArray(transportResult.diagnostics);
+      const reason = diagnostics.find((d) => d.level === "warn" || d.level === "info")?.message || "gh CLI fallback";
       layers.push({ id: "github-transport", status: "ok", message: `Transport: gh (${reason})`, mode: "gh" });
     } else {
       layers.push({ id: "github-transport", status: "error", message: "Transport: unavailable", mode: "unavailable" });
@@ -203,10 +219,10 @@ async function runDoctor(args: string[], { cpbRoot }: LooseRecord = {}) {
   // Layer 6: Repo bindings
   try {
     const { listProjects } = await import("../../server/services/hub/hub-registry.js");
-    const projects = await listProjects(hubRoot);
-    const bound = projects.filter((p) => p.github?.fullName);
+    const projects = (await listProjects(hubRoot)).map(recordValue);
+    const bound = projects.filter((p) => recordValue(p.github).fullName);
     if (bound.length > 0) {
-      layers.push({ id: "github-repo-bindings", status: "ok", message: `Repo bindings: ${bound.map((p) => `${p.github.fullName} → project ${p.id}`).join(", ")}` });
+      layers.push({ id: "github-repo-bindings", status: "ok", message: `Repo bindings: ${bound.map((p) => `${recordValue(p.github).fullName} → project ${p.id}`).join(", ")}` });
     } else {
       layers.push({ id: "github-repo-bindings", status: "warn", message: "Repo bindings: none", action: "Run: cpb github bind <project> <owner/repo>" });
     }
@@ -301,7 +317,7 @@ export async function run(args: string[] = [], { cpbRoot }: LooseRecord = {}) {
 
   try {
     const { bindProjectGithub, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
-    const hubRoot = resolveHubRoot(cpbRoot);
+    const hubRoot = resolveHubRoot(stringValue(cpbRoot));
     const project = await bindProjectGithub(hubRoot, parsed.projectId, parsed.repo);
     if (!project) {
       console.error(`project not found: ${parsed.projectId}`);
@@ -309,7 +325,7 @@ export async function run(args: string[] = [], { cpbRoot }: LooseRecord = {}) {
     }
     const payload = { bound: true, hubRoot, project };
     if (parsed.json) console.log(JSON.stringify(payload, null, 2));
-    else console.log(formatBindHuman(project));
+    else console.log(formatBindHuman(recordValue(project)));
     return 0;
   } catch (error) {
     console.error((error as Error).message);

@@ -1,0 +1,20 @@
+{
+  "name": "claude-mimo",
+  "displayName": "Claude MiMo",
+  "command": "claude-agent-acp",
+  "sessionMcpServers": false,
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
+  "defaultRoles": ["verifier", "reviewer", "remediator"],
+  "stability": "stable",
+  "envPrefix": "CPB_ACP_CLAUDE_MIMO",
+  "protocol": "acp",
+  "description": "Claude Code ACP runner configured through the MiMo Anthropic-compatible variant",
+  "providerKey": "claude:mimo-v2.5pro",
+  "providerVariant": "mimo-v2.5pro",
+  "lifecycle": "one-shot",
+  "resumeCommand": "claude",
+  "resumeArgs": ["--resume"]
+}

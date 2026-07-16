@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 /**
  * Quota Delegate Client — IPC client for the quota delegate process.
  *
@@ -9,6 +10,7 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { assertHubWritable } from "../../shared/hub-maintenance.js";
 import { randomUUID } from "node:crypto";
 
 interface DelegateMarkOpts {
@@ -24,8 +26,15 @@ interface DelegateMarkOpts {
 
 interface DelegateUsageRecord {
   project?: string;
+  jobId?: string | null;
+  attemptId?: string | null;
+  taskCategory?: string | null;
   issueNumber?: number;
-  attempt?: number;
+  attempt?: unknown;
+  retryCount?: number;
+  jobRetryCount?: number;
+  phaseRetryCount?: number;
+  isRetry?: boolean;
   phase: string;
   role?: string;
   providerKey: string;
@@ -35,11 +44,12 @@ interface DelegateUsageRecord {
   providerAdapter?: string;
   status: string;
   phaseStatus: string;
+  failureKind?: string | null;
   durationMs?: number;
-  quota?: Record<string, unknown>;
-  usage?: Record<string, unknown>;
-  fallback?: Record<string, unknown>;
-  providerAttempts?: number;
+  quota?: LooseRecord;
+  usage?: LooseRecord;
+  fallback?: LooseRecord;
+  providerAttempts?: unknown[] | null;
   source?: string;
 }
 
@@ -74,7 +84,8 @@ function lockFilePath(hubRoot: string) {
 
 // ─── Command Write (per-file, atomic rename) ─────────────────────────
 
-export async function appendCommand(hubRoot: string, command: { commandId: string } & Record<string, unknown>) {
+export async function appendCommand(hubRoot: string, command: { commandId: string } & LooseRecord) {
+  await assertHubWritable(hubRoot);
   const dir = inboxDir(hubRoot);
   await mkdir(dir, { recursive: true });
   const filePath = commandFilePath(hubRoot, command.commandId);
@@ -141,6 +152,7 @@ export async function delegateMarkProviderUnavailable(hubRoot: string, opts: Del
   await appendCommand(hubRoot, command);
   const ack = await waitForAck(hubRoot, commandId, ackTimeoutMs || ACK_TIMEOUT_MS);
   if (!ack?.ok) {
+    // retain: dynamic property augmentation on Error — TS idiom for attaching `.code`; no narrower/guard applies, subclass would be over-engineering for a single use site
     const err = new Error("quota delegate unavailable; provider state not recorded") as Error & { code?: string };
     err.code = "QUOTA_DELEGATE_UNAVAILABLE";
     throw err;
@@ -154,14 +166,22 @@ export async function delegateMarkProviderUnavailable(hubRoot: string, opts: Del
  */
 export async function delegateEnqueueProviderUsage(hubRoot: string, record: DelegateUsageRecord) {
   const commandId = randomUUID();
+  const recordedAt = new Date().toISOString();
   const command = {
     commandId,
     type: "usage_write",
-    ts: new Date().toISOString(),
+    ts: recordedAt,
     record: {
       project: record.project || null,
+      jobId: record.jobId || null,
+      attemptId: record.attemptId || null,
+      taskCategory: record.taskCategory || null,
       issueNumber: record.issueNumber ?? null,
       attempt: record.attempt ?? null,
+      retryCount: record.retryCount ?? 0,
+      jobRetryCount: record.jobRetryCount ?? 0,
+      phaseRetryCount: record.phaseRetryCount ?? 0,
+      isRetry: record.isRetry === true,
       phase: record.phase,
       role: record.role || null,
       providerKey: record.providerKey,
@@ -171,12 +191,14 @@ export async function delegateEnqueueProviderUsage(hubRoot: string, record: Dele
       providerAdapter: record.providerAdapter || null,
       status: record.status,
       phaseStatus: record.phaseStatus,
+      failureKind: record.failureKind || null,
       durationMs: record.durationMs ?? null,
       quota: record.quota || null,
       usage: record.usage || null,
       fallback: record.fallback || null,
       providerAttempts: record.providerAttempts || null,
       source: record.source || null,
+      recordedAt,
     },
   };
 

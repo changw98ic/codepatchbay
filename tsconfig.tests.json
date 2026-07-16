@@ -4,7 +4,14 @@
     "outDir": "dist-tests"
   },
   "include": [
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "cli/**/*.ts",
+    "core/**/*.ts",
+    "server/**/*.ts",
+    "runtime/**/*.ts",
+    "bridges/**/*.ts",
+    "shared/**/*.ts",
+    "scripts/**/*.ts"
   ],
   "exclude": [
     "node_modules",

@@ -16,21 +16,21 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { validateEvidenceObservation } from "../core/workflow/evidence-probes.js";
 
 
 const ATTEMPT_ID = "attempt-audit-001";
 
-const AUDIT_ITEM: AnyRecord = {
+const AUDIT_ITEM: LooseRecord = {
   id: "cl-audit-1",
   verificationMethod: "audit_export",
   predicateId: "audit.section-exported",
 };
 
 test("audit_export CASE A: identity + sectionPath + attemptId + valueDigest -> satisfied", () => {
-  const entry: AnyRecord = {
+  const entry: LooseRecord = {
     exportId: "export-001",
     sectionPath: "build/reports/audit.json#sectionX",
     attemptId: ATTEMPT_ID,
@@ -42,7 +42,7 @@ test("audit_export CASE A: identity + sectionPath + attemptId + valueDigest -> s
 });
 
 test("audit_export CASE B: no valueDigest -> valid (honest), satisfied false", () => {
-  const entry: AnyRecord = {
+  const entry: LooseRecord = {
     invocationId: "inv-002",
     sectionPath: "build/reports/audit.json#sectionY",
     attemptId: ATTEMPT_ID,
@@ -54,7 +54,7 @@ test("audit_export CASE B: no valueDigest -> valid (honest), satisfied false", (
 });
 
 test("audit_export CASE C: missing sectionPath -> invalid (dropped)", () => {
-  const entry: AnyRecord = {
+  const entry: LooseRecord = {
     exportId: "export-003",
     // sectionPath intentionally absent
     attemptId: ATTEMPT_ID,
@@ -66,7 +66,7 @@ test("audit_export CASE C: missing sectionPath -> invalid (dropped)", () => {
 });
 
 test("audit_export: missing attemptId -> invalid", () => {
-  const entry: AnyRecord = {
+  const entry: LooseRecord = {
     exportId: "export-004",
     sectionPath: "build/reports/audit.json#sectionZ",
     valueDigest: "sha256:def",
@@ -77,7 +77,7 @@ test("audit_export: missing attemptId -> invalid", () => {
 });
 
 test("audit_export: identity via probeId also satisfies structural gate", () => {
-  const entry: AnyRecord = {
+  const entry: LooseRecord = {
     probeId: "probe-cl-audit-1",
     sectionPath: "build/reports/audit.json#sectionW",
     attemptId: ATTEMPT_ID,

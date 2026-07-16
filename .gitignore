@@ -17,6 +17,9 @@ server/dist/
 # CodePatchbay runtime state
 flow-task/
 cpb-task/
+.cpb-evaluations/
+logs/
+codepatchbay-*.json
 .omc/
 .omx/
 web/.omc/

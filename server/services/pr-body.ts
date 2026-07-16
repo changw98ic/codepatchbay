@@ -1,4 +1,15 @@
-type LooseRecord = Record<string, any>;
+import { recordValue, type LooseRecord } from "../../shared/types.js";
+
+type PrBodyInput = {
+  job?: LooseRecord;
+  agents?: LooseRecord;
+  artifacts?: LooseRecord;
+  tests?: unknown[];
+  verdict?: LooseRecord;
+  completionGate?: LooseRecord | null;
+  audit?: LooseRecord;
+  routingContext?: LooseRecord | null;
+};
 
 function valueOrUnavailable(value: unknown) {
   return value === null || value === undefined || value === "" ? "unavailable" : String(value);
@@ -45,7 +56,8 @@ function triageStrategyLines(rc: LooseRecord | null | undefined) {
   if (!rc?.routing) return [];
   const r = rc.routing;
   const scopes = r.protectedScopes || [];
-  const scopeNames = scopes.map((s: Record<string, unknown>) => {
+  const scopeNames = scopes.map((s) => {
+    if (typeof s === "string") return s;
     const sev = s.severity ? ` [${s.severity}]` : "";
     return `${s.scope}${sev}`;
   });
@@ -64,23 +76,25 @@ function triageStrategyLines(rc: LooseRecord | null | undefined) {
 
 function contextPackLines(rc: LooseRecord | null | undefined) {
   if (!rc?.contextPack?.path) return [];
-  const cp = rc.contextPack;
+  const cp = recordValue(rc.contextPack);
+  const files = Array.isArray(cp.files) ? cp.files : [];
   return [
     "",
     "## Context Pack",
     "",
     `- Path: ${valueOrUnavailable(cp.path)}`,
-    `- Files: ${valueOrUnavailable(cp.fileCount ?? cp.files?.length)}`,
+    `- Files: ${valueOrUnavailable(cp.fileCount ?? files.length)}`,
   ];
 }
 
 function childTaskLines(rc: LooseRecord | null | undefined) {
-  if (!rc?.childTaskIds?.length) return [];
+  const childTaskIds = Array.isArray(rc?.childTaskIds) ? rc.childTaskIds.map(String) : [];
+  if (childTaskIds.length === 0) return [];
   return [
     "",
     "## Child Tasks",
     "",
-    ...rc.childTaskIds.map((id: string) => `- ${id}`),
+    ...childTaskIds.map((id) => `- ${id}`),
   ];
 }
 
@@ -102,7 +116,7 @@ function planCacheLines(rc: LooseRecord | null | undefined) {
 function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   if (!rc?.finalDiffGuard) return [];
   const dg = rc.finalDiffGuard;
-  const scopes = (dg.protectedScopes || []).map((s: Record<string, unknown> | string) => typeof s === "string" ? s : (s.scope || s));
+  const scopes = (dg.protectedScopes || []).map((s) => typeof s === "string" ? s : (s.scope || ""));
   const gr = dg.guardResult || {};
   return [
     "",
@@ -119,23 +133,81 @@ function finalDiffGuardLines(rc: LooseRecord | null | undefined) {
   ];
 }
 
+function completionGateLines(completionGate: LooseRecord | null | undefined) {
+  if (!completionGate) return [];
+  const checklist = recordValue(completionGate.checklist || completionGate.checklistStatus);
+  const gateBlocking = Array.isArray(completionGate.blocking) ? completionGate.blocking : [];
+  const checklistBlocking = Array.isArray(checklist.blocking) ? checklist.blocking : [];
+  const gateBlockingCount = completionGate.blockingCount ?? (gateBlocking.length > 0 ? gateBlocking.length : undefined);
+  const checklistBlockingCount = checklist.blockingCount ?? (checklistBlocking.length > 0 ? checklistBlocking.length : undefined);
+  const blocking = gateBlockingCount
+    ?? checklistBlockingCount
+    ?? "unavailable";
+  return [
+    "",
+    "## Completion Gate",
+    "",
+    `- Outcome: ${valueOrUnavailable(completionGate.outcome)}`,
+    `- Reason: ${valueOrUnavailable(completionGate.reason)}`,
+    `- Checklist Status: ${valueOrUnavailable(checklist.status)}`,
+    `- Blocking: ${blocking}`,
+  ];
+}
+
+function csv(value: unknown) {
+  return Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "unavailable";
+}
+
+function countValue(value: unknown) {
+  return typeof value === "number" ? value : "unavailable";
+}
+
+function completionReportLines(report: LooseRecord | null | undefined) {
+  if (!report) return [];
+  const residualRisk = recordValue(report.residualRisk);
+  const evidenceCounts = recordValue(report.evidenceCounts);
+  return [
+    "",
+    "## Completion Report",
+    "",
+    `- Changed Files: ${countValue(report.changedFileCount)} (${csv(report.changedFiles)})`,
+    `- Real Actors: ${csv(report.realActors)}`,
+    `- Real Entrypoints: ${csv(report.realEntrypoints)}`,
+    `- Bypass Candidates: ${csv(report.bypassCandidates)}`,
+    `- Evidence Classes: ${csv(report.evidenceClasses)}`,
+    `- Evidence Origins: ${csv(report.evidenceOrigins)}`,
+    `- Commands: ${csv(report.commands)}`,
+    `- Evidence Counts: ${countValue(evidenceCounts.passed)} passed / ${countValue(evidenceCounts.failed)} failed / ${countValue(evidenceCounts.total)} total`,
+    `- Residual Risk: ${csv(residualRisk.notes)}`,
+  ];
+}
+
 export function buildCodePatchBayPrBody({
   job = {},
   agents = {},
   artifacts = {},
   tests = [],
   verdict = {},
+  completionGate = null,
   audit = {},
   routingContext = null,
-}: LooseRecord = {}) {
-  const issue = job.sourceContext?.issueNumber ? `#${job.sourceContext.issueNumber}` : "unavailable";
-  const repo = job.sourceContext?.repo || "unavailable";
-  const status = verdict.status || "unavailable";
-  const confidence = verdict.confidence ?? "unavailable";
-  const reason = verdict.reason || "unavailable";
-  const blocking = verdict.blockingCount ?? verdict.blocking?.length ?? "unavailable";
+}: PrBodyInput = {}) {
+  const sourceContext = recordValue(job.sourceContext);
+  const verdictRecord = recordValue(verdict);
+  const blockingItems = Array.isArray(verdictRecord.blocking) ? verdictRecord.blocking : [];
+  const issue = sourceContext.issueNumber ? `#${sourceContext.issueNumber}` : "unavailable";
+  const repo = sourceContext.repo || "unavailable";
+  const status = verdictRecord.status || "unavailable";
+  const confidence = verdictRecord.confidence ?? "unavailable";
+  const reason = verdictRecord.reason || "unavailable";
+  const blocking = verdictRecord.blockingCount ?? blockingItems.length ?? "unavailable";
+  const completionReportCandidate = job.completionReport || recordValue(completionGate).completionReport;
+  const completionReport = completionReportCandidate && typeof completionReportCandidate === "object" && !Array.isArray(completionReportCandidate)
+    ? recordValue(completionReportCandidate)
+    : null;
 
-  const closes = job.sourceContext?.issueNumber ? `\n\nCloses #${job.sourceContext.issueNumber}` : "";
+  const closes = sourceContext.issueNumber ? `\n\nCloses #${sourceContext.issueNumber}` : "";
+  const routing = routingContext ? recordValue(routingContext) : null;
 
   return [
     "## CodePatchBay Run",
@@ -152,15 +224,15 @@ export function buildCodePatchBayPrBody({
     "",
     "## Plan",
     "",
-    `- Plan: ${artifactRef(artifacts.plan)}`,
-    `- Deliverable: ${artifactRef(artifacts.deliverable)}`,
-    `- Review: ${artifactRef(artifacts.review)}`,
-    `- Diff: ${artifactRef(artifacts.diff)}`,
-    ...(routingContext ? routingDecisionLines(routingContext) : []),
-    ...(routingContext ? triageStrategyLines(routingContext) : []),
-    ...(routingContext?.contextPack?.path ? contextPackLines(routingContext) : []),
-    ...(routingContext?.childTaskIds?.length ? childTaskLines(routingContext) : []),
-    ...(routingContext?.planCache ? planCacheLines(routingContext) : []),
+    `- Plan: ${artifactRef(recordValue(artifacts.plan))}`,
+    `- Deliverable: ${artifactRef(recordValue(artifacts.deliverable))}`,
+    `- Review: ${artifactRef(recordValue(artifacts.review))}`,
+    `- Diff: ${artifactRef(recordValue(artifacts.diff))}`,
+    ...(routing ? routingDecisionLines(routing) : []),
+    ...(routing ? triageStrategyLines(routing) : []),
+    ...(routing && recordValue(routing.contextPack).path ? contextPackLines(routing) : []),
+    ...(routing && Array.isArray(routing.childTaskIds) && routing.childTaskIds.length ? childTaskLines(routing) : []),
+    ...(routing?.planCache ? planCacheLines(routing) : []),
     "",
     "## Tests",
     "",
@@ -172,8 +244,10 @@ export function buildCodePatchBayPrBody({
     `- Confidence: ${confidence}`,
     `- Blocking: ${blocking}`,
     `- Reason: ${reason}`,
-    `- Verdict: ${artifactRef(artifacts.verdict)}`,
-    ...(routingContext?.finalDiffGuard ? finalDiffGuardLines(routingContext) : []),
+    `- Verdict: ${artifactRef(recordValue(artifacts.verdict))}`,
+    ...completionGateLines(completionGate),
+    ...completionReportLines(completionReport),
+    ...(routing?.finalDiffGuard ? finalDiffGuardLines(routing) : []),
     "",
     "## Audit",
     "",

@@ -30,3 +30,22 @@ test("AcpClient.request registers pending response before writing to stdio", asy
 
   assert.deepEqual(result, { ok: true });
 });
+
+test("AcpClient usability rejects ended stdin before persistent reuse", () => {
+  const client = new AcpClient({
+    agent: "codex",
+    cwd: process.cwd(),
+    prompt: "",
+    env: {},
+  });
+  const stdin = {
+    writable: true,
+    writableEnded: false,
+    destroyed: false,
+  };
+  client.child = { stdin } as unknown as NonNullable<AcpClient["child"]>;
+
+  assert.equal(client.isUsable(), true);
+  stdin.writableEnded = true;
+  assert.equal(client.isUsable(), false);
+});

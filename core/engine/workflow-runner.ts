@@ -1,7 +1,7 @@
 import { defaultPlanModeForWorkflow } from "../triage/schema.js";
 import { getWorkflow, isWorkflowName } from "../workflow/definition.js";
 
-function phasesForPlanMode(phases: string[], planMode: string, workflowName: string) {
+function phasesForPlanMode(phases: string[], planMode: string, workflowName: string): string[] {
   if (workflowName === "direct" && planMode === "none") {
     return phases.filter((phase) => phase === "execute");
   }
@@ -20,7 +20,7 @@ function phasesForPlanMode(phases: string[], planMode: string, workflowName: str
   }
 }
 
-export function resolvePhases(workflow = "standard", planMode = "full") {
+export function resolvePhases(workflow = "standard", planMode = "full"): string[] {
   const workflowName = isWorkflowName(workflow) ? workflow : "standard";
   const wf = getWorkflow(workflowName);
   const resolvedPlanMode = planMode === "auto"

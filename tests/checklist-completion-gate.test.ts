@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate, completionGateEvent } from "../core/engine/completion-gate.js";
 import { materializeJob } from "../server/services/event/event-store.js";
@@ -20,7 +20,7 @@ function ts(offset = 0) {
 
 // ── Shared fixtures ─────────────────────────────────────
 
-function frozenChecklist() {
+function frozenChecklist(): LooseRecord {
   return {
     schemaVersion: 1,
     jobId: "job-1",
@@ -64,7 +64,7 @@ function passingChecklistVerdict() {
   };
 }
 
-function freshEvidenceLedger(attemptId: string = "attempt-001") {
+function freshEvidenceLedger(attemptId: string = "attempt-001"): LooseRecord {
   return {
     ledgerId: "evidence-ledger-001",
     attemptId,
@@ -134,6 +134,84 @@ test("completion gate blocks stale checklist evidence", () => {
   assert.equal(result.outcome, "evidence_stale");
 });
 
+test("completion gate blocks pass evidence that lacks required real-path metadata", () => {
+  const checklist = frozenChecklist();
+  checklist.items[0] = {
+    ...checklist.items[0],
+    requiredEvidenceClass: "real_path_probe",
+    requiredEvidenceOrigin: "independent_probe",
+    requiresRealPathEvidence: true,
+  };
+
+  const result = evaluateCompletionGate({
+    ...completeJobGate(),
+    checklist,
+    checklistVerdict: passingChecklistVerdict(),
+    evidenceLedger: freshEvidenceLedger(),
+    executionMap: cleanExecutionMap(),
+  });
+
+  assert.equal(result.outcome, "evidence_mismatch");
+});
+
+test("completion gate accepts evidence with matching class, origin, and real-path coverage", () => {
+  const checklist = frozenChecklist();
+  checklist.items[0] = {
+    ...checklist.items[0],
+    requiredEvidenceClass: "real_path_probe",
+    requiredEvidenceOrigin: "independent_probe",
+    requiresRealPathEvidence: true,
+  };
+  const ledger = freshEvidenceLedger();
+  ledger.evidence[0] = {
+    ...ledger.evidence[0],
+    evidenceClass: "real_path_probe",
+    evidenceOrigin: "independent_probe",
+    coversRealPath: true,
+    coversOnlyMinimalRepro: false,
+  };
+
+  const result = evaluateCompletionGate({
+    ...completeJobGate(),
+    checklist,
+    checklistVerdict: passingChecklistVerdict(),
+    evidenceLedger: ledger,
+    executionMap: cleanExecutionMap(),
+  });
+
+  assert.equal(result.outcome, "complete");
+});
+
+test("completion gate blocks polluted user oracle evidence before legacy verdict pass", () => {
+  const checklist = frozenChecklist();
+  checklist.items[0] = {
+    ...checklist.items[0],
+    requiredEvidenceOrigin: "user_required",
+    expectedEvidence: "node --test tests/status.acceptance.test.ts",
+  };
+  const ledger = freshEvidenceLedger();
+  ledger.evidence[0] = {
+    ...ledger.evidence[0],
+    evidenceOrigin: "user_required",
+    command: "node --test tests/status.acceptance.test.ts",
+  };
+
+  const result = evaluateCompletionGate({
+    ...completeJobGate(),
+    checklist,
+    checklistVerdict: passingChecklistVerdict(),
+    evidenceLedger: ledger,
+    executionMap: {
+      ...cleanExecutionMap(),
+      changedFiles: ["cli/commands/status.ts", "tests/status.acceptance.test.ts"],
+    },
+  });
+
+  assert.equal(result.outcome, "oracle_polluted");
+  assert.equal((result.details as LooseRecord).checklist.outcome, "oracle_polluted");
+  assert.deepEqual((result.details as LooseRecord).checklist.pollutedOracleFiles, ["tests/status.acceptance.test.ts"]);
+});
+
 test("completion gate blocks unresolved runtime failures", () => {
   const result = evaluateCompletionGate({
     ...completeJobGate(),
@@ -164,7 +242,7 @@ test("completion gate blocks unresolved runtime failures", () => {
     }],
   });
   assert.equal(result.outcome, "poisoned_session");
-  assert.equal((result.details as AnyRecord).checklist.runtimeFailureRefs[0].type, "phase_poisoned_session");
+  assert.equal((result.details as LooseRecord).checklist.runtimeFailureRefs[0].type, "phase_poisoned_session");
 });
 
 // ── Materialized state test ─────────────────────────────
@@ -194,7 +272,7 @@ test("completion gate event preserves checklist fields in materialized state", (
         unmappedChangedFiles: [],
       },
     },
-  } as AnyRecord);
+  } as LooseRecord);
   const state = materializeJob([event]);
   assert.equal(state.completionGate.attemptId, "attempt-002");
   assert.equal(state.completionGate.checklistOutcome, "checklist_failed");
@@ -230,6 +308,47 @@ test("execution-map unmapped changed files blocks completion even with passing c
     },
   });
   assert.equal(result.outcome, "scope_violation");
+});
+
+test("execution-map unmapped file covered by fresh checklist evidence does not block completion", () => {
+  const result = evaluateCompletionGate({
+    ...completeJobGate(),
+    checklist: {
+      ...frozenChecklist(),
+      items: [{
+        ...frozenChecklist().items[0],
+        verificationMethod: "static",
+        allowedFiles: ["django/db/models/expressions.py"],
+      }],
+    },
+    checklistVerdict: passingChecklistVerdict(),
+    evidenceLedger: {
+      ledgerId: "evidence-ledger-001",
+      finalWorktree: { head: "abc", diffHash: "sha256:new" },
+      evidence: [{
+        id: "EV-001",
+        type: "evidence_claim",
+        checklistId: "AC-001",
+        verificationMethod: "static",
+        predicateId: "PRED-001",
+        result: "pass",
+        queryId: "static-diff-scope:AC-001",
+        matchCount: 1,
+        allowedFiles: ["django/db/models/expressions.py"],
+        changedFilesInScope: ["django/db/models/expressions.py"],
+        worktreeHead: "abc",
+        diffHash: "sha256:new",
+      }],
+    },
+    executionMap: {
+      schemaVersion: 1,
+      mappings: [],
+      changedFiles: ["django/db/models/expressions.py"],
+      unmappedChangedFiles: ["django/db/models/expressions.py"],
+    },
+  });
+
+  assert.equal(result.outcome, "complete");
 });
 
 test("unresolved phase_poisoned_session blocks completion even with valid artifacts", () => {
@@ -350,11 +469,13 @@ test("completionGateEvent includes all checklist fields", () => {
         mismatchedEvidenceRefs: [],
         staleEvidenceRefs: [{ ledgerId: "el-001", evidenceId: "EV-001" }],
         poisonedEvidenceRefs: [],
+        pollutedEvidenceRefs: [{ ledgerId: "el-001", evidenceId: "EV-003" }],
+        pollutedOracleFiles: ["tests/status.acceptance.test.ts"],
         runtimeFailureRefs: [],
         unmappedChangedFiles: ["core/extra.ts"],
       },
     },
-  } as AnyRecord);
+  } as LooseRecord);
 
   assert.equal(event.type, "completion_gate_evaluated");
   assert.equal(event.jobId, "job-1");
@@ -363,6 +484,9 @@ test("completionGateEvent includes all checklist fields", () => {
   assert.equal(event.attemptId, "attempt-003");
   assert.equal(event.checklistOutcome, "evidence_stale");
   assert.deepEqual(event.staleEvidenceRefs, [{ ledgerId: "el-001", evidenceId: "EV-001" }]);
+  assert.deepEqual(event.pollutedEvidenceRefs, [{ ledgerId: "el-001", evidenceId: "EV-003" }]);
+  assert.deepEqual(event.pollutedOracleFiles, ["tests/status.acceptance.test.ts"]);
+  assert.equal(event.pollutedOracleFileCount, 1);
   assert.deepEqual(event.unmappedChangedFiles, ["core/extra.ts"]);
   assert.equal(event.unmappedChangedFileCount, 1);
   assert.equal(event.runtimeFailureCount, 0);
@@ -373,11 +497,14 @@ test("completionGateEvent handles missing checklist details gracefully", () => {
     outcome: "complete",
     reason: "all gates passed",
     missingGates: [],
-  } as AnyRecord);
+  } as LooseRecord);
 
   assert.equal(event.checklistOutcome, null);
   assert.deepEqual(event.failedChecklistIds, []);
   assert.deepEqual(event.staleEvidenceRefs, []);
+  assert.deepEqual(event.pollutedEvidenceRefs, []);
+  assert.deepEqual(event.pollutedOracleFiles, []);
+  assert.equal(event.pollutedOracleFileCount, 0);
   assert.equal(event.runtimeFailureCount, 0);
   assert.equal(event.unmappedChangedFileCount, 0);
 });
@@ -400,6 +527,10 @@ test("completion_gate_evaluated reducer preserves all checklist fields", () => {
     mismatchedEvidenceRefs: [],
     staleEvidenceRefs: [{ ledgerId: "el-001", evidenceId: "EV-002" }],
     poisonedEvidenceRefs: [],
+    pollutedEvidenceRefs: [{ ledgerId: "el-001", evidenceId: "EV-003" }],
+    pollutedOracleFiles: ["tests/status.acceptance.test.ts"],
+    pollutedOracleFileCount: 1,
+    completionReport: { schemaVersion: 1, changedFiles: ["README.md"] },
     runtimeFailureRefs: [],
     runtimeFailureCount: 0,
     unmappedChangedFiles: [],
@@ -415,6 +546,11 @@ test("completion_gate_evaluated reducer preserves all checklist fields", () => {
   assert.deepEqual(state.completionGate.uncheckedChecklistIds, ["AC-002"]);
   assert.deepEqual(state.completionGate.missingEvidenceRefs, [{ ledgerId: "el-001", evidenceId: "EV-001" }]);
   assert.deepEqual(state.completionGate.staleEvidenceRefs, [{ ledgerId: "el-001", evidenceId: "EV-002" }]);
+  assert.deepEqual(state.completionGate.pollutedEvidenceRefs, [{ ledgerId: "el-001", evidenceId: "EV-003" }]);
+  assert.deepEqual(state.completionGate.pollutedOracleFiles, ["tests/status.acceptance.test.ts"]);
+  assert.equal(state.completionGate.pollutedOracleFileCount, 1);
+  assert.deepEqual(state.completionGate.completionReport, { schemaVersion: 1, changedFiles: ["README.md"] });
+  assert.deepEqual(state.completionReport, { schemaVersion: 1, changedFiles: ["README.md"] });
   assert.equal(state.completionGate.runtimeFailureCount, 0);
   assert.equal(state.completionGate.unmappedChangedFileCount, 0);
 });

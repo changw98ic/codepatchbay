@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { LooseRecord } from "../../shared/types.js";
 // cpb-mcp-server.ts — MCP server exposing CPB tools to Claude Code
 // Run with: CPB_ROOT=/path/to/codepatchbay node skills/claude-code/cpb-mcp-server.ts
 
@@ -34,7 +35,7 @@ interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: number | string;
   method: string;
-  params?: Record<string, any>;
+  params?: LooseRecord;
 }
 
 interface JsonRpcResponse {
@@ -153,7 +154,7 @@ const TOOLS = [
 
 // ── Tool handlers ──────────────────────────────────────────────────────────
 
-async function handleCpbPipeline(params: Record<string, any>) {
+async function handleCpbPipeline(params: LooseRecord) {
   const hubRoot = resolveHubRoot(CPB_ROOT);
   const entry = await enqueue(hubRoot, {
     projectId: params.project,
@@ -175,7 +176,7 @@ async function handleCpbPipeline(params: Record<string, any>) {
   };
 }
 
-async function handleCpbStatus(params: Record<string, any>) {
+async function handleCpbStatus(params: LooseRecord) {
   const events = await readEvents(CPB_ROOT, params.project, params.jobId);
   if (!events || events.length === 0) {
     return {
@@ -188,7 +189,7 @@ async function handleCpbStatus(params: Record<string, any>) {
   };
 }
 
-async function handleCpbList(params: Record<string, any>) {
+async function handleCpbList(params: LooseRecord) {
   const hubRoot = resolveHubRoot(CPB_ROOT);
   const projects = await listProjects(hubRoot, {
     enabledOnly: params.enabledOnly || false,
@@ -198,7 +199,7 @@ async function handleCpbList(params: Record<string, any>) {
   };
 }
 
-async function handleCpbStreamSubscribe(params: Record<string, any>) {
+async function handleCpbStreamSubscribe(params: LooseRecord) {
   const host = process.env.CPB_STREAM_HOST || "127.0.0.1";
   const port = process.env.CPB_STREAM_PORT || "9741";
   const limit = params.limit || 20;
@@ -218,14 +219,14 @@ async function handleCpbStreamSubscribe(params: Record<string, any>) {
     return {
       content: [{ type: "text", text: JSON.stringify(filtered.slice(0, limit), null, 2) }],
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: err.message, hint: "Start with `cpb stream --port 9741`" }) }],
     };
   }
 }
 
-async function handleCpbWikiRead(params: Record<string, any>) {
+async function handleCpbWikiRead(params: LooseRecord) {
   const hubRoot = resolveHubRoot(CPB_ROOT);
   const proj = await getProject(hubRoot, params.project);
   if (!proj || !proj.sourcePath) {
@@ -244,14 +245,14 @@ async function handleCpbWikiRead(params: Record<string, any>) {
   try {
     const content = await readFile(filePath, "utf8");
     return { content: [{ type: "text", text: content }] };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: err.message, path: params.path }) }],
     };
   }
 }
 
-async function handleCpbWikiList(params: Record<string, any>) {
+async function handleCpbWikiList(params: LooseRecord) {
   const hubRoot = resolveHubRoot(CPB_ROOT);
   const proj = await getProject(hubRoot, params.project);
   if (!proj || !proj.sourcePath) {
@@ -273,7 +274,7 @@ async function handleCpbWikiList(params: Record<string, any>) {
       type: e.isDirectory() ? "directory" : "file",
     }));
     return { content: [{ type: "text", text: JSON.stringify(files, null, 2) }] };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: err.message }) }],
     };

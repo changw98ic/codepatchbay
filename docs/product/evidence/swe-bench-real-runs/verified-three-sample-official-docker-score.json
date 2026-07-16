@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified-official-docker-score-batch",
+  "scoredAt": "2026-06-25T01:38:09Z",
+  "harness": {
+    "package": "swebench",
+    "version": "4.1.0",
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "maxWorkers": 1,
+    "timeoutSeconds": 1800,
+    "forceRebuild": false,
+    "cacheLevel": "instance",
+    "clean": false,
+    "environmentWorkaround": "HOME=/tmp/cpb-empty-home DOCKER_CONFIG=/tmp/cpb-empty-docker-config was required because the default Docker Desktop credsStore=desktop helper hung during Python SDK image pulls."
+  },
+  "summary": {
+    "instancesSubmitted": 3,
+    "instancesCompleted": 3,
+    "instancesResolved": 3,
+    "instancesUnresolved": 0,
+    "instancesWithErrors": 0,
+    "resolutionRate": "3/3"
+  },
+  "samples": [
+    {
+      "instanceId": "django__django-13128",
+      "repository": "django/django",
+      "baseCommit": "2d67222472f80f251607ae1b720527afceba06ad",
+      "dockerImage": "swebench/sweb.eval.x86_64.django_1776_django-13128:latest",
+      "runId": "cpb-django-13128-20260625-emptyhome",
+      "modelNameOrPath": "codepatchbay-codex-real-run",
+      "patchSha256": "d2581419dadca357d4ff93deeda33d643fbe2840084266e6eca357d90485a8dd",
+      "result": {
+        "resolved": true,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 7,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 134,
+          "failure": 0
+        },
+        "testOutputSummary": "Ran 143 tests in 0.193s; OK (skipped=2)."
+      },
+      "artifacts": {
+        "prediction": "/tmp/cpb-swebench-score-django-13128/prediction.jsonl",
+        "patch": "/tmp/cpb-swebench-score-django-13128/model.patch",
+        "finalReport": "/tmp/cpb-swebench-score-django-13128/codepatchbay-codex-real-run.cpb-django-13128-20260625-emptyhome.json",
+        "runInstanceLog": "/tmp/cpb-swebench-score-django-13128/logs/run_evaluation/cpb-django-13128-20260625-emptyhome/codepatchbay-codex-real-run/django__django-13128/run_instance.log",
+        "testOutput": "/tmp/cpb-swebench-score-django-13128/logs/run_evaluation/cpb-django-13128-20260625-emptyhome/codepatchbay-codex-real-run/django__django-13128/test_output.txt"
+      }
+    },
+    {
+      "instanceId": "matplotlib__matplotlib-13989",
+      "repository": "matplotlib/matplotlib",
+      "baseCommit": "a3e2897bfaf9eaac1d6649da535c4e721c89fa69",
+      "dockerImage": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-13989:latest",
+      "runId": "cpb-matplotlib-13989-20260625-sourceonly",
+      "modelNameOrPath": "codepatchbay-codex-real-run-source-only",
+      "patchSha256": "9f2afbdf81ab1ccbfd87384546a7302b462d212c2f9632564d5d8920d0d5c2ce",
+      "result": {
+        "resolved": true,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 411,
+          "failure": 0
+        },
+        "testOutputSummary": "Official SWE-bench report marks the instance resolved. Full test_output also includes non-scored image-test failures outside FAIL_TO_PASS/PASS_TO_PASS."
+      },
+      "notes": [
+        "The CPB local real run touched lib/matplotlib/tests/test_axes.py while working around local verification constraints. Official scoring used a source-only patch that changes only lib/matplotlib/axes/_axes.py.",
+        "The source-only patch is the artifact represented by this score."
+      ],
+      "artifacts": {
+        "prediction": "/tmp/cpb-swebench-score-batch-verified/matplotlib-13989-prediction.jsonl",
+        "patch": "/tmp/cpb-swebench-score-batch-verified/matplotlib-13989-source.patch",
+        "finalReport": "/tmp/cpb-swebench-score-batch-verified/codepatchbay-codex-real-run-source-only.cpb-matplotlib-13989-20260625-sourceonly.json",
+        "runInstanceLog": "/tmp/cpb-swebench-score-batch-verified/logs/run_evaluation/cpb-matplotlib-13989-20260625-sourceonly/codepatchbay-codex-real-run-source-only/matplotlib__matplotlib-13989/run_instance.log",
+        "testOutput": "/tmp/cpb-swebench-score-batch-verified/logs/run_evaluation/cpb-matplotlib-13989-20260625-sourceonly/codepatchbay-codex-real-run-source-only/matplotlib__matplotlib-13989/test_output.txt"
+      }
+    },
+    {
+      "instanceId": "pallets__flask-5014",
+      "repository": "pallets/flask",
+      "baseCommit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d",
+      "dockerImage": "swebench/sweb.eval.x86_64.pallets_1776_flask-5014:latest",
+      "runId": "cpb-flask-5014-20260625-sourceonly",
+      "modelNameOrPath": "codepatchbay-codex-real-run-source-only",
+      "patchSha256": "50f83500d9b5037b231c16df7237bea2c19a089ee2fdc3b9d27dec2fc9803cb9",
+      "result": {
+        "resolved": true,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 59,
+          "failure": 0
+        },
+        "testOutputSummary": "60 passed in 0.43s."
+      },
+      "artifacts": {
+        "prediction": "/tmp/cpb-swebench-score-batch-verified/flask-5014-prediction.jsonl",
+        "patch": "/tmp/cpb-swebench-score-batch-verified/flask-5014-source.patch",
+        "finalReport": "/tmp/cpb-swebench-score-batch-verified/codepatchbay-codex-real-run-source-only.cpb-flask-5014-20260625-sourceonly.json",
+        "runInstanceLog": "/tmp/cpb-swebench-score-batch-verified/logs/run_evaluation/cpb-flask-5014-20260625-sourceonly/codepatchbay-codex-real-run-source-only/pallets__flask-5014/run_instance.log",
+        "testOutput": "/tmp/cpb-swebench-score-batch-verified/logs/run_evaluation/cpb-flask-5014-20260625-sourceonly/codepatchbay-codex-real-run-source-only/pallets__flask-5014/test_output.txt"
+      }
+    }
+  ]
+}

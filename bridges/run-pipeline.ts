@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { LooseRecord } from "../core/contracts/types.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { resolveProjectDataRoot } from "../server/services/runtime.js";
@@ -35,12 +36,70 @@ import {
 } from "../server/services/dispatch/dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
 import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/setup.js";
+import { BoundedOutput, subprocessOutputMaxBytes } from "../shared/bounded-output.js";
+
+type ParsedArgs = {
+  project: string;
+  task: string;
+  maxRetries: number;
+  timeoutMin: number;
+  workflow: string;
+  jobIdOverride: string | null;
+  dispatchId: string | null;
+  sourcePath: string | null;
+};
+
+type FailureOptions = {
+  code?: string;
+  phase?: string;
+  cause?: unknown;
+  retryable?: boolean;
+};
+
+type FailureRecord = LooseRecord & {
+  reason: string;
+  code?: string;
+  phase?: string;
+  cause?: unknown;
+  retryable?: boolean;
+};
+
+type FailureSummary = {
+  phase?: string;
+  reason?: string;
+  deliverableId?: string | null;
+  verdictFile?: string | null;
+};
+
+type CommandOptions = {
+  signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
+};
+
+type CommandResult = {
+  exitCode: number;
+  stdout: string;
+  outputTruncated?: boolean;
+  childPid: number | null;
+  signal?: NodeJS.Signals | null;
+  error?: unknown;
+};
+
+type WikiBoundaryOptions = {
+  dataRoot?: string | null;
+};
+
+type CompletePhaseDetails = {
+  phase?: string;
+  artifact?: string;
+  ts?: string;
+};
 
 // ─── CLI arg parsing ───
 
-function parseArgs(argv: string[]) {
+function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
-  const options = new Map();
+  const options = new Map<string, string>();
 
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
@@ -66,13 +125,14 @@ function parseArgs(argv: string[]) {
     throw new Error(`Invalid project name: '${project}' (alphanumeric + hyphens only)`);
   }
 
-  const maxRetries = Math.max(1, parseInt(options.get("--max-retries") || "3", 10) || 3);
-  const timeoutMin = Math.max(0, parseInt(options.get("--timeout-min") || "0", 10) || 0);
-  const workflow = options.get("--workflow") || "standard";
+  const maxRetries = Math.max(1, parseInt(options.get("--max-retries") ?? "3", 10) || 3);
+  const timeoutMin = Math.max(0, parseInt(options.get("--timeout-min") ?? "0", 10) || 0);
+  const workflow = options.get("--workflow") ?? "standard";
 
-  const jobIdOverride = options.get("--job-id") || null;
-  const dispatchId = options.get("--dispatch-id") || null;
-  const sourcePath = options.get("--source-path") ? path.resolve(options.get("--source-path")) : null;
+  const jobIdOverride = options.get("--job-id") ?? null;
+  const dispatchId = options.get("--dispatch-id") ?? null;
+  const sourcePathOption = options.get("--source-path");
+  const sourcePath = sourcePathOption ? path.resolve(sourcePathOption) : null;
 
   return { project, task, maxRetries, timeoutMin, workflow, jobIdOverride, dispatchId, sourcePath };
 }
@@ -105,7 +165,7 @@ function warn(msg: string) {
   console.log(`${YELLOW}[WARN]${NC} ${msg}`);
 }
 
-function failure(reason: string, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: Record<string, unknown> = {}): Record<string, unknown> {
+function failure(reason: string, { code = FAILURE_CODES.FATAL, phase, cause, retryable }: FailureOptions = {}): FailureRecord {
   return {
     reason,
     code,
@@ -136,7 +196,7 @@ export async function canonicalSourcePath(sourcePath: string) {
   return canonical;
 }
 
-function printFailureSummary(cpbRoot: string, project: string, jobId: string, { phase, reason, deliverableId, verdictFile }: Record<string, any>) {
+function printFailureSummary(cpbRoot: string, project: string, jobId: string, { phase, reason, deliverableId, verdictFile }: FailureSummary) {
   console.log("");
   console.log(`${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}`);
   console.log(`${RED}  PIPELINE FAILED${NC}`);
@@ -204,13 +264,13 @@ function killChildProcess(proc: import("node:child_process").ChildProcess & { de
   }, 2_000).unref?.();
 }
 
-function runCommand(command: string, commandArgs: string[], cwd: string, options: Record<string, any> = {}): Promise<Record<string, any>> {
+function runCommand(command: string, commandArgs: string[], cwd: string, options: CommandOptions = {}): Promise<CommandResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks: Buffer[] = [];
+    const stdout = new BoundedOutput(subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES));
     const detached = Boolean(options.signal) && process.platform !== "win32";
 
-    function finish(result: Record<string, any>) {
+    function finish(result: CommandResult) {
       if (settled) return;
       settled = true;
       if (options.signal && proc) {
@@ -244,29 +304,25 @@ function runCommand(command: string, commandArgs: string[], cwd: string, options
     }
 
     proc.stdout.on("data", (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
+      stdout.append(chunk);
       process.stdout.write(chunk);
     });
     proc.stderr.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
     });
     proc.on("error", (err: Error) => {
-      finish({ exitCode: 1, stdout: combineChunks(stdoutChunks), childPid, error: err });
+      finish({ exitCode: 1, stdout: stdout.toString(), outputTruncated: stdout.truncated, childPid, error: err });
     });
     proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       finish({
         exitCode: code ?? 1,
-        stdout: combineChunks(stdoutChunks),
+        stdout: stdout.toString(),
+        outputTruncated: stdout.truncated,
         childPid,
         signal,
       });
     });
   });
-}
-
-function combineChunks(chunks: Buffer[]) {
-  if (chunks.length === 0) return "";
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function writeIfMissing(filePath: string, content: string) {
@@ -277,10 +333,10 @@ async function writeIfMissing(filePath: string, content: string) {
   }
 }
 
-async function readJsonObject(filePath: string) {
+async function readJsonObject(filePath: string): Promise<LooseRecord> {
   try {
     const parsed = JSON.parse(await readFile(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as LooseRecord : {};
   } catch {
     return {};
   }
@@ -313,7 +369,7 @@ async function assertHubProjectBoundary(cpbRoot: string, project: string, source
   }
 }
 
-export async function ensureWikiProjectBoundary(cpbRoot: string, project: string, sourcePath: string, { dataRoot = null }: Record<string, any> = {}) {
+export async function ensureWikiProjectBoundary(cpbRoot: string, project: string, sourcePath: string, { dataRoot = null }: WikiBoundaryOptions = {}) {
   if (!sourcePath) return;
   const wikiDir = dataRoot
     ? path.join(path.resolve(dataRoot), "wiki")
@@ -322,10 +378,11 @@ export async function ensureWikiProjectBoundary(cpbRoot: string, project: string
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   const projectJsonPath = path.join(wikiDir, "project.json");
   const existing = await readJsonObject(projectJsonPath);
-  if (existing.sourcePath) {
+  const existingSourcePathValue = typeof existing.sourcePath === "string" ? existing.sourcePath : null;
+  if (existingSourcePathValue) {
     let existingSourcePath = null;
     try {
-      existingSourcePath = await canonicalSourcePath(existing.sourcePath);
+      existingSourcePath = await canonicalSourcePath(existingSourcePathValue);
     } catch (err) {
       if (!sourcePathRebindAllowed()) {
         throw new Error(
@@ -342,7 +399,7 @@ export async function ensureWikiProjectBoundary(cpbRoot: string, project: string
   await assertHubProjectBoundary(cpbRoot, project, sourcePath);
   await writeFile(
     projectJsonPath,
-    `${JSON.stringify({ ...existing, name: existing.name || project, sourcePath }, null, 2)}\n`,
+    `${JSON.stringify({ ...existing, name: typeof existing.name === "string" ? existing.name : project, sourcePath }, null, 2)}\n`,
     "utf8",
   );
   await writeIfMissing(
@@ -452,7 +509,7 @@ async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, projec
   return created;
 }
 
-async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<{ cancelled: boolean; redirect: Record<string, unknown> | null }> {
+async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: string, phase: string, dataRoot: string): Promise<{ cancelled: boolean; redirect: LooseRecord | null }> {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
   if (job.cancelRequested) {
     await cancelJob(cpbRoot, project, jobId, { reason: job.cancelReason ?? `cancelled before ${phase}`, dataRoot });
@@ -469,7 +526,7 @@ async function checkCancelAndRedirect(cpbRoot: string, project: string, jobId: s
 // ─── Main pipeline ───
 
 async function main() {
-  let parsed;
+  let parsed: ParsedArgs;
   try {
     parsed = parseArgs(process.argv);
   } catch (err) {
@@ -485,7 +542,7 @@ async function main() {
   process.env.CPB_ROOT = cpbRoot;
   process.env.CPB_EXECUTOR_ROOT = executorRoot;
   const hubRoot = resolveHubRoot(cpbRoot);
-  let dataRoot;
+  let dataRoot: string;
   try {
     dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
       hubRoot,
@@ -538,7 +595,7 @@ async function main() {
 
   // Timeout support: set a flag via setTimeout
   let timedOut = false;
-  let watchdogTimer = null;
+  let watchdogTimer: NodeJS.Timeout | null = null;
 
   if (timeoutMin > 0) {
     watchdogTimer = setTimeout(() => {
@@ -566,8 +623,8 @@ async function main() {
     dataRoot,
   });
   const jobId = job.jobId;
-  const failCurrentJob = (details: Record<string, any>) => failJob(cpbRoot, project, jobId, { ...details, dataRoot });
-  const completeCurrentPhase = (details: Record<string, any>) => completePhase(cpbRoot, project, jobId, { ...details, dataRoot });
+  const failCurrentJob = (details: FailureRecord) => failJob(cpbRoot, project, jobId, { ...details, dataRoot });
+  const completeCurrentPhase = (details: CompletePhaseDetails) => completePhase(cpbRoot, project, jobId, { ...details, dataRoot });
   const completeCurrentJob = () => completeJob(cpbRoot, project, jobId, { dataRoot });
   const checkCurrentCancelAndRedirect = (phase: string) => checkCancelAndRedirect(cpbRoot, project, jobId, phase, dataRoot);
 

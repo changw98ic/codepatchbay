@@ -203,6 +203,7 @@ GET  /jobs            # job 列表 JSON
 
 ## 注意事项
 
+- **代码探索优先 codegraph**：符号查找、调用链、架构理解、where-is 先用 codegraph MCP 工具（`codegraph_context` / `codegraph_search` / `codegraph_node` / `codegraph_callers` / `codegraph_trace` / `codegraph_impact`），项目已 indexed（335 文件 / 6729 nodes / 15553 edges）。`grep` + `Read` 只补 codegraph 没覆盖的具体细节——不要用 grep+read loop 重复 codegraph 已做的索引工作（慢且漏跨文件关系）。**改代码前先 codegraph 查符号定义、callers、调用路径**。本次会话曾因全程 grep 漏掉 PhaseResult 8 套碎片化定义、文档引用漂移，代价不该重复。
 - 项目名只允许 `[a-zA-Z0-9-]`，通过 `require_safe_name` 校验
 - **领域核心入口是 `core/engine/run-job.ts`**（不是 server/）—— server/engine-runner 只是注入 ctx 的桥
 - `core/` 严禁 import `server/`（分层不变量，注释中声明）

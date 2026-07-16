@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import {
   mergeRoutePolicy,
   normalizeActorTrust,
@@ -78,16 +79,20 @@ const PROTECTED_RULES = [
   },
 ];
 
-function normalizeLabels(labels: unknown[] = []) {
+function hasName(value: unknown): value is { name: unknown } {
+  return typeof value === "object" && value !== null && "name" in value;
+}
+
+function normalizeLabels(labels: unknown = []) {
   return Array.isArray(labels)
     ? labels
-      .map((label) => (typeof label === "string" ? label : (label as Record<string, unknown>)?.name))
+      .map((label) => (typeof label === "string" ? label : hasName(label) ? label.name : undefined))
       .filter(Boolean)
       .map((label) => String(label).trim().toLowerCase())
     : [];
 }
 
-function textInput(input: Record<string, any> = {}) {
+function textInput(input: LooseRecord = {}) {
   return [
     ...normalizeLabels(input.labels),
     input.title,
@@ -97,7 +102,7 @@ function textInput(input: Record<string, any> = {}) {
   ].filter(Boolean).join(" ");
 }
 
-function includesLabel(labels: unknown[], expected: string) {
+function includesLabel(labels: unknown, expected: string) {
   return normalizeLabels(labels).includes(expected);
 }
 
@@ -109,14 +114,14 @@ function isComplexImplementationTask(text: string) {
   return matchesAny(text, IMPLEMENTATION_VERBS) && matchesAny(text, COMPLEX_IMPLEMENTATION_OBJECTS);
 }
 
-function changedFiles(input: Record<string, any> = {}) {
+function changedFiles(input: LooseRecord = {}) {
   if (Array.isArray(input.changedFiles)) return input.changedFiles;
   if (Array.isArray(input.files)) return input.files;
   if (Array.isArray(input.paths)) return input.paths;
   return [];
 }
 
-export function detectProtectedScopes(input: Record<string, any> = {}) {
+export function detectProtectedScopes(input: LooseRecord = {}) {
   const text = textInput(input);
   const files = changedFiles(input).map((file) => String(file || ""));
   const scopes = [];
@@ -136,7 +141,7 @@ export function detectProtectedScopes(input: Record<string, any> = {}) {
   return normalizeProtectedScopes(scopes);
 }
 
-export function actualDiffRiskGuard(input: Record<string, any> = {}) {
+export function actualDiffRiskGuard(input: LooseRecord = {}) {
   const files = changedFiles(input);
   const protectedScopes = detectProtectedScopes({ files });
   return {
@@ -151,7 +156,8 @@ export function actualDiffRiskGuard(input: Record<string, any> = {}) {
   };
 }
 
-export function classifyIssueRules(input: Record<string, any> = {}) {
+export function classifyIssueRules(input: LooseRecord = {}) {
+  const requestedRoute = recordValue(input.requestedRoute);
   const labels = normalizeLabels(input.labels);
   const text = textInput(input);
   const reasons = [];
@@ -198,9 +204,9 @@ export function classifyIssueRules(input: Record<string, any> = {}) {
 
   return {
     ruleRoute: normalizeRoute(route),
-    requestedRoute: normalizeRoute(input.requestedRoute || route, {
+    requestedRoute: normalizeRoute(requestedRoute || route, {
       ...route,
-      source: input.requestedRoute?.source || route.source,
+      source: requestedRoute.source || route.source,
     }),
     protectedScopes: normalizeProtectedScopes([
       ...protectedScopes,
@@ -212,11 +218,11 @@ export function classifyIssueRules(input: Record<string, any> = {}) {
   };
 }
 
-export function triageByRules(input: Record<string, any> = {}) {
-  const rules = classifyIssueRules(input) as Record<string, unknown>;
+export function triageByRules(input: LooseRecord = {}) {
+  const rules = classifyIssueRules(input);
   return mergeRoutePolicy({
     ...rules,
-    requestedRoute: input.requestedRoute || rules.requestedRoute,
-    reasons: rules.reasons as string[],
+    requestedRoute: recordValue(input.requestedRoute) || rules.requestedRoute,
+    reasons: rules.reasons,
   });
 }

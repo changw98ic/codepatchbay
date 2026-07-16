@@ -12,6 +12,18 @@ Issue / 任务 → CodePatchBay Runtime → coding agents → 有证据的可审
 
 CodePatchBay 不替代 Claude Code、Codex 或其他 coding agents。它管理 agent 之间的交接、状态、证据和产物。
 
+## 当前稳定化周期
+
+CodePatchBay 当前冻结横向能力扩张，优先清偿执行内核和发布门稳定性。稳定化周期内不新增 agent 类型、workflow 类别、scheduler 特性或 provider 集成；优先完成：
+
+- 执行内核的恢复边界、事件顺序和 provider handoff 安全拆分
+- 生产默认 checklist decomposition 合约测试和 worker 路径 E2E
+- managed-worker / ACP 隔离证据
+- 默认无外部副作用的 GitHub draft PR dry-run finalizer
+- `core/engine` 类型门禁和 broad-any 债务守卫
+
+发布级完成标准记录在 `docs/product/cpb-stabilization-baseline-2026-06-22.md` 和 `docs/product/cpb-flagship-validation-gate.md`；后续 PR 必须说明是否触及这些门禁，并在相关变更中运行 `npm run verify:release-gate`。
+
 ## 为什么需要交付运行时
 
 Coding agents 擅长写代码，但真实工程交付不只是代码生成。一个可审查的编码工作流还需要：
@@ -107,7 +119,83 @@ cpb github doctor                # 验证通信正常
 cpb hub start                    # 启动 Hub 调度器
 ```
 
-给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 创建草稿 PR。
+Hub 默认只监听回环地址，但回环地址也不是身份边界：启动时必须配置至少 32 字节的
+`CPB_HUB_BEARER_TOKEN`、`CPB_HUB_SERVICE_TOKENS_FILE` 或 `CPB_HUB_OIDC_CONFIG_FILE`。
+仅本地开发可显式设置 `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`；该模式只接受回环绑定，且 readiness 不会判定为商用就绪。
+若设置非回环 `CPB_HOST`，
+并应绑定回环地址、在 TLS 反向代理之后部署。只有明确位于受保护网络时，才可同时设置
+`CPB_HUB_ALLOW_INSECURE_HTTP=1` 允许非回环明文 HTTP。GitHub 评论触发的
+`/cpb run` 只接受仓库 `OWNER`、`MEMBER` 或 `COLLABORATOR`。
+
+企业部署可设置绝对路径 `CPB_HUB_SERVICE_TOKENS_FILE`，使用只保存 SHA-256 的具名服务令牌，
+并按 `hub:health`、`hub:read`、`hub:admin` scope 和项目白名单授权。旧
+`CPB_HUB_BEARER_TOKEN` 继续作为全局 `legacy-admin` 兼容凭证。权限文件必须是非符号链接的私有文件
+（POSIX 下不得向组或其他用户开放，例如 `0600`）。通过原子替换该文件可在下一次请求时热加载撤销、轮换和
+授权变更，无需重启；文件缺失、损坏或不安全时请求会以 `503 HUB_AUTH_CONFIGURATION_UNAVAILABLE`
+失败关闭，修复后自动恢复。完整格式、错误合同和轮换说明见
+[`docs/security/cpb-hub-service-tokens.md`](docs/security/cpb-hub-service-tokens.md)。
+
+企业 IdP 可通过私有 `CPB_HUB_OIDC_CONFIG_FILE` 接入 RFC 9068 JWT access token。Hub 严格校验
+`typ`、算法、issuer、audience、有效期和 JWKS 签名，再用本地 group→scope/project 规则授权；OIDC
+ID Token、opaque token 和未映射组不会获得 API 权限。JWKS 支持有界缓存、并发去重和受限的未知 `kid`
+刷新，过期后 IdP 不可用时以 `503 HUB_IDENTITY_PROVIDER_UNAVAILABLE` 失败关闭。完整配置、轮换和限制见
+[`docs/security/cpb-hub-oidc.md`](docs/security/cpb-hub-oidc.md)。
+
+Hub 会在响应前把请求 ID、主体、路径（不含 query）、状态、scope 判定和错误码写入持久 SHA-256
+hash-chain 访问审计；写入或完整性检查失败时请求返回 `503 HUB_ACCESS_AUDIT_UNAVAILABLE`，不会静默漏记。
+日志默认上限 256 MiB，`cpb doctor` 会提前告警，也可用 `cpb hub verify-access-audit` 离线验证。
+容量接近上限时可在停止 Hub 后运行 `cpb hub archive-access-audit --output PATH`；归档先完整发布再重置
+活动日志，使用持久 journal 自动恢复中断事务，生产环境可用
+`CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY` 添加 HMAC-SHA256 签名。
+该本地链不能替代独立 SIEM/WORM，信任边界和保留要求见
+[`docs/security/cpb-hub-access-audit.md`](docs/security/cpb-hub-access-audit.md)。
+
+项目注册表的所有生产写路径使用带单调 `revision` 的跨进程事务；陈旧快照返回
+`HUB_REGISTRY_CONFLICT`，不会覆盖其他进程已经提交的状态。默认本地文件模式使用所有权 token、续租、
+死进程恢复和提交前所有权复核，保证范围限于同一主机。需要跨主机共享注册表时，可配置私有
+`CPB_HUB_STATE_REDIS_CONFIG_FILE`，通过 Redis 原子 CAS 拒绝恢复后的旧 writer；leader lease、单调 epoch
+、队列、assignment、worker registry 与 worker inbox 也存入同一个 Redis hash；leader 写入会在存储层
+校验 fence，worker inbox 通过一次性 claim token 原子认领。远程连接强制
+`rediss://`，Hub 启动和 `cpb doctor` 都会执行有界预检。凭据可在同一 endpoint/database/key 上轮换，
+切换后端身份必须先停止全部控制面进程。lease、job 和审计状态仍没有完整分布式事务，
+`cpb doctor` 会继续报告 `activeActiveSafe: false`，因此还不能运行多个 active scheduler。部署、迁移、备份和
+拓扑限制见 [`docs/security/cpb-hub-redis-state.md`](docs/security/cpb-hub-redis-state.md)，本地事务细节见
+[`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md)。
+
+默认模式下 Hub 与所有注册项目的运行状态都位于 Hub 根目录内。配置 Redis 注册表后，该注册表位于
+外部服务，当前 Hub 备份不会包含它，必须使用 Redis 自身的备份恢复并核对 revision 和项目集合。
+文件系统备份和恢复必须离线执行；快照包含
+SHA-256 清单，恢复前会完整校验，覆盖已有状态必须显式使用 `--force`，原目录会保留为
+`*.pre-restore-*` 回滚副本：
+
+```bash
+cpb hub stop
+cpb hub backup --output /secure/backups/cpb-2026-07-11
+cpb hub verify-backup --input /secure/backups/cpb-2026-07-11
+cpb hub restore --input /secure/backups/cpb-2026-07-11 --force
+cpb hub recover-restore       # 检查并恢复被中断的恢复事务
+```
+
+备份默认要求至少 32 字节、无空白字符的 `CPB_HUB_BACKUP_SIGNING_KEY`，并自动写入
+HMAC-SHA256 签名；校验和恢复默认拒绝未签名快照。只有本地开发兼容场景可显式使用
+`--allow-unsigned-dev` 创建、校验或恢复未签名快照。签名密钥必须与
+快照分开保管，并纳入企业密钥轮换和灾备恢复流程。
+
+备份和恢复会在 Hub 根目录同级位置持有 token 化维护锁，Hub、调度器、worker、队列、项目注册表
+和 quota delegate 的写入口都会拒绝并发写入。恢复过程使用持久三阶段日志并在目录 rename 后执行
+fsync；进程或主机中断后，下一次 Hub 启动会自动回滚未提交状态或校验已提交的新根。也可以离线运行
+`cpb hub recover-restore` 显式执行同一恢复流程。
+
+复制开始前会检查目标文件系统的可用空间，并默认要求操作完成后仍保留 256 MiB。可用
+`CPB_HUB_MIN_FREE_BYTES` 设置其他非负字节数。备份 stage 使用与 Hub 和输出路径绑定的所有权标记；
+后续备份只会回收能够证明由同一 Hub/输出事务留下的中断 stage，遇到无标记或不匹配目录会拒绝删除。
+
+命令/测试类验收探针不再执行模型生成的 `expectedEvidence` 文本。需要此类探针的项目必须由维护者在
+仓库 `HEAD` 提交 `.cpb/verification-probes.json`，以结构化 `executable`/`args` 绑定 `predicateId`；
+未配置时会留下可审计的失败证据，不会回退到 shell 执行。格式和边界见
+[`docs/security/cpb-agent-secret-boundary.md`](docs/security/cpb-agent-secret-boundary.md)。
+
+给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 生成 draft PR dry-run preview；live 草稿 PR 创建需要显式 opt-in。
 
 ## 支持的 Coding Agents
 

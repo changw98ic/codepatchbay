@@ -24,7 +24,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { validateChecklistVerdict } from "../core/workflow/acceptance-checklist.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
@@ -33,7 +33,7 @@ import { buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
 
-function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
+function frozenChecklist(items: LooseRecord[] = [defaultItem()]) {
   return {
     schemaVersion: 1,
     jobId: "job-fixscope",
@@ -45,7 +45,7 @@ function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
   };
 }
 
-function defaultItem(overrides: AnyRecord = {}) {
+function defaultItem(overrides: LooseRecord = {}) {
   return {
     id: "AC-001",
     requirement: "required behavior",
@@ -63,7 +63,7 @@ function defaultItem(overrides: AnyRecord = {}) {
   };
 }
 
-function passingVerdict(overrides: AnyRecord = {}) {
+function passingVerdict(overrides: LooseRecord = {}) {
   return {
     schemaVersion: 1,
     jobId: "job-fixscope",
@@ -487,7 +487,7 @@ test("adversarial round 4: no element of fixScope matches /^AC-\\d+$/ pattern", 
   // Explicitly assert no element matches the checklist ID pattern
   const allFixScopes = [
     ...verdict.fixScope,
-    ...verdict.items.flatMap((item: AnyRecord) => item.fixScope || []),
+    ...verdict.items.flatMap((item: LooseRecord) => item.fixScope || []),
   ];
   for (const entry of allFixScopes) {
     assert.equal(

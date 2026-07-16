@@ -1,14 +1,51 @@
 import { validateSupervisorDecision } from "../../core/contracts/supervisor-decision.js";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AcpPool } from "../services/acp/acp-pool.js";
-import { AnyRecord } from "../../shared/types.js";
+import { LooseRecord } from "../../shared/types.js";
 
 const DEFAULT_SUPERVISOR_AGENT = "codex";
 const DEFAULT_SUPERVISOR_TIMEOUT_MS = 120_000;
 const SUPERVISOR_POOL_SCOPE = "control-plane";
 
-function resolveSupervisorAgent(env = process.env) {
+type SupervisorOptions = {
+  cpbRoot: string;
+  hubRoot: string;
+  pool?: SupervisorPool | null;
+  supervisorAgent?: string | null;
+  supervisorProviderKey?: string | null;
+  timeoutMs?: number | null;
+  env?: NodeJS.ProcessEnv;
+};
+
+type SupervisorPool = {
+  start?: () => Promise<unknown> | unknown;
+  status?: () => LooseRecord;
+  readProviderQuotas?: () => Promise<LooseRecord> | LooseRecord;
+  connectionLeaseStatus?: () => Promise<LooseRecord> | LooseRecord;
+  execute: (
+    agent: string,
+    prompt: string,
+    cwd: string,
+    timeoutMs: number,
+    options: LooseRecord,
+  ) => Promise<{ output?: string }> | { output?: string };
+};
+
+type DiagnosisContext = {
+  assignment: LooseRecord;
+  attempt?: unknown;
+  result: LooseRecord;
+};
+
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function resolveSupervisorAgent(env: NodeJS.ProcessEnv = process.env) {
   return (
     env.CPB_ACP_SUPERVISOR_AGENT ||
     env.CPB_SUPERVISOR_AGENT ||
@@ -16,7 +53,7 @@ function resolveSupervisorAgent(env = process.env) {
   );
 }
 
-function resolveSupervisorProviderKey(agent: string, env: Record<string, any> = process.env) {
+function resolveSupervisorProviderKey(agent: string, env: NodeJS.ProcessEnv = process.env) {
   return (
     env.CPB_ACP_SUPERVISOR_PROVIDER_KEY ||
     env.CPB_SUPERVISOR_PROVIDER_KEY ||
@@ -27,16 +64,16 @@ function resolveSupervisorProviderKey(agent: string, env: Record<string, any> = 
 export class AcpSupervisor {
   cpbRoot: string;
   hubRoot: string;
-  pool: AcpPool | null;
+  pool: SupervisorPool | null;
   supervisorAgent: string;
   supervisorProviderKey: string;
   timeoutMs: number;
-  _poolPromise: Promise<AcpPool | null> | null;
+  _poolPromise: Promise<SupervisorPool | null> | null;
   decisionsDir: string;
   statePath: string;
-  state: AnyRecord;
+  state: LooseRecord;
 
-  constructor({ cpbRoot, hubRoot, pool, supervisorAgent, supervisorProviderKey, timeoutMs, env = process.env }: AnyRecord) {
+  constructor({ cpbRoot, hubRoot, pool = null, supervisorAgent = null, supervisorProviderKey = null, timeoutMs = null, env = process.env }: SupervisorOptions) {
     this.cpbRoot = cpbRoot;
     this.hubRoot = hubRoot;
     this.pool = pool || null;
@@ -64,7 +101,7 @@ export class AcpSupervisor {
     };
   }
 
-  async _writeState(nextState: AnyRecord) {
+  async _writeState(nextState: LooseRecord) {
     this.state = {
       ...this.state,
       ...nextState,
@@ -83,7 +120,8 @@ export class AcpSupervisor {
     this._poolPromise = (async () => {
       try {
         const { getManagedAcpPool } = await import("../services/acp/acp-pool.js");
-        this.pool = (getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true }) as AcpPool | undefined) ?? null;
+        // retain: dynamic <getManagedAcpPool returns LooseRecord-typed Proxy wrapping an AcpPool; narrow to the known runtime shape>
+        this.pool = (getManagedAcpPool({ cpbRoot: this.cpbRoot, hubRoot: this.hubRoot, persistentProcesses: true }) as SupervisorPool | undefined) ?? null;
         return this.pool;
       } catch {
         this._poolPromise = null;
@@ -124,7 +162,7 @@ export class AcpSupervisor {
     }
   }
 
-  async refreshAdvisoryState({ reason = "refresh", startedAt = this.state.startedAt, lastDecision = null, lastFallback = null }: AnyRecord = {}) {
+  async refreshAdvisoryState({ reason = "refresh", startedAt = this.state.startedAt, lastDecision = null, lastFallback = null }: LooseRecord = {}) {
     const pool = await this._ensurePool();
     if (!pool) {
       return this._writeState({
@@ -138,23 +176,23 @@ export class AcpSupervisor {
       });
     }
 
-    let poolStatus = null;
-    let providerQuotas = {};
-    let connectionLeases = null;
+    let poolStatus: LooseRecord | null = null;
+    let providerQuotas: LooseRecord = {};
+    let connectionLeases: LooseRecord | null = null;
     try {
       poolStatus = typeof pool.status === "function" ? pool.status() : null;
     } catch (err) {
-      poolStatus = { error: err.message };
+      poolStatus = { error: err instanceof Error ? err.message : String(err) };
     }
     try {
       providerQuotas = typeof pool.readProviderQuotas === "function" ? await pool.readProviderQuotas() : {};
     } catch (err) {
-      providerQuotas = { error: err.message };
+      providerQuotas = { error: err instanceof Error ? err.message : String(err) };
     }
     try {
       connectionLeases = typeof pool.connectionLeaseStatus === "function" ? await pool.connectionLeaseStatus() : null;
     } catch (err) {
-      connectionLeases = { error: err.message };
+      connectionLeases = { error: err instanceof Error ? err.message : String(err) };
     }
 
     const providerHealth = buildProviderHealth({
@@ -189,7 +227,7 @@ export class AcpSupervisor {
     return { ...this.state };
   }
 
-  async diagnoseFailure({ assignment, attempt, result }: AnyRecord) {
+  async diagnoseFailure({ assignment, attempt, result }: DiagnosisContext) {
     const pool = await this._ensurePool();
     if (!pool) {
       return null; // Return null so FailureRouter falls through to deterministic routing
@@ -254,15 +292,16 @@ export class AcpSupervisor {
       }).catch(() => {});
       return rawDecision;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       await this.saveDecision(
         assignment,
-        { action: null, reason: `supervisor failed: ${err.message}`, params: {} },
-        { valid: false, errors: [`supervisor failed: ${err.message}`] },
+        { action: null, reason: `supervisor failed: ${message}`, params: {} },
+        { valid: false, errors: [`supervisor failed: ${message}`] },
       ).catch(() => {});
       await this.refreshAdvisoryState({
         reason: "diagnose_fallback",
         lastFallback: {
-          reason: `supervisor failed: ${err.message}`,
+          reason: `supervisor failed: ${message}`,
           assignmentId: assignment.assignmentId,
           entryId: assignment.entryId,
           at: new Date().toISOString(),
@@ -272,7 +311,7 @@ export class AcpSupervisor {
     }
   }
 
-  async saveDecision(assignment: AnyRecord, rawDecision: AnyRecord, validation: AnyRecord) {
+  async saveDecision(assignment: LooseRecord, rawDecision: LooseRecord, validation: LooseRecord) {
     await mkdir(this.decisionsDir, { recursive: true });
     const ts = Date.now();
     const file = path.join(this.decisionsDir, `${assignment.entryId}-${assignment.assignmentId}-${ts}.json`);
@@ -286,11 +325,12 @@ export class AcpSupervisor {
   }
 }
 
-function buildProviderHealth({ providerKey, poolStatus, providerQuotas, connectionLeases }: AnyRecord) {
-  const health: AnyRecord = {};
-  const pools = poolStatus?.pools && typeof poolStatus.pools === "object" ? poolStatus.pools : {};
-  for (const [agent, state] of Object.entries(pools) as [string, AnyRecord][]) {
-    const key = state.providerKey || agent;
+function buildProviderHealth({ providerKey, poolStatus, providerQuotas, connectionLeases }: { providerKey: string; poolStatus: LooseRecord | null; providerQuotas: LooseRecord; connectionLeases: LooseRecord | null }) {
+  const health: LooseRecord = {};
+  const pools = poolStatus?.pools && typeof poolStatus.pools === "object" ? poolStatus.pools as LooseRecord : {};
+  // retain: dynamic <Object.entries(LooseRecord) yields [string, any][]; cast prevents state from degrading to any>
+  for (const [agent, state] of Object.entries(pools) as [string, LooseRecord][]) {
+    const key = stringValue(state.providerKey, agent);
     health[key] = {
       providerKey: key,
       status: "available",
@@ -303,21 +343,22 @@ function buildProviderHealth({ providerKey, poolStatus, providerQuotas, connecti
     };
   }
   if (providerQuotas && typeof providerQuotas === "object" && !providerQuotas.error) {
-    for (const [key, quota] of Object.entries(providerQuotas) as [string, AnyRecord][]) {
+    // retain: dynamic <Object.entries(LooseRecord) yields [string, any][]; cast prevents quota from degrading to any>
+    for (const [key, quota] of Object.entries(providerQuotas) as [string, LooseRecord][]) {
       health[key] = {
-        ...(health[key] || { providerKey: key }),
-        status: quota.status || health[key]?.status || "unknown",
+        ...(recordValue(health[key]) || { providerKey: key }),
+        status: quota.status || recordValue(health[key]).status || "unknown",
         nextEligibleAt: quota.nextEligibleAt ?? null,
         reason: quota.reason || "",
-        source: quota.source || health[key]?.source || "provider-quota",
+        source: quota.source || recordValue(health[key]).source || "provider-quota",
         updatedAt: quota.updatedAt || null,
       };
     }
   }
   if (connectionLeases?.providers && typeof connectionLeases.providers === "object") {
-    for (const [key, count] of Object.entries(connectionLeases.providers)) {
+    for (const [key, count] of Object.entries(connectionLeases.providers as LooseRecord)) {
       health[key] = {
-        ...(health[key] || { providerKey: key, status: "unknown" }),
+        ...(recordValue(health[key]) || { providerKey: key, status: "unknown" }),
         activeLeases: count,
       };
     }
@@ -332,8 +373,9 @@ function buildProviderHealth({ providerKey, poolStatus, providerQuotas, connecti
   return health;
 }
 
-function buildDiagnosisPrompt({ assignment, attempt, result }: AnyRecord) {
-  const failure = result.jobResult?.failure || result.failure || {};
+function buildDiagnosisPrompt({ assignment, attempt, result }: DiagnosisContext) {
+  const jobResult = recordValue(result.jobResult);
+  const failure = recordValue(jobResult.failure || result.failure);
   return `You are the CPB Supervisor Agent. Diagnose this failure and recommend an action.
 
 ## Assignment
@@ -351,12 +393,12 @@ function buildDiagnosisPrompt({ assignment, attempt, result }: AnyRecord) {
 
 ## Stdout snippet
 \`\`\`
-${(failure.stdoutSnippet || "").slice(0, 300)}
+${stringValue(failure.stdoutSnippet).slice(0, 300)}
 \`\`\`
 
 ## Stderr snippet
 \`\`\`
-${(failure.stderrSnippet || "").slice(0, 300)}
+${stringValue(failure.stderrSnippet).slice(0, 300)}
 \`\`\`
 
 Respond with a JSON decision:
@@ -376,7 +418,7 @@ For switch_agent, params must include: { "role": "planner"|"executor"|"verifier"
 For wait_for_rate_limit, params must include: { "untilTs": "<ISO datetime>" }`;
 }
 
-function parseDecisionOutput(output: string): { decision: Record<string, any> | null; error: string | null } {
+function parseDecisionOutput(output: string): { decision: LooseRecord | null; error: string | null } {
   if (!output || typeof output !== "string") {
     return { decision: null, error: "empty supervisor output" };
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { createAgentHome } from "../core/agents/isolation.js";
@@ -21,12 +22,45 @@ test("createAgentHome places isolated homes under explicit dataRoot", async () =
   const env = await createAgentHome(cpbRoot, "codex", "job-1", {
     dataRoot,
     parentEnv: { HOME: path.join(root, "user-home") },
+    isolateTemp: true,
   });
 
   assert.equal(env.HOME, path.join(dataRoot, "agent-homes", "codex", "job-1"));
   assert.equal(env.XDG_CONFIG_HOME, path.join(env.HOME, ".config"));
+  assert.equal(env.TMPDIR, path.join(env.HOME, ".tmp"));
+  assert.equal(env.TMP, env.TMPDIR);
+  assert.equal(env.TEMP, env.TMPDIR);
+  assert.equal(env.GIT_CONFIG_GLOBAL, "/dev/null");
+  assert.equal(env.GIT_CONFIG_NOSYSTEM, "1");
+  if (process.platform === "darwin") {
+    assert.match(String(env.PATH), /^\/Applications\/Xcode\.app\/Contents\/Developer\/usr\/bin(?::|$)|^\/Library\/Developer\/CommandLineTools\/usr\/bin(?::|$)/);
+    if (existsSync("/opt/anaconda3/bin")) assert.match(String(env.PATH), /(?:^|:)\/opt\/anaconda3\/bin(?:[:]|$)/);
+  }
   await stat(env.HOME);
+  await stat(env.TMPDIR);
   await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
+});
+
+test("createAgentHome snapshots Codex auth but excludes version-sensitive user config", async () => {
+  const root = await tempRoot("cpb-agent-home-codex-snapshot");
+  const userHome = path.join(root, "user-home");
+  const sourceCodexHome = path.join(userHome, ".codex");
+  const dataRoot = path.join(root, "project-runtime");
+  await mkdir(sourceCodexHome, { recursive: true });
+  await writeFile(path.join(sourceCodexHome, "auth.json"), "{\"token\":\"fixture\"}\n", "utf8");
+  await writeFile(path.join(sourceCodexHome, "config.toml"), "model = \"fixture\"\n", "utf8");
+
+  const env = await createAgentHome(path.join(root, "cpb"), "codex", "job-snapshot", {
+    dataRoot,
+    parentEnv: { HOME: userHome },
+  });
+  const authPath = path.join(env.CODEX_HOME!, "auth.json");
+  const configPath = path.join(env.CODEX_HOME!, "config.toml");
+
+  assert.equal((await lstat(authPath)).isSymbolicLink(), false);
+  assert.equal(await readFile(authPath, "utf8"), "{\"token\":\"fixture\"}\n");
+  assert.equal((await stat(authPath)).mode & 0o777, 0o600);
+  await assertMissing(configPath);
 });
 
 test("createAgentHome places isolated homes under CPB_PROJECT_RUNTIME_ROOT", async () => {

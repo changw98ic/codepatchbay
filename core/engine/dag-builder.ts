@@ -7,15 +7,28 @@
  * @module core/engine/dag-builder
  */
 
-import { AnyRecord } from "../../shared/types.js";
 import { normalizeWorkflow } from "../workflow/definition.js";
 
-type DagNode = AnyRecord & {
+type DagNode = {
   id: string;
   phase: string;
   role?: string;
   dependsOn?: string[];
+  [key: string]: unknown;
 };
+type DagEdge = { from: string; to: string };
+type WorkflowDag = {
+  name: string;
+  nodes: DagNode[];
+  edges: DagEdge[];
+  maxConcurrentNodes: number;
+  isDag: boolean;
+  source: "runtime_phase_projection";
+};
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
 
 /**
  * Build a DAG descriptor for a concrete run.
@@ -26,7 +39,7 @@ type DagNode = AnyRecord & {
  * @param {{ workflow: string, phases: string[], phaseRoleMap: Record<string,string> }} opts
  * @returns {{ name: string, nodes: object[], edges: object[], maxConcurrentNodes: number, isDag: boolean, source: string }}
  */
-export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }) {
+export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }): WorkflowDag {
   const base = normalizeWorkflow(workflow);
   const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
 
@@ -37,18 +50,21 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
 
   const nodes: DagNode[] = [];
   for (const existing of baseNodes) {
-    const phase = existing.phase || existing.id;
+    const phase = nonEmptyString(existing.phase) || nonEmptyString(existing.id);
+    if (!phase) continue;
     if (!phaseBudget.has(phase)) continue;
-    const remaining = phaseBudget.get(phase);
+    const remaining = phaseBudget.get(phase) || 0;
     if (remaining <= 0) continue;
     phaseBudget.set(phase, remaining - 1);
+    const id = nonEmptyString(existing.id) || phase;
+    const role = nonEmptyString(existing.role) || phaseRoleMap[phase] || phase;
     nodes.push({
       ...existing,
-      id: existing.id || phase,
+      id,
       phase,
-      role: existing.role || phaseRoleMap[phase] || phase,
+      role,
       dependsOn: Array.isArray(existing.dependsOn)
-        ? [...existing.dependsOn]
+        ? existing.dependsOn.map(String).filter(Boolean)
         : [],
     });
   }
@@ -68,7 +84,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
   const includedIds = new Set(nodes.map((n) => n.id));
   const normalizedNodes = nodes.map((n) => ({
     ...n,
-    dependsOn: (n.dependsOn || []).filter((depId) => includedIds.has(depId)),
+    dependsOn: (n.dependsOn || []).filter((depId): depId is string => includedIds.has(depId)),
   }));
 
   return {
@@ -77,7 +93,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
     edges: normalizedNodes.flatMap((n) =>
       (n.dependsOn || []).map((depId) => ({ from: depId, to: n.id })),
     ),
-    maxConcurrentNodes: base?.maxConcurrentNodes || 1,
+    maxConcurrentNodes: Number(base?.maxConcurrentNodes) || 1,
     isDag: normalizedNodes.length > 0,
     source: "runtime_phase_projection",
   };
@@ -91,7 +107,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
  * @param {{ adversarialRequired?: boolean }} riskMap
  * @returns {string[]}
  */
-export function insertAdversarialVerify(phases: string[], riskMap: { adversarialRequired?: boolean } | null | undefined) {
+export function insertAdversarialVerify(phases: string[], riskMap: { adversarialRequired?: boolean } | null | undefined): string[] {
   if (
     !riskMap?.adversarialRequired ||
     !phases.includes("verify") ||
@@ -116,7 +132,7 @@ export function insertAdversarialVerify(phases: string[], riskMap: { adversarial
  * @param {{ nodes: { phase: string }[] }} dag
  * @returns {{ valid: boolean, reason?: string }}
  */
-export function validateDagForMutatingJob(dag: { nodes?: Array<{ phase?: string }> } | null | undefined) {
+export function validateDagForMutatingJob(dag: { nodes?: Array<{ phase?: string }> } | null | undefined): { valid: true } | { valid: false; reason: string } {
   const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
   const hasVerify = nodes.some((n) => n.phase === "verify");
   if (!hasVerify) {

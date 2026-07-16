@@ -21,7 +21,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { AnyRecord } from "../shared/types.js";
+import { recordValue, type LooseRecord } from "../shared/types.js";
 
 import { AcpPool } from "../server/services/acp/acp-pool.js";
 import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub/hub-queue.js";
@@ -29,6 +29,15 @@ import { resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { assertProviderAvailable, ProviderQuotaError } from "../server/services/provider-quota.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 type CliOptions = {
   live: boolean;
   hubRoot: string | null;
@@ -64,7 +73,7 @@ export function makeTempHub() {
   return mkdtemp(path.join(os.tmpdir(), "cpb-val-"));
 }
 
-async function withQuotaDelegate(hubRoot: string, fn: () => Promise<any>) {
+async function withQuotaDelegate(hubRoot: string, fn: () => Promise<unknown>) {
   const delegateScript = path.join(__dirname, "..", "server", "services", "quota-delegate.js");
   const child = spawn(process.execPath, [delegateScript, "--hub-root", hubRoot], {
     env: { ...process.env, CPB_DELEGATE_POLL_MS: "10" },
@@ -105,14 +114,14 @@ async function withQuotaDelegate(hubRoot: string, fn: () => Promise<any>) {
   }
 }
 
-async function seedQueue(hubRoot: string, entries: AnyRecord[]) {
+async function seedQueue(hubRoot: string, entries: LooseRecord[]) {
   for (const e of entries) {
     await enqueue(hubRoot, {
-      projectId: e.projectId || "test-project",
-      sourcePath: e.sourcePath || "/tmp/fake",
-      description: e.description || `issue-${Math.random().toString(36).slice(2, 6)}`,
-      priority: e.priority || "P2",
-      type: e.type || "candidate",
+      projectId: stringValue(e.projectId, "test-project"),
+      sourcePath: stringValue(e.sourcePath, "/tmp/fake"),
+      description: stringValue(e.description, `issue-${Math.random().toString(36).slice(2, 6)}`),
+      priority: stringValue(e.priority, "P2"),
+      type: stringValue(e.type, "candidate"),
     });
   }
 }
@@ -132,7 +141,7 @@ function makeFakeProjects(n: number) {
 
 // ── Checks (each gets an isolated hubRoot) ───────────────────────────────────
 
-export async function checkQueueIntegrity(hubRoot: any) {
+export async function checkQueueIntegrity(hubRoot: string) {
   const projects = makeFakeProjects(5);
   await seedQueue(hubRoot, projects);
   const queue = await loadQueue(hubRoot);
@@ -145,7 +154,7 @@ export async function checkQueueIntegrity(hubRoot: any) {
   return { pass: true, detail: `${queue.entries.length} entries, all pending with valid state` };
 }
 
-export async function checkQueueStatusSurfaces(hubRoot: any) {
+export async function checkQueueStatusSurfaces(hubRoot: string) {
   await seedQueue(hubRoot, [
     { projectId: "a", description: "a-1" },
     { projectId: "a", description: "a-2" },
@@ -164,7 +173,7 @@ export async function checkQueueStatusSurfaces(hubRoot: any) {
   return { pass: true, detail: `pending→in_progress correct: ${JSON.stringify(after)}` };
 }
 
-export async function checkRateLimitBackoff(hubRoot: any) {
+export async function checkRateLimitBackoff(hubRoot: string) {
   return withQuotaDelegate(hubRoot, async () => {
     const pool = new AcpPool({
       hubRoot,
@@ -186,7 +195,7 @@ export async function checkRateLimitBackoff(hubRoot: any) {
     }
 
     try {
-      await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" } as any);
+      await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
       return { pass: false, detail: "provider quota gate should reject during backoff" };
     } catch (err) {
       if (!(err instanceof ProviderQuotaError)) {
@@ -204,7 +213,7 @@ export async function checkRateLimitBackoff(hubRoot: any) {
   });
 }
 
-export async function checkConcurrencyBounds(hubRoot: any) {
+export async function checkConcurrencyBounds(hubRoot: string) {
   let maxActive = 0;
   let currentActive = 0;
   const pool = new AcpPool({
@@ -229,13 +238,13 @@ export async function checkConcurrencyBounds(hubRoot: any) {
   if (results.some((r) => r.output !== "ok")) return { pass: false, detail: "some executions failed" };
   if (maxActive > 2) return { pass: false, detail: `maxActive=${maxActive} exceeded limit of 2` };
 
-  const st = (pool.status().pools as AnyRecord).codex;
+  const st = recordValue(recordValue(pool.status().pools).codex);
   if (st.active !== 0) return { pass: false, detail: `active=${st.active} after all resolved (leak)` };
 
   return { pass: true, detail: `6 tasks, limit 2, maxActive=${maxActive}, active now=${st.active}` };
 }
 
-export async function checkMultiProjectScanUnder429(hubRoot: any) {
+export async function checkMultiProjectScanUnder429(hubRoot: string) {
   return withQuotaDelegate(hubRoot, async () => {
     let callCount = 0;
     const rateLimitedProjects = new Set();
@@ -254,7 +263,7 @@ export async function checkMultiProjectScanUnder429(hubRoot: any) {
     });
     const providerKey = pool.providerKey("codex");
 
-    const projects: (AnyRecord & { id: string; sourcePath: string; name: string; enabled: boolean })[] = [
+    const projects: (LooseRecord & { id: string; sourcePath: string; name: string; enabled: boolean })[] = [
       { id: "proj-0", sourcePath: "/tmp/fake-0", name: "proj-0", enabled: true },
       { id: "proj-1", sourcePath: "/tmp/fake-1", name: "proj-1", enabled: true },
       { id: "proj-2", sourcePath: "/tmp/fake-2", name: "proj-2", enabled: true },
@@ -262,7 +271,7 @@ export async function checkMultiProjectScanUnder429(hubRoot: any) {
 
     for (const project of projects) {
       try {
-        await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" } as any);
+        await assertProviderAvailable(hubRoot, { providerKey, agent: "codex" });
       } catch (err) {
         if (!(err instanceof ProviderQuotaError)) throw err;
         project.rateLimitedUntil = (err as ProviderQuotaError & { nextEligibleAt?: number }).nextEligibleAt;
@@ -292,7 +301,7 @@ export async function checkMultiProjectScanUnder429(hubRoot: any) {
   });
 }
 
-export async function checkProcessGrowthBound(hubRoot: any) {
+export async function checkProcessGrowthBound(hubRoot: string) {
   const pool = new AcpPool({
     hubRoot,
     limits: { codex: 1, claude: 1 },
@@ -304,8 +313,8 @@ export async function checkProcessGrowthBound(hubRoot: any) {
 
   for (let i = 0; i < 20; i++) {
     const handle = await pool.acquire("codex");
-    const st = (pool.status().pools as AnyRecord).codex;
-    if (st.active > 1) {
+    const st = recordValue(recordValue(pool.status().pools).codex);
+    if (numberValue(st.active) > 1) {
       handle.release();
       return { pass: false, detail: `active=${st.active} exceeded limit=1 at iteration ${i}` };
     }
@@ -313,13 +322,13 @@ export async function checkProcessGrowthBound(hubRoot: any) {
   }
 
   let totalActive = 0;
-  for (const p of Object.values(pool.status().pools as AnyRecord)) totalActive += p.active;
+  for (const p of Object.values(recordValue(pool.status().pools))) totalActive += numberValue(recordValue(p).active);
 
   if (totalActive !== 0) return { pass: false, detail: `leaked ${totalActive} active slots after 20 cycles` };
 
-  const pools = pool.status().pools as AnyRecord;
-  const codexActive = pools.codex.active;
-  const claudeActive = pools.claude.active;
+  const pools = recordValue(pool.status().pools);
+  const codexActive = recordValue(pools.codex).active;
+  const claudeActive = recordValue(pools.claude).active;
   return { pass: true, detail: `20 acquire/release cycles, active=0 after (codex=${codexActive}, claude=${claudeActive})` };
 }
 
@@ -334,15 +343,15 @@ export const ALL_CHECKS = [
   { name: "process-growth-bound", fn: checkProcessGrowthBound },
 ];
 
-export async function runChecks(hubRootFactory: string | (() => Promise<string>), opts: AnyRecord = {}) {
+export async function runChecks(hubRootFactory: string | (() => Promise<string>), opts: LooseRecord = {}) {
   const results = [];
   for (const check of ALL_CHECKS) {
     const isolatedHub = typeof hubRootFactory === "function" ? await hubRootFactory() : hubRootFactory;
     try {
       const result = await check.fn(isolatedHub);
-      results.push({ name: check.name, ...result });
-    } catch (err: any) {
-      results.push({ name: check.name, pass: false, detail: `UNEXPECTED: ${err.message}` });
+      results.push({ name: check.name, ...recordValue(result) });
+    } catch (err: unknown) {
+      results.push({ name: check.name, pass: false, detail: `UNEXPECTED: ${recordValue(err).message || err}` });
     } finally {
       if (typeof hubRootFactory === "function") {
         try { await rm(isolatedHub, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -352,7 +361,7 @@ export async function runChecks(hubRootFactory: string | (() => Promise<string>)
   return results;
 }
 
-export function formatResults(results: AnyRecord[], { json: asJson }: AnyRecord = {}) {
+export function formatResults(results: LooseRecord[], { json: asJson }: LooseRecord = {}) {
   if (asJson) return JSON.stringify(results, null, 2);
 
   const lines = [];

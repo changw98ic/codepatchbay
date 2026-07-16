@@ -1,13 +1,14 @@
 // ── reconcile ──
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { isRecord, recordValue, type LooseRecord } from "../../../core/contracts/types.js";
 import { listRuntimeDataRoots, resolveProjectDataRoot, runtimeDataPath, runtimeDataRoot } from "../runtime.js";
 import { eventFileFor, listEventFiles, readEvents, materializeJob, recoverEventFile } from "../event/event-store.js";
 import { appendEvent } from "../event/event-store.js";
 import { readLease, releaseLease, isLeaseStale } from "../infra.js";
 import { listJobs, failJob, blockJob } from "../job/job-store.js";
 import { rebuildJobsIndex, readJobsIndex } from "../job/job-store.js";
-import { resolveHubRoot, loadRegistry, saveRegistry } from "../hub/hub-registry.js";
+import { resolveHubRoot, loadRegistry, mutateRegistry } from "../hub/hub-registry.js";
 import { projectRuntimeRoot } from "../runtime.js";
 import { listProcesses, classifyLiveness, removeProcess } from "../infra.js";
 import { listQueue as listHubQueue, updateEntry as updateQueueEntry } from "../hub/hub-queue.js";
@@ -15,14 +16,178 @@ import { scanHubPollution, isUnderTestPath } from "../project/project-index.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function findMatchingQueueEntry(queueEntries: Record<string, any>[], job: Record<string, any>) {
-  const inProgress = queueEntries.filter((e: Record<string, any>) => e.status === "in_progress");
-  let match = inProgress.find((e: Record<string, any>) => e.metadata?.jobId === job.jobId);
+function errorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : null;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "");
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
+}
+
+type CleanupOptions = LooseRecord & {
+  hubRoot?: string;
+  dataRoot?: string;
+  project?: string | null;
+  legacyOnly?: boolean;
+  includeLegacyFallback?: boolean;
+  cleanupPollution?: boolean;
+};
+
+type CleanupProject = LooseRecord & {
+  id?: string;
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+};
+
+type CleanupRegistry = LooseRecord & {
+  projects: Record<string, CleanupProject>;
+};
+
+type PollutionRuntimeTargetInput = {
+  hubRoot: string;
+  project: CleanupProject;
+  projectId?: string;
+  registry: CleanupRegistry;
+};
+
+type PollutionSkip = {
+  projectId: string;
+  attemptedRoot: string | null;
+  reason: string;
+};
+
+type CleanupPollutionError = {
+  kind?: string;
+  projectId?: string;
+  dir?: string;
+  phase?: string;
+  message: string;
+};
+
+type CleanupPollutionReport = {
+  projectsRemoved: number;
+  orphanDirsRemoved: number;
+  sourcePathsPreserved: Array<string | undefined>;
+  unsafeProjectsSkipped: PollutionSkip[];
+  errors: CleanupPollutionError[];
+};
+
+type RuntimeRootEntry = LooseRecord & {
+  kind?: string;
+  dataRoot: string;
+  projectId?: string | null;
+};
+
+type CleanupJob = LooseRecord & {
+  jobId?: string;
+  project?: string;
+  task?: string;
+  status?: string;
+  phase?: string;
+  leaseId?: string;
+  worktree?: string;
+  worktreeBranch?: string | null;
+  worktreeBaseBranch?: string | null;
+  workflow?: string | null;
+  lastActivityAt?: string | null;
+  sourceContext?: LooseRecord | null;
+  __dataRoot?: string;
+};
+
+type ProcessEntry = LooseRecord & {
+  id?: string;
+  jobId?: string;
+  status?: string;
+  phase?: string;
+  leaseId?: string;
+  runnerPid?: number;
+  lastHeartbeat?: string;
+  sessionPin?: LooseRecord & {
+    sessionId?: string;
+    phase?: string;
+  };
+  __dataRoot?: string;
+};
+
+type QueueEntry = LooseRecord & {
+  id?: string;
+  status?: string;
+  projectId?: string;
+  description?: string;
+  updatedAt?: string;
+  createdAt?: string;
+  metadata?: LooseRecord;
+};
+
+type LeaseRecord = LooseRecord & {
+  jobId?: string;
+  phase?: string;
+  ownerPid?: number;
+  expiresAt?: string;
+};
+
+type StaleCause = LooseRecord & {
+  failureReason?: string;
+  phase?: string;
+  jobId?: string;
+  leaseId?: string;
+  observedAt?: string;
+  sessionPin?: unknown;
+};
+
+type EventValidationResult = {
+  valid: boolean;
+  events: LooseRecord[] | null;
+  recovered: boolean;
+  repaired: boolean;
+  wouldRecover?: boolean;
+  wouldRepair: boolean;
+  recoveryResult?: unknown;
+  error: { file: string; lineNumber: number; reason: string } | null;
+};
+
+type ReconcileStaleJobReport = LooseRecord & {
+  jobId?: string;
+  project?: string;
+  reason: string;
+};
+
+type ReconcileReport = LooseRecord & {
+  staleJobs: ReconcileStaleJobReport[];
+  orphanLeases: LooseRecord[];
+  streamRecoveries: LooseRecord[];
+  streamRepairs: LooseRecord[];
+  streamErrors: LooseRecord[];
+  indexRebuilt: boolean;
+  workers: LooseRecord & { stale: LooseRecord[]; pruned?: number };
+  reconciledProcesses: LooseRecord[];
+  reconciledQueueEntries: LooseRecord[];
+  pollutionPreview?: LooseRecord;
+  pollution?: unknown;
+};
+
+type CleanupDryRunReport = LooseRecord & {
+  leasesToRemove: string[];
+  worktreesPreserved: LooseRecord[];
+  totalLeaseFiles: number;
+  totalJobCount: number;
+  testProjectsToRemove: unknown[];
+  pollutedProjectsToRemove: unknown[];
+  orphanRuntimeDirsToRemove: unknown[];
+};
+
+function findMatchingQueueEntry(queueEntries: QueueEntry[], job: CleanupJob) {
+  const inProgress = queueEntries.filter((e) => e.status === "in_progress");
+  let match = inProgress.find((e) => e.metadata?.jobId === job.jobId);
   if (match) return match;
-  match = inProgress.find((e: Record<string, any>) => e.metadata?.originJobId === job.jobId);
+  match = inProgress.find((e) => e.metadata?.originJobId === job.jobId);
   if (match) return match;
   const byTask = inProgress.filter(
-    (e: Record<string, any>) => e.projectId === job.project && e.description === job.task
+    (e) => e.projectId === job.project && e.description === job.task
   );
   if (byTask.length === 1) return byTask[0];
   return null;
@@ -34,7 +199,7 @@ function isProcessAlive(pid: number) {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    if (err.code === "EPERM") return true;
+    if (errorCode(err) === "EPERM") return true;
     return false;
   }
 }
@@ -43,11 +208,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function resolvedHubRoot(cpbRoot: string, options: Record<string, any> = {}) {
+function resolvedHubRoot(cpbRoot: string, options: CleanupOptions = {}) {
   return options.hubRoot ? path.resolve(options.hubRoot) : resolveHubRoot(cpbRoot);
 }
 
-async function cleanupRuntimeRoots(cpbRoot: string, options: Record<string, any> = {}) {
+async function cleanupRuntimeRoots(cpbRoot: string, options: CleanupOptions = {}): Promise<RuntimeRootEntry[]> {
   if (options.dataRoot) {
     return [{ kind: "project", dataRoot: path.resolve(options.dataRoot), projectId: options.project || null }];
   }
@@ -64,9 +229,9 @@ async function cleanupRuntimeRoots(cpbRoot: string, options: Record<string, any>
   }
 }
 
-async function listJobsForCleanup(cpbRoot: string, options: Record<string, any> = {}) {
+async function listJobsForCleanup(cpbRoot: string, options: CleanupOptions = {}): Promise<CleanupJob[]> {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
-  const jobs: Record<string, any>[] = [];
+  const jobs: CleanupJob[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
     const batch = await listJobs(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
@@ -80,9 +245,9 @@ async function listJobsForCleanup(cpbRoot: string, options: Record<string, any> 
   return jobs;
 }
 
-async function listProcessesForCleanup(cpbRoot: string, options: Record<string, any> = {}) {
+async function listProcessesForCleanup(cpbRoot: string, options: CleanupOptions = {}): Promise<ProcessEntry[]> {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
-  const entries: Record<string, any>[] = [];
+  const entries: ProcessEntry[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
     const batch = await listProcesses(cpbRoot, { dataRoot: root.dataRoot });
@@ -96,7 +261,7 @@ async function listProcessesForCleanup(cpbRoot: string, options: Record<string, 
   return entries;
 }
 
-async function eventOptionsForProject(cpbRoot: string, project: string, options: Record<string, any> = {}) {
+async function eventOptionsForProject(cpbRoot: string, project: string, options: CleanupOptions = {}) {
   if (options.legacyOnly === true) {
     return { ...options, legacyOnly: true };
   }
@@ -110,8 +275,8 @@ async function eventOptionsForProject(cpbRoot: string, project: string, options:
   throw new Error("dataRoot is required for project event store paths");
 }
 
-export async function validateEventStream(cpbRoot: string, project: string, jobId: string, { dryRun = false, ...options }: Record<string, any> = {}) {
-  const events: Record<string, any>[] = [];
+export async function validateEventStream(cpbRoot: string, project: string, jobId: string, { dryRun = false, ...options }: CleanupOptions & { dryRun?: boolean } = {}): Promise<EventValidationResult> {
+  const events: LooseRecord[] = [];
   let raw;
   const eventOptions = await eventOptionsForProject(cpbRoot, project, options);
   const file = eventFileFor(cpbRoot, project, jobId, eventOptions);
@@ -119,7 +284,7 @@ export async function validateEventStream(cpbRoot: string, project: string, jobI
   try {
     raw = await readFile(file, "utf8");
   } catch (err) {
-    if (err && err.code === "ENOENT") {
+    if (errorCode(err) === "ENOENT") {
       return { valid: true, events: [], recovered: false, repaired: false, wouldRepair: false, error: null };
     }
     throw err;
@@ -137,7 +302,7 @@ export async function validateEventStream(cpbRoot: string, project: string, jobI
   for (let i = 0; i < nonEmpty.length; i++) {
     const { line, lineNumber } = nonEmpty[i];
     const isLast = i === nonEmpty.length - 1;
-    let event;
+    let event: unknown;
     try {
       event = JSON.parse(line);
     } catch {
@@ -174,7 +339,7 @@ export async function validateEventStream(cpbRoot: string, project: string, jobI
         error: { file, lineNumber, reason: "malformed JSON" },
       };
     }
-    if (event === null || typeof event !== "object" || Array.isArray(event)) {
+    if (!isRecord(event)) {
       return {
         valid: false,
         events: null,
@@ -199,31 +364,31 @@ export async function validateEventStream(cpbRoot: string, project: string, jobI
  *
  * Returns { recovered: [{jobId, reason}], failed: [{jobId, error}] }
  */
-export async function recoverOrphanedJobs(cpbRoot: string, options: Record<string, any> = {}) {
+export async function recoverOrphanedJobs(cpbRoot: string, options: CleanupOptions & { dryRun?: boolean } = {}) {
   const dryRun = options.dryRun || false;
-  const recovered: Record<string, any>[] = [];
-  const failed: Record<string, any>[] = [];
+  const recovered: LooseRecord[] = [];
+  const failed: LooseRecord[] = [];
 
   const jobs = await listJobsForCleanup(cpbRoot, options);
   const processEntries = await listProcessesForCleanup(cpbRoot, options);
-  const processByJobId = new Map<string, any>();
+  const processByJobId = new Map<string, ProcessEntry>();
   for (const pe of processEntries) {
     if (pe.jobId) processByJobId.set(pe.jobId, pe);
   }
 
   const hubRoot = resolvedHubRoot(cpbRoot, options);
-  let queueEntries: Record<string, any>[] = [];
+  let queueEntries: QueueEntry[] = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
   const now = new Date();
   const runningJobs = jobs.filter(
-    (j: Record<string, any>) => !TERMINAL_STATUSES.has(j.status) && j.jobId
+    (j) => !TERMINAL_STATUSES.has(j.status || "") && j.jobId
   );
 
   for (const job of runningJobs) {
     let isStale = false;
     let staleReason = "";
-    let cause = null;
+    let cause: StaleCause | null = null;
     const processEntry = processByJobId.get(job.jobId) || null;
 
     // Tier 1: Process registry orphan
@@ -249,7 +414,7 @@ export async function recoverOrphanedJobs(cpbRoot: string, options: Record<strin
 
     // Tier 2: Lease-based detection
     if (!isStale && job.leaseId) {
-      let lease;
+      let lease: LeaseRecord | null = null;
       try {
         lease = await readLease(cpbRoot, job.leaseId, { dataRoot: job.__dataRoot });
       } catch {
@@ -340,16 +505,16 @@ export async function recoverOrphanedJobs(cpbRoot: string, options: Record<strin
         } catch { /* best-effort */ }
       }
     } catch (err) {
-      failed.push({ jobId: job.jobId, project: job.project, error: err.message });
+      failed.push({ jobId: job.jobId, project: job.project, error: errorMessage(err) });
     }
   }
 
   return { recovered, failed };
 }
 
-export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...options }: Record<string, any> = {}) {
-  const streamRecoveries: Record<string, any>[] = [];
-  const report: Record<string, any> = {
+export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...options }: CleanupOptions & { dryRun?: boolean } = {}) {
+  const streamRecoveries: LooseRecord[] = [];
+  const report: ReconcileReport = {
     staleJobs: [],
     orphanLeases: [],
     streamRecoveries,
@@ -366,25 +531,25 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
   const now = new Date();
 
   const processEntries = await listProcessesForCleanup(cpbRoot, options);
-  const processByJobId = new Map<string, any>();
+  const processByJobId = new Map<string, ProcessEntry>();
   for (const pe of processEntries) {
     if (pe.jobId) processByJobId.set(pe.jobId, pe);
   }
 
   const hubRoot = resolvedHubRoot(cpbRoot, options);
-  let queueEntries: Record<string, any>[] = [];
+  let queueEntries: QueueEntry[] = [];
   try { queueEntries = await listHubQueue(hubRoot); } catch {}
 
   // 1. Detect stale running jobs
   const runningJobs = jobs.filter(
-    (j: Record<string, any>) => !TERMINAL_STATUSES.has(j.status) && j.jobId
+    (j) => !TERMINAL_STATUSES.has(j.status || "") && j.jobId
   );
 
   for (const job of runningJobs) {
     let isStale = false;
     let staleViaProcessOrphan = false;
     let staleReason = "";
-    let cause = null;
+    let cause: StaleCause | null = null;
     let failureArtifact = null;
     const processEntry = processByJobId.get(job.jobId) || null;
 
@@ -474,7 +639,7 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
     }
 
     if (isStale) {
-      const jobReport: Record<string, any> = {
+      const jobReport: ReconcileStaleJobReport = {
         jobId: job.jobId,
         project: job.project,
         reason: staleReason,
@@ -583,7 +748,7 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
   }
 
   // 2. Detect orphan leases
-  const activeJobIds = new Set(jobs.map((j: Record<string, any>) => j.jobId));
+  const activeJobIds = new Set(jobs.map((j) => j.jobId));
   for (const root of roots) {
     const leasesDir = path.join(root.dataRoot, "leases");
     let leaseFiles: string[];
@@ -644,7 +809,7 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
       ? registry.projects
       : Object.values(registry.projects);
 
-    for (const project of projectEntries as Record<string, any>[]) {
+    for (const project of projectEntries) {
       if (!project.worker || !project.worker.lastSeenAt) continue;
       const age = now.getTime() - new Date(project.worker.lastSeenAt).getTime();
       const pid = project.worker.pid;
@@ -655,15 +820,23 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
           pid,
           lastSeenAt: project.worker.lastSeenAt,
         });
-        if (!dryRun) {
-          project.worker = null;
-        }
       }
     }
 
     if (!dryRun && report.workers.stale.length > 0) {
-      const { saveRegistry } = await import("../hub/hub-registry.js");
-      await saveRegistry(hubRoot, registry);
+      await mutateRegistry(hubRoot, (currentRegistry) => {
+        for (const stale of report.workers.stale) {
+          const project = currentRegistry.projects[stale.project];
+          const worker = project?.worker;
+          if (
+            worker?.workerId === stale.workerId
+            && worker.pid === stale.pid
+            && worker.lastSeenAt === stale.lastSeenAt
+          ) {
+            project.worker = null;
+          }
+        }
+      });
     }
   }
 
@@ -731,8 +904,8 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
   return report;
 }
 
-export async function cleanupDryRun(cpbRoot: string, options: Record<string, any> = {}) {
-  const report: Record<string, any> = {
+export async function cleanupDryRun(cpbRoot: string, options: CleanupOptions = {}) {
+  const report: CleanupDryRunReport = {
     leasesToRemove: [],
     worktreesPreserved: [],
     totalLeaseFiles: 0,
@@ -804,15 +977,15 @@ export async function cleanupDryRun(cpbRoot: string, options: Record<string, any
   return report;
 }
 
-export async function cleanupJobs(cpbRoot: string, options: Record<string, any> = {}) {
+export async function cleanupJobs(cpbRoot: string, options: CleanupOptions = {}) {
   const roots = await cleanupRuntimeRoots(cpbRoot, options);
   const jobs = await listJobsForCleanup(cpbRoot, options);
   const terminal = new Set(["completed", "failed", "blocked", "cancelled"]);
   const terminalJobIds = new Set(
-    jobs.filter((j: Record<string, any>) => terminal.has(j.status)).map((j: Record<string, any>) => j.jobId)
+    jobs.filter((j) => terminal.has(j.status || "")).map((j) => j.jobId)
   );
   const terminalLeaseIds = new Set(
-    jobs.filter((j: Record<string, any>) => terminal.has(j.status) && j.leaseId).map((j: Record<string, any>) => j.leaseId)
+    jobs.filter((j) => terminal.has(j.status || "") && j.leaseId).map((j) => j.leaseId)
   );
 
   let cleaned = 0;
@@ -856,7 +1029,7 @@ export async function cleanupJobs(cpbRoot: string, options: Record<string, any> 
  * project, or a child path under that expected root. Rejects hubRoot, <hubRoot>/projects,
  * another registered project's expected root, sourcePath, and ancestors of sourcePath.
  */
-function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }: Record<string, any>) {
+function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }: PollutionRuntimeTargetInput) {
   const hubResolved = path.resolve(hubRoot);
   const hubProjectsResolved = path.join(hubResolved, "projects");
   const targetRaw = project.projectRuntimeRoot;
@@ -888,7 +1061,7 @@ function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }: R
       ? registry.projects
       : Object.values(registry.projects);
     for (const other of entries) {
-      const otherId = other.id;
+      const otherId = isRecord(other) && typeof other.id === "string" ? other.id : null;
       if (!otherId || otherId === pid) continue;
       const otherExpected = projectRuntimeRoot(hubRoot, otherId);
       if (targetResolved === otherExpected) {
@@ -907,67 +1080,82 @@ function safePollutionRuntimeTarget({ hubRoot, project, projectId, registry }: R
   return { canDelete: false, reason: "unsafe-runtime-root" };
 }
 
-export async function cleanupPollution(cpbRoot: string, options: Record<string, any> = {}) {
+export async function cleanupPollution(cpbRoot: string, options: CleanupOptions = {}): Promise<CleanupPollutionReport> {
   const hubRoot = resolvedHubRoot(cpbRoot, options);
   let projectsRemoved = 0;
   let orphanDirsRemoved = 0;
-  const sourcePathsPreserved = [];
-  const unsafeProjectsSkipped = [];
-  const errors = [];
+  const sourcePathsPreserved: Array<string | undefined> = [];
+  const unsafeProjectsSkipped: PollutionSkip[] = [];
+  const errors: CleanupPollutionError[] = [];
+  const runtimeTargets: Array<{ projectId: string; runtimeRoot: string }> = [];
 
   const pollution = await scanHubPollution(hubRoot);
-  const registry = await loadRegistry(hubRoot);
 
-  for (const candidate of pollution.candidates) {
-    const project = registry.projects[candidate.projectId];
-    if (!project) continue;
+  if (pollution.candidates.length > 0) {
+    projectsRemoved = await mutateRegistry(hubRoot, async (registry) => {
+      let removed = 0;
+      for (const candidate of pollution.candidates) {
+        const project = registry.projects[candidate.projectId];
+        if (!project) continue;
 
-    const safety = safePollutionRuntimeTarget({
-      hubRoot,
-      project,
-      projectId: candidate.projectId,
-      registry,
-    });
+        const safety = safePollutionRuntimeTarget({
+          hubRoot,
+          project,
+          projectId: candidate.projectId,
+          registry,
+        });
 
-    if (!safety.canDelete) {
-      if (isUnderTestPath(project.sourcePath)) {
+        if (!safety.canDelete) {
+          if (isUnderTestPath(project.sourcePath)) {
+            delete registry.projects[candidate.projectId];
+            removed++;
+            continue;
+          }
+          unsafeProjectsSkipped.push({
+            projectId: candidate.projectId,
+            attemptedRoot: project.projectRuntimeRoot || null,
+            reason: safety.reason,
+          });
+          continue;
+        }
+
+        sourcePathsPreserved.push(project.sourcePath);
         delete registry.projects[candidate.projectId];
-        projectsRemoved++;
-        continue;
-      }
-      unsafeProjectsSkipped.push({
-        projectId: candidate.projectId,
-        attemptedRoot: project.projectRuntimeRoot || null,
-        reason: safety.reason,
-      });
-      continue;
-    }
+        removed++;
 
-    sourcePathsPreserved.push(project.sourcePath);
-    delete registry.projects[candidate.projectId];
-    projectsRemoved++;
-
-    if (project.projectRuntimeRoot) {
-      try {
-        const resolved = path.resolve(project.projectRuntimeRoot);
-        await rm(resolved, { recursive: true, force: true });
-      } catch (err) {
-        errors.push({ projectId: candidate.projectId, phase: "runtime-rm", message: err.message });
+        if (project.projectRuntimeRoot) {
+          runtimeTargets.push({
+            projectId: candidate.projectId,
+            runtimeRoot: path.resolve(project.projectRuntimeRoot),
+          });
+        }
       }
-    }
+      return removed;
+    });
+  }
+
+  if (runtimeTargets.length > 0) {
+    await mutateRegistry(hubRoot, async (registry) => {
+      for (const target of runtimeTargets) {
+        if (registry.projects[target.projectId]) continue;
+        try {
+          await rm(target.runtimeRoot, { recursive: true, force: true });
+        } catch (err) {
+          errors.push({ projectId: target.projectId, phase: "runtime-rm", message: errorMessage(err) });
+        }
+      }
+    });
   }
 
   for (const orphan of pollution.orphanRuntimeDirs) {
+    const runtimeDir = stringOrNull(orphan.runtimeDir);
+    if (!runtimeDir) continue;
     try {
-      await rm(orphan.runtimeDir, { recursive: true, force: true });
+      await rm(runtimeDir, { recursive: true, force: true });
       orphanDirsRemoved++;
     } catch (err) {
-      errors.push({ kind: "orphan-runtime-dir", dir: orphan.runtimeDir, message: err.message });
+      errors.push({ kind: "orphan-runtime-dir", dir: runtimeDir, message: errorMessage(err) });
     }
-  }
-
-  if (projectsRemoved > 0) {
-    await saveRegistry(hubRoot, registry);
   }
 
   return { projectsRemoved, orphanDirsRemoved, sourcePathsPreserved, unsafeProjectsSkipped, errors };
@@ -976,7 +1164,114 @@ export async function cleanupPollution(cpbRoot: string, options: Record<string, 
 // ── worktree-retention ──
 import { mkdir, rename } from "node:fs/promises";
 
-const COMPLETED_ACTIONS = new Set(["preserve", "delete", "archive"]);
+type RetentionAction = "preserve" | "delete" | "archive";
+
+type WorktreeRetentionPolicy = LooseRecord & {
+  completed?: unknown;
+  archiveRoot?: unknown;
+};
+
+type NormalizedWorktreeRetentionPolicy = {
+  completed: RetentionAction | null;
+  archiveRoot: string;
+};
+
+type WorktreeRetentionEntry = LooseRecord & {
+  jobId?: string;
+  project: string | null;
+  status: string;
+  workflow: string | null;
+  worktree: string;
+  branch: string | null;
+  baseBranch: string | null;
+  action: RetentionAction;
+  reason: string;
+  archivePath?: string;
+  result?: "deleted" | "archived" | "preserved";
+};
+
+type WorktreeRetentionPlan = {
+  dryRun: boolean;
+  policy: NormalizedWorktreeRetentionPolicy;
+  entries: WorktreeRetentionEntry[];
+  orphans: WorktreeRetentionEntry[];
+  summary: {
+    total: number;
+    delete: number;
+    archive: number;
+    preserve: number;
+    orphanCount: number;
+  };
+};
+
+type WorktreeRetentionOptions = CleanupOptions & {
+  policy?: WorktreeRetentionPolicy;
+  dryRun?: boolean;
+};
+
+type WorktreeRetentionPrintableEntry = LooseRecord & {
+  action: string;
+  worktree: string;
+  archivePath?: string;
+  jobId?: string;
+  status?: string;
+  reason?: string;
+};
+
+type WorktreeRetentionPrintablePlan = LooseRecord & {
+  dryRun?: boolean;
+  entries: WorktreeRetentionPrintableEntry[];
+};
+
+type CommandResult = string | { stdout?: string; stderr?: string; code?: string | number };
+type CommandRunner = (
+  command: string,
+  args: string[],
+  options: { maxBuffer?: number; encoding?: BufferEncoding },
+) => Promise<CommandResult>;
+
+type BacklogHygieneOptions = CleanupOptions & {
+  dryRun?: boolean;
+  repo?: string | null;
+  runCommand?: CommandRunner;
+};
+
+type IssueCommentQuery = {
+  repo: string;
+  issueNumber: string | number;
+};
+
+type CpbCommentMeta = {
+  kind: string | null;
+  jobId: string | null;
+  status: string | null;
+};
+
+type IssueComment = LooseRecord & {
+  id?: string | number;
+  body: string;
+  meta?: CpbCommentMeta;
+};
+
+type CpbIssueComment = IssueComment & {
+  meta: CpbCommentMeta;
+};
+
+type GithubIssueForCleanup = LooseRecord & {
+  repository?: string | null;
+  repo?: string | null;
+  state?: string;
+  number?: string | number;
+};
+
+type StaleCommentsReport = {
+  issuesScanned: number;
+  staleComments: LooseRecord[];
+  supersededIssues: LooseRecord[];
+  errors: LooseRecord[];
+};
+
+const COMPLETED_ACTIONS = new Set<RetentionAction>(["preserve", "delete", "archive"]);
 
 // ── Workflow-aware retention policies ──
 // Maps workflow names to per-status retention actions.
@@ -999,28 +1294,78 @@ const WORKFLOW_RETENTION_POLICIES: Record<string, Record<string, string>> = {
 export function resolveRetentionPolicy(workflow: string | null | undefined, status: string): string {
   const policies = (workflow && WORKFLOW_RETENTION_POLICIES[workflow]) || null;
   const action = policies?.[status];
-  if (action && COMPLETED_ACTIONS.has(action)) return action;
+  if (isRetentionAction(action)) return action;
   return DEFAULT_WORKFLOW_RETENTION[status] || "preserve";
 }
 
-function normalizePolicy(cpbRoot: string, policy: Record<string, any> = {}) {
+function isRetentionAction(value: unknown): value is RetentionAction {
+  return typeof value === "string" && COMPLETED_ACTIONS.has(value as RetentionAction);
+}
+
+function normalizePolicy(cpbRoot: string, policy: WorktreeRetentionPolicy = {}): NormalizedWorktreeRetentionPolicy {
   // completed: null means "not specified, use workflow-aware default"
-  const completed = policy.completed != null && COMPLETED_ACTIONS.has(policy.completed)
+  const completed = policy.completed != null && isRetentionAction(policy.completed)
     ? policy.completed
     : null;
   return {
     completed,
-    archiveRoot: path.resolve(policy.archiveRoot || runtimeDataPath(cpbRoot, "worktree-archive")),
+    archiveRoot: path.resolve(typeof policy.archiveRoot === "string" ? policy.archiveRoot : runtimeDataPath(cpbRoot, "worktree-archive")),
   };
 }
 
-function archivePathFor(policy: Record<string, any>, worktree: string) {
+function archivePathFor(policy: NormalizedWorktreeRetentionPolicy, worktree: string) {
   return path.join(policy.archiveRoot, path.basename(worktree));
 }
 
-function entryForJob(job: Record<string, any>, policy: Record<string, any>): Record<string, any> {
+function managedWorktreeRoots(cpbRoot: string, options: CleanupOptions) {
+  return [...new Set([
+    path.resolve(resolvedHubRoot(cpbRoot, options), "worktrees"),
+    path.resolve(cpbRoot, "worktrees"),
+    path.resolve(cpbRoot, "cpb-task", "worktrees"),
+  ])];
+}
+
+function directManagedWorktreeRoot(worktree: string, roots: string[]) {
+  const candidate = path.resolve(worktree);
+  return roots.find((root) => {
+    const relative = path.relative(root, candidate);
+    return relative !== ""
+      && !path.isAbsolute(relative)
+      && relative !== ".."
+      && !relative.startsWith(`..${path.sep}`)
+      && !relative.includes(path.sep);
+  }) || null;
+}
+
+async function inspectManagedWorktreePath(worktree: string, roots: string[]) {
+  const root = directManagedWorktreeRoot(worktree, roots);
+  if (!root) return { safe: false as const, reason: "worktree is outside managed worktree roots" };
+  try {
+    const [rootInfo, worktreeInfo] = await Promise.all([lstat(root), lstat(path.resolve(worktree))]);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()
+      || !worktreeInfo.isDirectory() || worktreeInfo.isSymbolicLink()) {
+      return { safe: false as const, reason: "unsafe managed worktree path: expected real directories" };
+    }
+    const [canonicalRoot, canonicalWorktree] = await Promise.all([realpath(root), realpath(path.resolve(worktree))]);
+    if (path.dirname(canonicalWorktree) !== canonicalRoot) {
+      return { safe: false as const, reason: "unsafe managed worktree path: canonical path escaped its root" };
+    }
+    return { safe: true as const, root, worktree: canonicalWorktree };
+  } catch (error) {
+    return {
+      safe: false as const,
+      reason: `unsafe managed worktree path: ${errorCode(error) === "ENOENT" ? "path does not exist" : errorMessage(error)}`,
+    };
+  }
+}
+
+function entryForJob(
+  job: CleanupJob,
+  policy: NormalizedWorktreeRetentionPolicy,
+  safety: Awaited<ReturnType<typeof inspectManagedWorktreePath>>,
+): WorktreeRetentionEntry {
   const workflow = job.workflow || null;
-  const base: Record<string, any> = {
+  const base: WorktreeRetentionEntry = {
     jobId: job.jobId,
     project: job.project || null,
     status: job.status || "unknown",
@@ -1031,6 +1376,8 @@ function entryForJob(job: Record<string, any>, policy: Record<string, any>): Rec
     action: "preserve",
     reason: "worktree retained by default",
   };
+
+  if (!safety.safe) return { ...base, reason: safety.reason };
 
   // Determine action: explicit policy.completed overrides workflow-aware defaults
   const status = job.status || "unknown";
@@ -1054,57 +1401,55 @@ function entryForJob(job: Record<string, any>, policy: Record<string, any>): Rec
   return { ...base, reason: `${status} job worktree retained because it is not completed` };
 }
 
-export async function buildWorktreeRetentionPlan(cpbRoot: string, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
+export async function buildWorktreeRetentionPlan(cpbRoot: string, { policy = {}, dryRun = true, ...options }: WorktreeRetentionOptions = {}): Promise<WorktreeRetentionPlan> {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
   const jobs = await listJobsForCleanup(cpbRoot, options);
+  const managedRoots = managedWorktreeRoots(cpbRoot, options);
 
   // Build a set of worktree paths that have associated jobs
-  const worktreeByPath = new Map<string, any>();
+  const worktreeByPath = new Map<string, CleanupJob>();
   for (const job of jobs) {
-    if (job.jobId && job.worktree) {
+    if (job.jobId && job.worktree && directManagedWorktreeRoot(job.worktree, managedRoots)) {
       worktreeByPath.set(path.resolve(job.worktree), job);
     }
   }
 
-  // Orphan detection: scan worktrees directory for dirs not associated with any job
-  const orphans: Record<string, any>[] = [];
-  for (const job of jobs) {
-    // Derive the worktrees parent directory from any known worktree path
-    if (!job.worktree) continue;
-    const parentDir = path.dirname(job.worktree);
-    let subdirs: string[];
+  // Orphan detection only scans declared managed roots. Job projections are
+  // untrusted inputs and must never select an arbitrary parent directory.
+  const orphans: WorktreeRetentionEntry[] = [];
+  for (const root of managedRoots) {
+    let entries;
     try {
-      subdirs = await readdir(parentDir);
+      const info = await lstat(root);
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      entries = await readdir(root, { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const subdir of subdirs) {
-      const candidatePath = path.join(parentDir, subdir);
-      let isDir: boolean;
-      try {
-        isDir = (await stat(candidatePath)).isDirectory();
-      } catch {
-        continue;
-      }
-      if (!isDir) continue;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const candidatePath = path.join(root, entry.name);
       const resolved = path.resolve(candidatePath);
       if (!worktreeByPath.has(resolved)) {
         orphans.push({
+          project: null,
+          status: "unknown",
+          workflow: null,
           worktree: candidatePath,
+          branch: null,
+          baseBranch: null,
           action: "delete",
           reason: "orphan worktree: no associated job found",
         });
       }
     }
-    // Only scan the first valid parent directory to avoid redundant scans
-    break;
   }
 
   // Build entries from jobs with worktrees
-  const entries = jobs
+  const entries = (await Promise.all(jobs
     .filter((job) => job.jobId && job.worktree)
-    .map((job) => entryForJob(job, normalizedPolicy))
-    .sort((a, b) => a.worktree.localeCompare(b.worktree)) as Array<Record<string, any>>;
+    .map(async (job) => entryForJob(job, normalizedPolicy, await inspectManagedWorktreePath(job.worktree as string, managedRoots)))))
+    .sort((a, b) => a.worktree.localeCompare(b.worktree));
 
   // Append orphan entries
   const orphanEntries = orphans.sort((a, b) => a.worktree.localeCompare(b.worktree));
@@ -1125,16 +1470,27 @@ export async function buildWorktreeRetentionPlan(cpbRoot: string, { policy = {},
   };
 }
 
-export async function cleanupWorktrees(cpbRoot: string, { policy = {}, dryRun = true, ...options }: Record<string, any> = {}) {
+export async function cleanupWorktrees(cpbRoot: string, { policy = {}, dryRun = true, ...options }: WorktreeRetentionOptions = {}) {
   const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun, ...options });
   if (plan.dryRun) return plan;
 
+  const managedRoots = managedWorktreeRoots(cpbRoot, options);
   const results = [];
   for (const entry of plan.entries) {
     if (entry.action === "delete") {
+      const safety = await inspectManagedWorktreePath(entry.worktree, managedRoots);
+      if (!safety.safe) {
+        results.push({ ...entry, action: "preserve", reason: safety.reason, result: "preserved" });
+        continue;
+      }
       await rm(entry.worktree, { recursive: true, force: true });
       results.push({ ...entry, result: "deleted" });
     } else if (entry.action === "archive") {
+      const safety = await inspectManagedWorktreePath(entry.worktree, managedRoots);
+      if (!safety.safe) {
+        results.push({ ...entry, action: "preserve", reason: safety.reason, result: "preserved" });
+        continue;
+      }
       await mkdir(path.dirname(entry.archivePath), { recursive: true });
       await rename(entry.worktree, entry.archivePath);
       results.push({ ...entry, result: "archived" });
@@ -1146,7 +1502,7 @@ export async function cleanupWorktrees(cpbRoot: string, { policy = {}, dryRun = 
   return { ...plan, entries: results };
 }
 
-export function formatWorktreeRetentionHuman(plan: Record<string, any>) {
+export function formatWorktreeRetentionHuman(plan: WorktreeRetentionPrintablePlan) {
   const lines = [
     plan.dryRun ? "CodePatchBay Worktree Cleanup (dry-run)" : "CodePatchBay Worktree Cleanup",
     "",
@@ -1171,10 +1527,17 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const defaultRunCommand: CommandRunner = async (command, args, options) => {
+  const result = await execFileAsync(command, args, options);
+  return {
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+  };
+};
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const HYGIENE_TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
 
-function isTerminalJob(job: Record<string, any>) {
+function isTerminalJob(job: CleanupJob) {
   return HYGIENE_TERMINAL_STATUSES.has(job.status);
 }
 
@@ -1187,15 +1550,15 @@ function isStale(timestamp: string) {
   return Date.now() - new Date(timestamp).getTime() > STALE_THRESHOLD_MS;
 }
 
-async function runGh(args: string[], { runCommand = execFileAsync }: Record<string, any> = {}) {
+async function runGh(args: string[], { runCommand = defaultRunCommand }: BacklogHygieneOptions = {}) {
   const result = await runCommand("gh", args, {
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf8",
   });
-  return typeof result === "string" ? result : result.stdout;
+  return typeof result === "string" ? result : String(result.stdout ?? "");
 }
 
-async function listIssueComments({ repo, issueNumber }: Record<string, any>, { runCommand = execFileAsync }: Record<string, any> = {}) {
+async function listIssueComments({ repo, issueNumber }: IssueCommentQuery, { runCommand = defaultRunCommand }: BacklogHygieneOptions = {}): Promise<IssueComment[]> {
   const stdout = await runGh([
     "issue", "view", String(issueNumber),
     "--repo", repo,
@@ -1221,7 +1584,7 @@ export function isCpbComment(body: string) {
 }
 
 export function parseCpbCommentMeta(body: string) {
-  const meta: Record<string, any> = { kind: null, jobId: null, status: null };
+  const meta: CpbCommentMeta = { kind: null, jobId: null, status: null };
   if (!body) return meta;
 
   const jobMatch = body.match(/- Job:\s*(\S+)/);
@@ -1250,7 +1613,7 @@ export function parseCpbCommentMeta(body: string) {
   return meta;
 }
 
-export function buildStaleMarkerComment({ jobId, supersededBy, reason }: Record<string, any>) {
+export function buildStaleMarkerComment({ jobId, supersededBy, reason }: LooseRecord) {
   const lines = [
     "<!-- cpb-stale-marker -->",
     "> **CPB run superseded**",
@@ -1263,7 +1626,7 @@ export function buildStaleMarkerComment({ jobId, supersededBy, reason }: Record<
   return lines.join("\n");
 }
 
-export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQueueEntryId, reason }: Record<string, any>) {
+export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQueueEntryId, reason }: LooseRecord) {
   return [
     "### Issue superseded by newer CPB run",
     "",
@@ -1277,50 +1640,54 @@ export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQue
   ].filter((line) => line !== null).join("\n");
 }
 
-export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryRun = false, repo = null, runCommand = execFileAsync }: Record<string, any> = {}) {
+export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryRun = false, repo = null, runCommand = defaultRunCommand }: BacklogHygieneOptions = {}): Promise<StaleCommentsReport> {
   const jobs = await listJobsForCleanup(cpbRoot, { hubRoot });
   const queueEntries = await listHubQueue(hubRoot);
   const { readGithubIssues } = await import("../github/github-issues.js");
   const githubIssues = await readGithubIssues(hubRoot);
 
-  const jobsByIssue = new Map();
+  const jobsByIssue = new Map<string, CleanupJob[]>();
   for (const job of jobs) {
     if (!isTerminalJob(job)) continue;
     const source = job.sourceContext || {};
     if (source.type !== "github_issue" && source.issueNumber === undefined) continue;
     const r = source.repo || source.repository;
     const n = source.issueNumber;
-    if (!r || n === undefined || n === null) continue;
+    if (typeof r !== "string" || (typeof n !== "string" && typeof n !== "number")) continue;
     const key = issueKey(r, n);
     const list = jobsByIssue.get(key) || [];
     list.push(job);
     jobsByIssue.set(key, list);
   }
 
-  const queueByJobId = new Map();
-  const supersededEntries = [];
+  const queueByJobId = new Map<string, QueueEntry>();
+  const supersededEntries: QueueEntry[] = [];
   for (const entry of queueEntries) {
     const m = entry.metadata || {};
-    if (m.jobId) queueByJobId.set(m.jobId, entry);
-    if (m.originJobId) queueByJobId.set(m.originJobId, entry);
-    if (m.finalDisposition?.startsWith("superseded") || m.finalDisposition?.startsWith("rejected")) {
+    const jobId = typeof m.jobId === "string" ? m.jobId : null;
+    const originJobId = typeof m.originJobId === "string" ? m.originJobId : null;
+    const finalDisposition = typeof m.finalDisposition === "string" ? m.finalDisposition : "";
+    if (jobId) queueByJobId.set(jobId, entry);
+    if (originJobId) queueByJobId.set(originJobId, entry);
+    if (finalDisposition.startsWith("superseded") || finalDisposition.startsWith("rejected")) {
       supersededEntries.push(entry);
     }
   }
 
-  const report: Record<string, any> = {
+  const report: StaleCommentsReport = {
     issuesScanned: 0,
     staleComments: [],
     supersededIssues: [],
     errors: [],
   };
 
+  const normalizedIssues = githubIssues as GithubIssueForCleanup[];
   const targetIssues = repo
-    ? githubIssues.filter((i) => (i.repository || (i as Record<string, any>).repo) === repo && i.state !== "CLOSED")
-    : githubIssues.filter((i) => i.state !== "CLOSED");
+    ? normalizedIssues.filter((i) => (i.repository || i.repo) === repo && i.state !== "CLOSED")
+    : normalizedIssues.filter((i) => i.state !== "CLOSED");
 
   for (const issue of targetIssues) {
-    const r = issue.repository || (issue as Record<string, any>).repo;
+    const r = issue.repository || issue.repo;
     const n = issue.number;
     if (!r || !n) continue;
 
@@ -1329,33 +1696,33 @@ export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryR
     const issueJobs = jobsByIssue.get(key) || [];
 
     if (issueJobs.length === 0) continue;
-    const hasActiveRun = issueJobs.some((j: Record<string, any>) => !isTerminalJob(j));
+    const hasActiveRun = issueJobs.some((j) => !isTerminalJob(j));
     if (hasActiveRun) continue;
 
     let comments;
     try {
       comments = await listIssueComments({ repo: r, issueNumber: n }, { runCommand });
     } catch (err) {
-      report.errors.push({ repo: r, issueNumber: n, phase: "fetch_comments", message: err.message });
+      report.errors.push({ repo: r, issueNumber: n, phase: "fetch_comments", message: errorMessage(err) });
       continue;
     }
 
     const cpbComments = comments
-      .map((c: Record<string, any>) => ({ ...c, meta: parseCpbCommentMeta(c.body) }))
-      .filter((c: Record<string, any>) => isCpbComment(c.body) || c.meta.kind === "already-marked");
+      .map((c): CpbIssueComment => ({ ...c, meta: parseCpbCommentMeta(c.body) }))
+      .filter((c) => isCpbComment(c.body) || c.meta.kind === "already-marked");
 
     if (cpbComments.length === 0) continue;
 
-    const terminalComments = cpbComments.filter((c: Record<string, any>) => c.meta.kind === "terminal");
+    const terminalComments = cpbComments.filter((c) => c.meta.kind === "terminal");
     const latestTerminal = terminalComments.length > 0
       ? terminalComments[terminalComments.length - 1]
       : null;
 
     const alreadyMarkedIds = new Set(
-      cpbComments.filter((c: Record<string, any>) => c.meta.kind === "already-marked").map((c: Record<string, any>) => c.id),
+      cpbComments.filter((c) => c.meta.kind === "already-marked").map((c) => c.id),
     );
 
-    const staleCandidates = cpbComments.filter((c: Record<string, any>) => {
+    const staleCandidates = cpbComments.filter((c) => {
       if (c.meta.kind === "already-marked") return false;
       if (alreadyMarkedIds.has(c.id)) return false;
       if (c.meta.kind === "queued" && terminalComments.length > 0) return true;
@@ -1397,7 +1764,7 @@ export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryR
             issueNumber: n,
             phase: "mark_stale_comment",
             commentId: stale.id,
-            message: err.message,
+            message: errorMessage(err),
           });
         }
       }
@@ -1410,8 +1777,8 @@ export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryR
 
     for (const entry of matchingSuperseded) {
       const m = entry.metadata || {};
-      const supersededByQueueId = m.supersededByQueueEntryId || m.supersededByJobId || null;
-      const reason = m.finalDisposition || "superseded";
+      const supersededByQueueId = stringOrNull(m.supersededByQueueEntryId || m.supersededByJobId);
+      const reason = stringOrNull(m.finalDisposition) || "superseded";
 
       if (!isStale(entry.updatedAt || entry.createdAt)) continue;
 
@@ -1437,7 +1804,7 @@ export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryR
             repo: r,
             issueNumber: n,
             phase: "close_superseded_issue",
-            message: err.message,
+            message: errorMessage(err),
           });
         }
       }
@@ -1447,7 +1814,7 @@ export async function scanStaleComments(cpbRoot: string, hubRoot: string, { dryR
   return report;
 }
 
-export async function runBacklogHygiene(cpbRoot: string, { dryRun = false, repo = null, runCommand = execFileAsync }: Record<string, any> = {}) {
+export async function runBacklogHygiene(cpbRoot: string, { dryRun = false, repo = null, runCommand = defaultRunCommand }: BacklogHygieneOptions = {}) {
   const hubRoot = resolvedHubRoot(cpbRoot);
   return scanStaleComments(cpbRoot, hubRoot, { dryRun, repo, runCommand });
 }

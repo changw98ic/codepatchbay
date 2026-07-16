@@ -115,6 +115,36 @@ test("runCommandTree: timeout tears down the whole process group (grandchild rea
   assert.equal(alive, false, "grandchild in the process group must be reaped by killTree");
 });
 
+test("runCommandTree: timeout also tears down a detached grandchild process group", async () => {
+  const cwd = await makeCwd();
+  const pidFile = join(cwd, "detached-grandchild.pid");
+  const gcScript = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},10000);`;
+  const script = `const cp=require('child_process');const g=cp.spawn(process.execPath,['-e',${JSON.stringify(gcScript)}],{stdio:'ignore',detached:true});g.unref();setInterval(()=>{},10000);`;
+  const result = await runCommandTree("node", ["-e", script], {
+    cwd,
+    timeoutMs: 3000,
+    graceMs: 300,
+  });
+  assert.equal(result.timedOut, true);
+
+  const grandchildPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+  assert.ok(Number.isFinite(grandchildPid) && grandchildPid > 0);
+  let alive = true;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      process.kill(grandchildPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      alive = false;
+      break;
+    }
+  }
+  if (alive) {
+    try { process.kill(grandchildPid, "SIGKILL"); } catch {}
+  }
+  assert.equal(alive, false, "detached grandchild must not survive the command timeout");
+});
+
 test("killTree: direct call is a no-op on a missing pid", () => {
   // A very large pid is essentially guaranteed not to exist; killTree must not throw.
   assert.doesNotThrow(() => killTree(999999, 50));

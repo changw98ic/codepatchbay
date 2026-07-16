@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { LooseRecord } from "../shared/types.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { readdir } from "node:fs/promises";
@@ -33,7 +34,7 @@ async function collectTestFiles(dir: string): Promise<string[]> {
   return results;
 }
 
-async function runTests(files: string[], opts: Record<string, any> = {}) {
+async function runTests(files: string[], opts: LooseRecord = {}) {
   const { concurrency = undefined, env: envOverrides = {}, label = "tests" } = opts;
   const args = ["--test", ...files];
   if (concurrency !== undefined) {
@@ -90,6 +91,37 @@ const isolatedUnitFiles = new Set([
   // depends on OS scheduler timing and must not compete with the full unit
   // suite's child-process load.
   "tests/process-tree.test.js",
+  // These tests spawn real CLI processes with timeout assertions. Under the
+  // parallel focused suite, CPU-heavy workflow tests can starve the child
+  // process and turn the assertion into a harness timeout.
+  "tests/patch-integrity.test.js",
+  "tests/product-gate.test.js",
+  // Spawns the quota delegate as a real Node child process and waits for a lock
+  // file. Under the parallel unit suite, other process-heavy tests can starve
+  // child startup long enough to look like a delegate readiness failure.
+  "tests/quota-delegate.test.js",
+  // Exercises the bounded Claude CLI transport with real child processes that
+  // intentionally remain alive after emitting output, plus a real quota
+  // delegate. Parallel process pressure can starve stream handling until the
+  // transport's production timeout and turn successful early termination into
+  // a false timeout.
+  "tests/claude-glm-cli-transport.test.js",
+  // Spawns trusted probe subprocesses with bounded timeouts. Under the full
+  // parallel suite, process-heavy Hub tests can starve the probe long enough
+  // to turn a successful command into a false timeout.
+  "tests/checklist-verifier-gate.test.js",
+  // Runs real syntax/test subprocesses through the verification hard gate.
+  // Parallel process pressure can exhaust the bounded 30-second command
+  // window and manufacture a verification failure even though the same
+  // frozen candidate passes immediately in isolation.
+  "tests/deterministic-light-verify.test.js",
+  // Verifies that an idle Redis socket is unref'd by observing child-process
+  // exit timing; parallel process pressure can exceed its two-second bound.
+  "tests/hub-state-redis.test.js",
+  // Spawns nested Node processes with short timeout assertions; running under
+  // the parallel focused suite can starve the child process enough to look like
+  // a timeout instead of the intended exit-code assertion.
+  "tests/verify-p0p1-runner.test.js",
 ]);
 
 const isolatedIntegrationFiles = new Set([

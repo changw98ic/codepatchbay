@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { LooseRecord } from "../../shared/types.js";
 /**
  * CLI command for cancel/redirect operations.
  * Routed as: cpb cancel <project> <jobId> [reason]
@@ -14,7 +15,7 @@ function printUsage(command: string) {
   }
 }
 
-export async function run(args: string[], context: Record<string, any>) {
+export async function run(args: string[], context: LooseRecord) {
   const command = context?.command;
   const cpbRoot = context?.cpbRoot || process.env.CPB_ROOT;
 
@@ -34,8 +35,11 @@ export async function run(args: string[], context: Record<string, any>) {
       printUsage("cancel");
       return 1;
     }
-    const job = await requestCancelJob(cpbRoot, project, jobId, {
+    const { dataRoot, hubRoot } = await resolveProjectRuntime(String(cpbRoot), project);
+    const job = await requestCancelJob(String(cpbRoot), project, jobId, {
       reason: reasonParts.join(" ") || undefined,
+      dataRoot,
+      hubRoot,
     });
     console.log(JSON.stringify(job, null, 2));
   } else if (command === "redirect") {
@@ -44,9 +48,11 @@ export async function run(args: string[], context: Record<string, any>) {
       printUsage("redirect");
       return 1;
     }
-    const job = await requestRedirectJob(cpbRoot, project, jobId, {
+    const { dataRoot } = await resolveProjectRuntime(String(cpbRoot), project);
+    const job = await requestRedirectJob(String(cpbRoot), project, jobId, {
       instructions,
       reason: reasonParts.join(" ") || undefined,
+      dataRoot,
     });
     console.log(JSON.stringify(job, null, 2));
   } else {
@@ -55,6 +61,19 @@ export async function run(args: string[], context: Record<string, any>) {
   }
 
   return 0;
+}
+
+async function resolveProjectRuntime(cpbRoot: string, projectId: string) {
+  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const configuredRoot = process.env.CPB_PROJECT_RUNTIME_ROOT;
+  if (configuredRoot) return { hubRoot, dataRoot: configuredRoot };
+
+  const project = await getProject(hubRoot, projectId);
+  if (!project?.projectRuntimeRoot) {
+    throw new Error(`project runtime root required for project '${projectId}'`);
+  }
+  return { hubRoot, dataRoot: project.projectRuntimeRoot };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

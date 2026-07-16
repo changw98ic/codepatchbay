@@ -1,21 +1,22 @@
+import type { LooseRecord } from "../../shared/types.js";
 export const WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 export const PLAN_MODES = new Set(["none", "light", "full", "parent"]);
 
-const WORKFLOW_RANK = {
+const WORKFLOW_RANK: Record<string, number> = {
   direct: 0,
   standard: 1,
   complex: 2,
   blocked: 3,
 };
 
-const PLAN_MODE_RANK = {
+const PLAN_MODE_RANK: Record<string, number> = {
   none: 0,
   light: 1,
   parent: 2,
   full: 3,
 };
 
-const WORKFLOW_DEFAULT_PLAN_MODE = {
+const WORKFLOW_DEFAULT_PLAN_MODE: Record<string, string> = {
   direct: "none",
   standard: "full",
   complex: "full",
@@ -41,7 +42,7 @@ export function defaultPlanModeForWorkflow(workflow: string) {
   return WORKFLOW_DEFAULT_PLAN_MODE[workflow] || "light";
 }
 
-export function scopesContainCritical(protectedScopes: (string | Record<string, unknown>)[] = []) {
+export function scopesContainCritical(protectedScopes: (string | LooseRecord)[] = []) {
   return (protectedScopes || []).some((scope) => typeof scope === "object" && scope !== null && scope.severity === "critical");
 }
 
@@ -78,7 +79,7 @@ type NormalizedRoute = {
   source: string;
 };
 
-export function normalizeRoute(route: Record<string, unknown> = {}, defaults: Record<string, unknown> = {}): NormalizedRoute {
+export function normalizeRoute(route: LooseRecord = {}, defaults: LooseRecord = {}): NormalizedRoute {
   const routeWorkflow = typeof route.workflow === "string" ? route.workflow : undefined;
   const defaultsWorkflow = typeof defaults.workflow === "string" ? defaults.workflow : undefined;
   const routePlanMode = typeof route.planMode === "string" ? route.planMode : undefined;
@@ -119,7 +120,7 @@ export function isRouteDowngrade(candidate: NormalizedRoute, current: Normalized
   return routeStrength(candidate) < routeStrength(current);
 }
 
-export function normalizeProtectedScopes(scopes: Record<string, unknown>[] = []) {
+export function normalizeProtectedScopes(scopes: LooseRecord[] = []) {
   const byScope = new Map();
   for (const scope of scopes || []) {
     const name = cleanString(scope?.scope || scope);
@@ -143,7 +144,7 @@ export function normalizeProtectedScopes(scopes: Record<string, unknown>[] = [])
   return [...byScope.values()];
 }
 
-function actualDiffProtected(actualDiffRisk: Record<string, unknown>) {
+function actualDiffProtected(actualDiffRisk: LooseRecord) {
   return Boolean(actualDiffRisk?.protected || actualDiffRisk?.risk === "protected");
 }
 
@@ -152,12 +153,12 @@ function strongerRoute(a: NormalizedRoute, b: NormalizedRoute): NormalizedRoute 
 }
 
 interface MergeRoutePolicyInput {
-  ruleRoute?: Record<string, unknown>;
-  requestedRoute?: Record<string, unknown>;
-  acpRoute?: Record<string, unknown> | null;
-  actorTrust?: Record<string, unknown>;
-  protectedScopes?: Record<string, unknown>[];
-  actualDiffRisk?: Record<string, unknown> | null;
+  ruleRoute?: LooseRecord;
+  requestedRoute?: LooseRecord;
+  acpRoute?: LooseRecord | null;
+  actorTrust?: LooseRecord;
+  protectedScopes?: LooseRecord[];
+  actualDiffRisk?: LooseRecord | null;
   reasons?: string[];
 }
 
@@ -188,7 +189,8 @@ export function mergeRoutePolicy({
   let effective = base;
   const policyReasons = [base.reason, ...(reasons || [])].filter(Boolean);
 
-  for (const candidate of [rule, requested, acp].filter(Boolean)) {
+  const candidates: NormalizedRoute[] = [rule, requested, acp].filter((candidate): candidate is NormalizedRoute => Boolean(candidate));
+  for (const candidate of candidates) {
     if (!isRouteDowngrade(candidate, effective)) {
       effective = strongerRoute(effective, candidate);
       if (candidate.reason) policyReasons.push(candidate.reason);

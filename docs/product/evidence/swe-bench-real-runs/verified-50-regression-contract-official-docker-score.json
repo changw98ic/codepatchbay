@@ -1,0 +1,1891 @@
+{
+  "schemaVersion": 1,
+  "scoredAt": "2026-06-28T16:57:10.828Z",
+  "validationMode": "swe-bench-verified-real-run-regression-contract",
+  "summary": {
+    "totalInstances": 50,
+    "submittedInstances": 50,
+    "completedNonEmptyInstances": 49,
+    "resolvedInstances": 46,
+    "unresolvedNonEmptyInstances": 3,
+    "emptyPatchInstances": 1,
+    "errorInstances": 0,
+    "resolvedRateSubmitted": 0.92,
+    "resolvedRateNonEmpty": 0.9387755102040817,
+    "unresolvedOrEmptySubmitted": 4,
+    "missingSourceInstances": 1,
+    "missingTestInstances": 1,
+    "nonEmptyWithSourceAndTests": 49,
+    "timedOutCpbRuns": 2,
+    "emptyEvidenceCpbRuns": 0,
+    "harnessErrorInstances": 0
+  },
+  "harness": {
+    "package": "swebench",
+    "version": "4.1.0",
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "maxWorkers": 2,
+    "timeoutSeconds": 1800,
+    "forceRebuild": false,
+    "cacheLevel": "instance",
+    "clean": false,
+    "runId": "cpb-regression-contract-50-20260628",
+    "modelNameOrPath": "cpb-regression-contract-light",
+    "commandPath": "/tmp/cpb-swebench-50-regression-contract/score/official-score-command.full.txt",
+    "logPath": "/tmp/cpb-swebench-50-regression-contract/score/official-score.log",
+    "dockerInfoPath": "/tmp/cpb-swebench-50-regression-contract/score/docker-info.txt",
+    "environmentWorkaround": "HOME and DOCKER_CONFIG were isolated under the batch score directory to avoid Docker Desktop credential-helper hangs during Python SDK image pulls."
+  },
+  "cpbGeneration": {
+    "manifestPath": "/tmp/cpb-swebench-50-regression-contract/product-validation-index.json",
+    "instanceListPath": "/tmp/cpb-swebench-50-regression-contract/instances.txt",
+    "outputRoot": "/tmp/cpb-swebench-50-regression-contract",
+    "evidenceDir": "/tmp/cpb-swebench-50-regression-contract/evidence",
+    "logsDir": "/tmp/cpb-swebench-50-regression-contract/logs",
+    "tailLogsDir": "/tmp/cpb-swebench-50-regression-contract/logs-tail",
+    "retryLogsDir": "/tmp/cpb-swebench-50-regression-contract/logs-retry",
+    "planMode": "light",
+    "concurrency": "2 main + 2 tail during disjoint tail fanout; duplicate overlap stopped before duplicate evidence was consumed",
+    "perInstanceTimeoutMs": 1800000,
+    "selection": {
+      "count": 50,
+      "excludedHistoricalInstances": 73,
+      "rule": "first 50 dataset rows not found in existing docs/product/evidence JSON instance ids"
+    },
+    "counts": {
+      "total": 50,
+      "evidence": 50,
+      "withSource": 49,
+      "withTests": 49,
+      "emptyPatch": 1,
+      "missingEvidence": 0,
+      "timedOut": 2,
+      "jobStatuses": {
+        "failed": 48,
+        "cancelled": 2
+      }
+    },
+    "notes": [
+      "The runner prompt required each non-empty SWE-bench attempt to include minimal real in-repository regression coverage and avoid fake/fixture/snapshot/test-double edits just to satisfy validation.",
+      "django__django-13028 initially hit a transient Hugging Face rows API 502 in the tail lane; it was rerun manually and produced source plus test changes before scoring.",
+      "django__django-13195 was rerun manually after the tail timeout and reproduced an execute-phase ACP session hang: session_new occurred, no tool/edit output was produced, and the worker timed out after 1800000ms with an empty worktree diff.",
+      "django__django-12708 timed out at the CPB worker boundary but had a non-empty source+test patch and was accepted by the official harness; it resolved officially."
+    ]
+  },
+  "predictionBuild": {
+    "predictionsPath": "/tmp/cpb-swebench-50-regression-contract/score/predictions.jsonl",
+    "summaryPath": "/tmp/cpb-swebench-50-regression-contract/score/predictions-summary.json",
+    "sourceAndTestFilter": "Predictions include source plus in-repository test changes. Empty patches are preserved in predictions.jsonl and counted by the official harness as empty_patch_instances.",
+    "counts": {
+      "total": 50,
+      "evidence": 50,
+      "nonEmptyPatch": 49,
+      "emptyPatch": 1,
+      "withSource": 49,
+      "withTests": 49,
+      "timedOut": 2,
+      "errors": 0
+    },
+    "emptyPatchInstances": [
+      {
+        "instanceId": "django__django-13195",
+        "cpbJobStatus": "cancelled",
+        "workerTimedOut": true,
+        "workerErrorMessage": "managed worker timed out after 1800000ms",
+        "changedPaths": [],
+        "sourcePaths": [],
+        "testPaths": [],
+        "patchBytes": 0,
+        "officialOutcome": "empty_patch"
+      }
+    ],
+    "timedOutInstances": [
+      {
+        "instanceId": "django__django-12708",
+        "emptyPatch": false,
+        "patchBytes": 748,
+        "changedPaths": [
+          "django/db/backends/base/schema.py",
+          "tests/migrations/test_operations.py"
+        ],
+        "sourcePaths": [
+          "django/db/backends/base/schema.py"
+        ],
+        "testPaths": [
+          "tests/migrations/test_operations.py"
+        ],
+        "officialOutcome": "resolved",
+        "workerErrorMessage": "managed worker timed out after 1800000ms"
+      },
+      {
+        "instanceId": "django__django-13195",
+        "emptyPatch": true,
+        "patchBytes": 0,
+        "changedPaths": [],
+        "sourcePaths": [],
+        "testPaths": [],
+        "officialOutcome": "empty_patch",
+        "workerErrorMessage": "managed worker timed out after 1800000ms"
+      }
+    ],
+    "unresolvedNonEmptyInstances": [
+      {
+        "instanceId": "astropy__astropy-14182",
+        "repository": "astropy/astropy",
+        "changedPaths": [
+          "astropy/io/ascii/rst.py",
+          "astropy/io/ascii/tests/test_rst.py"
+        ],
+        "sourcePaths": [
+          "astropy/io/ascii/rst.py"
+        ],
+        "testPaths": [
+          "astropy/io/ascii/tests/test_rst.py"
+        ],
+        "patchBytes": 798
+      },
+      {
+        "instanceId": "astropy__astropy-14365",
+        "repository": "astropy/astropy",
+        "changedPaths": [
+          "astropy/io/ascii/qdp.py",
+          "astropy/io/ascii/tests/test_qdp.py"
+        ],
+        "sourcePaths": [
+          "astropy/io/ascii/qdp.py"
+        ],
+        "testPaths": [
+          "astropy/io/ascii/tests/test_qdp.py"
+        ],
+        "patchBytes": 471
+      },
+      {
+        "instanceId": "django__django-12308",
+        "repository": "django/django",
+        "changedPaths": [
+          "django/contrib/admin/utils.py",
+          "tests/admin_utils/tests.py"
+        ],
+        "sourcePaths": [
+          "django/contrib/admin/utils.py"
+        ],
+        "testPaths": [
+          "tests/admin_utils/tests.py"
+        ],
+        "patchBytes": 677
+      }
+    ]
+  },
+  "officialReport": {
+    "total_instances": 50,
+    "submitted_instances": 50,
+    "completed_instances": 49,
+    "resolved_instances": 46,
+    "unresolved_instances": 3,
+    "empty_patch_instances": 1,
+    "error_instances": 0,
+    "completed_ids": [
+      "astropy__astropy-13453",
+      "astropy__astropy-14182",
+      "astropy__astropy-14365",
+      "astropy__astropy-7166",
+      "django__django-11119",
+      "django__django-11206",
+      "django__django-11815",
+      "django__django-11820",
+      "django__django-11848",
+      "django__django-11880",
+      "django__django-11885",
+      "django__django-11951",
+      "django__django-11964",
+      "django__django-11999",
+      "django__django-12039",
+      "django__django-12050",
+      "django__django-12125",
+      "django__django-12143",
+      "django__django-12155",
+      "django__django-12193",
+      "django__django-12209",
+      "django__django-12262",
+      "django__django-12273",
+      "django__django-12276",
+      "django__django-12304",
+      "django__django-12308",
+      "django__django-12325",
+      "django__django-12406",
+      "django__django-12663",
+      "django__django-12708",
+      "django__django-12713",
+      "django__django-12741",
+      "django__django-12754",
+      "django__django-12774",
+      "django__django-12858",
+      "django__django-12965",
+      "django__django-13012",
+      "django__django-13023",
+      "django__django-13028",
+      "django__django-13033",
+      "django__django-13089",
+      "django__django-13109",
+      "django__django-13112",
+      "django__django-13121",
+      "django__django-13158",
+      "django__django-13212",
+      "django__django-13279",
+      "django__django-13297",
+      "django__django-13315"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [
+      "django__django-13195"
+    ],
+    "submitted_ids": [
+      "astropy__astropy-13453",
+      "astropy__astropy-14182",
+      "astropy__astropy-14365",
+      "astropy__astropy-7166",
+      "django__django-11119",
+      "django__django-11206",
+      "django__django-11815",
+      "django__django-11820",
+      "django__django-11848",
+      "django__django-11880",
+      "django__django-11885",
+      "django__django-11951",
+      "django__django-11964",
+      "django__django-11999",
+      "django__django-12039",
+      "django__django-12050",
+      "django__django-12125",
+      "django__django-12143",
+      "django__django-12155",
+      "django__django-12193",
+      "django__django-12209",
+      "django__django-12262",
+      "django__django-12273",
+      "django__django-12276",
+      "django__django-12304",
+      "django__django-12308",
+      "django__django-12325",
+      "django__django-12406",
+      "django__django-12663",
+      "django__django-12708",
+      "django__django-12713",
+      "django__django-12741",
+      "django__django-12754",
+      "django__django-12774",
+      "django__django-12858",
+      "django__django-12965",
+      "django__django-13012",
+      "django__django-13023",
+      "django__django-13028",
+      "django__django-13033",
+      "django__django-13089",
+      "django__django-13109",
+      "django__django-13112",
+      "django__django-13121",
+      "django__django-13158",
+      "django__django-13195",
+      "django__django-13212",
+      "django__django-13279",
+      "django__django-13297",
+      "django__django-13315"
+    ],
+    "resolved_ids": [
+      "astropy__astropy-13453",
+      "astropy__astropy-7166",
+      "django__django-11119",
+      "django__django-11206",
+      "django__django-11815",
+      "django__django-11820",
+      "django__django-11848",
+      "django__django-11880",
+      "django__django-11885",
+      "django__django-11951",
+      "django__django-11964",
+      "django__django-11999",
+      "django__django-12039",
+      "django__django-12050",
+      "django__django-12125",
+      "django__django-12143",
+      "django__django-12155",
+      "django__django-12193",
+      "django__django-12209",
+      "django__django-12262",
+      "django__django-12273",
+      "django__django-12276",
+      "django__django-12304",
+      "django__django-12325",
+      "django__django-12406",
+      "django__django-12663",
+      "django__django-12708",
+      "django__django-12713",
+      "django__django-12741",
+      "django__django-12754",
+      "django__django-12774",
+      "django__django-12858",
+      "django__django-12965",
+      "django__django-13012",
+      "django__django-13023",
+      "django__django-13028",
+      "django__django-13033",
+      "django__django-13089",
+      "django__django-13109",
+      "django__django-13112",
+      "django__django-13121",
+      "django__django-13158",
+      "django__django-13212",
+      "django__django-13279",
+      "django__django-13297",
+      "django__django-13315"
+    ],
+    "unresolved_ids": [
+      "astropy__astropy-14182",
+      "astropy__astropy-14365",
+      "django__django-12308"
+    ],
+    "error_ids": [],
+    "schema_version": 2
+  },
+  "samples": [
+    {
+      "instanceId": "astropy__astropy-13453",
+      "repository": "astropy/astropy",
+      "baseCommit": "19cc80471739bcb67b7e8099246b391c355023ee",
+      "failToPassTests": 1,
+      "passToPassTests": 9,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 900,
+      "changedPaths": [
+        "astropy/io/ascii/html.py",
+        "astropy/io/ascii/tests/test_html.py"
+      ],
+      "sourcePaths": [
+        "astropy/io/ascii/html.py"
+      ],
+      "testPaths": [
+        "astropy/io/ascii/tests/test_html.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/astropy-astropy-13453-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-astropy-astropy-13453-1782654909447/hub/worktrees/job-astropy-astropy-13453-pipeline"
+    },
+    {
+      "instanceId": "astropy__astropy-14182",
+      "repository": "astropy/astropy",
+      "baseCommit": "a5917978be39d13cd90b517e1de4e7a539ffaa48",
+      "failToPassTests": 1,
+      "passToPassTests": 9,
+      "officialOutcome": "unresolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 798,
+      "changedPaths": [
+        "astropy/io/ascii/rst.py",
+        "astropy/io/ascii/tests/test_rst.py"
+      ],
+      "sourcePaths": [
+        "astropy/io/ascii/rst.py"
+      ],
+      "testPaths": [
+        "astropy/io/ascii/tests/test_rst.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/astropy-astropy-14182-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-astropy-astropy-14182-1782654910535/hub/worktrees/job-astropy-astropy-14182-pipeline"
+    },
+    {
+      "instanceId": "astropy__astropy-14365",
+      "repository": "astropy/astropy",
+      "baseCommit": "7269fa3e33e8d02485a647da91a5a2a60a06af61",
+      "failToPassTests": 1,
+      "passToPassTests": 8,
+      "officialOutcome": "unresolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 471,
+      "changedPaths": [
+        "astropy/io/ascii/qdp.py",
+        "astropy/io/ascii/tests/test_qdp.py"
+      ],
+      "sourcePaths": [
+        "astropy/io/ascii/qdp.py"
+      ],
+      "testPaths": [
+        "astropy/io/ascii/tests/test_qdp.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/astropy-astropy-14365-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-astropy-astropy-14365-1782655535477/hub/worktrees/job-astropy-astropy-14365-pipeline"
+    },
+    {
+      "instanceId": "astropy__astropy-7166",
+      "repository": "astropy/astropy",
+      "baseCommit": "26d147868f8a891a6009a25cd6a8576d2e1bd747",
+      "failToPassTests": 1,
+      "passToPassTests": 6,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 527,
+      "changedPaths": [
+        "astropy/utils/misc.py",
+        "astropy/utils/tests/test_misc.py"
+      ],
+      "sourcePaths": [
+        "astropy/utils/misc.py"
+      ],
+      "testPaths": [
+        "astropy/utils/tests/test_misc.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/astropy-astropy-7166-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-astropy-astropy-7166-1782655560618/hub/worktrees/job-astropy-astropy-7166-pipeline"
+    },
+    {
+      "instanceId": "django__django-11119",
+      "repository": "django/django",
+      "baseCommit": "d4df5e1b0b1c643fe0fc521add0236764ec8e92a",
+      "failToPassTests": 1,
+      "passToPassTests": 7,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 479,
+      "changedPaths": [
+        "django/template/engine.py",
+        "tests/template_tests/test_engine.py"
+      ],
+      "sourcePaths": [
+        "django/template/engine.py"
+      ],
+      "testPaths": [
+        "tests/template_tests/test_engine.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11119-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11119-1782656070235/hub/worktrees/job-django-django-11119-pipeline"
+    },
+    {
+      "instanceId": "django__django-11206",
+      "repository": "django/django",
+      "baseCommit": "571ab44e8a8936014c22e7eebe4948d9611fd7ce",
+      "failToPassTests": 2,
+      "passToPassTests": 4,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1521,
+      "changedPaths": [
+        "django/utils/numberformat.py",
+        "tests/utils_tests/test_numberformat.py"
+      ],
+      "sourcePaths": [
+        "django/utils/numberformat.py"
+      ],
+      "testPaths": [
+        "tests/utils_tests/test_numberformat.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11206-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11206-1782656125888/hub/worktrees/job-django-django-11206-pipeline"
+    },
+    {
+      "instanceId": "django__django-11815",
+      "repository": "django/django",
+      "baseCommit": "e02f67ef2d03d48128e7a118bf75f0418e24e8ac",
+      "failToPassTests": 2,
+      "passToPassTests": 44,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 769,
+      "changedPaths": [
+        "django/db/migrations/serializer.py",
+        "tests/migrations/test_writer.py"
+      ],
+      "sourcePaths": [
+        "django/db/migrations/serializer.py"
+      ],
+      "testPaths": [
+        "tests/migrations/test_writer.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11815-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11815-1782656297640/hub/worktrees/job-django-django-11815-pipeline"
+    },
+    {
+      "instanceId": "django__django-11820",
+      "repository": "django/django",
+      "baseCommit": "c2678e49759e5c4c329bff0eeca2886267005d21",
+      "failToPassTests": 2,
+      "passToPassTests": 61,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 818,
+      "changedPaths": [
+        "django/db/models/base.py",
+        "tests/invalid_models_tests/test_models.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/base.py"
+      ],
+      "testPaths": [
+        "tests/invalid_models_tests/test_models.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11820-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11820-1782656463834/hub/worktrees/job-django-django-11820-pipeline"
+    },
+    {
+      "instanceId": "django__django-11848",
+      "repository": "django/django",
+      "baseCommit": "f0adf3b9b7a19cdee05368ff0c0c2d087f011180",
+      "failToPassTests": 2,
+      "passToPassTests": 43,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 762,
+      "changedPaths": [
+        "django/utils/http.py",
+        "tests/utils_tests/test_http.py"
+      ],
+      "sourcePaths": [
+        "django/utils/http.py"
+      ],
+      "testPaths": [
+        "tests/utils_tests/test_http.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11848-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11848-1782656629942/hub/worktrees/job-django-django-11848-pipeline"
+    },
+    {
+      "instanceId": "django__django-11880",
+      "repository": "django/django",
+      "baseCommit": "06909fe084f87a65459a83bd69d7cdbe4fce9a7c",
+      "failToPassTests": 1,
+      "passToPassTests": 114,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 422,
+      "changedPaths": [
+        "django/forms/fields.py",
+        "tests/forms_tests/tests/test_forms.py"
+      ],
+      "sourcePaths": [
+        "django/forms/fields.py"
+      ],
+      "testPaths": [
+        "tests/forms_tests/tests/test_forms.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11880-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11880-1782656824661/hub/worktrees/job-django-django-11880-pipeline"
+    },
+    {
+      "instanceId": "django__django-11885",
+      "repository": "django/django",
+      "baseCommit": "04ac9b45a34440fa447feb6ae934687aacbfc5f4",
+      "failToPassTests": 1,
+      "passToPassTests": 43,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 7499,
+      "changedPaths": [
+        "django/contrib/admin/utils.py",
+        "django/db/models/deletion.py",
+        "tests/delete/tests.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/admin/utils.py",
+        "django/db/models/deletion.py"
+      ],
+      "testPaths": [
+        "tests/delete/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11885-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11885-1782656953593/hub/worktrees/job-django-django-11885-pipeline"
+    },
+    {
+      "instanceId": "django__django-11951",
+      "repository": "django/django",
+      "baseCommit": "312049091288dbba2299de8d07ea3e3311ed7238",
+      "failToPassTests": 1,
+      "passToPassTests": 21,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 870,
+      "changedPaths": [
+        "django/db/models/query.py",
+        "tests/bulk_create/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/query.py"
+      ],
+      "testPaths": [
+        "tests/bulk_create/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11951-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11951-1782657075287/hub/worktrees/job-django-django-11951-pipeline"
+    },
+    {
+      "instanceId": "django__django-11964",
+      "repository": "django/django",
+      "baseCommit": "fc2b1cc926e34041953738e58fa6ad3053059b22",
+      "failToPassTests": 2,
+      "passToPassTests": 15,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 424,
+      "changedPaths": [
+        "django/db/models/enums.py",
+        "tests/model_enums/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/enums.py"
+      ],
+      "testPaths": [
+        "tests/model_enums/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11964-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11964-1782657340565/hub/worktrees/job-django-django-11964-pipeline"
+    },
+    {
+      "instanceId": "django__django-11999",
+      "repository": "django/django",
+      "baseCommit": "84633905273fc916e3d17883810d9969c03f73c2",
+      "failToPassTests": 1,
+      "passToPassTests": 30,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1026,
+      "changedPaths": [
+        "django/db/models/fields/__init__.py",
+        "tests/model_fields/models.py",
+        "tests/model_fields/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/fields/__init__.py"
+      ],
+      "testPaths": [
+        "tests/model_fields/models.py",
+        "tests/model_fields/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-11999-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11999-1782657607668/hub/worktrees/job-django-django-11999-pipeline"
+    },
+    {
+      "instanceId": "django__django-12039",
+      "repository": "django/django",
+      "baseCommit": "58c1acb1d6054dfec29d0f30b1033bae6ef62aec",
+      "failToPassTests": 1,
+      "passToPassTests": 11,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1355,
+      "changedPaths": [
+        "django/db/backends/ddl_references.py",
+        "tests/indexes/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/backends/ddl_references.py"
+      ],
+      "testPaths": [
+        "tests/indexes/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12039-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12039-1782657631576/hub/worktrees/job-django-django-12039-pipeline"
+    },
+    {
+      "instanceId": "django__django-12050",
+      "repository": "django/django",
+      "baseCommit": "b93a0e34d9b9b99d41103782b7e7aeabf47517e3",
+      "failToPassTests": 1,
+      "passToPassTests": 10,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 494,
+      "changedPaths": [
+        "django/db/models/sql/query.py",
+        "tests/queries/test_query.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/query.py"
+      ],
+      "testPaths": [
+        "tests/queries/test_query.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12050-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12050-1782657868791/hub/worktrees/job-django-django-12050-pipeline"
+    },
+    {
+      "instanceId": "django__django-12125",
+      "repository": "django/django",
+      "baseCommit": "89d41cba392b759732ba9f1db4ff29ed47da6a56",
+      "failToPassTests": 2,
+      "passToPassTests": 45,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1952,
+      "changedPaths": [
+        "django/db/migrations/serializer.py",
+        "tests/migrations/test_writer.py"
+      ],
+      "sourcePaths": [
+        "django/db/migrations/serializer.py"
+      ],
+      "testPaths": [
+        "tests/migrations/test_writer.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12125-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12125-1782657932535/hub/worktrees/job-django-django-12125-pipeline"
+    },
+    {
+      "instanceId": "django__django-12143",
+      "repository": "django/django",
+      "baseCommit": "5573a54d409bb98b5c5acdb308310bed02d392c2",
+      "failToPassTests": 1,
+      "passToPassTests": 52,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 709,
+      "changedPaths": [
+        "django/contrib/admin/options.py",
+        "tests/admin_changelist/tests.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/admin/options.py"
+      ],
+      "testPaths": [
+        "tests/admin_changelist/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12143-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12143-1782658151451/hub/worktrees/job-django-django-12143-pipeline"
+    },
+    {
+      "instanceId": "django__django-12155",
+      "repository": "django/django",
+      "baseCommit": "e8fcdaad5c428878d0a5d6ba820d957013f75595",
+      "failToPassTests": 1,
+      "passToPassTests": 6,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 700,
+      "changedPaths": [
+        "django/contrib/admindocs/utils.py",
+        "tests/admin_docs/test_utils.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/admindocs/utils.py"
+      ],
+      "testPaths": [
+        "tests/admin_docs/test_utils.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12155-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12155-1782658349822/hub/worktrees/job-django-django-12155-pipeline"
+    },
+    {
+      "instanceId": "django__django-12193",
+      "repository": "django/django",
+      "baseCommit": "3fb7c12158a2402f0f80824f6778112071235803",
+      "failToPassTests": 1,
+      "passToPassTests": 11,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 500,
+      "changedPaths": [
+        "django/forms/widgets.py",
+        "tests/forms_tests/widget_tests/test_checkboxinput.py"
+      ],
+      "sourcePaths": [
+        "django/forms/widgets.py"
+      ],
+      "testPaths": [
+        "tests/forms_tests/widget_tests/test_checkboxinput.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12193-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12193-1782658488672/hub/worktrees/job-django-django-12193-pipeline"
+    },
+    {
+      "instanceId": "django__django-12209",
+      "repository": "django/django",
+      "baseCommit": "5a68f024987e6d16c2626a31bf653a2edddea579",
+      "failToPassTests": 1,
+      "passToPassTests": 0,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 465,
+      "changedPaths": [
+        "django/db/models/base.py",
+        "tests/serializers/models/data.py",
+        "tests/serializers/test_data.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/base.py"
+      ],
+      "testPaths": [
+        "tests/serializers/models/data.py",
+        "tests/serializers/test_data.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12209-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12209-1782658602431/hub/worktrees/job-django-django-12209-pipeline"
+    },
+    {
+      "instanceId": "django__django-12262",
+      "repository": "django/django",
+      "baseCommit": "69331bb851c34f05bc77e9fc24020fe6908b9cd5",
+      "failToPassTests": 4,
+      "passToPassTests": 18,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1385,
+      "changedPaths": [
+        "django/template/library.py",
+        "tests/template_tests/templatetags/inclusion.py",
+        "tests/template_tests/test_custom.py"
+      ],
+      "sourcePaths": [
+        "django/template/library.py"
+      ],
+      "testPaths": [
+        "tests/template_tests/templatetags/inclusion.py",
+        "tests/template_tests/test_custom.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12262-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12262-1782658701155/hub/worktrees/job-django-django-12262-pipeline"
+    },
+    {
+      "instanceId": "django__django-12273",
+      "repository": "django/django",
+      "baseCommit": "927c903f3cd25c817c21738328b53991c035b415",
+      "failToPassTests": 2,
+      "passToPassTests": 27,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1324,
+      "changedPaths": [
+        "django/db/models/base.py",
+        "tests/model_inheritance_regress/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/base.py"
+      ],
+      "testPaths": [
+        "tests/model_inheritance_regress/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12273-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12273-1782658936143/hub/worktrees/job-django-django-12273-pipeline"
+    },
+    {
+      "instanceId": "django__django-12276",
+      "repository": "django/django",
+      "baseCommit": "53d8646f799de7f92ab9defe9dc56c6125448102",
+      "failToPassTests": 2,
+      "passToPassTests": 117,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 903,
+      "changedPaths": [
+        "django/forms/widgets.py",
+        "tests/forms_tests/tests/test_forms.py",
+        "tests/forms_tests/widget_tests/test_fileinput.py"
+      ],
+      "sourcePaths": [
+        "django/forms/widgets.py"
+      ],
+      "testPaths": [
+        "tests/forms_tests/tests/test_forms.py",
+        "tests/forms_tests/widget_tests/test_fileinput.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12276-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12276-1782659066792/hub/worktrees/job-django-django-12276-pipeline"
+    },
+    {
+      "instanceId": "django__django-12304",
+      "repository": "django/django",
+      "baseCommit": "4c1b401e8250f9f520b3c7dc369554477ce8b15a",
+      "failToPassTests": 1,
+      "passToPassTests": 17,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 523,
+      "changedPaths": [
+        "django/db/models/enums.py",
+        "tests/model_enums/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/enums.py"
+      ],
+      "testPaths": [
+        "tests/model_enums/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12304-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12304-1782659375446/hub/worktrees/job-django-django-12304-pipeline"
+    },
+    {
+      "instanceId": "django__django-12308",
+      "repository": "django/django",
+      "baseCommit": "2e0f04507b17362239ba49830d26fec504d46978",
+      "failToPassTests": 2,
+      "passToPassTests": 20,
+      "officialOutcome": "unresolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 677,
+      "changedPaths": [
+        "django/contrib/admin/utils.py",
+        "tests/admin_utils/tests.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/admin/utils.py"
+      ],
+      "testPaths": [
+        "tests/admin_utils/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12308-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12308-1782656224851/hub/worktrees/job-django-django-12308-pipeline"
+    },
+    {
+      "instanceId": "django__django-12325",
+      "repository": "django/django",
+      "baseCommit": "29c126bb349526b5f1cd78facbe9f25906f18563",
+      "failToPassTests": 2,
+      "passToPassTests": 201,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1673,
+      "changedPaths": [
+        "django/db/models/base.py",
+        "django/db/models/options.py",
+        "tests/invalid_models_tests/test_models.py",
+        "tests/invalid_models_tests/test_relative_fields.py",
+        "tests/migrations/test_state.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/base.py",
+        "django/db/models/options.py"
+      ],
+      "testPaths": [
+        "tests/invalid_models_tests/test_models.py",
+        "tests/invalid_models_tests/test_relative_fields.py",
+        "tests/migrations/test_state.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12325-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12325-1782656224300/hub/worktrees/job-django-django-12325-pipeline"
+    },
+    {
+      "instanceId": "django__django-12406",
+      "repository": "django/django",
+      "baseCommit": "335c9c94acf263901fb023404408880245b0c4b4",
+      "failToPassTests": 3,
+      "passToPassTests": 165,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 2283,
+      "changedPaths": [
+        "django/db/models/fields/related.py",
+        "django/forms/models.py",
+        "tests/model_forms/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/fields/related.py",
+        "django/forms/models.py"
+      ],
+      "testPaths": [
+        "tests/model_forms/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12406-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12406-1782656484241/hub/worktrees/job-django-django-12406-pipeline"
+    },
+    {
+      "instanceId": "django__django-12663",
+      "repository": "django/django",
+      "baseCommit": "fa5e7e46d875d4143510944f19d79df7b1739bab",
+      "failToPassTests": 1,
+      "passToPassTests": 135,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 578,
+      "changedPaths": [
+        "django/db/models/sql/query.py",
+        "tests/expressions/models.py",
+        "tests/expressions/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/query.py"
+      ],
+      "testPaths": [
+        "tests/expressions/models.py",
+        "tests/expressions/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12663-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12663-1782656679872/hub/worktrees/job-django-django-12663-pipeline"
+    },
+    {
+      "instanceId": "django__django-12708",
+      "repository": "django/django",
+      "baseCommit": "447980e72ac01da1594dd3373a03ba40b7ee6f80",
+      "failToPassTests": 1,
+      "passToPassTests": 101,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "cancelled",
+      "cpbAssignmentStatus": "cancelled",
+      "cpbPhases": [
+        "execute"
+      ],
+      "cpbWorkerTimedOut": true,
+      "cpbWorkerErrorMessage": "managed worker timed out after 1800000ms",
+      "emptyPatch": false,
+      "patchBytes": 748,
+      "changedPaths": [
+        "django/db/backends/base/schema.py",
+        "tests/migrations/test_operations.py"
+      ],
+      "sourcePaths": [
+        "django/db/backends/base/schema.py"
+      ],
+      "testPaths": [
+        "tests/migrations/test_operations.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12708-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12708-1782656902751/hub/worktrees/job-django-django-12708-pipeline"
+    },
+    {
+      "instanceId": "django__django-12713",
+      "repository": "django/django",
+      "baseCommit": "5b884d45ac5b76234eca614d90c83b347294c332",
+      "failToPassTests": 1,
+      "passToPassTests": 58,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1805,
+      "changedPaths": [
+        "django/contrib/admin/options.py",
+        "tests/admin_widgets/tests.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/admin/options.py"
+      ],
+      "testPaths": [
+        "tests/admin_widgets/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12713-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12713-1782657202281/hub/worktrees/job-django-django-12713-pipeline"
+    },
+    {
+      "instanceId": "django__django-12741",
+      "repository": "django/django",
+      "baseCommit": "537d422942b53bc0a2b6a51968f379c0de07793c",
+      "failToPassTests": 2,
+      "passToPassTests": 67,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1384,
+      "changedPaths": [
+        "django/core/management/commands/flush.py",
+        "django/db/backends/base/operations.py",
+        "tests/backends/base/test_operations.py",
+        "tests/backends/tests.py"
+      ],
+      "sourcePaths": [
+        "django/core/management/commands/flush.py",
+        "django/db/backends/base/operations.py"
+      ],
+      "testPaths": [
+        "tests/backends/base/test_operations.py",
+        "tests/backends/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12741-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12741-1782657479721/hub/worktrees/job-django-django-12741-pipeline"
+    },
+    {
+      "instanceId": "django__django-12754",
+      "repository": "django/django",
+      "baseCommit": "18759b2209ff556aed7f20d83cbf23e3d234e41c",
+      "failToPassTests": 1,
+      "passToPassTests": 112,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1372,
+      "changedPaths": [
+        "django/db/migrations/autodetector.py",
+        "tests/migrations/test_autodetector.py"
+      ],
+      "sourcePaths": [
+        "django/db/migrations/autodetector.py"
+      ],
+      "testPaths": [
+        "tests/migrations/test_autodetector.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12754-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12754-1782657801641/hub/worktrees/job-django-django-12754-pipeline"
+    },
+    {
+      "instanceId": "django__django-12774",
+      "repository": "django/django",
+      "baseCommit": "67f9d076cfc1858b94f9ed6d1a5ce2327dcc8d0d",
+      "failToPassTests": 1,
+      "passToPassTests": 41,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1065,
+      "changedPaths": [
+        "django/db/models/query.py",
+        "tests/lookup/models.py",
+        "tests/lookup/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/query.py"
+      ],
+      "testPaths": [
+        "tests/lookup/models.py",
+        "tests/lookup/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12774-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12774-1782658180520/hub/worktrees/job-django-django-12774-pipeline"
+    },
+    {
+      "instanceId": "django__django-12858",
+      "repository": "django/django",
+      "baseCommit": "f2051eb8a7febdaaa43bd33bf5a6108c5f428e59",
+      "failToPassTests": 1,
+      "passToPassTests": 73,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1295,
+      "changedPaths": [
+        "django/db/models/base.py",
+        "tests/invalid_models_tests/test_models.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/base.py"
+      ],
+      "testPaths": [
+        "tests/invalid_models_tests/test_models.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12858-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12858-1782658547479/hub/worktrees/job-django-django-12858-pipeline"
+    },
+    {
+      "instanceId": "django__django-12965",
+      "repository": "django/django",
+      "baseCommit": "437196da9a386bd4cc62b0ce3f2de4aba468613d",
+      "failToPassTests": 1,
+      "passToPassTests": 52,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 882,
+      "changedPaths": [
+        "django/db/models/sql/compiler.py",
+        "tests/delete/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/compiler.py"
+      ],
+      "testPaths": [
+        "tests/delete/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-12965-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-12965-1782658760914/hub/worktrees/job-django-django-12965-pipeline"
+    },
+    {
+      "instanceId": "django__django-13012",
+      "repository": "django/django",
+      "baseCommit": "22a59c01c00cf9fbefaee0e8e67fab82bbaf1fd2",
+      "failToPassTests": 2,
+      "passToPassTests": 137,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 562,
+      "changedPaths": [
+        "django/db/models/expressions.py",
+        "tests/expressions/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/expressions.py"
+      ],
+      "testPaths": [
+        "tests/expressions/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13012-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13012-1782658861959/hub/worktrees/job-django-django-13012-pipeline"
+    },
+    {
+      "instanceId": "django__django-13023",
+      "repository": "django/django",
+      "baseCommit": "f83b44075dafa429d59e8755aa47e15577cc49f9",
+      "failToPassTests": 2,
+      "passToPassTests": 9,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 611,
+      "changedPaths": [
+        "django/db/models/fields/__init__.py",
+        "tests/model_fields/test_decimalfield.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/fields/__init__.py"
+      ],
+      "testPaths": [
+        "tests/model_fields/test_decimalfield.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13023-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13023-1782659035302/hub/worktrees/job-django-django-13023-pipeline"
+    },
+    {
+      "instanceId": "django__django-13028",
+      "repository": "django/django",
+      "baseCommit": "78ad4b4b0201003792bfdbf1a7781cbc9ee03539",
+      "failToPassTests": 2,
+      "passToPassTests": 276,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 699,
+      "changedPaths": [
+        "django/db/models/sql/query.py",
+        "tests/queries/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/query.py"
+      ],
+      "testPaths": [
+        "tests/queries/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13028-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13028-1782659965469/hub/worktrees/job-django-django-13028-pipeline"
+    },
+    {
+      "instanceId": "django__django-13033",
+      "repository": "django/django",
+      "baseCommit": "a59de6e89e8dc1f3e71c9a5a5bbceb373ea5247e",
+      "failToPassTests": 1,
+      "passToPassTests": 26,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 958,
+      "changedPaths": [
+        "django/db/models/sql/compiler.py",
+        "tests/ordering/models.py",
+        "tests/ordering/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/compiler.py"
+      ],
+      "testPaths": [
+        "tests/ordering/models.py",
+        "tests/ordering/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13033-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13033-1782659207193/hub/worktrees/job-django-django-13033-pipeline"
+    },
+    {
+      "instanceId": "django__django-13089",
+      "repository": "django/django",
+      "baseCommit": "27c09043da52ca1f02605bf28600bfd5ace95ae4",
+      "failToPassTests": 2,
+      "passToPassTests": 352,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 912,
+      "changedPaths": [
+        "django/core/cache/backends/db.py",
+        "tests/cache/tests.py"
+      ],
+      "sourcePaths": [
+        "django/core/cache/backends/db.py"
+      ],
+      "testPaths": [
+        "tests/cache/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13089-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13089-1782659340938/hub/worktrees/job-django-django-13089-pipeline"
+    },
+    {
+      "instanceId": "django__django-13109",
+      "repository": "django/django",
+      "baseCommit": "fbe82f82555bc25dccb476c749ca062f0b522be3",
+      "failToPassTests": 2,
+      "passToPassTests": 170,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 632,
+      "changedPaths": [
+        "django/db/models/fields/related.py",
+        "tests/model_forms/models.py",
+        "tests/model_forms/tests.py",
+        "tests/validation/models.py",
+        "tests/validation/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/fields/related.py"
+      ],
+      "testPaths": [
+        "tests/model_forms/models.py",
+        "tests/model_forms/tests.py",
+        "tests/validation/models.py",
+        "tests/validation/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13109-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13109-1782659627276/hub/worktrees/job-django-django-13109-pipeline"
+    },
+    {
+      "instanceId": "django__django-13112",
+      "repository": "django/django",
+      "baseCommit": "09914ccf688974e068941f55412b930729bafa06",
+      "failToPassTests": 1,
+      "passToPassTests": 63,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1893,
+      "changedPaths": [
+        "django/db/migrations/state.py",
+        "tests/migrations/test_state.py"
+      ],
+      "sourcePaths": [
+        "django/db/migrations/state.py"
+      ],
+      "testPaths": [
+        "tests/migrations/test_state.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13112-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13112-1782659839059/hub/worktrees/job-django-django-13112-pipeline"
+    },
+    {
+      "instanceId": "django__django-13121",
+      "repository": "django/django",
+      "baseCommit": "ec5aa2161d8015a3fe57dcbbfe14200cd18f0a16",
+      "failToPassTests": 1,
+      "passToPassTests": 168,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 2500,
+      "changedPaths": [
+        "django/db/models/expressions.py",
+        "tests/expressions/tests.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/expressions.py"
+      ],
+      "testPaths": [
+        "tests/expressions/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13121-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13121-1782659985163/hub/worktrees/job-django-django-13121-pipeline"
+    },
+    {
+      "instanceId": "django__django-13158",
+      "repository": "django/django",
+      "baseCommit": "7af8f4127397279d19ef7c7899e93018274e2f9b",
+      "failToPassTests": 1,
+      "passToPassTests": 29,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 508,
+      "changedPaths": [
+        "django/db/models/sql/compiler.py",
+        "tests/queries/test_qs_combinators.py"
+      ],
+      "sourcePaths": [
+        "django/db/models/sql/compiler.py"
+      ],
+      "testPaths": [
+        "tests/queries/test_qs_combinators.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13158-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13158-1782660257918/hub/worktrees/job-django-django-13158-pipeline"
+    },
+    {
+      "instanceId": "django__django-13195",
+      "repository": "django/django",
+      "baseCommit": "156a2138db20abc89933121e4ff2ee2ce56a173a",
+      "failToPassTests": 5,
+      "passToPassTests": 382,
+      "officialOutcome": "empty_patch",
+      "cpbJobStatus": "cancelled",
+      "cpbAssignmentStatus": "cancelled",
+      "cpbPhases": [
+        "execute"
+      ],
+      "cpbWorkerTimedOut": true,
+      "cpbWorkerErrorMessage": "managed worker timed out after 1800000ms",
+      "emptyPatch": true,
+      "patchBytes": 0,
+      "changedPaths": [],
+      "sourcePaths": [],
+      "testPaths": [],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13195-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13195-1782662324241/hub/worktrees/job-django-django-13195-pipeline"
+    },
+    {
+      "instanceId": "django__django-13212",
+      "repository": "django/django",
+      "baseCommit": "f4e93919e4608cfc50849a1f764fd856e0917401",
+      "failToPassTests": 5,
+      "passToPassTests": 2,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 7757,
+      "changedPaths": [
+        "django/core/validators.py",
+        "django/forms/fields.py",
+        "tests/forms_tests/tests/test_validators.py"
+      ],
+      "sourcePaths": [
+        "django/core/validators.py",
+        "django/forms/fields.py"
+      ],
+      "testPaths": [
+        "tests/forms_tests/tests/test_validators.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13212-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13212-1782660538749/hub/worktrees/job-django-django-13212-pipeline"
+    },
+    {
+      "instanceId": "django__django-13279",
+      "repository": "django/django",
+      "baseCommit": "6e9c5ee88fc948e05b4a7d9f82a8861ed2b0343d",
+      "failToPassTests": 9,
+      "passToPassTests": 346,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 1185,
+      "changedPaths": [
+        "django/contrib/sessions/backends/base.py",
+        "tests/sessions_tests/tests.py"
+      ],
+      "sourcePaths": [
+        "django/contrib/sessions/backends/base.py"
+      ],
+      "testPaths": [
+        "tests/sessions_tests/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13279-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13279-1782660999724/hub/worktrees/job-django-django-13279-pipeline"
+    },
+    {
+      "instanceId": "django__django-13297",
+      "repository": "django/django",
+      "baseCommit": "8954f255bbf5f4ee997fd6de62cb50fc9b5dd697",
+      "failToPassTests": 1,
+      "passToPassTests": 52,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 855,
+      "changedPaths": [
+        "django/views/generic/base.py",
+        "tests/generic_views/test_base.py"
+      ],
+      "sourcePaths": [
+        "django/views/generic/base.py"
+      ],
+      "testPaths": [
+        "tests/generic_views/test_base.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13297-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13297-1782661391857/hub/worktrees/job-django-django-13297-pipeline"
+    },
+    {
+      "instanceId": "django__django-13315",
+      "repository": "django/django",
+      "baseCommit": "36bc47069ce071e80c8129500de3b8664d2058a7",
+      "failToPassTests": 1,
+      "passToPassTests": 146,
+      "officialOutcome": "resolved",
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbPhases": [
+        "execute",
+        "verify"
+      ],
+      "cpbWorkerTimedOut": false,
+      "cpbWorkerErrorMessage": null,
+      "emptyPatch": false,
+      "patchBytes": 965,
+      "changedPaths": [
+        "django/forms/models.py",
+        "tests/model_forms/tests.py"
+      ],
+      "sourcePaths": [
+        "django/forms/models.py"
+      ],
+      "testPaths": [
+        "tests/model_forms/tests.py"
+      ],
+      "evidencePath": "/tmp/cpb-swebench-50-regression-contract/evidence/django-django-13315-real-run.json",
+      "worktree": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-13315-1782661751866/hub/worktrees/job-django-django-13315-pipeline"
+    }
+  ],
+  "artifacts": {
+    "localOfficialReportPath": "/tmp/cpb-swebench-50-regression-contract/score/cpb-regression-contract-light.cpb-regression-contract-50-20260628.json",
+    "predictionsPath": "/tmp/cpb-swebench-50-regression-contract/score/predictions.jsonl",
+    "predictionsSummaryPath": "/tmp/cpb-swebench-50-regression-contract/score/predictions-summary.json",
+    "instanceListPath": "/tmp/cpb-swebench-50-regression-contract/instances.txt",
+    "productValidationIndexPath": "/tmp/cpb-swebench-50-regression-contract/product-validation-index.json",
+    "cpbEvidenceDir": "/tmp/cpb-swebench-50-regression-contract/evidence",
+    "officialScoreLogPath": "/tmp/cpb-swebench-50-regression-contract/score/official-score.log",
+    "officialScoreCommandPath": "/tmp/cpb-swebench-50-regression-contract/score/official-score-command.full.txt",
+    "dockerInfoPath": "/tmp/cpb-swebench-50-regression-contract/score/docker-info.txt"
+  }
+}

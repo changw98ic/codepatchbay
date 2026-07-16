@@ -200,34 +200,29 @@ flowchart TD
 ```mermaid
 flowchart TD
   A["server/index.js"] --> B["解析并校验 CPB_ROOT"]
-  B --> C["创建 Fastify app"]
-  C --> D["注册 cors、sensible、websocket"]
-  D --> E["/ws 端点：addClient、ping/pong、removeClient"]
-  C --> F["onRequest：注入 cpbRoot、cpbHubRoot、hubRuntime"]
-  F --> G{"配置了 CPB_API_KEYS？"}
-  G -->|"是"| H["API key hook，排除 /ws 与 /api/health"]
-  G -->|"否"| I["不启用 API key gate"]
-  H --> J["initNotificationService + notifBroadcast"]
-  I --> J
-  J --> K["注册 /api 路由组"]
-  K --> L["projects、tasks、channels、review、evolve、hub"]
-  K --> M["agents、events、github、skills、inbox"]
-  C --> N["定时广播 agent 状态"]
-  C --> O{"CPB_PROACTIVE=1？"}
-  O -->|"是"| P["scanCandidates，并在预算内自动创建 job"]
-  O -->|"否"| Q["跳过 proactive scan"]
-  C --> R{"web/dist 存在？"}
-  R -->|"是"| S["服务预构建 UI 与 SPA fallback"]
-  R -->|"否"| T["仅 API notFound handler"]
-  S --> U["registerWatcher"]
-  T --> U
-  U --> V["app.listen"]
+  B --> C["恢复中断 restore，校验维护锁"]
+  C --> D["加载服务令牌与 OIDC 私有策略"]
+  D --> E{"非回环且没有认证？"}
+  E -->|"是"| F["拒绝启动"]
+  E -->|"否"| G["打开持久 hash-chain 访问审计"]
+  G --> H["创建 Node HTTP server"]
+  H --> P["server.listen"]
+  P --> I["每请求热加载认证策略"]
+  I --> J["本地令牌常量时间匹配"]
+  J --> K{"本地认证成功？"}
+  K -->|"否"| L["验证 RFC 9068 JWT 与 JWKS"]
+  K -->|"是"| M["scope / project 授权"]
+  L --> M
+  M --> N["/api/auth/whoami、/api/health、/api/projects"]
+  N --> O["响应前持久写入访问审计"]
 ```
 
 主要依据文件：
 
 - `server/index.js`
-- `server/services/ws-broadcast.js`
+- `shared/hub-auth.js`
+- `shared/hub-oidc.js`
+- `server/services/audit/hub-access-audit.js`
 - `server/services/notification/index.js`
 - `server/services/watcher.js`
 

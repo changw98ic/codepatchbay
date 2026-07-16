@@ -1,5 +1,20 @@
-import { spawn } from "node:child_process";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
+import { spawn, type StdioOptions } from "node:child_process";
 import { getSetupAgent } from "./agent-catalog.js";
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function stdioValue(value: unknown): StdioOptions {
+  if (value === "pipe" || value === "ignore" || value === "inherit") return value;
+  if (Array.isArray(value)) return value as StdioOptions;
+  return "inherit";
+}
 
 function parseSimpleCommand(command: string) {
   const parts = command.trim().split(/\s+/);
@@ -32,17 +47,18 @@ function brewPackageFromCommand(command: string) {
   return parts[parts.length - 1] || null;
 }
 
-function rollbackFor(method: string, install: Record<string, any>) {
+function rollbackFor(method: string, install: LooseRecord) {
+  const command = stringValue(install.command);
   if (method === "npm") {
-    const pkg = packageNameFromNpm(install.command);
+    const pkg = packageNameFromNpm(command);
     return {
       command: pkg ? `npm uninstall -g ${pkg}` : null,
       notes: pkg ? [] : ["Package name could not be inferred; use vendor uninstall guidance."],
     };
   }
   if (method === "brew") {
-    const pkg = brewPackageFromCommand(install.command);
-    const cask = install.command.includes("--cask");
+    const pkg = brewPackageFromCommand(command);
+    const cask = command.includes("--cask");
     return {
       command: pkg ? `brew uninstall ${cask ? "--cask " : ""}${pkg}` : null,
       notes: pkg ? [] : ["Formula name could not be inferred; use vendor uninstall guidance."],
@@ -54,12 +70,12 @@ function rollbackFor(method: string, install: Record<string, any>) {
   };
 }
 
-function supplyChainNotesFor({ shell, install }: { shell: boolean; install: Record<string, any> }) {
+function supplyChainNotesFor({ shell, install }: { shell: boolean; install: LooseRecord }) {
   const notes = ["Review the source URL before executing this plan."];
   if (shell) {
     notes.push("Fetched installer commands require extra supply-chain review before execution.");
   }
-  for (const note of install.notes || []) {
+  for (const note of stringArray(install.notes)) {
     if (!notes.includes(note)) notes.push(note);
   }
   return notes;
@@ -73,45 +89,48 @@ function planCommand(command: string) {
   return { ...parsed, shell };
 }
 
-export function upgradeFor(method: string, agent: Record<string, any>) {
-  const upgrade = agent.upgrade?.[method] || null;
-  if (!upgrade?.command) return null;
-  const parsed = planCommand(upgrade.command);
+export function upgradeFor(method: string, agent: LooseRecord) {
+  const upgrade = recordValue(recordValue(agent.upgrade)[method]);
+  const upgradeCommand = stringValue(upgrade.command);
+  if (!upgradeCommand) return null;
+  const parsed = planCommand(upgradeCommand);
   return {
     method,
-    label: upgrade.label || "upgrade",
+    label: stringValue(upgrade.label, "upgrade"),
     command: parsed.command,
     args: parsed.args,
-    displayCommand: upgrade.command,
+    displayCommand: upgradeCommand,
     sourceUrl: upgrade.sourceUrl || agent.sourceUrl,
-    notes: upgrade.notes || [],
+    notes: stringArray(upgrade.notes),
     requiresExplicitConfirmation: true,
     shell: parsed.shell,
   };
 }
 
-function pickMethod(agent: Record<string, any>, detected: Record<string, any>) {
-  if (agent.install.brew && detected?.tools?.brew?.installed) return "brew";
-  if (agent.install.npm && detected?.tools?.npm?.installed) return "npm";
-  return Object.keys(agent.install)[0];
+function pickMethod(agent: LooseRecord, detected: LooseRecord) {
+  const install = recordValue(agent.install);
+  const tools = recordValue(recordValue(detected).tools);
+  if (install.brew && recordValue(tools.brew).installed) return "brew";
+  if (install.npm && recordValue(tools.npm).installed) return "npm";
+  return Object.keys(install)[0];
 }
 
-export function createInstallPlan({ agentId, method, version, detected }: Record<string, any> = {}) {
-  const agent = getSetupAgent(agentId);
+export function createInstallPlan({ agentId, method, version, detected }: LooseRecord = {}) {
+  const agent = getSetupAgent(stringValue(agentId));
   if (!agent) {
     throw new Error(`Unknown setup agent: ${agentId}`);
   }
 
-  const selectedMethod = method || pickMethod(agent, detected);
-  const install = agent.install?.[selectedMethod];
-  if (!install) {
+  const selectedMethod = stringValue(method) || pickMethod(agent, recordValue(detected));
+  const install = recordValue(recordValue(agent.install)[selectedMethod]);
+  if (Object.keys(install).length === 0) {
     throw new Error(`Agent '${agentId}' does not support install method '${selectedMethod}'`);
   }
 
   const hasVersion = version !== undefined && version !== null;
   const displayCommand = hasVersion
-    ? renderPinnedCommand(install.pinnedCommandTemplate, version)
-    : install.command;
+    ? renderPinnedCommand(stringValue(install.pinnedCommandTemplate), stringValue(version))
+    : stringValue(install.command);
   const parsed = planCommand(displayCommand);
 
   return {
@@ -128,7 +147,7 @@ export function createInstallPlan({ agentId, method, version, detected }: Record
     displayCommand,
     version: hasVersion ? version : undefined,
     sourceUrl: install.sourceUrl || agent.sourceUrl,
-    notes: install.notes || [],
+    notes: stringArray(install.notes),
     rollback: rollbackFor(selectedMethod, install),
     upgrade: upgradeFor(selectedMethod, agent),
     supplyChainNotes: supplyChainNotesFor({ shell: parsed.shell, install }),
@@ -137,13 +156,13 @@ export function createInstallPlan({ agentId, method, version, detected }: Record
   };
 }
 
-export async function executeInstallPlan(plan: Record<string, any>, { stdio = "inherit" }: Record<string, any> = {}) {
+export async function executeInstallPlan(plan: LooseRecord, { stdio = "inherit" }: LooseRecord = {}) {
   if (!plan?.requiresExplicitConfirmation) {
     throw new Error("Refusing to execute an install plan without explicit-confirmation metadata");
   }
 
   return await new Promise((resolve, reject) => {
-    const child = spawn(plan.command, plan.args, { stdio });
+    const child = spawn(stringValue(plan.command), stringArray(plan.args), { stdio: stdioValue(stdio) });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve({ ok: true, code });

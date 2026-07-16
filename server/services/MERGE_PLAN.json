@@ -63,7 +63,7 @@
         {
           "name": "hub-registry.ts",
           "mergedFrom": ["hub-registry.ts", "hub-runtime.ts", "hub-cli.ts", "attention-projection.ts"],
-          "exports": ["DEFAULT_GITHUB_TRIGGERS", "resolveHubRoot", "registryPath", "defaultRegistry", "loadRegistry", "saveRegistry", "registerProject", "listProjects", "getProject", "parseGithubRepo", "bindProjectGithub", "updateProject", "heartbeatWorker", "deriveWorkerStatus", "hubStatus", "getHubRuntime", "readHubLiveness", "resetInstances", "buildHubServerEnv", "buildHubInstallEnv", "cmdStart", "cmdStop", "buildAttentionProjection"],
+          "exports": ["DEFAULT_GITHUB_TRIGGERS", "resolveHubRoot", "registryPath", "defaultRegistry", "loadRegistry", "saveRegistry", "registerProject", "listProjects", "getProject", "parseGithubRepo", "bindProjectGithub", "updateProject", "heartbeatWorker", "deriveWorkerStatus", "hubStatus", "getHubRuntime", "readHubLiveness", "resetInstances", "buildHubControlPlaneEnv", "buildHubServerEnv", "buildHubInstallEnv", "cmdStart", "cmdStop", "buildAttentionProjection"],
           "estimatedLines": 1250
         },
         {

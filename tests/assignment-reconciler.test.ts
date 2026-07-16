@@ -8,13 +8,14 @@ import { FailureKind } from "../core/contracts/failure.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { Reconciler, buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
 import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
+import { recordValue } from "../shared/types.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
 
 function attemptDir(hubRoot, assignmentId, attempt = 1) {
   return path.join(hubRoot, "assignments", assignmentId, "attempts", String(attempt).padStart(3, "0"));
 }
 
-function reconciler(hubRoot, assignments, workers, failureRouter: Record<string, any> = {}, options: Record<string, any> = {}) {
+function reconciler(hubRoot, assignments, workers, failureRouter: Record<string, unknown> | FailureRouter = {}, options: Record<string, unknown> = {}) {
   const router = typeof failureRouter?.route === "function"
     ? failureRouter
     : {
@@ -83,18 +84,25 @@ test("buildRetrySourceContext carries verifier verdict into retry metadata", () 
     { action: "retry_same_worker", reason: "verification failed: acceptance failed", retryable: true },
   );
 
+  const retry = recordValue(sourceContext.retry);
+  const retryVerification = recordValue(retry.verification);
+  const retryVerdict = recordValue(retryVerification.verdict);
+  const retryArtifact = recordValue(retryVerification.artifact);
+  const previousFailure = recordValue(sourceContext.previousFailure);
+  const previousVerification = recordValue(previousFailure.verification);
+  const previousVerdict = recordValue(previousVerification.verdict);
   assert.equal(sourceContext.issueNumber, 42);
-  assert.equal(sourceContext.retry.failureKind, FailureKind.VERIFICATION_FAILED);
-  assert.equal(sourceContext.retry.failureReason, "acceptance failed");
-  assert.equal(sourceContext.retry.retryAction, "retry_same_worker");
-  assert.equal(sourceContext.retry.failureCount, 2);
-  assert.equal(sourceContext.retry.verification.verdict.status, "fail");
-  assert.equal(sourceContext.retry.verification.verdict.reason, "missing validation");
-  assert.deepEqual(sourceContext.retry.verification.retryScope, ["src/api.js"]);
-  assert.equal(sourceContext.retry.verification.artifact.path, "/tmp/verdict-123456.md");
-  assert.match(sourceContext.retry.previousOutput, /Verifier verdict:/);
-  assert.match(sourceContext.retry.previousOutput, /src\/api\.js/);
-  assert.equal(sourceContext.previousFailure.verification.verdict.status, "fail");
+  assert.equal(retry.failureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(retry.failureReason, "acceptance failed");
+  assert.equal(retry.retryAction, "retry_same_worker");
+  assert.equal(retry.failureCount, 2);
+  assert.equal(retryVerdict.status, "fail");
+  assert.equal(retryVerdict.reason, "missing validation");
+  assert.deepEqual(retryVerification.retryScope, ["src/api.js"]);
+  assert.equal(retryArtifact.path, "/tmp/verdict-123456.md");
+  assert.match(String(retry.previousOutput), /Verifier verdict:/);
+  assert.match(String(retry.previousOutput), /src\/api\.js/);
+  assert.equal(previousVerdict.status, "fail");
 });
 
 test("buildRetrySourceContext carries checklist retry state from checklistVerdict", () => {
@@ -146,6 +154,44 @@ test("buildRetrySourceContext carries checklist retry state from checklistVerdic
   assert.equal(JSON.stringify(sourceContext.retry.fixScope).includes("AC-002"), false);
 });
 
+test("buildRetrySourceContext preserves solver exhaustion strategy and fingerprint", () => {
+  const sourceContext = buildRetrySourceContext(
+    { attempts: 1, sourceContext: {} },
+    { attempt: 1 },
+    {
+      jobResult: {
+        jobId: "job-solver-exhausted",
+        failure: {
+          kind: FailureKind.VERIFICATION_FAILED,
+          phase: "verify",
+          reason: "focused test still fails",
+          retryable: true,
+          cause: {
+            solver: {
+              exhausted: true,
+              repairAttempts: 2,
+              failureFingerprint: "sha256:fingerprint-1",
+            },
+          },
+        },
+      },
+    },
+    {
+      action: "retry_same_worker",
+      reason: "fresh diagnosis",
+      retryable: true,
+      retryPhase: null,
+      retryStrategy: "fresh_attempt",
+      failureFingerprint: "sha256:fingerprint-1",
+    },
+  );
+
+  assert.equal(sourceContext.retry.retryPhase, null);
+  assert.equal(sourceContext.retry.retryStrategy, "fresh_attempt");
+  assert.equal(sourceContext.retry.failureFingerprint, "sha256:fingerprint-1");
+  assert.match(sourceContext.retry.previousOutput, /solver exhaustion/i);
+});
+
 test("buildRetrySourceContext carries verify-only retry phase with empty fixScope", () => {
   const result = {
     jobResult: {
@@ -186,10 +232,38 @@ test("buildRetrySourceContext carries verify-only retry phase with empty fixScop
     { action: "retry_same_worker", reason: "evidence missing", retryable: true, retryPhase: "verify" },
   );
 
-  assert.deepEqual(sourceContext.retry.targetChecklistIds, ["AC-003"]);
-  assert.equal(sourceContext.retry.retryPhase, "verify");
-  assert.deepEqual(sourceContext.retry.fixScope, []);
-  assert.equal(sourceContext.retry.verification.checklistVerdict.targetChecklistIds.length, 1);
+  const retry = recordValue(sourceContext.retry);
+  const verification = recordValue(retry.verification);
+  const checklistVerdict = recordValue(verification.checklistVerdict);
+  assert.deepEqual(retry.targetChecklistIds, ["AC-003"]);
+  assert.equal(retry.retryPhase, "verify");
+  assert.deepEqual(retry.fixScope, []);
+  assert.equal(Array.isArray(checklistVerdict.targetChecklistIds) ? checklistVerdict.targetChecklistIds.length : 0, 1);
+});
+
+test("buildRetrySourceContext synthesizes a complete generic recovery contract", () => {
+  const context = buildRetrySourceContext(
+    { attempts: 1, sourceContext: {} },
+    { attempt: 1 },
+    {
+      failure: {
+        kind: FailureKind.TIMEOUT,
+        phase: "execute",
+        reason: "provider response timed out",
+        retryable: true,
+        cause: { code: "PROMPT_TIMEOUT" },
+      },
+    },
+    { action: "restart_worker_and_retry", reason: "timeout recovery", retryable: true },
+  );
+  const retry = recordValue(context.retry);
+  assert.equal(retry.failureClass, "timeout");
+  assert.match(String(retry.failureFingerprint), /^sha256:/);
+  assert.equal(retry.retryStrategy, "fresh_session_with_carry_forward");
+  assert.equal(retry.strategyChanged, true);
+  assert.equal(retry.forceFreshSession, true);
+  assert.equal(retry.retryAllowed, true);
+  assert.equal(recordValue(retry.failureEvidence).code, "PROMPT_TIMEOUT");
 });
 
 test("Reconciler requeues verification failures with verifier retry context", async () => {
@@ -236,15 +310,20 @@ test("Reconciler requeues verification failures with verifier retry context", as
   });
 
   const [queued] = await listQueue(hubRoot);
+  const queuedMetadata = recordValue(queued.metadata);
+  const queuedSourceContext = recordValue(queuedMetadata.sourceContext);
+  const queuedRetry = recordValue(queuedSourceContext.retry);
+  const queuedVerification = recordValue(queuedRetry.verification);
+  const queuedVerdict = recordValue(queuedVerification.verdict);
   assert.equal(queued.status, "pending");
-  assert.equal(queued.metadata.lastFailureKind, FailureKind.VERIFICATION_FAILED);
-  assert.equal(queued.metadata.failureCount, 1);
-  assert.equal(queued.metadata.retryDecision.action, "retry_same_worker");
-  assert.equal(queued.metadata.sourceContext.retry.failureKind, FailureKind.VERIFICATION_FAILED);
-  assert.equal(queued.metadata.sourceContext.retry.verification.verdict.status, "fail");
-  assert.deepEqual(queued.metadata.sourceContext.retry.verification.retryScope, ["src/api.js"]);
-  assert.match(queued.metadata.sourceContext.retry.previousOutput, /Verifier verdict:/);
-  assert.match(queued.metadata.sourceContext.retry.previousOutput, /test expectation failed/);
+  assert.equal(queuedMetadata.lastFailureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(queuedMetadata.failureCount, 1);
+  assert.equal(recordValue(queuedMetadata.retryDecision).action, "retry_same_worker");
+  assert.equal(queuedRetry.failureKind, FailureKind.VERIFICATION_FAILED);
+  assert.equal(queuedVerdict.status, "fail");
+  assert.deepEqual(queuedVerification.retryScope, ["src/api.js"]);
+  assert.match(String(queuedRetry.previousOutput), /Verifier verdict:/);
+  assert.match(String(queuedRetry.previousOutput), /test expectation failed/);
 });
 
 test("Reconciler marks verification failures without actionable retry scope as failed", async () => {
@@ -349,17 +428,165 @@ test("AssignmentStore rejects result files with mismatched attempt tokens", asyn
     projectId: "proj",
     task: "token",
   });
-  await store.createAttempt(assignment.assignmentId, {
+  const attempt = await store.createAttempt(assignment.assignmentId, {
     workerId: "w-token",
     orchestratorEpoch: 1,
   });
 
   await assert.rejects(
     store.completeAttemptFromExistingResult(assignment.assignmentId, 1, {
+      assignmentId: assignment.assignmentId,
+      attempt: 1,
+      orchestratorEpoch: 1,
       status: "completed",
       attemptToken: "wrong-token",
     }),
     /attempt token mismatch/,
+  );
+  assert.equal((await store.getActiveAttempt(assignment.assignmentId)).attemptToken, attempt.attemptToken);
+});
+
+test("AssignmentStore rejects results missing the active orchestrator epoch", async () => {
+  const hubRoot = await tempRoot("cpb-assignment-epoch");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  const assignment = await store.getOrCreateAssignmentForEntry({
+    entryId: "q-epoch",
+    projectId: "proj",
+    task: "epoch",
+  });
+  const attempt = await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-epoch",
+    orchestratorEpoch: 4,
+  });
+
+  await assert.rejects(
+    store.completeAttemptFromExistingResult(assignment.assignmentId, 1, {
+      assignmentId: assignment.assignmentId,
+      attempt: 1,
+      attemptToken: attempt.attemptToken,
+      status: "completed",
+    }),
+    /missing orchestrator epoch/,
+  );
+  assert.equal((await store.getAssignment(assignment.assignmentId)).status, "assigned");
+});
+
+test("AssignmentStore prevents a late attempt from overwriting the active attempt", async () => {
+  const hubRoot = await tempRoot("cpb-assignment-stale-result");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  const assignment = await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-result",
+    projectId: "proj",
+    task: "stale result",
+  });
+  const firstAttempt = await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-old",
+    orchestratorEpoch: 4,
+  });
+  await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-result",
+    projectId: "proj",
+    task: "retry stale result",
+  });
+  const secondAttempt = await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-new",
+    orchestratorEpoch: 5,
+  });
+
+  await assert.rejects(
+    store.completeAttemptFromExistingResult(assignment.assignmentId, 1, {
+      assignmentId: assignment.assignmentId,
+      attempt: 1,
+      orchestratorEpoch: firstAttempt.orchestratorEpoch,
+      attemptToken: firstAttempt.attemptToken,
+      status: "completed",
+    }),
+    /stale attempt.*active attempt is 2/,
+  );
+
+  const state = await store.getAssignment(assignment.assignmentId);
+  assert.equal(state.activeAttempt, 2);
+  assert.equal(state.status, "assigned");
+  assert.equal((await store.getActiveAttempt(assignment.assignmentId)).attemptToken, secondAttempt.attemptToken);
+});
+
+test("AssignmentStore prevents stale synthetic failures from creating results", async () => {
+  const hubRoot = await tempRoot("cpb-assignment-stale-synthetic");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  const assignment = await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-synthetic",
+    projectId: "proj",
+    task: "stale synthetic",
+  });
+  const firstAttempt = await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-old",
+    orchestratorEpoch: 8,
+  });
+  await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-synthetic",
+    projectId: "proj",
+    task: "retry stale synthetic",
+  });
+  await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-new",
+    orchestratorEpoch: 9,
+  });
+
+  await assert.rejects(
+    store.writeSyntheticFailure(assignment.assignmentId, 1, {
+      assignmentId: assignment.assignmentId,
+      attempt: 1,
+      orchestratorEpoch: firstAttempt.orchestratorEpoch,
+      attemptToken: firstAttempt.attemptToken,
+      status: "failed",
+      jobResult: { status: "failed", failure: { kind: "worker_crashed" } },
+    }),
+    /stale attempt.*active attempt is 2/,
+  );
+  await assert.rejects(
+    readJson(path.join(attemptDir(hubRoot, assignment.assignmentId, 1), "result.json")),
+    /ENOENT/,
+  );
+  const state = await store.getAssignment(assignment.assignmentId);
+  assert.equal(state.activeAttempt, 2);
+  assert.equal(state.status, "assigned");
+});
+
+test("AssignmentStore returns null for a missing active attempt and rejects stale cancellation", async () => {
+  const hubRoot = await tempRoot("cpb-assignment-stale-cancel");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  assert.equal(await store.getActiveAttempt("a-missing"), null);
+
+  const assignment = await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-cancel",
+    projectId: "proj",
+    task: "stale cancel",
+  });
+  await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-old",
+    orchestratorEpoch: 1,
+  });
+  await store.getOrCreateAssignmentForEntry({
+    entryId: "q-stale-cancel",
+    projectId: "proj",
+    task: "retry stale cancel",
+  });
+  await store.createAttempt(assignment.assignmentId, {
+    workerId: "w-new",
+    orchestratorEpoch: 2,
+  });
+
+  await assert.rejects(
+    store.writeCancel(assignment.assignmentId, 1, "late cancel"),
+    /stale attempt.*active attempt is 2/,
+  );
+  await assert.rejects(
+    readJson(path.join(attemptDir(hubRoot, assignment.assignmentId, 1), "control", "cancel.json")),
+    /ENOENT/,
   );
 });
 
@@ -416,6 +643,7 @@ test("Reconciler finalizes completed result files into queue and worker state", 
   await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), {
     assignmentId: assignment.assignmentId,
     attempt: 1,
+    orchestratorEpoch: attempt.orchestratorEpoch,
     attemptToken: attempt.attemptToken,
     status: "completed",
     jobResult: { status: "completed", jobId: "job-ok" },
@@ -473,6 +701,52 @@ test("Reconciler finalizes cancelled result files as cancelled queue entries", a
   const [queued] = await listQueue(hubRoot);
   assert.equal(queued.status, "cancelled");
   assert.match(queued.metadata.cancelReason, /user requested/);
+});
+
+test("Reconciler never completes a queue entry when finalization is blocked", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-finalizer-blocked");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "blocked finalize" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress", claimedBy: "w-1", workerId: "w-1" });
+  await workers.registerWorker("w-1", { status: "running", currentAssignmentId: `a-${entry.id}` });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "blocked finalize",
+  });
+  const attempt = await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-1",
+    orchestratorEpoch: 6,
+  });
+  await assignments.markRunning(assignment.assignmentId, 1);
+  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), {
+    assignmentId: assignment.assignmentId,
+    attempt: 1,
+    orchestratorEpoch: attempt.orchestratorEpoch,
+    attemptToken: attempt.attemptToken,
+    status: "blocked",
+    jobResult: {
+      status: "blocked",
+      failure: {
+        kind: "finalizer_failed",
+        phase: "finalize",
+        reason: "PR evidence blocked",
+        retryable: false,
+      },
+    },
+    finalizeResult: { ok: false, status: "blocked", code: "PR_EVIDENCE_BLOCKED" },
+    finalization: { required: true, ok: false, status: "blocked" },
+  });
+
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  const [queued] = await listQueue(hubRoot);
+  assert.equal(queued.status, "blocked");
+  assert.match(queued.reason, /PR evidence blocked/);
+  assert.equal((await assignments.getAssignment(assignment.assignmentId)).status, "blocked");
 });
 
 test("Reconciler writes synthetic failure for stale assignment heartbeat", async () => {
@@ -711,6 +985,7 @@ test("Reconciler compensates terminal assignments missing queue and worker final
   await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), {
     assignmentId: assignment.assignmentId,
     attempt: 1,
+    orchestratorEpoch: attempt.orchestratorEpoch,
     attemptToken: attempt.attemptToken,
     status: "completed",
     jobResult: { status: "completed" },

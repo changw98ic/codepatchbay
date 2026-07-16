@@ -33,7 +33,7 @@ describe("D40 manifest registry layout", () => {
     auth: {
       methods: ["chatgpt", "api_key"],
       connectCommand: "codex",
-      statusCommand: "codex auth status",
+      statusCommand: "codex login status",
     },
     adapter: {
       protocol: "acp",

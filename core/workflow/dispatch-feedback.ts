@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
@@ -18,11 +19,11 @@ export function dispatchFeedbackPath(cpbRoot: string, project: string, jobId: st
   );
 }
 
-export function normalizeDispatchFeedback(input: Record<string, any> = {}, defaults: Record<string, any> = {}) {
+export function normalizeDispatchFeedback(input: LooseRecord = {}, defaults: LooseRecord = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("dispatch feedback must be an object");
   }
-  const requested: Record<string, any> = input.requested && typeof input.requested === "object" ? input.requested : {};
+  const requested = recordValue(input.requested);
   const workflow = String(requested.workflow || input.workflow || "").trim();
   const planMode = String(requested.planMode || input.planMode || "").trim();
   const reason = String(input.reason || requested.reason || "").trim();
@@ -53,7 +54,7 @@ export function normalizeDispatchFeedback(input: Record<string, any> = {}, defau
   };
 }
 
-export async function readDispatchFeedbackFile(cpbRoot: string, project: string, jobId: string, { phase = "execute" }: Record<string, any> = {}) {
+export async function readDispatchFeedbackFile(cpbRoot: string, project: string, jobId: string, { phase = "execute" }: LooseRecord = {}) {
   const file = dispatchFeedbackPath(cpbRoot, project, jobId);
   let raw: string;
   try {
@@ -68,8 +69,7 @@ export async function readDispatchFeedbackFile(cpbRoot: string, project: string,
   };
 }
 
-export function buildRoutingFeedbackEvent(feedback: Record<string, any>, { jobId, project, phase, upgradedQueueEntryId = null }: Record<string, any> = {}) {
-  feedback = feedback as Record<string, any>;
+export function buildRoutingFeedbackEvent(feedback: LooseRecord, { jobId, project, phase, upgradedQueueEntryId = null }: LooseRecord = {}) {
   return {
     type: "executor_routing_feedback",
     jobId,

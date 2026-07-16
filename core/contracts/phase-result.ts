@@ -1,4 +1,7 @@
-export function phasePassed({ phase, artifact = null, diagnostics = {} }: { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown> }) {
+import type { LooseRecord } from "../../shared/types.js";
+import { PhaseResult, PhaseFailure, PhaseArtifact } from "../../shared/types.js";
+
+export function phasePassed({ phase, artifact = null, diagnostics = {} }: { phase: string; artifact?: PhaseArtifact | null; diagnostics?: LooseRecord }): PhaseResult {
   return {
     schemaVersion: 1,
     phase,
@@ -10,7 +13,7 @@ export function phasePassed({ phase, artifact = null, diagnostics = {} }: { phas
   };
 }
 
-export function phaseFailed({ phase, failure, diagnostics = {} }: { phase: string; failure: unknown; diagnostics?: Record<string, unknown> }) {
+export function phaseFailed({ phase, failure, diagnostics = {} }: { phase: string; failure: PhaseFailure; diagnostics?: LooseRecord }): PhaseResult {
   return {
     schemaVersion: 1,
     phase,
@@ -22,6 +25,6 @@ export function phaseFailed({ phase, failure, diagnostics = {} }: { phase: strin
   };
 }
 
-export function isPhasePassed(result: { status?: string } | null | undefined) {
+export function isPhasePassed(result: { status?: unknown } | null | undefined) {
   return result?.status === "passed";
 }

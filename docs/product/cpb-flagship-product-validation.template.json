@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "validationMode": "maintainer-dry-run",
+      "reviewer": "team-or-maintainer-label",
+      "representativeRepository": "owner/repository-or-internal-repo-label",
+      "validatedAt": "validated-at-iso-timestamp",
+      "evidenceBundleRef": "path-or-url-to-dry-run-evidence-bundle",
+      "unfamiliarMaintainerOrTeam": true,
+      "dryRunFinalizerStatus": "dry-run",
+      "draftPrPreview": true,
+      "noLiveSideEffects": true,
+      "evidenceBundleUnderstood": false,
+      "trustObjections": [
+        "example: unclear whether provider token was used"
+      ],
+      "prBodyRequiredManualReconstruction": false,
+      "blockedFinalizerReasonCategories": [
+        "example: missing completion gate"
+      ],
+      "wouldOptIntoLiveDraftPr": false,
+      "notes": "Replace this template row with observed dry-run feedback. Local evidenceBundleRef values must point to existing repo-local files; URL refs may point to external audit bundles."
+    },
+    {
+      "validationMode": "swe-bench-verified",
+      "benchmarkDataset": "SWE-bench/SWE-bench_Verified",
+      "benchmarkSplit": "test",
+      "benchmarkInstanceId": "owner__repo-issue-number",
+      "representativeRepository": "owner/repository",
+      "baseCommit": "40-character-base-commit-sha",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=0&length=1",
+      "problemStatementSha256": "64-character-problem-statement-sha256",
+      "failToPassTests": 1,
+      "passToPassTests": 1,
+      "officialBenchmarkHumanValidated": true,
+      "benchmarkIssuePullRequestPair": true,
+      "validatedAt": "validated-at-iso-timestamp",
+      "evidenceBundleRef": "path-or-url-to-swe-bench-dry-run-evidence-bundle",
+      "dryRunFinalizerStatus": "dry-run",
+      "draftPrPreview": true,
+      "noLiveSideEffects": true,
+      "prBodyRequiredManualReconstruction": false,
+      "notes": "Use this mode for real SWE-bench Verified samples. This does not claim CPB solved the benchmark unless the evidence bundle includes that separate run."
+    }
+  ],
+  "supplementalOfficialScoreBundles": [
+    {
+      "validationMode": "swe-bench-verified-official-score-bundle",
+      "evidenceBundleRef": "path-or-url-to-official-score-bundle",
+      "notes": "Optional local machine-readable official scorer evidence. The gate validates source-only predictions, resolved scorer totals, and merged scored-report validity."
+    }
+  ]
+}

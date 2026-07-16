@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { appendEvent, materializeJob, readEvents } from "../server/services/event/event-store.js";
@@ -48,17 +48,25 @@ async function loadRunJob() {
   return runJobPromise;
 }
 
-function jsonEnvelope(data: AnyRecord) {
+function jsonEnvelope(data: LooseRecord) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
 }
 
-function phaseOutput(role: string, overrides: AnyRecord = {}) {
+function phaseOutput(role: string, overrides: LooseRecord = {}) {
   if (role === "planner") {
     return jsonEnvelope({
       status: "ok",
       planMarkdown: [
         "## Analysis",
         "- Engine provider fallback fixture.",
+        "",
+        "## Bounded Handoff",
+        "- Real actors: engine provider fallback fixture and README.md",
+        "- Entrypoints: runJob provider routing workflow",
+        "- Bypass candidates: preflight fallback and dynamic agent routing",
+        "- Edit files: README.md",
+        "- Verification targets: node:test engine fixture",
+        "- Blockers: none",
         "",
         "## Files to modify",
         "- README.md",
@@ -122,6 +130,23 @@ function phaseOutput(role: string, overrides: AnyRecord = {}) {
   });
 }
 
+function decomposeOutput(overrides: LooseRecord = {}) {
+  return jsonEnvelope({
+    status: "ok",
+    decomposedItems: [
+      {
+        requirement: "README is updated by the engine provider fixture.",
+        predicateId: "engine-provider-readme-update",
+        verificationMethod: "static",
+        allowedFiles: ["README.md"],
+        sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+        expectedEvidence: "README.md is changed by the fixture execution",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 async function makeSourceRoot(prefix = "cpb-engine-source") {
   const sourcePath = await tempRoot(prefix);
   await writeFile(path.join(sourcePath, "README.md"), "# Engine Fixture\n", "utf8");
@@ -129,7 +154,21 @@ async function makeSourceRoot(prefix = "cpb-engine-source") {
   return sourcePath;
 }
 
-function makeServices({ events = [], starts = [], completed = [], failed = [] }: AnyRecord = {}) {
+type ProviderEventServiceOptions = {
+  events?: LooseRecord[];
+  starts?: string[];
+  completed?: string[];
+  failed?: LooseRecord[];
+  riskMap?: LooseRecord | null;
+};
+
+type ProviderEventPoolOptions = {
+  onExecute?: ((args: LooseRecord) => Promise<LooseRecord | undefined> | LooseRecord | undefined) | null;
+  calls?: LooseRecord[];
+  releases?: LooseRecord[];
+};
+
+function makeServices({ events = [], starts = [], completed = [], failed = [], riskMap = null }: ProviderEventServiceOptions = {}) {
   return {
     createJob: async (_cpbRoot, job) => ({
       ...job,
@@ -137,7 +176,7 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] }:
       status: "running",
     }),
     prepareTask: async () => ({
-      riskMap: {
+      riskMap: riskMap || {
         riskLevel: "medium",
         domains: ["test_fixture"],
         highRiskFiles: [],
@@ -148,9 +187,9 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] }:
         confidence: "high",
       },
     }),
-    startPhase: async (_cpbRoot, project, jobId, { phase }) => {
+    startPhase: async (_cpbRoot, project, jobId, { phase, agent, role }) => {
       starts.push(phase);
-      events.push({ type: "phase_started", project, jobId, phase });
+      events.push({ type: "phase_started", project, jobId, phase, agent: agent || null, role: role || null });
     },
     blockJob: async (_cpbRoot, project, jobId, failure) => {
       events.push({ type: "job_blocked", project, jobId, ...failure });
@@ -173,7 +212,7 @@ function makeServices({ events = [], starts = [], completed = [], failed = [] }:
   };
 }
 
-function makePool({ onExecute, calls = [], releases = [] }: AnyRecord = {}) {
+function makePool({ onExecute, calls = [], releases = [] }: ProviderEventPoolOptions = {}) {
   return {
     providerKey(agent, variant) {
       return variant ? `${agent}:${variant}` : agent;
@@ -185,7 +224,11 @@ function makePool({ onExecute, calls = [], releases = [] }: AnyRecord = {}) {
       ].filter((candidate) => candidate.providerKey !== excludeKey);
     },
     async execute(agent, prompt, cwd, timeoutMs, meta) {
-      calls.push({ agent, prompt, cwd, timeoutMs, meta });
+      const call = { agent, prompt, cwd, timeoutMs, meta };
+      if (/\bdecomposedItems\b/.test(prompt)) {
+        return { output: decomposeOutput(), providerKey: this.providerKey(agent, meta.variant), variant: meta.variant || null };
+      }
+      calls.push(call);
       if (onExecute) {
         const value = await onExecute({ agent, prompt, cwd, timeoutMs, meta, calls });
         if (value !== undefined) return value;
@@ -246,6 +289,13 @@ async function readDelegateUsageCommands(hubRoot) {
   return commands.filter((command) => command.type === "usage_write");
 }
 
+const DEFAULT_PROVIDER_SERVICES: LooseRecord = {
+  assertProviderAvailable,
+  getProviderAdapter,
+  delegateMarkProviderUnavailable,
+  delegateEnqueueProviderUsage,
+};
+
 async function runEngine({
   cpbRoot = null,
   dataRoot = null,
@@ -261,12 +311,7 @@ async function runEngine({
   agentAvailability = null,
   agentHealth = null,
   teamPolicy = null,
-  providerServices = {
-    assertProviderAvailable,
-    getProviderAdapter,
-    delegateMarkProviderUnavailable,
-    delegateEnqueueProviderUsage,
-  },
+  providerServices = DEFAULT_PROVIDER_SERVICES,
   jobId = "job-engine",
 } = {}) {
   const runJob = await loadRunJob();
@@ -380,9 +425,34 @@ test("runJob applies dynamic agent plan config before provider execution", async
     },
   });
 
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "completed", JSON.stringify(result));
   assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "fake-secondary");
   assert.equal(calls.find((call) => call.meta.role === "planner")?.agent, "fake-primary");
+});
+
+test("runJob phase start event records dynamic agent selection used for execution", async () => {
+  const events = [];
+  const calls = [];
+
+  const { result } = await runEngine({
+    servicesState: { events },
+    pool: makePool({ calls }),
+    sourceContext: {
+      dynamicAgentPlan: {
+        agentConfig: {
+          executor: { agent: "fake-secondary" },
+        },
+        acceptanceChecklistArtifact: { id: "stub", name: "acceptance-checklist-stub" },
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "fake-secondary");
+  const executeStarted = events.find((event) => event.type === "phase_started" && event.phase === "execute");
+  assert.ok(executeStarted);
+  assert.equal(executeStarted.agent, "fake-secondary");
+  assert.equal(executeStarted.role, "executor");
 });
 
 test("runJob blocks required dynamic roles as agent_unavailable when provider preflight fails", async () => {
@@ -450,6 +520,97 @@ test("runJob applies configured phase fallback before provider execution", async
   assert.equal(verifyDecision.preferredAgent, "fake-primary");
   assert.equal(verifyDecision.selectedAgent, "fake-secondary");
   assert.equal(verifyDecision.fallbackApplied, true);
+  const verifyResult = events.find((event) => event.type === "agent_routing_result" && event.phase === "verify");
+  assert.ok(verifyResult);
+  assert.equal(verifyResult.selectedAgent, "fake-secondary");
+  assert.equal(verifyResult.finalAgent, "fake-secondary");
+  assert.equal(verifyResult.status, "passed");
+  const projected = materializeJob(events) as LooseRecord;
+  const projectedVerify = projected.phaseAgentSelections.find((selection) => selection.phase === "verify");
+  assert.equal(projectedVerify.finalAgent, "fake-secondary");
+  assert.equal(projectedVerify.finalStatus, "passed");
+});
+
+test("runJob consumes outcome metrics in the production phase-routing path", async () => {
+  const hubRoot = await tempRoot("cpb-engine-outcome-routing");
+  const events: LooseRecord[] = [];
+  const calls: LooseRecord[] = [];
+  const metricQueries: LooseRecord[] = [];
+  const metricsFor = (agent: string, values: LooseRecord) => ({
+    agent,
+    providerKey: agent,
+    scope: "task_category_phase_role",
+    scopeConfidence: 1,
+    evidenceCoverage: 1,
+    ...values,
+  });
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events },
+    pool: makePool({ calls }),
+    agents: { planner: "codex", executor: "codex", verifier: "codex" },
+    providerServices: {
+      async readAgentRoutingMetrics(_hubRoot: string, query: LooseRecord) {
+        metricQueries.push(query);
+        if (query.phase !== "execute") return { agents: {} };
+        return {
+          agents: {
+            codex: metricsFor("codex", {
+              sampleSize: 20, successes: 12, retries: 5, timeouts: 2,
+              verifierRuns: 20, verifierPasses: 11,
+            }),
+            claude: metricsFor("claude", {
+              sampleSize: 30, successes: 29, retries: 1, timeouts: 0,
+              verifierRuns: 30, verifierPasses: 28,
+            }),
+          },
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed", JSON.stringify(result));
+  assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "claude");
+  assert.ok(metricQueries.some((query) => query.phase === "execute" && query.role === "executor"));
+  const decision = events.find((event) => event.type === "agent_routing_decision" && event.phase === "execute");
+  assert.equal(decision?.outcomeApplied, true);
+  assert.equal(decision?.selectedAgent, "claude");
+  assert.match(String(decision?.reason), /outcome evidence selected claude/);
+  assert.equal(Array.isArray(decision?.candidates), true);
+  assert.equal(JSON.stringify(decision).includes("costUsd"), false);
+  assert.equal(JSON.stringify(decision).includes("totalTokens"), false);
+});
+
+test("high-risk production routing keeps verifier provider family independent from executor", async () => {
+  const events: LooseRecord[] = [];
+  const calls: LooseRecord[] = [];
+  const { result } = await runEngine({
+    servicesState: {
+      events,
+      riskMap: {
+        riskLevel: "high",
+        domains: ["security"],
+        verificationDepth: "strict",
+        adversarialRequired: true,
+      },
+    },
+    pool: makePool({ calls }),
+    agents: { planner: "codex", executor: "codex", verifier: "codex", adversarial_verifier: "codex" },
+    providerServices: null,
+  });
+
+  assert.equal(result.status, "completed", JSON.stringify(result));
+  assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "codex");
+  const verifierCalls = calls.filter((call) => call.meta.role === "verifier" || call.meta.role === "adversarial_verifier");
+  assert.ok(verifierCalls.length >= 1);
+  assert.ok(verifierCalls.every((call) => call.agent === "claude"));
+  const independentDecisions = events.filter((event) =>
+    event.type === "agent_routing_decision" && (event.role === "verifier" || event.role === "adversarial_verifier"),
+  );
+  assert.ok(independentDecisions.length >= 1);
+  assert.ok(independentDecisions.every((event) => event.independenceApplied === true));
+  assert.ok(independentDecisions.every((event) => event.excludedProviderFamily === "codex"));
 });
 
 test("runJob tolerates missing provider services when provider checks are unused", async () => {
@@ -487,7 +648,7 @@ test("materializeJob keeps phase fallback separate from job executor selection",
       reason: "preferred unavailable",
       ts: "2026-06-04T00:01:00.000Z",
     },
-  ]) as AnyRecord;
+  ]) as LooseRecord;
 
   assert.equal(job.executor, "claude");
   assert.equal(job.executorSelection, undefined);
@@ -496,7 +657,7 @@ test("materializeJob keeps phase fallback separate from job executor selection",
   assert.equal(job.phaseAgentSelections[0].role, "verifier");
 });
 
-test("runJob releases ACP provider resources after every phase attempt", async () => {
+test("runJob keeps attempt-scoped ACP conversations alive across phases", async () => {
   const calls = [];
   const releases = [];
   const { result, sourcePath } = await runEngine({
@@ -505,13 +666,8 @@ test("runJob releases ACP provider resources after every phase attempt", async (
 
   assert.equal(result.status, "completed");
   assert.deepEqual(calls.map((call) => call.meta.role), ["planner", "executor", "verifier"]);
-  assert.deepEqual(releases.map((release) => release.reason), [
-    "phase_plan_complete",
-    "phase_execute_complete",
-    "phase_verify_complete",
-  ]);
-  assert.ok(releases.every((release) => release.cwd === sourcePath));
-  assert.ok(releases.every((release) => release.options?.closeProvider === true));
+  assert.equal(sourcePath.length > 0, true);
+  assert.deepEqual(releases, []);
 });
 
 test("trusted simple tasks auto-route to direct execute and verify phases", async () => {
@@ -556,7 +712,7 @@ test("complex implementation tasks mentioning tests keep the standard full pipel
   assert.equal(route.decision.ruleRoute.category, "implementation");
 });
 
-test("unknown auto-routed tasks keep the requested safe default", async () => {
+test("ordinary auto-routed tasks remove the redundant planning phase", async () => {
   const route = resolveTaskRoute({
     task: "Build a small Vue dashboard page",
     actor: "cli",
@@ -564,8 +720,9 @@ test("unknown auto-routed tasks keep the requested safe default", async () => {
   });
 
   assert.equal(route.workflow, "standard");
-  assert.equal(route.planMode, "auto");
-  assert.equal(route.triageApplied, false);
+  assert.equal(route.planMode, "light");
+  assert.equal(route.triageApplied, true);
+  assert.equal(route.decision.ruleRoute.category, "unknown");
 });
 
 test("protected complex tasks auto-upgrade to plan, execute, review, and verify", async () => {
@@ -690,7 +847,7 @@ test("runJob hands off mid-run rate limits to a fallback provider", async (t) =>
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
         executePrimaryFailed = true;
-        const err = new Error("429 rate limit from primary") as Error & AnyRecord;
+        const err = new Error("429 rate limit from primary") as Error & LooseRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";
@@ -718,6 +875,44 @@ test("runJob hands off mid-run rate limits to a fallback provider", async (t) =>
   assert.equal(handoff.to, "fake-secondary");
 });
 
+test("runJob hands off mid-run provider transport disconnects to a fallback provider", async (t) => {
+  const hubRoot = await tempRoot("cpb-engine-hub-midrun-transport");
+  await startDelegateAckLoop(t, hubRoot);
+  const events = [];
+  const calls = [];
+  let executePrimaryFailed = false;
+
+  const pool = makePool({
+    calls,
+    onExecute: async ({ agent, meta }) => {
+      if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
+        executePrimaryFailed = true;
+        throw new Error("stream disconnected before completion: error sending request for url");
+      }
+      return { output: phaseOutput(meta.role), providerKey: agent, variant: null };
+    },
+  });
+
+  const { result } = await runEngine({
+    hubRoot,
+    servicesState: { events },
+    pool,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(
+    calls.filter((call) => call.meta.role === "executor").map((call) => call.agent),
+    ["fake-primary", "fake-secondary"],
+  );
+  const handoff = events.find((event) => event.type === "provider_handoff" && event.phase === "execute" && event.midRun);
+  assert.equal(handoff.from, "fake-primary");
+  assert.equal(handoff.to, "fake-secondary");
+  assert.equal(handoff.failureKind, FailureKind.AGENT_UNAVAILABLE);
+  assert.equal(handoff.handoffKind, "provider_transport");
+  assert.equal(handoff.status, "transport_failure");
+  assert.match(handoff.reason, /stream disconnected before completion/);
+});
+
 test("runJob turns quota delegate write failure into structured runtime failure", async () => {
   const hubRoot = await tempRoot("cpb-engine-hub-delegate-fail");
   const events = [];
@@ -725,7 +920,7 @@ test("runJob turns quota delegate write failure into structured runtime failure"
   const pool = makePool({
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary") {
-        const err = new Error("429 rate limit without delegate") as Error & AnyRecord;
+        const err = new Error("429 rate limit without delegate") as Error & LooseRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";
@@ -760,7 +955,7 @@ test("runJob retries transient phase failures and corrects artifact validation f
       if (meta.role === "planner") {
         planAttempts += 1;
         if (planAttempts === 1) {
-          const err = new Error("planner spawn failed") as Error & AnyRecord;
+          const err = new Error("planner spawn failed") as Error & LooseRecord;
           err.code = "ENOENT";
           throw err;
         }
@@ -909,7 +1104,7 @@ test("usage fallback record uses handoffState from/to/reason — not inferred fr
     onExecute: async ({ agent, meta }) => {
       if (meta.role === "executor" && agent === "fake-primary" && !executePrimaryFailed) {
         executePrimaryFailed = true;
-        const err = new Error("429 rate limit from primary") as Error & AnyRecord;
+        const err = new Error("429 rate limit from primary") as Error & LooseRecord;
         err.name = "RateLimitError";
         err.providerKey = "fake-primary";
         err.status = "rate_limited";

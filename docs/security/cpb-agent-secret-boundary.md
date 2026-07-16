@@ -20,6 +20,27 @@ Hub/UI backend servers receive only an explicit env allowlist:
 CPB-launched dependency-install helpers and the local Vite UI dev server use a
 narrower runtime-only allowlist and do not receive provider credentials.
 
+The Hub service-token authorization file is configured by absolute path through
+`CPB_HUB_SERVICE_TOKENS_FILE`. Only the Hub server child receives that path;
+orchestrator, worker, quota-delegate, installer, and agent children do not. The
+file stores token SHA-256 digests rather than plaintext bearer tokens and must
+remain outside the Hub root so backups do not copy credential material.
+
+The Hub OIDC authorization policy is configured by absolute path through
+`CPB_HUB_OIDC_CONFIG_FILE`. That path is likewise forwarded only to the Hub
+server child, not to orchestrators, workers, installers, quota delegates, or
+agents. Resource-server JWT verification uses pinned public JWKS and does not
+require an OAuth client secret. The policy file remains integrity-sensitive
+because it maps identity-provider groups to Hub scopes and projects.
+
+`CPB_HUB_BACKUP_SIGNING_KEY` and
+`CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY` remain in the invoking control
+process. `cpb hub start` completes interrupted restore/audit-archive recovery
+before spawning the long-running Hub server and does not forward either
+signing key to that child, orchestrator, workers, quota delegate, installers,
+or agents. A directly invoked `server/index.js` may read the audit-archive key
+only to authenticate an interrupted archive during startup recovery.
+
 ### Agent Process Sandbox
 
 ACP provider adapter processes and CPB-brokered terminal commands can be
@@ -29,10 +50,17 @@ launched through an OS/container sandbox before the provider code runs:
 - `CPB_AGENT_SANDBOX=best-effort` uses a supported sandbox when available and
   otherwise keeps running without one.
 - `CPB_AGENT_SANDBOX=required` fails closed if no supported sandbox is
-  available.
-- `CPB_AGENT_SANDBOX=strict` is `required` plus default network and subprocess
+  available and denies network access by default.
+- `CPB_AGENT_SANDBOX=strict` is `required` plus default subprocess
   denial. If the selected sandbox provider cannot enforce a requested
   restriction, `required`/`strict` fails closed instead of silently downgrading.
+
+When no mode is configured, CPB uses `required` for all agent phases and fails
+closed when no provider is available. `off` and `best-effort` are explicit
+development compatibility choices. Production deployments should verify the
+provider with `CPB_AGENT_SANDBOX_SELF_TEST=1`. Read-only
+Claude-compatible phases retain that configured sandbox mode in addition to
+provider tool-deny policy; they no longer disable an explicit sandbox request.
 
 Built-in providers are macOS `sandbox-exec` and Linux `bwrap` when present.
 The macOS provider can enforce filesystem, network, and process-exec policy.
@@ -54,6 +82,35 @@ contract.
 does not launch a live sandbox probe. Set `CPB_AGENT_SANDBOX_SELF_TEST=1` to make
 doctor run a minimal sandboxed Node process and fail the self-test check if the
 configured sandbox cannot execute commands.
+
+### Trusted Verification Probes
+
+Acceptance-checklist `expectedEvidence` is descriptive text and is never
+executed. Command and test checklist items can run only when the target
+repository already contains a maintainer-reviewed policy at
+`.cpb/verification-probes.json` in `HEAD`:
+
+```json
+{
+  "schemaVersion": 1,
+  "probes": [
+    {
+      "predicateId": "unit-tests",
+      "executable": "npm",
+      "args": ["test"]
+    }
+  ]
+}
+```
+
+The checklist `predicateId` must match a policy entry. CPB launches the
+executable with an argument array and `shell: false`, rejects inline shell
+evaluator flags such as `sh -c`, and passes a scrubbed environment without Hub,
+Redis, or provider credentials. Worktree edits cannot authorize a new probe,
+because policy is read from the committed `HEAD` version. Repositories without
+this policy still support static and event-based evidence; command/test items
+fail closed with a ledger-visible reason instead of executing model or issue
+text.
 
 ### ACP Pool Environment Snapshot
 
@@ -87,6 +144,17 @@ All CPB output surfaces redact secrets before persistence or emission:
 
 Redacted patterns: Bearer tokens, OpenAI/AWS/Google API keys, key=value pairs with secret-like keys, webhook URLs.
 
+### Runtime Resource Bounds
+
+Agent phases have a 30-minute hard timeout when no positive
+`CPB_ACP_PHASE_TIMEOUT_MS`, `CPB_ACP_POOL_TIMEOUT_MS`, or job timeout is set.
+Zero and invalid values fall back to the finite default rather than silently
+creating an unbounded phase. Legacy bridge subprocess capture retains only the
+newest 8 MiB per output stream by default; set a positive
+`CPB_SUBPROCESS_OUTPUT_MAX_BYTES` to choose a different bound. Output may still
+be streamed to the configured process log while the in-memory capture remains
+bounded.
+
 ### CPB-Brokered File Reads
 
 Project file loading (`project-loader`) and knowledge composition (`knowledge-compose`) deny reads of known secret paths:
@@ -112,7 +180,7 @@ set to `required` or `strict` with an available OS/container sandbox:
 
 2. **Agent subprocess spawning outside CPB**: Without required sandboxing, if an ACP agent launches its own subprocesses outside CPB's terminal broker, those subprocesses are not subject to CPB's env allowlist or output redaction. Subprocesses launched through CPB's terminal broker receive the same allowlisted environment as ACP adapter processes and the same sandbox wrapper when sandboxing is enabled.
 
-3. **Network exfiltration**: Without `CPB_AGENT_SANDBOX=strict` or `CPB_AGENT_SANDBOX_NETWORK=deny`, CPB cannot prevent an agent from sending data over the network if the agent has network access.
+3. **Network exfiltration**: `required` and `strict` deny network by default. If an operator explicitly sets `CPB_AGENT_SANDBOX_NETWORK=allow`, CPB cannot prevent an agent from sending data over that permitted network path.
 
 4. **Trusted CPB host process**: The already-running CPB CLI/server process remains inside the trusted computing base. CPB-launched Hub/UI server children and ACP pool launches use allowlisted environments, but CPB cannot fully isolate secrets from a process that was itself started by the user with secrets already in its environment without moving that process into a separate OS/container boundary.
 
@@ -123,7 +191,7 @@ set to `required` or `strict` with an available OS/container sandbox:
 ## Early Access Positioning
 
 CPB **reduces risk** through worktrees, env scrubbing, output redaction,
-CPB-controlled guards, and optional fail-closed process sandboxing. It is **not
+CPB-controlled guards, and default fail-closed process sandboxing. It is **not
 automatically a full sandbox** unless required/strict OS sandboxing is enabled
 and verified on the host. Users should:
 

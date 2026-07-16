@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 // Shared secret policy for P0.3: child-env allowlist, recursive redaction,
 // secret-path detection, and secret-artifact classification.
 
@@ -23,6 +24,7 @@ export {
 
 const SECRET_KEY_PATTERN = /authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook/i;
 const SECRET_REFERENCE_KEY_PATTERN = /(?:authorization|cookie|api[_-]?key|auth[_-]?token|token|secret|password|credential|private[_-]?key|access[_-]?key|session[_-]?key|webhook)[A-Za-z0-9_-]*(?:ref|reference)$/i;
+const TELEMETRY_TOKEN_KEY_PATTERN = /^(?:inputTokens|cachedInputTokens|outputTokens|reasoningOutputTokens|totalTokens|tokenSource|tokens)$/i;
 const WEBHOOK_URL_PATTERN = /https?:\/\/[^\s"']*(?:webhook|hook|bot)[^\s"']*/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:token|secret|key|signature)=)[^&\s"']+/gi;
 const GITHUB_URL_TOKEN_PATTERN = /https:\/\/x-access-token:[^@\s"']+@github\.com\/[^\s"']*/gi;
@@ -32,7 +34,12 @@ function isSecretReferenceKey(key: unknown = ""): boolean {
   return SECRET_REFERENCE_KEY_PATTERN.test(String(key));
 }
 
+function isTelemetryTokenKey(key: unknown = ""): boolean {
+  return TELEMETRY_TOKEN_KEY_PATTERN.test(String(key));
+}
+
 function redactString(value: unknown, key: unknown = ""): string {
+  if (typeof key === "string" && isTelemetryTokenKey(key)) return String(value);
   if (typeof key === "string" && SECRET_KEY_PATTERN.test(key)) return "[REDACTED]";
   return String(value)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
@@ -68,9 +75,11 @@ export function redactSecrets(value: unknown, key: unknown = ""): unknown {
     if (seen.has(val)) return "[Circular]";
     seen.add(val);
 
-    const out: Record<string, unknown> = {};
+    const out: LooseRecord = {};
     for (const [k, v] of Object.entries(val)) {
-      if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
+      if (isTelemetryTokenKey(k)) {
+        out[k] = walk(v);
+      } else if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
         out[k] = "[REDACTED]";
       } else if (typeof v === "string") {
         out[k] = redactString(v, isSecretReferenceKey(k) ? "" : k);
@@ -97,7 +106,7 @@ const RAW_SECRET_INPUT_PATTERNS = [
   { name: "google_api_key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
 ];
 
-export function detectSecretInput(input: unknown): Record<string, any> {
+export function detectSecretInput(input: unknown): LooseRecord {
   const text = Array.isArray(input) ? input.join(" ") : String(input ?? "");
   const match = RAW_SECRET_INPUT_PATTERNS.find(({ pattern }) => pattern.test(text));
   return {
@@ -109,18 +118,18 @@ export function detectSecretInput(input: unknown): Record<string, any> {
   };
 }
 
-export function assertNoSecretInput(input: unknown): Record<string, any> {
+export function assertNoSecretInput(input: unknown): LooseRecord {
   const detected = detectSecretInput(input);
   if (detected.matched) {
-    const error = new Error(SECRET_INPUT_GUIDANCE);
-    (error as Error & { code?: string; detection?: Record<string, unknown> }).code = "SECRET_INPUT_REJECTED";
-    (error as Error & { code?: string; detection?: Record<string, unknown> }).detection = detected;
+    const error: Error & { code?: string; detection?: LooseRecord } = new Error(SECRET_INPUT_GUIDANCE);
+    error.code = "SECRET_INPUT_REJECTED";
+    error.detection = detected;
     throw error;
   }
   return detected;
 }
 
-export function makeSecretInputRejectedEvent({ source, input, reason }: Record<string, any> = {}) {
+export function makeSecretInputRejectedEvent({ source, input, reason }: LooseRecord = {}) {
   const detected = detectSecretInput(input);
   return {
     type: "secret_input_rejected",
@@ -203,17 +212,17 @@ export function isSecretArtifact(name: unknown, content: unknown): boolean {
   return false;
 }
 
-export function makeSecretBlockedEvent(artifactName: unknown, reason?: string): Record<string, any> {
+export function makeSecretBlockedEvent(artifactName: unknown, reason?: string): LooseRecord {
   return {
     type: "secret_blocked",
     messageKey: "secret_blocked",
-    artifact: redactSecrets(String(artifactName || "")),
+    artifact: String(redactSecrets(String(artifactName || ""))),
     reason: reason || "secret-like content detected",
     ts: new Date().toISOString(),
   };
 }
 
-export function notifySecretBlocked(onSecretBlocked: ((event: Record<string, unknown>) => void) | null, artifactName: unknown, reason?: string): Record<string, any> {
+export function notifySecretBlocked(onSecretBlocked: ((event: LooseRecord) => void) | null, artifactName: unknown, reason?: string): LooseRecord {
   const event = makeSecretBlockedEvent(artifactName, reason);
   if (typeof onSecretBlocked === "function") {
     onSecretBlocked(event);

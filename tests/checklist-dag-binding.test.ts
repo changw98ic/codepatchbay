@@ -11,14 +11,14 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { runJob } from "../core/engine/run-job.js";
 import { validateChecklistDagCoverage } from "../core/workflow/acceptance-checklist.js";
 import { tempRoot } from "./helpers.js";
 
 
-function jsonEnvelope(data: AnyRecord) {
+function jsonEnvelope(data: LooseRecord) {
   return "```json\n" + JSON.stringify(data, null, 2) + "\n```";
 }
 
@@ -64,10 +64,10 @@ test("dag_node_started and dag_node_completed include checklistIds from DAG node
   const cpbRoot = await tempRoot("cpb-dag-bind-events");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
-      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
+      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
       if (meta.role === "executor") return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
       return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
     },
@@ -93,14 +93,14 @@ test("dag_node_started and dag_node_completed include checklistIds from DAG node
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => pool,
   });
 
   const dagEvent = events.find((event) => event.type === "workflow_dag_materialized");
   assert.ok(dagEvent, "workflow_dag_materialized event should exist");
-  assert.deepEqual(dagEvent.workflowDag.nodes.find((node: AnyRecord) => node.phase === "execute").checklistIds, ["AC-001"]);
+  assert.deepEqual(dagEvent.workflowDag.nodes.find((node: LooseRecord) => node.phase === "execute").checklistIds, ["AC-001"]);
 
   // dag_node_started for execute carries checklistIds
   const dagNodeStarted = events.find((event) => event.type === "dag_node_started" && event.phase === "execute");
@@ -127,10 +127,10 @@ test("dag_node_failed includes checklistIds from DAG node", async () => {
   const cpbRoot = await tempRoot("cpb-dag-bind-failed");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
-      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
+      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
       if (meta.role === "executor") return { output: "not json", providerKey: "fake", variant: null };
       return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
     },
@@ -156,7 +156,7 @@ test("dag_node_failed includes checklistIds from DAG node", async () => {
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => pool,
   });
@@ -180,7 +180,7 @@ test("validateChecklistDagCoverage rejects custom mutating node without checklis
   assert.equal(result.ok, false, "should reject custom mutating node without checklistIds or checklistNeutral");
   assert.equal(result.outcome, "dag_uncovered");
   assert.ok(result.violations.length > 0, "should report violations");
-  assert.ok(result.violations.some((v: AnyRecord) => v.nodeId === "custom-mutate"), "violation should mention custom-mutate node");
+  assert.ok(result.violations.some((v: LooseRecord) => v.nodeId === "custom-mutate"), "violation should mention custom-mutate node");
 });
 
 test("validateChecklistDagCoverage accepts custom node with checklistNeutral", () => {
@@ -209,7 +209,7 @@ test("validateChecklistDagCoverage rejects verify node not depending on execute 
   const result = validateChecklistDagCoverage(workflowDag, acceptanceChecklist);
   assert.equal(result.ok, false, "should reject verify node that does not depend on execute covering same ids");
   assert.equal(result.outcome, "dag_uncovered");
-  assert.ok(result.violations.some((v: AnyRecord) => v.nodeId === "verify" && v.reason.includes("must depend on")), "violation should mention missing dependency");
+  assert.ok(result.violations.some((v: LooseRecord) => v.nodeId === "verify" && v.reason.includes("must depend on")), "violation should mention missing dependency");
 });
 
 test("validateChecklistDagCoverage accepts valid DAG with execute and verify covering same ids", () => {

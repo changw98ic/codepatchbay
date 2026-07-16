@@ -1,6 +1,7 @@
 // ── release-store ──
 import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { LooseRecord } from "../../../core/contracts/types.js";
 import { assertExecutorRoot, readExecutorPackage, REQUIRED_EXECUTOR_FILES } from "../setup.js";
 
 export const RELEASE_METADATA_FORMAT_VERSION = 1;
@@ -45,7 +46,120 @@ const EXCLUDED_WIKI_PROJECTS = new Set([
   "flow",
 ]);
 
-export function resolveReleaseStoreRoot({ destRoot, env = process.env }: AnyRecord = {}) {
+type ReleaseEnv = NodeJS.ProcessEnv;
+
+type ReleaseStoreOptions = {
+  destRoot?: string;
+  env?: ReleaseEnv;
+};
+
+type InstallReleaseOptions = ReleaseStoreOptions & {
+  sourceRoot?: string;
+  name?: string;
+  now?: Date | string;
+};
+
+type ReleaseManifest = LooseRecord & {
+  metadataVersion?: number;
+  releaseId?: string;
+  sourcePath?: string;
+  installedPath?: string;
+  createdAt?: string;
+  codeVersion?: string;
+  packageName?: string;
+  stateFormatVersions?: Record<string, number>;
+};
+
+type ReleaseSelector = LooseRecord & {
+  stateVersion?: number;
+  releaseId?: string;
+  releasePath?: string;
+  selectedAt?: string;
+};
+
+type CurrentReleaseSelection = {
+  selector: ReleaseSelector | null;
+  linkTarget: string | null;
+};
+
+type ReleaseListItem = ReleaseManifest & {
+  releaseId: string;
+  installedPath: string;
+  status: "valid" | "invalid";
+  current?: boolean;
+  error?: string;
+};
+
+type ReleaseFailure = LooseRecord & {
+  code: string;
+  message?: string;
+  path?: string | null;
+  releaseId?: string;
+};
+
+type ReleaseCompatibility = {
+  ok: boolean;
+  releaseId: string;
+  releasePath: string | null;
+  metadata: ReleaseManifest | null;
+  failures: ReleaseFailure[];
+};
+
+type ReleaseJobRecord = LooseRecord & {
+  jobId?: string;
+  status?: string;
+  project?: string;
+  executor?: { releaseId?: string };
+  lineage?: {
+    executorSelection?: LooseRecord & {
+      selectedReleaseId?: string;
+      parentReleaseId?: string;
+    };
+  };
+};
+
+type ReleasePin = {
+  jobId?: string;
+  status?: string;
+  project?: string;
+};
+
+type ReleaseGcCandidate = {
+  releaseId: string;
+  installedPath: string | null;
+  classification: "eligible" | "protected" | "unsafe";
+  reasons: string[];
+  skipReason?: string;
+  refusalReason?: string;
+};
+
+type ReleaseGcPlan = {
+  releaseStoreRoot: string;
+  currentReleaseId: string | null;
+  candidates: ReleaseGcCandidate[];
+  generatedAt: string;
+};
+
+type ReleaseGcResult = {
+  deleted: ReleaseGcCandidate[];
+  skipped: ReleaseGcCandidate[];
+  refused: ReleaseGcCandidate[];
+  executedAt: string;
+};
+
+type ReleaseGcOptions = ReleaseStoreOptions & {
+  cpbRoot?: string;
+};
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err || "");
+}
+
+function isRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function resolveReleaseStoreRoot({ destRoot, env = process.env }: ReleaseStoreOptions = {}) {
   if (destRoot) return path.resolve(destRoot);
   const cpbHome = env.CPB_HOME || path.join(
     process.env.HOME || "/tmp",
@@ -77,7 +191,7 @@ export function manifestPathForRelease(installedPath: string) {
   return path.join(path.resolve(installedPath), "release", "manifest.json");
 }
 
-export async function readReleaseMetadata(installedPathOrManifestPath: string): Promise<AnyRecord> {
+export async function readReleaseMetadata(installedPathOrManifestPath: string): Promise<ReleaseManifest> {
   const resolved = path.resolve(installedPathOrManifestPath);
   let manifestFile;
   try {
@@ -121,13 +235,14 @@ async function exists(targetPath: string) {
   }
 }
 
-export async function installRelease({ sourceRoot, destRoot, name, now = new Date(), env }: AnyRecord = {}) {
+export async function installRelease({ sourceRoot, destRoot, name, now = new Date(), env }: InstallReleaseOptions = {}) {
   const resolvedSource = await assertExecutorRoot(sourceRoot);
   const pkg = await readExecutorPackage(resolvedSource);
+  const releaseDate = now instanceof Date ? now : new Date(now);
 
   const releaseId = name
     ? name
-    : generateDefaultReleaseId(pkg.version, now);
+    : generateDefaultReleaseId(pkg.version, releaseDate);
   validateReleaseId(releaseId);
 
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
@@ -189,7 +304,7 @@ export async function installRelease({ sourceRoot, destRoot, name, now = new Dat
       releaseId,
       sourcePath: resolvedSource,
       installedPath,
-      createdAt: now instanceof Date ? now.toISOString() : new Date(now).toISOString(),
+      createdAt: releaseDate.toISOString(),
       codeVersion: pkg.version,
       packageName: pkg.name,
       stateFormatVersions: {
@@ -216,15 +331,15 @@ export async function installRelease({ sourceRoot, destRoot, name, now = new Dat
   }
 }
 
-export function resolveCpbHome({ env = process.env }: AnyRecord = {}) {
+export function resolveCpbHome({ env = process.env }: { env?: ReleaseEnv } = {}) {
   return env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
 }
 
-export function currentReleaseLinkPath({ env = process.env }: AnyRecord = {}) {
+export function currentReleaseLinkPath({ env = process.env }: { env?: ReleaseEnv } = {}) {
   return path.join(resolveCpbHome({ env }), "current");
 }
 
-export function currentReleaseStatePath({ env = process.env }: AnyRecord = {}) {
+export function currentReleaseStatePath({ env = process.env }: { env?: ReleaseEnv } = {}) {
   return path.join(resolveCpbHome({ env }), "release", "current.json");
 }
 
@@ -242,14 +357,14 @@ export async function supportedStateFormatVersions() {
   };
 }
 
-export async function listReleases({ destRoot, env = process.env }: AnyRecord = {}) {
+export async function listReleases({ destRoot, env = process.env }: ReleaseStoreOptions = {}) {
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   let currentSelection = null;
   try {
     currentSelection = await readCurrentReleaseSelection({ env });
   } catch {}
 
-  const releases: AnyRecord[] = [];
+  const releases: ReleaseListItem[] = [];
   let entries;
   try {
     entries = await readdir(storeRoot, { withFileTypes: true });
@@ -277,7 +392,7 @@ export async function listReleases({ destRoot, env = process.env }: AnyRecord = 
         releaseId: name,
         installedPath: path.join(storeRoot, name),
         status: "invalid",
-        error: err.message,
+        error: errorMessage(err),
       });
     }
   }
@@ -296,7 +411,7 @@ export async function listReleases({ destRoot, env = process.env }: AnyRecord = 
   };
 }
 
-export async function readCurrentReleaseSelection({ env = process.env }: AnyRecord = {}) {
+export async function readCurrentReleaseSelection({ env = process.env }: { env?: ReleaseEnv } = {}): Promise<CurrentReleaseSelection | null> {
   const statePath = currentReleaseStatePath({ env });
   let selector = null;
   try {
@@ -315,7 +430,7 @@ export async function readCurrentReleaseSelection({ env = process.env }: AnyReco
   return { selector, linkTarget };
 }
 
-export async function inspectCurrentRelease({ env = process.env }: AnyRecord = {}) {
+export async function inspectCurrentRelease({ env = process.env }: { env?: ReleaseEnv } = {}) {
   const selection = await readCurrentReleaseSelection({ env });
   if (!selection) return null;
 
@@ -330,7 +445,7 @@ export async function inspectCurrentRelease({ env = process.env }: AnyRecord = {
   }
 }
 
-export async function checkReleaseCompatibility({ releaseId, destRoot, env = process.env }: AnyRecord = {}) {
+export async function checkReleaseCompatibility({ releaseId, destRoot, env = process.env }: ReleaseStoreOptions & { releaseId?: string } = {}): Promise<ReleaseCompatibility> {
   try {
     validateReleaseId(releaseId);
   } catch (err) {
@@ -339,13 +454,13 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
       releaseId: String(releaseId),
       releasePath: null,
       metadata: null,
-      failures: [{ code: "release_path_invalid", message: err.message, releaseId: String(releaseId) }],
+      failures: [{ code: "release_path_invalid", message: errorMessage(err), releaseId: String(releaseId) }],
     };
   }
 
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   const rPath = releasePath(storeRoot, releaseId);
-  const failures: AnyRecord[] = [];
+  const failures: ReleaseFailure[] = [];
 
   const resolvedStoreRoot = path.resolve(storeRoot);
   const resolvedRPath = path.resolve(rPath);
@@ -392,14 +507,14 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
   try {
     raw = await readFile(manifestFile, "utf8");
   } catch (err) {
-    failures.push({ code: "manifest_missing", message: `Cannot read manifest: ${err.message}`, path: manifestFile, remediation: "Ensure release/manifest.json exists and is readable" });
+    failures.push({ code: "manifest_missing", message: `Cannot read manifest: ${errorMessage(err)}`, path: manifestFile, remediation: "Ensure release/manifest.json exists and is readable" });
     return { ok: false, releaseId, releasePath: rPath, metadata: null, failures };
   }
 
   try {
     manifest = JSON.parse(raw);
   } catch (err) {
-    failures.push({ code: "manifest_malformed", message: `Manifest JSON is malformed: ${err.message}`, path: manifestFile, remediation: "Ensure release/manifest.json contains valid JSON" });
+    failures.push({ code: "manifest_malformed", message: `Manifest JSON is malformed: ${errorMessage(err)}`, path: manifestFile, remediation: "Ensure release/manifest.json contains valid JSON" });
     return { ok: false, releaseId, releasePath: rPath, metadata: null, failures };
   }
 
@@ -463,10 +578,10 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
 }
 
 export class ReleaseCompatibilityError extends Error {
-  failures: AnyRecord[];
+  failures: ReleaseFailure[];
   releaseId: string;
 
-  constructor(failures: AnyRecord[], releaseId: string) {
+  constructor(failures: ReleaseFailure[], releaseId: string) {
     super(`Release '${releaseId}' is not compatible: ${failures.map(f => f.code).join(", ")}`);
     this.name = "ReleaseCompatibilityError";
     this.failures = failures;
@@ -474,7 +589,7 @@ export class ReleaseCompatibilityError extends Error {
   }
 }
 
-export async function selectRelease({ releaseId, destRoot, env = process.env, now }: AnyRecord = {}) {
+export async function selectRelease({ releaseId, destRoot, env = process.env, now }: ReleaseStoreOptions & { releaseId?: string; now?: Date } = {}) {
   const compat = await checkReleaseCompatibility({ releaseId, destRoot, env });
   if (!compat.ok) {
     throw new ReleaseCompatibilityError(compat.failures, releaseId);
@@ -514,15 +629,14 @@ export async function selectRelease({ releaseId, destRoot, env = process.env, no
 
 // ── release-gc ──
 import { lstat as lstatFn, readdir as readdirFn, readFile as readFileFn, rm as rmFn, stat as statFn } from "node:fs/promises";
-import { AnyRecord } from "../../../shared/types.js";
 import { listJobs } from "../job/job-store.js";
 
 async function gcExists(p: string) {
   try { await statFn(p); return true; } catch { return false; }
 }
 
-function collectReleasePins(jobs: Record<string, any>[]) {
-  const pins = new Map<string, any[]>();
+function collectReleasePins(jobs: ReleaseJobRecord[]) {
+  const pins = new Map<string, ReleasePin[]>();
   for (const job of jobs) {
     const ids = new Set<string>();
     if (job.executor?.releaseId) ids.add(job.executor.releaseId);
@@ -536,7 +650,7 @@ function collectReleasePins(jobs: Record<string, any>[]) {
   return pins;
 }
 
-async function collectProcessAndLeaseEvidence(cpbRoot: string, jobs: Record<string, any>[]) {
+async function collectProcessAndLeaseEvidence(cpbRoot: string, jobs: ReleaseJobRecord[]) {
   const processReleaseIds = new Set<string>();
   const leaseReleaseIds = new Set<string>();
 
@@ -573,7 +687,7 @@ async function collectProcessAndLeaseEvidence(cpbRoot: string, jobs: Record<stri
   return { processReleaseIds, leaseReleaseIds };
 }
 
-export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot }: Record<string, any> = {}) {
+export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot }: ReleaseGcOptions = {}): Promise<ReleaseGcPlan> {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const storeRoot = resolveReleaseStoreRoot({ destRoot, env });
   const releaseList = await listReleases({ destRoot, env });
@@ -583,7 +697,7 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   try {
     jobs = await listJobs(resolvedCpbRoot);
   } catch (err) {
-    throw new Error(`Cannot build release GC plan: failed to read job inventory: ${(err as Error).message}`);
+    throw new Error(`Cannot build release GC plan: failed to read job inventory: ${err.message}`);
   }
 
   const jobPins = collectReleasePins(jobs);
@@ -626,7 +740,7 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
 
     const jobPin = jobPins.get(releaseId);
     if (jobPin) {
-      const activeJobs = jobPin.filter((j: Record<string, any>) => !["completed", "failed", "blocked", "cancelled"].includes(j.status));
+      const activeJobs = jobPin.filter((j) => !["completed", "failed", "blocked", "cancelled"].includes(j.status || ""));
       if (activeJobs.length > 0) {
         reasons.push(`active_job:${activeJobs.length}`);
         classification = "protected";
@@ -690,10 +804,10 @@ export async function buildReleaseGcPlan({ cpbRoot, env = process.env, destRoot 
   };
 }
 
-export async function executeReleaseGc(plan: Record<string, any>, { destRoot, env = process.env, cpbRoot }: Record<string, any> = {}) {
-  const eligible = plan.candidates.filter((c: Record<string, any>) => c.classification === "eligible");
-  const protected_ = plan.candidates.filter((c: Record<string, any>) => c.classification === "protected");
-  const unsafe = plan.candidates.filter((c: Record<string, any>) => c.classification === "unsafe");
+export async function executeReleaseGc(plan: ReleaseGcPlan, { destRoot, env = process.env, cpbRoot }: ReleaseGcOptions = {}): Promise<ReleaseGcResult> {
+  const eligible = plan.candidates.filter((c) => c.classification === "eligible");
+  const protected_ = plan.candidates.filter((c) => c.classification === "protected");
+  const unsafe = plan.candidates.filter((c) => c.classification === "unsafe");
 
   const deleted = [];
   const skipped = [];
@@ -710,10 +824,10 @@ export async function executeReleaseGc(plan: Record<string, any>, { destRoot, en
   } catch (err) {
     return {
       deleted: [],
-      skipped: protected_.map((c: Record<string, any>) => ({ ...c, skipReason: "protected" })),
+      skipped: protected_.map((c) => ({ ...c, skipReason: "protected" })),
       refused: [
-        ...eligible.map((c: Record<string, any>) => ({ ...c, refusalReason: `job_inventory_unreadable: ${(err as Error).message}` })),
-        ...unsafe.map((c: Record<string, any>) => ({ ...c, refusalReason: "unsafe" })),
+        ...eligible.map((c) => ({ ...c, refusalReason: `job_inventory_unreadable: ${errorMessage(err)}` })),
+        ...unsafe.map((c) => ({ ...c, refusalReason: "unsafe" })),
       ],
       executedAt: new Date().toISOString(),
     };
@@ -742,7 +856,10 @@ export async function executeReleaseGc(plan: Record<string, any>, { destRoot, en
       continue;
     }
 
-    const currentReleasePath = (currentSelection as Record<string, any> | null | undefined)?.linkTarget || currentSelection?.selector?.releasePath;
+    // retain: dynamic field access — inspectCurrentRelease's typed shape omits linkTarget,
+    // but defensively probe for it before falling back to selector.releasePath (runtime-identical).
+    const currentSelectionWithLink = currentSelection as (typeof currentSelection & { linkTarget?: string | null });
+    const currentReleasePath = currentSelectionWithLink?.linkTarget || currentSelection?.selector?.releasePath;
     if (currentReleasePath && path.resolve(candidate.installedPath) === path.resolve(currentReleasePath)) {
       refused.push({ ...candidate, refusalReason: "path_matches_current_release_revalidated" });
       continue;
@@ -763,7 +880,7 @@ export async function executeReleaseGc(plan: Record<string, any>, { destRoot, en
       await rmFn(resolvedPath, { recursive: true, force: true });
       deleted.push(candidate);
     } catch (err) {
-      refused.push({ ...candidate, refusalReason: `delete_failed: ${err.message}` });
+      refused.push({ ...candidate, refusalReason: `delete_failed: ${errorMessage(err)}` });
     }
   }
 
@@ -782,7 +899,7 @@ export async function executeReleaseGc(plan: Record<string, any>, { destRoot, en
   };
 }
 
-export function formatGcPlanHuman(plan: Record<string, any>) {
+export function formatGcPlanHuman(plan: ReleaseGcPlan) {
   const lines = [];
   lines.push("Release GC Plan:");
   lines.push(`  Store root: ${plan.releaseStoreRoot}`);
@@ -807,7 +924,7 @@ export function formatGcPlanHuman(plan: Record<string, any>) {
   return lines.join("\n");
 }
 
-export function formatGcResultHuman(result: Record<string, any>) {
+export function formatGcResultHuman(result: ReleaseGcResult) {
   const lines = [];
   lines.push("Release GC Result:");
   lines.push(`  Deleted: ${result.deleted.length}`);

@@ -49,6 +49,25 @@ function redactSecrets(text: unknown) {
  * @param {string} [opts.sourcePath]
  * @returns {Promise<string>} markdown handoff document
  */
+type HandoffPreviousResult = {
+  phase?: string | null;
+  artifact?: { name?: string | null } | string | Record<string, unknown> | null;
+};
+
+type HandoffBundleInput = {
+  project: string;
+  jobId: string;
+  phase: string;
+  task: string;
+  originProvider: string | null;
+  failureReason: string;
+  partialStdout?: string;
+  partialStderr?: string;
+  previousResults?: HandoffPreviousResult[];
+  cpbRoot: string;
+  sourcePath?: string | null;
+};
+
 export async function generateHandoffBundle({
   project,
   jobId,
@@ -61,7 +80,7 @@ export async function generateHandoffBundle({
   previousResults = [],
   cpbRoot,
   sourcePath,
-}) {
+}: HandoffBundleInput) {
   const cwd = sourcePath || cpbRoot;
   const sections = [];
 
@@ -77,7 +96,11 @@ export async function generateHandoffBundle({
   const planResult = previousResults.find((r) => r.phase === "plan" || r.artifact);
   if (planResult?.artifact) {
     sections.push(`## Plan Artifact\n`);
-    sections.push(`Artifact: ${planResult.artifact.name || planResult.artifact}`);
+    const art = planResult.artifact;
+    // Mirrors original `artifact.name || artifact` evaluation: objects fall back
+    // to the object itself (stringified), strings have no `.name` so they pass through.
+    const name = typeof art === "string" ? undefined : art.name;
+    sections.push(`Artifact: ${name || art}`);
     sections.push("");
   }
 

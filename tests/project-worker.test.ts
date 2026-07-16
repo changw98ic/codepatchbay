@@ -9,7 +9,12 @@ import { registerProject, heartbeatWorker, getProject, loadRegistry, saveRegistr
 import { enqueue, listQueue, queueStatus } from "../server/services/hub/hub-queue.js";
 import { listDispatches } from "../server/services/dispatch/dispatch.js";
 
-let activeWorkers;
+type ProjectWorkerOptions = NonNullable<ConstructorParameters<typeof ProjectWorker>[0]>;
+type ProjectWorkerTestOptions = ProjectWorkerOptions & {
+  runPipelineFn?: ProjectWorkerOptions["runPipelineFn"];
+};
+
+let activeWorkers: ProjectWorker[] | undefined;
 
 describe("ProjectWorker", () => {
   let hubRoot;
@@ -29,7 +34,7 @@ describe("ProjectWorker", () => {
     else process.env.CPB_WORKER_DISPATCH_ENABLED = originalDispatch;
   });
 
-  function makeWorker(opts: Record<string, any> = {}) {
+  function makeWorker(opts: ProjectWorkerTestOptions = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,
@@ -539,7 +544,7 @@ describe("ProjectWorker stale queue recovery", () => {
     projectId = project.id;
   });
 
-  function makeWorker(opts: Record<string, any> = {}) {
+  function makeWorker(opts: ProjectWorkerTestOptions = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,
@@ -752,7 +757,7 @@ describe("ProjectWorker crash and reconnect resilience", () => {
     activeWorkers = [];
   });
 
-  function makeWorker(opts: Record<string, any> = {}) {
+  function makeWorker(opts: ProjectWorkerTestOptions = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,
@@ -979,7 +984,7 @@ describe("ProjectWorker heartbeat action directives", () => {
     activeWorkers.length = 0;
   });
 
-  function makeWorker(opts: Record<string, any> = {}) {
+  function makeWorker(opts: ProjectWorkerTestOptions = {}) {
     const w = new ProjectWorker({
       projectId,
       hubRoot,

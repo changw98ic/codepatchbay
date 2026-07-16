@@ -1,0 +1,1243 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified-official-docker-score-20-runnable-real-run-v3",
+  "scoredAt": "2026-06-26T11:39:31.638Z",
+  "harness": {
+    "package": "swebench",
+    "version": "4.1.0",
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "maxWorkers": 2,
+    "timeoutSeconds": 1800,
+    "forceRebuild": false,
+    "cacheLevel": "instance",
+    "clean": false,
+    "runId": "cpb-20-runnable-20260626-sourceonly-v3",
+    "modelNameOrPath": "codepatchbay-codex-real-run-20-runnable-source-only-v3",
+    "environmentWorkaround": "HOME=/tmp/cpb-empty-home DOCKER_CONFIG=/tmp/cpb-empty-docker-config was required because the default Docker Desktop credsStore=desktop helper hung during Python SDK image pulls."
+  },
+  "cpbGeneration": {
+    "manifestPath": "/tmp/cpb-swebench-20-runnable-manifest.json",
+    "outputRoot": "/tmp/cpb-swebench-20-runnable-real-runs-v2 plus targeted tail rerun /tmp/cpb-swebench-20-tail-rerun",
+    "batchResultsPath": "/tmp/cpb-swebench-20-runnable-real-runs-v2/cpb-batch-results.json",
+    "evidenceDir": "/tmp/cpb-swebench-20-runnable-real-runs-v2/evidence",
+    "totalRuns": 20,
+    "completedRuns": 20,
+    "concurrency": 2,
+    "perInstanceTimeoutMs": 900000,
+    "emptyPatchRerun": {
+      "outputRoot": "/tmp/cpb-swebench-20-empty-rerun",
+      "evidenceDir": "/tmp/cpb-swebench-20-empty-rerun/evidence",
+      "rerunSummaryPath": "/tmp/cpb-swebench-20-empty-rerun/rerun-summary.json",
+      "retryFetchSummaryPath": "/tmp/cpb-swebench-20-empty-rerun/retry-fetch-summary.json",
+      "rerunInstanceIds": [
+        "astropy__astropy-7671",
+        "django__django-11333",
+        "django__django-16877",
+        "pytest-dev__pytest-5809",
+        "sphinx-doc__sphinx-8721",
+        "sphinx-doc__sphinx-9711"
+      ],
+      "convertedToSourcePatch": [
+        "astropy__astropy-7671",
+        "django__django-11333",
+        "django__django-16877",
+        "sphinx-doc__sphinx-8721"
+      ],
+      "stillEmptyAfterRerun": [
+        "pytest-dev__pytest-5809",
+        "sphinx-doc__sphinx-9711"
+      ],
+      "perInstanceTimeoutMs": 2700000
+    },
+    "targetedTailRerun": {
+      "outputRoot": "/tmp/cpb-swebench-20-tail-rerun",
+      "evidenceDir": "/tmp/cpb-swebench-20-tail-rerun/evidence",
+      "rerunSummaryPath": "/tmp/cpb-swebench-20-tail-rerun/rerun-summary.json",
+      "rerunInstanceIds": [
+        "django__django-16502",
+        "pylint-dev__pylint-4661",
+        "sphinx-doc__sphinx-8595",
+        "pytest-dev__pytest-5809",
+        "sphinx-doc__sphinx-9711"
+      ],
+      "convertedToSourcePatch": [
+        "django__django-16502",
+        "pylint-dev__pylint-4661",
+        "sphinx-doc__sphinx-8595",
+        "pytest-dev__pytest-5809",
+        "sphinx-doc__sphinx-9711"
+      ],
+      "resolvedAfterTailRerun": [
+        "pylint-dev__pylint-4661",
+        "pytest-dev__pytest-5809"
+      ],
+      "stillUnresolvedAfterTailRerun": [
+        "django__django-16502",
+        "sphinx-doc__sphinx-8595",
+        "sphinx-doc__sphinx-9711"
+      ],
+      "stillEmptyAfterTailRerun": [],
+      "perInstanceTimeoutMs": 3600000
+    }
+  },
+  "predictionBuild": {
+    "predictionsPath": "/tmp/cpb-swebench-20-runnable-score-v3/predictions.jsonl",
+    "predictionSummaryPath": "/tmp/cpb-swebench-20-runnable-score-v3/prediction-summary.json",
+    "sourcePatchCount": 20,
+    "emptyPatchCount": 0,
+    "policy": "Use CPB-generated source-only diffs for scoring; exclude tests/docs/changelog paths; submit empty patches only when CPB runs produce no diff. The v3 targeted tail rerun produced source patches for all 20 submitted instances, so SWE-bench ran all containers and reported zero empty_patch_instances."
+  },
+  "summary": {
+    "instancesSubmitted": 20,
+    "instancesCompleted": 20,
+    "instancesResolved": 17,
+    "instancesUnresolved": 3,
+    "instancesWithEmptyPatches": 0,
+    "instancesWithErrors": 0,
+    "resolutionRateSubmitted": "17/20",
+    "resolutionRateCompleted": "17/20"
+  },
+  "officialReport": {
+    "total_instances": 20,
+    "submitted_instances": 20,
+    "completed_instances": 20,
+    "resolved_instances": 17,
+    "unresolved_instances": 3,
+    "empty_patch_instances": 0,
+    "error_instances": 0,
+    "completed_ids": [
+      "astropy__astropy-7671",
+      "django__django-10973",
+      "django__django-11066",
+      "django__django-11239",
+      "django__django-11333",
+      "django__django-12419",
+      "django__django-15127",
+      "django__django-16502",
+      "django__django-16877",
+      "psf__requests-1142",
+      "pylint-dev__pylint-4661",
+      "pytest-dev__pytest-5809",
+      "scikit-learn__scikit-learn-14053",
+      "scikit-learn__scikit-learn-14141",
+      "sphinx-doc__sphinx-7985",
+      "sphinx-doc__sphinx-8035",
+      "sphinx-doc__sphinx-8593",
+      "sphinx-doc__sphinx-8595",
+      "sphinx-doc__sphinx-8721",
+      "sphinx-doc__sphinx-9711"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": [
+      "astropy__astropy-7671",
+      "django__django-10973",
+      "django__django-11066",
+      "django__django-11239",
+      "django__django-11333",
+      "django__django-12419",
+      "django__django-15127",
+      "django__django-16502",
+      "django__django-16877",
+      "psf__requests-1142",
+      "pylint-dev__pylint-4661",
+      "pytest-dev__pytest-5809",
+      "scikit-learn__scikit-learn-14053",
+      "scikit-learn__scikit-learn-14141",
+      "sphinx-doc__sphinx-7985",
+      "sphinx-doc__sphinx-8035",
+      "sphinx-doc__sphinx-8593",
+      "sphinx-doc__sphinx-8595",
+      "sphinx-doc__sphinx-8721",
+      "sphinx-doc__sphinx-9711"
+    ],
+    "resolved_ids": [
+      "astropy__astropy-7671",
+      "django__django-10973",
+      "django__django-11066",
+      "django__django-11239",
+      "django__django-11333",
+      "django__django-12419",
+      "django__django-15127",
+      "django__django-16877",
+      "psf__requests-1142",
+      "pylint-dev__pylint-4661",
+      "pytest-dev__pytest-5809",
+      "scikit-learn__scikit-learn-14053",
+      "scikit-learn__scikit-learn-14141",
+      "sphinx-doc__sphinx-7985",
+      "sphinx-doc__sphinx-8035",
+      "sphinx-doc__sphinx-8593",
+      "sphinx-doc__sphinx-8721"
+    ],
+    "unresolved_ids": [
+      "django__django-16502",
+      "sphinx-doc__sphinx-8595",
+      "sphinx-doc__sphinx-9711"
+    ],
+    "error_ids": [],
+    "schema_version": 2
+  },
+  "artifacts": {
+    "officialReportPath": "/tmp/cpb-swebench-20-runnable-score-v3/official-report.json",
+    "predictionSummaryPath": "/tmp/cpb-swebench-20-runnable-score-v3/prediction-summary.json",
+    "predictionsPath": "/tmp/cpb-swebench-20-runnable-score-v3/predictions.jsonl",
+    "harnessRunRoot": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3",
+    "combinedEvidenceDir": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined"
+  },
+  "samples": [
+    {
+      "index": 1,
+      "instanceId": "django__django-12419",
+      "repository": "django/django",
+      "baseCommit": "7fa1a93c6c8109010a6ff3f604fda83b604e0e97",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=83&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/conf/global_settings.py",
+          "docs/ref/settings.txt",
+          "docs/releases/3.1.txt"
+        ],
+        "sourcePatchFiles": [
+          "django/conf/global_settings.py"
+        ],
+        "excludedFiles": [
+          "docs/ref/settings.txt",
+          "docs/releases/3.1.txt"
+        ],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 447,
+        "patchSha256": "18cf1caafe29438c70a9b98fb12f68d678e3e9649e6f66a1239645aa2301bf80"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-12419-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-12419.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-12419",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-12419/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-12419/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-12419/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-12419/patch.diff"
+      }
+    },
+    {
+      "index": 2,
+      "instanceId": "pylint-dev__pylint-4661",
+      "repository": "pylint-dev/pylint",
+      "baseCommit": "1d1619ef913b99b06647d2030bddff4800abdf63",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=322&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "pylint/config/__init__.py",
+          "setup.cfg"
+        ],
+        "sourcePatchFiles": [
+          "pylint/config/__init__.py",
+          "setup.cfg"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 2707,
+        "patchSha256": "410bf00fd33c49e53a2a30a133551ab12250d8f55e05d1c8cc78e9e446f50f33"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/pylint-dev-pylint-4661-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/pylint-dev-pylint-4661.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pylint-dev__pylint-4661",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pylint-dev__pylint-4661/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pylint-dev__pylint-4661/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pylint-dev__pylint-4661/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pylint-dev__pylint-4661/patch.diff"
+      }
+    },
+    {
+      "index": 3,
+      "instanceId": "sphinx-doc__sphinx-8595",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "b19bce971e82f2497d67fdacdeca8db08ae0ba56",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=408&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 634,
+        "patchSha256": "84231cd312075410f717ddfdac7515b424ad4211c4c86adaa979b7915ceac5c8"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": false,
+        "unresolved": true,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 0,
+          "failure": 1
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-8595-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/sphinx-doc-sphinx-8595.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8595",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8595/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8595/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8595/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8595/patch.diff"
+      }
+    },
+    {
+      "index": 4,
+      "instanceId": "sphinx-doc__sphinx-9711",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "81a4fd973d4cfcb25d01a7b0be62cdb28f82406d",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=424&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "sphinx/extension.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/extension.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1433,
+        "patchSha256": "fdc810ef0dd508612dccfaa11eb7064b9c9de09d2fc7e0b85d5429795712bb16"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": false,
+        "unresolved": true,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 0,
+          "failure": 1
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-9711-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/sphinx-doc-sphinx-9711.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-9711",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-9711/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-9711/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-9711/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-9711/patch.diff"
+      }
+    },
+    {
+      "index": 5,
+      "instanceId": "django__django-15127",
+      "repository": "django/django",
+      "baseCommit": "9a6e2df3a8f01ea761529bec48e5a8dc0ea9575b",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=179&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/contrib/messages/storage/base.py"
+        ],
+        "sourcePatchFiles": [
+          "django/contrib/messages/storage/base.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 736,
+        "patchSha256": "d6dff196a1625d8c3179026fc84403d74aef24c5b89ebf9480f5610174b61b9e"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 1,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-15127-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-15127.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-15127",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-15127/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-15127/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-15127/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-15127/patch.diff"
+      }
+    },
+    {
+      "index": 6,
+      "instanceId": "django__django-11333",
+      "repository": "django/django",
+      "baseCommit": "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=46&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/urls/base.py",
+          "django/urls/resolvers.py"
+        ],
+        "sourcePatchFiles": [
+          "django/urls/base.py",
+          "django/urls/resolvers.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1293,
+        "patchSha256": "1080303488031821cb76dcaac4af5cc36d74b32c9b4b8e0a5606898abc2d9fe6"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 2,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-11333-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/django-django-11333.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11333",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11333/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11333/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11333/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11333/patch.diff"
+      }
+    },
+    {
+      "index": 7,
+      "instanceId": "scikit-learn__scikit-learn-14141",
+      "repository": "scikit-learn/scikit-learn",
+      "baseCommit": "3d997697fdd166eff428ea9fd35734b6a8ba113e",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=366&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "sklearn/utils/_show_versions.py"
+        ],
+        "sourcePatchFiles": [
+          "sklearn/utils/_show_versions.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 361,
+        "patchSha256": "11fb6de61c63d3d149207b5d23d6317848e1cfc1e8ff7294d678a28a3f72502a"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 2,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/scikit-learn-scikit-learn-14141-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/scikit-learn-scikit-learn-14141.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14141",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14141/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14141/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14141/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14141/patch.diff"
+      }
+    },
+    {
+      "index": 8,
+      "instanceId": "sphinx-doc__sphinx-8035",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "5e6da19f0e44a0ae83944fb6ce18f18f781e1a6e",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=398&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": true,
+        "assignmentStatus": null,
+        "jobStatus": null,
+        "changedFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 4420,
+        "patchSha256": "bfbb903fb6a708fe48a93ea4ceeb37b480f89a4a876eb442cf5ff496196cf046"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 2,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-8035-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/sphinx-doc-sphinx-8035.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8035",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8035/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8035/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8035/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8035/patch.diff"
+      }
+    },
+    {
+      "index": 9,
+      "instanceId": "sphinx-doc__sphinx-8593",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "07983a5a8704ad91ae855218ecbda1c8598200ca",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=407&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": true,
+        "assignmentStatus": null,
+        "jobStatus": null,
+        "changedFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/ext/autodoc/__init__.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1035,
+        "patchSha256": "447e5b2b8273b7ff397d9aab47b109f31d862a5b494005711c1e2a02f8952d7a"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 2,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 1,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-8593-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/sphinx-doc-sphinx-8593.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8593",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8593/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8593/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8593/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8593/patch.diff"
+      }
+    },
+    {
+      "index": 10,
+      "instanceId": "astropy__astropy-7671",
+      "repository": "astropy/astropy",
+      "baseCommit": "a7141cd90019b62688d507ae056298507678c058",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=19&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "astropy/utils/introspection.py"
+        ],
+        "sourcePatchFiles": [
+          "astropy/utils/introspection.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 966,
+        "patchSha256": "e48c75187350a67e954fb07d2eb4a705345b5662b3caeb4856fe2f02ffe5096e"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 3,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/astropy-astropy-7671-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/astropy-astropy-7671.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/astropy__astropy-7671",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/astropy__astropy-7671/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/astropy__astropy-7671/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/astropy__astropy-7671/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/astropy__astropy-7671/patch.diff"
+      }
+    },
+    {
+      "index": 11,
+      "instanceId": "django__django-11066",
+      "repository": "django/django",
+      "baseCommit": "4b45b6c8e4d7c9701a332e80d3b1c84209dc36e2",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=28&length=1",
+      "cpbRun": {
+        "runnerExitCode": 0,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "completed",
+        "jobStatus": "completed",
+        "changedFiles": [
+          "django/contrib/contenttypes/management/__init__.py"
+        ],
+        "sourcePatchFiles": [
+          "django/contrib/contenttypes/management/__init__.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 761,
+        "patchSha256": "991ecc0c254da551acb77b797401d62d5089f92016d30c15d89a6054beef42e5"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 3,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-11066-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-11066.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11066",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11066/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11066/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11066/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11066/patch.diff"
+      }
+    },
+    {
+      "index": 12,
+      "instanceId": "pytest-dev__pytest-5809",
+      "repository": "pytest-dev/pytest",
+      "baseCommit": "8aba863a634f40560e25055d179220f0eefabe9a",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=336&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "src/_pytest/pastebin.py"
+        ],
+        "sourcePatchFiles": [
+          "src/_pytest/pastebin.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 412,
+        "patchSha256": "dbb1fb8631511a94143c1ac5bed02d567600455adb1b48c6c317b5eb71d91301"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 3,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/pytest-dev-pytest-5809-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/pytest-dev-pytest-5809-retry1.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pytest-dev__pytest-5809",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pytest-dev__pytest-5809/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pytest-dev__pytest-5809/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pytest-dev__pytest-5809/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/pytest-dev__pytest-5809/patch.diff"
+      }
+    },
+    {
+      "index": 13,
+      "instanceId": "sphinx-doc__sphinx-8721",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "82ef497a8c88f0f6e50d84520e7276bfbf65025d",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=411&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "sphinx/ext/viewcode.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/ext/viewcode.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 580,
+        "patchSha256": "3adbdef8efef408a74aa76dfbb42e21f896ddb7069d4e130d7e9d4d43527b421"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 3,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-8721-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/sphinx-doc-sphinx-8721-retry1.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8721",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8721/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8721/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8721/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-8721/patch.diff"
+      }
+    },
+    {
+      "index": 14,
+      "instanceId": "django__django-16877",
+      "repository": "django/django",
+      "baseCommit": "98f6ada0e2058d67d91fb6c16482411ec2ca0967",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=243&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/template/defaultfilters.py",
+          "docs/ref/templates/builtins.txt"
+        ],
+        "sourcePatchFiles": [
+          "django/template/defaultfilters.py"
+        ],
+        "excludedFiles": [
+          "docs/ref/templates/builtins.txt"
+        ],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 658,
+        "patchSha256": "d501bcf038afa51bb9e360051f1228df460bc7c0429a2f37e32b75b8519f9219"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 4,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-16877-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-empty-rerun/logs/django-django-16877-retry1.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16877",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16877/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16877/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16877/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16877/patch.diff"
+      }
+    },
+    {
+      "index": 15,
+      "instanceId": "django__django-16502",
+      "repository": "django/django",
+      "baseCommit": "246eb4836a6fb967880f838aa0d22ecfdca8b6f1",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=230&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/core/servers/basehttp.py"
+        ],
+        "sourcePatchFiles": [
+          "django/core/servers/basehttp.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1013,
+        "patchSha256": "6c89548d9e20394dc1c39226051fb3316e7ea3ff80e51da49661b859495a7ca8"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": false,
+        "unresolved": true,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 0,
+          "failure": 1
+        },
+        "passToPass": {
+          "success": 4,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-16502-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-16502.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16502",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16502/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16502/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16502/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-16502/patch.diff"
+      }
+    },
+    {
+      "index": 16,
+      "instanceId": "sphinx-doc__sphinx-7985",
+      "repository": "sphinx-doc/sphinx",
+      "baseCommit": "f30284ef926ebaf04b176f21b421e2dffc679792",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=397&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": true,
+        "assignmentStatus": null,
+        "jobStatus": null,
+        "changedFiles": [
+          "sphinx/builders/linkcheck.py"
+        ],
+        "sourcePatchFiles": [
+          "sphinx/builders/linkcheck.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1838,
+        "patchSha256": "09889e41b506890604549c4c4d7ff05bdb3d58c13c35c2f527d014ab60799e67"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 2,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 3,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/sphinx-doc-sphinx-7985-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/sphinx-doc-sphinx-7985.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-7985",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-7985/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-7985/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-7985/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/sphinx-doc__sphinx-7985/patch.diff"
+      }
+    },
+    {
+      "index": 17,
+      "instanceId": "django__django-10973",
+      "repository": "django/django",
+      "baseCommit": "ddb293685235fd09e932805771ae97f72e817181",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=26&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/db/backends/postgresql/client.py"
+        ],
+        "sourcePatchFiles": [
+          "django/db/backends/postgresql/client.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 2450,
+        "patchSha256": "da7ca81819389a07709792de3691e4bbdb6ef25f475cd4bd440fee3edd252a67"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 5,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-10973-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-10973.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-10973",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-10973/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-10973/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-10973/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-10973/patch.diff"
+      }
+    },
+    {
+      "index": 18,
+      "instanceId": "django__django-11239",
+      "repository": "django/django",
+      "baseCommit": "d87bd29c4f8dfcdf3f4a4eb8340e6770a2416fe3",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=41&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "django/db/backends/postgresql/client.py"
+        ],
+        "sourcePatchFiles": [
+          "django/db/backends/postgresql/client.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1314,
+        "patchSha256": "17d3ad8fe05913678ba862e912da3d8fde6012bdee191516708e2b0df2e6c19f"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 5,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/django-django-11239-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/django-django-11239.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11239",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11239/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11239/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11239/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/django__django-11239/patch.diff"
+      }
+    },
+    {
+      "index": 19,
+      "instanceId": "psf__requests-1142",
+      "repository": "psf/requests",
+      "baseCommit": "22623bd8c265b78b161542663ee980738441c307",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=290&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": false,
+        "assignmentStatus": "failed",
+        "jobStatus": "failed",
+        "changedFiles": [
+          "requests/models.py"
+        ],
+        "sourcePatchFiles": [
+          "requests/models.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 644,
+        "patchSha256": "bf7a31f4a70b9b3bcdd42b3962f101aabbd43b42f69810f6b675c39062b128f4"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 5,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/psf-requests-1142-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/psf-requests-1142.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/psf__requests-1142",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/psf__requests-1142/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/psf__requests-1142/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/psf__requests-1142/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/psf__requests-1142/patch.diff"
+      }
+    },
+    {
+      "index": 20,
+      "instanceId": "scikit-learn__scikit-learn-14053",
+      "repository": "scikit-learn/scikit-learn",
+      "baseCommit": "6ab8c86c383dd847a1be7103ad115f174fe23ffd",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=364&length=1",
+      "cpbRun": {
+        "runnerExitCode": 1,
+        "runnerSignal": null,
+        "workerExitCode": 0,
+        "workerTimedOut": true,
+        "assignmentStatus": null,
+        "jobStatus": null,
+        "changedFiles": [
+          "sklearn/tree/export.py"
+        ],
+        "sourcePatchFiles": [
+          "sklearn/tree/export.py"
+        ],
+        "excludedFiles": [],
+        "predictionKind": "source-only-patch",
+        "patchBytes": 1166,
+        "patchSha256": "c973904eb7f771db5e4eb244edcf1c656d958be0031b963ca4b10edae7ce730f"
+      },
+      "officialResult": {
+        "submitted": true,
+        "completed": true,
+        "emptyPatch": false,
+        "resolved": true,
+        "unresolved": false,
+        "error": false,
+        "patchExists": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 5,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "cpbEvidence": "/tmp/cpb-swebench-20-runnable-score-v3/evidence-combined/scikit-learn-scikit-learn-14053-real-run.json",
+        "cpbLog": "/tmp/cpb-swebench-20-runnable-real-runs-v2/logs/scikit-learn-scikit-learn-14053.log",
+        "officialRunDir": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14053",
+        "officialReport": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14053/report.json",
+        "officialRunInstanceLog": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14053/run_instance.log",
+        "officialTestOutput": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14053/test_output.txt",
+        "officialPatch": "/tmp/cpb-swebench-20-runnable-score-v3/harness/run_evaluation/cpb-20-runnable-20260626-sourceonly-v3/codepatchbay-codex-real-run-20-runnable-source-only-v3/scikit-learn__scikit-learn-14053/patch.diff"
+      }
+    }
+  ]
+}

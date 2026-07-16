@@ -15,12 +15,17 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { redactSecrets } from "./observability/observability.js";
+import { inspectHubAccessAuditUsage } from "./audit/hub-access-audit.js";
 import { listJobs } from "./job/job-store.js";
 import { hubStatus, loadRegistry, resolveHubRoot } from "./hub/hub-registry.js";
 import { readHubLiveness } from "./hub/hub-registry.js";
 import { readLease, isLeaseStale } from "./infra.js";
 import { runtimeDataPath } from "./runtime.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
+import { loadHubAuthConfig } from "../../shared/hub-auth.js";
+import { openHubOidcProvider } from "../../shared/hub-oidc.js";
+import { openHubRedisStateBackend } from "../../shared/hub-state-redis.js";
+import { isLoopbackHost } from "../../shared/network.js";
 
 import { sanitizeProviderReason } from "./acp/acp-pool.js";
 import { scanHubPollution } from "./project/project-index.js";
@@ -38,6 +43,7 @@ import { executorMetadata } from "./setup.js";
 import * as agentRegistry from "../../core/agents/registry.js";
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
+import { recordValue, type LooseRecord } from "../../core/contracts/types.js";
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -47,28 +53,143 @@ const HUB_WORKER_TTL = 120_000;
 
 // --- Result model ---
 
-type Check = Record<string, any>;
+type Check = LooseRecord & {
+  id: string;
+  category: string;
+  status: string;
+  severity: string;
+  message: string;
+  details?: unknown;
+  remediation?: unknown;
+  guidance?: unknown;
+  evidence?: unknown;
+  recommendedAction?: unknown;
+};
 
-function makeCheck(id: string, category: string, status: string, severity: string, message: string, { details, remediation }: Record<string, any> = {}) {
+type CheckOptions = {
+  details?: unknown;
+  remediation?: unknown;
+};
+
+type ReadinessRecord = LooseRecord & {
+  id?: string;
+  name?: string;
+  displayName?: string;
+  binary?: string;
+  installed?: boolean;
+  recommended?: boolean;
+  status?: string;
+  error?: unknown;
+  version?: string;
+  install?: LooseRecord;
+  tools?: Record<string, ReadinessRecord>;
+  agents?: Record<string, ReadinessRecord>;
+  projects?: Record<string, ReadinessRecord>;
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+  cpbRoot?: string;
+  hubRoot?: string;
+  cwd?: string;
+  platform?: NodeJS.Platform;
+  probe?: unknown;
+  timeout?: number;
+  env?: ReadinessEnv;
+  adapterOverrides?: Record<string, ReadinessRecord>;
+  checks?: Check[];
+  summary?: ReadinessRecord;
+  command?: string;
+  args?: string[];
+  fallbackCommand?: string;
+  fallbackArgs?: string[];
+  stability?: string;
+  message?: string;
+  guidance?: unknown;
+  details?: unknown;
+  remediation?: unknown;
+  leaseId?: string;
+  jobId?: string;
+  project?: string;
+  currentPhase?: string;
+  executor?: ReadinessRecord;
+  lineage?: ReadinessRecord;
+  executorSelection?: ReadinessRecord;
+  selectedReleaseId?: string;
+  parentReleaseId?: string;
+  severity?: string;
+  metadata?: ReadinessRecord;
+  selector?: ReadinessRecord;
+  releaseId?: string;
+  installedPath?: string;
+  codeVersion?: string;
+  stateFormatVersions?: LooseRecord;
+  pid?: number;
+  codebaseRoot?: string;
+  socketPath?: string | null;
+  source?: string;
+  type?: string;
+  failureType?: string;
+  attemptId?: string;
+  phase?: string;
+  nodeId?: string;
+  reason?: string;
+  reasons?: unknown[];
+  untilTs?: string;
+  ts?: string;
+  prUrl?: string;
+  pullRequestUrl?: string;
+  url?: string;
+  prNumber?: number;
+  number?: number;
+  artifact?: unknown;
+  path?: string;
+  kind?: string;
+  broken?: boolean;
+  entries?: ReadinessRecord[];
+  brokenReferences?: ReadinessRecord[];
+  runtimeFailures?: unknown[];
+  runtimeContext?: unknown;
+  completionGate?: ReadinessRecord;
+  attemptIdForChecklist?: string;
+  ok?: number;
+  warn?: number;
+  fail?: number;
+  success?: boolean;
+};
+
+type ReadinessEnv = NodeJS.ProcessEnv & ReadinessRecord;
+
+function readinessRecord(value: unknown): ReadinessRecord {
+  return recordValue(value) as ReadinessRecord;
+}
+
+function readinessArray(value: unknown): ReadinessRecord[] {
+  return Array.isArray(value) ? value.map(readinessRecord) : [];
+}
+
+function sandboxProbe(value: unknown): ((command: string) => boolean) | undefined {
+  return typeof value === "function" ? value as (command: string) => boolean : undefined;
+}
+
+function makeCheck(id: string, category: string, status: string, severity: string, message: string, { details, remediation }: CheckOptions = {}) {
   const check: Check = { id, category, status, severity, message };
   if (details !== undefined) check.details = details;
   if (remediation !== undefined) check.remediation = remediation;
   return check;
 }
 
-function ok(id: string, category: string, message: string, opts?: Record<string, any>) {
+function ok(id: string, category: string, message: string, opts?: CheckOptions) {
   return makeCheck(id, category, "ok", "info", message, opts);
 }
 
-function warn(id: string, category: string, message: string, opts?: Record<string, any>) {
+function warn(id: string, category: string, message: string, opts?: CheckOptions) {
   return makeCheck(id, category, "warn", "important", message, opts);
 }
 
-function error(id: string, category: string, message: string, opts?: Record<string, any>) {
+function error(id: string, category: string, message: string, opts?: CheckOptions) {
   return makeCheck(id, category, "error", "critical", message, opts);
 }
 
-function skipped(id: string, category: string, message: string, opts?: Record<string, any>) {
+function skipped(id: string, category: string, message: string, opts?: CheckOptions) {
   return makeCheck(id, category, "skipped", "info", message, opts);
 }
 
@@ -280,14 +401,14 @@ async function checkAcpAdapter(adapterName: string, command: string, args: strin
   return ok(id, "acp", msg, { details: version ? { version } : undefined });
 }
 
-function preferredInstallMethod(agent: Record<string, any>, setupSnapshot: Record<string, any>) {
+function preferredInstallMethod(agent: ReadinessRecord, setupSnapshot: ReadinessRecord) {
   const methods = Object.keys(agent.install || {});
   if (methods.includes("brew") && setupSnapshot?.tools?.brew?.installed) return "brew";
   if (methods.includes("npm") && setupSnapshot?.tools?.npm?.installed) return "npm";
   return methods[0] || "manual";
 }
 
-export function buildSetupReadinessChecks(setupSnapshot: Record<string, any> = {}, catalog: Record<string, any>[] = []) {
+export function buildSetupReadinessChecks(setupSnapshot: ReadinessRecord = {}, catalog: ReadinessRecord[] = []) {
   const checks = [];
   for (const agent of catalog) {
     const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
@@ -359,10 +480,218 @@ async function checkHubWritability(hubRoot: string) {
   }
 }
 
+async function checkHubAccessAudit(hubRoot: string, env: ReadinessEnv) {
+  try {
+    const redisBackend = await openHubRedisStateBackend({
+      hubRoot,
+      configFile: env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+    });
+    const usage = await inspectHubAccessAuditUsage({
+      hubRoot,
+      maxBytes: env.CPB_HUB_ACCESS_AUDIT_MAX_BYTES,
+      redisBackend,
+    });
+    const percent = Math.round(usage.usagePercent * 10) / 10;
+    const details = {
+      filePath: usage.filePath,
+      pending: usage.pending,
+      archiveJournalPath: usage.archiveJournalPath,
+      archivePending: usage.archivePending,
+      sizeBytes: usage.sizeBytes,
+      maxBytes: usage.maxBytes,
+      usagePercent: percent,
+      remainingBytes: usage.remainingBytes,
+    };
+    if (usage.pending) {
+      return error("hub-access-audit", "hub", "Hub access audit has an interrupted pending append", {
+        details,
+        remediation: "Restart the Hub to recover the pending append before accepting requests.",
+      });
+    }
+    if (usage.archivePending) {
+      return error("hub-access-audit", "hub", "Hub access audit has an interrupted archive transaction", {
+        details,
+        remediation: "Run: cpb hub recover-access-audit-archive, or restart the offline Hub to recover it automatically.",
+      });
+    }
+    if (usage.usagePercent >= 95) {
+      return error("hub-access-audit", "hub", `Hub access audit is ${percent}% full`, {
+        details,
+        remediation: redisBackend
+          ? "Export the Redis audit Stream to the configured SIEM/WORM sink, then apply the approved retention workflow or raise CPB_HUB_ACCESS_AUDIT_MAX_BYTES."
+          : "Schedule an offline audit archive or raise CPB_HUB_ACCESS_AUDIT_MAX_BYTES after capacity review.",
+      });
+    }
+    if (usage.usagePercent >= 75) {
+      return warn("hub-access-audit", "hub", `Hub access audit is ${percent}% full`, {
+        details,
+        remediation: "Plan an offline audit archive before the fail-closed capacity limit is reached.",
+      });
+    }
+    return ok("hub-access-audit", "hub", `Hub access audit capacity healthy (${percent}% used)`, { details });
+  } catch (e) {
+    return error("hub-access-audit", "hub", `Hub access-audit check failed: ${e.message}`, {
+      remediation: "Inspect Hub audit file permissions, pending recovery state, and CPB_HUB_ACCESS_AUDIT_MAX_BYTES.",
+    });
+  }
+}
+
+export async function checkHubAuthentication(
+  hubRoot: string,
+  env: ReadinessEnv,
+  options: { fetcher?: typeof fetch; now?: () => number } = {},
+) {
+  try {
+    const oidc = await openHubOidcProvider({
+      configFile: env.CPB_HUB_OIDC_CONFIG_FILE,
+      hubRoot,
+      fetcher: options.fetcher,
+      now: options.now,
+    });
+    const local = await loadHubAuthConfig({
+      bearerToken: env.CPB_HUB_BEARER_TOKEN,
+      serviceTokensFile: env.CPB_HUB_SERVICE_TOKENS_FILE,
+      hubRoot,
+      requireAuthentication: oidc.configured || env.CPB_HUB_ALLOW_ANONYMOUS_DEV !== "1",
+    });
+    const modes = [
+      local.credentials.some((credential) => credential.principal.source === "legacy-env") ? "legacy-token" : null,
+      local.sourceFile ? "service-token-file" : null,
+      oidc.configured ? "oidc-rfc9068" : null,
+    ].filter(Boolean);
+    const hasAuthentication = local.credentialCount > 0 || oidc.configured;
+    if (!hasAuthentication) {
+      const host = String(env.CPB_HOST || "127.0.0.1");
+      const anonymousDev = env.CPB_HUB_ALLOW_ANONYMOUS_DEV === "1";
+      if (anonymousDev && isLoopbackHost(host)) {
+        return warn("hub-authentication", "hub", "Loopback Hub uses explicit anonymous development mode", {
+          details: { modes: ["local-anonymous-dev"], host },
+          remediation: "Remove CPB_HUB_ALLOW_ANONYMOUS_DEV and configure scoped service tokens or OIDC before enterprise use.",
+        });
+      }
+      return error("hub-authentication", "hub", "Hub has no authentication mechanism configured", {
+        details: { modes: [], host, anonymousDevRequested: anonymousDev },
+        remediation: "Configure CPB_HUB_SERVICE_TOKENS_FILE or CPB_HUB_OIDC_CONFIG_FILE; anonymous development mode is loopback-only and not enterprise-ready.",
+      });
+    }
+    let oidcKeys: { keyCount: number; freshUntil: string | null } | null = null;
+    if (oidc.configured) oidcKeys = await oidc.preflight();
+    return ok("hub-authentication", "hub", `Hub authentication configured (${modes.join(", ")})`, {
+      details: {
+        modes,
+        localCredentialCount: local.credentialCount,
+        oidcKeyCount: oidcKeys?.keyCount || 0,
+        oidcJwksFreshUntil: oidcKeys?.freshUntil || null,
+      },
+    });
+  } catch (e) {
+    return error("hub-authentication", "hub", "Hub authentication configuration or identity provider is unavailable", {
+      details: { code: e && typeof e === "object" && "code" in e ? String(e.code) : null },
+      remediation: "Validate private auth-policy files and verify the configured OIDC JWKS endpoint before accepting traffic.",
+    });
+  }
+}
+
+export function checkHubBackupSigning(env: ReadinessEnv) {
+  const key = String(env.CPB_HUB_BACKUP_SIGNING_KEY || "");
+  if (!key) {
+    return error("hub-backup-signing", "hub", "Hub backup signing key is not configured", {
+      remediation: "Set CPB_HUB_BACKUP_SIGNING_KEY to a dedicated secret containing at least 32 non-whitespace bytes.",
+    });
+  }
+  if (key.trim() !== key || /\s/.test(key) || Buffer.byteLength(key, "utf8") < 32) {
+    return error("hub-backup-signing", "hub", "Hub backup signing key is invalid", {
+      remediation: "Replace CPB_HUB_BACKUP_SIGNING_KEY with a dedicated secret containing at least 32 non-whitespace bytes.",
+    });
+  }
+  return ok("hub-backup-signing", "hub", "Hub backup signing is configured");
+}
+
+export async function checkHubStateBackend(hubRoot: string, env: ReadinessEnv) {
+  try {
+    const backend = await openHubRedisStateBackend({
+      configFile: env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+      hubRoot,
+    });
+    if (!backend) {
+      return warn("hub-state-backend", "hub", "Hub control-plane state uses single-node local-file transactions", {
+        details: { mode: "local-file", multiNodeSafe: false, activeActiveSafe: false },
+        remediation: "Configure a private CPB_HUB_STATE_REDIS_CONFIG_FILE before running multiple Hub nodes.",
+      });
+    }
+    await backend.preflight();
+    const [assignmentRecords, workerRecords, inboxRecords, jobRecords, auditHead] = await Promise.all([
+      backend.scanStateRecords("assignment:"),
+      backend.scanStateRecords("worker:"),
+      backend.scanStateRecords("workerInbox:"),
+      backend.scanStateRecords("job:"),
+      backend.readAccessAuditHead(),
+    ]);
+    for (const { record } of assignmentRecords) {
+      const document = readinessRecord(record.data);
+      const state = readinessRecord(document.state);
+      if (!state.assignmentId || !state.status || !document.attempts
+        || typeof document.attempts !== "object" || Array.isArray(document.attempts)) {
+        throw Object.assign(new Error("Redis assignment record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
+      }
+    }
+    for (const { record } of workerRecords) {
+      const worker = readinessRecord(record.data);
+      if (!worker.workerId || !worker.status || !worker.incarnationToken) {
+        throw Object.assign(new Error("Redis worker record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
+      }
+    }
+    for (const { record } of inboxRecords) {
+      const inbox = readinessRecord(record.data);
+      if (!inbox.workerId || !inbox.assignmentId || !inbox.payload
+        || typeof inbox.payload !== "object" || Array.isArray(inbox.payload)
+        || !["pending", "processing"].includes(String(inbox.status || ""))) {
+        throw Object.assign(new Error("Redis worker inbox record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
+      }
+    }
+    for (const { record } of jobRecords) {
+      const job = readinessRecord(record.data);
+      if (!job.project || !job.jobId || !job.status) {
+        throw Object.assign(new Error("Redis job projection is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
+      }
+    }
+    const brokerUrl = typeof env.CPB_HUB_WORKER_BROKER_URL === "string" ? env.CPB_HUB_WORKER_BROKER_URL : "";
+    let brokerEndpoint: URL | null = null;
+    try {
+      brokerEndpoint = brokerUrl ? new URL(brokerUrl) : null;
+    } catch { /* reported below */ }
+    if (!brokerEndpoint || (brokerEndpoint.protocol !== "https:"
+      && !(brokerEndpoint.protocol === "http:" && isLoopbackHost(brokerEndpoint.hostname)))) {
+      return error("hub-state-backend", "hub", "Redis shared state requires a secure managed-worker broker endpoint", {
+        details: { code: "HUB_WORKER_BROKER_REQUIRED", mode: "redis-cas" },
+        remediation: "Configure CPB_HUB_WORKER_BROKER_URL with HTTPS, or loopback HTTP when the worker runs on the Hub host.",
+      });
+    }
+    return warn("hub-state-backend", "hub", "Redis protects shared runtime and access-audit authority; target-topology failover and load validation remain incomplete", {
+      details: {
+        mode: "redis-cas",
+        topology: backend.topology,
+        multiNodeSafe: true,
+        activeActiveSafe: false,
+        sharedStores: ["registry", "leader", "queue", "assignments", "workers", "workerInbox", "leases", "jobs", "jobEvents", "accessAudit"],
+        remainingLocalStores: [],
+        accessAudit: { sequence: auditHead.sequence, sizeBytes: auditHead.sizeBytes },
+        workerCredentialIsolation: "worker/incarnation-scoped broker; Redis credential retained by Hub only",
+      },
+      remediation: "Keep one elected scheduler and validate Redis failover, rolling restart, sustained load, and recovery objectives in the target topology before production promotion.",
+    });
+  } catch (e) {
+    return error("hub-state-backend", "hub", "Hub Redis state backend is unavailable", {
+      details: { code: e && typeof e === "object" && "code" in e ? String(e.code) : null },
+      remediation: "Validate the private Redis state config, TLS/auth settings, and Redis availability before starting the Hub.",
+    });
+  }
+}
+
 async function checkRegistryConsistency(hubRoot: string) {
   try {
     const registry = await loadRegistry(hubRoot);
-    const projects: Record<string, any>[] = Object.values(registry.projects || {});
+    const projects = Object.values(registry.projects || {}).map(readinessRecord);
     const issues = [];
     for (const project of projects) {
       if (!project.id) {
@@ -385,7 +714,7 @@ async function checkRegistryConsistency(hubRoot: string) {
 
 async function checkStaleJobs(cpbRoot: string) {
   try {
-    const allJobs: Record<string, any>[] = await listJobs(cpbRoot);
+    const allJobs = (await listJobs(cpbRoot)).map(readinessRecord);
     const terminalStates = ["completed", "failed", "blocked", "cancelled"];
     const running = allJobs.filter((j) => !terminalStates.includes(j.status));
     if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
@@ -433,7 +762,7 @@ async function checkOrphanLeases(cpbRoot: string) {
     const leaseFiles = files.filter((f) => f.endsWith(".json"));
     if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
 
-    const allJobs: Record<string, any>[] = await listJobs(cpbRoot);
+    const allJobs = (await listJobs(cpbRoot)).map(readinessRecord);
     const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
     const orphans = [];
     for (const f of leaseFiles) {
@@ -495,8 +824,8 @@ async function checkProviderBackoff(hubRoot: string) {
     const now = Date.now();
     for (const [agent, info] of Object.entries(limits)) {
       if (!info || typeof info !== "object") continue;
-      const backoff = info as Record<string, any>;
-      const untilTs = Date.parse(backoff.untilTs);
+      const backoff = info as ReadinessRecord;
+      const untilTs = Date.parse(String(backoff.untilTs || ""));
       if (Number.isFinite(untilTs) && untilTs > now) {
         active.push({
           agent,
@@ -545,10 +874,10 @@ export function buildAgentSandboxReadinessChecks({
   cwd = process.cwd(),
   platform = process.platform,
   probe,
-}: Record<string, any> = {}) {
+}: { env?: ReadinessEnv; cwd?: string; platform?: NodeJS.Platform; probe?: unknown } = {}) {
   let policy;
   try {
-    policy = resolveAgentSandboxPolicy(env, { cwd, platform, probe });
+    policy = resolveAgentSandboxPolicy(env, { cwd, platform, ...(sandboxProbe(probe) ? { probe: sandboxProbe(probe) } : {}) });
   } catch (e) {
     return [error("agent-sandbox-posture", "sandbox", `Agent sandbox policy invalid: ${e.message}`, {
       details: { error: e.message },
@@ -595,7 +924,7 @@ export async function runAgentSandboxSelfTestCheck({
   platform = process.platform,
   probe,
   timeout = SUBPROCESS_TIMEOUT_MS,
-}: Record<string, any> = {}) {
+}: { env?: ReadinessEnv; cwd?: string; platform?: NodeJS.Platform; probe?: unknown; timeout?: number } = {}) {
   if (!["1", "true", "yes"].includes(String(env.CPB_AGENT_SANDBOX_SELF_TEST || "").toLowerCase())) {
     return skipped("agent-sandbox-self-test", "sandbox", "Agent sandbox live self-test not requested", {
       details: { reason: "set CPB_AGENT_SANDBOX_SELF_TEST=1 to run" },
@@ -605,7 +934,7 @@ export async function runAgentSandboxSelfTestCheck({
 
   let policy;
   try {
-    policy = resolveAgentSandboxPolicy(env, { cwd, platform, probe });
+    policy = resolveAgentSandboxPolicy(env, { cwd, platform, ...(sandboxProbe(probe) ? { probe: sandboxProbe(probe) } : {}) });
   } catch (e) {
     return error("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test cannot resolve policy: ${e.message}`, {
       details: { error: e.message },
@@ -633,7 +962,7 @@ export async function runAgentSandboxSelfTestCheck({
     launch = buildAgentSandboxLaunch(
       process.execPath,
       ["-e", "process.stdout.write('cpb-agent-sandbox-self-test')"],
-      { env, cwd, platform, probe },
+      { env, cwd, platform, ...(sandboxProbe(probe) ? { probe: sandboxProbe(probe) } : {}) },
     );
   } catch (e) {
     return error("agent-sandbox-self-test", "sandbox", `Agent sandbox live self-test could not launch: ${e.message}`, {
@@ -744,7 +1073,7 @@ async function checkGithubReadiness(hubRoot: string) {
       if (transport.mode === "api") {
         checks.push(ok("github-transport", "github", "Transport: api"));
       } else if (transport.mode === "gh") {
-        const reason = transport.diagnostics?.find((d) => d.level === "info")?.message || "gh CLI fallback";
+        const reason = readinessArray(transport.diagnostics).find((d) => d.level === "info")?.message || "gh CLI fallback";
         checks.push(warn("github-transport", "github", `Transport: gh (${reason})`));
       } else {
         checks.push(error("github-transport", "github", "GitHub outbound transport unavailable"));
@@ -771,14 +1100,14 @@ async function checkGithubReadiness(hubRoot: string) {
   return checks;
 }
 
-export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env }: Record<string, any> = {}) {
+export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env }: ReadinessRecord & { env?: ReadinessEnv } = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
   let setup = null;
   let setupChecks: Check[] = [];
   try {
     setup = await detectSetupEnvironment();
-    setupChecks = buildSetupReadinessChecks(setup, listSetupAgents());
+    setupChecks = buildSetupReadinessChecks(setup, listSetupAgents().map(readinessRecord));
   } catch (e) {
     setup = { schemaVersion: 1, error: e.message };
     setupChecks = [warn("setup-readiness", "setup", `Setup readiness unavailable: ${e.message}`)];
@@ -829,6 +1158,10 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     ...adapterChecks,
     checkHubLiveness(resolvedHubRoot),
     checkHubWritability(resolvedHubRoot),
+    checkHubAuthentication(resolvedHubRoot, env),
+    checkHubBackupSigning(env),
+    checkHubStateBackend(resolvedHubRoot, env),
+    checkHubAccessAudit(resolvedHubRoot, env),
     checkRegistryConsistency(resolvedHubRoot),
     checkStaleJobs(resolvedCpbRoot),
     checkStaleWorkers(resolvedHubRoot),
@@ -841,10 +1174,10 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
   const summary = deriveSummary(checks);
 
   // Collect per-project runtime roots
-  let projectRuntimeRoots: Record<string, any> = {};
+  let projectRuntimeRoots: ReadinessRecord = {};
   try {
-    const registry = await loadRegistry(resolvedHubRoot);
-    for (const project of Object.values(registry.projects) as Record<string, any>[]) {
+      const registry = await loadRegistry(resolvedHubRoot);
+      for (const project of Object.values(registry.projects).map(readinessRecord)) {
       if (project.projectRuntimeRoot) {
         projectRuntimeRoots[project.id] = project.projectRuntimeRoot;
       }
@@ -867,19 +1200,19 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
 
 // --- Release doctor checks ---
 
-function okR(id: string, message: string, opts: Record<string, any> = {}) {
+function okR(id: string, message: string, opts: ReadinessRecord = {}) {
   return { id, status: "ok", message, ...opts };
 }
 
-function warnR(id: string, message: string, { guidance, ...rest }: Record<string, any> = {}) {
+function warnR(id: string, message: string, { guidance, ...rest }: ReadinessRecord = {}) {
   return { id, status: "warn", message, guidance, ...rest };
 }
 
-function failR(id: string, message: string, { guidance, ...rest }: Record<string, any> = {}) {
+function failR(id: string, message: string, { guidance, ...rest }: ReadinessRecord = {}) {
   return { id, status: "fail", message, guidance, ...rest };
 }
 
-async function checkReleaseCurrentMetadata({ env }: Record<string, any>) {
+async function checkReleaseCurrentMetadata({ env }: { env: ReadinessEnv }) {
   const selection = await inspectCurrentRelease({ env });
   if (!selection) {
     return warnR("release.current_metadata", "No release selected", {
@@ -918,7 +1251,7 @@ async function checkReleaseCurrentMetadata({ env }: Record<string, any>) {
   });
 }
 
-async function checkReleaseExecutorRoot({ env }: Record<string, any>) {
+async function checkReleaseExecutorRoot({ env }: { env: ReadinessEnv }) {
   const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
   if (!executorRoot) {
     return warnR("release.executor_root", "CPB_EXECUTOR_ROOT not set", {
@@ -945,7 +1278,7 @@ async function checkReleaseExecutorRoot({ env }: Record<string, any>) {
   return okR("release.executor_root", `Executor root: ${executorRoot} (release: ${meta.releaseId || "dev"})`);
 }
 
-async function checkReleaseRuntimeRoot({ env }: Record<string, any>) {
+async function checkReleaseRuntimeRoot({ env }: { env: ReadinessEnv }) {
   const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
   if (!executorRoot) {
     return warnR("release.runtime_root", "Cannot check runtime root without CPB_EXECUTOR_ROOT", {
@@ -964,7 +1297,7 @@ async function checkReleaseRuntimeRoot({ env }: Record<string, any>) {
   }
 }
 
-async function checkReleaseStateFormat({ env }: Record<string, any>) {
+async function checkReleaseStateFormat({ env }: { env: ReadinessEnv }) {
   const selection = await inspectCurrentRelease({ env });
   if (!selection?.metadata?.stateFormatVersions) {
     return warnR("release.state_format", "No release selected or metadata missing stateFormatVersions", {
@@ -987,7 +1320,7 @@ async function checkReleaseStateFormat({ env }: Record<string, any>) {
   return okR("release.state_format", "State format versions compatible");
 }
 
-async function checkReleaseLauncherHealth({ env }: Record<string, any>) {
+async function checkReleaseLauncherHealth({ env }: { env: ReadinessEnv }) {
   const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
   const binLink = path.join(cpbHome, "bin", "cpb");
   let target;
@@ -1012,7 +1345,7 @@ async function checkReleaseLauncherHealth({ env }: Record<string, any>) {
   return okR("release.launcher_health", `Launcher resolves to: ${target}`);
 }
 
-async function checkReleaseJobPinning({ env, cpbRoot }: Record<string, any>) {
+async function checkReleaseJobPinning({ env, cpbRoot }: { env: ReadinessEnv; cpbRoot?: string }) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const selection = await inspectCurrentRelease({ env });
   const currentReleaseId = selection?.metadata?.releaseId || null;
@@ -1057,7 +1390,7 @@ async function checkReleaseJobPinning({ env, cpbRoot }: Record<string, any>) {
   }
 }
 
-export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Record<string, any> = {}) {
+export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: ReadinessRecord & { env?: ReadinessEnv } = {}) {
   const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const checks = await Promise.all([
     checkReleaseCurrentMetadata({ env }),
@@ -1068,8 +1401,12 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Rec
     checkReleaseJobPinning({ env, cpbRoot: resolvedCpbRoot }),
   ]);
 
-  const summary: Record<string, any> = { ok: 0, warn: 0, fail: 0 };
-  for (const check of checks) summary[check.status]++;
+  const summary = { ok: 0, warn: 0, fail: 0, success: false };
+  for (const check of checks) {
+    if (check.status === "ok") summary.ok = (summary.ok || 0) + 1;
+    if (check.status === "warn") summary.warn = (summary.warn || 0) + 1;
+    if (check.status === "fail") summary.fail = (summary.fail || 0) + 1;
+  }
   summary.success = summary.fail === 0;
 
   return {
@@ -1080,7 +1417,7 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Rec
   };
 }
 
-export function formatReleaseDoctorHuman(result: Record<string, any>) {
+export function formatReleaseDoctorHuman(result: ReadinessRecord & { summary: ReadinessRecord; checks: Check[] }) {
   const { summary, checks } = result;
   const lines = [];
   lines.push(`${BOLD}Release Doctor${NC}`);
@@ -1105,7 +1442,7 @@ export function formatReleaseDoctorHuman(result: Record<string, any>) {
   return lines.join("\n");
 }
 
-export function formatReleaseDoctorJson(result: Record<string, any>) {
+export function formatReleaseDoctorJson(result: ReadinessRecord & { summary: ReadinessRecord; checks: Check[] }) {
   return JSON.stringify(result, null, 2);
 }
 
@@ -1136,10 +1473,10 @@ const STATUS_COLOR = {
 const NC = "\x1b[0m";
 const BOLD = "\x1b[1m";
 
-export function formatReadinessHuman(result: Record<string, unknown>) {
-  const redacted = redactSecrets(result) as Record<string, unknown>;
+export function formatReadinessHuman(result: LooseRecord) {
+  const redacted = redactSecrets(result) as LooseRecord;
   const summary = redacted.summary as Record<string, number> | undefined;
-  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Record<string, unknown>[];
+  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as LooseRecord[];
   const lines = [];
 
   lines.push(`${BOLD}CodePatchbay Doctor${NC}`);
@@ -1178,13 +1515,13 @@ export function formatReadinessHuman(result: Record<string, unknown>) {
   return lines.join("\n");
 }
 
-export function formatReadinessJson(result: Record<string, unknown>) {
-  const redacted = redactSecrets(result) as Record<string, unknown>;
-  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Record<string, unknown>[];
+export function formatReadinessJson(result: LooseRecord) {
+  const redacted = redactSecrets(result) as LooseRecord;
+  const checks = (Array.isArray(redacted.checks) ? redacted.checks : []) as Check[];
   const normalized = {
     ...redacted,
     readiness: redacted.readiness ?? deriveReadinessLevels(checks),
-    checks: checks.map((check: Record<string, unknown>) => ({
+    checks: checks.map((check: Check) => ({
       ...check,
       evidence: check.evidence ?? check.details ?? { message: check.message },
       recommendedAction: check.recommendedAction ?? check.remediation ?? null,
@@ -1196,11 +1533,11 @@ export function formatReadinessJson(result: Record<string, unknown>) {
 // ── CodeGraph readiness (from codegraph-readiness.ts) ──────────────────────
 
 export class CodeGraphUnavailableError extends Error {
-  constructor(reason: string, details: Record<string, any> = {}) {
+  constructor(reason: string, details: ReadinessRecord = {}) {
     super(reason);
     this.name = "CodeGraphUnavailableError";
-    (this as Error & { code?: string; details?: Record<string, any> }).code = "codegraph_unavailable";
-    (this as Error & { code?: string; details?: Record<string, any> }).details = details;
+    (this as Error & { code?: string; details?: ReadinessRecord }).code = "codegraph_unavailable";
+    (this as Error & { code?: string; details?: ReadinessRecord }).details = details;
   }
 }
 
@@ -1262,7 +1599,7 @@ async function readDaemonState(sourceRoot: string) {
   };
 }
 
-export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string, any> = {}) {
+export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessRecord = {}) {
   const sourceRoot = await canonicalDir(sourcePath);
   if (!sourceRoot) {
     throw new CodeGraphUnavailableError("sourcePath is required for CodeGraph readiness", {
@@ -1275,6 +1612,7 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string
   const stateFile = await readJson(statePath);
   const daemonState = await readDaemonState(sourceRoot);
   let state = stateFile?.pid ? stateFile : daemonState;
+  const indexOnlyOk = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK === "1";
 
   const indexFile = await firstUsableIndexFile(sourceRoot);
   if (!indexFile) {
@@ -1282,6 +1620,20 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: Record<string
       reason: "missing_codegraph_index",
       sourcePath: sourceRoot,
     });
+  }
+
+  if (indexOnlyOk && !daemonState?.pid) {
+    return {
+      available: true,
+      sourcePath: sourceRoot,
+      indexFile,
+      state: {
+        source: "index_only",
+        codebaseRoot: sourceRoot,
+        pid: null,
+        socketPath: null,
+      },
+    };
   }
 
   if (!state?.pid) {
@@ -1678,7 +2030,7 @@ The local demo fixed the toy repo sum implementation and exercised the CodePatch
 
 // ── Audit export (from audit-export.ts) ────────────────────────────────────
 
-function collectRuntimeFailureRefs(events: Record<string, any>[], materialized?: Record<string, any>) {
+function collectRuntimeFailureRefs(events: LooseRecord[], materialized?: ReadinessRecord) {
   // Prefer materialized state (event-replay source of truth)
   if (materialized?.runtimeFailures && Array.isArray(materialized.runtimeFailures) && materialized.runtimeFailures.length > 0) {
     return materialized.runtimeFailures;
@@ -1712,7 +2064,7 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
     restrictToWiki: true,
   });
   delete artifactIndex.generatedAt;
-  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e: Record<string, any>) => ({ ...e }));
+  artifactIndex.brokenReferences = artifactIndex.brokenReferences.map((e) => ({ ...e }));
 
   let verdict = null;
   const verdictEntry = [...artifactIndex.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
@@ -1736,7 +2088,7 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
     };
   }
 
-  const materialized = (materializeJob as (events: Record<string, any>[]) => Record<string, any>)(events);
+  const materialized = readinessRecord(materializeJob(events));
 
   const checklistArtifacts = await readActiveChecklistArtifacts({
     artifactIndex,
@@ -1767,7 +2119,7 @@ export async function buildJobAuditExport(cpbRoot: string, project: string, jobI
   });
 }
 
-export async function writeJobAuditExport(outputDir: string, auditPackage: Record<string, any>) {
+export async function writeJobAuditExport(outputDir: string, auditPackage: ReadinessRecord) {
   const { redactSecrets: redactSecretsForWrite } = await import("./secret-policy.js");
   const safe = redactSecretsForWrite(auditPackage);
   const slug = `${auditPackage.project}-${auditPackage.jobId}`.replace(/[^a-zA-Z0-9_-]/g, "_");

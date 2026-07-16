@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { AnyRecord } from "../../shared/types.js";
+import { isRecord, recordValue, type LooseRecord } from "../../shared/types.js";
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
@@ -7,7 +7,7 @@ import { createInstallPlan, upgradeFor } from "../../core/setup/install-plan.js"
 import { runInstallPlanWithEvents } from "../../server/services/setup.js";
 
 
-const runInstallPlan = runInstallPlanWithEvents as (plan: AnyRecord, options?: AnyRecord) => Promise<AnyRecord>;
+const runInstallPlan = runInstallPlanWithEvents as (plan: unknown, options?: LooseRecord) => Promise<LooseRecord>;
 
 function usage() {
   return [
@@ -40,7 +40,7 @@ export async function run(args: string[] = []) {
       console.log(JSON.stringify({ agents }, null, 2));
     } else {
       for (const agent of agents) {
-        const adapter = agent.adapter;
+        const adapter = recordValue(agent.adapter);
         const protocol = adapter?.protocol || "unknown";
         const adapterCmd = adapter?.command || "-";
         console.log(`${agent.id}\t${agent.displayName}\t${protocol}\t${adapterCmd}`);
@@ -54,7 +54,7 @@ export async function run(args: string[] = []) {
     if (args.includes("--json")) {
       console.log(JSON.stringify(snapshot, null, 2));
     } else {
-      for (const [id, agent] of Object.entries(snapshot.agents as Record<string, AnyRecord>)) {
+      for (const [id, agent] of Object.entries(snapshot.agents as Record<string, LooseRecord>)) {
         const version = agent.version ? ` (${agent.version})` : "";
         console.log(`${id}\t${agent.installed ? "installed" : "missing"}${version}`);
       }
@@ -72,9 +72,9 @@ export async function run(args: string[] = []) {
     }
 
     const detected = await detectSetupEnvironment();
-    const plan = createInstallPlan({ agentId, method, version, detected }) as AnyRecord;
+    const plan = recordValue(createInstallPlan({ agentId, method, version, detected }));
     const shouldExecute = args.includes("--yes");
-    const result: AnyRecord = { executed: false, plan };
+    const result: LooseRecord = { executed: false, plan };
 
     if (shouldExecute) {
       result.installResult = await runInstallPlan(plan, { cpbRoot: process.env.CPB_ROOT });
@@ -86,8 +86,10 @@ export async function run(args: string[] = []) {
     } else {
       console.log(`Plan: ${plan.displayCommand}`);
       if (plan.version) console.log(`Pinned: ${plan.version}`);
-      if (plan.upgrade) console.log(`Upgrade: ${plan.upgrade.displayCommand}`);
-      if (plan.rollback?.command) console.log(`Rollback: ${plan.rollback.command}`);
+      const upgrade = recordValue(plan.upgrade);
+      const rollback = recordValue(plan.rollback);
+      if (plan.upgrade) console.log(`Upgrade: ${upgrade.displayCommand}`);
+      if (rollback.command) console.log(`Rollback: ${rollback.command}`);
       console.log(shouldExecute ? "Executed: yes" : "Executed: no (pass --yes to run)");
     }
     return 0;
@@ -102,21 +104,26 @@ export async function run(args: string[] = []) {
     }
 
     const { getSetupAgent } = await import("../../core/setup/agent-catalog.js");
-    const agent = getSetupAgent(agentId) as AnyRecord | null;
-    if (!agent) {
+    const agentCandidate = getSetupAgent(agentId);
+    if (!agentCandidate) {
       console.error(`Unknown agent: ${agentId}`);
       return 1;
     }
+    const agent = recordValue(agentCandidate);
 
     const detected = await detectSetupEnvironment();
-    const selectedMethod = method || (agent.install.brew && detected?.tools?.brew?.installed
+    const install = recordValue(agent.install);
+    const tools = recordValue(detected.tools);
+    const brew = recordValue(tools.brew);
+    const selectedMethod = method || (isRecord(install.brew) && brew.installed
       ? "brew"
-      : Object.keys(agent.upgrade || {})[0]);
-    const upgrade = upgradeFor(selectedMethod, agent) as AnyRecord | null;
-    if (!upgrade) {
+      : Object.keys(recordValue(agent.upgrade))[0]);
+    const upgradeCandidate = upgradeFor(selectedMethod, agentCandidate);
+    if (!upgradeCandidate) {
       console.error(`No upgrade path found for '${agentId}' via '${selectedMethod}'`);
       return 1;
     }
+    const upgrade = recordValue(upgradeCandidate);
 
     const shouldExecute = args.includes("--yes");
     if (shouldExecute) {

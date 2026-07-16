@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../shared/types.js";
 /**
  * Engine Bridge — runtime-facing engine boundary.
  *
@@ -10,10 +11,10 @@ import {
   runJobWithServices as runJobWithServerServices,
 } from "../server/services/setup.js";
 
-export function buildServices(cpbRoot: string, opts: Record<string, unknown> = {}) {
+export function buildServices(cpbRoot: string, opts: LooseRecord = {}) {
   return buildServerServices(cpbRoot, opts);
 }
 
-export async function runJobWithServices(opts: Record<string, unknown>) {
+export async function runJobWithServices(opts: LooseRecord) {
   return runJobWithServerServices(opts);
 }

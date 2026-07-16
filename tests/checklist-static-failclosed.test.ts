@@ -28,7 +28,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { buildEvidenceProbePlan, validateEvidenceObservation } from "../core/workflow/evidence-probes.js";
 import { buildEvidenceLedger } from "../core/phases/verify.js";
@@ -41,7 +41,7 @@ const JOB_ID = "job-static-001";
 const PROJECT = "flow-static-test";
 
 /** A single static checklist item (frozen). */
-function staticChecklist(itemId: string, predicateId: string, allowedFiles: string[]): AnyRecord {
+function staticChecklist(itemId: string, predicateId: string, allowedFiles: string[]): LooseRecord {
   return {
     schemaVersion: 1,
     jobId: JOB_ID,
@@ -69,7 +69,7 @@ function staticChecklist(itemId: string, predicateId: string, allowedFiles: stri
 }
 
 /** verificationEvidence shape consumed by buildEvidenceLedger. */
-function verificationEvidence(): AnyRecord {
+function verificationEvidence(): LooseRecord {
   return {
     git: { head: "deadbeefcafebabe0000000000000000deadbeef", diffHash: "sha256:diff-abcdef" },
     hardGate: { checks: [] },
@@ -77,12 +77,13 @@ function verificationEvidence(): AnyRecord {
 }
 
 /** Find the ledger evidence entry for a checklist id. */
-function evidenceFor(ledger: AnyRecord, checklistId: string): AnyRecord | undefined {
-  return (ledger.evidence || []).find((e: AnyRecord) => e.checklistId === checklistId);
+function evidenceFor(ledger: LooseRecord, checklistId: string): LooseRecord | undefined {
+  const evidence = Array.isArray(ledger.evidence) ? ledger.evidence : [];
+  return evidence.find((e: LooseRecord) => e.checklistId === checklistId);
 }
 
 /** Build a verdict claiming the item passed by citing a ledger evidence id. */
-function passVerdictCiting(itemId: string, ledgerId: string, evidenceId: string): AnyRecord {
+function passVerdictCiting(itemId: string, ledgerId: string, evidenceId: string): LooseRecord {
   return {
     schemaVersion: 1,
     jobId: JOB_ID,
@@ -277,7 +278,7 @@ test("CASE C (pins R2 secondary-merge attemptId re-stamp): merged probe observat
   ];
 
   const plan = buildEvidenceProbePlan({ acceptanceChecklist: checklist, hardGateChecks, attemptId: ATTEMPT_ID });
-  const probe = (plan.probes || []).find((p: AnyRecord) => p.checklistId === itemId);
+  const probe = (plan.probes || []).find((p: LooseRecord) => p.checklistId === itemId);
   assert.ok(probe, "merged probe must exist for the checklist item");
   assert.equal(
     probe.observation.attemptId,
@@ -322,7 +323,7 @@ test("CASE D (guards re-stamp no-clobber): existing matching attemptId is preser
   ];
 
   const plan = buildEvidenceProbePlan({ acceptanceChecklist: checklist, hardGateChecks, attemptId: originalAttemptId });
-  const probe = (plan.probes || []).find((p: AnyRecord) => p.checklistId === itemId);
+  const probe = (plan.probes || []).find((p: LooseRecord) => p.checklistId === itemId);
   assert.ok(probe);
   assert.equal(
     probe.observation.attemptId,
@@ -338,7 +339,7 @@ test("CASE D (guards re-stamp no-clobber): existing matching attemptId is preser
     hardGateChecks,
     attemptId: "attempt-different-999",
   });
-  const probe2 = (plan2.probes || []).find((p: AnyRecord) => p.checklistId === itemId);
+  const probe2 = (plan2.probes || []).find((p: LooseRecord) => p.checklistId === itemId);
   assert.ok(probe2);
   assert.equal(
     probe2.observation.attemptId,

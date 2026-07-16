@@ -95,7 +95,7 @@ export function startWikiWatcher(options: WikiWatcherOptions): { close: () => vo
     });
   } catch (err) {
     // If watch fails (e.g. recursive not supported), log and return a no-op
-    console.warn("[stream/wiki-watcher] fs.watch failed:", (err as Error).message);
+    console.warn("[stream/wiki-watcher] fs.watch failed:", err instanceof Error ? err.message : String(err));
   }
 
   return {

@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 export const SupervisorAction = Object.freeze({
   RETRY_SAME_WORKER: "retry_same_worker",
   RESTART_WORKER_AND_RETRY: "restart_worker_and_retry",
@@ -11,7 +12,14 @@ export const SupervisorAction = Object.freeze({
 
 const VALID_ACTIONS: Set<string> = new Set(Object.values(SupervisorAction));
 
-const ACTION_SCHEMAS = {
+type ActionSchema = {
+  params?: {
+    required?: string[];
+    properties?: Record<string, LooseRecord & { type?: string; values?: unknown[] }>;
+  };
+};
+
+const ACTION_SCHEMAS: Record<string, ActionSchema> = {
   [SupervisorAction.REROUTE]: {
     params: {
       required: ["workflow", "planMode"],
@@ -50,15 +58,16 @@ export function isValidSupervisorAction(action: string) {
 /**
  * P1-1 fix: strict schema validation with enum, type, and additionalProperties checks.
  */
-export function validateSupervisorDecision(decision: Record<string, any>) {
+export function validateSupervisorDecision(decision: LooseRecord) {
   if (!decision || typeof decision !== "object") {
     return { valid: false, errors: ["decision must be an object"] };
   }
-  const candidate = decision as Record<string, any>;
+  const candidate = decision;
   const errors = [];
+  const action = typeof candidate.action === "string" ? candidate.action : "";
 
   // Action must be valid
-  if (!VALID_ACTIONS.has(candidate.action)) {
+  if (!VALID_ACTIONS.has(action)) {
     errors.push(`invalid action: ${candidate.action} (allowed: ${[...VALID_ACTIONS].join(", ")})`);
   }
 
@@ -77,8 +86,8 @@ export function validateSupervisorDecision(decision: Record<string, any>) {
     if (typeof candidate.params !== "object" || Array.isArray(candidate.params)) {
       errors.push("params must be an object");
     } else {
-      const params = candidate.params as Record<string, any>;
-      const schema = (ACTION_SCHEMAS as Record<string, any>)[candidate.action];
+      const params = recordValue(candidate.params);
+      const schema = ACTION_SCHEMAS[action];
 
       // Check forbidden params
       for (const key of Object.keys(params)) {
@@ -89,27 +98,28 @@ export function validateSupervisorDecision(decision: Record<string, any>) {
 
       if (schema?.params) {
         // Check required params
-        for (const req of schema.params.required) {
+        for (const req of schema.params.required || []) {
           if (!(req in params)) {
             errors.push(`missing required param: ${req}`);
           }
         }
 
         // Check enum and type constraints for each property
-        for (const [key, spec] of Object.entries(schema.params.properties) as Array<[string, Record<string, any>]>) {
+        for (const [key, spec] of Object.entries(schema.params.properties || {})) {
           const value = params[key];
           if (value === undefined) continue; // required check handles missing
 
           if (spec.type === "enum") {
-            if (!spec.values.includes(value)) {
-              errors.push(`param ${key} invalid value: "${value}" (allowed: ${spec.values.join(", ")})`);
+            const values = Array.isArray(spec.values) ? spec.values : [];
+            if (!values.includes(value)) {
+              errors.push(`param ${key} invalid value: "${value}" (allowed: ${values.join(", ")})`);
             }
           } else if (spec.type === "string") {
             if (typeof value !== "string" || !value) {
               errors.push(`param ${key} must be a non-empty string`);
             }
           } else if (spec.type === "date-time") {
-            const parsed = Date.parse(value);
+            const parsed = Date.parse(String(value || ""));
             if (!Number.isFinite(parsed)) {
               errors.push(`param ${key} must be a valid ISO datetime`);
             }
@@ -117,11 +127,11 @@ export function validateSupervisorDecision(decision: Record<string, any>) {
         }
 
         // additionalProperties: reject params not in schema
-        const allowedKeys = new Set([...Object.keys(schema.params.properties), ...FORBIDDEN_PARAMS]);
+        const allowedKeys = new Set([...Object.keys(schema.params.properties || {}), ...FORBIDDEN_PARAMS]);
         // Actions without explicit param schemas allow any non-forbidden param
         for (const key of Object.keys(params)) {
           if (!allowedKeys.has(key)) {
-            errors.push(`unexpected param for ${candidate.action}: ${key}`);
+            errors.push(`unexpected param for ${action}: ${key}`);
           }
         }
       }

@@ -1,10 +1,12 @@
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 
 import { buildPhaseLocator, locatorEnvelope } from "./phase-locator.js";
 import { readEvents, materializeJob } from "./event/event-store.js";
 
 const DEFAULT_MAX_BYTES = 8192;
+
+type PhaseHook = (context: LooseRecord) => unknown;
 
 
 export const HOOK_POINTS = Object.freeze({
@@ -17,9 +19,21 @@ export const HOOK_POINTS = Object.freeze({
 });
 
 const ALL_POINTS = Object.values(HOOK_POINTS) as string[];
-const registry = new Map<string, Array<(context: Record<string, any>) => any>>();
+const registry = new Map<string, PhaseHook[]>();
 
-export function registerPhaseHook(point: string, fn: (context: Record<string, any>) => any) {
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+export function registerPhaseHook(point: string, fn: PhaseHook) {
   if (!ALL_POINTS.includes(point)) {
     throw new Error(`unknown hook point: ${point}`);
   }
@@ -54,8 +68,8 @@ export function hookPointFor(bp: string, timing: string) {
   return ALL_POINTS.includes(point) ? point : null;
 }
 
-export function buildHookContext({ hookPoint, locator, envelope, role, phase, result, error }: AnyRecord) {
-  const env = (envelope || locator || {}) as Record<string, any>;
+export function buildHookContext({ hookPoint, locator, envelope, role, phase, result, error }: LooseRecord) {
+  const env = recordValue(envelope || locator);
   return {
     hookPoint,
     phase: phase || env.phase || null,
@@ -86,7 +100,7 @@ export function buildHookContext({ hookPoint, locator, envelope, role, phase, re
   };
 }
 
-export function makeHookEvent(type: string, context: AnyRecord, extra: AnyRecord = {}) {
+export function makeHookEvent(type: string, context: LooseRecord, extra: LooseRecord = {}) {
   return {
     type,
     jobId: context.jobId,
@@ -99,7 +113,7 @@ export function makeHookEvent(type: string, context: AnyRecord, extra: AnyRecord
   };
 }
 
-function makeDiagnosticEvent(context: AnyRecord, diagnostic: AnyRecord) {
+function makeDiagnosticEvent(context: LooseRecord, diagnostic: LooseRecord) {
   return {
     type: "phase_hook_diagnostic",
     jobId: context.jobId,
@@ -114,17 +128,17 @@ function makeDiagnosticEvent(context: AnyRecord, diagnostic: AnyRecord) {
   };
 }
 
-export async function runPhaseHooks(context: AnyRecord) {
-  const point = context.hookPoint;
+export async function runPhaseHooks(context: LooseRecord) {
+  const point = stringValue(context.hookPoint);
   const hooks = getPhaseHooks(point);
 
   if (hooks.length === 0) {
-    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false, hookResults: [] as Record<string, any>[], hookEvents: [] as Record<string, any>[] };
+    return { ok: true, diagnostics: [] as LooseRecord[], events: [] as LooseRecord[], blockPhase: false, hookResults: [] as LooseRecord[], hookEvents: [] as LooseRecord[] };
   }
 
   const hookEvents = [makeHookEvent("phase_hook_started", context, { hookCount: hooks.length })];
-  const hookResults = [];
-  const allDiagnostics = [];
+  const hookResults: LooseRecord[] = [];
+  const allDiagnostics: LooseRecord[] = [];
   let ok = true;
   let blockPhase = false;
   let classification = "info";
@@ -134,20 +148,22 @@ export async function runPhaseHooks(context: AnyRecord) {
     try {
       hookResult = await hook(context);
     } catch (err) {
+      const errorRecord = recordValue(err);
       hookResult = {
         ok: false,
-        diagnostics: [{ message: (err as Error).message, classification: "infra" }],
-        events: [] as Record<string, any>[],
+        diagnostics: [{ message: stringValue(errorRecord.message), classification: "infra" }],
+        events: [] as LooseRecord[],
         blockPhase: false,
         classification: "infra",
       };
     }
-    hookResults.push(hookResult);
-    if (hookResult.diagnostics) allDiagnostics.push(...hookResult.diagnostics);
-    if (!hookResult.ok) ok = false;
-    if (hookResult.blockPhase) blockPhase = true;
-    if (hookResult.classification === "blocking") classification = "blocking";
-    else if (hookResult.classification === "infra" && classification !== "blocking") classification = "infra";
+    const result = recordValue(hookResult);
+    hookResults.push(result);
+    if (Array.isArray(result.diagnostics)) allDiagnostics.push(...result.diagnostics.map(recordValue));
+    if (!result.ok) ok = false;
+    if (result.blockPhase) blockPhase = true;
+    if (result.classification === "blocking") classification = "blocking";
+    else if (result.classification === "infra" && classification !== "blocking") classification = "infra";
   }
 
   hookEvents.push(
@@ -163,17 +179,17 @@ export async function runPhaseHooks(context: AnyRecord) {
     }
   }
 
-  return { ok, diagnostics: allDiagnostics, events: [] as Record<string, any>[], blockPhase, classification, hookResults, hookEvents };
+  return { ok, diagnostics: allDiagnostics, events: [] as LooseRecord[], blockPhase, classification, hookResults, hookEvents };
 }
 
-function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecord) => { ok: boolean; message?: string }) | null = null) {
-  return function preflight(context: AnyRecord) {
+function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: LooseRecord) => { ok: boolean; message?: string }) | null = null) {
+  return function preflight(context: LooseRecord) {
     const missing = requiredFields.filter((f) => !context[f]);
     if (missing.length > 0) {
       return {
         ok: false,
         diagnostics: [{ message: `missing required fields: ${missing.join(", ")}`, classification: "blocking" }],
-        events: [] as Record<string, any>[],
+        events: [] as LooseRecord[],
         blockPhase: true,
         classification: "blocking",
       };
@@ -184,29 +200,31 @@ function preflightCheck(requiredFields: string[], artifactCheck: ((ctx: AnyRecor
         return {
           ok: false,
           diagnostics: [{ message: r.message, classification: "blocking" }],
-          events: [] as Record<string, any>[],
+          events: [] as LooseRecord[],
           blockPhase: true,
           classification: "blocking",
         };
       }
     }
-    return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
+    return { ok: true, diagnostics: [] as LooseRecord[], events: [] as LooseRecord[], blockPhase: false };
   };
 }
 
 const REQUIRED_LOCATOR_FIELDS = ["project", "jobId", "phase", "eventLogPath"];
 
-const builtinHooks = {
+const builtinHooks: Record<string, PhaseHook> = {
   [HOOK_POINTS.PRE_PLAN]: preflightCheck(REQUIRED_LOCATOR_FIELDS),
   [HOOK_POINTS.PRE_EXECUTE]: preflightCheck(REQUIRED_LOCATOR_FIELDS, (ctx) => {
-    if (!ctx.artifacts || !ctx.artifacts.plan) {
+    const artifacts = recordValue(ctx.artifacts);
+    if (!artifacts.plan) {
       return { ok: false, message: "pre-execute requires artifacts.plan" };
     }
     return { ok: true };
   }),
   [HOOK_POINTS.PRE_VERIFY]: preflightCheck(REQUIRED_LOCATOR_FIELDS, (ctx) => {
-    const hasArtifact = ctx.artifacts && (ctx.artifacts.execute || ctx.artifacts.deliverable);
-    const hasExecuteCompletion = ctx.completedPhases && ctx.completedPhases.includes("execute");
+    const artifacts = recordValue(ctx.artifacts);
+    const hasArtifact = Boolean(artifacts.execute || artifacts.deliverable);
+    const hasExecuteCompletion = stringArray(ctx.completedPhases).includes("execute");
     const hasWorktree = Boolean(ctx.worktree);
     if (!hasArtifact && !hasExecuteCompletion && !hasWorktree) {
       return { ok: false, message: "pre-verify requires execute completion, deliverable artifact, or worktree" };
@@ -216,17 +234,18 @@ const builtinHooks = {
   [HOOK_POINTS.POST_EXECUTE]: function postExecuteVerify() {
     const cmd = process.env.CPB_HOOK_POST_EXECUTE_VERIFY_CMD;
     if (!cmd) {
-      return { ok: true, diagnostics: [] as Record<string, any>[], events: [] as Record<string, any>[], blockPhase: false };
+      return { ok: true, diagnostics: [] as LooseRecord[], events: [] as LooseRecord[], blockPhase: false };
     }
     return {
       ok: true,
       diagnostics: [{ message: `post-execute verification configured: ${cmd}`, classification: "info" }],
-      events: [] as Record<string, any>[],
+      events: [] as LooseRecord[],
       blockPhase: false,
     };
   },
-  [HOOK_POINTS.ON_FAILURE]: function onFailureDiagnostics(context: AnyRecord) {
-    const errorMsg = typeof context.error === "string" ? context.error : context.error?.message || "";
+  [HOOK_POINTS.ON_FAILURE]: function onFailureDiagnostics(context: LooseRecord) {
+    const errorRecord = recordValue(context.error);
+    const errorMsg = typeof context.error === "string" ? context.error : stringValue(errorRecord.message);
     const isPermissionDenial = /\b(write|execute|read)\s+denied\b/i.test(errorMsg)
       || /\bPERMISSION_FAIL_FAST\b/.test(errorMsg)
       || /\binfra_block\b/.test(errorMsg);
@@ -248,7 +267,7 @@ const builtinHooks = {
           worktree: context.worktree,
         },
       }],
-      events: [] as Record<string, any>[],
+      events: [] as LooseRecord[],
       blockPhase: false,
       classification: failureClassification,
     };
@@ -274,36 +293,37 @@ export async function buildPhaseContextPacket(
   project: string,
   jobId: string,
   phase: string,
-  options: AnyRecord = {},
+  options: LooseRecord = {},
 ) {
-  const maxBytes =
-    options.maxBytes ??
-    (process.env.CPB_PHASE_CONTEXT_MAX_BYTES
-      ? (Number(process.env.CPB_PHASE_CONTEXT_MAX_BYTES) || null)
-      : null) ??
-    DEFAULT_MAX_BYTES;
+  const configuredMaxBytes =
+    numberValue(options.maxBytes, 0) ||
+    (process.env.CPB_PHASE_CONTEXT_MAX_BYTES ? Number(process.env.CPB_PHASE_CONTEXT_MAX_BYTES) || 0 : 0);
+  const maxBytes = configuredMaxBytes || DEFAULT_MAX_BYTES;
 
   const locator = await buildPhaseLocator(cpbRoot, project, jobId, phase, options);
   const locators = locatorEnvelope(locator);
   const events = await readEvents(cpbRoot, project, jobId, {
-    dataRoot: locator.stateRoot,
+    dataRoot: stringValue(locator.stateRoot),
     includeLegacyFallback: false,
   });
   const job = materializeJob(events);
+  const jobRecord = recordValue(job);
+  const jobArtifacts = recordValue(jobRecord.artifacts);
+  const budget = { maxBytes, actualBytes: 0, clipped: false };
 
-  const packet: AnyRecord = {
+  const packet: LooseRecord = {
     schemaVersion: 1,
     project,
     jobId,
     phase,
     locators,
-    task: job.task || null,
-    workflow: job.workflow || null,
-    artifacts: { ...(job.artifacts || {}) },
-    completedPhases: job.completedPhases || [],
-    sourceContext: locator.sourcePath || job.sourceContext || null,
-    readInstructions: buildReadInstructions(locator, job, phase),
-    budget: { maxBytes, actualBytes: 0, clipped: false },
+    task: jobRecord.task || null,
+    workflow: jobRecord.workflow || null,
+    artifacts: { ...jobArtifacts },
+    completedPhases: stringArray(jobRecord.completedPhases),
+    sourceContext: locator.sourcePath || jobRecord.sourceContext || null,
+    readInstructions: buildReadInstructions(locator, jobRecord, phase),
+    budget,
     indexSummary: null,
     eventTailSummary: null,
   };
@@ -316,12 +336,12 @@ export async function buildPhaseContextPacket(
       usedBytes += measureUtf8Bytes(tail);
     }
   }
-  packet.budget.actualBytes = usedBytes;
-  packet.budget.clipped = usedBytes > maxBytes;
+  budget.actualBytes = usedBytes;
+  budget.clipped = usedBytes > maxBytes;
   return packet;
 }
 
-function buildReadInstructions(locator: AnyRecord, job: AnyRecord, phase: string) {
+function buildReadInstructions(locator: LooseRecord, job: LooseRecord, phase: string) {
   const instructions: string[] = [];
   if (locator.eventLogPath) instructions.push(`Read event log: ${locator.eventLogPath}`);
   if (locator.prevArtifactPath) {
@@ -330,35 +350,38 @@ function buildReadInstructions(locator: AnyRecord, job: AnyRecord, phase: string
   if (phase === "plan" && locator.inboxDir) {
     instructions.push(`Check inbox directory for existing plans: ${locator.inboxDir}`);
   }
-  if (["execute", "review", "verify"].includes(phase) && job.artifacts?.plan) {
-    const planPath = resolveArtifactName(locator, job.artifacts.plan);
+  const artifacts = recordValue(job.artifacts);
+  if (["execute", "review", "verify"].includes(phase) && artifacts.plan) {
+    const planPath = resolveArtifactName(locator, artifacts.plan);
     if (planPath) instructions.push(`Read plan artifact: ${planPath}`);
   }
-  if (["review", "verify"].includes(phase) && job.artifacts?.execute) {
-    const execPath = resolveArtifactName(locator, job.artifacts.execute);
+  if (["review", "verify"].includes(phase) && artifacts.execute) {
+    const execPath = resolveArtifactName(locator, artifacts.execute);
     if (execPath) instructions.push(`Read execute deliverable: ${execPath}`);
   }
-  if (phase === "verify" && job.artifacts?.review) {
-    const reviewPath = resolveArtifactName(locator, job.artifacts.review);
+  if (phase === "verify" && artifacts.review) {
+    const reviewPath = resolveArtifactName(locator, artifacts.review);
     if (reviewPath) instructions.push(`Read review artifact: ${reviewPath}`);
   }
   if (locator.wikiDir) {
-    instructions.push(`Read project context (if exists): ${path.join(locator.wikiDir, "context.md")}`);
-    instructions.push(`Read project decisions (if exists): ${path.join(locator.wikiDir, "decisions.md")}`);
+    const wikiDir = stringValue(locator.wikiDir);
+    instructions.push(`Read project context (if exists): ${path.join(wikiDir, "context.md")}`);
+    instructions.push(`Read project decisions (if exists): ${path.join(wikiDir, "decisions.md")}`);
   }
   if (locator.sourcePath) instructions.push(`Source code root: ${locator.sourcePath}`);
   return instructions;
 }
 
-function resolveArtifactName(locator: AnyRecord, artifact: string) {
-  if (!artifact || typeof artifact !== "string") return null;
-  if (path.isAbsolute(artifact)) return artifact;
-  const normalized = artifact.endsWith(".md") ? artifact : `${artifact}.md`;
-  const dir = normalized.startsWith("plan-") ? locator.inboxDir : locator.outputsDir;
+function resolveArtifactName(locator: LooseRecord, artifact: unknown) {
+  const artifactName = stringValue(artifact);
+  if (!artifactName) return null;
+  if (path.isAbsolute(artifactName)) return artifactName;
+  const normalized = artifactName.endsWith(".md") ? artifactName : `${artifactName}.md`;
+  const dir = normalized.startsWith("plan-") ? stringValue(locator.inboxDir) : stringValue(locator.outputsDir);
   return path.join(dir, normalized);
 }
 
-function buildEventTail(events: AnyRecord[]) {
+function buildEventTail(events: LooseRecord[]) {
   return events.slice(-10)
     .map((event) => {
       const parts = [event.type];

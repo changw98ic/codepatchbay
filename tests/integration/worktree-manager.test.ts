@@ -32,9 +32,11 @@ test("createWorktree initializes isolated codegraph while reusing installed depe
   await mkdir(path.join(sourceNodeModules, "chokidar"), { recursive: true });
   await writeFile(path.join(sourceNodeModules, "chokidar", "package.json"), "{\"name\":\"chokidar\"}\n", "utf8");
   await writeFile(path.join(project, "README.md"), "# source\n", "utf8");
+  await writeFile(path.join(project, ".env.example"), "TOKEN=example\n", "utf8");
   git(project, ["init"]);
-  git(project, ["add", "README.md"]);
+  git(project, ["add", "README.md", ".env.example"]);
   git(project, ["commit", "-m", "Initial"]);
+  const sourceHead = git(project, ["rev-parse", "HEAD"]).stdout.trim();
   const initCodegraph = async (worktreePath) => {
     initCalls.push(worktreePath);
     await mkdir(path.join(worktreePath, ".codegraph"), { recursive: true });
@@ -56,6 +58,10 @@ test("createWorktree initializes isolated codegraph while reusing installed depe
   assert.notEqual(await realpath(worktreeCodegraph), await realpath(path.join(project, ".codegraph")));
   assert.equal((await lstat(worktreeNodeModules)).isSymbolicLink(), true);
   assert.equal(await realpath(worktreeNodeModules), await realpath(sourceNodeModules));
+  assert.equal(git(project, ["rev-parse", "HEAD"]).stdout.trim(), sourceHead);
+  assert.equal(git(project, ["diff", "--exit-code", "HEAD"]).stdout.trim(), "");
+  assert.equal(git(project, ["ls-files", "--error-unmatch", ".env.example"]).stdout.trim(), ".env.example");
+  await assert.rejects(readFile(path.join(project, ".gitignore"), "utf8"), { code: "ENOENT" });
 
   const excludePathResult = git(created.path, ["rev-parse", "--git-path", "info/exclude"]);
   const excludePath = path.isAbsolute(excludePathResult.stdout.trim())
@@ -117,4 +123,10 @@ test("createWorktree initializes isolated codegraph while reusing installed depe
   assert.deepEqual(initCalls, [created.path, created.path, created.path]);
   await assert.rejects(lstat(path.join(skippedCodegraph.path, ".codegraph")), { code: "ENOENT" });
   assert.equal((await lstat(path.join(skippedCodegraph.path, "node_modules"))).isSymbolicLink(), true);
+});
+
+test("worktree setup never fabricates CodeGraph readiness with a detached sentinel", async () => {
+  const source = await readFile(path.resolve(import.meta.dirname, "..", "..", "..", "runtime", "git", "worktree.ts"), "utf8");
+  assert.doesNotMatch(source, /cpb_worktree_readiness_sentinel/);
+  assert.doesNotMatch(source, /setInterval\(\(\) => \{\}, 2147483647\)/);
 });

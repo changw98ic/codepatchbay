@@ -57,22 +57,23 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
   // Patch startWorker to use our exit-immediately script.
   // Preserves the real restart logic by reading _restartCount from assignment.
   const origRegisterWorker = workerStore.registerWorker.bind(workerStore);
-  supervisor.startWorker = async function (assignment: Record<string, any>) {
+  supervisor.startWorker = async function (assignment: Record<string, unknown>) {
     const workerId = WorkerStore.makeWorkerId();
-    const restartCount = assignment._restartCount || 0;
+    const restartCount = typeof assignment._restartCount === "number" ? assignment._restartCount : 0;
 
     const logFd = await open(path.join(logDir, `worker-${workerId}.log`), "a");
     const child = spawn(process.execPath, [exitScript], {
       cwd: hubRoot,
       detached: true,
-      stdio: ["ignore", logFd as any, logFd as any],
+      stdio: ["ignore", logFd.fd, logFd.fd],
     });
     child.unref();
+    if (typeof child.pid !== "number") assert.fail("worker child pid missing");
 
     supervisor._children.set(workerId, child);
 
     const worker = await workerStore.registerWorker(workerId, {
-      projectId: assignment?.projectId || "test",
+      projectId: typeof assignment.projectId === "string" ? assignment.projectId : "test",
       pid: child.pid,
       status: "starting",
       executorRoot: repoRoot,
@@ -102,10 +103,10 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
           });
           try {
             await supervisor.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
-          } catch (err: any) {
+          } catch (err: unknown) {
             await workerStore.updateWorker(workerId, {
               status: "exhausted",
-              restartError: err.message,
+              restartError: err instanceof Error ? err.message : String(err),
             });
           }
         } else if (!wasDeliberate) {

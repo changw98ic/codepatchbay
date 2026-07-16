@@ -1,3 +1,6 @@
+import type { LooseRecord } from "../../shared/types.js";
+import { isRecord, recordValue } from "./checklist-shared.js";
+
 const VALID_STATUSES = new Set(["pass", "fail", "inconclusive", "infra_error"]);
 
 const REQUIRED_BASIS_KEYS = [
@@ -5,15 +8,15 @@ const REQUIRED_BASIS_KEYS = [
   "events", "runtimeState", "executorSummary",
 ];
 
-function fullBasis(overrides: Record<string, any> = {}) {
-  const basis: Record<string, any> = {};
+function fullBasis(overrides: Record<string, unknown> = {}) {
+  const basis: LooseRecord = {};
   for (const key of REQUIRED_BASIS_KEYS) {
     basis[key] = overrides[key] ?? "missing";
   }
   return basis;
 }
 
-export function validateVerdictEnvelope(envelope: Record<string, any>) {
+export function validateVerdictEnvelope(envelope: LooseRecord) {
   if (!envelope || typeof envelope !== "object") {
     return { valid: false, error: "envelope must be an object" };
   }
@@ -44,7 +47,8 @@ export function validateVerdictEnvelope(envelope: Record<string, any>) {
     if (typeof envelope.basis !== "object" || envelope.basis === null || Array.isArray(envelope.basis)) {
       return { valid: false, error: "basis must be an object" };
     }
-    const missing = REQUIRED_BASIS_KEYS.filter((k) => !(k in envelope.basis));
+    const basis = recordValue(envelope.basis);
+    const missing = REQUIRED_BASIS_KEYS.filter((k) => !(k in basis));
     if (missing.length > 0) {
       return { valid: false, error: `basis missing required keys: ${missing.join(", ")}` };
     }
@@ -96,11 +100,15 @@ function uniqueNonEmpty(values: unknown[]): string[] {
   return result;
 }
 
+function numberOption(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 function summarizeBlockingEntry(entry: unknown): string {
   if (typeof entry === "string") return truncate(entry);
-  if (!entry || typeof entry !== "object") return truncate(entry);
+  if (!isRecord(entry)) return truncate(entry);
 
-  const rec = entry as Record<string, unknown>;
+  const rec = entry;
   const criterion = oneLine(rec.criterion || rec.input || rec.check || rec.title);
   const file = oneLine(rec.file || rec.path);
   const evidence = oneLine(rec.evidence || rec.detail || rec.reason);
@@ -114,18 +122,21 @@ function summarizeBlockingEntry(entry: unknown): string {
   return truncate(parts.join(" | "));
 }
 
-function failedLayerChecks(envelope: Record<string, any>) {
+function failedLayerChecks(envelope: LooseRecord) {
   const layers = envelope?.layers;
-  if (!layers || typeof layers !== "object" || Array.isArray(layers)) return [];
+  if (!isRecord(layers)) return [];
   return Object.entries(layers)
-    .filter(([, layer]) => String((layer as Record<string, any>)?.status || "").toLowerCase() === "fail")
-    .map(([name, layer]) => truncate(`${name}: ${(layer as Record<string, any>)?.detail || "failed"}`));
+    .filter(([, layer]) => String(isRecord(layer) ? layer.status : "").toLowerCase() === "fail")
+    .map(([name, layer]) => truncate(`${name}: ${isRecord(layer) ? layer.detail : "failed"}`));
 }
 
-function retryScopeFromEnvelope(envelope: Record<string, any>) {
+function retryScopeFromEnvelope(envelope: LooseRecord) {
   const explicit = Array.isArray(envelope?.fix_scope) ? envelope.fix_scope : [];
   const blockingFiles = Array.isArray(envelope?.blocking)
-    ? envelope.blocking.map((entry) => typeof entry === "object" && entry ? entry.file || entry.path : "")
+    ? envelope.blocking.map((entry) => {
+        const record = recordValue(entry);
+        return record.file || record.path || "";
+      })
     : [];
   return uniqueNonEmpty([...explicit, ...blockingFiles]);
 }
@@ -135,7 +146,7 @@ export function normalizeRetryReason(verdictContent: string, {
   previousVerdictId = null,
   previousVerdictPath = null,
   maxItems = 5,
-}: Record<string, any> = {}) {
+}: LooseRecord = {}) {
   const envelope = parseVerdictEnvelope(verdictContent);
   return buildRetryInputFromVerdict(envelope, {
     retryCount,
@@ -145,14 +156,15 @@ export function normalizeRetryReason(verdictContent: string, {
   });
 }
 
-export function buildRetryInputFromVerdict(envelope: Record<string, any>, {
+export function buildRetryInputFromVerdict(envelope: LooseRecord, {
   retryCount = 1,
   previousVerdictId = null,
   previousVerdictPath = null,
   maxItems = 5,
-}: Record<string, any> = {}) {
+}: LooseRecord = {}) {
+  const maxRetryItems = numberOption(maxItems, 5);
   const status = classifyVerdict(envelope?.status || "inconclusive");
-  const base: Record<string, any> = {
+  const base: LooseRecord = {
     shouldRetry: false,
     status,
     retryCount,
@@ -177,9 +189,9 @@ export function buildRetryInputFromVerdict(envelope: Record<string, any>, {
     ...failedLayerChecks(envelope),
     ...missingInputChecks,
   ]);
-  const failingChecks = (structuredChecks.length ? structuredChecks : uniqueNonEmpty([envelope?.reason])).slice(0, maxItems);
+  const failingChecks = (structuredChecks.length ? structuredChecks : uniqueNonEmpty([envelope?.reason])).slice(0, maxRetryItems);
 
-  const retryScope = retryScopeFromEnvelope(envelope).slice(0, maxItems);
+  const retryScope = retryScopeFromEnvelope(envelope).slice(0, maxRetryItems);
   const reason = oneLine(envelope?.reason) || "verifier rejected the previous deliverable";
   const verdictLabel = previousVerdictId || "previous verifier verdict";
   const lines = [
@@ -207,11 +219,14 @@ export function buildRetryInputFromVerdict(envelope: Record<string, any>, {
 }
 
 // Back-fill v1 basis fields from v2 structured fields for backward compatibility
-function backfillLegacy(envelope: Record<string, any>) {
+function backfillLegacy(envelope: LooseRecord) {
   if (!envelope.basis) {
-    const layers = envelope.layers || {};
-    const tests = layers.fast?.detail || layers.changed?.detail || "not run";
-    const build = layers.acceptance?.detail || "not run";
+    const layers = recordValue(envelope.layers);
+    const fastLayer = recordValue(layers.fast);
+    const changedLayer = recordValue(layers.changed);
+    const acceptanceLayer = recordValue(layers.acceptance);
+    const tests = fastLayer.detail || changedLayer.detail || "not run";
+    const build = acceptanceLayer.detail || "not run";
     envelope.basis = fullBasis({
       taskGoal: envelope.task_goal || envelope.reason || "",
       worktreeDiff: envelope.diff_summary || "none",
@@ -223,8 +238,9 @@ function backfillLegacy(envelope: Record<string, any>) {
     });
   }
   if (!envelope.blockingMissingInputs) {
-    envelope.blockingMissingInputs = (envelope.blocking || []).map((b: Record<string, unknown>) =>
-      typeof b === "string" ? b : b.criterion || b.input || String(b)
+    const blocking = Array.isArray(envelope.blocking) ? envelope.blocking : [];
+    envelope.blockingMissingInputs = blocking.map((b: unknown) =>
+      typeof b === "string" ? b : recordValue(b).criterion || recordValue(b).input || String(b)
     );
   }
   return envelope;
@@ -326,7 +342,7 @@ export function parseVerdictEnvelope(content: string) {
   };
 }
 
-export function formatVerdictEnvelope(envelope: Record<string, any>) {
+export function formatVerdictEnvelope(envelope: LooseRecord) {
   const validation = validateVerdictEnvelope(envelope);
   if (!validation.valid) {
     throw new Error(`invalid verdict envelope: ${validation.error}`);

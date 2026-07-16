@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { getProject } from "./hub/hub-registry.js";
 import { updateEntry } from "./hub/hub-queue.js";
 import { checkCodeGraphReady } from "./readiness-checks.js";
@@ -5,9 +6,9 @@ import { generateDynamicAgentPlan } from "../../core/agents/dynamic-agent-plan.j
 
 export class ProjectCapabilityMapUnavailableError extends Error {
   code: string;
-  details: Record<string, any>;
+  details: LooseRecord;
 
-  constructor(reason: string, details: Record<string, any> = {}) {
+  constructor(reason: string, details: LooseRecord = {}) {
     super(reason);
     this.name = "ProjectCapabilityMapUnavailableError";
     this.code = "codegraph_unavailable";
@@ -68,16 +69,16 @@ const DOMAIN_RULES = [
 
 const DOCS_ONLY_RE = /\b(doc|docs|readme|comment|copy|typo|spelling|markdown)\b/i;
 
-function objectAt(source: Record<string, any>, keys: string[]) {
+function objectAt(source: LooseRecord, keys: string[]): LooseRecord | null {
   for (const key of keys) {
     const value = source?.[key];
-    if (value && typeof value === "object") return value;
+    if (value && typeof value === "object" && !Array.isArray(value)) return recordValue(value);
   }
   return null;
 }
 
-function projectMaps(project: Record<string, any>, sourceContext: Record<string, any> = {}) {
-  const metadata = project?.metadata || {};
+function projectMaps(project: LooseRecord, sourceContext: LooseRecord = {}) {
+  const metadata = recordValue(project.metadata);
   const merged = { ...sourceContext, ...metadata, ...project };
   const capabilityMap = objectAt(merged, [
     "project_capability_map",
@@ -104,7 +105,7 @@ function projectMaps(project: Record<string, any>, sourceContext: Record<string,
   return { capabilityMap, safetyBoundaryMap, highRiskAreaMap, confidence };
 }
 
-function requireCapabilityMap(project: Record<string, any>, sourceContext: Record<string, any>) {
+function requireCapabilityMap(project: LooseRecord, sourceContext: LooseRecord) {
   const maps = projectMaps(project, sourceContext);
   if (!maps.capabilityMap) {
     throw new ProjectCapabilityMapUnavailableError("Project Capability Map is unavailable", {
@@ -115,7 +116,7 @@ function requireCapabilityMap(project: Record<string, any>, sourceContext: Recor
   if (maps.confidence !== "high") {
     throw new ProjectCapabilityMapUnavailableError("Project Capability Map is not high confidence", {
       reason: "project_capability_map_not_high_confidence",
-      confidence: maps.confidence,
+      confidence: typeof maps.confidence === "string" || typeof maps.confidence === "number" ? maps.confidence : null,
       project: project?.id || null,
     });
   }
@@ -131,7 +132,7 @@ function valuesToStrings(value: unknown): string[] {
   return [];
 }
 
-function filesForDomains(highRiskAreaMap: Record<string, any>, domains: string[]) {
+function filesForDomains(highRiskAreaMap: LooseRecord, domains: string[]) {
   const files = new Set();
   for (const domain of domains) {
     const direct = highRiskAreaMap?.[domain] || highRiskAreaMap?.[domain.replace(/_/g, "-")];
@@ -204,10 +205,11 @@ async function resolveProjectForTask({ hubRoot, project, sourcePath }) {
   return registered || { id: project, sourcePath };
 }
 
-async function persistQueueRiskMap(hubRoot: string, sourceContext: Record<string, any>, riskMap: Record<string, any>, dynamicAgentPlan: Record<string, any> | null = null) {
-  const queueEntryId = sourceContext?.queueEntryId || sourceContext?.entryId || sourceContext?.queue?.entryId;
+async function persistQueueRiskMap(hubRoot: string, sourceContext: LooseRecord, riskMap: LooseRecord, dynamicAgentPlan: LooseRecord | null = null) {
+  const queue = recordValue(sourceContext.queue);
+  const queueEntryId = sourceContext?.queueEntryId || sourceContext?.entryId || queue.entryId;
   if (!hubRoot || !queueEntryId) return;
-  await updateEntry(hubRoot, queueEntryId, {
+  await updateEntry(hubRoot, String(queueEntryId), {
     metadata: {
       riskMap,
       riskLevel: riskMap.riskLevel,
@@ -218,9 +220,9 @@ async function persistQueueRiskMap(hubRoot: string, sourceContext: Record<string
   }).catch(() => {});
 }
 
-export async function prepareTask(cpbRootOrOptions: Record<string, any> | string, options: Record<string, any> = {}) {
+export async function prepareTask(cpbRootOrOptions: LooseRecord | string, options: LooseRecord = {}) {
   const cpbRoot = cpbRootOrOptions && typeof cpbRootOrOptions === "object"
-    ? cpbRootOrOptions.cpbRoot
+    ? String(cpbRootOrOptions.cpbRoot || "")
     : cpbRootOrOptions;
   const {
     hubRoot,
@@ -233,11 +235,16 @@ export async function prepareTask(cpbRootOrOptions: Record<string, any> | string
   } = cpbRootOrOptions && typeof cpbRootOrOptions === "object"
     ? { ...cpbRootOrOptions, ...options }
     : options;
-  const registeredProject = await resolveProjectForTask({ hubRoot, project, sourcePath });
+  const sourceContextRecord = recordValue(sourceContext);
+  const cpbRootValue = typeof cpbRoot === "string" ? cpbRoot : "";
+  const hubRootValue = typeof hubRoot === "string" ? hubRoot : "";
+  const sourcePathValue = typeof sourcePath === "string" ? sourcePath : "";
+  const projectValue = typeof project === "string" ? project : "";
+  const registeredProject = await resolveProjectForTask({ hubRoot: hubRootValue, project: projectValue, sourcePath: sourcePathValue });
   const effectiveSourcePath = sourcePath || registeredProject?.sourcePath;
 
-  await checkCodeGraphReady({ cpbRoot, sourcePath: effectiveSourcePath });
-  const maps = requireCapabilityMap(registeredProject, sourceContext);
+  await checkCodeGraphReady({ cpbRoot: cpbRootValue, sourcePath: typeof effectiveSourcePath === "string" ? effectiveSourcePath : "" });
+  const maps = requireCapabilityMap(recordValue(registeredProject), sourceContextRecord);
   const riskMap = computeRiskMap({
     task,
     maps,
@@ -247,6 +254,6 @@ export async function prepareTask(cpbRootOrOptions: Record<string, any> | string
   });
   const dynamicAgentPlan = generateDynamicAgentPlan({ riskMap, workflow, planMode });
 
-  await persistQueueRiskMap(hubRoot, sourceContext, riskMap, dynamicAgentPlan);
+  await persistQueueRiskMap(hubRootValue, sourceContextRecord, riskMap, dynamicAgentPlan);
   return { riskMap, dynamicAgentPlan };
 }

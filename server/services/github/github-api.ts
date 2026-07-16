@@ -4,7 +4,7 @@ import { createSign, createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../../shared/types.js";
+import type { LooseRecord } from "../../../shared/types.js";
 import { redactSecrets } from "../secret-policy.js";
 
 // ============================================================
@@ -27,11 +27,19 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
 export function githubAppConfigPath(hubRoot: string) {
   return path.join(path.resolve(hubRoot), "github", "app.json");
 }
 
-function normalizeId(value: unknown, field: string, errors: string[], { required = true }: AnyRecord = {}) {
+function normalizeId(value: unknown, field: string, errors: string[], { required = true }: LooseRecord = {}) {
   if (value === null || value === undefined || value === "") {
     if (required) errors.push(`${field} is required`);
     return null;
@@ -72,9 +80,11 @@ function normalizePrivateKeyRef(value: unknown, errors: string[]) {
 }
 
 function normalizePermissions(value: unknown, errors: string[]) {
-  const permissions: AnyRecord = {
+  const permissions: Record<string, string> = {
     ...DEFAULT_GITHUB_APP_PERMISSIONS,
-    ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
+    ...(value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(
+      Object.entries(value).map(([key, level]) => [key, String(level)]),
+    ) : {}),
   };
 
   for (const [key, level] of Object.entries(permissions)) {
@@ -85,8 +95,8 @@ function normalizePermissions(value: unknown, errors: string[]) {
   return permissions;
 }
 
-export function validateGithubAppConfig(raw = {}) {
-  const input = raw as AnyRecord;
+export function validateGithubAppConfig(raw: LooseRecord = {}) {
+  const input = raw;
   const errors: string[] = [];
   const appId = normalizeId(input.appId, "appId", errors);
   const installationId = normalizeId(input.installationId, "installationId", errors, { required: false });
@@ -111,7 +121,7 @@ export function validateGithubAppConfig(raw = {}) {
   };
 }
 
-export function redactGithubAppConfig(config: AnyRecord | null) {
+export function redactGithubAppConfig(config: LooseRecord | null) {
   if (!config) return null;
   const { webhookSecret, privateKey, privateKeyPem, ...safe } = config;
   return redactSecrets(safe);
@@ -124,7 +134,7 @@ async function writeAtomic(filePath: string, content: string) {
   await rename(tmp, filePath);
 }
 
-export async function saveGithubAppConfig(hubRoot: string, raw: AnyRecord = {}) {
+export async function saveGithubAppConfig(hubRoot: string, raw: LooseRecord = {}) {
   const validation = validateGithubAppConfig(raw);
   if (!validation.valid) {
     throw new Error(`invalid GitHub App config: ${validation.errors.join("; ")}`);
@@ -151,11 +161,11 @@ export async function loadGithubAppConfig(hubRoot: string) {
   }
   return redactGithubAppConfig({
     ...validation.config,
-    updatedAt: (raw as AnyRecord).updatedAt || null,
+    updatedAt: raw.updatedAt || null,
   });
 }
 
-export function buildGithubAppReadiness(config: AnyRecord | null) {
+export function buildGithubAppReadiness(config: LooseRecord | null) {
   if (!config) {
     return [{
       id: "github-app-config",
@@ -192,14 +202,14 @@ export function buildGithubAppReadiness(config: AnyRecord | null) {
       status: config.privateKeyRef ? "ok" : "warn",
       severity: config.privateKeyRef ? "info" : "important",
       message: config.privateKeyRef
-        ? `Private key configured (${config.privateKeyRef.split(":")[0]}:*)`
+        ? `Private key configured (${String(config.privateKeyRef).split(":")[0]}:*)`
         : "No private key — outbound transport will use gh CLI",
       recommendedAction: config.privateKeyRef ? null : "Run: cpb github connect --private-key-ref env:CPB_GITHUB_PRIVATE_KEY",
     },
   ];
 }
 
-export function resolveSecretRef(secretRef: string, { env = process.env }: AnyRecord = {}) {
+export function resolveSecretRef(secretRef: string, { env = process.env }: { env?: NodeJS.ProcessEnv } = {}) {
   if (typeof secretRef !== "string" || secretRef.trim() === "") {
     throw new Error("secret reference is required");
   }
@@ -212,14 +222,14 @@ export function resolveSecretRef(secretRef: string, { env = process.env }: AnyRe
   throw new Error(`unsupported secret reference: ${secretRef.split(":")[0] || "unknown"}`);
 }
 
-export function resolveGithubWebhookSecret(config: AnyRecord | null, options: AnyRecord = {}) {
+export function resolveGithubWebhookSecret(config: LooseRecord | null, options: { env?: NodeJS.ProcessEnv } = {}) {
   if (!config?.webhookSecretRef) {
     throw new Error("GitHub webhook secret reference missing");
   }
-  return resolveSecretRef(config.webhookSecretRef, options);
+  return resolveSecretRef(String(config.webhookSecretRef), options);
 }
 
-export function verifyGithubWebhookSignature({ signature, rawBody, secret }: AnyRecord) {
+export function verifyGithubWebhookSignature({ signature, rawBody, secret }: LooseRecord) {
   if (typeof signature !== "string" || !signature.startsWith("sha256=")) return false;
   if (!secret || !rawBody) return false;
 
@@ -227,7 +237,7 @@ export function verifyGithubWebhookSignature({ signature, rawBody, secret }: Any
   if (!/^[0-9a-f]{64}$/i.test(providedHex)) return false;
 
   const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody));
-  const expectedHex = createHmac("sha256", secret).update(body).digest("hex");
+  const expectedHex = createHmac("sha256", String(secret)).update(body).digest("hex");
   const provided = Buffer.from(providedHex, "hex");
   const expected = Buffer.from(expectedHex, "hex");
   return provided.length === expected.length && timingSafeEqual(provided, expected);
@@ -243,16 +253,16 @@ const TOKEN_CACHE_S = 3300; // Cache installation token ~55 min
 
 // --- Private key resolution ---
 
-export function resolvePrivateKey(config: AnyRecord | null | undefined, { env = process.env }: AnyRecord = {}) {
+export function resolvePrivateKey(config: LooseRecord | null | undefined, { env = process.env }: LooseRecord = {}) {
   if (!config?.privateKeyRef) return null;
-  const ref = config.privateKeyRef;
+  const ref = String(config.privateKeyRef);
 
   if (ref.startsWith("env:")) {
     const name = ref.slice("env:".length);
-    const value = env[name];
+    const value = recordValue(env)[name];
     if (!value) throw new Error(`private key not found: env:${name}`);
     // env var may contain literal \n that need unescaping
-    return value.replace(/\\n/g, "\n");
+    return String(value).replace(/\\n/g, "\n");
   }
 
   if (ref.startsWith("file:")) {
@@ -293,7 +303,8 @@ function createAppJwt(appId: string, privateKeyPem: string) {
 
 let tokenCache: { token: string | null; expiresAt: number } = { token: null, expiresAt: 0 };
 
-async function fetchJson(url: string, options: AnyRecord = {}) {
+async function fetchJson(url: string, options: LooseRecord = {}) {
+  // retain: dynamic fetch boundary — LooseRecord (LooseRecord) is not structurally assignable to RequestInit, cast required to spread into fetch()
   const requestOptions = options as RequestInit & { headers?: Record<string, string> };
   const headers = {
     "Accept": "application/vnd.github+json",
@@ -301,17 +312,17 @@ async function fetchJson(url: string, options: AnyRecord = {}) {
     ...requestOptions.headers,
   };
   const res = await fetch(url, { ...requestOptions, headers });
-  const body = await res.json();
+  const body = recordValue(await res.json());
   if (!res.ok) {
-    const error = new Error(body.message || `GitHub API ${res.status}`);
-    (error as Error & { status?: number; body?: unknown }).status = res.status;
-    (error as Error & { status?: number; body?: unknown }).body = body;
+    const error: Error & { status?: number; body?: unknown } = new Error(stringValue(body.message, `GitHub API ${res.status}`));
+    error.status = res.status;
+    error.body = body;
     throw error;
   }
   return body;
 }
 
-export async function getInstallationToken(config: AnyRecord, { env = process.env, forceRefresh = false }: AnyRecord = {}) {
+export async function getInstallationToken(config: LooseRecord, { env = process.env, forceRefresh = false }: LooseRecord = {}) {
   if (!forceRefresh && tokenCache.token && Date.now() < tokenCache.expiresAt) {
     return tokenCache.token;
   }
@@ -320,15 +331,15 @@ export async function getInstallationToken(config: AnyRecord, { env = process.en
   if (!privateKey) throw new Error("GitHub App private key not configured");
   if (!config.installationId) throw new Error("GitHub App installation ID not configured");
 
-  const jwt = createAppJwt(config.appId, privateKey);
+  const jwt = createAppJwt(String(config.appId), privateKey);
   const body = await fetchJson(`${GITHUB_API}/app/installations/${config.installationId}/access_tokens`, {
     method: "POST",
     headers: { Authorization: `Bearer ${jwt}` },
   });
 
   tokenCache = {
-    token: body.token,
-    expiresAt: (body.expires_at ? new Date(body.expires_at).getTime() : Date.now() + TOKEN_CACHE_S * 1000) - 60000,
+    token: stringValue(body.token),
+    expiresAt: (body.expires_at ? new Date(String(body.expires_at)).getTime() : Date.now() + TOKEN_CACHE_S * 1000) - 60000,
   };
   return tokenCache.token;
 }
@@ -339,7 +350,7 @@ export function clearTokenCache() {
 
 // --- Transport: post issue comment ---
 
-export async function postGithubCommentWithApi({ repo, issueNumber, body }: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
+export async function postGithubCommentWithApi({ repo, issueNumber, body }: LooseRecord, config: LooseRecord, { env = process.env }: LooseRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const result = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}/comments`, {
     method: "POST",
@@ -355,7 +366,7 @@ export async function postGithubCommentWithApi({ repo, issueNumber, body }: AnyR
 
 // --- Transport: create pull request ---
 
-export async function createPullRequestWithApi(request: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
+export async function createPullRequestWithApi(request: LooseRecord, config: LooseRecord, { env = process.env }: LooseRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const result = await fetchJson(`${GITHUB_API}/repos/${request.repo}/pulls`, {
     method: "POST",
@@ -377,7 +388,7 @@ export async function createPullRequestWithApi(request: AnyRecord, config: AnyRe
 
 // --- Transport: close issue ---
 
-export async function closeGithubIssueWithApi({ repo, number, body }: AnyRecord, config: AnyRecord, { env = process.env }: AnyRecord = {}) {
+export async function closeGithubIssueWithApi({ repo, number, body }: LooseRecord, config: LooseRecord, { env = process.env }: LooseRecord = {}) {
   const token = await getInstallationToken(config, { env });
   const patch = await fetchJson(`${GITHUB_API}/repos/${repo}/issues/${number}`, {
     method: "PATCH",
@@ -398,15 +409,15 @@ function makeDiagnostic(level: string, message: string) {
   return { level, message };
 }
 
-export async function resolveGithubTransport(hubRoot: string, { env = process.env }: AnyRecord = {}): Promise<AnyRecord> {
-  const diagnostics: AnyRecord[] = [];
-  let config: AnyRecord | null = null;
+export async function resolveGithubTransport(hubRoot: string, { env = process.env }: LooseRecord = {}): Promise<LooseRecord> {
+  const diagnostics: LooseRecord[] = [];
+  let config: LooseRecord | null = null;
 
   // Load config
   try {
-    config = await loadGithubAppConfig(hubRoot);
+    config = recordValue(await loadGithubAppConfig(hubRoot));
   } catch (error) {
-    diagnostics.push(makeDiagnostic("error", `Failed to load GitHub App config: ${error.message}`));
+    diagnostics.push(makeDiagnostic("error", `Failed to load GitHub App config: ${recordValue(error).message || error}`));
   }
 
   if (!config) {
@@ -430,22 +441,22 @@ export async function resolveGithubTransport(hubRoot: string, { env = process.en
           apiDiagnostics.push(makeDiagnostic("error", `Private key not resolvable: ${config.privateKeyRef}`));
         }
       } catch (error) {
-        apiDiagnostics.push(makeDiagnostic("error", `Private key resolution failed: ${error.message}`));
+        apiDiagnostics.push(makeDiagnostic("error", `Private key resolution failed: ${recordValue(error).message || error}`));
       }
     }
-    apiAvailable = config.installationId && config.privateKeyRef && apiDiagnostics.length === 0;
+    apiAvailable = Boolean(config.installationId && config.privateKeyRef && apiDiagnostics.length === 0);
   }
 
-  if (apiAvailable) {
+  if (apiAvailable && config) {
     return {
       mode: "api",
       healthy: true,
       config,
-      diagnostics: [] as AnyRecord[],
+      diagnostics: [],
       getToken: () => getInstallationToken(config, { env }),
-      postComment: (req: AnyRecord) => postGithubCommentWithApi(req, config, { env }),
-      createPullRequest: (req: AnyRecord) => createPullRequestWithApi(req, config, { env }),
-      closeIssue: (req: AnyRecord) => closeGithubIssueWithApi(req, config, { env }),
+      postComment: (req: LooseRecord) => postGithubCommentWithApi(req, config, { env }),
+      createPullRequest: (req: LooseRecord) => createPullRequestWithApi(req, config, { env }),
+      closeIssue: (req: LooseRecord) => closeGithubIssueWithApi(req, config, { env }),
     };
   }
 
@@ -465,6 +476,9 @@ export async function resolveGithubTransport(hubRoot: string, { env = process.en
     const { postGithubCommentWithGh } = await import("./github-issues.js");
     const { createPullRequestWithGh } = await import("./github-issues.js");
     const { closeGithubIssueWithGh } = await import("./github-issues.js");
+    type GhCommentRequest = Parameters<typeof postGithubCommentWithGh>[0];
+    type GhPullRequest = Parameters<typeof createPullRequestWithGh>[0];
+    type GhCloseRequest = Parameters<typeof closeGithubIssueWithGh>[0];
 
     const fallbackReason = apiDiagnostics.length > 0
       ? apiDiagnostics.map((d) => d.message).join("; ")
@@ -479,9 +493,9 @@ export async function resolveGithubTransport(hubRoot: string, { env = process.en
         ...apiDiagnostics,
       ],
       getToken: null,
-      postComment: (req: AnyRecord) => postGithubCommentWithGh(req),
-      createPullRequest: (req: AnyRecord) => createPullRequestWithGh(req),
-      closeIssue: (req: AnyRecord) => closeGithubIssueWithGh(req),
+      postComment: (req: GhCommentRequest) => postGithubCommentWithGh(req),
+      createPullRequest: (req: GhPullRequest) => createPullRequestWithGh(req),
+      closeIssue: (req: GhCloseRequest) => closeGithubIssueWithGh(req),
     };
   }
 

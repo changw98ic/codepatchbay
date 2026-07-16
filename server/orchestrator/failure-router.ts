@@ -1,12 +1,15 @@
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { FailureKind } from "../../core/contracts/failure.js";
 import { mapChecklistRoutingLabel } from "../../core/workflow/acceptance-checklist.js";
+import { selectFailureRecovery } from "../../core/contracts/failure-recovery.js";
 
 
 const MAX_RETRIES: Record<string, number> = {
   runtime_interrupted: 2,
   timeout: 1,
+  [FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT]: 2,
   agent_contract_invalid: 1,
+  [FailureKind.PERMISSION_DENIED]: 1,
   worker_crashed: 2,
   worker_heartbeat_lost: 2,
   assignment_progress_stale: 2,
@@ -28,8 +31,9 @@ const SMART_MODE_SUPERVISOR_KINDS = new Set<string>([
   FailureKind.TIMEOUT,
 ]);
 
-function collectVerificationRetryScope(failure: AnyRecord = {}) {
-  const verdict = failure.cause?.verdict || {};
+function collectVerificationRetryScope(failure: LooseRecord = {}) {
+  const cause = recordValue(failure.cause);
+  const verdict = recordValue(cause.verdict);
   const scope = new Set<string>();
   const add = (value: unknown) => {
     if (typeof value === "string" && value.trim()) scope.add(value.trim());
@@ -38,25 +42,37 @@ function collectVerificationRetryScope(failure: AnyRecord = {}) {
     if (Array.isArray(values)) values.forEach(add);
   };
 
+  addMany(cause.fix_scope);
+  addMany(cause.fixScope);
   addMany(verdict.fix_scope);
   addMany(verdict.fixScope);
   for (const blocking of Array.isArray(verdict.blocking) ? verdict.blocking : []) {
-    add(blocking?.file);
-    add(blocking?.path);
-    addMany(blocking?.files);
-    addMany(blocking?.paths);
+    const blockingRecord = recordValue(blocking);
+    add(blockingRecord.file);
+    add(blockingRecord.path);
+    addMany(blockingRecord.files);
+    addMany(blockingRecord.paths);
   }
   // Extract file-only scope from checklistVerdict — do NOT add checklist ids
-  const checklistVerdict = verdict.checklistVerdict || failure.cause?.checklistVerdict || {};
+  const checklistVerdict = recordValue(verdict.checklistVerdict || cause.checklistVerdict);
   addMany(checklistVerdict.fixScope);
   for (const item of Array.isArray(checklistVerdict.items) ? checklistVerdict.items : []) {
-    addMany(item?.fixScope);
+    addMany(recordValue(item).fixScope);
   }
   return [...scope];
 }
 
+function isVerifierReadOnlyMutation(failure: LooseRecord) {
+  const phase = String(failure.phase || "");
+  const reason = String(failure.reason || "");
+  if (!/(^|_)verify$/.test(phase)) return false;
+  return /read-only phase attempted to modify/i.test(reason) ||
+    /read-only phase .*cannot run mutating terminal command/i.test(reason) ||
+    Boolean(recordValue(failure.cause).readOnlyMutation);
+}
+
 export class FailureRouter {
-  supervisor: { diagnoseFailure: (ctx: AnyRecord) => Promise<AnyRecord> } | null;
+  supervisor: { diagnoseFailure: (ctx: LooseRecord) => Promise<LooseRecord> } | null;
   readModeFn: (() => Promise<string> | string) | null;
 
   /**
@@ -64,9 +80,9 @@ export class FailureRouter {
    * @param {object} [opts]
    * @param {Function} [opts.readModeFn] - async () => "default"|"smart"
    */
-  constructor(supervisor: { diagnoseFailure: (ctx: AnyRecord) => Promise<AnyRecord> } | null = null, opts: AnyRecord = {}) {
+  constructor(supervisor: { diagnoseFailure: (ctx: LooseRecord) => Promise<LooseRecord> } | null = null, opts: { readModeFn?: (() => Promise<string> | string) | null } = {}) {
     this.supervisor = supervisor;
-    this.readModeFn = opts.readModeFn || null;
+    this.readModeFn = typeof opts.readModeFn === "function" ? opts.readModeFn : null;
   }
 
   async _shouldConsultSupervisor(failureKind: string) {
@@ -84,13 +100,80 @@ export class FailureRouter {
    * Route a failure. For complex failures, consult AcpSupervisor if available.
    * Reads retry budget from assignment.attempts (durable, P1-4).
    */
-  async route({ assignment, attempt, result }: AnyRecord) {
-    const failure = result.jobResult?.failure || result.failure || {};
-    const attemptCount = assignment.attempts || 0;
-    const maxRetries = MAX_RETRIES[failure.kind] ?? 0;
+  async route({ assignment, attempt, result }: LooseRecord): Promise<LooseRecord> {
+    const assignmentRecord = recordValue(assignment);
+    const resultRecord = recordValue(result);
+    const jobResult = recordValue(resultRecord.jobResult);
+    const failure = recordValue(jobResult.failure || resultRecord.failure);
+    const failureCause = recordValue(failure.cause);
+    const solverFailure = recordValue(failureCause.solver);
+    const failureKind = String(failure.kind || "");
+    const attemptCount = typeof assignmentRecord.attempts === "number" ? assignmentRecord.attempts : 0;
+    const maxRetries = MAX_RETRIES[failureKind] ?? 0;
+    const sourceContext = recordValue(assignmentRecord.sourceContext || recordValue(assignmentRecord.metadata).sourceContext);
+    const previousRetry = recordValue(sourceContext.retry);
+    const previousFingerprint = typeof previousRetry.failureFingerprint === "string" ? previousRetry.failureFingerprint : null;
+    const previousStrategy = typeof previousRetry.retryStrategy === "string" ? previousRetry.retryStrategy : null;
+    const initialRecovery = selectFailureRecovery({ failure, scope: "queue" });
+    const upstreamFingerprint = typeof solverFailure.failureFingerprint === "string"
+      ? solverFailure.failureFingerprint
+      : typeof failureCause.failureFingerprint === "string" ? failureCause.failureFingerprint : null;
+    const fingerprintRepeated = previousFingerprint === initialRecovery.failureFingerprint
+      || Boolean(upstreamFingerprint && previousFingerprint === upstreamFingerprint);
+    const normalizedPreviousFingerprint = fingerprintRepeated
+      ? initialRecovery.failureFingerprint
+      : previousFingerprint;
+    const recoveryFor = (preferredStrategy: string | null = null) => selectFailureRecovery({
+      failure,
+      previousFingerprint: normalizedPreviousFingerprint,
+      previousStrategy,
+      preferredStrategy,
+      scope: "queue",
+    });
+    const failureRecovery = recoveryFor(
+      solverFailure.exhausted === true ? "fresh_session_diagnosis" : null,
+    );
+    const failureMetadata = {
+      failureClass: failureRecovery.failureClass,
+      failureFingerprint: failureRecovery.failureFingerprint,
+      failureEvidence: failureRecovery.failureEvidence,
+    };
+    const retryDecision = (decision: LooseRecord, preferredStrategy: string | null = null): LooseRecord => {
+      if (fingerprintRepeated && !previousStrategy) {
+        return {
+          action: "mark_failed",
+          reason: `repeated unchanged failure ${initialRecovery.failureFingerprint} has no recorded prior strategy; blind retry denied`,
+          retryable: false,
+          ...failureMetadata,
+          retryStrategy: null,
+          strategyChanged: false,
+        };
+      }
+      const recovery = recoveryFor(preferredStrategy || (typeof decision.retryStrategy === "string" ? decision.retryStrategy : null));
+      if (!recovery.retryStrategy || !recovery.strategyChanged) {
+        return {
+          action: "mark_failed",
+          reason: recovery.stopReason || `retry strategy did not change for ${recovery.failureFingerprint}`,
+          retryable: false,
+          ...failureMetadata,
+          retryStrategy: recovery.retryStrategy,
+          strategyChanged: recovery.strategyChanged,
+        };
+      }
+      return {
+        ...decision,
+        failureClass: recovery.failureClass,
+        failureFingerprint: recovery.failureFingerprint,
+        failureEvidence: recovery.failureEvidence,
+        retryStrategy: recovery.retryStrategy,
+        strategyChanged: recovery.strategyChanged,
+        forceFreshSession: recovery.forceFreshSession,
+      };
+    };
 
     if (
       failure.retryable === false &&
+      failure.kind !== FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT &&
       failure.kind !== FailureKind.PERMISSION_DENIED &&
       failure.kind !== FailureKind.HUMAN_APPROVAL_REQUIRED
     ) {
@@ -98,6 +181,7 @@ export class FailureRouter {
         action: "mark_failed",
         reason: `${failure.kind} is non-retryable: ${failure.reason}`,
         retryable: false,
+        ...failureMetadata,
       };
     }
 
@@ -106,8 +190,11 @@ export class FailureRouter {
       return {
         action: "wait_for_rate_limit",
         reason: failure.reason,
-        untilTs: failure.cause?.nextEligibleAt || failure.cause?.untilTs || Date.now() + 60_000,
+        untilTs: failureCause.nextEligibleAt || failureCause.untilTs || Date.now() + 60_000,
         retryable: true,
+        ...failureMetadata,
+        retryStrategy: "wait_for_rate_limit_window",
+        strategyChanged: previousStrategy !== "wait_for_rate_limit_window",
       };
     }
 
@@ -118,27 +205,30 @@ export class FailureRouter {
         action: "mark_failed",
         reason: `${failure.kind}: ${failure.reason}`,
         retryable: false,
+        ...failureMetadata,
       };
     }
 
+    let verificationRetryScope: string[] = [];
     if (failure.kind === FailureKind.VERIFICATION_FAILED) {
-      const retryScope = collectVerificationRetryScope(failure);
+      verificationRetryScope = collectVerificationRetryScope(failure);
       // Checklist-aware routing: map routing labels from completion gate
       // to correct retry action, phase, and fixScope.
-      const routing = failure.cause?.routingLabel
-        ? mapChecklistRoutingLabel(failure.cause.routingLabel, {
-            ...failure.cause,
-            fixScope: retryScope.length > 0 ? retryScope : (failure.cause?.fixScope || []),
+      const routingLabel = typeof failureCause.routingLabel === "string" ? failureCause.routingLabel : "";
+      const routing = routingLabel
+        ? mapChecklistRoutingLabel(routingLabel, {
+            ...failureCause,
+            fixScope: verificationRetryScope.length > 0 ? verificationRetryScope : (Array.isArray(failureCause.fixScope) ? failureCause.fixScope : []),
           })
         : null;
       if (routing?.action === "retry_same_worker" && routing.retryPhase) {
-        return {
+        return retryDecision({
           action: "retry_same_worker",
           reason: failure.reason,
           retryable: true,
           retryPhase: routing.retryPhase,
-          ...(routing.requiresFixScope && retryScope.length > 0 ? { fixScope: retryScope } : {}),
-        };
+          ...(routing.requiresFixScope && verificationRetryScope.length > 0 ? { fixScope: verificationRetryScope } : {}),
+        }, routing.retryPhase === "verify" ? "rebuild_evidence" : "targeted_repair");
       }
       // Non-retryable routing (e.g. scope_violation, missing evidence without probe)
       if (routing && !routing.retryable) {
@@ -146,6 +236,7 @@ export class FailureRouter {
           action: "mark_failed",
           reason: `${routing.kind}: ${failure.reason}`,
           retryable: false,
+          ...failureMetadata,
         };
       }
       // Human approval required
@@ -154,13 +245,15 @@ export class FailureRouter {
           action: "mark_blocked",
           reason: failure.reason,
           retryable: false,
+          ...failureMetadata,
         };
       }
-      if (retryScope.length === 0) {
+      if (verificationRetryScope.length === 0 && solverFailure.exhausted !== true) {
         return {
           action: "mark_failed",
           reason: `verification failed without actionable retry scope: ${failure.reason}`,
           retryable: false,
+          ...failureMetadata,
         };
       }
     }
@@ -171,15 +264,19 @@ export class FailureRouter {
         action: "mark_failed",
         reason: `${failure.kind} exceeded retry budget (${attemptCount}/${maxRetries + 1}): ${failure.reason}`,
         retryable: false,
+        ...failureMetadata,
       };
     }
 
     // P1-2: Complex failures → consult supervisor if available
-    if (await this._shouldConsultSupervisor(failure.kind)) {
+    if (await this._shouldConsultSupervisor(failureKind)) {
       try {
         const decision = await this.supervisor.diagnoseFailure({ assignment, attempt, result });
         if (decision && typeof decision.action === "string") {
-          return decision;
+          if (["retry_same_worker", "restart_worker_and_retry", "reroute", "switch_agent"].includes(decision.action)) {
+            return retryDecision(decision);
+          }
+          return { ...decision, ...failureMetadata };
         }
       } catch {
         // Supervisor failed — fall through to deterministic routing
@@ -187,46 +284,62 @@ export class FailureRouter {
     }
 
     // Deterministic routing by failure kind
-    switch (failure.kind) {
+    switch (failureKind) {
       case FailureKind.RUNTIME_INTERRUPTED:
       case FailureKind.WORKER_CRASHED:
       case FailureKind.WORKER_HEARTBEAT_LOST:
       case FailureKind.ASSIGNMENT_PROGRESS_STALE:
-        return {
+        return retryDecision({
           action: "restart_worker_and_retry",
           reason: `${failure.kind}: ${failure.reason}`,
           retryable: true,
-        };
+        });
 
       case FailureKind.TIMEOUT:
-        return {
+      case FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT:
+        return retryDecision({
           action: "restart_worker_and_retry",
-          reason: `timeout: ${failure.reason}`,
+          reason: `${failure.kind}: ${failure.reason}`,
           retryable: true,
-        };
+        });
 
       case FailureKind.VERIFICATION_FAILED:
-        return {
+        return retryDecision({
           action: "retry_same_worker",
-          reason: `verification failed: ${failure.reason}`,
+          reason: solverFailure.exhausted === true
+            ? `in-attempt solver exhausted; start one fresh diagnosis attempt: ${failure.reason}`
+            : `verification failed: ${failure.reason}`,
           retryable: true,
-        };
+          retryPhase: solverFailure.exhausted === true ? null : "execute",
+          retryStrategy: solverFailure.exhausted === true ? "fresh_session_diagnosis" : "targeted_repair",
+          ...(verificationRetryScope.length > 0 ? { fixScope: verificationRetryScope } : {}),
+        }, solverFailure.exhausted === true ? "fresh_session_diagnosis" : "targeted_repair");
 
       case FailureKind.AGENT_CONTRACT_INVALID:
       case FailureKind.AGENT_EXIT_NONZERO:
       case FailureKind.ARTIFACT_INVALID:
-        return {
+        return retryDecision({
           action: "restart_worker_and_retry",
           reason: `${failure.kind}: ${failure.reason}`,
           retryable: true,
-        };
+        });
 
       case FailureKind.PERMISSION_DENIED:
+        if (isVerifierReadOnlyMutation(failure)) {
+          return retryDecision({
+            action: "retry_same_worker",
+            reason: `verifier read-only mutation denied: ${failure.reason}`,
+            retryable: true,
+            retryPhase: "verify",
+          }, "correct_permission_strategy");
+        }
+      // fall through
       case FailureKind.HUMAN_APPROVAL_REQUIRED:
         return {
           action: "mark_blocked",
           reason: `${failure.kind}: ${failure.reason}`,
           retryable: false,
+          ...failureMetadata,
         };
 
       case FailureKind.SCOPE_VIOLATION:
@@ -234,6 +347,7 @@ export class FailureRouter {
           action: "mark_failed",
           reason: `scope violation: ${failure.reason}`,
           retryable: false,
+          ...failureMetadata,
         };
 
       default:
@@ -241,6 +355,7 @@ export class FailureRouter {
           action: "mark_failed",
           reason: `unhandled failure kind ${failure.kind}: ${failure.reason}`,
           retryable: false,
+          ...failureMetadata,
         };
     }
   }

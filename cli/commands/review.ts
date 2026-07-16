@@ -144,7 +144,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   console.log("");
   console.log(`${BOLD}Actions:${NC}`);
   console.log("  a/accept   — keep changes");
-  console.log("  r/reject   — revert changes (git reset --hard)");
+  console.log("  r/reject   — reject review without modifying the working tree");
   console.log("  q/quit     — exit");
   console.log("");
 
@@ -159,17 +159,10 @@ export async function run(args, { cpbRoot, executorRoot }) {
     console.log(`${GREEN}Changes accepted.${NC}`);
   } else if (choice === "r" || choice === "reject") {
     if (src) {
-      console.log(`${YELLOW}Reverting changes in ${src}...${NC}`);
-      const { spawn } = await import("node:child_process");
-      await new Promise((resolve) => {
-        spawn("git", ["-C", src, "checkout", "--", "."], { stdio: "inherit" }).on("close", resolve);
-      });
-      await new Promise((resolve) => {
-        spawn("git", ["-C", src, "clean", "-fd"], { stdio: "inherit" }).on("close", resolve);
-      });
-      console.log(`${GREEN}Reverted to last committed state.${NC}`);
+      console.log(`${YELLOW}Review rejected; no files were modified.${NC}`);
+      console.log(`Inspect ${src} and revert only the reviewed files after preserving unrelated work.`);
     } else {
-      console.error(`${RED}Cannot revert: not a git repo.${NC}`);
+      console.log(`${YELLOW}Review rejected; no files were modified.${NC}`);
     }
   } else {
     console.log("No action taken.");

@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const EVENT_STORE = readFileSync(
-  path.resolve('server/services/event/event-store.js'), 'utf8'
+const EVENT_MATERIALIZER = readFileSync(
+  path.resolve('server/services/event/event-materializer.js'), 'utf8'
 );
 
 const EVENT_REGISTRY = {
@@ -40,6 +40,7 @@ const EVENT_REGISTRY = {
   adversarial_verdict:    { class: 'state',    consumer: 'verifier, supervisor',      testFile: 'engine-prepare-task.test.js', testMatch: ['adversarialVerdict'] },
   executor_routing_feedback: { class: 'audit', consumer: 'routing-engine, supervisor', testFile: 'event-store.test.js', testMatch: ['executor_routing_feedback'] },
   agent_routing_decision: { class: 'state',    consumer: 'routing-engine, supervisor', testFile: 'engine-provider-event.test.js', testMatch: ['agent_routing_decision'] },
+  agent_routing_result:   { class: 'audit',    consumer: 'routing-engine, trace',      testFile: 'engine-provider-event.test.js', testMatch: ['agent_routing_result'] },
   approval_required:      { class: 'control',  consumer: 'approval-gateway, supervisor', testFile: 'event-store.test.js', testMatch: ['approval_required'] },
   approval_timed_out:     { class: 'control',  consumer: 'approval-gateway, supervisor', testFile: 'event-store.test.js', testMatch: ['approval_timed_out'] },
   review_bundle_accepted: { class: 'audit',    consumer: 'review-loop, supervisor',   testFile: 'event-store.test.js', testMatch: ['review_bundle_accepted'] },
@@ -68,7 +69,7 @@ const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);
 describe('R4: event extension gate', () => {
   it('every event type has a materialization rule', () => {
     for (const [eventType] of Object.entries(EVENT_REGISTRY)) {
-      const hasHandler = EVENT_STORE.includes(`${eventType}(state`) || EVENT_STORE.includes(`${eventType}: `);
+      const hasHandler = EVENT_MATERIALIZER.includes(`${eventType}(state`) || EVENT_MATERIALIZER.includes(`${eventType}: `);
       assert.ok(hasHandler, `${eventType} missing handler in EVENT_HANDLERS`);
     }
   });
@@ -105,7 +106,7 @@ describe('R4: event extension gate', () => {
     const handlerKeyRegex = /^  ([a-z_]+)\(state|^  ([a-z_]+): _/gm;
     const materialized = new Set<string>();
     let match;
-    while ((match = handlerKeyRegex.exec(EVENT_STORE)) !== null) {
+    while ((match = handlerKeyRegex.exec(EVENT_MATERIALIZER)) !== null) {
       materialized.add(match[1] || match[2]);
     }
     for (const eventType of materialized) {

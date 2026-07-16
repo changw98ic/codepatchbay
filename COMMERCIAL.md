@@ -1,38 +1,26 @@
 # Commercial Use
 
-CodePatchbay is available for personal and non-commercial use under the PolyForm Noncommercial License 1.0.0.
+CodePatchBay is licensed under the GNU Affero General Public License v3.0
+(`AGPL-3.0-only`). The AGPL permits commercial use; it does not impose a
+non-commercial field-of-use restriction. Commercial users must comply with
+the AGPL, including its source-code obligations when modified versions are
+offered to users over a network.
 
-Commercial use is not permitted without a separate written commercial license from the project owner.
+The complete terms in [`LICENSE`](./LICENSE) control.
 
-## What counts as commercial use?
+## Optional commercial licensing
 
-Commercial use includes, but is not limited to:
+An organization that cannot meet the AGPL's copyleft requirements may ask the
+project owner whether a separate written commercial license is available.
+Such a license may also cover support, private deployment assistance, or
+custom development. It is optional and does not limit rights already granted
+by the AGPL.
 
-- using CodePatchbay inside a company, startup, agency, consultancy, or other commercial organization
-- using CodePatchbay to deliver paid consulting, development, automation, or operations services
-- offering CodePatchbay or a modified version as a hosted service
-- integrating CodePatchbay into a paid product or service
-- redistributing CodePatchbay as part of a commercial product, appliance, platform, or bundle
-- using CodePatchbay to support revenue-generating internal workflows
+When making an inquiry, include:
 
-## What is allowed without a commercial license?
+- organization name and intended use case
+- deployment model and expected number of users or projects
+- whether CodePatchBay will be modified, embedded, redistributed, or hosted
+- any support, compliance, or private-deployment requirements
 
-Subject to the license terms, non-commercial uses include:
-
-- personal study and experimentation
-- hobby projects without anticipated commercial application
-- educational use
-- public research use
-- non-commercial evaluation
-
-## How to request commercial permission
-
-Open an issue or contact the repository owner with:
-
-- your organization name
-- intended use case
-- expected deployment model
-- number of users or projects
-- whether you need support, custom features, or private deployment help
-
-This file is a plain-language summary. The license text in `LICENSE` controls.
+This file is a plain-language project policy, not legal advice.

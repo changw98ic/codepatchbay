@@ -6,11 +6,66 @@
  * no I/O, no side effects, no external dependencies.
  */
 
-import { AnyRecord } from "../../shared/types.js";
 import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
+type CompletionGateJob = {
+  workflow?: string | null;
+  planMode?: string | null;
+  completedPhases?: string[];
+};
+type WorkflowDag = {
+  nodes?: Array<{ id?: string | null; phase?: string | null }>;
+};
+type RiskMap = {
+  adversarialRequired?: boolean;
+};
+type EvidenceRef = LooseRecord & {
+  ledgerId?: string;
+  evidenceId?: string;
+  attemptId?: string;
+};
+type ChecklistCompletionResult = LooseRecord & {
+  outcome?: string | null;
+  reason?: string | null;
+  attemptId?: string | null;
+  failedChecklistIds?: string[];
+  uncheckedChecklistIds?: string[];
+  missingEvidenceRefs?: EvidenceRef[];
+  mismatchedEvidenceRefs?: EvidenceRef[];
+  staleEvidenceRefs?: EvidenceRef[];
+  poisonedEvidenceRefs?: EvidenceRef[];
+  pollutedEvidenceRefs?: EvidenceRef[];
+  pollutedOracleFiles?: string[];
+  runtimeFailureRefs?: EvidenceRef[];
+  unmappedChangedFiles?: string[];
+};
+type CompletionGateDetails = LooseRecord & {
+  isMutating: boolean;
+  dagPhases: string[];
+  completedPhases: string[];
+  adversarialRequired: boolean;
+  checklist?: ChecklistCompletionResult;
+};
+export type CompletionGateResult = {
+  outcome: string;
+  reason: string;
+  missingGates: string[];
+  details: CompletionGateDetails;
+  attemptId?: string | null;
+};
+type CompletionGateEventInput = {
+  outcome?: string;
+  reason?: string;
+  missingGates?: string[];
+  details?: LooseRecord & { checklist?: ChecklistCompletionResult };
+  attemptId?: string | null;
+};
+type CompletionGateEventOptions = {
+  completionReport?: LooseRecord | null;
+};
 
 /**
  * Parse a verdict string looking for the canonical `VERDICT: <STATUS>` line.
@@ -21,8 +76,8 @@ type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
  */
 export function parseVerdict(verdictText: unknown): ParsedVerdict {
   if (verdictText && typeof verdictText === "object") {
-    const obj = verdictText as Record<string, unknown>;
-    const raw = ((obj.verdict || obj.status || "") as string).toString().toUpperCase()
+    const obj = recordValue(verdictText);
+    const raw = String(obj.verdict || obj.status || "").toUpperCase()
     if (raw === "PASS") return { status: "pass", raw }
     if (raw === "FAIL" || raw === "PARTIAL") return { status: "fail", raw }
   }
@@ -63,7 +118,7 @@ export function parseVerdict(verdictText: unknown): ParsedVerdict {
  * @param {{ workflow?: string, planMode?: string }} job
  * @returns {boolean}
  */
-export function isMutatingJob(job: AnyRecord | null | undefined): boolean {
+export function isMutatingJob(job: CompletionGateJob | null | undefined): boolean {
   if (!job) return false
   const mode = job.planMode
   if (mode === "parent" || mode === "none") return false
@@ -112,25 +167,25 @@ export function evaluateCompletionGate({
   attemptId,
   multiAttempt,
 }: {
-  job?: AnyRecord;
-  workflowDag?: AnyRecord;
-  riskMap?: AnyRecord;
-  dynamicAgentPlan?: AnyRecord;
-  artifactIndex?: AnyRecord;
+  job?: CompletionGateJob;
+  workflowDag?: WorkflowDag;
+  riskMap?: RiskMap;
+  dynamicAgentPlan?: LooseRecord;
+  artifactIndex?: LooseRecord;
   parsedVerdict?: ParsedVerdict;
   parsedAdversarialVerdict?: ParsedVerdict;
-  checklist?: AnyRecord;
-  checklistVerdict?: AnyRecord;
-  evidenceLedger?: AnyRecord;
-  executionMap?: AnyRecord;
-  runtimeFailures?: AnyRecord[];
+  checklist?: LooseRecord;
+  checklistVerdict?: LooseRecord;
+  evidenceLedger?: LooseRecord;
+  executionMap?: LooseRecord;
+  runtimeFailures?: LooseRecord[];
   attemptId?: string;
   multiAttempt?: boolean;
-} = {}) {
+} = {}): CompletionGateResult {
   const completedPhases = new Set(job?.completedPhases || [])
   const dagNodes = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes : []
-  const dagPhases = new Set(dagNodes.map((n) => n.phase || n.id))
-  const details: AnyRecord = {
+  const dagPhases = new Set(dagNodes.map((n) => n.phase || n.id).filter((phase): phase is string => Boolean(phase)))
+  const details: CompletionGateDetails = {
     isMutating: isMutatingJob(job),
     dagPhases: [...dagPhases],
     completedPhases: [...completedPhases],
@@ -150,7 +205,7 @@ export function evaluateCompletionGate({
       multiAttempt,
     });
     if (checklistResult.outcome !== "complete") {
-      return gateResult(checklistResult.outcome, checklistResult.reason, ["checklist"], {
+      return gateResult(checklistResult.outcome || "checklist_invalid", checklistResult.reason || "checklist completion failed", ["checklist"], {
         ...details,
         checklist: checklistResult,
       });
@@ -244,9 +299,14 @@ export function evaluateCompletionGate({
  * @param {{ outcome: string, reason: string, missingGates: string[] }} gateResult
  * @returns {object}
  */
-export function completionGateEvent(jobId: string, project: string, gateResult: AnyRecord) {
+export function completionGateEvent(
+  jobId: string,
+  project: string,
+  gateResult: CompletionGateEventInput,
+  { completionReport = null }: CompletionGateEventOptions = {},
+) {
   const checklist = gateResult.details?.checklist || {};
-  return {
+  const event = {
     type: "completion_gate_evaluated",
     jobId,
     project,
@@ -261,16 +321,20 @@ export function completionGateEvent(jobId: string, project: string, gateResult: 
     mismatchedEvidenceRefs: checklist.mismatchedEvidenceRefs || [],
     staleEvidenceRefs: checklist.staleEvidenceRefs || [],
     poisonedEvidenceRefs: checklist.poisonedEvidenceRefs || [],
+    pollutedEvidenceRefs: checklist.pollutedEvidenceRefs || [],
+    pollutedOracleFiles: checklist.pollutedOracleFiles || [],
+    pollutedOracleFileCount: Array.isArray(checklist.pollutedOracleFiles) ? checklist.pollutedOracleFiles.length : 0,
     runtimeFailureRefs: checklist.runtimeFailureRefs || [],
     runtimeFailureCount: Array.isArray(checklist.runtimeFailureRefs) ? checklist.runtimeFailureRefs.length : 0,
     unmappedChangedFiles: checklist.unmappedChangedFiles || [],
     unmappedChangedFileCount: Array.isArray(checklist.unmappedChangedFiles) ? checklist.unmappedChangedFiles.length : 0,
     ts: new Date().toISOString(),
   };
+  return completionReport ? { ...event, completionReport } : event;
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────
 
-function gateResult(outcome: string, reason: string, missingGates: string[], details: AnyRecord) {
+function gateResult(outcome: string, reason: string, missingGates: string[], details: CompletionGateDetails): CompletionGateResult {
   return { outcome, reason, missingGates, details }
 }

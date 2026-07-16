@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
@@ -12,7 +13,7 @@ export function buildAgentMetadata({
   verifyVariant,
   reviewVariant,
 }) {
-  const result: Record<string, any> = {};
+  const result: LooseRecord = {};
   const roles = [
     ["planner", planAgent, planVariant],
     ["executor", executeAgent, executeVariant],
@@ -131,7 +132,7 @@ function parseCommonFlags(args: string[]) {
  * Both resolve to the same enqueue call. "run" mode auto-detects project
  * from cwd/package.json when --project is not specified.
  */
-export async function run(args, { cpbRoot, executorRoot, command }: Record<string, any> = {}) {
+export async function run(args, { cpbRoot, executorRoot, command }: LooseRecord = {}) {
   const isRunMode = command === "run" || args[0] === "--project" || args[0]?.startsWith('"') || args[0]?.startsWith("'") || !args[0]?.match(/^[a-zA-Z0-9-]+$/);
 
   // Detect: if --project flag is present, treat as run mode
@@ -196,7 +197,7 @@ Options:
         const hubRoot = resolveHubRoot(cpbRoot);
         const registry = await loadRegistry(hubRoot);
         const cwd = path.resolve(process.cwd());
-        for (const [id, proj] of Object.entries(registry.projects || {}) as Array<[string, Record<string, any>]>) {
+        for (const [id, proj] of Object.entries(registry.projects || {}) as Array<[string, LooseRecord]>) {
           const src = proj.sourcePath && path.resolve(proj.sourcePath);
           if (src === cwd || cwd.startsWith(src + path.sep)) {
             project = id;
@@ -238,7 +239,7 @@ Options:
     workflowExplicit: parsed.workflowExplicit,
     planModeExplicit: parsed.planModeExplicit,
     actor: "cli",
-  } as Record<string, any>);
+  } as LooseRecord);
 
   const { enqueue } = await import(path.join(executorRoot, "server", "services", "hub", "hub-queue.js"));
   const { getProject } = await import(path.join(executorRoot, "server", "services", "hub", "hub-registry.js"));

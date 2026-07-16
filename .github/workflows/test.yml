@@ -24,18 +24,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium with system deps
-        run: npx playwright install --with-deps chromium
-
-      - name: Install rollup native binding (npm workspace bug workaround)
-        run: npm install @rollup/rollup-linux-x64-gnu --no-save
-        if: runner.os == 'Linux'
+      - name: Install Redis integration runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server redis-tools
+          redis-server --version
+          redis-cli --version
 
       - name: Run Node and shell tests
         run: npm test
 
       - name: Run Node typecheck
         run: npm run typecheck:node
+
+      - name: Run strict engine typecheck
+        run: npm run typecheck:strict:engine
+
+      - name: Run engine type-debt gate
+        run: npm run typecheck:type-debt:engine
 
       - name: Run web tests
         run: cd web && npm test -- --run
@@ -49,8 +55,12 @@ jobs:
         run: npm run build:web
         if: hashFiles('web/package.json') != ''
 
-      - name: CI smoke test (cpb setup + demo)
+      - name: CI smoke test (setup + Hub lifecycle)
         run: npm run build:node && node dist/scripts/ci-smoke.js
+
+      - name: Run stabilization and release gates
+        if: matrix.node-version == 22
+        run: npm run verify:stabilization
 
   lint:
     runs-on: ubuntu-latest
