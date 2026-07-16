@@ -85,6 +85,12 @@ test("persistent ACP clients never share a session across conversation keys", as
     hubRoot,
     env: {
       ...process.env,
+      // The fake ACP transcript is an agent-owned diagnostic artifact. Declare
+      // this test's exact temporary root instead of relying on a platform-wide
+      // TMPDIR that is present on macOS but commonly unset on Linux.
+      TMPDIR: tmp,
+      TMP: tmp,
+      TEMP: tmp,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
